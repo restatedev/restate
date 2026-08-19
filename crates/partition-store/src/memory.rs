@@ -27,11 +27,7 @@ use crate::{PartitionDb, SharedState};
 const INITIAL_NUM_PARTITIONS: usize = 24;
 const DEBUG_MEMORY_REPORTING: bool = false;
 
-pub const MAX_WRITE_BUFFERS: u32 = 4;
 pub const NOMINAL_WRITE_BUFFERS: u32 = 4;
-// merge 2 memtables when flushing to L0
-pub const WRITE_BUFFERS_TO_MERGE: u32 = 2;
-pub const LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER: u32 = 2;
 /// Matches rocksdb default (target_file_size_base * 25)
 pub const COMPACTION_BYTES_MULTIPLIER: u32 = 25;
 /// Try to keep the table files above this size if partition write buffers are too small
@@ -42,6 +38,9 @@ pub const MIN_WRITE_BUFFER_SIZE: usize = 1024 * 1024;
 pub struct PartitionDbMemoryConfig {
     memory_budget: usize,
     max_file_size: usize,
+    max_write_buffer_number: u32,
+    write_buffers_to_merge: u32,
+    level_zero_file_num_compaction_trigger: u32,
 }
 
 impl PartitionDbMemoryConfig {
@@ -49,6 +48,10 @@ impl PartitionDbMemoryConfig {
         Self {
             memory_budget,
             max_file_size: MIN_FILE_SIZE.max(opts.rocksdb_max_file_size.as_usize()),
+            max_write_buffer_number: opts.rocksdb_max_write_buffer_number(),
+            write_buffers_to_merge: opts.rocksdb_write_buffers_to_merge(),
+            level_zero_file_num_compaction_trigger: opts
+                .rocksdb_level_zero_file_num_compaction_trigger(),
         }
     }
 
@@ -61,15 +64,15 @@ impl PartitionDbMemoryConfig {
     }
 
     pub const fn min_write_buffer_number_to_merge(&self) -> u32 {
-        WRITE_BUFFERS_TO_MERGE
+        self.write_buffers_to_merge
     }
 
     pub const fn max_write_buffer_number(&self) -> u32 {
-        MAX_WRITE_BUFFERS
+        self.max_write_buffer_number
     }
 
     pub const fn level_zero_file_num_compaction_trigger(&self) -> u32 {
-        LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER
+        self.level_zero_file_num_compaction_trigger
     }
 
     pub fn max_bytes_for_level_base(&self) -> usize {
@@ -261,6 +264,13 @@ async fn collect_memory_usage(
     })
 }
 
+/// Memtable size at which a partition is flushed to reclaim memory. Scales with the queue depth
+/// so a `max_write_buffer_number` above nominal isn't reclaimed before rocksdb throttles it.
+fn reclaim_threshold(per_partition_budget: usize, max_write_buffer_number: u32) -> usize {
+    let buffers = max_write_buffer_number.max(NOMINAL_WRITE_BUFFERS * 3 / 2);
+    per_partition_budget.saturating_mul(buffers as usize) / NOMINAL_WRITE_BUFFERS as usize
+}
+
 async fn rebalance_memory(
     memory_budget: &MemoryBudget,
     psm_state: &SharedState,
@@ -316,14 +326,19 @@ async fn rebalance_memory(
     // refresh the partition_budget since previous step may have changed it
     let current_per_partition_budget = memory_budget.current_per_partition_budget();
 
+    let reclaim_above = reclaim_threshold(
+        current_per_partition_budget,
+        Configuration::pinned()
+            .worker
+            .storage
+            .rocksdb_max_write_buffer_number(),
+    );
+
     let mut reclaim_candidates: Vec<_> = Vec::with_capacity(collected.partitions.len());
     // did we exceed the total memory budget?
     for (usage, partition_db) in collected.partitions.values() {
-        // is this an offending partition? only if it exceeds its budget by 50%
-        if !usage.is_flush_pending
-            && usage.total_bytes
-                > (current_per_partition_budget + current_per_partition_budget.div_ceil(2))
-        {
+        // is this an offending partition?
+        if !usage.is_flush_pending && usage.total_bytes > reclaim_above {
             reclaim_candidates.push((usage, partition_db));
         }
         if !usage.is_open() {
@@ -470,5 +485,33 @@ impl std::fmt::Display for MemoryUsage {
             ByteCount::from(self.total_bytes),
             self.is_flush_pending
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const BUDGET: usize = 200 * 1024 * 1024;
+
+    #[test]
+    fn reclaim_threshold_scales_with_queue_depth() {
+        assert_eq!(reclaim_threshold(BUDGET, 1), BUDGET * 3 / 2);
+        assert_eq!(reclaim_threshold(BUDGET, 4), BUDGET * 3 / 2);
+        assert_eq!(reclaim_threshold(BUDGET, 6), BUDGET * 3 / 2);
+        assert_eq!(reclaim_threshold(BUDGET, 8), BUDGET * 2);
+    }
+
+    #[test]
+    fn memory_config_derives_geometry_from_storage_options() {
+        let config = PartitionDbMemoryConfig::calculate(BUDGET, &StorageOptions::default());
+
+        assert_eq!(config.max_write_buffer_number(), 4);
+        assert_eq!(config.min_write_buffer_number_to_merge(), 2);
+        assert_eq!(config.level_zero_file_num_compaction_trigger(), 2);
+        assert_eq!(
+            config.write_buffer_size(),
+            BUDGET / NOMINAL_WRITE_BUFFERS as usize
+        );
     }
 }

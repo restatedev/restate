@@ -36,6 +36,8 @@ use crate::retries::RetryPolicy;
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
 
+const MIN_WRITE_BUFFER_NUMBER: u32 = 4;
+
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 /// # Worker options
@@ -893,6 +895,60 @@ pub struct StorageOptions {
     ///
     /// Since v1.7.0
     pub rocksdb_max_file_size: NonZeroByteCount,
+
+    /// # Max write buffer number
+    ///
+    /// The maximum number of memtables a partition keeps in memory. Rocksdb throttles writes to
+    /// the partition-store database once `max - 1` memtables are waiting for a flush, and stops
+    /// them at `max`.
+    ///
+    /// A partition's budget is sliced into four nominal memtables, so raising this lets a
+    /// bursting partition borrow past its budget instead of stalling. It does not change how
+    /// often memtables are sealed, so it costs peak memory rather than compaction work.
+    ///
+    /// The value is automatically sanitized to 4 if set to a smaller value.
+    ///
+    /// Requires a restart to take effect.
+    ///
+    /// [default] is 4
+    ///
+    /// Since v1.8.0
+    rocksdb_max_write_buffer_number: NonZeroU32,
+
+    /// # Write buffers to merge before flushing
+    ///
+    /// How many memtables must be waiting before a flush is triggered (rocksdb's
+    /// `min_write_buffer_number_to_merge`). Merging more per flush collapses overwrites in memory
+    /// and produces fewer, larger L0 files, but delays the flush: at the default of 2, one
+    /// memtable of headroom separates the flush starting from writes being throttled.
+    ///
+    /// Set to 1 to flush as soon as a memtable is sealed, at the cost of more L0 files and more
+    /// compaction. It also shrinks L1, see `rocksdb-level-zero-file-num-compaction-trigger`.
+    ///
+    /// The value is automatically sanitized to `max-write-buffer-number - 2` if set higher.
+    ///
+    /// Requires a restart to take effect.
+    ///
+    /// [default] is 2
+    ///
+    /// Since v1.8.0
+    rocksdb_write_buffers_to_merge: NonZeroU32,
+
+    /// # Level-0 file count compaction trigger
+    ///
+    /// The number of L0 files that triggers an L0 -> L1 compaction. Together with
+    /// `rocksdb-write-buffers-to-merge` this sets how many bytes L0 holds before compacting,
+    /// which is also used as the L1 target size.
+    ///
+    /// Partition stores never throttle writes on L0 file count, so raising this trades read
+    /// amplification for less compaction work.
+    ///
+    /// Requires a restart to take effect.
+    ///
+    /// [default] is 2
+    ///
+    /// Since v1.8.0
+    rocksdb_level_zero_file_num_compaction_trigger: NonZeroU32,
 }
 
 impl StorageOptions {
@@ -927,6 +983,25 @@ impl StorageOptions {
     pub fn rocksdb_max_background_compactions(&self) -> NonZeroU32 {
         self.rocksdb_max_background_compactions
             .unwrap_or(NonZeroU32::new(1).unwrap())
+    }
+
+    pub fn rocksdb_max_write_buffer_number(&self) -> u32 {
+        self.rocksdb_max_write_buffer_number
+            .get()
+            .max(MIN_WRITE_BUFFER_NUMBER)
+    }
+
+    /// Clamped to keep the delayed-write tier reachable: it needs `unflushed >= max - 1` and
+    /// `unflushed - 1 >= merge`, so anything above `max - 2` only ever hits the hard stop.
+    pub fn rocksdb_write_buffers_to_merge(&self) -> u32 {
+        self.rocksdb_write_buffers_to_merge
+            .get()
+            .min(self.rocksdb_max_write_buffer_number().saturating_sub(2))
+            .max(1)
+    }
+
+    pub fn rocksdb_level_zero_file_num_compaction_trigger(&self) -> u32 {
+        self.rocksdb_level_zero_file_num_compaction_trigger.get()
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
@@ -974,6 +1049,9 @@ impl Default for StorageOptions {
             rocksdb_max_file_size: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             ),
+            rocksdb_max_write_buffer_number: NonZeroU32::new(4).unwrap(),
+            rocksdb_write_buffers_to_merge: NonZeroU32::new(2).unwrap(),
+            rocksdb_level_zero_file_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
         }
     }
 }
@@ -1154,6 +1232,27 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn write_buffer_geometry_is_sanitized() {
+        let mut opts = StorageOptions::default();
+        assert_eq!(opts.rocksdb_max_write_buffer_number(), 4);
+        assert_eq!(opts.rocksdb_write_buffers_to_merge(), 2);
+        assert_eq!(opts.rocksdb_level_zero_file_num_compaction_trigger(), 2);
+
+        opts.rocksdb_max_write_buffer_number = NonZeroU32::new(2).unwrap();
+        assert_eq!(opts.rocksdb_max_write_buffer_number(), 4);
+
+        opts.rocksdb_max_write_buffer_number = NonZeroU32::new(4).unwrap();
+        opts.rocksdb_write_buffers_to_merge = NonZeroU32::new(3).unwrap();
+        assert_eq!(opts.rocksdb_write_buffers_to_merge(), 2);
+
+        opts.rocksdb_max_write_buffer_number = NonZeroU32::new(8).unwrap();
+        assert_eq!(opts.rocksdb_write_buffers_to_merge(), 3);
+
+        opts.rocksdb_write_buffers_to_merge = NonZeroU32::new(1).unwrap();
+        assert_eq!(opts.rocksdb_write_buffers_to_merge(), 1);
+    }
 
     #[test]
     fn apply_deprecated_precedence() {
