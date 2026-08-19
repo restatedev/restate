@@ -99,6 +99,8 @@ impl ServiceClient {
             Arc::new(ArcSwapOption::empty())
         };
 
+        gcp::install_federation_config(options.gcp_federation.clone());
+
         Ok(Self::new(
             HttpClient::from_options(&options.http),
             LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
@@ -169,8 +171,11 @@ impl ServiceClient {
                         let impersonate = auth
                             .impersonate_service_account()
                             .map(|b| b.as_ref());
+                        let wif_provider = auth
+                            .workload_identity_provider()
+                            .map(|b| b.as_ref());
                         let token = gcp
-                            .mint(impersonate, &audience)
+                            .mint(wif_provider, impersonate, &audience)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
 

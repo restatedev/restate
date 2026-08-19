@@ -8727,6 +8727,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-lambda",
  "aws-sdk-sts",
+ "aws-sigv4",
  "base64",
  "bs58",
  "bytes",
@@ -8769,6 +8770,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "url",
  "zstd",
 ]
 

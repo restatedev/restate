@@ -25,6 +25,7 @@ aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-lambda = {version = "1.112.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
 aws-sdk-sts = {version = "1.95.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sigv4 = { workspace = true }
 base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
@@ -58,6 +59,7 @@ tokio-util = { workspace = true }
 tokio-rustls = "0.26"
 tower = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]

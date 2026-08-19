@@ -32,6 +32,12 @@
 //! All credential construction executes on a small dedicated tokio runtime (see
 //! [`build_auth_runtime`]) so refresh tasks live on a runtime with process lifetime rather than a
 //! partition invoker runtime that can be torn down out from under them.
+//!
+//! A deployment may additionally request AWS -> GCP workload identity federation (see
+//! [`federation`]): rather than the server's ambient Application Default Credentials, the ID
+//! token is minted through a shared AWS broker role, a SigV4-signed subject token, a Google STS
+//! exchange, and impersonation. That path is a fourth [`IdTokenSource`] construction recipe; once
+//! built, it is cached and refreshed exactly like the ambient and impersonated recipes.
 
 use std::fmt;
 use std::sync::{Arc, LazyLock};
@@ -48,6 +54,10 @@ use tokio::sync::Semaphore;
 use ahash::HashMap;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
+
+mod federation;
+
+pub(crate) use federation::install_config as install_federation_config;
 
 /// Per-attempt timeout for an individual token mint call. Safe to drop on timeout: the refresh
 /// task is owned by the cached credential and shared across callers, so a dropped read never
@@ -129,6 +139,10 @@ pub enum GcpAuthError {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct CacheKey {
+    /// Full resource name of a GCP workload identity federation provider. `None` selects the
+    /// ambient/impersonated ADC paths, byte-for-byte as before workload identity federation
+    /// existed; `Some` selects the federation chain in [`federation::build_federated_source`].
+    wif_provider: Option<String>,
     impersonate: Option<String>,
     audience: String,
 }
@@ -509,6 +523,27 @@ async fn build_on_auth_runtime(
 ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     let audience = key.audience.clone();
 
+    if key.wif_provider.is_some() {
+        // The federation chain does its own async I/O (assuming the broker role, resolving the
+        // AWS region) rather than the ADC paths' blocking filesystem reads, so it runs as a plain
+        // task on the auth runtime instead of `spawn_blocking`. It still runs on the auth runtime
+        // and under the same construction semaphore as the ADC paths (acquired by the caller,
+        // `Registry::get_or_build`), so the credential's refresh task -- spawned inside `.build()`
+        // in `federation::build_federated_source` -- lands there too. It never touches the shared
+        // `ambient_source`: federation has its own process-wide shared identity (the broker role
+        // session), architecturally parallel to it, not the same actor.
+        return registry
+            .handle
+            .spawn(federation::build_federated_source(key))
+            .await
+            .unwrap_or_else(|join_error| {
+                Err(GcpAuthError::Build {
+                    audience,
+                    message: format!("GCP auth runtime task failed: {join_error}"),
+                })
+            });
+    }
+
     let build: Box<dyn FnOnce() -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send> =
         match key.impersonate.clone() {
             None => Box::new(move || build_ambient_credentials(key)),
@@ -688,11 +723,15 @@ impl GcpTokenClient {
         }
     }
 
-    /// Mint an OIDC ID token for the given audience. If `impersonate_service_account` is set, the
-    /// token is minted via the IAM Credentials `generateIdToken` API for that service account;
-    /// otherwise it is minted from ambient ADC identity.
+    /// Mint an OIDC ID token for the given audience. If `wif_provider` is set, the token is
+    /// minted through the AWS -> GCP workload identity federation chain (see [`federation`]),
+    /// impersonating `impersonate_service_account` (required in this case). Otherwise, if
+    /// `impersonate_service_account` is set, the token is minted via the IAM Credentials
+    /// `generateIdToken` API for that service account directly from ambient ADC identity; with
+    /// neither set, it is minted from ambient ADC identity directly.
     pub async fn mint(
         &self,
+        wif_provider: Option<&str>,
         impersonate_service_account: Option<&str>,
         audience: &str,
     ) -> Result<String, GcpAuthError> {
@@ -711,6 +750,7 @@ impl GcpTokenClient {
         }
 
         let key = CacheKey {
+            wif_provider: wif_provider.map(str::to_owned),
             impersonate: impersonate_service_account.map(str::to_owned),
             audience: audience.to_owned(),
         };
@@ -779,6 +819,7 @@ impl GcpTokenClient {
         }
 
         let key = CacheKey {
+            wif_provider: None,
             impersonate: impersonate.map(str::to_owned),
             audience: audience.to_owned(),
         };
@@ -925,6 +966,7 @@ mod tests {
 
     fn key(audience: &str) -> CacheKey {
         CacheKey {
+            wif_provider: None,
             impersonate: None,
             audience: audience.to_owned(),
         }
@@ -970,7 +1012,8 @@ mod tests {
             }
         });
 
-        let results = futures::future::join_all((0..64).map(|_| client.mint(None, audience))).await;
+        let results =
+            futures::future::join_all((0..64).map(|_| client.mint(None, None, audience))).await;
 
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
@@ -1364,7 +1407,7 @@ mod tests {
             .insert(cache_key.clone(), dyn_source.clone())
             .await;
 
-        let first = client.mint(None, audience).await;
+        let first = client.mint(None, None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
         // The entry must still be present and unchanged (no eviction on transient failure).
@@ -1372,7 +1415,7 @@ mod tests {
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &dyn_source)));
 
         // The mock "self-heals" on the next call, as a real credential's refresh loop would.
-        let second = client.mint(None, audience).await;
+        let second = client.mint(None, None, audience).await;
         assert!(second.is_ok(), "{second:?}");
     }
 
@@ -1388,7 +1431,7 @@ mod tests {
             .insert(cache_key.clone(), source.clone())
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = client.mint(None, None, audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1435,7 +1478,7 @@ mod tests {
             .insert(cache_key.clone(), old_source.clone())
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = client.mint(None, None, audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1486,10 +1529,13 @@ mod tests {
         failing_client.force_mint_failure_for_test("independent client fails independently");
 
         assert_eq!(
-            seeded_client.mint(None, audience).await.expect("seeded"),
+            seeded_client
+                .mint(None, None, audience)
+                .await
+                .expect("seeded"),
             token
         );
-        assert!(failing_client.mint(None, audience).await.is_err());
+        assert!(failing_client.mint(None, None, audience).await.is_err());
 
         // Isolation is structural, not just a coincidence of behavior: the seed lives only on the
         // instance it was set on.
@@ -1501,5 +1547,123 @@ mod tests {
                 .contains_key(&key(audience))
         );
         assert!(failing_client.inner.test_sources.lock().is_empty());
+    }
+
+    /// `wif_provider` is a real dimension of the cache key: a federated and an ambient/impersonated
+    /// credential for the same (impersonate, audience) pair must never collide in the registry.
+    /// Drives this through the real `mint()` -> `get_or_build` path via `construct_overrides`
+    /// (each key gets its own override, keyed exactly as production would key it), rather than
+    /// manipulating the cache directly, so a regression that merged the two keys would actually
+    /// fail this test.
+    #[tokio::test]
+    async fn wif_provider_is_a_distinct_cache_key_dimension() {
+        let client = GcpTokenClient::new();
+        let audience = "https://wif-cache-key.example.com";
+        let impersonate = "sa@proj.iam.gserviceaccount.com";
+        let provider =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
+
+        let ambient_key = CacheKey {
+            wif_provider: None,
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        let wif_key = CacheKey {
+            wif_provider: Some(provider.to_owned()),
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        assert_ne!(ambient_key, wif_key);
+
+        let ambient_builds = Arc::new(AtomicUsize::new(0));
+        let wif_builds = Arc::new(AtomicUsize::new(0));
+
+        install_construct_override(ambient_key, {
+            let ambient_builds = ambient_builds.clone();
+            move |_| {
+                ambient_builds.fetch_add(1, Ordering::SeqCst);
+                Ok(MockSource::new(|_| MockOutcome::Token(fresh_token()))
+                    as Arc<dyn IdTokenSource>)
+            }
+        });
+        install_construct_override(wif_key, {
+            let wif_builds = wif_builds.clone();
+            move |_| {
+                wif_builds.fetch_add(1, Ordering::SeqCst);
+                Ok(MockSource::new(|_| MockOutcome::Token(fresh_token()))
+                    as Arc<dyn IdTokenSource>)
+            }
+        });
+
+        // Minting through each key twice must build each exactly once (moka caches the result)
+        // and never satisfy one key's construction from the other's.
+        for _ in 0..2 {
+            client
+                .mint(None, Some(impersonate), audience)
+                .await
+                .expect("ambient key mints");
+            client
+                .mint(Some(provider), Some(impersonate), audience)
+                .await
+                .expect("federated key mints");
+        }
+
+        assert_eq!(
+            ambient_builds.load(Ordering::SeqCst),
+            1,
+            "ambient key must build exactly once, independently of the federated key"
+        );
+        assert_eq!(
+            wif_builds.load(Ordering::SeqCst),
+            1,
+            "federated key must build exactly once, independently of the ambient key"
+        );
+    }
+
+    /// A deployment requesting workload identity federation on a server with no `[gcp-federation]`
+    /// configuration must fail closed with a permanent (non-retryable) error, never fall back to
+    /// an unauthenticated request. This exercises the real `mint` -> registry -> auth-runtime path
+    /// (not a seeded test source), with `FEDERATION_CONFIG` left at its default `None` -- nothing
+    /// in this test binary ever installs a `[gcp-federation]` config (see
+    /// `federation::federation_tests` for why that must stay true).
+    ///
+    /// Construction failures are never cached by moka's `try_get_with` (only successful builds
+    /// are), so there is no stale entry to evict here -- unlike a *cached* credential's permanent
+    /// mint failure, which does go through `evict_if_unchanged`. Retrying finds nothing cached and
+    /// attempts construction fresh, which is the PR #1 discipline this case trivially satisfies.
+    #[tokio::test]
+    async fn wif_requested_without_server_config_is_a_permanent_build_error() {
+        let client = GcpTokenClient::new();
+        let provider =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
+        let audience = "https://wif-no-config.example.com";
+        let impersonate = "sa@proj.iam.gserviceaccount.com";
+
+        let err = client
+            .mint(Some(provider), Some(impersonate), audience)
+            .await
+            .expect_err("must fail without a [gcp-federation] configuration");
+        assert!(
+            matches!(err, GcpAuthError::Build { .. }),
+            "expected a permanent Build error, got {err:?}"
+        );
+
+        let key = CacheKey {
+            wif_provider: Some(provider.to_owned()),
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        assert!(
+            registry().cache.get(&key).await.is_none(),
+            "a construction failure must never populate the cache"
+        );
+
+        // Retrying attempts construction fresh and fails the same way -- not wedged on a stale
+        // cached error.
+        let err2 = client
+            .mint(Some(provider), Some(impersonate), audience)
+            .await
+            .expect_err("still fails without configuration");
+        assert!(matches!(err2, GcpAuthError::Build { .. }));
     }
 }
