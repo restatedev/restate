@@ -908,7 +908,7 @@ impl PermittedRecvStream {
 
 impl Body for PermittedRecvStream {
     type Data = Bytes;
-    type Error = h2::Error;
+    type Error = super::Error;
 
     fn poll_frame(
         mut self: Pin<&mut Self>,
@@ -921,7 +921,7 @@ impl Body for PermittedRecvStream {
                     let _ = self.stream.flow_control().release_capacity(len);
                     return Poll::Ready(Some(Ok(Frame::data(data))));
                 }
-                Some(Err(err)) => return Poll::Ready(Some(Err(err))),
+                Some(Err(err)) => return Poll::Ready(Some(Err(err.into()))),
                 None => {
                     self.data_done = true;
                 }
@@ -932,7 +932,7 @@ impl Body for PermittedRecvStream {
         match ready!(self.stream.poll_trailers(cx)) {
             Ok(Some(trailers)) => Poll::Ready(Some(Ok(Frame::trailers(trailers)))),
             Ok(None) => Poll::Ready(None),
-            Err(err) => Poll::Ready(Some(Err(err))),
+            Err(err) => Poll::Ready(Some(Err(err.into()))),
         }
     }
 

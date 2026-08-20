@@ -56,11 +56,29 @@ pub enum Error {
     #[error(transparent)]
     IO(#[from] io::Error),
     #[error(transparent)]
-    H2(#[from] h2::Error),
+    H2(h2::Error),
+    #[error(
+        "deployment generating many small data frames. Please adjust `worker.invoker.http2-data-frame-budget` according to your workload shape"
+    )]
+    TooManyDataFrames,
     #[error("connection is closed")]
     Closed,
     #[error("connection keep-alive timeout")]
     KeepAliveTimeout,
+}
+
+impl From<h2::Error> for Error {
+    fn from(err: h2::Error) -> Self {
+        match err.reason() {
+            Some(reason)
+                if reason == h2::Reason::ENHANCE_YOUR_CALM
+                    && err.to_string().contains("too_many_data_frames") =>
+            {
+                Self::TooManyDataFrames
+            }
+            _ => Self::H2(err),
+        }
+    }
 }
 
 #[derive(Clone)]
