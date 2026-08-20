@@ -10,9 +10,11 @@ distinct `(impersonation target, audience)` identity shares one outer ID-token c
 once and reused process-wide, instead of a new credential per mint attempt or per hourly token
 refresh. Impersonated identities additionally share a single process-wide ambient source
 credential — the identity used to authenticate the impersonation call itself — rather than each
-impersonated identity building its own copy. All credential construction runs on a small dedicated
-background runtime with process lifetime, so a credential's refresh task keeps running even if the
-partition or invoker that first requested it is later torn down.
+impersonated identity building its own copy. Credential construction runs as a TaskCenter task on
+its process-lifetime default runtime, so a credential's background refresh task keeps running even
+if the partition or invoker that first requested it is later torn down — and, as a TaskCenter task,
+that refresh work now shows up in SIGUSR2 tokio task dumps and TaskCenter's task metrics, where it
+was previously invisible on an unmanaged runtime of its own.
 
 ### Why This Matters
 
