@@ -161,12 +161,9 @@ async fn bearer_attached_with_persisted_audience() {
 
     let client = build_service_client();
     let token = fake_jwt_with_audience(&expected_audience);
-    client.gcp_for_test().seed_for_test(
-        None,
-        &expected_audience,
-        token.clone(),
-        Duration::from_secs(3600),
-    );
+    client
+        .gcp_for_test()
+        .seed_for_test(None, &expected_audience, token.clone());
 
     let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
         ByteString::from(expected_audience.clone()),
@@ -207,12 +204,9 @@ async fn customer_authorization_passes_through_alongside_minted_xsa() {
 
     let client = build_service_client();
     let token = fake_jwt_with_audience(&expected_audience);
-    client.gcp_for_test().seed_for_test(
-        None,
-        &expected_audience,
-        token.clone(),
-        Duration::from_secs(3600),
-    );
+    client
+        .gcp_for_test()
+        .seed_for_test(None, &expected_audience, token.clone());
 
     let mut extra = hyper::HeaderMap::new();
     extra.insert(
@@ -257,7 +251,7 @@ async fn bearer_uses_explicit_audience_when_provided() {
     let token = fake_jwt_with_audience(explicit_audience);
     client
         .gcp_for_test()
-        .seed_for_test(None, explicit_audience, token, Duration::from_secs(3600));
+        .seed_for_test(None, explicit_audience, token);
 
     let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
         ByteString::from_static(explicit_audience),
