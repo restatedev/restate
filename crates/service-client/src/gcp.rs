@@ -42,7 +42,6 @@ use moka::future::Cache;
 use moka::ops::compute::Op;
 use thiserror::Error;
 use tokio::runtime::{Handle, Runtime};
-use tokio::sync::Semaphore;
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
@@ -60,10 +59,6 @@ const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 /// in-flight request needs to complete.
 const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(60);
 
-/// Cache sizing is operator-controlled hygiene, not a security bound: keys exist only for
-/// registered deployments.
-const CACHE_MAX_CAPACITY: u64 = 1024;
-
 /// An actively-used credential stays cached indefinitely; an idle one (deregistered deployment)
 /// ages out after this long without a mint.
 const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
@@ -71,12 +66,6 @@ const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
 /// moka evicts lazily, during cache operations, so a fully idle cache never expires anything on
 /// its own. This interval drives eviction even with zero mint traffic.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(300);
-
-/// Bounds concurrent credential *construction* across distinct keys. Per-key single-flight (via
-/// the moka cache) already collapses concurrent misses for the same key; this additionally caps
-/// the many-new-keys storm that a mass of first-time mints (e.g. after a restart) could cause,
-/// since each construction may block on ADC discovery / DNS.
-const MAX_CONCURRENT_CONSTRUCTIONS: usize = 4;
 
 /// Bound on a single probe of the shared ambient source's own cached token state (see
 /// [`ambient_source_is_dead`]). A healthy or still-refreshing source answers this near-instantly;
@@ -87,6 +76,12 @@ const MAX_CONCURRENT_CONSTRUCTIONS: usize = 4;
 const AMBIENT_SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 const AUTH_RUNTIME_WORKER_THREADS: usize = 2;
+
+/// Also the process-wide bound on concurrent credential construction: constructions run as
+/// `spawn_blocking` tasks on the auth runtime (ADC discovery reads files synchronously), so the
+/// blocking pool's size caps how many can be in flight at once — excess constructions queue.
+/// Per-key single-flight (the moka cache) already collapses same-key misses; this bounds the
+/// many-distinct-keys case without a separate semaphore.
 const AUTH_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
 
 #[derive(Clone, Debug, Error)]
@@ -206,7 +201,6 @@ struct Registry {
     // to spawn work on it).
     _runtime: Runtime,
     handle: Handle,
-    construction_permits: Semaphore,
     /// The process's shared ambient ADC identity, used as the source credential for every
     /// impersonated key. See [`Registry::ambient_source`] and the module docs.
     ambient_source: SourceSlot<google_cloud_auth::credentials::Credentials>,
@@ -329,10 +323,7 @@ impl Registry {
     fn init() -> Self {
         let runtime = build_auth_runtime();
         let handle = runtime.handle().clone();
-        let cache = Cache::builder()
-            .max_capacity(CACHE_MAX_CAPACITY)
-            .time_to_idle(CACHE_TIME_TO_IDLE)
-            .build();
+        let cache = Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build();
 
         // Spawned exactly once, here, rather than per `GcpTokenClient` (which is created per
         // invoker and would otherwise add a tick per partition).
@@ -350,7 +341,6 @@ impl Registry {
             cache,
             _runtime: runtime,
             handle,
-            construction_permits: Semaphore::new(MAX_CONCURRENT_CONSTRUCTIONS),
             ambient_source: SourceSlot::new(),
             #[cfg(any(test, feature = "test_util"))]
             test_hooks: TestHooks::default(),
@@ -376,12 +366,6 @@ impl Registry {
         let init_key = key.clone();
         self.cache
             .try_get_with(key, async move {
-                let _permit = self
-                    .construction_permits
-                    .acquire()
-                    .await
-                    .expect("construction semaphore is never closed");
-
                 #[cfg(any(test, feature = "test_util"))]
                 if let Some(f) = override_fn {
                     return f(&init_key);
@@ -415,13 +399,6 @@ impl Registry {
     /// identity, not any particular mint key: every impersonated `(impersonate, audience)` key
     /// clones the same underlying actor rather than each spawning its own.
     ///
-    /// Never acquires a construction permit itself: this always runs inside
-    /// `build_on_auth_runtime`'s init future, which already holds one for the whole duration of
-    /// its call here. Acquiring a second permit from the same `MAX_CONCURRENT_CONSTRUCTIONS`-sized
-    /// semaphore would deadlock as soon as that many concurrent cold impersonated keys are in
-    /// flight: all permits would be held by callers waiting on this very function, with none left
-    /// for it to acquire (restatedev/restate#5151 follow-up F3; see
-    /// `concurrent_cold_impersonated_constructions_do_not_deadlock_on_construction_permits`).
     async fn ambient_source(
         &'static self,
     ) -> Result<Arc<google_cloud_auth::credentials::Credentials>, String> {
@@ -430,19 +407,21 @@ impl Registry {
             .await
     }
 
-    /// Probes the currently cached ambient source credential and replaces it if — and only if —
-    /// the probe proves its background refresh actor has permanently died. Called from `mint()`
-    /// after any permanent *impersonated* mint failure.
+    /// Called from `mint()` after a permanent *impersonated* mint failure. That failure is
+    /// ambiguous: it does not say whether the shared ambient source credential died, or only the
+    /// target service account is misconfigured. The two cases need opposite handling:
     ///
-    /// `get_or_build`'s cache-on-success behavior only ever retries a *construction* failure. If
-    /// the source credential built successfully but its actor later hit a permanent error (bad
-    /// ADC config discovered only once IAM actually rejects a request, a revoked service-account
-    /// key, ...), nothing would otherwise ever replace it short of a process restart, and every
-    /// impersonated credential rebuilt afterwards would clone that same corpse. An
-    /// impersonation-only failure (source healthy, target service account misconfigured) must
-    /// never replace the source — that would reintroduce per-retry actor accumulation — so this
-    /// only acts when [`ambient_source_is_dead`] itself proves the source dead; a healthy,
-    /// self-healing, or inconclusive (timed-out) probe leaves the slot untouched.
+    /// - Source dead (its refresh actor hit a permanent error and exited): the slot holds an
+    ///   unusable credential forever — every rebuilt impersonated credential clones the corpse,
+    ///   and only a process restart would recover. It must be replaced.
+    /// - Source healthy (permanent 403 from impersonation itself, the common misconfiguration):
+    ///   replacing it discards a live refresh actor per retry — the exact leak this module
+    ///   exists to prevent. It must be kept.
+    ///
+    /// [`ambient_source_is_dead`] distinguishes the two, and only a *proven-dead* source is
+    /// replaced; healthy, self-healing, and inconclusive probes leave the slot untouched. This
+    /// prepares the next mint rather than retrying the current one: the caller still sees the
+    /// original failure.
     async fn recover_ambient_source_if_dead(&'static self) {
         let Some(current) = self.ambient_source.peek().await else {
             return;
@@ -479,16 +458,20 @@ impl Registry {
     }
 }
 
-/// Bounded read of `source`'s own currently-published token state. `Credentials::headers` for the
-/// general access-token type routes through the same kind of `TokenCache`/`watch` machinery that
-/// `IDTokenCredentials::id_token` does, so once a source's own refresh actor has published a
-/// permanent error and exited, a `headers()` call there returns that error immediately without
-/// waiting — this resolves as `false` almost instantly for a healthy or still-refreshing source,
-/// and `true` almost instantly for a source whose actor has already died. If neither observation
-/// lands within [`AMBIENT_SOURCE_PROBE_TIMEOUT`] (the actor is genuinely mid-fetch right now), the
-/// source is treated as alive: a probe timeout must never cause a replacement, or an
-/// impersonation-scoped failure racing an in-progress refresh could strand and rebuild a
-/// perfectly healthy source.
+/// Returns whether `source`'s background refresh actor has provably terminated. "Dead" is
+/// deliberately narrow — this is not a health check.
+///
+/// The probe is a bounded read of the token state the actor publishes on a `watch` channel
+/// (`Credentials::headers`). google-cloud-auth's refresh actor publishes a permanent error and
+/// then exits, so reading a permanent error back IS proof the actor is gone — which is what makes
+/// replacing the credential safe: there is no live actor left to strand. Every other observation
+/// keeps the source:
+///
+/// - a token: healthy;
+/// - a transient error: the actor is alive and self-healing;
+/// - timeout (no state within [`AMBIENT_SOURCE_PROBE_TIMEOUT`]): mid-fetch, so alive —
+///   a timeout must never trigger replacement, or a failure scoped to one key racing an
+///   in-progress refresh would strand and rebuild a healthy source.
 async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credentials) -> bool {
     matches!(
         tokio::time::timeout(AMBIENT_SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new()))
@@ -1072,34 +1055,28 @@ mod tests {
         assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
-    /// Regression test for the construction-semaphore re-entrancy deadlock (restatedev/restate#5151
-    /// follow-up F3). `get_or_build`'s init future acquires a construction permit before calling
-    /// into the impersonated arm; pre-fix, `Registry::ambient_source` acquired a SECOND permit
-    /// from the very same `MAX_CONCURRENT_CONSTRUCTIONS`-sized semaphore. With
-    /// `MAX_CONCURRENT_CONSTRUCTIONS` concurrent cold impersonated keys holding all the permits,
-    /// whichever one wins the race to actually run `ambient_source`'s single-flighted initializer
-    /// then blocks forever on a permit that can never free up, since every other holder is itself
-    /// blocked waiting for that very initializer to finish. One extra concurrent key beyond
-    /// `MAX_CONCURRENT_CONSTRUCTIONS` guarantees all permits are contended for regardless of
-    /// scheduling order.
+    /// Guards against cross-waiting between construction paths: many concurrent cold impersonated
+    /// keys all funnel through the single-flighted `ambient_source` initializer while their own
+    /// per-key constructions are in flight. An earlier revision deadlocked here by holding one
+    /// bounded-semaphore permit per key and having the shared initializer acquire a second from
+    /// the same pool; the semaphore is gone (the auth runtime's bounded blocking pool is the
+    /// concurrency bound now), and this test keeps any reintroduced construction-time
+    /// cross-dependency from shipping. A genuine multi-thread runtime matters: single-thread
+    /// cooperative scheduling can mask such deadlocks by running each task to completion.
     ///
     /// Does not override outer construction (only the ambient source, to avoid real ADC/network):
     /// the point is to exercise the real `get_or_build` -> `build_on_auth_runtime` ->
     /// `ambient_source` call chain, not a stand-in for it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-    async fn concurrent_cold_impersonated_constructions_do_not_deadlock_on_construction_permits() {
+    async fn concurrent_cold_impersonated_constructions_do_not_deadlock() {
         install_ambient_source_override(|| {
             Ok(google_cloud_auth::credentials::Credentials::from(
                 FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
             ))
         });
 
-        // A genuine multi-thread runtime with well more than `MAX_CONCURRENT_CONSTRUCTIONS`
-        // concurrent cold keys: real OS-thread parallelism (not single-thread cooperative
-        // interleaving) is what reliably fills every construction permit with a distinct
-        // in-flight task before any of them reaches the shared `ambient_source` initializer.
         let client = GcpTokenClient::new();
-        let mints = (0..MAX_CONCURRENT_CONSTRUCTIONS * 8).map(|i| {
+        let mints = (0..32).map(|i| {
             let client = client.clone();
             let audience = format!("https://deadlock-{i}.example.com");
             let service_account = "sa@example.iam.gserviceaccount.com".to_owned();
@@ -1108,9 +1085,7 @@ mod tests {
 
         tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(mints))
             .await
-            .expect(
-                "concurrent cold impersonated constructions must not deadlock on construction permits",
-            );
+            .expect("concurrent cold impersonated constructions must not deadlock");
     }
 
     fn impersonated_key(audience: &str, service_account: &str) -> CacheKey {
