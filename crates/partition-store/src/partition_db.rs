@@ -577,6 +577,7 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
         let storage_config = &Configuration::pinned().worker.storage;
         self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
 
+        db_options.set_max_subcompactions(storage_config.rocksdb_max_sub_compactions());
         // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
         // writes and flushes.
         db_options.set_soft_pending_compaction_bytes_limit(512 * 1024 * 1024 * 1024);
@@ -696,6 +697,13 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_target_file_size_base(mem_config.target_file_size_base() as u64);
         cf_options.set_max_bytes_for_level_base(mem_config.max_bytes_for_level_base() as u64);
         cf_options.set_max_compaction_bytes(mem_config.max_compaction_bytes() as u64);
+
+        // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        cf_options.set_soft_pending_compaction_bytes_limit(512 * 1024 * 1024 * 1024);
+        // Do not push back on compaction delays, sacrifice storage and do not hinder
+        // writes and flushes.
+        cf_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
 
         cf_options
     }
