@@ -15,6 +15,7 @@ options_schema = ["restate-types/schemars"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-core = { workspace = true }
 restate-types = { workspace = true }
 restate-util-time = { workspace = true }
 
@@ -62,6 +63,7 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 restate-service-client = { path = ".", features = ["test_util"] }
+restate-core = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
