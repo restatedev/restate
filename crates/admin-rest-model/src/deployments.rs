@@ -38,6 +38,14 @@ pub struct GoogleIdTokenAuth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub audience: Option<bytestring::ByteString>,
+    /// Full resource name of a GCP workload identity federation provider, e.g.
+    /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
+    /// When set, Restate mints the ID token via the AWS -> GCP workload identity federation
+    /// chain instead of its ambient Application Default Credentials. Requires
+    /// `impersonate_service_account` to be set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
+    pub workload_identity_provider: Option<bytestring::ByteString>,
 }
 
 /// Failure that the URI-aware wire-to-persisted conversion may surface when the operator left
@@ -84,7 +92,8 @@ impl GoogleIdTokenAuth {
         Ok(restate_types::deployment::GoogleIdTokenAuth::new(
             audience,
             self.impersonate_service_account,
-        ))
+        )
+        .with_workload_identity_provider(self.workload_identity_provider))
     }
 }
 
@@ -103,6 +112,7 @@ impl From<restate_types::deployment::GoogleIdTokenAuth> for GoogleIdTokenAuth {
         GoogleIdTokenAuth {
             impersonate_service_account: value.impersonate_service_account().cloned(),
             audience: Some(value.audience().clone()),
+            workload_identity_provider: value.workload_identity_provider().cloned(),
         }
     }
 }
@@ -689,6 +699,7 @@ mod tests {
         GoogleIdTokenAuth {
             impersonate_service_account: None,
             audience,
+            workload_identity_provider: None,
         }
     }
 

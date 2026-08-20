@@ -26,6 +26,7 @@ aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-lambda = {version = "1.112.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
 aws-sdk-sts = {version = "1.95.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sigv4 = { workspace = true }
 base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
@@ -59,13 +60,17 @@ tokio-util = { workspace = true }
 tokio-rustls = "0.26"
 tower = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
 restate-service-client = { path = ".", features = ["test_util"] }
 restate-core = { workspace = true, features = ["test-util"] }
+aws-smithy-runtime-api = { workspace = true }
+aws-smithy-types = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
+google-cloud-gax = { version = "1.13.0" }
 hyper = { workspace = true, features = ["server"] }
 pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }

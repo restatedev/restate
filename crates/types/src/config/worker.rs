@@ -26,8 +26,8 @@ use super::{
 };
 use crate::config::throttling::ThrottlingOptions;
 use crate::config::{
-    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
-    IngestionOptions,
+    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, GcpFederationOptions,
+    HttpOptions, IngestionOptions,
 };
 use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
@@ -676,6 +676,15 @@ pub struct ServiceClientOptions {
     /// Defaults to `x-restate-cluster-name: <cluster name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+
+    /// # GCP workload identity federation
+    ///
+    /// Enables minting Google ID tokens for deployments that set `workload_identity_provider` in
+    /// their `auth` block, via a shared AWS -> GCP workload identity federation broker. Unset by
+    /// default: deployments requesting this authentication fail registration and mint with an
+    /// actionable error until this block is configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcp_federation: Option<GcpFederationOptions>,
 }
 
 const DEFAULT_REQUEST_IDENTITY_EXPIRATION: NonZeroFriendlyDuration =
@@ -689,6 +698,7 @@ impl Default for ServiceClientOptions {
             request_identity_private_key_pem_file: None,
             request_identity_expiration: DEFAULT_REQUEST_IDENTITY_EXPIRATION,
             additional_request_headers: None,
+            gcp_federation: None,
         }
     }
 }

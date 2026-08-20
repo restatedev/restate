@@ -24,7 +24,7 @@ use tracing::subscriber::NoSubscriber;
 
 use crate::deployment;
 use crate::deployment::{
-    DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
+    DeploymentAddress, Headers, HttpAuth, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
@@ -182,6 +182,92 @@ pub fn validate_http_auth(
             "GCP auth configured for a loopback/private deployment URI; \
              tokens will still be minted and attached"
         );
+    }
+
+    Ok(())
+}
+
+/// Validate the GCP workload identity federation invariant: a deployment that names a
+/// `workload_identity_provider` must also name a service account to impersonate, since the
+/// external-account credential the federation chain produces cannot mint an ID token ambiently.
+/// Kept separate from [`validate_http_auth`] (which predates workload identity federation) so its
+/// existing (uri, additional_headers) call sites and tests are unaffected.
+pub fn validate_workload_identity_federation(
+    auth: Option<&HttpAuth>,
+) -> Result<(), HttpAuthValidationError> {
+    let Some(HttpAuth::GoogleIdToken(g)) = auth else {
+        return Ok(());
+    };
+    let Some(provider) = g.workload_identity_provider() else {
+        return Ok(());
+    };
+
+    if g.impersonate_service_account().is_none() {
+        return Err(HttpAuthValidationError::invalid_field(
+            "auth.workload_identity_provider",
+            "workload_identity_provider requires impersonate_service_account to be set; the \
+             external-account credential the federation chain produces cannot mint an ID token \
+             ambiently"
+                .to_owned(),
+        ));
+    }
+
+    if let Err(reason) = validate_workload_identity_provider_resource_name(provider) {
+        return Err(HttpAuthValidationError::invalid_field(
+            "auth.workload_identity_provider",
+            format!(
+                "workload_identity_provider '{provider}' is not a canonical GCP workload                  identity provider resource name (expected                  //iam.googleapis.com/projects/<project-number>/locations/<location>/workloadIdentityPools/<pool>/providers/<provider>):                  {reason}"
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
+/// Validates that `resource` has the shape
+/// `//iam.googleapis.com/projects/<project-number>/locations/<location>/workloadIdentityPools/<pool>/providers/<provider>`:
+/// a numeric project number and four non-empty, single-segment path components. `<location>` is
+/// `global` for every workload identity pool today, but this accepts any single segment rather
+/// than hardcoding that, since nothing about the resource-name grammar requires it. Persisted
+/// verbatim into cache keys, SigV4 `SignedHeaders`, and the Google STS `audience` parameter, so an
+/// arbitrary string here is a functional bug waiting to happen, not just a cosmetic one.
+fn validate_workload_identity_provider_resource_name(resource: &str) -> Result<(), &'static str> {
+    let Some(rest) = resource.strip_prefix("//iam.googleapis.com/projects/") else {
+        return Err("must start with //iam.googleapis.com/projects/<project-number>");
+    };
+
+    let mut segments = rest.split('/');
+    let project = segments.next().unwrap_or("");
+    if project.is_empty() || !project.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("project must be a numeric project number");
+    }
+
+    if segments.next() != Some("locations") {
+        return Err("expected /locations/<location>/... after the project number");
+    }
+    let location = segments.next().unwrap_or("");
+    if location.is_empty() {
+        return Err("location must be a single non-empty path segment");
+    }
+
+    if segments.next() != Some("workloadIdentityPools") {
+        return Err("expected /workloadIdentityPools/<pool>/... after the location");
+    }
+    let pool = segments.next().unwrap_or("");
+    if pool.is_empty() {
+        return Err("workload identity pool must be a single non-empty path segment");
+    }
+
+    if segments.next() != Some("providers") {
+        return Err("expected /providers/<provider> after the workload identity pool");
+    }
+    let provider = segments.next().unwrap_or("");
+    if provider.is_empty() {
+        return Err("provider must be a single non-empty path segment");
+    }
+
+    if segments.next().is_some() {
+        return Err("unexpected trailing path segment after the provider");
     }
 
     Ok(())
