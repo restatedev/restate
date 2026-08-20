@@ -312,10 +312,9 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
     let (_, deployment, _) = schema_registry
         .register_deployment(RegisterDeploymentRequest {
             deployment_address: HttpDeploymentAddress::new(uri)
-                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-                    explicit_audience.clone(),
-                    None,
-                ))))
+                .with_auth(Some(HttpAuth::GoogleIdToken(
+                    GoogleIdTokenAuth::new(explicit_audience.clone(), None, None).unwrap(),
+                )))
                 .into(),
             additional_headers: Default::default(),
             metadata: Default::default(),
@@ -341,93 +340,6 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
     );
 }
 
-#[cfg(test)]
-mod workload_identity_federation_validation_tests {
-    use super::super::validate_workload_identity_federation;
-    use crate::deployment::{GoogleIdTokenAuth, HttpAuth};
-    use bytestring::ByteString;
-
-    const PROVIDER: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws";
-
-    #[test]
-    fn rejects_provider_without_impersonation() {
-        let auth = HttpAuth::GoogleIdToken(
-            GoogleIdTokenAuth::new(ByteString::from_static("https://svc.example.com"), None)
-                .with_workload_identity_provider(Some(ByteString::from_static(PROVIDER))),
-        );
-        let err = validate_workload_identity_federation(Some(&auth))
-            .expect_err("provider without impersonation must be rejected");
-        assert_eq!(err.field(), "auth.workload_identity_provider");
-    }
-
-    #[test]
-    fn accepts_provider_with_impersonation() {
-        let auth = HttpAuth::GoogleIdToken(
-            GoogleIdTokenAuth::new(
-                ByteString::from_static("https://svc.example.com"),
-                Some(ByteString::from_static("sa@proj.iam.gserviceaccount.com")),
-            )
-            .with_workload_identity_provider(Some(ByteString::from_static(PROVIDER))),
-        );
-        validate_workload_identity_federation(Some(&auth))
-            .expect("provider with impersonation is accepted");
-    }
-
-    #[test]
-    fn accepts_no_provider() {
-        let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-            ByteString::from_static("https://svc.example.com"),
-            None,
-        ));
-        validate_workload_identity_federation(Some(&auth)).expect("no provider is accepted");
-    }
-
-    #[test]
-    fn accepts_no_auth() {
-        validate_workload_identity_federation(None).expect("no auth block is accepted");
-    }
-
-    fn provider_auth(provider: &str) -> HttpAuth {
-        HttpAuth::GoogleIdToken(
-            GoogleIdTokenAuth::new(
-                ByteString::from_static("https://svc.example.com"),
-                Some(ByteString::from_static("sa@proj.iam.gserviceaccount.com")),
-            )
-            .with_workload_identity_provider(Some(ByteString::from(provider.to_owned()))),
-        )
-    }
-
-    #[test]
-    fn accepts_canonical_provider_resource_names() {
-        for provider in [
-            PROVIDER,
-            "//iam.googleapis.com/projects/999999999999/locations/global/workloadIdentityPools/my-pool/providers/my-provider",
-            "//iam.googleapis.com/projects/1/locations/eu/workloadIdentityPools/p/providers/r",
-        ] {
-            validate_workload_identity_federation(Some(&provider_auth(provider)))
-                .unwrap_or_else(|e| panic!("expected '{provider}' to be accepted, got {e}"));
-        }
-    }
-
-    #[test]
-    fn rejects_non_canonical_provider_resource_names() {
-        for provider in [
-            "",
-            "not-a-resource-name",
-            "iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws",
-            "//iam.googleapis.com/projects/abc/locations/global/workloadIdentityPools/pool/providers/aws",
-            "//iam.googleapis.com/projects//locations/global/workloadIdentityPools/pool/providers/aws",
-            "//iam.googleapis.com/projects/123/locations//workloadIdentityPools/pool/providers/aws",
-            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools//providers/aws",
-            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/",
-            "//iam.googleapis.com/projects/123/regions/global/workloadIdentityPools/pool/providers/aws",
-            "//iam.googleapis.com/projects/123/locations/global/pools/pool/providers/aws",
-            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/endpoints/aws",
-            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws/extra",
-        ] {
-            let err = validate_workload_identity_federation(Some(&provider_auth(provider)))
-                .expect_err(&format!("expected '{provider}' to be rejected"));
-            assert_eq!(err.field(), "auth.workload_identity_provider");
-        }
-    }
-}
+// Workload identity federation validation (provider-requires-impersonation, canonical resource
+// name) is enforced by `GoogleIdTokenAuth::new` itself; see
+// crates/types/src/schema/deployment/http_auth.rs's test module.

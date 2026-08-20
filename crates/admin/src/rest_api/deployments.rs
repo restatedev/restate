@@ -28,7 +28,6 @@ use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
     Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
-    validate_workload_identity_federation,
 };
 use restate_types::schema::service::ServiceMetadata;
 
@@ -111,8 +110,7 @@ where
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
                 let persisted = wire_auth
                     .into_persisted(&uri)
-                    .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?;
-                validate_workload_identity_federation(Some(&persisted))?;
+                    .map_err(|e| MetaApiError::InvalidField(e.field(), e.to_string()))?;
                 Some(persisted)
             } else {
                 None
@@ -367,17 +365,20 @@ where
                 validate_uri(uri)?;
             }
 
-            // Validate the auth invariants against the post-merge (uri, additional_headers). PATCH
-            // preserves the persisted auth (see schema::registry::update_deployment); a PATCH that
-            // changes the URI to http:// or adds an X-Serverless-Authorization header must be
-            // rejected just like the equivalent register call would be.
+            // Validate the (uri, additional_headers) auth invariant against the post-merge
+            // values. PATCH preserves the persisted `auth` unchanged (see
+            // schema::registry::update_deployment) -- and `GoogleIdTokenAuth::new` guarantees any
+            // persisted auth already satisfies its own invariants, so only the uri/headers
+            // interaction needs re-checking here: a PATCH that changes the URI to http:// or adds
+            // an X-Serverless-Authorization header must be rejected just like the equivalent
+            // register call would be.
             let existing_deployment = state
                 .schema_registry
                 .get_deployment(deployment_id)
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
             if let DeploymentType::Http {
                 address: existing_uri,
-                auth: Some(existing_auth),
+                auth: Some(_),
                 ..
             } = &existing_deployment.ty
             {
@@ -390,7 +391,6 @@ where
                     &existing_deployment.additional_headers,
                 );
                 validate_http_auth(effective_uri, Some(effective_headers.as_ref()))?;
-                validate_workload_identity_federation(Some(existing_auth))?;
             }
 
             (

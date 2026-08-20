@@ -48,16 +48,28 @@ pub struct GoogleIdTokenAuth {
     pub workload_identity_provider: Option<bytestring::ByteString>,
 }
 
-/// Failure that the URI-aware wire-to-persisted conversion may surface when the operator left
-/// `audience` unset on the wire and the deployment URI has no derivable origin. The REST handler
-/// translates this into an `InvalidField("auth.audience", ...)` 400 response.
+/// Failure that the URI-aware wire-to-persisted conversion may surface: either the operator left
+/// `audience` unset on the wire and the deployment URI has no derivable origin, or the auth block
+/// violates a `GoogleIdTokenAuth` invariant (see [`restate_types::deployment::GoogleIdTokenAuthError`]).
+/// The REST handler maps both to an `InvalidField` 400 response via [`Self::field`].
 #[derive(Debug, thiserror::Error)]
-pub enum AudienceDerivationError {
+pub enum GoogleIdTokenAuthConversionError {
     #[error(
         "cannot derive OIDC audience from deployment URI '{uri}': missing scheme or host. \
          Specify auth.audience explicitly."
     )]
-    UnderivableFromUri { uri: String },
+    UnderivableAudience { uri: String },
+    #[error(transparent)]
+    Invalid(#[from] restate_types::deployment::GoogleIdTokenAuthError),
+}
+
+impl GoogleIdTokenAuthConversionError {
+    pub fn field(&self) -> &'static str {
+        match self {
+            Self::UnderivableAudience { .. } => "auth.audience",
+            Self::Invalid(e) => e.field(),
+        }
+    }
 }
 
 impl HttpAuth {
@@ -67,7 +79,7 @@ impl HttpAuth {
     pub fn into_persisted(
         self,
         uri: &Uri,
-    ) -> Result<restate_types::deployment::HttpAuth, AudienceDerivationError> {
+    ) -> Result<restate_types::deployment::HttpAuth, GoogleIdTokenAuthConversionError> {
         match self {
             HttpAuth::GoogleIdToken(g) => Ok(restate_types::deployment::HttpAuth::GoogleIdToken(
                 g.into_persisted(uri)?,
@@ -80,20 +92,21 @@ impl GoogleIdTokenAuth {
     pub fn into_persisted(
         self,
         uri: &Uri,
-    ) -> Result<restate_types::deployment::GoogleIdTokenAuth, AudienceDerivationError> {
+    ) -> Result<restate_types::deployment::GoogleIdTokenAuth, GoogleIdTokenAuthConversionError>
+    {
         let audience = match self.audience {
             Some(a) => a,
             None => restate_types::deployment::derive_audience(uri)
                 .map(bytestring::ByteString::from)
-                .ok_or_else(|| AudienceDerivationError::UnderivableFromUri {
+                .ok_or_else(|| GoogleIdTokenAuthConversionError::UnderivableAudience {
                     uri: uri.to_string(),
                 })?,
         };
         Ok(restate_types::deployment::GoogleIdTokenAuth::new(
             audience,
             self.impersonate_service_account,
-        )
-        .with_workload_identity_provider(self.workload_identity_provider))
+            self.workload_identity_provider,
+        )?)
     }
 }
 
@@ -728,9 +741,26 @@ mod tests {
             .into_persisted(&uri)
             .expect_err("must surface error");
         match err {
-            AudienceDerivationError::UnderivableFromUri { uri: got } => {
+            GoogleIdTokenAuthConversionError::UnderivableAudience { uri: got } => {
                 assert_eq!(got, "/discover");
             }
+            GoogleIdTokenAuthConversionError::Invalid(e) => panic!("unexpected: {e}"),
         }
+    }
+
+    #[test]
+    fn into_persisted_rejects_provider_without_impersonation() {
+        let uri: Uri = "https://svc.example.com/discover".parse().unwrap();
+        let auth = GoogleIdTokenAuth {
+            impersonate_service_account: None,
+            audience: None,
+            workload_identity_provider: Some(ByteString::from_static(
+                "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r",
+            )),
+        };
+        let err = auth
+            .into_persisted(&uri)
+            .expect_err("provider without impersonation must be rejected");
+        assert_eq!(err.field(), "auth.workload_identity_provider");
     }
 }
