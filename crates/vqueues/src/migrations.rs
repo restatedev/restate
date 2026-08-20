@@ -59,13 +59,18 @@ fn increment_unchecked(bytes: &mut BytesMut) {
     unreachable!("failed to find a byte to increment");
 }
 
+pub enum MigrationResult {
+    SkippedCompleted,
+    FullyMigrated,
+}
+
 /// VQueues migration for a range of partition keys.
 pub async fn migrate_to_vqueues(
     ctx: &mut MigrationContext<'_>,
     cache: &mut VQueuesMetaCache,
     migration_record_created_at: UniqueTimestamp,
     skip_completed: bool,
-) -> Result<(), StorageError> {
+) -> Result<MigrationResult, StorageError> {
     // Design Notes:
     // We need to make the migration of a single invocation atomic. An invocation is either migrated
     // or not. To make this atomic, all mutations necessary to migrate a single invocation must be
@@ -90,7 +95,12 @@ pub async fn migrate_to_vqueues(
     // clean up old keyed service status table after we have migrated everything
     restate_partition_store::migrations::migrate_to_locks_table::delete_service_status_data(ctx)?;
     stats.report_finish();
-    Ok(())
+
+    Ok(if stats.num_skipped_completed > 0 {
+        MigrationResult::SkippedCompleted
+    } else {
+        MigrationResult::FullyMigrated
+    })
 }
 
 /// Migrate inboxes
