@@ -29,9 +29,19 @@
 //! it has no way to notice that a credential which built fine has since had its background
 //! refresh actor die of a later, unrelated permanent error.
 //!
-//! All credential construction executes on a small dedicated tokio runtime (see
-//! [`build_auth_runtime`]) so refresh tasks live on a runtime with process lifetime rather than a
-//! partition invoker runtime that can be torn down out from under them.
+//! ## Execution model
+//!
+//! Credential construction runs as a [`restate_core::TaskKind::CredentialsRefresh`] task on
+//! TaskCenter's default runtime (see [`build_via_task_center`]) rather than on whatever runtime
+//! happened to call `mint()`. The default runtime has process lifetime, so a refresh task
+//! `build()` spawns internally survives the caller's own runtime being torn down — e.g. a
+//! partition processor's runtime, which is ephemeral. This also makes the refresh tasks visible in
+//! SIGUSR2 tokio task dumps (they were invisible on a private, unmanaged runtime) and the
+//! construction tasks themselves visible in TaskCenter's task metrics. When no TaskCenter is
+//! current — in practice, only this crate's own unit tests, since every production consumer of
+//! `ServiceClient` runs inside one — construction falls back to a plain `spawn_blocking` on
+//! whatever runtime is calling in, with no durability guarantee; this is an unmanaged-mode safety
+//! net, not a supported deployment path.
 
 use std::fmt;
 use std::sync::{Arc, LazyLock};
@@ -40,8 +50,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 use moka::future::Cache;
 use moka::ops::compute::Op;
+use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
-use tokio::runtime::{Handle, Runtime};
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
@@ -69,14 +79,12 @@ const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(300);
 /// not an expected wait.
 const AMBIENT_SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
-const AUTH_RUNTIME_WORKER_THREADS: usize = 2;
+/// Name for the TaskCenter task that builds a single credential (see [`build_via_task_center`]).
+const CREDENTIAL_BUILD_TASK_NAME: &str = "gcp-credential-build";
 
-/// Also the process-wide bound on concurrent credential construction: constructions run as
-/// `spawn_blocking` tasks on the auth runtime (ADC discovery reads files synchronously), so the
-/// blocking pool's size caps how many can be in flight at once — excess constructions queue.
-/// Per-key single-flight (the moka cache) already collapses same-key misses; this bounds the
-/// many-distinct-keys case without a separate semaphore.
-const AUTH_RUNTIME_MAX_BLOCKING_THREADS: usize = 4;
+/// Name for the TaskCenter task that periodically drives cache eviction (see
+/// [`Registry::init`]).
+const HOUSEKEEPING_TASK_NAME: &str = "gcp-credential-housekeeping";
 
 #[derive(Clone, Debug, Error)]
 pub enum GcpAuthError {
@@ -170,31 +178,12 @@ impl IdTokenSource for Live {
     }
 }
 
-/// Builds the dedicated auth runtime. All credential construction executes here (see
-/// [`Registry::get_or_build`]) so the refresh task a credential's `build()` spawns lives on a
-/// runtime with process lifetime, never a partition invoker runtime that can be torn down while
-/// the cached credential and its watch receivers survive.
-fn build_auth_runtime() -> Runtime {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(AUTH_RUNTIME_WORKER_THREADS)
-        .max_blocking_threads(AUTH_RUNTIME_MAX_BLOCKING_THREADS)
-        .thread_name("gcp-auth")
-        .enable_all()
-        .build()
-        .expect("gcp auth runtime builds")
-}
-
-/// Process-global credential registry: the moka cache of credential objects, the dedicated auth
-/// runtime construction executes on, and the semaphore bounding concurrent construction. Created
-/// once per process; every [`GcpTokenClient`] is a handle to it. Per-invoker registries would
-/// multiply key cardinality by partition count and tie credential lifecycles to invoker
-/// lifecycles, which is exactly the leak this module exists to avoid.
+/// Process-global credential registry: the moka cache of credential objects and the shared
+/// ambient source slot. Created once per process; every [`GcpTokenClient`] is a handle to it.
+/// Per-invoker registries would multiply key cardinality by partition count and tie credential
+/// lifecycles to invoker lifecycles, which is exactly the leak this module exists to avoid.
 struct Registry {
     cache: Cache<CacheKey, Arc<dyn IdTokenSource>>,
-    // Kept alive for the process lifetime; never read directly (`handle` below is the clone used
-    // to spawn work on it).
-    _runtime: Runtime,
-    handle: Handle,
     /// The process's shared ambient ADC identity, used as the source credential for every
     /// impersonated key. See [`Registry::ambient_source`] and the module docs.
     ambient_source: SourceSlot<google_cloud_auth::credentials::Credentials>,
@@ -315,36 +304,57 @@ fn registry() -> &'static Registry {
 
 impl Registry {
     fn init() -> Self {
-        let runtime = build_auth_runtime();
-        let handle = runtime.handle().clone();
         let cache = Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build();
 
         // Spawned exactly once, here, rather than per `GcpTokenClient` (which is created per
         // invoker and would otherwise add a tick per partition).
         let housekeeping_cache = cache.clone();
-        handle.spawn(async move {
+        let housekeeping = async move {
             let mut interval = tokio::time::interval(HOUSEKEEPING_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
                 housekeeping_cache.run_pending_tasks().await;
             }
-        });
+        };
+        match TaskCenter::try_current() {
+            Some(task_center) => {
+                let _ = task_center.spawn_unmanaged(
+                    TaskKind::CredentialsRefresh,
+                    HOUSEKEEPING_TASK_NAME,
+                    housekeeping,
+                );
+            }
+            None => match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    tracing::debug!(
+                        "no TaskCenter current; running GCP credential cache housekeeping on the \
+                         calling runtime directly (expected only outside a TaskCenter, e.g. this \
+                         crate's own unit tests)"
+                    );
+                    handle.spawn(housekeeping);
+                }
+                Err(_) => {
+                    tracing::debug!(
+                        "no TaskCenter or tokio runtime current when the GCP credential registry \
+                         was first accessed; cache housekeeping will not run"
+                    );
+                }
+            },
+        }
 
         Self {
             cache,
-            _runtime: runtime,
-            handle,
             ambient_source: SourceSlot::new(),
             #[cfg(any(test, feature = "test_util"))]
             test_hooks: TestHooks::default(),
         }
     }
 
-    /// Returns the cached credential for `key`, building it on the auth runtime if this is the
-    /// first mint for this key (or the previous credential was evicted). Concurrent misses for
-    /// the same key coalesce into one build via the moka cache's single-flight semantics; waiters
-    /// share the error on failure, and errors are not cached.
+    /// Returns the cached credential for `key`, building it via TaskCenter if this is the first
+    /// mint for this key (or the previous credential was evicted). Concurrent misses for the same
+    /// key coalesce into one build via the moka cache's single-flight semantics; waiters share the
+    /// error on failure, and errors are not cached.
     async fn get_or_build(
         &'static self,
         key: CacheKey,
@@ -365,7 +375,7 @@ impl Registry {
                     return f(&init_key);
                 }
 
-                build_on_auth_runtime(self, init_key).await
+                build_via_task_center(self, init_key).await
             })
             .await
             .map_err(|error| (*error).clone())
@@ -388,7 +398,7 @@ impl Registry {
             .await;
     }
 
-    /// Returns the process's shared ambient source credential, building it on the auth runtime on
+    /// Returns the process's shared ambient source credential, building it via TaskCenter on
     /// first use and reusing it thereafter. This credential represents the process's own ADC
     /// identity, not any particular mint key: every impersonated `(impersonate, audience)` key
     /// clones the same underlying actor rather than each spawning its own.
@@ -448,7 +458,13 @@ impl Registry {
             }
         }
 
-        build_ambient_source_on_auth_runtime(&self.handle).await
+        spawn_construction(|| {
+            google_cloud_auth::credentials::Builder::default()
+                .build()
+                .map_err(|e| e.to_string())
+        })
+        .await
+        .map_err(|failure| failure.into_error(std::convert::identity))
     }
 }
 
@@ -474,13 +490,77 @@ async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credent
     )
 }
 
-/// Resolves the credential(s) needed for `key` and builds the outer ID-token credential on the
-/// auth runtime. The impersonated arm first resolves the process-wide ambient source (see
+/// Outcome of dispatching a blocking credential-construction closure via [`spawn_construction`].
+enum ConstructionFailure<E> {
+    /// The build closure itself returned this application-level error.
+    Build(E),
+    /// The TaskCenter task or blocking thread failed to run the closure at all (TaskCenter
+    /// shutting down, or the closure panicked).
+    Infra(String),
+}
+
+impl<E> ConstructionFailure<E> {
+    /// Collapses both variants into the caller's own error type. `Build` passes its error through
+    /// unchanged; `Infra` is shaped into one via `to_error`, since only the caller has the context
+    /// (e.g. the audience) needed to turn an infrastructure failure into an application error.
+    fn into_error(self, to_error: impl FnOnce(String) -> E) -> E {
+        match self {
+            ConstructionFailure::Build(e) => e,
+            ConstructionFailure::Infra(message) => to_error(message),
+        }
+    }
+}
+
+impl<E> From<tokio::task::JoinError> for ConstructionFailure<E> {
+    fn from(error: tokio::task::JoinError) -> Self {
+        ConstructionFailure::Infra(error.to_string())
+    }
+}
+
+impl<E> From<restate_core::ShutdownError> for ConstructionFailure<E> {
+    fn from(_: restate_core::ShutdownError) -> Self {
+        ConstructionFailure::Infra("TaskCenter is shutting down".to_owned())
+    }
+}
+
+/// Runs `build` — a blocking credential-construction closure — as a
+/// [`TaskKind::CredentialsRefresh`] task on TaskCenter's default runtime when a TaskCenter is
+/// current, or directly via `spawn_blocking` on the calling runtime otherwise. The latter is
+/// expected only in this crate's own unit tests: every production consumer of `ServiceClient`
+/// runs inside a TaskCenter. See the module docs for why the TaskCenter path matters — any
+/// refresh task `build()` spawns internally needs to land on a runtime with process lifetime, not
+/// the caller's own, which the fallback path cannot guarantee.
+async fn spawn_construction<T, E>(
+    build: impl FnOnce() -> Result<T, E> + Send + 'static,
+) -> Result<T, ConstructionFailure<E>>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    let built = if let Some(task_center) = TaskCenter::try_current() {
+        let task = task_center.spawn_unmanaged(
+            TaskKind::CredentialsRefresh,
+            CREDENTIAL_BUILD_TASK_NAME,
+            async move { tokio::task::spawn_blocking(build).await },
+        )?;
+        task.await??
+    } else {
+        tracing::debug!(
+            "no TaskCenter current; building GCP credential on the calling runtime directly \
+             (expected only outside a TaskCenter, e.g. this crate's own unit tests)"
+        );
+        tokio::task::spawn_blocking(build).await?
+    };
+    built.map_err(ConstructionFailure::Build)
+}
+
+/// Resolves the credential(s) needed for `key` and builds the outer ID-token credential. The
+/// impersonated arm first resolves the process-wide ambient source (see
 /// [`Registry::ambient_source`]) before building its own outer credential, so a permanent failure
 /// here can only ever strand the outer actor — the shared source actor is independent of any
 /// single key. Its own recovery is driven separately, from `mint()`'s permanent-failure path (see
 /// [`Registry::recover_ambient_source_if_dead`]), not from a rebuild cycle here.
-async fn build_on_auth_runtime(
+async fn build_via_task_center(
     registry: &'static Registry,
     key: CacheKey,
 ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
@@ -503,37 +583,13 @@ async fn build_on_auth_runtime(
             }
         };
 
-    registry
-        .handle
-        .spawn_blocking(build)
+    spawn_construction(build)
         .await
-        .unwrap_or_else(|join_error| {
-            Err(GcpAuthError::Build {
-                audience,
-                message: format!("GCP auth runtime task failed: {join_error}"),
-            })
-        })
-}
-
-/// Runs inside `spawn_blocking` on the auth runtime: `build()` synchronously spawns the ambient
-/// source credential's refresh task via `tokio::spawn` — which lands on the ambient runtime, i.e.
-/// the auth runtime, because tokio propagates runtime context into `spawn_blocking` closures. ADC
-/// discovery here is also blocking filesystem reads.
-async fn build_ambient_source_on_auth_runtime(
-    handle: &Handle,
-) -> Result<google_cloud_auth::credentials::Credentials, String> {
-    handle
-        .spawn_blocking(|| {
-            google_cloud_auth::credentials::Builder::default()
-                .build()
-                .map_err(|e| e.to_string())
-        })
-        .await
-        .unwrap_or_else(|join_error| Err(format!("GCP auth runtime task failed: {join_error}")))
+        .map_err(|failure| failure.into_error(|message| GcpAuthError::Build { audience, message }))
 }
 
 /// Builds the outer ID-token credential for an unimpersonated (ambient) key. Runs inside
-/// `spawn_blocking` on the auth runtime — see [`build_on_auth_runtime`].
+/// [`spawn_construction`].
 fn build_ambient_credentials(key: CacheKey) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
@@ -562,8 +618,7 @@ fn build_ambient_credentials(key: CacheKey) -> Result<Arc<dyn IdTokenSource>, Gc
 }
 
 /// Builds the outer ID-token credential for an impersonated key, from the process-wide shared
-/// `source` credential. Runs inside `spawn_blocking` on the auth runtime — see
-/// [`build_on_auth_runtime`].
+/// `source` credential. Runs inside [`spawn_construction`].
 fn build_impersonated_credentials(
     key: CacheKey,
     service_account: String,
@@ -848,7 +903,7 @@ mod tests {
         }
     }
 
-    /// Installs a per-key override that `get_or_build` consults instead of `build_on_auth_runtime`.
+    /// Installs a per-key override that `get_or_build` consults instead of `build_via_task_center`.
     /// Keying by `CacheKey` means tests using distinct cache keys cannot interfere with each other
     /// even if `cargo test` runs them concurrently in one process.
     fn install_construct_override(
@@ -962,7 +1017,7 @@ mod tests {
 
     /// Pins P1's fix (restatedev/restate#5151): the impersonated arm's source ADC credential is a
     /// single process-wide actor, not one per key. `Registry::ambient_source` is exactly what
-    /// `build_on_auth_runtime` calls before building any impersonated key's outer credential, so
+    /// `build_via_task_center` calls before building any impersonated key's outer credential, so
     /// proving it single-flights and shares its result here is equivalent to proving that N
     /// concurrent impersonated constructions share one source build — without also leaving N real
     /// (if harmless) background refresh tasks running for their outer credentials, which
@@ -992,16 +1047,18 @@ mod tests {
 
     /// Guards against cross-waiting between construction paths: many concurrent cold impersonated
     /// keys all funnel through the single-flighted `ambient_source` initializer while their own
-    /// per-key constructions are in flight. An earlier revision deadlocked here by holding one
-    /// bounded-semaphore permit per key and having the shared initializer acquire a second from
-    /// the same pool; the semaphore is gone (the auth runtime's bounded blocking pool is the
-    /// concurrency bound now), and this test keeps any reintroduced construction-time
-    /// cross-dependency from shipping. A genuine multi-thread runtime matters: single-thread
-    /// cooperative scheduling can mask such deadlocks by running each task to completion.
+    /// per-key constructions are each in their own `TaskKind::CredentialsRefresh` TaskCenter task.
+    /// An earlier revision deadlocked here by holding one bounded-semaphore permit per key and
+    /// having the shared initializer acquire a second from the same pool; that semaphore no
+    /// longer exists (TaskCenter's default runtime and its blocking pool are the concurrency
+    /// bound now), and this test keeps any reintroduced construction-time cross-dependency from
+    /// shipping. A genuine multi-thread runtime matters: single-thread cooperative scheduling can
+    /// mask such deadlocks by running each task to completion.
     ///
     /// Does not override outer construction (only the ambient source, to avoid real ADC/network):
-    /// the point is to exercise the real `get_or_build` -> `build_on_auth_runtime` ->
-    /// `ambient_source` call chain, not a stand-in for it.
+    /// the point is to exercise the real `get_or_build` -> `build_via_task_center` ->
+    /// `ambient_source` call chain, not a stand-in for it. No TaskCenter is current in this test,
+    /// so construction runs via the fallback `spawn_blocking` path on the test's own runtime.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_cold_impersonated_constructions_do_not_deadlock() {
         install_ambient_source_override(|| {
@@ -1215,15 +1272,28 @@ mod tests {
     }
 
     /// Real credentials can't be constructed in a unit test (no ADC, no network), so this
-    /// exercises the same runtime-placement primitive `build_on_auth_runtime` relies on directly:
-    /// a `tokio::spawn` performed inside a `spawn_blocking` closure lands on the runtime that
-    /// owns the blocking pool (the auth runtime), not on the caller's runtime. A real
+    /// exercises the same runtime-placement primitive `build_via_task_center` relies on: a
+    /// `CredentialsRefresh` task spawned via `Handle::spawn_unmanaged` lands on TaskCenter's
+    /// *default* runtime, and a nested `tokio::spawn` performed inside a `spawn_blocking` closure
+    /// within that task lands there too -- not on whatever runtime issued the spawn. A real
     /// credential's `build()` spawns its refresh task the same way, which is exactly why
-    /// `Registry::get_or_build` routes construction through `handle.spawn_blocking` in the first
-    /// place: the refresh task must survive a partition invoker runtime being torn down.
+    /// construction is routed through TaskCenter in the first place: the refresh task must
+    /// survive a partition invoker runtime being torn down.
+    ///
+    /// Builds its own `TaskCenter` with its own dedicated default runtime (standing in for the
+    /// server's real one) rather than using `#[restate_core::test]`, so the "caller" runtime that
+    /// issues the spawn can be a genuinely different, droppable runtime --
+    /// `#[restate_core::test]` makes the test's own runtime and TaskCenter's default runtime the
+    /// same one, which would not exercise this property at all.
     #[test]
-    fn auth_runtime_outlives_a_caller_runtime_that_constructed_on_it() {
-        let handle = registry().handle.clone();
+    fn task_center_default_runtime_outlives_a_caller_runtime_that_spawned_construction_on_it() {
+        let default_runtime = tokio::runtime::Runtime::new().expect("default runtime builds");
+        let task_center = restate_core::TaskCenterBuilder::default()
+            .default_runtime_handle(default_runtime.handle().clone())
+            .build()
+            .expect("task center builds")
+            .into_handle();
+
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let (tx, rx) = std::sync::mpsc::channel();
 
@@ -1233,27 +1303,70 @@ mod tests {
             let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
             let running = running.clone();
             caller_runtime.block_on(async move {
-                handle
-                    .spawn_blocking(move || {
-                        tokio::spawn(async move {
-                            while running.load(Ordering::SeqCst) {
-                                tokio::time::sleep(Duration::from_millis(5)).await;
-                            }
-                            let _ = tx.send(());
-                        });
-                    })
+                task_center
+                    .spawn_unmanaged::<_, ()>(
+                        TaskKind::CredentialsRefresh,
+                        "test-build",
+                        async move {
+                            tokio::task::spawn_blocking(move || {
+                                tokio::spawn(async move {
+                                    while running.load(Ordering::SeqCst) {
+                                        tokio::time::sleep(Duration::from_millis(5)).await;
+                                    }
+                                    let _ = tx.send(());
+                                });
+                            })
+                            .await
+                            .expect("construction runs");
+                        },
+                    )
+                    .expect("task center accepts the task")
                     .await
-                    .expect("construction runs on the auth runtime");
+                    .expect("construction task completes");
             });
             // Dropping the caller runtime here. If the spawned task had landed on it instead of
-            // the auth runtime, dropping it would abort the task and the channel send below would
-            // never happen.
+            // TaskCenter's default runtime, dropping it would abort the task and the channel send
+            // below would never happen.
         }
 
         std::thread::sleep(Duration::from_millis(50));
         running.store(false, Ordering::SeqCst);
         rx.recv_timeout(Duration::from_secs(2))
-            .expect("task spawned via the auth runtime survives the caller runtime's drop");
+            .expect("task spawned via the default runtime survives the caller runtime's drop");
+    }
+
+    /// Drives credential construction through the registry inside a real `TaskCenter`, proving
+    /// `build_via_task_center` actually dispatches via a `TaskKind::CredentialsRefresh` task
+    /// rather than silently taking the unmanaged fallback. Scoped to construction
+    /// (`Registry::get_or_build`) rather than a full `mint()`: the ambient path's `.build()` only
+    /// wires the credential together and needs no network (ADC discovery reads local files, at
+    /// worst falling back to the metadata-server identity without contacting it), but the
+    /// subsequent token mint would need a real, reachable GCP environment this sandboxed test
+    /// does not have. Testing construction in isolation keeps the test hermetic while still
+    /// exercising the exact TaskCenter dispatch path this task added.
+    ///
+    /// The construction outcome depends on whatever ADC state happens to exist on the machine
+    /// running the test: no local ADC file falls back to the metadata-server identity and
+    /// `.build()` succeeds; a real developer machine's `gcloud auth application-default login`
+    /// credentials (an `authorized_user` ADC type) cannot mint ID tokens directly and `.build()`
+    /// correctly reports `AmbientUnsupported`. Both are legitimate completions of construction
+    /// through TaskCenter; only an unexpected error variant indicates a bug in the dispatch itself
+    /// rather than in this test's environment assumptions.
+    ///
+    /// Isolation note: like the other tests here that touch the shared `registry()` static, this
+    /// relies on `nextest` running each test in its own process. Uniquely for TC-dependent
+    /// behavior: a non-TC test that happened to run first in the same process would leave
+    /// `TaskCenter::try_current()` returning `None` for the rest of that process, which would
+    /// mask this test's very reason for existing.
+    #[restate_core::test]
+    async fn construction_dispatches_via_task_center_when_current() {
+        assert!(TaskCenter::try_current().is_some());
+
+        let audience = "https://tc-construction.example.com";
+        match registry().get_or_build(key(audience)).await {
+            Ok(_) | Err(GcpAuthError::AmbientUnsupported { .. }) => {}
+            Err(error) => panic!("construction via TaskCenter failed unexpectedly: {error:?}"),
+        }
     }
 
     #[tokio::test]
