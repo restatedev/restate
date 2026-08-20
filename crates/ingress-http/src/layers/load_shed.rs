@@ -8,15 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use futures::ready;
-use http::{Request, Response};
-use metrics::counter;
-use pin_project_lite::pin_project;
 use std::future::Future;
+use std::io;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+
+use bytes::Bytes;
+use futures::ready;
+use http::{Request, Response};
+use http_body::Body;
+use http_body_util::Full;
+use metrics::counter;
+use pin_project_lite::pin_project;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower::{Layer, Service};
 use tracing::warn;
@@ -61,9 +65,9 @@ impl<S> LoadShed<S> {
 impl<S, ReqBody, ResBody> Service<Request<ReqBody>> for LoadShed<S>
 where
     S: Service<Request<ReqBody>, Response = Response<ResBody>>,
-    ResBody: http_body::Body + Default + From<Bytes>,
+    ResBody: Body,
 {
-    type Response = Response<ResBody>;
+    type Response = Response<PermittedBody<ResBody>>;
     type Error = S::Error;
     type Future = ResponseFuture<S::Future>;
 
@@ -92,7 +96,7 @@ where
         ResponseFuture {
             state: ResponseState::Called {
                 fut: self.inner.call(req),
-                _permit: permit,
+                _permit: Some(permit),
             },
         }
     }
@@ -111,8 +115,9 @@ pin_project! {
         Called {
             #[pin]
             fut: F,
-               // Keep this around so that it is dropped when the future completes
-            _permit: OwnedSemaphorePermit,
+            // Held for the duration of the call. On success it is handed over to the response
+            // body (see `poll`); otherwise it is released when the future is dropped.
+            _permit: Option<OwnedSemaphorePermit>,
         },
         Overloaded,
     }
@@ -121,18 +126,115 @@ pin_project! {
 impl<F, B, E> Future for ResponseFuture<F>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: http_body::Body + Default + From<Bytes>,
+    B: Body,
 {
-    type Output = Result<Response<B>, E>;
+    type Output = Result<Response<PermittedBody<B>>, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         match self.project().state.project() {
-            ResponseStateProj::Called { fut, .. } => Poll::Ready(ready!(fut.poll(cx))),
-            // Route through HandlerError so the 429 carries the standard JSON body and the
-            // x-restate-error-source header (source = ingress).
-            ResponseStateProj::Overloaded => {
-                Poll::Ready(Ok(HandlerError::TooManyRequests.into_response()))
+            ResponseStateProj::Called { fut, _permit } => {
+                // `PermittedBody` keeps the permit alive until the body itself is dropped, so a
+                // long-lived stream (e.g. an ingestion stream) counts against the concurrency
+                // limit for its whole duration.
+                let response = ready!(fut.poll(cx))
+                    .map(|response| response.map(|body| PermittedBody::new(body, _permit.take())));
+                Poll::Ready(response)
             }
+            ResponseStateProj::Overloaded => Poll::Ready(Ok(HandlerError::TooManyRequests
+                .into_response()
+                .map(|body| PermittedBody::full(body, None)))),
+        }
+    }
+}
+
+pin_project! {
+    #[project = InnerBodyProj]
+    enum InnerBody<B> where B: Body {
+        Body{#[pin] body: B},
+        Full{#[pin] body: Full<Bytes>},
+    }
+}
+
+impl<B> Default for InnerBody<B>
+where
+    B: Body,
+{
+    fn default() -> Self {
+        Self::Full {
+            body: Default::default(),
+        }
+    }
+}
+
+pin_project! {
+    #[derive(Default)]
+    pub struct PermittedBody<B>  where B: Body{
+        #[pin]
+        body: InnerBody<B>,
+        _permit: Option<OwnedSemaphorePermit>,
+    }
+}
+
+impl<B> PermittedBody<B>
+where
+    B: Body,
+{
+    pub fn full(body: Full<Bytes>, permit: Option<OwnedSemaphorePermit>) -> Self {
+        Self {
+            body: InnerBody::Full { body },
+            _permit: permit,
+        }
+    }
+
+    pub fn new(body: B, permit: Option<OwnedSemaphorePermit>) -> Self {
+        Self {
+            body: InnerBody::Body { body },
+            _permit: permit,
+        }
+    }
+}
+
+impl<B> Body for PermittedBody<B>
+where
+    B: Body,
+    B::Error: From<io::Error>,
+    B::Data: From<Bytes>,
+{
+    type Data = B::Data;
+    type Error = B::Error;
+
+    fn is_end_stream(&self) -> bool {
+        match &self.body {
+            InnerBody::Body { body } => body.is_end_stream(),
+            InnerBody::Full { body } => body.is_end_stream(),
+        }
+    }
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.project();
+        match this.body.project() {
+            InnerBodyProj::Body { body } => body.poll_frame(cx),
+            InnerBodyProj::Full { body } => body
+                .poll_frame(cx)
+                .map_ok(|frame| frame.map_data(Self::Data::from))
+                .map_err(|_| {
+                    // this should not happen. Unfortunately tonic::Status does not have an implementation
+                    // From<Infallible>, so we have to do this little dance.
+                    Self::Error::from(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "should never fail",
+                    ))
+                }),
+        }
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        match &self.body {
+            InnerBody::Body { body } => body.size_hint(),
+            InnerBody::Full { body } => body.size_hint(),
         }
     }
 }

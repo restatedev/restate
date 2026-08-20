@@ -30,7 +30,7 @@ use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
 
 use restate_core::network::{NetworkSender, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind, task_center};
-use restate_ingestion_client::{IngestionClient, IngestionError, RecordCommit};
+use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, RecordCommit};
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{SubscriptionId, WithPartitionKey};
 use restate_types::net::ingest::{DedupSequenceNrQueryRequest, ProducerId, ResponseStatus};
