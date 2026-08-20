@@ -899,7 +899,7 @@ dependencies = [
  "aws-smithy-async",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "h2",
+ "h2 0.4.16",
  "http 1.5.0",
  "hyper",
  "hyper-rustls",
@@ -4060,6 +4060,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "h2"
+version = "0.4.17"
+source = "git+https://github.com/muhamadazmy/h2?branch=configurable-data-frame-budget#4b2e989a503bdb78e15da15a47613c4d194d6c24"
+dependencies = [
+ "atomic-waker",
+ "bytes",
+ "fnv",
+ "futures-core",
+ "futures-sink",
+ "http 1.5.0",
+ "indexmap 2.14.0",
+ "slab",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "half"
 version = "2.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4353,7 +4371,7 @@ dependencies = [
  "bytes",
  "futures-channel",
  "futures-core",
- "h2",
+ "h2 0.4.16",
  "http 1.5.0",
  "http-body 1.1.0",
  "httparse",
@@ -7411,7 +7429,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
+ "h2 0.4.16",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
@@ -8722,7 +8740,7 @@ dependencies = [
  "futures",
  "google-cloud-auth",
  "googletest",
- "h2",
+ "h2 0.4.17",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
@@ -11088,7 +11106,7 @@ dependencies = [
  "base64",
  "bytes",
  "flate2",
- "h2",
+ "h2 0.4.16",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
