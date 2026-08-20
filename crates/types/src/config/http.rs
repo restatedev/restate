@@ -129,7 +129,7 @@ pub struct HttpOptions {
     ///
     /// Values below 25 KiB (25600 B) are raised to 25600 B.
     ///
-    /// Since: v1.8.0
+    /// Since: v1.7.5
     ///
     /// Default: 1 MiB
     http2_data_frame_budget: NonZeroByteCount,
