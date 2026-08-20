@@ -36,6 +36,11 @@ pub trait PartitionFeatures {
     ///
     /// *Since v1.7.0*
     fn is_unique_random_seeds_enabled(&self) -> bool;
+
+    /// Whether all invocations are currently migrated to vqueues.
+    ///
+    /// *Since v1.7.5*
+    fn is_fully_migrated_to_vqueues(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -45,6 +50,7 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnableJournalV2 => self.journal_v2,
             PartitionFeatureChange::EnableVqueues => self.vqueues,
             PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
+            PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
         }
     }
 
@@ -55,6 +61,11 @@ impl PartitionFeatures for PersistedFeatures {
 
     #[inline]
     fn is_vqueues_enabled(&self) -> bool {
+        self.vqueues || self.vqueues_skip_completed
+    }
+
+    #[inline]
+    fn is_fully_migrated_to_vqueues(&self) -> bool {
         self.vqueues
     }
 
@@ -79,6 +90,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
         (**self).is_vqueues_enabled()
     }
 
+    fn is_fully_migrated_to_vqueues(&self) -> bool {
+        (**self).is_fully_migrated_to_vqueues()
+    }
+
     fn is_unique_random_seeds_enabled(&self) -> bool {
         (**self).is_unique_random_seeds_enabled()
     }
@@ -95,6 +110,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_vqueues_enabled(&self) -> bool {
         (**self).is_vqueues_enabled()
+    }
+
+    fn is_fully_migrated_to_vqueues(&self) -> bool {
+        (**self).is_fully_migrated_to_vqueues()
     }
 
     fn is_unique_random_seeds_enabled(&self) -> bool {
