@@ -10,7 +10,6 @@
 
 mod manager;
 mod metadata_client_wrapper;
-mod metadata_migrations;
 mod update_task;
 
 use ahash::HashMap;
@@ -38,7 +37,6 @@ use restate_types::{GenerationalNodeId, Version, Versioned};
 pub use self::manager::{MetadataManager, TargetVersion};
 use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
-pub use metadata_migrations::migrate_metadata;
 
 use self::metadata_client_wrapper::MetadataClientWrapper;
 
