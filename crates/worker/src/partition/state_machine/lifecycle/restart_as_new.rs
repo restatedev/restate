@@ -332,6 +332,7 @@ mod tests {
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
+    use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Stage};
     use restate_types::identifiers::{
         DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
         WithPartitionKey,
@@ -348,6 +349,8 @@ mod tests {
     use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
+    use restate_types::vqueues::EntryId;
+    use restate_util_string::ToReString;
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
     use std::time::Duration;
@@ -765,6 +768,98 @@ mod tests {
                 ],
             )
             .await;
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn restart_propagates_pinned_deployment_to_vqueue_entry() {
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+        ]))
+        .await;
+
+        let invocation_target = InvocationTarget::mock_service();
+        let original_invocation_id = InvocationId::generate(&invocation_target, None);
+        let _ = test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id: original_invocation_id,
+                    invocation_target: invocation_target.clone(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                }),
+                fixtures::pinned_deployment(original_invocation_id, ServiceProtocolVersion::V6),
+                fixtures::invoker_entry_effect(
+                    original_invocation_id,
+                    OutputCommand {
+                        result: OutputResult::Success(Default::default()),
+                        name: Default::default(),
+                    },
+                ),
+                fixtures::invoker_end_effect(original_invocation_id),
+            ])
+            .await;
+
+        test_env.set_enabled_features(PersistedFeatures::from_iter([
+            PartitionFeatureChange::EnableJournalV2,
+            PartitionFeatureChange::EnableVqueues,
+        ]));
+
+        let new_invocation_id = InvocationId::from_parts(
+            original_invocation_id.partition_key(),
+            InvocationUuid::generate(&invocation_target, None),
+        );
+        let new_deployment_id = DeploymentId::new();
+        let _ = test_env
+            .apply(commands::RestartAsNewInvocationCommand::test_envelope(
+                RestartAsNewInvocationRequest {
+                    invocation_id: original_invocation_id,
+                    new_invocation_id,
+                    copy_prefix_up_to_index_included: 0,
+                    patch_deployment_id: Some(new_deployment_id),
+                    response_sink: None,
+                },
+            ))
+            .await;
+
+        let InvocationStatus::Inboxed(inboxed) = test_env
+            .storage
+            .get_invocation_status(&new_invocation_id)
+            .await
+            .unwrap()
+        else {
+            panic!("restarted invocation must be inboxed");
+        };
+        let vqueue_id = inboxed
+            .metadata
+            .vqueue_id
+            .expect("restarted invocation must have a vqueue id");
+        assert_eq!(
+            inboxed
+                .metadata
+                .input
+                .pinned_deployment()
+                .map(|pinned| pinned.deployment_id),
+            Some(new_deployment_id)
+        );
+
+        let entry_id = EntryId::from(new_invocation_id);
+        let entry_status = {
+            let transaction = test_env.storage.transaction();
+            transaction
+                .get_vqueue_entry_status(new_invocation_id.partition_key(), &entry_id)
+                .await
+                .unwrap()
+                .expect("restarted invocation must have a vqueue entry")
+        };
+        assert_eq!(entry_status.vqueue_id(), &vqueue_id);
+        assert_eq!(entry_status.stage(), Stage::Inbox);
+        assert_eq!(
+            entry_status.metadata().deployment,
+            Some(new_deployment_id.to_restring())
+        );
 
         test_env.shutdown().await;
     }

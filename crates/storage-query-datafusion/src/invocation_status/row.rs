@@ -98,6 +98,7 @@ pub(crate) fn append_invocation_status_row<'a>(
     match invocation_status.inner.status() {
         Status::Scheduled => {
             row.status("scheduled");
+            fill_pinned_deployment(&mut row, invocation_status)?;
             if row.is_created_using_restate_version_defined() {
                 row.created_using_restate_version(
                     invocation_status.created_using_restate_version()?,
@@ -123,6 +124,7 @@ pub(crate) fn append_invocation_status_row<'a>(
         }
         Status::Inboxed => {
             row.status("inboxed");
+            fill_pinned_deployment(&mut row, invocation_status)?;
             if row.is_created_using_restate_version_defined() {
                 row.created_using_restate_version(
                     invocation_status.created_using_restate_version()?,
@@ -192,20 +194,7 @@ pub(crate) fn append_invocation_status_row<'a>(
         Status::Completed => {
             row.status("completed");
             fill_journal_metadata(&mut row, invocation_status)?;
-
-            if row.is_pinned_deployment_id_defined()
-                && let Some(deployment_id) = invocation_status.deployment_id()?
-            {
-                row.fmt_pinned_deployment_id(deployment_id);
-            }
-            if row.is_pinned_service_protocol_version_defined()
-                && let Some(service_protocol_version) =
-                    invocation_status.service_protocol_version()?
-            {
-                row.pinned_service_protocol_version(
-                    service_protocol_version.as_repr().unsigned_abs(),
-                );
-            }
+            fill_pinned_deployment(&mut row, invocation_status)?;
 
             if row.is_created_using_restate_version_defined() {
                 row.created_using_restate_version(
@@ -272,16 +261,7 @@ fn fill_in_flight_invocation_metadata(
         row.created_using_restate_version(status.created_using_restate_version()?);
     }
     // journal_metadata and stats are filled by other functions
-    if row.is_pinned_deployment_id_defined()
-        && let Some(deployment_id) = status.deployment_id()?
-    {
-        row.fmt_pinned_deployment_id(deployment_id);
-    }
-    if row.is_pinned_service_protocol_version_defined()
-        && let Some(service_protocol_version) = status.service_protocol_version()?
-    {
-        row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
-    }
+    fill_pinned_deployment(row, status)?;
     if row.is_scheduled_start_at_defined()
         && let Some(execution_time) = status.inner.execution_time
     {
@@ -292,6 +272,24 @@ fn fill_in_flight_invocation_metadata(
     }
     if row.is_journal_retention_defined() {
         row.journal_retention(status.journal_retention_duration()?.as_millis() as i64);
+    }
+
+    Ok(())
+}
+
+fn fill_pinned_deployment(
+    row: &mut SysInvocationStatusRowBuilder,
+    status: &InvocationStatusV2Lazy,
+) -> Result<(), ConversionError> {
+    if row.is_pinned_deployment_id_defined()
+        && let Some(deployment_id) = status.deployment_id()?
+    {
+        row.fmt_pinned_deployment_id(deployment_id);
+    }
+    if row.is_pinned_service_protocol_version_defined()
+        && let Some(service_protocol_version) = status.service_protocol_version()?
+    {
+        row.pinned_service_protocol_version(service_protocol_version.as_repr().unsigned_abs());
     }
 
     Ok(())

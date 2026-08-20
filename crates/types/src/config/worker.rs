@@ -882,6 +882,15 @@ pub struct StorageOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
 
+    /// The maximum number of subcompactions to run in parallel.
+    ///
+    /// Setting this to 1 means no sub-compactions are allowed.
+    ///
+    /// Default is 1
+    ///
+    /// Since v1.7.5
+    rocksdb_max_sub_compactions: u32,
+
     /// # Clamps target size for sst files
     ///
     /// The target size for sst files. Restate uses this value to internally determine
@@ -929,6 +938,14 @@ impl StorageOptions {
             .unwrap_or(NonZeroU32::new(1).unwrap())
     }
 
+    pub fn rocksdb_max_sub_compactions(&self) -> u32 {
+        if self.rocksdb_max_sub_compactions == 0 {
+            1
+        } else {
+            self.rocksdb_max_sub_compactions
+        }
+    }
+
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
         self.rocksdb_memory_budget
             .unwrap_or_else(|| {
@@ -971,6 +988,7 @@ impl Default for StorageOptions {
             rocksdb_disable_auto_memory_reclaimer: false,
             rocksdb_max_background_flushes: None,
             rocksdb_max_background_compactions: None,
+            rocksdb_max_sub_compactions: 1,
             rocksdb_max_file_size: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             ),
@@ -1206,5 +1224,17 @@ mod tests {
             new.request_identity_private_key_pem_file.as_deref(),
             Some(Path::new("/key.pem"))
         );
+    }
+    #[test]
+
+    fn sanitize_rocksdb_max_sub_compactions() {
+        let mut options = StorageOptions::default();
+        assert_eq!(options.rocksdb_max_sub_compactions(), 1);
+
+        options.rocksdb_max_sub_compactions = 0;
+        assert_eq!(options.rocksdb_max_sub_compactions(), 1);
+
+        options.rocksdb_max_sub_compactions = 4;
+        assert_eq!(options.rocksdb_max_sub_compactions(), 4);
     }
 }

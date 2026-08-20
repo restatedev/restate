@@ -16,7 +16,9 @@ use crate::storage::{
     StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError, decode,
     encode,
 };
-use crate::{RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, SemanticRestateVersion};
+use crate::{
+    RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, SemanticRestateVersion,
+};
 
 /// A change to the set of state-machine features enabled on a partition.
 ///
@@ -49,7 +51,7 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.0*
     EnableJournalV2 = 1,
-    /// Enable vqueues for the partition.
+    /// Enable vqueues for the partition and migrate all invocations.
     ///
     /// *Since v1.7.0*
     EnableVqueues = 2,
@@ -58,6 +60,10 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.0*
     EnableUniqueRandomSeeds = 3,
+    /// Enable vqueues for the partition and skip migrating completed invocations.
+    ///
+    /// *Since v1.7.5*
+    EnableVqueuesSkipCompleted = 4,
 }
 
 impl PartitionFeatureChange {
@@ -74,6 +80,7 @@ impl PartitionFeatureChange {
             Self::EnableJournalV2 => &RESTATE_VERSION_1_6_0,
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
+            Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
         }
     }
 
@@ -83,6 +90,9 @@ impl PartitionFeatureChange {
         match self {
             Self::EnableJournalV2 => !std::mem::replace(&mut features.journal_v2, true),
             Self::EnableVqueues => !std::mem::replace(&mut features.vqueues, true),
+            Self::EnableVqueuesSkipCompleted => {
+                !std::mem::replace(&mut features.vqueues_skip_completed, true)
+            }
             Self::EnableUniqueRandomSeeds => {
                 !std::mem::replace(&mut features.unique_random_seeds, true)
             }
@@ -130,6 +140,12 @@ pub struct PersistedFeatures {
     /// *Since v1.7.0*
     #[bilrost(tag(3))]
     pub unique_random_seeds: bool,
+
+    /// Virtual queues are enabled on this partition with only inflight-invocations migrated.
+    ///
+    /// *Since v1.7.5*
+    #[bilrost(tag(4))]
+    pub vqueues_skip_completed: bool,
 }
 
 impl PersistedFeatures {
@@ -141,6 +157,8 @@ impl PersistedFeatures {
             self.journal_v2.then_some("journal_v2"),
             self.vqueues.then_some("vqueues"),
             self.unique_random_seeds.then_some("unique_random_seeds"),
+            self.vqueues_skip_completed
+                .then_some("vqueues_skip_completed"),
         ]
         .into_iter()
         .flatten()
@@ -199,10 +217,13 @@ mod tests {
     fn apply_to_sets_field() {
         let mut features = PersistedFeatures::default();
         assert!(!features.vqueues);
+        assert!(!features.vqueues_skip_completed);
         assert!(!features.unique_random_seeds);
         PartitionFeatureChange::EnableVqueues.apply_to(&mut features);
+        PartitionFeatureChange::EnableVqueuesSkipCompleted.apply_to(&mut features);
         PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
+        assert!(features.vqueues_skip_completed);
         assert!(features.unique_random_seeds);
     }
 
