@@ -235,12 +235,12 @@ impl DiscoveryClient for ServiceDiscovery {
         };
 
         let retry_policy = self.retry_policy.iter();
-        let (mut parts, body) = Self::invoke_discovery_endpoint(
+        let (mut parts, body) = Box::pin(Self::invoke_discovery_endpoint(
             &self.client,
             endpoint.clone(),
             build_request,
             retry_policy,
-        )
+        ))
         .await?;
 
         // Retrieve chosen service discovery protocol version.
@@ -471,7 +471,7 @@ impl ServiceDiscovery {
                 ))
             };
 
-            let e = match response.await {
+            let e = match Box::pin(response).await {
                 Ok(response) => {
                     // Discovery succeeded
                     return Ok(response);
