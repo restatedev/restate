@@ -39,8 +39,11 @@ use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
+use crate::query_warnings::{QueryWarnings, WarningOrigin, try_record};
+use crate::remote_query_scanner_manager::PartitionUnavailable;
 use crate::table_util::{find_sort_columns, make_ordering};
 
+#[async_trait]
 pub trait ScanPartition: Send + Sync + Debug + 'static {
     #[allow(clippy::too_many_arguments)]
     fn scan_partition(
@@ -53,6 +56,23 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream>;
+
+    /// Whether `partition_id` can be scanned right now.
+    ///
+    /// Consulted while the query is planned, so that a partition which cannot be scanned is
+    /// dropped from the plan rather than failing the query once it executes. Detecting it
+    /// here is also what keeps the resulting warning visible: it happens before the response
+    /// headers are written.
+    ///
+    /// Async because the only way to ask whether a partition store is open is to await it —
+    /// every public lookup on `PartitionStoreManager` is async. Scanners that cannot answer
+    /// cheaply keep the default and are simply attempted.
+    async fn check_available(
+        &self,
+        _partition_id: PartitionId,
+    ) -> Result<(), PartitionUnavailable> {
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -174,11 +194,36 @@ where
 
         let predicate = datafusion::physical_expr::conjunction_opt(filters);
 
-        let physical_partitions: Vec<(PartitionId, Partition)> = self
+        // Drop partitions that cannot be scanned — they route nowhere, or their store is not
+        // open on the node that would serve them — recording each one, so that a single
+        // unavailable partition degrades the result instead of failing the query. Filtering
+        // here rather than at execution time also keeps such a partition from taking down the
+        // ones sharing its sequential scan bucket, and makes the warnings known before the
+        // response starts streaming, which is what keeps them visible on the Arrow path.
+        let warnings = state.config().get_extension::<QueryWarnings>();
+        let live_partitions = self
             .partition_selector
             .get_live_partitions()
             .await
-            .map_err(DataFusionError::External)?
+            .map_err(DataFusionError::External)?;
+
+        let mut available_partitions = Vec::with_capacity(live_partitions.len());
+        for (partition_id, partition) in live_partitions {
+            match self.partition_scanner.check_available(partition_id).await {
+                Ok(()) => available_partitions.push((partition_id, partition)),
+                Err(unavailable) => {
+                    if !try_record(
+                        warnings.as_ref(),
+                        WarningOrigin::Partition(partition_id),
+                        unavailable.to_string(),
+                    ) {
+                        return Err(DataFusionError::External(unavailable.into()));
+                    }
+                }
+            }
+        }
+
+        let physical_partitions: Vec<(PartitionId, Partition)> = available_partitions
             .into_iter()
             .flat_map(|(partition_id, partition)| {
                 match &partition_key_selection {
@@ -360,18 +405,49 @@ where
                 let predicate = self.predicate.clone();
                 let batch_size = context.session_config().batch_size();
                 let elapsed_compute = baseline_metrics.elapsed_compute().clone();
+                let warnings = context.session_config().get_extension::<QueryWarnings>();
                 move |(partition_id, partition)| {
-                    scanner
-                        .scan_partition(
-                            partition_id,
-                            partition.key_range,
-                            schema.clone(),
-                            predicate.clone(),
-                            batch_size,
-                            limit,
-                            elapsed_compute.clone(),
-                        )
-                        .map_err(|e| DataFusionError::External(e.into()))
+                    let err = match scanner.scan_partition(
+                        partition_id,
+                        partition.key_range,
+                        schema.clone(),
+                        predicate.clone(),
+                        batch_size,
+                        limit,
+                        elapsed_compute.clone(),
+                    ) {
+                        // Guard each partition's scan separately: a failure only excuses the
+                        // partition it happened in, and several partitions are scanned
+                        // sequentially through the `try_flatten` below.
+                        Ok(stream) => {
+                            return Ok(Box::pin(PartitionScanStream::new(
+                                stream,
+                                partition_id,
+                                warnings.clone(),
+                            )) as SendableRecordBatchStream);
+                        }
+                        Err(err) => err,
+                    };
+
+                    // A synchronous failure means the scan never started. The only
+                    // operational one is `PartitionUnavailable` — the partition became
+                    // unscannable since we planned — so skip it as we would have at plan
+                    // time. Anything else synchronous is a wiring bug and must stay loud.
+                    match err.downcast_ref::<PartitionUnavailable>() {
+                        Some(unavailable)
+                            if try_record(
+                                warnings.as_ref(),
+                                WarningOrigin::Partition(partition_id),
+                                unavailable.to_string(),
+                            ) =>
+                        {
+                            Ok(Box::pin(RecordBatchStreamAdapter::new(
+                                schema.clone(),
+                                stream::empty(),
+                            )) as SendableRecordBatchStream)
+                        }
+                        _ => Err(DataFusionError::External(err.into())),
+                    }
                 }
             })
             .try_flatten();
@@ -735,6 +811,88 @@ impl Display for ExprList<'_> {
     }
 }
 
+/// Wraps one partition's scan so that a failure degrades the query instead of failing it.
+///
+/// On an error the partition's stream ends gracefully and a warning is recorded — but only
+/// if the partition had not yet produced any rows. A partition that fails *after* yielding
+/// rows propagates the error, because an arbitrary truncated subset of one partition is a
+/// result no warning can describe honestly.
+///
+/// The "produced nothing" rule is deliberately about *when* the failure happened rather than
+/// *why*: a failure relayed from another node arrives as `DataFusionError::Internal(String)`
+/// with no recoverable type, so there is nothing to classify on.
+struct PartitionScanStream {
+    inner: SendableRecordBatchStream,
+    partition_id: PartitionId,
+    warnings: Option<Arc<QueryWarnings>>,
+    rows_emitted: bool,
+    done: bool,
+}
+
+impl PartitionScanStream {
+    fn new(
+        inner: SendableRecordBatchStream,
+        partition_id: PartitionId,
+        warnings: Option<Arc<QueryWarnings>>,
+    ) -> Self {
+        Self {
+            inner,
+            partition_id,
+            warnings,
+            rows_emitted: false,
+            done: false,
+        }
+    }
+}
+
+impl Stream for PartitionScanStream {
+    type Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.done {
+            return Poll::Ready(None);
+        }
+
+        match self.inner.poll_next_unpin(cx) {
+            Poll::Ready(Some(Err(err))) => {
+                self.done = true;
+
+                if self.rows_emitted {
+                    return Poll::Ready(Some(Err(err)));
+                }
+
+                let recorded = try_record(
+                    self.warnings.as_ref(),
+                    WarningOrigin::Partition(self.partition_id),
+                    err.to_string(),
+                );
+
+                if recorded {
+                    // End this partition's stream; its siblings keep scanning.
+                    Poll::Ready(None)
+                } else {
+                    Poll::Ready(Some(Err(err)))
+                }
+            }
+            Poll::Ready(Some(Ok(batch))) => {
+                self.rows_emitted = true;
+                Poll::Ready(Some(Ok(batch)))
+            }
+            Poll::Ready(None) => {
+                self.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl datafusion::execution::RecordBatchStream for PartitionScanStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
 /// Stream wrapper that records [`BaselineMetrics`] using [`BaselineMetrics::record_poll`].
 pub(crate) struct MeteredStream<S> {
     pub(crate) inner: S,
@@ -751,5 +909,99 @@ where
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let poll = self.inner.poll_next_unpin(cx);
         self.baseline_metrics.record_poll(poll)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::{Int32Array, RecordBatch};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::error::DataFusionError;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use futures::StreamExt;
+    use futures::executor::block_on;
+
+    use restate_types::identifiers::PartitionId;
+
+    use super::PartitionScanStream;
+    use crate::query_warnings::QueryWarnings;
+
+    fn one_row() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap()
+    }
+
+    /// Builds a stream yielding `batches` successful batches, then a failure.
+    fn failing_after(batches: usize) -> super::SendableRecordBatchStream {
+        let batch = one_row();
+        let schema = batch.schema();
+        let items = (0..batches)
+            .map(move |_| Ok(batch.clone()))
+            .chain(std::iter::once(Err(DataFusionError::Internal(
+                "partition 2 doesn't exist on this node".to_owned(),
+            ))));
+
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter(items.collect::<Vec<_>>()),
+        ))
+    }
+
+    #[test]
+    fn a_partition_that_produced_nothing_is_skipped() {
+        let warnings = Arc::new(QueryWarnings::default());
+        let stream = PartitionScanStream::new(
+            failing_after(0),
+            PartitionId::from(2),
+            Some(Arc::clone(&warnings)),
+        );
+
+        let items = block_on(stream.collect::<Vec<_>>());
+
+        // the failure is swallowed: this partition simply contributes no rows
+        assert!(
+            items.iter().all(Result::is_ok),
+            "the error should not have propagated"
+        );
+        assert!(items.is_empty());
+
+        let collected = warnings.collect();
+        assert_eq!(1, collected.len());
+        assert_eq!("partition 2", collected[0].origin.to_string());
+    }
+
+    /// The invariant the whole design rests on: tolerating a partition that already emitted
+    /// rows would return an arbitrary truncated subset of it, which no warning can describe.
+    #[test]
+    fn a_partition_that_already_emitted_rows_fails_the_query() {
+        let warnings = Arc::new(QueryWarnings::default());
+        let stream = PartitionScanStream::new(
+            failing_after(1),
+            PartitionId::from(2),
+            Some(Arc::clone(&warnings)),
+        );
+
+        let items = block_on(stream.collect::<Vec<_>>());
+
+        assert_eq!(2, items.len());
+        assert!(items[0].is_ok());
+        assert!(items[1].is_err(), "the error must propagate");
+        assert!(
+            warnings.collect().is_empty(),
+            "a truncated partition must not be recorded as a tolerated skip"
+        );
+    }
+
+    #[test]
+    fn without_a_sink_the_error_propagates() {
+        // Nowhere to report the skip, so degrading silently is not an option.
+        let stream = PartitionScanStream::new(failing_after(0), PartitionId::from(2), None);
+
+        let items = block_on(stream.collect::<Vec<_>>());
+
+        assert_eq!(1, items.len());
+        assert!(items[0].is_err());
     }
 }

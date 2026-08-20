@@ -31,6 +31,7 @@ mod partition_replica_set;
 mod partition_state;
 mod partition_store_scanner;
 mod promise;
+pub mod query_warnings;
 mod rules;
 mod scanner_task;
 mod scheduler_status;

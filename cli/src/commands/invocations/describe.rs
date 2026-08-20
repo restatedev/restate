@@ -13,6 +13,7 @@ use cling::prelude::*;
 use comfy_table::Table;
 use dialoguer::console::style;
 use indoc::indoc;
+use itertools::Itertools;
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_rough;
@@ -43,6 +44,18 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let sql_client = clients::DataFusionHttpClient::new(env).await?;
 
     let Some(inv) = get_invocation(&sql_client, &opts.invocation_id).await? else {
+        // An empty result only means "does not exist" if every partition was actually
+        // searched. If one was skipped, the invocation may well live there.
+        let warnings = sql_client.collected_warnings();
+        if !warnings.is_empty() {
+            bail!(
+                "Cannot tell whether invocation {} exists: {} could not be searched ({}). \
+                 Retry once the partition is available again.",
+                opts.invocation_id,
+                warnings.iter().map(|w| w.origin.as_str()).join(", "),
+                warnings.iter().map(|w| w.message.as_str()).join("; "),
+            );
+        }
         bail!("Invocation {} not found!", opts.invocation_id);
     };
 

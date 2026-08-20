@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
@@ -45,7 +46,7 @@ use super::context::QueryContext;
 use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
 use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
-    PartitionLocation, PartitionLocator, RemoteScannerManager,
+    PartitionLocation, PartitionLocator, PartitionUnavailable, RemoteScannerManager,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -150,14 +151,20 @@ impl DeploymentResolver for MockSchemas {
 }
 
 #[derive(Clone, Debug)]
-struct MockPartitionSelector;
+struct MockPartitionSelector(Arc<Vec<(PartitionId, Partition)>>);
+
+impl Default for MockPartitionSelector {
+    /// The single full-range partition that [`MockQueryEngine`] opens a store for.
+    fn default() -> Self {
+        let id = PartitionId::MIN;
+        Self(Arc::new(vec![(id, Partition::new(id, KeyRange::FULL))]))
+    }
+}
 
 #[async_trait]
 impl SelectPartitions for MockPartitionSelector {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
-        let id = PartitionId::MIN;
-        let partition = Partition::new(id, KeyRange::FULL);
-        Ok(vec![(id, partition)])
+        Ok(self.0.as_ref().clone())
     }
 }
 
@@ -178,13 +185,45 @@ impl RemoteScannerService for NoopSvc {
     }
 }
 
-struct AlwaysLocalPartitionLocator;
+/// Reports every partition as local except those explicitly marked unroutable, which fail
+/// exactly as `MetadataAwarePartitionLocator` does for a partition with no leader and no
+/// alive replica.
+///
+/// Partitions in `unroutable_after_first_lookup` answer the plan-time availability check
+/// and then fail, reproducing a partition that loses its last replica between planning and
+/// execution.
+#[derive(Default)]
+struct UnroutablePartitionLocator {
+    unroutable: HashSet<PartitionId>,
+    unroutable_after_first_lookup: HashSet<PartitionId>,
+    lookups: Mutex<HashMap<PartitionId, usize>>,
+}
 
-impl PartitionLocator for AlwaysLocalPartitionLocator {
+impl PartitionLocator for UnroutablePartitionLocator {
     fn get_partition_target_node(
         &self,
-        _partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation> {
+        partition_id: PartitionId,
+    ) -> Result<PartitionLocation, PartitionUnavailable> {
+        let unavailable = || {
+            Err(PartitionUnavailable {
+                partition_id,
+                reason: "no known leader and no alive node in its replica-set".into(),
+            })
+        };
+
+        if self.unroutable.contains(&partition_id) {
+            return unavailable();
+        }
+
+        if self.unroutable_after_first_lookup.contains(&partition_id) {
+            let mut lookups = self.lookups.lock().expect("lock is never poisoned");
+            let seen = lookups.entry(partition_id).or_default();
+            *seen += 1;
+            if *seen > 1 {
+                return unavailable();
+            }
+        }
+
         Ok(PartitionLocation::Local)
     }
 }
@@ -203,6 +242,30 @@ impl MockQueryEngine {
         + Clone
         + 'static,
     ) -> Self {
+        Self::create_inner(
+            status,
+            schemas,
+            MockPartitionSelector::default(),
+            UnroutablePartitionLocator::default(),
+        )
+        .await
+    }
+
+    async fn create_inner(
+        status: impl PartitionLeaderStatusHandle<
+            SchedulerStatus = SchedulerStatusEntry,
+            UserLimitCounter = UserLimitCounterEntry,
+        >,
+        schemas: impl DeploymentResolver
+        + ServiceMetadataResolver
+        + Send
+        + Sync
+        + Debug
+        + Clone
+        + 'static,
+        partition_selector: MockPartitionSelector,
+        locator: UnroutablePartitionLocator,
+    ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true)
@@ -213,21 +276,20 @@ impl MockQueryEngine {
             .await
             .unwrap();
 
-        // Matches MockPartitionSelector's single partition
         Self(
             manager.clone(),
             partition_store,
             QueryContext::with_user_tables(
                 &QueryEngineOptions::default(),
-                MockPartitionSelector,
+                partition_selector,
                 manager,
                 Some(status),
                 Live::from_value(schemas),
                 RemoteScannerManager::new(
                     Arc::new(NoopSvc),
-                    Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
-                    // The mock locator always returns `Local`, so the manager
-                    // never invokes `allocate_scanner_id` and never reads
+                    Arc::new(locator) as Arc<dyn PartitionLocator>,
+                    // The mock locator only ever returns `Local` or an error, so the
+                    // manager never invokes `allocate_scanner_id` and never reads
                     // `my_node_id`. A blank Metadata is sufficient here.
                     restate_core::MetadataBuilder::default().to_metadata(),
                 ),
@@ -241,6 +303,62 @@ impl MockQueryEngine {
 
     pub async fn create() -> Self {
         Self::create_with(MockStatusHandle::default(), MockSchemas::default()).await
+    }
+
+    /// An engine whose partition table holds `PartitionId::MIN` — the only one with a real
+    /// store — plus `extra_partitions`. Ids listed in `unroutable` fail routing; the rest
+    /// route locally but have no store, which is the other way a partition scan can fail.
+    pub async fn create_with_partitions(
+        extra_partitions: impl IntoIterator<Item = PartitionId>,
+        unroutable: impl IntoIterator<Item = PartitionId>,
+    ) -> Self {
+        Self::create_with_locator(
+            extra_partitions,
+            UnroutablePartitionLocator {
+                unroutable: unroutable.into_iter().collect(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    /// Like [`Self::create_with_partitions`], but the listed partitions pass the plan-time
+    /// availability check and only fail when the scan is actually opened.
+    pub async fn create_with_partitions_lost_after_planning(
+        extra_partitions: impl IntoIterator<Item = PartitionId>,
+        lost: impl IntoIterator<Item = PartitionId>,
+    ) -> Self {
+        Self::create_with_locator(
+            extra_partitions,
+            UnroutablePartitionLocator {
+                unroutable_after_first_lookup: lost.into_iter().collect(),
+                ..Default::default()
+            },
+        )
+        .await
+    }
+
+    async fn create_with_locator(
+        extra_partitions: impl IntoIterator<Item = PartitionId>,
+        locator: UnroutablePartitionLocator,
+    ) -> Self {
+        let mut partitions = vec![(
+            PartitionId::MIN,
+            Partition::new(PartitionId::MIN, KeyRange::FULL),
+        )];
+        partitions.extend(
+            extra_partitions
+                .into_iter()
+                .map(|id| (id, Partition::new(id, KeyRange::FULL))),
+        );
+
+        Self::create_inner(
+            MockStatusHandle::default(),
+            MockSchemas::default(),
+            MockPartitionSelector(Arc::new(partitions)),
+            locator,
+        )
+        .await
     }
 
     pub fn partition_store(&mut self) -> &mut PartitionStore {

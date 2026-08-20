@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use bytes::{Bytes, BytesMut};
@@ -38,7 +39,7 @@ use restate_core::protobuf::cluster_ctrl_svc::{
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::WriteError;
 use restate_storage_query_datafusion::context::{QueryContext, QueryError};
-use restate_storage_query_datafusion::node_fan_out::NodeWarnings;
+use restate_storage_query_datafusion::query_warnings::QueryWarnings;
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
@@ -469,11 +470,12 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .await
             .map_err(datafusion_query_error_to_status)?;
 
-        let node_warnings = query_result.node_warnings;
+        let warnings = Arc::clone(query_result.warnings());
 
         let data_stream = WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
             query_result.stream,
             request.query,
+            (),
         )
         .map_err(datafusion_error_to_status)?
         .map(|item| {
@@ -488,7 +490,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         // response message, avoiding an extra trailing empty-data message.
         let stream = QueryWarningStream {
             inner: data_stream.boxed(),
-            node_warnings,
+            warnings,
             last_response: None,
             done: false,
         };
@@ -628,7 +630,7 @@ fn serialize_value<T: StorageEncode>(value: &T) -> Bytes {
 /// to that final response before yielding it.
 struct QueryWarningStream {
     inner: BoxStream<'static, Result<QueryResponse, Status>>,
-    node_warnings: Vec<NodeWarnings>,
+    warnings: Arc<QueryWarnings>,
     last_response: Option<Result<QueryResponse, Status>>,
     done: bool,
 }
@@ -648,7 +650,7 @@ impl Stream for QueryWarningStream {
                     self.done = true;
                     // Inner stream ended. Yield the buffered last response
                     // with warnings attached, or a warnings-only response.
-                    let warnings = drain_node_warnings(&self.node_warnings);
+                    let warnings = query_warnings(&self.warnings);
                     return match self.last_response.take() {
                         Some(Ok(mut resp)) => {
                             resp.warnings = warnings;
@@ -678,15 +680,18 @@ impl Stream for QueryWarningStream {
     }
 }
 
-fn drain_node_warnings(node_warnings: &[NodeWarnings]) -> Vec<QueryWarning> {
-    let mut out = Vec::new();
-    for nw in node_warnings {
-        out.extend(nw.lock().drain(..).map(|w| QueryWarning {
-            node_id: w.node_id,
-            message: w.message,
-        }));
-    }
-    out
+fn query_warnings(warnings: &QueryWarnings) -> Vec<QueryWarning> {
+    warnings
+        .collect()
+        .into_iter()
+        // `node_id` carries the origin, which is a node id (`N1`) for the node-scoped
+        // tables this endpoint serves, or `partition <id>` should a partition-backed table
+        // ever be registered on the cluster query context.
+        .map(|warning| QueryWarning {
+            node_id: warning.origin.to_string(),
+            message: warning.message,
+        })
+        .collect()
 }
 
 fn datafusion_query_error_to_status(err: QueryError) -> Status {

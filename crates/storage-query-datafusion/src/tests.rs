@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
 use datafusion::arrow::array::{
-    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, TimestampMillisecondArray,
-    UInt32Array, UInt64Array,
+    ArrayRef, DurationMillisecondArray, Int64Array, LargeStringArray, ListArray,
+    TimestampMillisecondArray, UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -31,7 +32,9 @@ use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, ServiceId};
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionId, PartitionKey, ServiceId,
+};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
@@ -476,6 +479,184 @@ async fn query_sys_invocation_status_completed() {
                 }
             ),
         )
+    );
+}
+
+/// A partition that cannot be routed anywhere is dropped from the query instead of failing
+/// it, and is reported so the caller can tell the result is incomplete.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unroutable_partition_is_skipped_with_a_warning() {
+    let unroutable = PartitionId::from(2);
+    let mut engine = MockQueryEngine::create_with_partitions([unroutable], [unroutable]).await;
+
+    let completion_retention = Duration::from_secs(100);
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &InvocationId::from_parts(0, InvocationUuid::from_u128(1)),
+        &InvocationStatus::Completed(CompletedInvocation {
+            invocation_target: InvocationTarget::mock_service(),
+            completion_retention_duration: completion_retention,
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    // An aggregate, so this also proves the warning sink survives the intervening
+    // aggregate/coalesce plan nodes rather than only reaching a bare scan.
+    let result = engine
+        .execute("SELECT MAX(completion_retention) AS max_retention FROM sys_invocation_status")
+        .await
+        .unwrap();
+    let warnings = Arc::clone(result.warnings());
+    let records = result
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    // the reachable partition still answers
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "max_retention" => DurationMillisecondArray: eq(completion_retention.as_millis() as i64),
+            }
+        ))
+    );
+
+    let collected = warnings.collect();
+    assert_eq!(1, collected.len());
+    assert_eq!("partition 2", collected[0].origin.to_string());
+    assert!(
+        collected[0].message.contains("currently unavailable"),
+        "unexpected warning message: {}",
+        collected[0].message
+    );
+}
+
+/// The hazard of tolerating a skipped partition, written down: `count(*)` still returns a
+/// plausible number, and only the warnings reveal that it is a lower bound.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn count_over_a_skipped_partition_is_a_lower_bound() {
+    let unroutable = PartitionId::from(2);
+    let mut engine = MockQueryEngine::create_with_partitions([unroutable], [unroutable]).await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &InvocationId::from_parts(0, InvocationUuid::from_u128(1)),
+        &InvocationStatus::Completed(CompletedInvocation {
+            invocation_target: InvocationTarget::mock_service(),
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let result = engine
+        .execute("SELECT COUNT(*) AS cnt FROM sys_invocation_status")
+        .await
+        .unwrap();
+    let warnings = Arc::clone(result.warnings());
+    let records = result
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(records, all!(row!(0, { "cnt" => Int64Array: eq(1) })));
+    assert_eq!(1, warnings.collect().len());
+}
+
+/// A partition that survives the plan-time check and only loses its last replica once the
+/// scan is opened must also be skipped. This pins the execute-time branch, and with it the
+/// fact that the typed error is still recoverable after being wrapped by `anyhow`.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn partition_lost_after_planning_is_skipped_with_a_warning() {
+    let lost = PartitionId::from(2);
+    let mut engine =
+        MockQueryEngine::create_with_partitions_lost_after_planning([lost], [lost]).await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &InvocationId::from_parts(0, InvocationUuid::from_u128(1)),
+        &InvocationStatus::Completed(CompletedInvocation {
+            invocation_target: InvocationTarget::mock_service(),
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let result = engine
+        .execute("SELECT COUNT(*) AS cnt FROM sys_invocation_status")
+        .await
+        .unwrap();
+    let warnings = Arc::clone(result.warnings());
+    let records = result
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(records, all!(row!(0, { "cnt" => Int64Array: eq(1) })));
+
+    let collected = warnings.collect();
+    assert_eq!(1, collected.len());
+    assert_eq!("partition 2", collected[0].origin.to_string());
+}
+
+/// A partition that routes here but whose store is closed — what disabling a partition
+/// actually leaves behind — is skipped rather than failing the query. This is the regression
+/// test for `select * from sys_invocation_status` returning a 500 with
+/// "partition N doesn't exist on this node".
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storeless_partition_is_skipped_with_a_warning() {
+    // routable (not listed as unroutable) but no store was ever opened for it
+    let storeless = PartitionId::from(2);
+    let mut engine = MockQueryEngine::create_with_partitions([storeless], []).await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &InvocationId::from_parts(0, InvocationUuid::from_u128(1)),
+        &InvocationStatus::Completed(CompletedInvocation {
+            invocation_target: InvocationTarget::mock_service(),
+            ..CompletedInvocation::mock_neo()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let result = engine
+        .execute("SELECT COUNT(*) AS cnt FROM sys_invocation_status")
+        .await
+        .unwrap();
+    let warnings = Arc::clone(result.warnings());
+    let records = result
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    // the partition with an open store still answers
+    assert_that!(records, all!(row!(0, { "cnt" => Int64Array: eq(1) })));
+
+    let collected = warnings.collect();
+    assert_eq!(1, collected.len());
+    assert_eq!("partition 2", collected[0].origin.to_string());
+    assert!(
+        collected[0].message.contains("no partition store is open"),
+        "unexpected warning message: {}",
+        collected[0].message
     );
 }
 
