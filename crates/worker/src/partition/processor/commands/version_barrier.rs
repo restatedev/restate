@@ -151,6 +151,10 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                                 | DetailedRunMode::Candidate
                         );
                         let config = self.node_ctx.config.live_load();
+                        let skip_completed = config
+                            .common
+                            .experimental
+                            .is_vqueues_migration_skip_completed_enabled();
                         let partition_db = &self.partition_db;
                         let mut ctx = MigrationContext::new(
                             config,
@@ -163,6 +167,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                             &mut ctx,
                             self.processor.vqueues_mut(),
                             UniqueTimestamp::from_unix_millis_unchecked(created_at.into()),
+                            skip_completed,
                         )
                         .await?;
                     }
