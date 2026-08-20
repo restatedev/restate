@@ -13,6 +13,7 @@ use std::time::Instant;
 use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
+use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
@@ -25,6 +26,7 @@ use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
+use crate::remote_query_scanner_manager::PartitionUnavailable;
 use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
@@ -138,6 +140,7 @@ where
     }
 }
 
+#[async_trait]
 impl<S, RB> ScanPartition for LocalPartitionsScanner<S>
 where
     S: ScanLocalPartition<Builder = RB>,
@@ -162,6 +165,26 @@ where
             limit,
             elapsed_compute,
         )
+    }
+
+    /// A partition whose store is not open on this node cannot be scanned. This is a normal
+    /// operational state — the store is closed while a partition is being transferred, after
+    /// `restatectl partition drop-store`, and whenever a partition processor stops — so it is
+    /// reported here rather than being discovered as a stream failure once the query runs.
+    async fn check_available(&self, partition_id: PartitionId) -> Result<(), PartitionUnavailable> {
+        if self
+            .partition_store_manager
+            .get_local_partition_if_open(partition_id)
+            .await
+            .is_some()
+        {
+            return Ok(());
+        }
+
+        Err(PartitionUnavailable::new(
+            partition_id,
+            "no partition store is open on this node",
+        ))
     }
 }
 

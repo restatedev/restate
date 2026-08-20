@@ -23,8 +23,6 @@
 use std::fmt::{self, Debug, Display, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
-
-use parking_lot::Mutex;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
@@ -48,22 +46,10 @@ use restate_types::nodes_config::Role;
 use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, PlainNodeId};
 
+use crate::query_warnings::{QueryWarnings, WarningOrigin};
 use crate::remote_query_scanner_client::remote_scan_as_datafusion_stream;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{MeteredStream, ProjectedColumns, Scan};
-
-/// A warning collected from a node that failed during query execution.
-#[derive(Debug, Clone)]
-pub struct NodeWarning {
-    pub node_id: String,
-    pub message: String,
-}
-
-/// Shared collection of per-node warnings accumulated during fan-out execution.
-///
-/// Each partition (node) stream that encounters an error will push a warning
-/// here instead of propagating the error through DataFusion.
-pub type NodeWarnings = Arc<Mutex<Vec<NodeWarning>>>;
 
 /// Determines the set of target nodes for a fan-out query.
 pub(crate) trait NodeLocator: Send + Sync + Debug + 'static {
@@ -317,10 +303,9 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
 
 /// Execution plan that scans multiple nodes in parallel.
 ///
-/// Each logical partition corresponds to one target node. When a node is
-/// unreachable or returns an error, the error is captured as a [`NodeWarning`]
-/// instead of failing the entire query. Callers can inspect the accumulated
-/// warnings via [`NodeFanOutExecutionPlan::node_warnings()`].
+/// Each logical partition corresponds to one target node. When a node is unreachable or
+/// returns an error, the error is recorded in the query's [`QueryWarnings`] instead of
+/// failing the entire query, and that node's stream simply ends.
 #[derive(Debug, Clone)]
 pub(crate) struct NodeFanOutExecutionPlan {
     projected_schema: SchemaRef,
@@ -333,7 +318,6 @@ pub(crate) struct NodeFanOutExecutionPlan {
     plan_properties: Arc<PlanProperties>,
     statistics: Arc<Statistics>,
     metrics: ExecutionPlanMetricsSet,
-    node_warnings: NodeWarnings,
 }
 
 impl NodeFanOutExecutionPlan {
@@ -369,14 +353,7 @@ impl NodeFanOutExecutionPlan {
             plan_properties: Arc::new(plan_properties),
             statistics: Arc::new(statistics),
             metrics: ExecutionPlanMetricsSet::new(),
-            node_warnings: Arc::new(Mutex::new(Vec::new())),
         }
-    }
-
-    /// Returns the shared warnings collector. The gRPC layer uses this to
-    /// attach per-node errors to the final [`QueryResponse`].
-    pub fn node_warnings(&self) -> &NodeWarnings {
-        &self.node_warnings
     }
 }
 
@@ -424,7 +401,6 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
 
         let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
         let batch_size = context.session_config().batch_size();
-        let node_label = target.plain_node_id.to_string();
 
         let inner: SendableRecordBatchStream = if target.is_local
             && let Some(local_scanner) = &self.local_scanner
@@ -472,11 +448,18 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
             )
         };
 
-        Ok(Box::pin(ErrorCatchingStream::new(
-            inner,
-            node_label,
-            self.node_warnings.clone(),
-        )))
+        // Without a sink there is nowhere to report an unreachable node, so the error must
+        // propagate rather than silently become missing rows.
+        Ok(
+            match context.session_config().get_extension::<QueryWarnings>() {
+                Some(warnings) => Box::pin(ErrorCatchingStream::new(
+                    inner,
+                    target.plain_node_id,
+                    warnings,
+                )),
+                None => inner,
+            },
+        )
     }
 
     fn metrics(&self) -> Option<MetricsSet> {
@@ -541,20 +524,24 @@ impl Display for NodeList<'_> {
 }
 
 /// Stream adapter that catches errors from a per-node [`SendableRecordBatchStream`],
-/// records them as [`NodeWarning`]s, and terminates the individual stream gracefully
-/// instead of propagating the error through DataFusion.
+/// records them in the query's [`QueryWarnings`], and terminates the individual stream
+/// gracefully instead of propagating the error through DataFusion.
 struct ErrorCatchingStream {
     inner: SendableRecordBatchStream,
-    node_label: String,
-    warnings: NodeWarnings,
+    plain_node_id: PlainNodeId,
+    warnings: Arc<QueryWarnings>,
     done: bool,
 }
 
 impl ErrorCatchingStream {
-    fn new(inner: SendableRecordBatchStream, node_label: String, warnings: NodeWarnings) -> Self {
+    fn new(
+        inner: SendableRecordBatchStream,
+        plain_node_id: PlainNodeId,
+        warnings: Arc<QueryWarnings>,
+    ) -> Self {
         Self {
             inner,
-            node_label,
+            plain_node_id,
             warnings,
             done: false,
         }
@@ -572,10 +559,8 @@ impl Stream for ErrorCatchingStream {
         match self.inner.poll_next_unpin(cx) {
             Poll::Ready(Some(Err(err))) => {
                 self.done = true;
-                self.warnings.lock().push(NodeWarning {
-                    node_id: self.node_label.clone(),
-                    message: err.to_string(),
-                });
+                self.warnings
+                    .record(WarningOrigin::Node(self.plain_node_id), err.to_string());
                 // Terminate this partition's stream gracefully
                 Poll::Ready(None)
             }

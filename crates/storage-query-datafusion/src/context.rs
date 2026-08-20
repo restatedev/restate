@@ -23,8 +23,8 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::physical_plan::{SendableRecordBatchStream, execute_stream};
+use datafusion::prelude::{DataFrame, SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
 
 use restate_core::{Metadata, TaskCenter};
@@ -46,7 +46,7 @@ use restate_worker_api::invoker::StatusHandle;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::empty_invoker_status_handle::EmptyInvokerStatusHandle;
-use crate::node_fan_out::NodeWarnings;
+use crate::query_warnings::QueryWarnings;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
@@ -645,7 +645,10 @@ impl QueryContext {
 
         let sql_options = SQLOptions::new()
             .with_allow_ddl(false)
-            .with_allow_dml(false);
+            .with_allow_dml(false)
+            // `execute` plans against a per-query `SessionState` clone, so a `SET` would
+            // silently mutate the shared session for every subsequent query on this node.
+            .with_allow_statements(false);
 
         Ok(Self {
             sql_options,
@@ -659,24 +662,27 @@ impl QueryContext {
             limiter.try_consume_one()?;
         }
 
-        let state = self.datafusion_context.state();
+        // Every scan in this query reports skipped nodes/partitions into this sink. It is
+        // installed on the session config, which a `TaskContext` inherits, so the same
+        // instance is reachable while the query is planned and while it executes.
+        let warnings = Arc::new(QueryWarnings::default());
+        let mut state = self.datafusion_context.state();
+        state.config_mut().set_extension(Arc::clone(&warnings));
+
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let plan = state.statement_to_plan(statement).await?;
         self.sql_options.verify_plan(&plan)?;
-        let df = self.datafusion_context.execute_logical_plan(plan).await?;
+
+        // Deliberately not `SessionContext::execute_logical_plan`: the query has to run
+        // against the state carrying the sink above. Safe because `sql_options` rejects
+        // DDL, DML and statements, which is all that method adds.
+        let df = DataFrame::new(state, plan);
 
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df.create_physical_plan().await?;
 
-        // Collect NodeWarnings handles from any NodeFanOutExecutionPlan nodes
-        // in the plan tree before execution begins.
-        let node_warnings = collect_node_warnings(&physical_plan);
-
         let stream = execute_stream(physical_plan, task_ctx)?;
-        Ok(QueryResult {
-            stream,
-            node_warnings,
-        })
+        Ok(QueryResult { stream, warnings })
     }
 
     pub fn task_ctx(&self) -> Arc<TaskContext> {
@@ -690,29 +696,19 @@ impl AsRef<SessionContext> for QueryContext {
     }
 }
 
-/// Result of a SQL query execution, containing the record batch stream
-/// and any per-node warning collectors from fan-out execution plans.
+/// Result of a SQL query execution: the record batch stream, plus the scans the query
+/// skipped rather than failing on.
 pub struct QueryResult {
     pub stream: SendableRecordBatchStream,
-    pub node_warnings: Vec<NodeWarnings>,
+    warnings: Arc<QueryWarnings>,
 }
 
-/// Walks the physical plan tree and collects [`NodeWarnings`] handles from
-/// any [`NodeFanOutExecutionPlan`] nodes found.
-fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
-    use crate::node_fan_out::NodeFanOutExecutionPlan;
-
-    let mut warnings = Vec::new();
-    let mut stack = vec![Arc::clone(plan)];
-    while let Some(node) = stack.pop() {
-        if let Some(fan_out) = node.downcast_ref::<NodeFanOutExecutionPlan>() {
-            warnings.push(fan_out.node_warnings().clone());
-        }
-        for child in node.children() {
-            stack.push(Arc::clone(child));
-        }
+impl QueryResult {
+    /// The nodes and partitions this query skipped. Only meaningful once [`Self::stream`]
+    /// has been consumed; a non-empty result means the rows are incomplete.
+    pub fn warnings(&self) -> &Arc<QueryWarnings> {
+        &self.warnings
     }
-    warnings
 }
 
 /// Newtype to add debug implementation which is required for [`SelectPartitions`].

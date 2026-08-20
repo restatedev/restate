@@ -103,6 +103,24 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql) -> Result<()> {
         }
     }
 
+    // stderr, so that --json/--jsonl output stays machine-parseable.
+    if !resp.warnings.is_empty() {
+        c_eprintln!(
+            "{}",
+            Styled(
+                Style::Warn,
+                "WARNING (partial results): rows are missing, so aggregates are lower bounds and a lookup may find nothing for a record that exists."
+            )
+        );
+        for warning in &resp.warnings {
+            c_eprintln!(
+                "  {}: {}",
+                Styled(Style::Warn, &warning.origin),
+                Styled(Style::Warn, &warning.message)
+            );
+        }
+    }
+
     c_eprintln!(
         "{} rows. Query took {:?}",
         if sql_opts.json || sql_opts.jsonl {

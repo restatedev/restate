@@ -23,8 +23,11 @@ pub trait RecordBatchWriter
 where
     Self: Sized,
 {
+    /// Extra context the writer needs beyond the schema; `()` when it needs none.
+    type Context;
+
     // Create the writer
-    fn new(schema: &Schema) -> Result<Self, DataFusionError>;
+    fn new(schema: &Schema, context: Self::Context) -> Result<Self, DataFusionError>;
 
     /// Write a single batch to the writer.
     fn write(&mut self, batch: &RecordBatch) -> Result<Bytes, DataFusionError>;
@@ -34,7 +37,9 @@ where
 }
 
 impl RecordBatchWriter for StreamWriter<Vec<u8>> {
-    fn new(schema: &Schema) -> Result<Self, DataFusionError> {
+    type Context = ();
+
+    fn new(schema: &Schema, _context: Self::Context) -> Result<Self, DataFusionError> {
         Ok(Self::try_new(Vec::new(), schema)?)
     }
 
@@ -64,10 +69,11 @@ impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     pub fn new(
         record_batch_stream: SendableRecordBatchStream,
         query: String,
+        context: W::Context,
     ) -> Result<Self, DataFusionError> {
         Ok(WriteRecordBatchStream {
             done: false,
-            stream_writer: W::new(&record_batch_stream.schema())?,
+            stream_writer: W::new(&record_batch_stream.schema(), context)?,
             record_batch_stream,
             query,
         })

@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use async_trait::async_trait;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
@@ -78,11 +79,35 @@ pub enum PartitionLocation {
     Remote { node_id: NodeId },
 }
 
+/// A partition cannot be scanned right now — it routes nowhere, or its store is not open on
+/// the node that would serve it.
+///
+/// Reported by [`ScanPartition::check_available`] while a query is planned, so the partition
+/// is dropped from the plan and recorded as a warning instead of failing the query. It is a
+/// distinct type so that a *synchronous* scan failure which is not this — notably a local
+/// scanner missing from the registry, which is a wiring bug rather than an operational state
+/// — keeps failing the query loudly.
+#[derive(Debug, thiserror::Error)]
+#[error("partition {partition_id} is currently unavailable: {reason}")]
+pub struct PartitionUnavailable {
+    pub partition_id: PartitionId,
+    pub reason: Cow<'static, str>,
+}
+
+impl PartitionUnavailable {
+    pub(crate) fn new(partition_id: PartitionId, reason: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            partition_id,
+            reason: reason.into(),
+        }
+    }
+}
+
 pub trait PartitionLocator: Send + Sync + 'static {
     fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation>;
+    ) -> Result<PartitionLocation, PartitionUnavailable>;
 }
 
 #[derive(Clone)]
@@ -105,12 +130,13 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
     fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation> {
+    ) -> Result<PartitionLocation, PartitionUnavailable> {
         let my_node_id = self.metadata.my_node_id();
         match self.partition_routing.get_node_by_partition(partition_id) {
-            None => {
-                bail!("node lookup for partition {} failed", partition_id)
-            }
+            None => Err(PartitionUnavailable::new(
+                partition_id,
+                "no known leader and no alive node in its replica-set",
+            )),
             Some(node_id) if node_id == my_node_id => Ok(PartitionLocation::Local),
             Some(node_id) => Ok(PartitionLocation::Remote {
                 node_id: NodeId::from(node_id),
@@ -126,7 +152,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
     fn get_partition_target_node(
         &self,
         _partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation> {
+    ) -> Result<PartitionLocation, PartitionUnavailable> {
         Ok(PartitionLocation::Local)
     }
 }
@@ -224,7 +250,7 @@ impl RemoteScannerManager {
     pub fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation> {
+    ) -> Result<PartitionLocation, PartitionUnavailable> {
         self.partition_locator
             .get_partition_target_node(partition_id)
     }
@@ -257,6 +283,7 @@ impl RemotePartitionsScanner {
 #[derive(Debug)]
 struct ScanToScanPartitionAdapter(Arc<dyn Scan>);
 
+#[async_trait]
 impl ScanPartition for ScanToScanPartitionAdapter {
     fn scan_partition(
         &self,
@@ -273,6 +300,7 @@ impl ScanPartition for ScanToScanPartitionAdapter {
     }
 }
 
+#[async_trait]
 impl ScanPartition for RemotePartitionsScanner {
     fn scan_partition(
         &self,
@@ -314,6 +342,26 @@ impl ScanPartition for RemotePartitionsScanner {
                     limit,
                 ))
             }
+        }
+    }
+
+    async fn check_available(&self, partition_id: PartitionId) -> Result<(), PartitionUnavailable> {
+        match self.manager.get_partition_target_node(partition_id)? {
+            // The partition routes to this node, so we can also ask whether its store is
+            // actually open here — the common way a partition becomes unscannable while
+            // still being routable.
+            PartitionLocation::Local => {
+                match self.manager.local_partition_scanner(&self.table_name) {
+                    Some(scanner) => scanner.check_available(partition_id).await,
+                    // No scanner registered for this table is a wiring bug rather than an
+                    // operational state, so don't report it as an unavailable partition here;
+                    // let the scan fail loudly instead.
+                    None => Ok(()),
+                }
+            }
+            // Whether a remote node still has the partition open can only be discovered by
+            // scanning it; that failure is caught by the per-partition stream guard.
+            PartitionLocation::Remote { .. } => Ok(()),
         }
     }
 }

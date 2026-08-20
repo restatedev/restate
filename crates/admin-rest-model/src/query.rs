@@ -11,6 +11,16 @@
 use serde::Deserialize;
 use serde_with::serde_as;
 
+/// Response header carrying a JSON array of `{"origin": .., "message": ..}` naming the
+/// scans the server skipped while answering a query, e.g.
+/// `[{"origin":"partition 22","message":"partition 22 is currently unavailable: ..."}]`.
+///
+/// Present only when something was skipped, in which case the rows are **incomplete**:
+/// aggregates are lower bounds and a lookup may return nothing for a record that exists.
+/// JSON responses carry the same list under the body's `warnings` key, which — unlike this
+/// header — also covers partitions that became unavailable after the response started.
+pub const QUERY_WARNINGS_HEADER: &str = "x-restate-query-warnings";
+
 #[serde_as]
 #[derive(Debug, Deserialize)]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]

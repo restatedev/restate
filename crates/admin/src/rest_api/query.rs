@@ -29,8 +29,9 @@ use http_body_util::StreamBody;
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use restate_admin_rest_model::query::QueryRequest;
+use restate_admin_rest_model::query::{QUERY_WARNINGS_HEADER, QueryRequest};
 use restate_core::network::TransportConnect;
+use restate_storage_query_datafusion::query_warnings::QueryWarnings;
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
@@ -133,18 +134,24 @@ where
     };
 
     let query_result = query_context.execute(&payload.query).await?;
+    let warnings = Arc::clone(query_result.warnings());
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, payload.query)?
-                .map_ok(Frame::data)
-                .left_stream(),
+            WriteRecordBatchStream::<JsonWriter>::new(
+                query_result.stream,
+                payload.query,
+                Arc::clone(&warnings),
+            )?
+            .map_ok(Frame::data)
+            .left_stream(),
             "application/json",
         ),
         _ => (
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 query_result.stream,
                 payload.query,
+                (),
             )?
             .map_ok(Frame::data)
             .right_stream(),
@@ -160,11 +167,75 @@ where
         return Err(err.into());
     }
 
-    Ok(Response::builder()
-        .header(http::header::CONTENT_TYPE, content_type)
+    // Response headers are sent before the body, so this reports the partitions that were
+    // already known to be unavailable when the query was planned - which is every one of
+    // them in practice, since routing is resolved at plan time. A partition that becomes
+    // unroutable mid-query is recorded in the server log only. The JSON representation has
+    // no such limitation because it is written at the end of the body.
+    let mut response = Response::builder().header(http::header::CONTENT_TYPE, content_type);
+    if let Some(header) = warnings_header(&warnings) {
+        response = response.header(QUERY_WARNINGS_HEADER, header);
+    }
+
+    Ok(response
         .body(StreamBody::new(result_stream))
         .expect("content-type header is correct")
         .into_response())
+}
+
+/// Header values must be visible ASCII, and the full message is available in the server log
+/// and (for JSON responses) in the body, so lossily sanitizing here is acceptable.
+fn sanitize_for_header(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() || c == ' ' {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+fn warnings_json(warnings: &QueryWarnings) -> Option<serde_json::Value> {
+    let collected = warnings.collect();
+    if collected.is_empty() {
+        return None;
+    }
+
+    Some(serde_json::Value::Array(
+        collected
+            .into_iter()
+            .map(|warning| {
+                serde_json::json!({
+                    "origin": warning.origin.to_string(),
+                    "message": warning.message,
+                })
+            })
+            .collect(),
+    ))
+}
+
+fn warnings_header(warnings: &QueryWarnings) -> Option<HeaderValue> {
+    let collected = warnings.collect();
+    if collected.is_empty() {
+        return None;
+    }
+
+    let json = serde_json::Value::Array(
+        collected
+            .into_iter()
+            .map(|warning| {
+                serde_json::json!({
+                    "origin": sanitize_for_header(&warning.origin.to_string()),
+                    "message": sanitize_for_header(&warning.message),
+                })
+            })
+            .collect(),
+    );
+
+    HeaderValue::from_str(&json.to_string()).ok()
 }
 
 #[derive(Clone)]
@@ -198,10 +269,13 @@ pub(crate) struct JsonWriter {
     json_writer: datafusion::arrow::json::Writer<LockWriter, JsonArray>,
     lock_writer: LockWriter,
     finished: bool,
+    warnings: Arc<QueryWarnings>,
 }
 
 impl RecordBatchWriter for JsonWriter {
-    fn new(_schema: &Schema) -> Result<Self, DataFusionError> {
+    type Context = Arc<QueryWarnings>;
+
+    fn new(_schema: &Schema, warnings: Self::Context) -> Result<Self, DataFusionError> {
         let mut lock_writer = LockWriter::new();
         // we write out under 'rows' key so that we may add extra keys later (eg 'schema')
         lock_writer.write_all(br#"{"rows":"#)?;
@@ -209,6 +283,7 @@ impl RecordBatchWriter for JsonWriter {
             json_writer: datafusion::arrow::json::Writer::new(lock_writer.clone()),
             lock_writer,
             finished: false,
+            warnings,
         })
     }
 
@@ -222,8 +297,36 @@ impl RecordBatchWriter for JsonWriter {
             self.finished = true;
 
             self.json_writer.finish()?;
+            // Written here rather than up front because the set of skipped scans is only
+            // complete once the last batch has been produced.
+            if let Some(warnings) = warnings_json(&self.warnings) {
+                self.lock_writer.write_all(br#","warnings":"#)?;
+                self.lock_writer
+                    .write_all(warnings.to_string().as_bytes())?;
+            }
             self.lock_writer.write_all(b"}")?;
         }
         Ok(Bytes::from(self.lock_writer.take()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn header_values_are_reduced_to_visible_ascii() {
+        // header values must be visible ASCII, so anything else is replaced rather than
+        // silently producing a value `HeaderValue::from_str` would reject
+        assert_eq!("partition 22", sanitize_for_header("partition 22"));
+        assert_eq!("a?b", sanitize_for_header("a\nb"));
+        assert_eq!("q???", sanitize_for_header("q\u{00e9}\u{00e8}\t"));
+
+        let json = serde_json::json!([{
+            "origin": sanitize_for_header("partition 22"),
+            "message": sanitize_for_header("unavailable:\nno leader"),
+        }]);
+        // the encoded form must always be acceptable as a header value
+        assert!(HeaderValue::from_str(&json.to_string()).is_ok());
     }
 }

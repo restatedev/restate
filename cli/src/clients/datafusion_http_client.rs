@@ -12,6 +12,9 @@
 
 use super::errors::ApiError;
 
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
+
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClient;
 use arrow::error::ArrowError;
@@ -23,6 +26,7 @@ use arrow::{
 };
 use bytes::Buf;
 use itertools::Itertools;
+use restate_admin_rest_model::query::QUERY_WARNINGS_HEADER;
 use restate_types::SemanticRestateVersion;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -44,15 +48,29 @@ pub enum Error {
     UrlParse(#[from] url::ParseError),
 }
 
+/// A scan the server skipped while answering a query, meaning the rows are incomplete.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QueryWarning {
+    /// The node or partition that was skipped, e.g. `partition 22` or `N4`.
+    pub origin: String,
+    pub message: String,
+}
+
 /// A handy client for the datafusion HTTP service.
 #[derive(Clone)]
 pub struct DataFusionHttpClient {
     pub(crate) inner: AdminClient,
+    /// Warnings accumulated across every query this client has run, so that a command
+    /// which issues several queries can tell whether *any* of them saw incomplete data.
+    warnings: Arc<Mutex<BTreeMap<String, String>>>,
 }
 
 impl From<AdminClient> for DataFusionHttpClient {
     fn from(value: AdminClient) -> Self {
-        DataFusionHttpClient { inner: value }
+        DataFusionHttpClient {
+            inner: value,
+            warnings: Arc::default(),
+        }
     }
 }
 
@@ -60,7 +78,35 @@ impl DataFusionHttpClient {
     pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let inner = AdminClient::new(env).await?;
 
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            warnings: Arc::default(),
+        })
+    }
+
+    fn record_warnings(&self, warnings: &[QueryWarning]) {
+        let mut collected = self
+            .warnings
+            .lock()
+            .expect("warnings lock is never poisoned");
+        for warning in warnings {
+            collected.insert(warning.origin.clone(), warning.message.clone());
+        }
+    }
+
+    /// Every scan skipped by any query this client has run. Non-empty means at least one
+    /// result was incomplete: rows are missing, so counts are lower bounds and a lookup may
+    /// find nothing for a record that exists.
+    pub fn collected_warnings(&self) -> Vec<QueryWarning> {
+        self.warnings
+            .lock()
+            .expect("warnings lock is never poisoned")
+            .iter()
+            .map(|(origin, message)| QueryWarning {
+                origin: origin.clone(),
+                message: message.clone(),
+            })
+            .collect()
     }
 
     /// Prepare a request builder for a DataFusion request.
@@ -111,7 +157,10 @@ impl DataFusionHttpClient {
         // reqwest's stream feature) and stitch that with the stream reader.
         let payload = resp.bytes().await?.reader();
 
-        Ok(serde_json::from_reader::<_, JsonResponse<T>>(payload)?.rows)
+        let response = serde_json::from_reader::<_, JsonResponse<T>>(payload)?;
+        self.record_warnings(&response.warnings);
+
+        Ok(response.rows)
     }
 
     pub async fn run_arrow_query(&self, query: String) -> Result<SqlResponse, Error> {
@@ -136,6 +185,9 @@ impl DataFusionHttpClient {
             })));
         }
 
+        let warnings = parse_warnings_header(resp.headers());
+        self.record_warnings(&warnings);
+
         // We read the entire payload first in-memory to simplify the logic, however,
         // if this ever becomes a problem, we can use bytes_stream() (requires
         // reqwest's stream feature) and stitch that with the stream reader.
@@ -148,7 +200,11 @@ impl DataFusionHttpClient {
             batches.push(batch?);
         }
 
-        Ok(SqlResponse { schema, batches })
+        Ok(SqlResponse {
+            schema,
+            batches,
+            warnings,
+        })
     }
 
     pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
@@ -191,11 +247,26 @@ pub struct SqlQueryRequest {
 pub struct SqlResponse {
     pub schema: SchemaRef,
     pub batches: Vec<RecordBatch>,
+    /// Scans the server skipped for this query. Non-empty means `batches` is incomplete.
+    pub warnings: Vec<QueryWarning>,
 }
 
 #[derive(Deserialize)]
 pub struct JsonResponse<T> {
     pub rows: Vec<T>,
+    #[serde(default)]
+    pub warnings: Vec<QueryWarning>,
+}
+
+/// Reads the `x-restate-query-warnings` header. A server that does not send it, or sends
+/// something unparseable, is treated as having reported no warnings — the header is
+/// diagnostic, and failing the query over it would be worse than losing the diagnostic.
+fn parse_warnings_header(headers: &reqwest::header::HeaderMap) -> Vec<QueryWarning> {
+    headers
+        .get(QUERY_WARNINGS_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| serde_json::from_str(value).ok())
+        .unwrap_or_default()
 }
 
 // Ensure that client is Send + Sync. Compiler will fail if it's not.
@@ -203,3 +274,35 @@ const _: () = {
     const fn assert_send<T: Send + Sync>() {}
     assert_send::<DataFusionHttpClient>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{HeaderMap, HeaderValue};
+
+    fn headers(value: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(QUERY_WARNINGS_HEADER, HeaderValue::from_str(value).unwrap());
+        headers
+    }
+
+    #[test]
+    fn parses_the_warnings_header_the_server_sends() {
+        // the exact shape produced by the admin endpoint
+        let parsed = parse_warnings_header(&headers(
+            r#"[{"origin":"partition 22","message":"partition 22 is currently unavailable: no known leader"}]"#,
+        ));
+        assert_eq!(
+            parsed,
+            vec![QueryWarning {
+                origin: "partition 22".to_owned(),
+                message: "partition 22 is currently unavailable: no known leader".to_owned(),
+            }]
+        );
+
+        // an absent header is the normal, complete-result case
+        assert!(parse_warnings_header(&HeaderMap::new()).is_empty());
+        // the header is diagnostic, so garbage must not fail the query
+        assert!(parse_warnings_header(&headers("not json")).is_empty());
+    }
+}

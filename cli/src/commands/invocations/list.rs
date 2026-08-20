@@ -203,6 +203,26 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         }
     }
 
+    // The listing and its count are both understated when a partition was skipped, so say
+    // so rather than letting a short list read as the whole truth.
+    let warnings = sql_client.collected_warnings();
+    if !warnings.is_empty() {
+        c_eprintln!(
+            "{}",
+            Styled(
+                Style::Warn,
+                "WARNING (partial results): some invocations are missing because these could not be searched:"
+            )
+        );
+        for warning in &warnings {
+            c_eprintln!(
+                "  {}: {}",
+                Styled(Style::Warn, &warning.origin),
+                Styled(Style::Warn, &warning.message)
+            );
+        }
+    }
+
     c_eprintln!(
         "Showing {}/{} invocations. Query took {:?}",
         results.len(),
