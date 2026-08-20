@@ -40,10 +40,12 @@ without bound.
   revoked service-account key — Restate notices the next time an impersonated mint fails and
   rebuilds it automatically; a misconfigured *impersonation target* on an otherwise healthy source
   never triggers a rebuild.
-- Tokens may now be served up to a few minutes before their literal expiry, governed by the
-  credential library's own proactive-refresh window, rather than Restate's previous 60-second
-  skew. Restate still rejects and re-mints a token with less than 60 seconds of validity
-  remaining, so no request is handed a token that is about to expire.
+- Restate no longer parses the minted token or rejects one for having too little validity left.
+  That check was a carry-over from the old token-string cache, where a minted string could be
+  handed out up to an hour after being read; the registry's read path never serves an
+  already-expired token (it blocks on the credential's own refresh instead), so the only remaining
+  exposure is a token expiring within the single network round trip to the deployment, which Cloud
+  Run itself validates on arrival.
 
 ### Known Limitation
 

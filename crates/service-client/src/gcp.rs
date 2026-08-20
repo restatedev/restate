@@ -53,12 +53,6 @@ use parking_lot::Mutex;
 /// cancels an in-flight fetch.
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// A token with less time than this remaining is rejected rather than attached to a request. The
-/// credential itself serves a token until its literal expiry (relying on its own ~4 minute early
-/// refresh to stay ahead); this is Restate's margin of safety on top of that for the time an
-/// in-flight request needs to complete.
-const MIN_TOKEN_VALIDITY: Duration = Duration::from_secs(60);
-
 /// An actively-used credential stays cached indefinitely; an idle one (deregistered deployment)
 /// ages out after this long without a mint.
 const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
@@ -596,25 +590,16 @@ fn build_impersonated_credentials(
 enum FetchError {
     Timeout,
     Source(SourceError),
-    /// The source returned a token, but with less than [`MIN_TOKEN_VALIDITY`] remaining. Treated
-    /// as transient: the credential is not at fault (it will refresh eventually) so the entry is
-    /// never evicted for this reason.
-    ShortValidity,
 }
 
 async fn mint_from_source(
     source: &dyn IdTokenSource,
     timeout: Duration,
 ) -> Result<String, FetchError> {
-    let token = tokio::time::timeout(timeout, source.id_token())
+    tokio::time::timeout(timeout, source.id_token())
         .await
         .map_err(|_| FetchError::Timeout)?
-        .map_err(FetchError::Source)?;
-
-    match parse_jwt_exp(&token) {
-        Some(remaining) if remaining >= MIN_TOKEN_VALIDITY => Ok(token),
-        _ => Err(FetchError::ShortValidity),
-    }
+        .map_err(FetchError::Source)
 }
 
 fn to_auth_error(error: FetchError, audience: &str, impersonate: Option<&str>) -> GcpAuthError {
@@ -629,14 +614,6 @@ fn to_auth_error(error: FetchError, audience: &str, impersonate: Option<&str>) -
             audience: audience.to_owned(),
             impersonate,
             message: source_error.to_string(),
-        },
-        FetchError::ShortValidity => GcpAuthError::Mint {
-            audience: audience.to_owned(),
-            impersonate,
-            message: format!(
-                "minted token has less than {}s of validity remaining",
-                MIN_TOKEN_VALIDITY.as_secs()
-            ),
         },
     }
 }
@@ -778,31 +755,6 @@ impl Default for GcpTokenClient {
     }
 }
 
-/// Best-effort parse of a JWT's `exp` claim into a Duration-from-now. Returns None if the token is
-/// malformed or already expired. Used only for the validity guard above — the credential itself
-/// is the source of truth for when to refresh.
-fn parse_jwt_exp(token: &str) -> Option<Duration> {
-    use base64::Engine;
-
-    let payload_b64 = token.split('.').nth(1)?;
-    let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .ok()?;
-    let payload_json: serde_json::Value = serde_json::from_slice(&payload).ok()?;
-    let exp = payload_json.get("exp")?.as_u64()?;
-
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs();
-
-    if exp <= now {
-        None
-    } else {
-        Some(Duration::from_secs(exp - now))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -822,23 +774,6 @@ mod tests {
         let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(format!(r#"{{"exp":{exp}}}"#).as_bytes());
         format!("{header}.{payload}.")
-    }
-
-    #[test]
-    fn parse_jwt_exp_returns_some_for_valid_token() {
-        let token = synthesize_jwt(Duration::from_secs(3600));
-        let dur = parse_jwt_exp(&token).expect("expected Some");
-        assert!(dur > Duration::from_secs(3500));
-        assert!(dur <= Duration::from_secs(3600));
-    }
-
-    #[test]
-    fn parse_jwt_exp_returns_none_for_expired() {
-        let header = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(br#"{"alg":"none","typ":"JWT"}"#);
-        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(br#"{"exp":1}"#);
-        let token = format!("{header}.{payload}.");
-        assert!(parse_jwt_exp(&token).is_none());
     }
 
     #[test]
@@ -1421,14 +1356,6 @@ mod tests {
             matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_source)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
         );
-    }
-
-    #[tokio::test]
-    async fn validity_guard_rejects_tokens_with_short_remaining_validity() {
-        let source: Arc<dyn IdTokenSource> =
-            MockSource::new(|_| MockOutcome::Token(synthesize_jwt(Duration::from_secs(30))));
-        let outcome = mint_from_source(source.as_ref(), Duration::from_secs(1)).await;
-        assert!(matches!(outcome, Err(FetchError::ShortValidity)));
     }
 
     #[tokio::test]
