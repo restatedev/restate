@@ -143,6 +143,8 @@ pub struct ConnectionConfig {
     initial_stream_window_size: u32,
     initial_connection_window_size: u32,
     max_frame_size: u32,
+    /// Connection-level budget for H2 DATA framing overhead.
+    data_frame_budget: usize,
     keep_alive_timeout: Duration,
     keep_alive_interval: Option<Duration>,
     /// Fractional jitter added to `keep_alive_interval`, expressed as a fraction
@@ -158,6 +160,7 @@ impl Default for ConnectionConfig {
             initial_stream_window_size: 2 * 1024 * 1024,
             initial_connection_window_size: 5 * 1024 * 1024,
             max_frame_size: 16 * 1024,
+            data_frame_budget: 256 * 1024,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
             keep_alive_interval_jitter: 0.2f32,
@@ -433,6 +436,7 @@ where
                 initial_connection_window_size = shared.config.initial_connection_window_size,
                 initial_stream_window_size = shared.config.initial_stream_window_size,
                 max_frame_size = shared.config.max_frame_size,
+                data_frame_budget = shared.config.data_frame_budget,
                 "Building h2 connection"
             );
 
@@ -441,6 +445,7 @@ where
                 .initial_connection_window_size(shared.config.initial_connection_window_size)
                 .initial_window_size(shared.config.initial_stream_window_size)
                 .max_frame_size(shared.config.max_frame_size)
+                .data_frame_budget(shared.config.data_frame_budget)
                 .handshake::<_, Bytes>(stream)
                 .await
                 .inspect_err(|_| {

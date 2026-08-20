@@ -153,6 +153,7 @@ impl HttpClient {
                 .initial_stream_window_size(options.initial_stream_window_size())
                 .initial_connection_window_size(options.initial_connection_window_size())
                 .max_frame_size(options.max_frame_size())
+                .data_frame_budget(options.data_frame_budget())
                 .idle_connection_timeout(if options.http2_idle_connection_timeout.is_zero() {
                     None
                 } else {

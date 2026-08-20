@@ -68,6 +68,14 @@ pub struct PoolConfig {
     #[builder(default = 16 * 1024)]
     pub(crate) max_frame_size: u32,
 
+    /// Connection-level budget (in bytes) for H2 DATA framing overhead. Small
+    /// frames consume the budget, larger frames replenish it; exhausting it
+    /// closes the connection with `ENHANCE_YOUR_CALM`.
+    ///
+    /// Default: 256 KiB.
+    #[builder(default = 256 * 1024)]
+    pub(crate) data_frame_budget: usize,
+
     /// Maximum time to wait for an HTTP/2 PING response before declaring the
     /// connection dead and returning [`ConnectionError::KeepAliveTimeout`].
     /// Only meaningful when `keep_alive_interval` is `Some`. Defaults to 20 s.
@@ -96,6 +104,7 @@ impl Default for PoolConfig {
             initial_stream_window_size: 2 * 1024 * 1024,
             initial_connection_window_size: 5 * 1024 * 1024,
             max_frame_size: 16 * 1024,
+            data_frame_budget: 256 * 1024,
             keep_alive_interval: None,
             keep_alive_interval_jitter: 0.2,
             keep_alive_timeout: Duration::from_secs(20),
