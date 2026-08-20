@@ -546,10 +546,41 @@ where
             // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
             // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
             // not touch the local FSM mirror here.
-            if config.common.experimental.is_vqueues_enabled()
-                && !processor.fsm().features().is_vqueues_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableVqueues);
+            if config.common.experimental.is_vqueues_enabled() {
+                // The vqueues flag is true, one of the following will happen:
+                //   1. We're already on vqueues, so nothing to do.
+                //   2. We're not yet on vqueues, so we'll migrate either fully or partially depending
+                //      on the vqueues_skip_completed flag.
+                //   3. We've previously partially migrated to vqueues, but now we want to fully migrate,
+                //      so we'll trigger a full migration.
+                match (
+                    config
+                        .common
+                        .experimental
+                        .is_vqueues_migration_skip_completed_enabled(),
+                    processor.fsm().features().is_vqueues_enabled(),
+                    processor.fsm().features().is_fully_migrated_to_vqueues(),
+                ) {
+                    (_, _, true) => {
+                        // Nothing to do here, we're fully migrated to vqueues.
+                    }
+
+                    (false, _, false) => {
+                        // skip_completed=False (full migration), and we're not yet fully migrated,
+                        // so we'll trigger a full migration.
+                        feature_changes.push(PartitionFeatureChange::EnableVqueues);
+                    }
+
+                    (true, true, false) => {
+                        // skip_completed=True (partial migration), and we're already partially migrated,
+                        // nothing to do here.
+                    }
+                    (true, false, false) => {
+                        // skip_completed=True (partial migration), and we're yet on vqueues, so we'll
+                        // trigger a partial migration.
+                        feature_changes.push(PartitionFeatureChange::EnableVqueuesSkipCompleted);
+                    }
+                }
             }
 
             // Persist a unique random seed on new invocations. Needs to be opted-in because
@@ -1210,6 +1241,7 @@ mod tests {
             PersistedFeatures {
                 journal_v2: true,
                 vqueues: true,
+                vqueues_skip_completed: true,
                 unique_random_seeds: true,
             },
         );

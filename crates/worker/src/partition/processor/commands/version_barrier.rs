@@ -10,11 +10,10 @@
 
 use std::assert_matches;
 
-use restate_clock::UniqueTimestamp;
-use restate_vqueues::context::HasVQueuesMut;
-use tracing::debug;
+use tracing::{debug, info};
 
 use restate_bifrost::DataRecord;
+use restate_clock::UniqueTimestamp;
 use restate_core::cancellation_token;
 use restate_partition_store::migrations::MigrationContext;
 use restate_partition_store::{PartitionDb, PartitionStoreTransaction};
@@ -22,6 +21,8 @@ use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
 use restate_types::partitions::features::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
+use restate_vqueues::context::HasVQueuesMut;
+use restate_vqueues::migrations::MigrationResult;
 use restate_wal_protocol::control::VersionBarrierCommand;
 use restate_wal_protocol::v2::{CommandScope, Envelope};
 
@@ -142,7 +143,8 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     // and scheduled-invocation timers via the `InvocationStatus::Scheduled`
                     // source-of-truth) must be migrated to vqueue form before vqueues is
                     // enabled.
-                    PartitionFeatureChange::EnableVqueues => {
+                    PartitionFeatureChange::EnableVqueues
+                    | PartitionFeatureChange::EnableVqueuesSkipCompleted => {
                         // if we are in "Leader" mode, then something is wrong!
                         assert_matches!(
                             self.leadership.current_mode(),
@@ -151,10 +153,8 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                                 | DetailedRunMode::Candidate
                         );
                         let config = self.node_ctx.config.live_load();
-                        let skip_completed = config
-                            .common
-                            .experimental
-                            .is_vqueues_migration_skip_completed_enabled();
+                        let skip_completed =
+                            matches!(change, PartitionFeatureChange::EnableVqueuesSkipCompleted);
                         let partition_db = &self.partition_db;
                         let mut ctx = MigrationContext::new(
                             config,
@@ -163,13 +163,23 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                             cancellation_token(),
                         );
 
-                        restate_vqueues::migrations::migrate_to_vqueues(
+                        let res = restate_vqueues::migrations::migrate_to_vqueues(
                             &mut ctx,
                             self.processor.vqueues_mut(),
                             UniqueTimestamp::from_unix_millis_unchecked(created_at.into()),
                             skip_completed,
                         )
                         .await?;
+
+                        if skip_completed && matches!(res, MigrationResult::FullyMigrated) {
+                            // Our initial intention was skipping completed invocation, but the full scan
+                            // found no completed invocations. We can safely consider it a full migration.
+                            info!(
+                                partition_id = %self.processor.partition_id(),
+                                "Auto promoting the vqueue migration into a full migration as no completed invocations were found",
+                            );
+                            PartitionFeatureChange::EnableVqueues.apply_to(&mut updated);
+                        }
                     }
                     PartitionFeatureChange::EnableJournalV2 => {}
                     // Flipping unique-random-seeds on only affects invocations created after the apply
