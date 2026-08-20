@@ -160,7 +160,7 @@ impl Default for ConnectionConfig {
             initial_stream_window_size: 2 * 1024 * 1024,
             initial_connection_window_size: 5 * 1024 * 1024,
             max_frame_size: 16 * 1024,
-            data_frame_budget: 256 * 1024,
+            data_frame_budget: 1024 * 1024,
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
             keep_alive_interval_jitter: 0.2f32,

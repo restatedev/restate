@@ -10,7 +10,7 @@ as a configuration option, `http2-data-frame-budget`, alongside the existing HTT
 
 ```toml
 [worker.invoker]
-http2-data-frame-budget = "256 KiB"
+http2-data-frame-budget = "1 MiB"
 ```
 
 Values below 25 KiB (25600 B) are raised to 25600 B, which is the underlying HTTP/2

@@ -131,7 +131,7 @@ pub struct HttpOptions {
     ///
     /// Since: v1.8.0
     ///
-    /// Default: 256 KiB
+    /// Default: 1 MiB
     http2_data_frame_budget: NonZeroByteCount,
 }
 
@@ -152,7 +152,7 @@ impl Default for HttpOptions {
                 NonZeroUsize::new(5 * 1024 * 1024).unwrap(),
             ),
             http2_max_frame_size: NonZeroByteCount::new(NonZeroUsize::new(16 * 1024).unwrap()),
-            http2_data_frame_budget: NonZeroByteCount::new(NonZeroUsize::new(256 * 1024).unwrap()),
+            http2_data_frame_budget: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
         }
     }
 }
