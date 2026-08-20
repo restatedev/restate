@@ -361,116 +361,52 @@ impl Registry {
             }
         }
 
-        let build = || {
-            google_cloud_auth::credentials::Builder::default()
-                .build()
-                .map_err(|e| e.to_string())
-        };
-        match TaskCenter::try_current() {
-            Some(task_center) => {
-                let task = task_center
-                    .spawn_unmanaged(
-                        TaskKind::CredentialsRefresh,
-                        "gcp-credential-build",
-                        async move { tokio::task::spawn_blocking(build).await },
-                    )
-                    .map_err(|_| "TaskCenter is shutting down".to_owned())?;
-                match task.await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(join_error)) => {
-                        Err(format!("construction thread panicked: {join_error}"))
-                    }
-                    Err(_shutdown) => Err("GCP credential construction task failed".to_owned()),
-                }
-            }
-            #[cfg(any(test, feature = "test_util"))]
-            None => build(),
-            #[cfg(not(any(test, feature = "test_util")))]
-            None => {
-                Err("no TaskCenter is current; this indicates a mis-embedded server".to_owned())
-            }
-        }
+        run_on_task_center(
+            "gcp-credential-build",
+            std::convert::identity,
+            Box::pin(async {
+                tokio::task::spawn_blocking(|| {
+                    google_cloud_auth::credentials::Builder::default()
+                        .build()
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("construction thread panicked: {e}")))
+            }),
+        )
+        .await
     }
 
     /// Builds the outer credential for `key` as a single [`TaskKind::CredentialsRefresh`] task on
-    /// TaskCenter's default runtime, so any refresh actor `build()` spawns internally lands on a
-    /// runtime with process lifetime, not whichever ephemeral runtime is calling in. Production
-    /// requires a TaskCenter; its absence fails the mint immediately rather than silently building
-    /// on a runtime with no lifetime guarantee.
-    ///
-    /// A federated key (`wif_provider` set) dispatches [`federation::build_federated_source`]
-    /// directly as the task's body, rather than through [`Registry::build_credentials`]'s blocking
-    /// closure: the federation chain (assuming the AWS broker role, signing and exchanging the
-    /// SigV4 subject token) is pure async I/O with nothing to hand to a blocking thread. It is
-    /// boxed before it reaches `spawn_unmanaged`: left inline, its several owned `String`s and
-    /// `Arc<Broker>` alive across internal await points would size this function's own generated
-    /// future for its largest branch, inflating every call -- ambient and impersonated included --
-    /// to the federation chain's size. Boxing collapses that to one pointer.
+    /// TaskCenter's default runtime (see [`run_on_task_center`]). A federated key (`wif_provider`
+    /// set) dispatches [`federation::build_federated_source`] directly as the task's body, rather
+    /// than through [`Registry::build_credentials`]'s blocking closure: the federation chain is
+    /// pure async I/O with nothing to hand to a blocking thread.
     async fn build_via_task_center(
         &'static self,
         key: CacheKey,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         let audience = key.audience.clone();
+        let to_build_error = move |message| GcpAuthError::Build {
+            audience: audience.clone(),
+            message,
+        };
 
         if key.wif_provider.is_some() {
-            return match TaskCenter::try_current() {
-                Some(task_center) => {
-                    let task = task_center
-                        .spawn_unmanaged(
-                            TaskKind::CredentialsRefresh,
-                            "gcp-federated-credential-build",
-                            Box::pin(federation::build_federated_source(key)),
-                        )
-                        .map_err(|_| GcpAuthError::Build {
-                            audience: audience.clone(),
-                            message: "TaskCenter is shutting down".to_owned(),
-                        })?;
-                    task.await.unwrap_or_else(|_| {
-                        Err(GcpAuthError::Build {
-                            audience,
-                            message: "GCP credential construction task failed".to_owned(),
-                        })
-                    })
-                }
-                #[cfg(any(test, feature = "test_util"))]
-                None => federation::build_federated_source(key).await,
-                #[cfg(not(any(test, feature = "test_util")))]
-                None => Err(GcpAuthError::Build {
-                    audience,
-                    message: "no TaskCenter is current; this indicates a mis-embedded server"
-                        .to_owned(),
-                }),
-            };
+            return run_on_task_center(
+                "gcp-credential-build",
+                to_build_error,
+                Box::pin(federation::build_federated_source(key)),
+            )
+            .await;
         }
 
-        match TaskCenter::try_current() {
-            Some(task_center) => {
-                let task = task_center
-                    .spawn_unmanaged(
-                        TaskKind::CredentialsRefresh,
-                        "gcp-credential-build",
-                        async move { self.build_credentials(key).await },
-                    )
-                    .map_err(|_| GcpAuthError::Build {
-                        audience: audience.clone(),
-                        message: "TaskCenter is shutting down".to_owned(),
-                    })?;
-                task.await.unwrap_or_else(|_| {
-                    Err(GcpAuthError::Build {
-                        audience,
-                        message: "GCP credential construction task failed".to_owned(),
-                    })
-                })
-            }
-            #[cfg(any(test, feature = "test_util"))]
-            None => self.build_credentials(key).await,
-            #[cfg(not(any(test, feature = "test_util")))]
-            None => Err(GcpAuthError::Build {
-                audience,
-                message: "no TaskCenter is current; this indicates a mis-embedded server"
-                    .to_owned(),
-            }),
-        }
+        run_on_task_center(
+            "gcp-credential-build",
+            to_build_error,
+            Box::pin(async move { self.build_credentials(key).await }),
+        )
+        .await
     }
 
     /// Resolves the credential(s) needed for `key` and builds the outer ID-token credential,
@@ -517,6 +453,48 @@ async fn credentials_source_is_dead(source: &google_cloud_auth::credentials::Cre
         tokio::time::timeout(SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new())).await,
         Ok(Err(e)) if !e.is_transient()
     )
+}
+
+/// Runs `build` as a single [`TaskKind::CredentialsRefresh`] task on TaskCenter's default runtime,
+/// so a refresh actor `build` spawns internally lands on a runtime with process lifetime rather
+/// than whatever runtime is calling in. A blocking build (ADC file reads) wraps itself in
+/// `spawn_blocking` inside `build`; the federation chain's build is already pure async I/O and
+/// passes straight through. Production requires a TaskCenter; the `cfg(test)` fallback awaits
+/// `build` in place, since this crate's own unit tests are the only production-shaped consumer of
+/// `ServiceClient` that runs outside one.
+///
+/// Callers box `build` themselves (rather than this function boxing it internally): a generic
+/// parameter's own size is baked into the caller's future at the call site regardless of what an
+/// internal `Box::pin` later does with it, so pre-boxing is what actually keeps callers -- whose
+/// `build` futures range from a `spawn_blocking` closure to the federation chain's own future,
+/// several owned `String`s and an `Arc<Broker>` alive across its internal await points -- small.
+async fn run_on_task_center<T, E>(
+    task_name: &'static str,
+    to_infra_error: impl Fn(String) -> E,
+    build: std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    match TaskCenter::try_current() {
+        Some(task_center) => {
+            let task = task_center
+                .spawn_unmanaged(TaskKind::CredentialsRefresh, task_name, build)
+                .map_err(|_| to_infra_error("TaskCenter is shutting down".to_owned()))?;
+            task.await.unwrap_or_else(|_| {
+                Err(to_infra_error(
+                    "GCP credential construction task failed".to_owned(),
+                ))
+            })
+        }
+        #[cfg(any(test, feature = "test_util"))]
+        None => build.await,
+        #[cfg(not(any(test, feature = "test_util")))]
+        None => Err(to_infra_error(
+            "no TaskCenter is current; this indicates a mis-embedded server".to_owned(),
+        )),
+    }
 }
 
 /// Runs `build` on a blocking thread, mapping a panicked build thread to a `GcpAuthError` at this
@@ -1196,8 +1174,6 @@ mod tests {
     /// holds through the real per-key construction path.
     #[tokio::test]
     async fn n_federated_keys_for_one_provider_share_one_source_build() {
-        federation::install_fixture_broker_for_test().await;
-
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/share";
         let build_count = Arc::new(AtomicUsize::new(0));
         federation::install_federated_source_override_for_test(provider, {
@@ -1239,8 +1215,6 @@ mod tests {
     /// analogue of `dead_ambient_source_is_replaced_after_permanent_impersonation_failure`.
     #[tokio::test]
     async fn dead_federated_source_is_replaced_after_permanent_mint_failure() {
-        federation::install_fixture_broker_for_test().await;
-
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/recovery";
         federation::external_account_source_slot(provider)
             .seed_for_test(google_cloud_auth::credentials::Credentials::from(
@@ -1299,8 +1273,6 @@ mod tests {
     /// `healthy_ambient_source_is_not_replaced_by_repeated_impersonation_failures`.
     #[tokio::test]
     async fn healthy_federated_source_is_not_replaced_by_repeated_mint_failures() {
-        federation::install_fixture_broker_for_test().await;
-
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/stable";
         federation::external_account_source_slot(provider)
             .seed_for_test(google_cloud_auth::credentials::Credentials::from(
@@ -1350,8 +1322,6 @@ mod tests {
     /// source builds independently.
     #[tokio::test]
     async fn two_wif_providers_get_independent_sources() {
-        federation::install_fixture_broker_for_test().await;
-
         let provider_a =
             "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/a";
         let provider_b =
@@ -1512,11 +1482,11 @@ mod tests {
     }
 
     /// A deployment requesting workload identity federation on a server with no `[gcp-federation]`
-    /// configuration must fail closed with a permanent (non-retryable) error, never fall back to
-    /// an unauthenticated request. This exercises the real `mint` -> registry -> construction path
-    /// (not a seeded test source), with `FEDERATION_CONFIG` left at its default `None` -- nothing
-    /// in this test binary ever installs a `[gcp-federation]` config (see
-    /// `federation::federation_tests` for why that must stay true).
+    /// configuration must fail closed with a construction error, never fall back to an
+    /// unauthenticated request. This exercises the real `mint` -> registry -> construction path
+    /// (not a seeded test source), with `FEDERATION_CONFIG` left unset -- nothing in this test
+    /// binary ever installs a `[gcp-federation]` config (see `federation::federation_tests` for
+    /// why that must stay true).
     ///
     /// Construction failures are never cached by moka's `try_get_with` (only successful builds
     /// are), so there is no stale entry to evict here -- unlike a *cached* credential's permanent
@@ -1535,8 +1505,8 @@ mod tests {
             .await
             .expect_err("must fail without a [gcp-federation] configuration");
         assert!(
-            matches!(err, GcpAuthError::Build { .. }),
-            "expected a permanent Build error, got {err:?}"
+            matches!(err, GcpAuthError::Adc { .. }),
+            "expected a construction error, got {err:?}"
         );
 
         let key = CacheKey {
@@ -1555,6 +1525,6 @@ mod tests {
             .mint(Some(provider), Some(impersonate), audience)
             .await
             .expect_err("still fails without configuration");
-        assert!(matches!(err2, GcpAuthError::Build { .. }));
+        assert!(matches!(err2, GcpAuthError::Adc { .. }));
     }
 }
