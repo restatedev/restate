@@ -304,6 +304,9 @@ zstd = { version = "0.13" }
 path = "workspace-hack"
 
 [patch.crates-io]
+# NEVER MERGE: refresh-task lifecycle counters for the GCP WIF soak image.
+google-cloud-auth = { git = "https://github.com/pcholakov/google-cloud-rust.git", rev = "1377d7473923e55c97dd95e76dfe7ba438f256b9" }
+
 # Cross compilation fixes: Use autotools to detect cross compilation tool chain.
 # The fixes are based on rust-sasl v0.1.22.
 # Todo: Upstream changes and get rid of patch

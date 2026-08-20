@@ -276,7 +276,7 @@ dependencies = [
  "arrow-schema",
  "arrow-select",
  "atoi",
- "base64",
+ "base64 0.22.1",
  "chrono",
  "comfy-table",
  "half",
@@ -668,7 +668,7 @@ dependencies = [
  "aws-sdk-sts",
  "aws-sigv4",
  "aws-types",
- "base64",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "thiserror 1.0.69",
@@ -1153,6 +1153,12 @@ name = "base64"
 version = "0.22.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
+
+[[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "base64-simd"
@@ -2686,7 +2692,7 @@ checksum = "5f64c983bbbdcb729d921a2b2ac3375598719b5cc0c30345ad664936f3176fc7"
 dependencies = [
  "arrow",
  "arrow-buffer",
- "base64",
+ "base64 0.22.1",
  "blake2",
  "blake3",
  "chrono",
@@ -3954,19 +3960,18 @@ checksum = "e4eba85ea1d0a966a983acd07deee566e67395d2d96b6fb39e62b5a833f1eb0b"
 [[package]]
 name = "google-cloud-auth"
 version = "1.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f54aab44c16b8463ae11b165a87c3d484780231f157bb1ed65843d591beb5abd"
+source = "git+https://github.com/pcholakov/google-cloud-rust.git?rev=1377d7473923e55c97dd95e76dfe7ba438f256b9#1377d7473923e55c97dd95e76dfe7ba438f256b9"
 dependencies = [
  "async-trait",
  "aws-lc-rs",
- "base64",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "google-cloud-gax",
  "hex",
  "hmac",
  "http 1.5.0",
- "jsonwebtoken 10.4.0",
+ "jsonwebtoken 11.0.0",
  "reqwest 0.13.4",
  "rustc_version",
  "rustls",
@@ -3977,14 +3982,14 @@ dependencies = [
  "thiserror 2.0.20",
  "time",
  "tokio",
+ "tracing",
  "url",
 ]
 
 [[package]]
 name = "google-cloud-gax"
-version = "1.13.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9a46dd0fd026bbc4a5d84e6ab0c941cee6e3b057976a0bb107fdb5238ce598f"
+version = "1.14.0"
+source = "git+https://github.com/pcholakov/google-cloud-rust.git?rev=1377d7473923e55c97dd95e76dfe7ba438f256b9#1377d7473923e55c97dd95e76dfe7ba438f256b9"
 dependencies = [
  "bytes",
  "futures",
@@ -3997,13 +4002,13 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "tokio-stream",
 ]
 
 [[package]]
 name = "google-cloud-rpc"
 version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2162c08a89118130979ba261080e960e44cdcb2d6e2ab8ca9b1da245285d353"
+source = "git+https://github.com/pcholakov/google-cloud-rust.git?rev=1377d7473923e55c97dd95e76dfe7ba438f256b9#1377d7473923e55c97dd95e76dfe7ba438f256b9"
 dependencies = [
  "bytes",
  "google-cloud-wkt",
@@ -4015,10 +4020,9 @@ dependencies = [
 [[package]]
 name = "google-cloud-wkt"
 version = "1.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fccf98cfd5481a5f5a285181ab0c62123d7d47cd2bb7299448440649349e4e7"
+source = "git+https://github.com/pcholakov/google-cloud-rust.git?rev=1377d7473923e55c97dd95e76dfe7ba438f256b9#1377d7473923e55c97dd95e76dfe7ba438f256b9"
 dependencies = [
- "base64",
+ "base64 0.23.1",
  "bytes",
  "serde",
  "serde_json",
@@ -4137,7 +4141,7 @@ version = "7.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "byteorder",
  "crossbeam-channel",
  "flate2",
@@ -4413,7 +4417,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96547c2556ec9d12fb1578c4eaf448b04993e7fb79cbaad930a656880a6bdfa0"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-util",
@@ -5036,7 +5040,7 @@ version = "9.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "js-sys",
  "pem",
  "ring",
@@ -5052,7 +5056,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
 dependencies = [
  "aws-lc-rs",
- "base64",
+ "base64 0.22.1",
  "getrandom 0.2.17",
  "js-sys",
  "pem",
@@ -5060,6 +5064,22 @@ dependencies = [
  "serde_json",
  "signature",
  "simple_asn1",
+ "zeroize",
+]
+
+[[package]]
+name = "jsonwebtoken"
+version = "11.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "881733cbc631fc9e472e24447ce32a64bedf2da498d6d8570b08edc87de71f65"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde",
+ "serde_json",
+ "signature",
  "zeroize",
 ]
 
@@ -5114,7 +5134,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "484647f147899f866a7b5db6aaa1671e943f89f4be76e2a383c96b1b27058294"
 dependencies = [
  "async-stream",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures",
  "http 1.5.0",
@@ -5490,7 +5510,7 @@ version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "evmap",
  "hyper-util",
  "indexmap 2.14.0",
@@ -6014,7 +6034,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "622acbc9100d3c10e2ee15804b0caa40e55c933d5aa53814cd520805b7958a49"
 dependencies = [
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "form_urlencoded",
@@ -6055,7 +6075,7 @@ checksum = "86996964f8b721067b6ed238aa0ccee56ecad6ee5e714468aa567992d05d2b91"
 dependencies = [
  "arc-swap",
  "async-trait",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "cfg-if",
  "chrono",
@@ -6222,7 +6242,7 @@ version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7175df06de5eaee9909d4805a3d07e28bb752c34cab57fa9cff549da596b30f"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "const-hex",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -6352,7 +6372,7 @@ version = "3.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d30c53c26bc5b31a98cd02d20f25a7c8567146caf63ed593a9d87b2775291be"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "serde_core",
 ]
 
@@ -7420,7 +7440,7 @@ version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eddd3ca559203180a307f12d114c268abf583f59b03cb906fd0b3ff8646c1147"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-channel",
  "futures-core",
@@ -7464,7 +7484,7 @@ version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bytes",
  "futures-core",
  "http 1.5.0",
@@ -7590,7 +7610,7 @@ dependencies = [
 name = "restate-base64-util"
 version = "1.8.0-dev"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "restate-workspace-hack",
 ]
 
@@ -7686,7 +7706,7 @@ dependencies = [
  "arc-swap",
  "arrow",
  "axum",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "chrono-humanize",
@@ -8096,7 +8116,7 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-msk-iam-sasl-signer",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "derive_more",
  "futures",
@@ -8728,7 +8748,7 @@ dependencies = [
  "aws-sdk-lambda",
  "aws-sdk-sts",
  "aws-sigv4",
- "base64",
+ "base64 0.22.1",
  "bs58",
  "bytes",
  "bytestring",
@@ -9007,7 +9027,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "base62",
- "base64",
+ "base64 0.22.1",
  "bilrost",
  "bitflags 2.13.1",
  "bytes",
@@ -10073,7 +10093,7 @@ version = "3.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ee78f1fbe43ac4a0e47aadb3dbd357b69eb0d3793e948624cd03dd2750ab1c0a"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "bs58",
  "chrono",
  "hex",
@@ -11105,7 +11125,7 @@ checksum = "ac2a5518c70fa84342385732db33fb3f44bc4cc748936eb5833d2df34d6445ef"
 dependencies = [
  "async-trait",
  "axum",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "flate2",
  "h2",
