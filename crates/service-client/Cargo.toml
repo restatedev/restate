@@ -15,11 +15,13 @@ options_schema = ["restate-types/schemars"]
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-core = { workspace = true }
 restate-types = { workspace = true }
 restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
 arc-swap = { workspace = true }
+async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-sdk-lambda = {version = "1.112.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
@@ -42,6 +44,7 @@ hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
 hyper-util = { workspace = true, features = ["client-legacy"] }
 jsonwebtoken = { workspace = true }
+moka = { workspace = true, features = ["future"] }
 parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
 pin-project = { workspace = true }
@@ -61,6 +64,7 @@ zstd = { workspace = true }
 
 [dev-dependencies]
 restate-service-client = { path = ".", features = ["test_util"] }
+restate-core = { workspace = true, features = ["test-util"] }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 hyper = { workspace = true, features = ["server"] }
