@@ -19,6 +19,14 @@
 //! [`TaskKind::CredentialsRefresh`] task on TaskCenter's default runtime, so a credential's
 //! refresh actor lands on a runtime with process lifetime rather than whatever runtime happened to
 //! call `mint()`.
+//!
+//! A deployment may additionally request AWS -> GCP workload identity federation (see
+//! [`federation`]): rather than ambient Application Default Credentials, the ID token is minted
+//! through a shared AWS broker role, a SigV4-signed subject token, a Google STS exchange, and
+//! impersonation. That path is a fourth [`IdTokenSource`] construction recipe, keyed by
+//! `wif_provider` and cached and refreshed exactly like the others; unlike them, its construction
+//! is pure async I/O (no blocking ADC reads), so it runs directly as the body of its own
+//! `CredentialsRefresh` task instead of via `spawn_blocking` (see [`Registry::build_via_task_center`]).
 
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
@@ -34,6 +42,10 @@ use ahash::HashMap;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
 
+mod federation;
+
+pub(crate) use federation::install_config as install_federation_config;
+
 /// Per-attempt timeout for a mint call.
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -43,8 +55,10 @@ const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
 /// moka evicts lazily; this drives eviction even with zero mint traffic.
 const HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(300);
 
-/// Bound on probing the shared ambient source's own cached state (see [`ambient_source_is_dead`]).
-const AMBIENT_SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+/// Bound on probing a shared source credential's own cached state (see
+/// [`credentials_source_is_dead`]). Shared by the ambient source and, per WIF provider, the
+/// federated external-account source.
+const SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Clone, Debug, Error)]
 pub enum GcpAuthError {
@@ -86,8 +100,35 @@ pub enum GcpAuthError {
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 struct CacheKey {
+    /// Full resource name of a GCP workload identity federation provider. `None` selects the
+    /// ambient/impersonated ADC paths, byte-for-byte as before workload identity federation
+    /// existed; `Some` selects the federation chain in [`federation::build_federated_source`].
+    wif_provider: Option<String>,
     impersonate: Option<String>,
     audience: String,
+}
+
+/// Renders `error`'s `Display` together with its full `source()` chain, each level separated by
+/// `": "`.
+///
+/// `google_cloud_auth`'s `CredentialsError::Display` only ever prints its own top-level message
+/// (e.g. "failed to fetch ID token via impersonation and future attempts will not succeed") --
+/// the detail an operator actually needs, such as a `google_cloud_gax::error::Error` carrying the
+/// HTTP status code and response body from a failed `iamcredentials.googleapis.com` call (e.g.
+/// "the HTTP transport reports a [403] error: {"error":{"code":403,"status":"PERMISSION_DENIED",
+/// ...}}"), lives one or more levels down its `source()` chain, which `Display` never visits.
+/// Without this, a missing `roles/iam.serviceAccountOpenIdTokenCreator` binding -- the single most
+/// common federation/impersonation misconfiguration -- surfaced as an opaque, undiagnosable
+/// message in both `restate dp register` errors and server logs.
+fn display_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
+    let mut message = error.to_string();
+    let mut cause = error.source();
+    while let Some(err) = cause {
+        message.push_str(": ");
+        message.push_str(&err.to_string());
+        cause = err.source();
+    }
+    message
 }
 
 /// Internal seam that keeps the registry and the mint path testable without ADC or network: `Live`
@@ -121,8 +162,8 @@ struct Registry {
 /// A single cached, cheaply-cloneable value with single-flight, retry-on-error construction and
 /// recovery from a background actor that died after a successful build (a bare `OnceCell` only
 /// ever retries a *construction* failure). Holds one value; a caller keying by provider identity
-/// (the stacked WIF work will want one `SourceSlot` per external-account provider) is the caller's
-/// job, not this type's.
+/// (federation keys by WIF provider resource name; see [`federation::external_account_source_slot`])
+/// is the caller's job, not this type's.
 struct SourceSlot<T> {
     cell: tokio::sync::Mutex<Option<T>>,
 }
@@ -151,7 +192,8 @@ impl<T: Clone> SourceSlot<T> {
     /// healthy, self-healing, or inconclusive probe leaves it untouched. Trade-off: the lock is
     /// held through the probe (bounded by the probe's own timeout), so a concurrent lookup or
     /// another recovery attempt briefly waits -- in exchange for not needing ABA/identity
-    /// bookkeeping around the swap.
+    /// bookkeeping around the swap. Shared by the ambient source's recovery and, per WIF provider,
+    /// the federated external-account source's recovery.
     async fn recover_if_dead<E>(
         &self,
         is_dead: impl AsyncFnOnce(&T) -> bool,
@@ -300,7 +342,7 @@ impl Registry {
     async fn recover_ambient_source_if_dead(&'static self) {
         let _ = self
             .ambient_source
-            .recover_if_dead(ambient_source_is_dead, self.build_ambient_source())
+            .recover_if_dead(credentials_source_is_dead, self.build_ambient_source())
             .await;
     }
 
@@ -319,82 +361,60 @@ impl Registry {
             }
         }
 
-        let build = || {
-            google_cloud_auth::credentials::Builder::default()
-                .build()
-                .map_err(|e| e.to_string())
-        };
-        match TaskCenter::try_current() {
-            Some(task_center) => {
-                let task = task_center
-                    .spawn_unmanaged(
-                        TaskKind::CredentialsRefresh,
-                        "gcp-credential-build",
-                        async move { tokio::task::spawn_blocking(build).await },
-                    )
-                    .map_err(|_| "TaskCenter is shutting down".to_owned())?;
-                match task.await {
-                    Ok(Ok(result)) => result,
-                    Ok(Err(join_error)) => {
-                        Err(format!("construction thread panicked: {join_error}"))
-                    }
-                    Err(_shutdown) => Err("GCP credential construction task failed".to_owned()),
-                }
-            }
-            #[cfg(any(test, feature = "test_util"))]
-            None => build(),
-            #[cfg(not(any(test, feature = "test_util")))]
-            None => {
-                Err("no TaskCenter is current; this indicates a mis-embedded server".to_owned())
-            }
-        }
+        run_on_task_center(
+            "gcp-credential-build",
+            std::convert::identity,
+            Box::pin(async {
+                tokio::task::spawn_blocking(|| {
+                    google_cloud_auth::credentials::Builder::default()
+                        .build()
+                        .map_err(|e| e.to_string())
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("construction thread panicked: {e}")))
+            }),
+        )
+        .await
     }
 
     /// Builds the outer credential for `key` as a single [`TaskKind::CredentialsRefresh`] task on
-    /// TaskCenter's default runtime, so any refresh actor `build()` spawns internally lands on a
-    /// runtime with process lifetime, not whichever ephemeral runtime is calling in. Production
-    /// requires a TaskCenter; its absence fails the mint immediately rather than silently building
-    /// on a runtime with no lifetime guarantee.
+    /// TaskCenter's default runtime (see [`run_on_task_center`]). A federated key (`wif_provider`
+    /// set) dispatches [`federation::build_federated_source`] directly as the task's body, rather
+    /// than through [`Registry::build_credentials`]'s blocking closure: the federation chain is
+    /// pure async I/O with nothing to hand to a blocking thread.
     async fn build_via_task_center(
         &'static self,
         key: CacheKey,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         let audience = key.audience.clone();
-        match TaskCenter::try_current() {
-            Some(task_center) => {
-                let task = task_center
-                    .spawn_unmanaged(
-                        TaskKind::CredentialsRefresh,
-                        "gcp-credential-build",
-                        async move { self.build_credentials(key).await },
-                    )
-                    .map_err(|_| GcpAuthError::Build {
-                        audience: audience.clone(),
-                        message: "TaskCenter is shutting down".to_owned(),
-                    })?;
-                task.await.unwrap_or_else(|_| {
-                    Err(GcpAuthError::Build {
-                        audience,
-                        message: "GCP credential construction task failed".to_owned(),
-                    })
-                })
-            }
-            #[cfg(any(test, feature = "test_util"))]
-            None => self.build_credentials(key).await,
-            #[cfg(not(any(test, feature = "test_util")))]
-            None => Err(GcpAuthError::Build {
-                audience,
-                message: "no TaskCenter is current; this indicates a mis-embedded server"
-                    .to_owned(),
-            }),
+        let to_build_error = move |message| GcpAuthError::Build {
+            audience: audience.clone(),
+            message,
+        };
+
+        if key.wif_provider.is_some() {
+            return run_on_task_center(
+                "gcp-credential-build",
+                to_build_error,
+                Box::pin(federation::build_federated_source(key)),
+            )
+            .await;
         }
+
+        run_on_task_center(
+            "gcp-credential-build",
+            to_build_error,
+            Box::pin(async move { self.build_credentials(key).await }),
+        )
+        .await
     }
 
     /// Resolves the credential(s) needed for `key` and builds the outer ID-token credential,
     /// offloading the blocking `.build()` call. The impersonated arm first resolves the
     /// process-wide ambient source: a permanent failure here can only ever strand the outer actor,
     /// since the shared source actor is independent of any single key and is recovered separately
-    /// (see [`Registry::recover_ambient_source_if_dead`]).
+    /// (see [`Registry::recover_ambient_source_if_dead`]). Never called for a federated key -- see
+    /// [`Registry::build_via_task_center`].
     async fn build_credentials(
         &'static self,
         key: CacheKey,
@@ -424,12 +444,57 @@ impl Registry {
 /// published that error and exited -- replacing it strands nothing live. Anything else (a token, a
 /// transient error, or the probe timing out) means the actor might still be alive, so it must be
 /// kept.
-async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credentials) -> bool {
+///
+/// Shared by the ambient source (see [`Registry::recover_ambient_source_if_dead`]) and, per WIF
+/// provider, the federated external-account source (see
+/// [`federation::recover_federated_source_if_dead`]).
+async fn credentials_source_is_dead(source: &google_cloud_auth::credentials::Credentials) -> bool {
     matches!(
-        tokio::time::timeout(AMBIENT_SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new()))
-            .await,
+        tokio::time::timeout(SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new())).await,
         Ok(Err(e)) if !e.is_transient()
     )
+}
+
+/// Runs `build` as a single [`TaskKind::CredentialsRefresh`] task on TaskCenter's default runtime,
+/// so a refresh actor `build` spawns internally lands on a runtime with process lifetime rather
+/// than whatever runtime is calling in. A blocking build (ADC file reads) wraps itself in
+/// `spawn_blocking` inside `build`; the federation chain's build is already pure async I/O and
+/// passes straight through. Production requires a TaskCenter; the `cfg(test)` fallback awaits
+/// `build` in place, since this crate's own unit tests are the only production-shaped consumer of
+/// `ServiceClient` that runs outside one.
+///
+/// Callers box `build` themselves (rather than this function boxing it internally): a generic
+/// parameter's own size is baked into the caller's future at the call site regardless of what an
+/// internal `Box::pin` later does with it, so pre-boxing is what actually keeps callers -- whose
+/// `build` futures range from a `spawn_blocking` closure to the federation chain's own future,
+/// several owned `String`s and an `Arc<Broker>` alive across its internal await points -- small.
+async fn run_on_task_center<T, E>(
+    task_name: &'static str,
+    to_infra_error: impl Fn(String) -> E,
+    build: std::pin::Pin<Box<dyn Future<Output = Result<T, E>> + Send>>,
+) -> Result<T, E>
+where
+    T: Send + 'static,
+    E: Send + 'static,
+{
+    match TaskCenter::try_current() {
+        Some(task_center) => {
+            let task = task_center
+                .spawn_unmanaged(TaskKind::CredentialsRefresh, task_name, build)
+                .map_err(|_| to_infra_error("TaskCenter is shutting down".to_owned()))?;
+            task.await.unwrap_or_else(|_| {
+                Err(to_infra_error(
+                    "GCP credential construction task failed".to_owned(),
+                ))
+            })
+        }
+        #[cfg(any(test, feature = "test_util"))]
+        None => build.await,
+        #[cfg(not(any(test, feature = "test_util")))]
+        None => Err(to_infra_error(
+            "no TaskCenter is current; this indicates a mis-embedded server".to_owned(),
+        )),
+    }
 }
 
 /// Runs `build` on a blocking thread, mapping a panicked build thread to a `GcpAuthError` at this
@@ -522,11 +587,15 @@ impl GcpTokenClient {
         }
     }
 
-    /// Mint an OIDC ID token for the given audience. If `impersonate_service_account` is set, the
-    /// token is minted via the IAM Credentials `generateIdToken` API for that service account;
-    /// otherwise it is minted from ambient ADC identity.
+    /// Mint an OIDC ID token for the given audience. If `wif_provider` is set, the token is
+    /// minted through the AWS -> GCP workload identity federation chain (see [`federation`]),
+    /// impersonating `impersonate_service_account` (required in this case). Otherwise, if
+    /// `impersonate_service_account` is set, the token is minted via the IAM Credentials
+    /// `generateIdToken` API for that service account from ambient ADC identity; with neither
+    /// set, it is minted from ambient ADC identity directly.
     pub async fn mint(
         &self,
+        wif_provider: Option<&str>,
         impersonate_service_account: Option<&str>,
         audience: &str,
     ) -> Result<String, GcpAuthError> {
@@ -545,6 +614,7 @@ impl GcpTokenClient {
         }
 
         let key = CacheKey {
+            wif_provider: wif_provider.map(str::to_owned),
             impersonate: impersonate_service_account.map(str::to_owned),
             audience: audience.to_owned(),
         };
@@ -572,14 +642,19 @@ impl GcpTokenClient {
                 // the cache still holds the exact credential that produced the error.
                 if evictable && !error.is_transient() {
                     registry().evict_if_unchanged(&key, &source).await;
-                    if key.impersonate.is_some() {
+                    // A federated key shares its source with every other key using the same WIF
+                    // provider, not with the ambient identity, so the two recovery paths are
+                    // mutually exclusive.
+                    if let Some(provider) = &key.wif_provider {
+                        federation::recover_federated_source_if_dead(provider).await;
+                    } else if key.impersonate.is_some() {
                         registry().recover_ambient_source_if_dead().await;
                     }
                 }
                 Err(GcpAuthError::Mint {
                     audience: audience.to_owned(),
                     impersonate,
-                    message: error.to_string(),
+                    message: display_error_chain(&error),
                 })
             }
             Err(_) => Err(GcpAuthError::Timeout {
@@ -615,6 +690,7 @@ impl GcpTokenClient {
         }
 
         let key = CacheKey {
+            wif_provider: None,
             impersonate: impersonate.map(str::to_owned),
             audience: audience.to_owned(),
         };
@@ -653,6 +729,32 @@ mod tests {
         // Leak-free: must not surface the google-cloud-auth internal API hint.
         assert!(!msg.contains("idtoken::user_account"), "{msg}");
         assert!(!msg.to_lowercase().contains("builder directly"), "{msg}");
+    }
+
+    /// The single most common federation/impersonation misconfiguration -- a customer forgetting
+    /// to grant `roles/iam.serviceAccountOpenIdTokenCreator` on the invocation service account --
+    /// surfaces from `iamcredentials.googleapis.com` as a 403 with a `PERMISSION_DENIED` status in
+    /// the JSON body. `CredentialsError::Display` alone drops this (it only prints its own
+    /// top-level message); `display_error_chain` must recover it from the source chain so it
+    /// reaches `GcpAuthError::Mint`'s message, legible in `restate dp register` errors and server
+    /// logs.
+    #[test]
+    fn credentials_error_403_permission_denied_survives_display_error_chain() {
+        let body = br#"{"error":{"code":403,"message":"The caller does not have permission","status":"PERMISSION_DENIED"}}"#;
+        let gax_error = google_cloud_gax::error::Error::http(
+            403,
+            http::HeaderMap::new(),
+            bytes::Bytes::from_static(body),
+        );
+        let credentials_error = google_cloud_auth::errors::CredentialsError::new(
+            false,
+            "failed to fetch ID token via impersonation",
+            gax_error,
+        );
+
+        let message = display_error_chain(&credentials_error);
+        assert!(message.contains("403"), "{message}");
+        assert!(message.contains("PERMISSION_DENIED"), "{message}");
     }
 
     struct MockSource {
@@ -696,6 +798,7 @@ mod tests {
 
     fn key(audience: &str) -> CacheKey {
         CacheKey {
+            wif_provider: None,
             impersonate: None,
             audience: audience.to_owned(),
         }
@@ -703,6 +806,15 @@ mod tests {
 
     fn impersonated_key(audience: &str, service_account: &str) -> CacheKey {
         CacheKey {
+            wif_provider: None,
+            impersonate: Some(service_account.to_owned()),
+            audience: audience.to_owned(),
+        }
+    }
+
+    fn federated_key(audience: &str, provider: &str, service_account: &str) -> CacheKey {
+        CacheKey {
+            wif_provider: Some(provider.to_owned()),
             impersonate: Some(service_account.to_owned()),
             audience: audience.to_owned(),
         }
@@ -735,7 +847,8 @@ mod tests {
 
     /// A `CredentialsProvider` a test can drive deterministically, with zero network and without
     /// going through the SDK's own refresh-actor machinery: `Credentials::from(...)` wraps this
-    /// directly, so its `headers()` impl below is exactly what `ambient_source_is_dead` observes.
+    /// directly, so its `headers()` impl below is exactly what `credentials_source_is_dead`
+    /// observes.
     #[derive(Clone, Copy, Debug)]
     enum ProbeOutcome {
         Healthy,
@@ -801,7 +914,8 @@ mod tests {
             }
         });
 
-        let results = futures::future::join_all((0..64).map(|_| client.mint(None, audience))).await;
+        let results =
+            futures::future::join_all((0..64).map(|_| client.mint(None, None, audience))).await;
 
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
@@ -835,7 +949,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ambient_source_is_dead_only_for_a_proven_permanent_error() {
+    async fn credentials_source_is_dead_only_for_a_proven_permanent_error() {
         let cases = [
             (ProbeOutcome::Healthy, false),
             (ProbeOutcome::Transient, false),
@@ -847,7 +961,7 @@ mod tests {
                 FakeCredentialsProvider::always(move || outcome),
             );
             assert_eq!(
-                ambient_source_is_dead(&source).await,
+                credentials_source_is_dead(&source).await,
                 expected_dead,
                 "{outcome:?}"
             );
@@ -886,7 +1000,7 @@ mod tests {
             }) as Arc<dyn IdTokenSource>)
         });
 
-        let outcome = client.mint(Some(service_account), audience).await;
+        let outcome = client.mint(None, Some(service_account), audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -935,7 +1049,7 @@ mod tests {
         });
 
         for _ in 0..5 {
-            let outcome = client.mint(Some(service_account), audience).await;
+            let outcome = client.mint(None, Some(service_account), audience).await;
             assert!(
                 matches!(outcome, Err(GcpAuthError::Mint { .. })),
                 "{outcome:?}"
@@ -967,7 +1081,7 @@ mod tests {
             .insert(cache_key.clone(), dyn_source.clone())
             .await;
 
-        let first = client.mint(None, audience).await;
+        let first = client.mint(None, None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
         // The entry must still be present and unchanged (no eviction on transient failure).
@@ -975,7 +1089,7 @@ mod tests {
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &dyn_source)));
 
         // The mock "self-heals" on the next call, as a real credential's refresh loop would.
-        let second = client.mint(None, audience).await;
+        let second = client.mint(None, None, audience).await;
         assert!(second.is_ok(), "{second:?}");
     }
 
@@ -991,7 +1105,7 @@ mod tests {
             .insert(cache_key.clone(), source.clone())
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = client.mint(None, None, audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1039,7 +1153,7 @@ mod tests {
             .insert(cache_key.clone(), old_source.clone())
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = client.mint(None, None, audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1050,5 +1164,367 @@ mod tests {
             matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_source)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
         );
+    }
+
+    /// N cold outer constructions for the same WIF provider share exactly one build of that
+    /// provider's shared external-account source credential -- the federated analogue of
+    /// `impersonated_constructions_share_one_ambient_source_build`. Exercised through `mint()` on
+    /// N distinct audiences (N distinct outer `CacheKey`s, so N distinct outer credentials) rather
+    /// than through the source-sharing primitive directly, since the point is to prove sharing
+    /// holds through the real per-key construction path.
+    #[tokio::test]
+    async fn n_federated_keys_for_one_provider_share_one_source_build() {
+        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/share";
+        let build_count = Arc::new(AtomicUsize::new(0));
+        federation::install_federated_source_override_for_test(provider, {
+            let build_count = build_count.clone();
+            move || {
+                build_count.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+
+        let client = GcpTokenClient::new();
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        let results = futures::future::join_all((0..8).map(|i| {
+            let client = client.clone();
+            let audience = format!("https://federated-source-share-{i}.example.com");
+            async move {
+                client
+                    .mint(Some(provider), Some(service_account), &audience)
+                    .await
+            }
+        }))
+        .await;
+
+        // Each key's outer construction is real (not overridden), so the resulting mint may well
+        // fail (no real network in this sandbox reaches Google); only the source-sharing count
+        // below is under test.
+        let _ = results;
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "8 keys for one WIF provider must share exactly one external-account source build"
+        );
+    }
+
+    /// A shared federated source whose actor has permanently died is replaced exactly once by the
+    /// first permanent mint failure on a key targeting that provider to probe it -- the federated
+    /// analogue of `dead_ambient_source_is_replaced_after_permanent_impersonation_failure`.
+    #[tokio::test]
+    async fn dead_federated_source_is_replaced_after_permanent_mint_failure() {
+        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/recovery";
+        federation::external_account_source_slot(provider)
+            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
+                FakeCredentialsProvider::always(|| ProbeOutcome::Dead),
+            ))
+            .await;
+
+        let build_count = Arc::new(AtomicUsize::new(0));
+        federation::install_federated_source_override_for_test(provider, {
+            let build_count = build_count.clone();
+            move || {
+                build_count.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+
+        let client = GcpTokenClient::new();
+        let audience = "https://federated-recovery.example.com";
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        install_construct_override(federated_key(audience, provider, service_account), |_| {
+            Ok(MockSource::new(|_| {
+                MockOutcome::Error(permanent_error("impersonation misconfigured"))
+            }) as Arc<dyn IdTokenSource>)
+        });
+
+        let outcome = client
+            .mint(Some(provider), Some(service_account), audience)
+            .await;
+        assert!(
+            matches!(outcome, Err(GcpAuthError::Mint { .. })),
+            "{outcome:?}"
+        );
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            1,
+            "the dead federated source must be replaced exactly once"
+        );
+
+        // The replacement is healthy and reusable without a further rebuild: this build must
+        // never run.
+        let reused: Result<google_cloud_auth::credentials::Credentials, String> =
+            federation::external_account_source_slot(provider)
+                .get_or_build(async {
+                    unreachable!("the slot must already hold the recovered source")
+                })
+                .await;
+        assert!(reused.is_ok());
+        assert_eq!(build_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// A healthy shared federated source is never replaced by a repeatedly-failing impersonation
+    /// target on a key using it -- the federated analogue of
+    /// `healthy_ambient_source_is_not_replaced_by_repeated_impersonation_failures`.
+    #[tokio::test]
+    async fn healthy_federated_source_is_not_replaced_by_repeated_mint_failures() {
+        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/stable";
+        federation::external_account_source_slot(provider)
+            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
+                FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+            ))
+            .await;
+
+        let build_count = Arc::new(AtomicUsize::new(0));
+        federation::install_federated_source_override_for_test(provider, {
+            let build_count = build_count.clone();
+            move || {
+                build_count.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+
+        let client = GcpTokenClient::new();
+        let audience = "https://federated-stable.example.com";
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        install_construct_override(federated_key(audience, provider, service_account), |_| {
+            Ok(MockSource::new(|_| {
+                MockOutcome::Error(permanent_error("impersonation misconfigured"))
+            }) as Arc<dyn IdTokenSource>)
+        });
+
+        for _ in 0..5 {
+            let outcome = client
+                .mint(Some(provider), Some(service_account), audience)
+                .await;
+            assert!(
+                matches!(outcome, Err(GcpAuthError::Mint { .. })),
+                "{outcome:?}"
+            );
+        }
+
+        assert_eq!(
+            build_count.load(Ordering::SeqCst),
+            0,
+            "a healthy federated source must never be replaced by an impersonation-only failure"
+        );
+    }
+
+    /// Two distinct WIF providers get two independent shared source credentials: a permanent
+    /// failure on a key for one provider must never touch the other's source, and each provider's
+    /// source builds independently.
+    #[tokio::test]
+    async fn two_wif_providers_get_independent_sources() {
+        let provider_a =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/a";
+        let provider_b =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/b";
+        federation::external_account_source_slot(provider_a)
+            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
+                FakeCredentialsProvider::always(|| ProbeOutcome::Dead),
+            ))
+            .await;
+        federation::external_account_source_slot(provider_b)
+            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
+                FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+            ))
+            .await;
+
+        let build_count_a = Arc::new(AtomicUsize::new(0));
+        federation::install_federated_source_override_for_test(provider_a, {
+            let build_count_a = build_count_a.clone();
+            move || {
+                build_count_a.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+        let build_count_b = Arc::new(AtomicUsize::new(0));
+        federation::install_federated_source_override_for_test(provider_b, {
+            let build_count_b = build_count_b.clone();
+            move || {
+                build_count_b.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+
+        let client = GcpTokenClient::new();
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        let audience_a = "https://federated-independent-a.example.com";
+        let audience_b = "https://federated-independent-b.example.com";
+        install_construct_override(
+            federated_key(audience_a, provider_a, service_account),
+            |_| {
+                Ok(MockSource::new(|_| {
+                    MockOutcome::Error(permanent_error("impersonation misconfigured"))
+                }) as Arc<dyn IdTokenSource>)
+            },
+        );
+        install_construct_override(
+            federated_key(audience_b, provider_b, service_account),
+            |_| {
+                Ok(MockSource::new(|_| {
+                    MockOutcome::Error(permanent_error("impersonation misconfigured"))
+                }) as Arc<dyn IdTokenSource>)
+            },
+        );
+
+        // Only provider_a's source is dead; failing a mint against provider_b must never touch it.
+        let outcome_b = client
+            .mint(Some(provider_b), Some(service_account), audience_b)
+            .await;
+        assert!(matches!(outcome_b, Err(GcpAuthError::Mint { .. })));
+        assert_eq!(
+            build_count_b.load(Ordering::SeqCst),
+            0,
+            "provider_b's healthy source must not be replaced"
+        );
+        assert_eq!(
+            build_count_a.load(Ordering::SeqCst),
+            0,
+            "a mint against provider_b must never rebuild provider_a's source"
+        );
+
+        // provider_a's dead source is replaced on its own key's permanent failure.
+        let outcome_a = client
+            .mint(Some(provider_a), Some(service_account), audience_a)
+            .await;
+        assert!(matches!(outcome_a, Err(GcpAuthError::Mint { .. })));
+        assert_eq!(
+            build_count_a.load(Ordering::SeqCst),
+            1,
+            "provider_a's dead source must be replaced exactly once"
+        );
+        assert_eq!(
+            build_count_b.load(Ordering::SeqCst),
+            0,
+            "recovering provider_a's source must never touch provider_b's"
+        );
+    }
+
+    /// `wif_provider` is a real dimension of the cache key: a federated and an ambient/impersonated
+    /// credential for the same (impersonate, audience) pair must never collide in the registry.
+    /// Drives this through the real `mint()` -> `get_or_build` path via `construct_overrides`
+    /// (each key gets its own override, keyed exactly as production would key it), rather than
+    /// manipulating the cache directly, so a regression that merged the two keys would actually
+    /// fail this test.
+    #[tokio::test]
+    async fn wif_provider_is_a_distinct_cache_key_dimension() {
+        let client = GcpTokenClient::new();
+        let audience = "https://wif-cache-key.example.com";
+        let impersonate = "sa@proj.iam.gserviceaccount.com";
+        let provider =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
+
+        let ambient_key = CacheKey {
+            wif_provider: None,
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        let wif_key = CacheKey {
+            wif_provider: Some(provider.to_owned()),
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        assert_ne!(ambient_key, wif_key);
+
+        let ambient_builds = Arc::new(AtomicUsize::new(0));
+        let wif_builds = Arc::new(AtomicUsize::new(0));
+
+        install_construct_override(ambient_key, {
+            let ambient_builds = ambient_builds.clone();
+            move |_| {
+                ambient_builds.fetch_add(1, Ordering::SeqCst);
+                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+            }
+        });
+        install_construct_override(wif_key, {
+            let wif_builds = wif_builds.clone();
+            move |_| {
+                wif_builds.fetch_add(1, Ordering::SeqCst);
+                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+            }
+        });
+
+        // Minting through each key twice must build each exactly once (moka caches the result)
+        // and never satisfy one key's construction from the other's.
+        for _ in 0..2 {
+            client
+                .mint(None, Some(impersonate), audience)
+                .await
+                .expect("ambient key mints");
+            client
+                .mint(Some(provider), Some(impersonate), audience)
+                .await
+                .expect("federated key mints");
+        }
+
+        assert_eq!(
+            ambient_builds.load(Ordering::SeqCst),
+            1,
+            "ambient key must build exactly once, independently of the federated key"
+        );
+        assert_eq!(
+            wif_builds.load(Ordering::SeqCst),
+            1,
+            "federated key must build exactly once, independently of the ambient key"
+        );
+    }
+
+    /// A deployment requesting workload identity federation on a server with no `[gcp-federation]`
+    /// configuration must fail closed with a construction error, never fall back to an
+    /// unauthenticated request. This exercises the real `mint` -> registry -> construction path
+    /// (not a seeded test source), with `FEDERATION_CONFIG` left unset -- nothing in this test
+    /// binary ever installs a `[gcp-federation]` config (see `federation::federation_tests` for
+    /// why that must stay true).
+    ///
+    /// Construction failures are never cached by moka's `try_get_with` (only successful builds
+    /// are), so there is no stale entry to evict here -- unlike a *cached* credential's permanent
+    /// mint failure, which does go through `evict_if_unchanged`. Retrying finds nothing cached and
+    /// attempts construction fresh, which is the PR #1 discipline this case trivially satisfies.
+    #[tokio::test]
+    async fn wif_requested_without_server_config_is_a_permanent_build_error() {
+        let client = GcpTokenClient::new();
+        let provider =
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
+        let audience = "https://wif-no-config.example.com";
+        let impersonate = "sa@proj.iam.gserviceaccount.com";
+
+        let err = client
+            .mint(Some(provider), Some(impersonate), audience)
+            .await
+            .expect_err("must fail without a [gcp-federation] configuration");
+        assert!(
+            matches!(err, GcpAuthError::Adc { .. }),
+            "expected a construction error, got {err:?}"
+        );
+
+        let key = CacheKey {
+            wif_provider: Some(provider.to_owned()),
+            impersonate: Some(impersonate.to_owned()),
+            audience: audience.to_owned(),
+        };
+        assert!(
+            registry().cache.get(&key).await.is_none(),
+            "a construction failure must never populate the cache"
+        );
+
+        // Retrying attempts construction fresh and fails the same way -- not wedged on a stale
+        // cached error.
+        let err2 = client
+            .mint(Some(provider), Some(impersonate), audience)
+            .await
+            .expect_err("still fails without configuration");
+        assert!(matches!(err2, GcpAuthError::Adc { .. }));
     }
 }

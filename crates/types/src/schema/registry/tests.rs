@@ -312,10 +312,9 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
     let (_, deployment, _) = schema_registry
         .register_deployment(RegisterDeploymentRequest {
             deployment_address: HttpDeploymentAddress::new(uri)
-                .with_auth(Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-                    explicit_audience.clone(),
-                    None,
-                ))))
+                .with_auth(Some(HttpAuth::GoogleIdToken(
+                    GoogleIdTokenAuth::new(explicit_audience.clone(), None, None).unwrap(),
+                )))
                 .into(),
             additional_headers: Default::default(),
             metadata: Default::default(),
@@ -340,3 +339,7 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
         "audience must be preserved verbatim by the registry",
     );
 }
+
+// Workload identity federation validation (provider-requires-impersonation, canonical resource
+// name) is enforced by `GoogleIdTokenAuth::new` itself; see
+// crates/types/src/schema/deployment/http_auth.rs's test module.

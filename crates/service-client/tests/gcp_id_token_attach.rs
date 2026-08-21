@@ -165,10 +165,9 @@ async fn bearer_attached_with_persisted_audience() {
         .gcp_for_test()
         .seed_for_test(None, &expected_audience, token.clone());
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from(expected_audience.clone()),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from(expected_audience.clone()), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -214,10 +213,9 @@ async fn customer_authorization_passes_through_alongside_minted_xsa() {
         hyper::http::HeaderValue::from_static("Bearer user-supplied-token"),
     );
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from(expected_audience.clone()),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from(expected_audience.clone()), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -253,10 +251,9 @@ async fn bearer_uses_explicit_audience_when_provided() {
         .gcp_for_test()
         .seed_for_test(None, explicit_audience, token);
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from_static(explicit_audience),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from_static(explicit_audience), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -282,10 +279,10 @@ async fn mint_failure_does_not_send_unauthenticated_request() {
         .gcp_for_test()
         .force_mint_failure_for_test("simulated ADC failure");
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from_static("https://example.test"),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from_static("https://example.test"), None, None)
+            .unwrap(),
+    );
 
     let parts = Parts::new(
         ClientMethod::Post,
