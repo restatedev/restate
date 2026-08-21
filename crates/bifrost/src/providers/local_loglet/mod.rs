@@ -137,9 +137,7 @@ impl Loglet for LocalLoglet {
         filter: KeyFilter,
         from: LogletOffset,
     ) -> Result<SendableLogletReadStream, OperationError> {
-        Ok(Box::pin(
-            LocalLogletReadStream::create(self, filter, from).await?,
-        ))
+        Ok(Box::pin(LocalLogletReadStream::create(self, filter, from)?))
     }
 
     fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
@@ -388,17 +386,19 @@ mod tests {
             ("record-1", Keys::Single(1)).into(),
             ("record-2", Keys::Single(2)).into(),
             ("record-3", Keys::Single(1)).into(),
+            ("record-4", Keys::Single(2)).into(),
         ]
         .into();
         let offset = loglet.enqueue_batch(batch).await?.await?;
 
         let key_filter = KeyFilter::Include(1);
-        let read_stream = loglet
+        let mut read_stream = loglet
             .create_read_stream(key_filter, LogletOffset::OLDEST)
             .await?;
         read_stream.notify_readable_tail(offset.next());
 
         let records: Vec<_> = read_stream
+            .by_ref()
             .take(2)
             .try_collect::<Vec<_>>()
             .await?
@@ -418,6 +418,9 @@ mod tests {
                 eq((LogletOffset::from(3), "record-3".to_owned()))
             ]
         );
+        let filtered = read_stream.next().await.unwrap()?;
+        assert_that!(filtered.kind(), eq(crate::RecordKind::Filtered));
+        assert_that!(read_stream.read_pointer(), eq(offset.next()));
 
         Ok(())
     }
