@@ -17,7 +17,8 @@ use crate::storage::{
     encode,
 };
 use crate::{
-    RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, SemanticRestateVersion,
+    RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_8_0,
+    SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -64,6 +65,13 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.5*
     EnableVqueuesSkipCompleted = 4,
+
+    /// Write a reference to the output journal
+    /// instead of embedding the invocation result
+    /// in the completion status.
+    ///
+    /// *Since v1.8.0*
+    EnableWriteResultReference,
 }
 
 impl PartitionFeatureChange {
@@ -81,6 +89,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
+            Self::EnableWriteResultReference => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -100,6 +109,9 @@ impl PartitionFeatureChange {
             }
             Self::EnableUniqueRandomSeeds => {
                 !std::mem::replace(&mut features.unique_random_seeds, true)
+            }
+            Self::EnableWriteResultReference => {
+                !std::mem::replace(&mut features.write_result_reference, true)
             }
         }
     }
@@ -151,6 +163,14 @@ pub struct PersistedFeatures {
     /// *Since v1.7.5*
     #[bilrost(tag(4))]
     pub vqueues_skip_completed: bool,
+
+    /// Write a reference to the output journal
+    /// instead of embedding the invocation result
+    /// in the completion status.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(5))]
+    pub write_result_reference: bool,
 }
 
 impl PersistedFeatures {

@@ -44,7 +44,7 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
     JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
     PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
-    WriteInvocationStatusTable,
+    ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -70,9 +70,9 @@ use restate_tracing_instrumentation as instrumentation;
 use restate_types::RestateVersion;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::errors::{
-    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
-    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
-    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
+    GenericError, InvocationError, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
+    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
@@ -124,6 +124,7 @@ use restate_wal_protocol::v2::{CommandKind, commands};
 use restate_worker_api::invoker::Effect;
 
 use self::utils::SpanExt;
+use crate::ReadJournalTableExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     USAGE_LEADER_JOURNAL_ENTRY_COUNT,
@@ -162,6 +163,16 @@ pub enum Error {
     EnvelopeDecoding(#[from] StorageDecodeError),
     #[error("Bifrost envelope has unknown command kind")]
     UnknownCommandKind,
+}
+
+impl From<crate::ResolveResultError> for Error {
+    fn from(value: crate::ResolveResultError) -> Self {
+        match value {
+            crate::ResolveResultError::BadEntryVariant(ty) => Self::BadEntryVariant(ty),
+            crate::ResolveResultError::Storage(err) => Self::Storage(err),
+            crate::ResolveResultError::EntryDecoding(err) => Self::EntryDecoding(err),
+        }
+    }
 }
 
 #[macro_export]
@@ -685,7 +696,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteJournalTable
             + WriteLockTable
-            + journal_table_v2::WriteJournalTable,
+            + journal_table_v2::WriteJournalTable
+            + journal_table_v2::ReadJournalTable,
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
@@ -1008,6 +1020,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<Option<ServiceInvocation>, Error>
     where
         S: ReadInvocationStatusTable
+            + journal_table_v2::ReadJournalTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -1089,13 +1102,31 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
-                self.send_response_to_sinks(
-                    service_invocation.response_sink.take(),
-                    completed.response_result,
-                    Some(invocation_id),
-                    completion_expiry_time,
-                    Some(&completed.invocation_target),
-                )?;
+                let response_result = self
+                    .storage
+                    .resolve_response_result_ref(invocation_id, &completed.response_result)
+                    .await?;
+
+                match response_result {
+                    Some(result) => {
+                        self.send_response_to_sinks(
+                            service_invocation.response_sink.take(),
+                            result,
+                            Some(invocation_id),
+                            completion_expiry_time,
+                            Some(&completed.invocation_target),
+                        )?;
+                    }
+                    None => {
+                        self.send_response_to_sinks(
+                            service_invocation.response_sink.take(),
+                            GONE_INVOCATION_ERROR,
+                            Some(invocation_id),
+                            completion_expiry_time,
+                            Some(&completed.invocation_target),
+                        )?;
+                    }
+                }
             }
             InvocationStatus::Free => {
                 unreachable!("This was checked before!")
@@ -2735,9 +2766,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
-            let response_result = if let Some(response_result) = response_result_override {
-                response_result
-            } else if let Some(response_result) = self
+            //  output_index can be None if the output is overridden or because
+            // read_last_output_entry detected protocol version <= V3.
+            // In that case, the results is embedded in the ResponseResult and we
+            // can't use Reference
+            let (output_index, response_result) = if let Some(response_result) =
+                response_result_override
+            {
+                // when the output is overridden, we have no way to reference
+                // output journal, so we return None instead.
+
+                (None, response_result)
+            } else if let Some((output_index, response_result)) = self
                 .read_last_output_entry_result(
                     &invocation_id,
                     journal_length,
@@ -2749,7 +2789,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 )
                 .await?
             {
-                response_result
+                (output_index, response_result)
             } else {
                 // We don't panic on this, although it indicates a bug at the moment.
                 warn!("Invocation completed without an output entry. This is not supported yet.");
@@ -2792,6 +2832,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
+                // Only use `reference` if write-result-reference feature is enabled.
+                let output_index = if self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_write_result_reference_enabled()
+                {
+                    output_index
+                } else {
+                    // force embed
+                    None
+                };
+
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
@@ -2799,7 +2852,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     } else {
                         JournalRetentionPolicy::Retain
                     },
-                    response_result,
+                    ResponseResultRef::new(response_result, output_index),
                     self.record_created_at,
                 );
                 self.do_store_completed_invocation(invocation_id, completed_invocation)?;
@@ -4105,7 +4158,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
         service_protocol_version: ServiceProtocolVersion,
-    ) -> Result<Option<ResponseResult>, Error>
+    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
     where
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
     {
@@ -4121,10 +4174,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
                     let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                    return Ok(Some(match cmd.result {
-                        OutputResult::Success(s) => ResponseResult::Success(s),
-                        OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                    }));
+                    return Ok(Some((
+                        Some(i),
+                        match cmd.result {
+                            OutputResult::Success(s) => ResponseResult::Success(s),
+                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                        },
+                    )));
                 }
             }
             Ok(None)
@@ -4149,7 +4205,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         Entry::Output(e) =
                             enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
-                    Ok(e.result.into())
+                    Ok((None, e.result.into()))
                 })
                 .transpose()
         }
@@ -4213,6 +4269,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<(), Error>
     where
         S: ReadInvocationStatusTable
+            + journal_table_v2::ReadJournalTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -4229,6 +4286,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let invocation_id = attach_invocation_request
             .invocation_query
             .to_invocation_id();
+
         match self.get_invocation_status(&invocation_id).await? {
             InvocationStatus::Free => self.send_response_to_sinks(
                 vec![attach_invocation_request.response_sink],
@@ -4260,13 +4318,31 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
-                self.send_response_to_sinks(
-                    vec![attach_invocation_request.response_sink],
-                    completed.response_result,
-                    Some(invocation_id),
-                    completion_expiry_time,
-                    Some(&completed.invocation_target),
-                )?;
+                let response_result = self
+                    .storage
+                    .resolve_response_result_ref(invocation_id, &completed.response_result)
+                    .await?;
+
+                match response_result {
+                    Some(result) => {
+                        self.send_response_to_sinks(
+                            vec![attach_invocation_request.response_sink],
+                            result,
+                            Some(invocation_id),
+                            completion_expiry_time,
+                            Some(&completed.invocation_target),
+                        )?;
+                    }
+                    None => {
+                        self.send_response_to_sinks(
+                            vec![attach_invocation_request.response_sink],
+                            GONE_INVOCATION_ERROR,
+                            Some(invocation_id),
+                            completion_expiry_time,
+                            Some(&completed.invocation_target),
+                        )?;
+                    }
+                }
             }
         }
 
@@ -4294,6 +4370,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     "Send response to ingress with request id '{:?}': Failure({})",
                     request_id,
                     e
+                )
+            }
+            InvocationOutputResponse::Gone => {
+                debug_if_leader!(
+                    self.is_leader,
+                    "Send response to ingress with request id '{:?}': Gone",
+                    request_id
                 )
             }
         };

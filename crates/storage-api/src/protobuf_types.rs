@@ -140,11 +140,13 @@ pub mod v1 {
             span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
+            self, PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
         use crate::protobuf_types::v1::{
-            Future, NotificationEntryIndex, NotificationResultVariant,
+            Future, NotificationEntryIndex, NotificationResultVariant, ResponseFailure,
+            ResponseReference, ResponseResultRef, ResponseSuccess, response_reference,
+            response_result_ref,
         };
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
@@ -3705,26 +3707,127 @@ pub mod v1 {
             fn from(value: restate_types::invocation::ResponseResult) -> Self {
                 let response_result = match value {
                     restate_types::invocation::ResponseResult::Success(value) => {
-                        response_result::ResponseResult::ResponseSuccess(
-                            response_result::ResponseSuccess { value },
-                        )
+                        response_result::ResponseResult::ResponseSuccess(ResponseSuccess { value })
                     }
                     restate_types::invocation::ResponseResult::Failure(err) => {
-                        response_result::ResponseResult::ResponseFailure(
-                            response_result::ResponseFailure {
-                                failure_code: err.code().into(),
-                                failure_message: Bytes::copy_from_slice(err.message().as_ref()),
-                                failure_metadata: err
-                                    .metadata
-                                    .into_iter()
-                                    .map(|(key, value)| FailureMetadata { key, value })
-                                    .collect(),
-                            },
-                        )
+                        response_result::ResponseResult::ResponseFailure(ResponseFailure {
+                            failure_code: err.code().into(),
+                            failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                            failure_metadata: err
+                                .metadata
+                                .into_iter()
+                                .map(|(key, value)| FailureMetadata { key, value })
+                                .collect(),
+                        })
                     }
                 };
 
                 ResponseResult {
+                    response_result: Some(response_result),
+                }
+            }
+        }
+
+        impl From<response_reference::Result> for invocation_status_table::ExitResult {
+            fn from(value: response_reference::Result) -> Self {
+                match value {
+                    response_reference::Result::Success(_) => Self::Success,
+                    response_reference::Result::Failure(failure) => {
+                        Self::Failure(invocation_status_table::ExitFailure {
+                            code: failure.failure_code.into(),
+                            message: failure.failure_message.into(),
+                        })
+                    }
+                }
+            }
+        }
+
+        impl From<invocation_status_table::ExitResult> for response_reference::Result {
+            fn from(value: invocation_status_table::ExitResult) -> Self {
+                match value {
+                    invocation_status_table::ExitResult::Success => Self::Success(()),
+                    invocation_status_table::ExitResult::Failure(failure) => {
+                        Self::Failure(response_reference::ResponseFailure {
+                            failure_code: failure.code.into(),
+                            failure_message: failure.message.to_string(),
+                        })
+                    }
+                }
+            }
+        }
+
+        impl TryFrom<ResponseResultRef> for invocation_status_table::ResponseResultRef {
+            type Error = ConversionError;
+
+            fn try_from(value: ResponseResultRef) -> Result<Self, ConversionError> {
+                let result = match value
+                    .response_result
+                    .ok_or_else(|| ConversionError::missing_field("response_result"))?
+                {
+                    response_result_ref::ResponseResult::ResponseReference(reference) => {
+                        invocation_status_table::ResponseResultRef::Reference(
+                            invocation_status_table::ResponseReference {
+                                entry_index: reference.entry_idx,
+                                result: reference
+                                    .result
+                                    .ok_or_else(|| ConversionError::missing_field("exit_code"))?
+                                    .into(),
+                            },
+                        )
+                    }
+                    response_result_ref::ResponseResult::ResponseSuccess(success) => {
+                        invocation_status_table::ResponseResultRef::Success(success.value)
+                    }
+                    response_result_ref::ResponseResult::ResponseFailure(failure) => {
+                        // we should be able to turn the incoming Bytes into a String without a copy
+                        let failure_message = Vec::<u8>::from(failure.failure_message);
+                        let failure_message = String::from_utf8(failure_message)
+                            .map_err(ConversionError::invalid_data)?;
+                        invocation_status_table::ResponseResultRef::Failure(
+                            InvocationError::new(failure.failure_code, failure_message)
+                                .with_metadata_vec(
+                                    failure
+                                        .failure_metadata
+                                        .into_iter()
+                                        .map(|m| (m.key, m.value))
+                                        .collect(),
+                                ),
+                        )
+                    }
+                };
+
+                Ok(result)
+            }
+        }
+
+        impl From<invocation_status_table::ResponseResultRef> for ResponseResultRef {
+            fn from(value: invocation_status_table::ResponseResultRef) -> Self {
+                let response_result = match value {
+                    invocation_status_table::ResponseResultRef::Reference(reference) => {
+                        response_result_ref::ResponseResult::ResponseReference(ResponseReference {
+                            entry_idx: reference.entry_index,
+                            result: Some(reference.result.into()),
+                        })
+                    }
+                    invocation_status_table::ResponseResultRef::Success(value) => {
+                        response_result_ref::ResponseResult::ResponseSuccess(ResponseSuccess {
+                            value,
+                        })
+                    }
+                    invocation_status_table::ResponseResultRef::Failure(err) => {
+                        response_result_ref::ResponseResult::ResponseFailure(ResponseFailure {
+                            failure_code: err.code().into(),
+                            failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                            failure_metadata: err
+                                .metadata
+                                .into_iter()
+                                .map(|(key, value)| FailureMetadata { key, value })
+                                .collect(),
+                        })
+                    }
+                };
+
+                ResponseResultRef {
                     response_result: Some(response_result),
                 }
             }
@@ -4158,10 +4261,12 @@ pub mod v1 {
         };
 
         use crate::protobuf_types::v1::{
-            InvocationTarget, ResponseResult, Source, SpanContextLite,
+            InvocationTarget, Source, SpanContextLite,
             pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
-            response_result, source,
+            source,
         };
+
+        use crate::protobuf_types::v1::{ResponseResultRef, response_result_ref};
 
         fn merge_bytes_zerocopy<'a>(
             wire_type: prost::encoding::WireType,
@@ -4464,13 +4569,13 @@ pub mod v1 {
 
             pub fn response_result(
                 &self,
-            ) -> Result<response_result::ResponseResult, ConversionError> {
+            ) -> Result<response_result_ref::ResponseResult, ConversionError> {
                 use ConversionError;
 
                 let result = self.result_lazy.as_ref();
                 let result = expect_or_fail!(result)?;
 
-                let result = ResponseResult::decode(*result)
+                let result = ResponseResultRef::decode(*result)
                     .map_err(|_| ConversionError::invalid_data_static("result"))?;
 
                 let response_result = result.response_result.as_ref();

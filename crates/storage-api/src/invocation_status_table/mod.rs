@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::ops::{ControlFlow, RangeInclusive};
@@ -18,7 +19,8 @@ use bytestring::ByteString;
 use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::errors::{InvocationError, InvocationErrorCode};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -717,6 +719,85 @@ impl InFlightInvocationMetadata {
     }
 }
 
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// A stripped down version of InvocationError
+pub struct ExitFailure {
+    pub code: InvocationErrorCode,
+    pub message: Cow<'static, str>,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExitResult {
+    Success,
+    Failure(ExitFailure),
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResponseReference {
+    pub entry_index: EntryIndex,
+    pub result: ExitResult,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResponseResultRef {
+    Reference(ResponseReference),
+    // Embedded success/failure status
+    // Used for overrides and backward compatibility
+    // with older ResponseResult
+    #[debug("Success(<data>)")]
+    Success(Bytes),
+    #[debug("Failure({_0})")]
+    Failure(InvocationError),
+}
+
+impl ResponseResultRef {
+    /// Create a new ResponseResultRef. It's the caller responsibility to make
+    /// sure the EntryIndex is valid (if set) and that it points to the journal
+    /// entry of the ResponseResult.
+    pub fn new(result: ResponseResult, output_index: Option<EntryIndex>) -> Self {
+        match (output_index, result) {
+            (None, ResponseResult::Success(bytes)) => Self::Success(bytes),
+            (None, ResponseResult::Failure(failure)) => Self::Failure(failure),
+            (Some(entry_index), result) => Self::Reference(ResponseReference {
+                entry_index,
+                result: result.into(),
+            }),
+        }
+    }
+
+    pub fn result(&self) -> ExitResult {
+        match self {
+            Self::Success(_) => ExitResult::Success,
+            Self::Failure(err) => ExitResult::Failure(ExitFailure {
+                code: err.code,
+                message: err.message.clone(),
+            }),
+            Self::Reference(reference) => reference.result.clone(),
+        }
+    }
+}
+
+impl From<ResponseResult> for ResponseResultRef {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Self::Success(bytes),
+            ResponseResult::Failure(failure) => Self::Failure(failure),
+        }
+    }
+}
+
+impl From<ResponseResult> for ExitResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(_) => Self::Success,
+            ResponseResult::Failure(failure) => Self::Failure(ExitFailure {
+                code: failure.code,
+                message: failure.message,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub vqueue_id: Option<VQueueId>,
@@ -733,7 +814,7 @@ pub struct CompletedInvocation {
     pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
-    pub response_result: ResponseResult,
+    pub response_result: ResponseResultRef,
 
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
@@ -759,7 +840,7 @@ impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         in_flight_invocation_metadata
@@ -776,7 +857,7 @@ impl CompletedInvocation {
             execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
@@ -877,8 +958,7 @@ mod test_util {
     use super::*;
     use restate_sharding::PartitionKey;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-
-    use restate_types::invocation::VirtualObjectHandlerType;
+    use restate_types::invocation::{ResponseResult, VirtualObjectHandlerType};
 
     impl StatusTimestamps {
         pub fn mock() -> Self {
@@ -1014,7 +1094,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
@@ -1042,7 +1122,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),

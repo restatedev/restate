@@ -220,13 +220,31 @@ pub(crate) fn append_invocation_status_row<'a>(
             }
 
             if row.is_completion_result_defined() || row.is_completion_failure_defined() {
-                use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
+                use restate_storage_api::protobuf_types::v1::response_reference::Result;
+                use restate_storage_api::protobuf_types::v1::response_result_ref::ResponseResult;
                 match invocation_status.response_result()? {
+                    ResponseResult::ResponseReference(reference) => {
+                        let exit_code = reference
+                            .result
+                            .ok_or_else(|| ConversionError::missing_field("exit_code"))?;
+                        match exit_code {
+                            Result::Success(_) => row.completion_result("success"),
+                            Result::Failure(failure) => {
+                                row.completion_result("failure");
+                                if row.is_completion_failure_defined() {
+                                    row.fmt_completion_failure(format_args!(
+                                        "[{}] {}",
+                                        failure.failure_code, failure.failure_message,
+                                    ));
+                                }
+                            }
+                        }
+                    }
                     ResponseResult::ResponseSuccess(_) => {
                         row.completion_result("success");
                     }
                     ResponseResult::ResponseFailure(
-                        restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
+                        restate_storage_api::protobuf_types::v1::ResponseFailure {
                             failure_code,
                             failure_message,
                             ..
