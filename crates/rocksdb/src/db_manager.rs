@@ -86,7 +86,6 @@ impl RocksDbManager {
         let mut env = rocksdb::Env::new().expect("rocksdb env is created");
         env.set_high_priority_background_threads(2);
         env.set_low_priority_background_threads(1);
-        env.set_bottom_priority_background_threads(1);
 
         // Setup the global write rate limiter
         let rate_limiter = RateLimiter::new(
