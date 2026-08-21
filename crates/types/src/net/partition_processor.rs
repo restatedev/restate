@@ -18,9 +18,9 @@ use crate::identifiers::{
     PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use crate::invocation::client::{
-    CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PatchDeploymentId,
-    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse, SubmittedInvocationNotification,
+    CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -117,6 +117,9 @@ pub enum GetInvocationOutputResponseMode {
 pub enum PartitionProcessorRpcRequestInner {
     AppendInvocation(Arc<InvocationRequest>, AppendInvocationReplyOn),
     GetInvocationOutput(InvocationQuery, GetInvocationOutputResponseMode),
+    GetInvocationStatus {
+        invocation_id: InvocationId,
+    },
     AppendInvocationResponse(InvocationResponse),
     AppendSignal(InvocationId, Signal),
     CancelInvocation {
@@ -172,6 +175,9 @@ impl WithPartitionKey for PartitionProcessorRpcRequestInner {
                 invocation_id.partition_key()
             }
             PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
+                invocation_id.partition_key()
+            }
+            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
                 invocation_id.partition_key()
             }
         }
@@ -535,6 +541,7 @@ pub enum PartitionProcessorRpcResponse {
     NotSupported,
     Submitted(SubmittedInvocationNotification),
     Output(InvocationOutput),
+    Status(InvocationStatus),
     CancelInvocation(CancelInvocationRpcResponse),
     KillInvocation(KillInvocationRpcResponse),
     PurgeInvocation(PurgeInvocationRpcResponse),

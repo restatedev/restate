@@ -88,6 +88,31 @@ pub enum GetInvocationOutputResponse {
     Ready(InvocationOutput),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum InvocationState {
+    Scheduled,
+    Inboxed,
+    Invoked,
+    Suspended,
+    Paused,
+    Killed,
+    Failed,
+    Succeeded,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct InvocationStatus {
+    pub state: InvocationState,
+    pub error: Option<InvocationError>,
+}
+
+// the most used variant is the largest one, so we are muting clippy intentionally.
+#[derive(Debug, Clone)]
+pub enum GetInvocationStatusResponse {
+    NotFound,
+    Status(InvocationStatus),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CancelInvocationResponse {
     /// The cancellation was processed immediately (e.g. for inboxed/scheduled invocations)
@@ -211,6 +236,13 @@ pub trait InvocationClient {
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, InvocationClientError>> + Send;
+
+    /// Get invocation status, when present.
+    fn get_invocation_status(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<GetInvocationStatusResponse, InvocationClientError>> + Send;
 
     /// **DEPRECATED** Append [`InvocationResponse`] to an existing invocation journal. Only ServiceProtocol <= 3
     fn append_invocation_response(
