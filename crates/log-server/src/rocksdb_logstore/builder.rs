@@ -97,7 +97,6 @@ impl RocksDbConfigurator {
             let mut env = rocksdb::Env::new()?;
             env.set_high_priority_background_threads(1);
             env.set_low_priority_background_threads(1);
-            env.set_bottom_priority_background_threads(1);
             env
         };
         Ok(Self { env })
