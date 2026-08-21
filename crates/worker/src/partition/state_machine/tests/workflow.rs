@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-
 use std::time::Duration;
 
 use prost::Message;
@@ -21,10 +19,11 @@ use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
-    PurgeInvocationRequest, ResponseResultRef,
+    PurgeInvocationRequest,
 };
 use restate_types::service_protocol;
 
+use super::*;
 use crate::partition::state_machine::tests::matchers::actions::purge_invocation_reply;
 
 #[restate_core::test]
