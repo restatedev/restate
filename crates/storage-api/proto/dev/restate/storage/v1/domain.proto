@@ -655,7 +655,7 @@ message ResponseReference {
   }
 
   uint32 entry_idx = 1;
-  oneof exit_code {
+  oneof result {
     google.protobuf.Empty success = 2;
     ResponseFailure failure = 3;
   }
