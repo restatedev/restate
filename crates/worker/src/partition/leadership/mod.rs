@@ -732,7 +732,9 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled() {
+            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled()
+                || config.worker.disable_scheduler
+            {
                 // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
                 // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
                 // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
@@ -904,13 +906,14 @@ where
         &mut self,
         processor: impl Processor + HasVQueues,
         actions: impl Iterator<Item = Action>,
+        scheduler_disabled: bool,
     ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => {
                 // nothing to do :-)
             }
             State::Leader(leader_state) => {
-                leader_state.handle_actions(processor, actions)?;
+                leader_state.handle_actions(processor, actions, scheduler_disabled)?;
             }
         }
 

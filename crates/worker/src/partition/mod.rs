@@ -593,6 +593,7 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
+            let scheduler_disabled = config.worker.disable_scheduler;
             let network_processing_permit =
                 self.leadership_state.try_reserve_rpc_processing_permit();
 
@@ -710,7 +711,7 @@ where
                     // Commit our changes and notify actuators about actions if we are the leader
                     txn.commit().await?;
                     self.ctx.release_applied_lsn();
-                    self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..))?;
+                    self.leadership_state.handle_actions(&mut self.ctx, action_collector.drain(..), scheduler_disabled)?;
 
                     // Compact the vqueues meta cache only after all actions have been processed. This
                     // is important because the actions can contain vqueue scheduler events that assume

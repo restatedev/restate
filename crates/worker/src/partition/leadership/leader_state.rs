@@ -22,10 +22,6 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
-use tokio::time::Instant;
-use tokio_stream::wrappers::{ReceiverStream, WatchStream};
-use tracing::{debug, trace};
-
 use restate_bifrost::CommitToken;
 use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
@@ -58,6 +54,10 @@ use restate_wal_protocol::v1::UpsertRuleBookCommandWrapper;
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
+use tokio::time::Instant;
+use tokio_stream::wrappers::{ReceiverStream, WatchStream};
+use tracing::log::warn;
+use tracing::{debug, trace};
 
 use crate::metric_definitions::{PARTITION_HANDLE_LEADER_ACTIONS, USAGE_LEADER_ACTION_COUNT};
 use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
@@ -837,6 +837,7 @@ impl LeaderState {
         &mut self,
         processor: impl Processor + HasVQueues,
         actions: impl Iterator<Item = Action>,
+        scheduler_disabled: bool,
     ) -> Result<(), Error> {
         for action in actions {
             let action_name = action.name();
@@ -851,7 +852,7 @@ impl LeaderState {
             )
             .increment(1);
 
-            self.handle_action(&processor, action)?;
+            self.handle_action(&processor, action, scheduler_disabled)?;
         }
 
         Ok(())
@@ -861,12 +862,19 @@ impl LeaderState {
         &mut self,
         processor: &(impl Processor + HasVQueues),
         action: Action,
+        scheduler_disabled: bool,
     ) -> Result<(), Error> {
         match action {
             Action::Invoke {
                 invocation_id,
                 invocation_target,
             } => {
+                if scheduler_disabled {
+                    warn!(
+                        "The scheduler is disabled. The system won't process invocation commands."
+                    );
+                    return Ok(());
+                }
                 let fencing_token = self.fencing_tokens.mint(invocation_id);
                 self.invoker_handle
                     .invoke(invocation_id, fencing_token, invocation_target)
