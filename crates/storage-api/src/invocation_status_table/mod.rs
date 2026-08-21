@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::ops::{ControlFlow, RangeInclusive};
@@ -18,9 +19,10 @@ use bytestring::ByteString;
 use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::errors::{InvocationError, InvocationErrorCode};
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
-    Header, InvocationInput, InvocationTarget, ResponseResultRef, ServiceInvocation,
+    Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
 };
 use restate_types::journal_v2::UnresolvedFuture;
@@ -714,6 +716,85 @@ impl InFlightInvocationMetadata {
         );
         self.pinned_deployment = Some(pinned_deployment);
         self.timestamps.update(timestamp);
+    }
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+// A stripped down version of InvocationError
+pub struct ExitFailure {
+    pub code: InvocationErrorCode,
+    pub message: Cow<'static, str>,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ExitResult {
+    Success,
+    Failure(ExitFailure),
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResponseReference {
+    pub entry_index: EntryIndex,
+    pub result: ExitResult,
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ResponseResultRef {
+    Reference(ResponseReference),
+    // Embedded success/failure status
+    // Used for overrides and backward compatibility
+    // with older ResponseResult
+    #[debug("Success(<data>)")]
+    Success(Bytes),
+    #[debug("Failure({_0})")]
+    Failure(InvocationError),
+}
+
+impl ResponseResultRef {
+    /// Create a new ResponseResultRef. It's the caller responsibility to make
+    /// sure the EntryIndex is valid (if set) and that it points to the journal
+    /// entry of the ResponseResult.
+    pub fn new(result: ResponseResult, output_index: Option<EntryIndex>) -> Self {
+        match (output_index, result) {
+            (None, ResponseResult::Success(bytes)) => Self::Success(bytes),
+            (None, ResponseResult::Failure(failure)) => Self::Failure(failure),
+            (Some(entry_index), result) => Self::Reference(ResponseReference {
+                entry_index,
+                result: result.into(),
+            }),
+        }
+    }
+
+    pub fn result(&self) -> ExitResult {
+        match self {
+            Self::Success(_) => ExitResult::Success,
+            Self::Failure(err) => ExitResult::Failure(ExitFailure {
+                code: err.code,
+                message: err.message.clone(),
+            }),
+            Self::Reference(reference) => reference.result.clone(),
+        }
+    }
+}
+
+impl From<ResponseResult> for ResponseResultRef {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Self::Success(bytes),
+            ResponseResult::Failure(failure) => Self::Failure(failure),
+        }
+    }
+}
+
+impl From<ResponseResult> for ExitResult {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(_) => Self::Success,
+            ResponseResult::Failure(failure) => Self::Failure(ExitFailure {
+                code: failure.code,
+                message: failure.message,
+            }),
+        }
     }
 }
 
