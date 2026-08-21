@@ -546,10 +546,41 @@ where
             // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
             // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
             // not touch the local FSM mirror here.
-            if config.common.experimental.is_vqueues_enabled()
-                && !processor.fsm().features().is_vqueues_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableVqueues);
+            if config.common.experimental.is_vqueues_enabled() {
+                // The vqueues flag is true, one of the following will happen:
+                //   1. We're already on vqueues, so nothing to do.
+                //   2. We're not yet on vqueues, so we'll migrate either fully or partially depending
+                //      on the vqueues_skip_completed flag.
+                //   3. We've previously partially migrated to vqueues, but now we want to fully migrate,
+                //      so we'll trigger a full migration.
+                match (
+                    config
+                        .common
+                        .experimental
+                        .is_vqueues_migration_skip_completed_enabled(),
+                    processor.fsm().features().is_vqueues_enabled(),
+                    processor.fsm().features().is_fully_migrated_to_vqueues(),
+                ) {
+                    (_, _, true) => {
+                        // Nothing to do here, we're fully migrated to vqueues.
+                    }
+
+                    (false, _, false) => {
+                        // skip_completed=False (full migration), and we're not yet fully migrated,
+                        // so we'll trigger a full migration.
+                        feature_changes.push(PartitionFeatureChange::EnableVqueues);
+                    }
+
+                    (true, true, false) => {
+                        // skip_completed=True (partial migration), and we're already partially migrated,
+                        // nothing to do here.
+                    }
+                    (true, false, false) => {
+                        // skip_completed=True (partial migration), and we're yet on vqueues, so we'll
+                        // trigger a partial migration.
+                        feature_changes.push(PartitionFeatureChange::EnableVqueuesSkipCompleted);
+                    }
+                }
             }
 
             // Persist a unique random seed on new invocations. Needs to be opted-in because
@@ -671,19 +702,28 @@ where
                 })?
                 .into_guard();
 
-            let scheduler_service = SchedulerService::create(
-                ResourceManager::create(
+            let scheduler_service = if config.worker.disable_scheduler {
+                warn!(
+                    leader_epoch = %leader_epoch,
+                    "The VQueue scheduler is disabled on this partition processor. Unsetting \
+                     worker.disable-scheduler and re-acquiring leadership is required to enable it."
+                );
+                SchedulerService::new_disabled()
+            } else {
+                SchedulerService::create(
+                    ResourceManager::create(
+                        partition_store.partition_db().clone(),
+                        node_ctx.invoker_capacity.concurrency.clone(),
+                        node_ctx.invoker_capacity.invocation_token_bucket.clone(),
+                        node_ctx.invoker_capacity.memory_pool.clone(),
+                        node_ctx.invoker_capacity.initial_invocation_memory,
+                    )
+                    .await?,
                     partition_store.partition_db().clone(),
-                    node_ctx.invoker_capacity.concurrency.clone(),
-                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
-                    node_ctx.invoker_capacity.memory_pool.clone(),
-                    node_ctx.invoker_capacity.initial_invocation_memory,
+                    processor.vqueues_mut(),
                 )
-                .await?,
-                partition_store.partition_db().clone(),
-                processor.vqueues_mut(),
-            )
-            .await?;
+                .await?
+            };
 
             // Seed the scheduler's UserLimiter with whatever rules
             // have already been applied to this partition.
@@ -1022,39 +1062,38 @@ mod tests {
 
     use assert2::let_assert;
     use restate_bifrost::Bifrost;
+    use restate_core::network::Reciprocal;
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
-    use restate_types::identifiers::{LeaderEpoch, PartitionId};
+    use restate_types::deployment::PinnedDeployment;
+    use restate_types::identifiers::{
+        DeploymentId, InvocationId, LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId,
+    };
+    use restate_types::invocation::FencingToken;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
     };
+    use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
     use restate_wal_protocol::Command;
     use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::invocation::PauseInvocationCommand;
     use restate_worker_api::invoker::capacity::InvokerCapacity;
+    use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
     use crate::partition::leadership::{LeadershipState, State};
     use crate::partition::processor::ProcessorRawContext;
+    use crate::partition::types::InvokerEffect;
     use crate::partition::{LeadershipInfo, NodeContext};
     use crate::partition_processor_manager::PartitionLeaderHandlesRegistry;
     use crate::rule_book_cache::RuleBookCacheHandle;
-
-    use restate_core::network::Reciprocal;
-    use restate_types::deployment::PinnedDeployment;
-    use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
-    use restate_types::invocation::FencingToken;
-    use restate_types::service_protocol::ServiceProtocolVersion;
-    use restate_wal_protocol::invocation::PauseInvocationCommand;
-    use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
-
-    use crate::partition::types::InvokerEffect;
 
     const PARTITION_ID: PartitionId = PartitionId::MIN;
     const NODE_ID: GenerationalNodeId = GenerationalNodeId::new(0, 0);
@@ -1210,6 +1249,7 @@ mod tests {
             PersistedFeatures {
                 journal_v2: true,
                 vqueues: true,
+                vqueues_skip_completed: true,
                 unique_random_seeds: true,
             },
         );
@@ -1253,7 +1293,6 @@ mod tests {
         let State::Leader(leader_state) = &mut state.state else {
             panic!("expected to be leader");
         };
-
         let invocation_id = InvocationId::mock_random();
         // Four distinguishable effects so we can assert exactly which were appended.
         let dep_attempt1 = DeploymentId::from_parts(1, 1);

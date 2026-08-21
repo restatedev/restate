@@ -16,6 +16,10 @@ use serde_with::serde_as;
 use restate_memory::NonZeroByteCount;
 use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
+/// h2's own default; smaller budgets weaken the protection against peers that
+/// fragment their payload into many tiny DATA frames.
+const MIN_DATA_FRAME_BUDGET: usize = 25_600;
+
 /// # HTTP client options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -118,6 +122,23 @@ pub struct HttpOptions {
     ///
     /// Default: 16 KiB
     http2_max_frame_size: NonZeroByteCount,
+
+    /// # HTTP/2 DATA frame budget
+    ///
+    /// Connection-level budget (in bytes) for HTTP/2 DATA framing overhead.
+    ///
+    /// HTTP/2 flow control limits DATA payload bytes, but it does not limit the number of frames carrying those bytes.
+    /// A peer could fragment data into many tiny frames, causing disproportionate memory usage from queued events and
+    /// slab entries while remaining within the flow-control windows.
+    ///
+    /// Values below 25 KiB (25600 B) are raised to 25600 B.
+    ///
+    /// Since v1.7.5
+    ///
+    /// Default: 1 MiB
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    http2_data_frame_budget: Option<NonZeroByteCount>,
 }
 
 impl Default for HttpOptions {
@@ -137,6 +158,7 @@ impl Default for HttpOptions {
                 NonZeroUsize::new(5 * 1024 * 1024).unwrap(),
             ),
             http2_max_frame_size: NonZeroByteCount::new(NonZeroUsize::new(16 * 1024).unwrap()),
+            http2_data_frame_budget: None,
         }
     }
 }
@@ -158,6 +180,13 @@ impl HttpOptions {
         u32::try_from(self.http2_max_frame_size.as_usize())
             .unwrap_or(u32::MAX)
             .clamp(16_384, 16_777_215)
+    }
+
+    pub fn data_frame_budget(&self) -> usize {
+        self.http2_data_frame_budget
+            .map(|v| v.as_usize())
+            .unwrap_or_else(|| 1024 * 1024) // 1MiB
+            .max(MIN_DATA_FRAME_BUDGET)
     }
 
     pub(crate) fn apply_deprecated(&mut self, new_base: &str, deprecated: DeprecatedHttpOptions) {

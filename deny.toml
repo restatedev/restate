@@ -100,9 +100,6 @@ skip = [
     { name = "windows_i686_msvc" },
     { name = "windows_aarch64_msvc" },
 
-    # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
-    { name = "base64" },
-
     # The following is an internal dependency needed by librocksdb-sys
     { name = "syn" },
 
@@ -129,4 +126,8 @@ allow-git = ["https://github.com/apache/arrow-rs.git"]
 
 [sources.allow-org]
 # 1 or more github.com organizations to allow git sources for
-github = ["restatedev"]
+github = [
+    "restatedev",
+    # TODO: remove after https://github.com/hyperium/h2/pull/942 is merged and released
+    "muhamadazmy",
+]

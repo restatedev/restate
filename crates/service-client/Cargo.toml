@@ -32,7 +32,8 @@ dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
-h2 = "0.4.16"
+# TODO: Update to latest h2 version once https://github.com/hyperium/h2/pull/942 is merged
+h2 = { git = "https://github.com/muhamadazmy/h2", branch = "configurable-data-frame-budget"}
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
