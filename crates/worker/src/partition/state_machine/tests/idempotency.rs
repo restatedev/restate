@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::Duration;
 
-use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
+use rstest::*;
+
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, JournalMetadata, StatusTimestamps,
@@ -18,11 +19,12 @@ use restate_storage_api::invocation_status_table::{
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, InvocationTarget, PurgeInvocationRequest,
-    ResponseResultRef, SubmitNotificationSink,
+    SubmitNotificationSink,
 };
 use restate_worker_api::invoker::Effect;
-use rstest::*;
-use std::time::Duration;
+
+use super::*;
+use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
 
 #[restate_core::test]
 async fn start_and_complete_idempotent_invocation() {

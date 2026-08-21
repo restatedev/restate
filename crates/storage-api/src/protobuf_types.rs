@@ -99,7 +99,7 @@ pub mod v1 {
         use restate_types::identifiers::{
             PartitionProcessorRpcRequestId, WithInvocationId, WithPartitionKey,
         };
-        use restate_types::invocation::{ExitFailure, InvocationTermination, TerminationFlavor};
+        use restate_types::invocation::{InvocationTermination, TerminationFlavor};
         use restate_types::journal::enriched::AwakeableEnrichmentResult;
         use restate_types::journal_v2::raw::RawNotificationResultVariant;
         use restate_types::journal_v2::{
@@ -140,7 +140,7 @@ pub mod v1 {
             span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
+            self, PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
         use crate::protobuf_types::v1::{
@@ -3728,23 +3728,25 @@ pub mod v1 {
             }
         }
 
-        impl From<response_reference::ExitCode> for restate_types::invocation::ExitCode {
-            fn from(value: response_reference::ExitCode) -> Self {
+        impl From<response_reference::Result> for invocation_status_table::ExitResult {
+            fn from(value: response_reference::Result) -> Self {
                 match value {
-                    response_reference::ExitCode::Success(_) => Self::Success,
-                    response_reference::ExitCode::Failure(failure) => Self::Failure(ExitFailure {
-                        code: failure.failure_code.into(),
-                        message: failure.failure_message.into(),
-                    }),
+                    response_reference::Result::Success(_) => Self::Success,
+                    response_reference::Result::Failure(failure) => {
+                        Self::Failure(invocation_status_table::ExitFailure {
+                            code: failure.failure_code.into(),
+                            message: failure.failure_message.into(),
+                        })
+                    }
                 }
             }
         }
 
-        impl From<restate_types::invocation::ExitCode> for response_reference::ExitCode {
-            fn from(value: restate_types::invocation::ExitCode) -> Self {
+        impl From<invocation_status_table::ExitResult> for response_reference::Result {
+            fn from(value: invocation_status_table::ExitResult) -> Self {
                 match value {
-                    restate_types::invocation::ExitCode::Success => Self::Success(()),
-                    restate_types::invocation::ExitCode::Failure(failure) => {
+                    invocation_status_table::ExitResult::Success => Self::Success(()),
+                    invocation_status_table::ExitResult::Failure(failure) => {
                         Self::Failure(response_reference::ResponseFailure {
                             failure_code: failure.code.into(),
                             failure_message: failure.message.to_string(),
@@ -3754,7 +3756,7 @@ pub mod v1 {
             }
         }
 
-        impl TryFrom<ResponseResultRef> for restate_types::invocation::ResponseResultRef {
+        impl TryFrom<ResponseResultRef> for invocation_status_table::ResponseResultRef {
             type Error = ConversionError;
 
             fn try_from(value: ResponseResultRef) -> Result<Self, ConversionError> {
@@ -3763,25 +3765,25 @@ pub mod v1 {
                     .ok_or_else(|| ConversionError::missing_field("response_result"))?
                 {
                     response_result_ref::ResponseResult::ResponseReference(reference) => {
-                        restate_types::invocation::ResponseResultRef::Reference(
-                            restate_types::invocation::ResponseReference {
+                        invocation_status_table::ResponseResultRef::Reference(
+                            invocation_status_table::ResponseReference {
                                 entry_index: reference.entry_idx,
-                                exit_code: reference
-                                    .exit_code
+                                result: reference
+                                    .result
                                     .ok_or_else(|| ConversionError::missing_field("exit_code"))?
                                     .into(),
                             },
                         )
                     }
                     response_result_ref::ResponseResult::ResponseSuccess(success) => {
-                        restate_types::invocation::ResponseResultRef::Success(success.value)
+                        invocation_status_table::ResponseResultRef::Success(success.value)
                     }
                     response_result_ref::ResponseResult::ResponseFailure(failure) => {
                         // we should be able to turn the incoming Bytes into a String without a copy
                         let failure_message = Vec::<u8>::from(failure.failure_message);
                         let failure_message = String::from_utf8(failure_message)
                             .map_err(ConversionError::invalid_data)?;
-                        restate_types::invocation::ResponseResultRef::Failure(
+                        invocation_status_table::ResponseResultRef::Failure(
                             InvocationError::new(failure.failure_code, failure_message)
                                 .with_metadata_vec(
                                     failure
@@ -3798,21 +3800,21 @@ pub mod v1 {
             }
         }
 
-        impl From<restate_types::invocation::ResponseResultRef> for ResponseResultRef {
-            fn from(value: restate_types::invocation::ResponseResultRef) -> Self {
+        impl From<invocation_status_table::ResponseResultRef> for ResponseResultRef {
+            fn from(value: invocation_status_table::ResponseResultRef) -> Self {
                 let response_result = match value {
-                    restate_types::invocation::ResponseResultRef::Reference(reference) => {
+                    invocation_status_table::ResponseResultRef::Reference(reference) => {
                         response_result_ref::ResponseResult::ResponseReference(ResponseReference {
                             entry_idx: reference.entry_index,
-                            exit_code: Some(reference.exit_code.into()),
+                            result: Some(reference.result.into()),
                         })
                     }
-                    restate_types::invocation::ResponseResultRef::Success(value) => {
+                    invocation_status_table::ResponseResultRef::Success(value) => {
                         response_result_ref::ResponseResult::ResponseSuccess(ResponseSuccess {
                             value,
                         })
                     }
-                    restate_types::invocation::ResponseResultRef::Failure(err) => {
+                    invocation_status_table::ResponseResultRef::Failure(err) => {
                         response_result_ref::ResponseResult::ResponseFailure(ResponseFailure {
                             failure_code: err.code().into(),
                             failure_message: Bytes::copy_from_slice(err.message().as_ref()),
