@@ -33,7 +33,7 @@ use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata,
+    CompletedInvocation, ExitResult, InFlightInvocationMetadata,
 };
 use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
@@ -46,9 +46,7 @@ use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
-use restate_types::invocation::{
-    ExitCode, InvocationTarget, InvocationTargetType, VirtualObjectHandlerType,
-};
+use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
 use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope};
@@ -1394,9 +1392,9 @@ where
         let stage = Stage::Finished;
 
         // How do we know if the invocation was "killed" or cancelled?
-        let status = match completed.response_result.exit_code() {
-            ExitCode::Success => Status::Succeeded,
-            ExitCode::Failure(ref e) => {
+        let status = match completed.response_result.result() {
+            ExitResult::Success => Status::Succeeded,
+            ExitResult::Failure(ref e) => {
                 if e.code == restate_types::errors::codes::ABORTED {
                     // Special handling for cancel/kill. Definitely not ideal, but the current
                     // design leaves me with no other options.

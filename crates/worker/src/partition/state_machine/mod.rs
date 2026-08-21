@@ -44,7 +44,7 @@ use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
     JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
     PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
-    WriteInvocationStatusTable,
+    ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -87,10 +87,9 @@ use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
     InvocationMutationResponseSink, InvocationQuery, InvocationResponse, InvocationTarget,
     InvocationTargetType, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
-    PurgeInvocationRequest, ResponseResult, ResponseResultRef, RestartAsNewInvocationRequest,
-    ResumeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
-    ServiceInvocationSpanContext, Source, SubmitNotificationSink, TerminationFlavor,
-    VirtualObjectHandlerType, WorkflowHandlerType,
+    PurgeInvocationRequest, ResponseResult, RestartAsNewInvocationRequest, ResumeInvocationRequest,
+    ServiceInvocation, ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
+    SubmitNotificationSink, TerminationFlavor, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal::Completion;
 use restate_types::journal::CompletionResult;

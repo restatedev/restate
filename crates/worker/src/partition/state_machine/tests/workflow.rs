@@ -8,17 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::Duration;
 
-use crate::partition::state_machine::tests::matchers::actions::forward_purge_invocation_response;
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
-    PurgeInvocationRequest, ResponseResultRef,
+    PurgeInvocationRequest,
 };
-use std::time::Duration;
+
+use super::*;
+use crate::partition::state_machine::tests::matchers::actions::forward_purge_invocation_response;
 
 #[restate_core::test]
 async fn start_workflow_method() {
