@@ -11,7 +11,6 @@
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{InvocationResponse, JournalCompletionTarget, ResponseResult};
-use restate_wal_protocol::Command;
 
 pub(crate) type InvokerEffect = restate_worker_api::invoker::FencedEffect;
 pub(crate) type InvokerEffectKind = restate_worker_api::invoker::EffectKind;
@@ -23,8 +22,6 @@ pub(crate) trait OutboxMessageExt {
         entry_index: EntryIndex,
         result: ResponseResult,
     ) -> OutboxMessage;
-
-    fn to_command(self) -> Command;
 }
 
 impl OutboxMessageExt for OutboxMessage {
@@ -40,15 +37,5 @@ impl OutboxMessageExt for OutboxMessage {
             },
             result,
         })
-    }
-
-    fn to_command(self) -> Command {
-        match self {
-            OutboxMessage::ServiceInvocation(si) => Command::Invoke(si),
-            OutboxMessage::ServiceResponse(sr) => Command::InvocationResponse(sr),
-            OutboxMessage::InvocationTermination(it) => Command::TerminateInvocation(it),
-            OutboxMessage::AttachInvocation(ai) => Command::AttachInvocation(ai),
-            OutboxMessage::NotifySignal(notify_signal) => Command::NotifySignal(notify_signal),
-        }
     }
 }

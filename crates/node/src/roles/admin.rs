@@ -45,7 +45,8 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::Envelope;
+use restate_wal_protocol::v2::Raw;
 use restate_worker_api::PartitionProcessorInvocationClient;
 
 #[derive(Debug, thiserror::Error, CodedError)]
@@ -82,7 +83,7 @@ impl<T: TransportConnect> AdminRole<T> {
     pub async fn create(
         health_status: HealthStatus<AdminStatus>,
         bifrost: Bifrost,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         updateable_config: Live<Configuration>,
         partition_routing: PartitionRouting,
         partition_table: Live<PartitionTable>,
