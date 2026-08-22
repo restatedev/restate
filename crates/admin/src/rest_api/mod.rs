@@ -23,6 +23,7 @@ mod serdes;
 mod services;
 mod subscriptions;
 mod version;
+mod vqueues;
 
 use serde::Serialize;
 use utoipa::OpenApi;
@@ -59,6 +60,7 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "kafka_cluster", description = "Kafka cluster management"),
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),
+        (name = "vqueue", description = "Virtual queue management"),
         (name = "cluster_health", description = "Cluster health"),
         (name = "health", description = "Admin API health"),
         (name = "version", description = "API Version"),
@@ -106,6 +108,9 @@ where
             // Handler endpoints
             .routes(routes!(handlers::list_service_handlers))
             .routes(routes!(handlers::get_service_handler))
+            // Virtual queue endpoints
+            .routes(routes!(vqueues::pause_vqueue))
+            .routes(routes!(vqueues::resume_vqueue))
             // Invocation endpoints
             .routes(routes!(invocations::delete_invocation))
             .routes(routes!(invocations::kill_invocation))
