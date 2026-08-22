@@ -12,13 +12,13 @@ mod durability_tracker;
 mod fencing;
 mod leader_state;
 mod self_proposer;
+mod self_proposer_scheduler;
 pub mod trim_queue;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
@@ -63,11 +63,8 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
-use restate_vqueues::scheduler::{self};
 use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta};
-use restate_wal_protocol::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
-};
+use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::{Command, Envelope};
 use restate_worker_api::invoker::InvokerHandle;
@@ -80,7 +77,7 @@ use self::fencing::FencingTokens;
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::invoker_integration::EntryEnricher;
 use crate::partition::LeadershipInfo;
-use crate::partition::cleaner::{self, Cleaner};
+use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -146,20 +143,6 @@ pub(crate) enum TaskTermination {
     Unexpected,
     #[display("{}", _0)]
     Failure(GenericError),
-}
-
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum LeaderEvent {
-    Scheduler(Result<scheduler::Decisions, StorageError>),
-    Invoker(InvokerEffect),
-    Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerKeyValue),
-    Cleaner(cleaner::CleanerEffect),
-    PartitionMaintenance(UpdatePartitionDurabilityCommand),
-    UpsertSchema(Schema),
-    UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    NetworkService(NetworkServiceEvent),
 }
 
 #[derive(derive_more::Debug)]
