@@ -118,6 +118,9 @@ pub enum TaskKind {
     LogTrimmer,
     MetadataServer,
     Background,
+    /// Background work for invoker credentials
+    #[strum(props(OnCancel = "abort", runtime = "default", OnError = "log"))]
+    Credentials,
     // -- Bifrost Tasks
     #[strum(props(runtime = "default"))]
     BifrostWatchdog,
@@ -133,15 +136,6 @@ pub enum TaskKind {
     BifrostAppender,
     #[strum(props(OnCancel = "abort", OnError = "log"))]
     Disposable,
-    /// Background work for a credential registry (e.g. building an ADC-backed client for
-    /// GCP-authenticated deployments, and periodic cache housekeeping for that registry). Runs on
-    /// the default runtime, so any refresh task a built credential spawns internally lives on a
-    /// runtime with process lifetime rather than whichever ephemeral runtime (e.g. a partition
-    /// processor) triggered the work. There is nothing worth waiting for on cancellation -- a
-    /// single build is self-contained and a housekeeping tick is safely interrupted -- and a
-    /// failure is a per-caller error or a skipped tick, never a reason to shut down the node.
-    #[strum(props(OnCancel = "abort", runtime = "default", OnError = "log"))]
-    CredentialsRefresh,
     LogletProvider,
     #[strum(props(OnCancel = "abort"))]
     Watchdog,
