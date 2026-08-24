@@ -21,17 +21,13 @@ use super::{BackgroundWorkBudget, CommonOptions, RocksDbOptions};
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
-// We'll use 50% extra memory in the worst case, but will reduce write stalls.
-const MAX_WRITE_BUFFERS: u32 = 12;
-const NOMINAL_WRITE_BUFFERS: u32 = 8;
+// We need at least 2 write buffers so we can accept writes while a flush is in progress.
+const MIN_WRITE_BUFFERS: u32 = 2;
 const WRITE_BUFFERS_TO_MERGE: u32 = 1;
-const LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER: u32 = 8;
 /// Matches rocksdb default (target_file_size_base * 25)
 const COMPACTION_BYTES_MULTIPLIER: u32 = 25;
 /// Try to keep the table files above this size if partition write buffers are too small
-const MIN_FILE_SIZE: usize = 16 * 1024 * 1024;
-/// The absolute minimum write buffer size
-const MIN_WRITE_BUFFER_SIZE: usize = 4 * 1024 * 1024;
+const MIN_FILE_SIZE: usize = 8 * 1024 * 1024;
 
 /// # Log server options
 ///
@@ -49,6 +45,9 @@ pub struct LogServerOptions {
     /// The memory budget for rocksdb memtables in bytes
     ///
     /// If this value is set, it overrides the ratio defined in `rocksdb-memory-ratio`.
+    ///
+    /// The memory budget is automatically sanitized to the minimum of 32 MiB if set to
+    /// a smaller value.
     #[serde(skip_serializing_if = "Option::is_none")]
     rocksdb_memory_budget: Option<NonZeroByteCount>,
 
@@ -90,7 +89,8 @@ pub struct LogServerOptions {
     /// awaiting garbage collection.
     ///
     /// This is safe to enable/disable at any time.
-    #[cfg_attr(feature = "schemars", schemars(skip))]
+    ///
+    /// Since v1.7.0
     pub rocksdb_enable_blob_separation: bool,
 
     /// Minimum value size for blob file separation
@@ -101,8 +101,11 @@ pub struct LogServerOptions {
     /// BlobIndex pointers) at the cost of an extra read indirection on cache misses.
     ///
     /// Only takes effect when `rocksdb-enable-blob-separation` is true.
+    ///
+    /// [default] is 512 KiB
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_blob_min_size: Option<NonZeroByteCount>,
 
     /// Disable compression for blob files
@@ -112,7 +115,8 @@ pub struct LogServerOptions {
     /// on writes and blob-GC reads.
     ///
     /// Only takes effect when `rocksdb-enable-blob-separation` is true.
-    #[cfg_attr(feature = "schemars", schemars(skip))]
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub rocksdb_disable_blob_compression: bool,
 
@@ -121,8 +125,9 @@ pub struct LogServerOptions {
     /// Maximum number of concurrent compaction operations for this database.
     ///
     /// If unset, defaults are computed based on CPU count and active node roles.
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
 
     /// # Write Batch (in bytes)
@@ -168,17 +173,50 @@ pub struct LogServerOptions {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     rocksdb_disable_wal: bool,
 
-    /// # Clamps target size for sst files
+    /// # Target size for SST files
     ///
     /// The target size for sst files. Restate uses this value to internally determine
     /// the number of memtables to keep in memory and how much to merge before flushing.
     ///
-    /// The value is automatically sanitized to 16 MiB if set to a smaller value.
+    /// The value is automatically sanitized to 8 MiB if set to a smaller value.
+    /// When blob separation is enabled, non-L0 SST files instead target 8 MiB.
     ///
     /// [default] is 128 MiB
     ///
     /// Since v1.7.0
     pub rocksdb_max_file_size: NonZeroByteCount,
+
+    /// # Buffer size used for writing to SST files
+    ///
+    /// Sets the maximum buffer size that is used to write SST files to disk.
+    /// Larger values translate to larger IO operations which can be helpful
+    /// for slow or network-attached storage devices.
+    ///
+    /// [default] is 1 MiB
+    ///
+    /// Since v1.7.7
+    pub rocksdb_writable_file_max_buffer_size: NonZeroByteCount,
+
+    /// # Number of L0 files to trigger compaction
+    ///
+    /// Sets the number of files to trigger level-0 compaction.
+    ///
+    /// [default] is 8
+    ///
+    /// Since v1.7.7
+    pub rocksdb_l0_num_compaction_trigger: NonZeroU32,
+
+    /// # Max open files
+    ///
+    /// Sets the number of open files that can be used by the DB. You may need to
+    /// increase this if your database has a large working set. Unset means
+    /// files opened are always kept open.
+    ///
+    /// [default] is unset
+    ///
+    /// Since v1.7.7
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rocksdb_max_open_files: Option<NonZeroU32>,
 
     /// Disable RocksDB paranoid checks
     ///
@@ -249,13 +287,15 @@ impl LogServerOptions {
     }
 
     pub fn rocksdb_memory_budget(&self) -> NonZeroByteCount {
-        self.rocksdb_memory_budget.unwrap_or_else(|| {
-            warn!(
-                "LogServer's rocksdb_memory_budget is not set, defaulting to {}",
+        self.rocksdb_memory_budget
+            .unwrap_or_else(|| {
+                warn!(
+                    "LogServer's rocksdb_memory_budget is not set, defaulting to {}",
+                    MIN_ROCKSDB_MEMORY
+                );
                 MIN_ROCKSDB_MEMORY
-            );
-            MIN_ROCKSDB_MEMORY
-        })
+            })
+            .max(MIN_ROCKSDB_MEMORY)
     }
 
     /// Minimum value size for blob separation. Defaults to 512 KiB.
@@ -301,41 +341,67 @@ impl LogServerOptions {
     }
 
     pub fn write_buffer_size(&self) -> usize {
-        MIN_WRITE_BUFFER_SIZE
-            .max(self.rocksdb_memory_budget().as_usize() / NOMINAL_WRITE_BUFFERS as usize)
+        let all_memtables_memory = self.rocksdb_memory_budget().as_usize();
+        let write_buffers = self.num_write_buffers() as usize;
+        all_memtables_memory.div_ceil(write_buffers)
     }
 
     pub const fn min_write_buffer_number_to_merge(&self) -> u32 {
         WRITE_BUFFERS_TO_MERGE
     }
 
-    pub const fn max_write_buffer_number(&self) -> u32 {
-        MAX_WRITE_BUFFERS
+    pub fn num_write_buffers(&self) -> u32 {
+        let all_memtables_memory = self.rocksdb_memory_budget().as_usize();
+        // We want to have a minimum of 2 write buffers. If the sst file is too large,
+        // we will sanitize it (make it smaller) to still meet this requirement.
+        MIN_WRITE_BUFFERS.max(
+            all_memtables_memory
+                .div_ceil(self.max_file_size())
+                .min(i32::MAX as usize) as u32,
+        )
     }
 
-    pub const fn level_zero_file_num_compaction_trigger(&self) -> u32 {
-        LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER
+    pub fn level_zero_file_num_compaction_trigger(&self) -> u32 {
+        self.rocksdb_l0_num_compaction_trigger
+            .get()
+            .min(i32::MAX as u32)
     }
 
     pub fn max_bytes_for_level_base(&self) -> usize {
-        self.write_buffer_size()
-            * self.min_write_buffer_number_to_merge() as usize
-            * self.level_zero_file_num_compaction_trigger() as usize
+        if self.rocksdb_enable_blob_separation {
+            // See performance tuning remarks https://github.com/facebook/rocksdb/wiki/BlobDB#performance-tuning
+            self.target_file_size_base().saturating_mul(10)
+        } else {
+            self.write_buffer_size()
+                .saturating_mul(self.min_write_buffer_number_to_merge() as usize)
+                .saturating_mul(self.level_zero_file_num_compaction_trigger() as usize)
+        }
     }
 
     pub fn target_file_size_base(&self) -> usize {
         // Set the target file within the range of acceptable values
-        self.write_buffer_size()
-            .clamp(MIN_FILE_SIZE, self.max_file_size())
+        if self.rocksdb_enable_blob_separation {
+            // Note: If blob-separation is enabled, the target file size in > L0 should
+            // be much smaller than L0 since most of of the data will be keys and value
+            // references. This makes compactions cheaper and more concurrent.
+            //
+            // todo(asoli): Consider making this configurable if needed.
+            MIN_FILE_SIZE
+        } else {
+            self.write_buffer_size().max(self.max_file_size())
+        }
     }
 
     pub fn max_compaction_bytes(&self) -> usize {
-        self.target_file_size_base() * COMPACTION_BYTES_MULTIPLIER as usize
+        self.target_file_size_base()
+            .saturating_mul(COMPACTION_BYTES_MULTIPLIER as usize)
     }
 
     pub fn max_wal_total_size(&self) -> usize {
         const SAFETY_MULTIPLIER: usize = 8;
-        self.write_buffer_size() * self.max_write_buffer_number() as usize * SAFETY_MULTIPLIER
+        self.write_buffer_size()
+            .saturating_mul(self.num_write_buffers() as usize)
+            .saturating_mul(SAFETY_MULTIPLIER)
     }
 
     pub fn max_file_size(&self) -> usize {
@@ -369,6 +435,38 @@ impl Default for LogServerOptions {
             rocksdb_max_file_size: NonZeroByteCount::new(
                 NonZeroUsize::new(128 * 1024 * 1024).unwrap(),
             ),
+            rocksdb_writable_file_max_buffer_size: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1024).unwrap(),
+            ),
+            rocksdb_l0_num_compaction_trigger: NonZeroU32::new(8).unwrap(),
+            rocksdb_max_open_files: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_rocksdb_sizing_limits() {
+        let mut options = LogServerOptions {
+            rocksdb_memory_budget: Some(NonZeroByteCount::new(NonZeroUsize::MIN)),
+            rocksdb_l0_num_compaction_trigger: NonZeroU32::MAX,
+            ..Default::default()
+        };
+
+        assert_eq!(options.rocksdb_memory_budget(), MIN_ROCKSDB_MEMORY);
+        assert_eq!(
+            options.level_zero_file_num_compaction_trigger(),
+            i32::MAX as u32
+        );
+
+        options.rocksdb_memory_budget = Some(NonZeroByteCount::new(NonZeroUsize::MAX));
+        assert_eq!(options.num_write_buffers(), i32::MAX as u32);
+
+        options.rocksdb_max_file_size = NonZeroByteCount::new(NonZeroUsize::MAX);
+        assert_eq!(options.max_compaction_bytes(), usize::MAX);
+        assert_eq!(options.max_wal_total_size(), usize::MAX);
     }
 }
