@@ -23,6 +23,7 @@ pub(crate) const MINT_OUTCOME_SUCCESS: &str = "success";
 pub(crate) const MINT_OUTCOME_TIMEOUT: &str = "timeout";
 pub(crate) const MINT_OUTCOME_TRANSIENT_ERROR: &str = "transient_error";
 pub(crate) const MINT_OUTCOME_PERMANENT_ERROR: &str = "permanent_error";
+pub(crate) const MINT_OUTCOME_BUILD_ERROR: &str = "build_error";
 
 /// Label values only -- never audience, service account, endpoint, provider, or error text.
 /// Those are unbounded, and the credential registry these metrics describe is a small,
@@ -43,12 +44,16 @@ pub(crate) fn describe_metrics() {
     describe_counter!(
         GCP_TOKEN_MINTS,
         Unit::Count,
-        "Number of GCP ID-token mint attempts, by outcome"
+        "Number of GCP ID-token mint attempts, by outcome: success, timeout, transient_error, \
+         permanent_error (the credential's own id_token() call failed), or build_error (the \
+         underlying credential itself could not be constructed -- counted once per failed caller,\
+         not once per build, since a single failed build fails every caller waiting on it)"
     );
 
     describe_gauge!(
         GCP_CREDENTIALS_ACTIVE,
         Unit::Count,
-        "Number of GCP credentials currently cached"
+        "Number of GCP credentials currently cached. Approximate: moka evicts lazily, so this can \
+         lag an actual eviction until the next housekeeping tick"
     );
 }
