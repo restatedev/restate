@@ -14,6 +14,7 @@ use crate::schema::info::SchemaInfo;
 use crate::schema::subscriptions::Subscription;
 use crate::time::MillisSinceEpoch;
 use http::uri::Authority;
+use restate_encoding::BilrostNewType;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ops::Deref;
@@ -31,6 +32,7 @@ use std::str::FromStr;
     Eq,
     PartialEq,
     Hash,
+    BilrostNewType,
 )]
 #[cfg_attr(feature = "utoipa-schema", derive(::utoipa::ToSchema))]
 #[cfg_attr(feature = "utoipa-schema", schema(value_type = String, format = Hostname))]
@@ -60,17 +62,21 @@ impl Deref for KafkaClusterName {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, bilrost::Message)]
 #[non_exhaustive]
 pub struct KafkaCluster {
+    #[bilrost(tag(1))]
     pub name: KafkaClusterName,
+    #[bilrost(tag(2))]
     pub properties: HashMap<String, String>,
+    #[bilrost(tag(3))]
     pub created_at: MillisSinceEpoch,
 
     /// # Info
     ///
     /// List of configuration/deprecation information related to this cluster.
     #[serde(skip, default)] // Serde skip because we generate this at runtime
+    #[bilrost(ignore(Vec::default()))]
     pub info: Vec<SchemaInfo>,
 }
 

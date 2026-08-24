@@ -1384,8 +1384,9 @@ impl Handler {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: HeaderValue::from_str(&ct)
-                        .map_err(|e| ServiceError::BadOutputContentType(ct.into(), e))?,
+                        .map_err(|e| ServiceError::BadOutputContentType(ct.to_owned(), e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
+                    #[allow(deprecated)]
                     has_json_schema: schema.json_schema.is_some(),
                 }),
                 json_schema: schema.json_schema,

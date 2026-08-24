@@ -66,16 +66,21 @@ use crate::{Version, Versioned, identifiers};
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 #[debug("Schema(version: {version})")]
 pub struct Schema {
     /// This gets bumped on each update.
+    #[bilrost(tag(1))]
     version: Version,
 
+    #[bilrost(tag(2))]
     deployments: HashMap<DeploymentId, Deployment>,
+    #[bilrost(tag(3))]
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
+    #[bilrost(tag(4))]
     subscriptions: HashMap<SubscriptionId, Subscription>,
+    #[bilrost(tag(5))]
     kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
@@ -118,11 +123,48 @@ impl Versioned for Schema {
 }
 
 mod storage {
-    use crate::flexbuffers_storage_encode_decode;
+    use bytes::BytesMut;
+
+    use restate_platform::storage::{
+        StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+    };
 
     use super::Schema;
+    use crate::storage;
 
-    flexbuffers_storage_encode_decode!(Schema);
+    //flexbuffers_storage_encode_decode!(Schema);
+
+    impl StorageEncode for Schema {
+        fn default_codec(&self) -> StorageCodecKind {
+            StorageCodecKind::FlexbuffersSerde
+        }
+
+        fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+            match self.default_codec() {
+                StorageCodecKind::FlexbuffersSerde => {
+                    storage::encode::encode_serde(self, buf, self.default_codec())
+                }
+                StorageCodecKind::Bilrost => storage::encode::encode_bilrost(self, buf),
+                _ => unreachable!("unsupported StorageCodecKind"),
+            }
+        }
+    }
+
+    impl StorageDecode for Schema {
+        fn decode<B: bytes::Buf>(
+            buf: &mut B,
+            kind: StorageCodecKind,
+        ) -> Result<Self, StorageDecodeError>
+        where
+            Self: Sized,
+        {
+            match kind {
+                StorageCodecKind::FlexbuffersSerde => storage::decode::decode_serde(buf, kind),
+                StorageCodecKind::Bilrost => storage::decode::decode_bilrost(buf),
+                _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+            }
+        }
+    }
 }
 
 // -- Data model

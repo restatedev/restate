@@ -140,12 +140,12 @@ impl Proxiable<VersionTag> for http::Version {
     }
 
     fn encode_proxy(&self) -> Self::Proxy {
-        match self {
-            &http::Version::HTTP_09 => HttpVersion::Http09,
-            &http::Version::HTTP_10 => HttpVersion::Http10,
-            &http::Version::HTTP_11 => HttpVersion::Http11,
-            &http::Version::HTTP_2 => HttpVersion::Http2,
-            &http::Version::HTTP_3 => HttpVersion::Http3,
+        match *self {
+            http::Version::HTTP_09 => HttpVersion::Http09,
+            http::Version::HTTP_10 => HttpVersion::Http10,
+            http::Version::HTTP_11 => HttpVersion::Http11,
+            http::Version::HTTP_2 => HttpVersion::Http2,
+            http::Version::HTTP_3 => HttpVersion::Http3,
             _ => {
                 // http4 is out already! what year is this?
                 unreachable!("unknown http version")

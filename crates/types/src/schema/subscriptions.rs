@@ -122,11 +122,15 @@ impl PartialEq<&str> for Sink {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 pub struct Subscription {
+    #[bilrost(tag(1))]
     id: SubscriptionId,
+    #[bilrost(tag(2))]
     source: KafkaSource,
+    #[bilrost(tag(3))]
     sink: Sink,
+    #[bilrost(tag(4))]
     metadata: HashMap<String, String>,
 }
 

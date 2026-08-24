@@ -491,6 +491,7 @@ impl Default for OutputContentTypeRule {
         Self::Set(OutputContentType {
             content_type: http::HeaderValue::from_static("application/json"),
             set_content_type_if_empty: false,
+            #[allow(deprecated)]
             has_json_schema: false,
         })
     }
