@@ -2930,7 +2930,7 @@ mod kafka_cluster {
 
         let subscription = &subscriptions[0];
         match subscription.source() {
-            Source::Kafka { cluster, topic } => {
+            KafkaSource { cluster, topic } => {
                 assert_eq!(cluster, "my-cluster");
                 assert_eq!(topic, "my-topic");
             }
@@ -3166,7 +3166,7 @@ mod kafka_cluster {
         assert_eq!(subscriptions[0].id(), subscription_id);
 
         match subscriptions[0].source() {
-            Source::Kafka { cluster, topic } => {
+            KafkaSource { cluster, topic } => {
                 assert_eq!(cluster, "config-cluster");
                 assert_eq!(topic, "my-topic");
             }

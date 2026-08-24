@@ -18,23 +18,29 @@ use crate::identifiers::SubscriptionId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 use crate::schema::Redaction;
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Why this is not an enum anymore?
+//
+// it's because the entire subscription mechanism will be deprecated
+// once we merge the Ingestion API. This is only here now for
+// backward compatibility and should not be extended.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum Source {
-    Kafka { cluster: String, topic: String },
+#[serde(from = "serde_hacks::Source", into = "serde_hacks::Source")]
+pub struct KafkaSource {
+    #[bilrost(tag(1))]
+    pub cluster: String,
+    #[bilrost(tag(2))]
+    pub topic: String,
 }
 
-impl fmt::Display for Source {
+impl fmt::Display for KafkaSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Source::Kafka { cluster, topic, .. } => {
-                write!(f, "kafka://{cluster}/{topic}")
-            }
-        }
+        let Self { cluster, topic } = self;
+        write!(f, "kafka://{cluster}/{topic}")
     }
 }
 
-impl PartialEq<&str> for Source {
+impl PartialEq<&str> for KafkaSource {
     fn eq(&self, other: &&str) -> bool {
         self.to_string().as_str() == *other
     }
@@ -119,7 +125,7 @@ impl PartialEq<&str> for Sink {
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Subscription {
     id: SubscriptionId,
-    source: Source,
+    source: KafkaSource,
     sink: Sink,
     metadata: HashMap<String, String>,
 }
@@ -127,7 +133,7 @@ pub struct Subscription {
 impl Subscription {
     pub fn new(
         id: SubscriptionId,
-        source: Source,
+        source: KafkaSource,
         sink: Sink,
         metadata: HashMap<String, String>,
     ) -> Self {
@@ -143,7 +149,7 @@ impl Subscription {
         self.id
     }
 
-    pub fn source(&self) -> &Source {
+    pub fn source(&self) -> &KafkaSource {
         &self.source
     }
 
@@ -186,6 +192,26 @@ pub trait SubscriptionResolver {
 
 mod serde_hacks {
     use super::*;
+
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+    #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+    pub enum Source {
+        Kafka { cluster: String, topic: String },
+    }
+
+    impl From<KafkaSource> for Source {
+        fn from(value: KafkaSource) -> Self {
+            let KafkaSource { cluster, topic } = value;
+            Self::Kafka { cluster, topic }
+        }
+    }
+
+    impl From<Source> for KafkaSource {
+        fn from(value: Source) -> Self {
+            let Source::Kafka { cluster, topic } = value;
+            Self { cluster, topic }
+        }
+    }
 
     /// Specialized version of [super::service::ServiceType]
     #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -281,7 +307,7 @@ pub mod mocks {
                 .expect("stable valid subscription id");
             Subscription {
                 id,
-                source: Source::Kafka {
+                source: KafkaSource {
                     cluster: "my-cluster".to_string(),
                     topic: "my-topic".to_string(),
                 },
@@ -296,5 +322,72 @@ pub mod mocks {
                 metadata: Default::default(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use serde::{Deserialize, Serialize};
+
+    use crate::{
+        invocation::VirtualObjectHandlerType, schema::subscriptions::VirtualObjectTemplate,
+    };
+
+    #[test]
+    fn serde_compatibility() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct OldContainer {
+            source: super::serde_hacks::Source,
+            sink: super::serde_hacks::Sink,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct NewContainer {
+            source: super::KafkaSource,
+            sink: super::Sink,
+        }
+
+        let old = OldContainer {
+            source: super::serde_hacks::Source::Kafka {
+                cluster: "my-cluster".into(),
+                topic: "my-topic".into(),
+            },
+            sink: super::serde_hacks::Sink::Invocation {
+                event_invocation_target_template:
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject(
+                        VirtualObjectTemplate {
+                            name: "object".into(),
+                            handler: "handler".into(),
+                            handler_ty: VirtualObjectHandlerType::Exclusive,
+                        },
+                    ),
+            },
+        };
+
+        let new = NewContainer {
+            source: super::KafkaSource {
+                cluster: "my-cluster".into(),
+                topic: "my-topic".into(),
+            },
+            sink: super::Sink {
+                event_invocation_target_template:
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject(
+                        VirtualObjectTemplate {
+                            name: "object".into(),
+                            handler: "handler".into(),
+                            handler_ty: VirtualObjectHandlerType::Exclusive,
+                        },
+                    ),
+            },
+        };
+
+        let buffer = flexbuffers::to_vec(&new).unwrap();
+        let loaded: OldContainer = flexbuffers::from_slice(&buffer).unwrap();
+        assert_eq!(loaded, old);
+
+        let buffer = flexbuffers::to_vec(&old).unwrap();
+        let loaded: NewContainer = flexbuffers::from_slice(&buffer).unwrap();
+
+        assert_eq!(loaded, new);
     }
 }

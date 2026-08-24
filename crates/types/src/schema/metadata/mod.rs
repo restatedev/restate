@@ -56,7 +56,7 @@ use crate::schema::service::{
     HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
 };
 use crate::schema::subscriptions::{
-    ListSubscriptionFilter, Source, Subscription, SubscriptionResolver,
+    KafkaSource, ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 use crate::schema::{Redaction, deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
@@ -1051,7 +1051,7 @@ impl KafkaClusterResolver for Schema {
             .subscriptions
             .values()
             .filter(|sub| {
-                let Source::Kafka { cluster, .. } = sub.source();
+                let KafkaSource { cluster, .. } = sub.source();
                 cluster == cluster_name
             })
             .map(|sub| sub.clone().redact(redact_secrets))

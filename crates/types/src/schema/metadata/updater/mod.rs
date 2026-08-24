@@ -30,7 +30,7 @@ use crate::schema::invocation_target::{
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
 use crate::schema::subscriptions::{
-    EventInvocationTargetTemplate, ServiceTemplate, Sink, Source, Subscription,
+    EventInvocationTargetTemplate, KafkaSource, ServiceTemplate, Sink, Subscription,
     VirtualObjectTemplate, WorkflowTemplate,
 };
 use crate::time::MillisSinceEpoch;
@@ -859,7 +859,7 @@ impl SchemaUpdater {
                     })?
                     .as_str();
                 let topic_name = &source.path()[1..];
-                Source::Kafka {
+                KafkaSource {
                     cluster: cluster_name.to_string(),
                     topic: topic_name.to_string(),
                 }
@@ -870,7 +870,7 @@ impl SchemaUpdater {
                 ));
             }
         };
-        let Source::Kafka { cluster, .. } = &source;
+        let KafkaSource { cluster, .. } = &source;
 
         // Parse sink
         let sink = match sink.scheme_str() {
@@ -1062,7 +1062,7 @@ impl SchemaUpdater {
             .subscriptions
             .values()
             .filter(|s| {
-                let Source::Kafka { cluster, .. } = s.source();
+                let KafkaSource { cluster, .. } = s.source();
                 cluster == kafka_cluster_name
             })
             .map(|s| s.id())
