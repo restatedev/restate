@@ -19,15 +19,23 @@
 //! lands on a runtime with process lifetime rather than the runtime that happens to call `mint()`.
 
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use metrics::{counter, gauge, histogram};
 use moka::future::Cache;
 use moka::ops::compute::Op;
 use parking_lot::RwLock;
 use restate_core::{Handle, TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
+use tracing::warn;
+
+use crate::metric_definitions::{
+    GCP_CREDENTIAL_BUILD_DURATION, GCP_CREDENTIAL_BUILDS, GCP_CREDENTIALS_ACTIVE, GCP_TOKEN_MINTS,
+    MINT_OUTCOME_PERMANENT_ERROR, MINT_OUTCOME_SUCCESS, MINT_OUTCOME_TIMEOUT,
+    MINT_OUTCOME_TRANSIENT_ERROR, RESULT_ERROR, RESULT_SUCCESS,
+};
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
@@ -145,27 +153,30 @@ impl<T: Clone> RecoverableCell<T> {
         Ok(value)
     }
 
-    // bounded by the probe's own timeout; swapped under lock so no need for external ABA checks
+    // bounded by the probe's own timeout; swapped under lock so no need for external ABA checks.
+    // Returns whether a replacement actually happened, so callers can log accordingly.
     async fn replace_if_failed<E>(
         &self,
         should_replace: impl AsyncFnOnce(&T) -> bool,
         build: impl Future<Output = Result<T, E>>,
-    ) -> Result<(), E> {
+    ) -> Result<bool, E> {
         let mut guard = self.cell.lock().await;
         let Some(current) = guard.as_ref() else {
-            return Ok(());
+            return Ok(false);
         };
         if !should_replace(current).await {
-            return Ok(());
+            return Ok(false);
         }
         match build.await {
-            Ok(value) => *guard = Some(value),
+            Ok(value) => {
+                *guard = Some(value);
+                Ok(true)
+            }
             Err(e) => {
                 *guard = None;
-                return Err(e);
+                Err(e)
             }
         }
-        Ok(())
     }
 
     #[cfg(test)]
@@ -238,6 +249,8 @@ fn credential_registry() -> Arc<CredentialRegistry> {
 impl CredentialRegistry {
     fn init(task_center: &Handle) -> Arc<Self> {
         Arc::new_cyclic(|self_weak| {
+            crate::metric_definitions::describe_metrics();
+
             let cache = Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build();
 
             let housekeeping_cache = cache.clone();
@@ -247,6 +260,7 @@ impl CredentialRegistry {
                 loop {
                     interval.tick().await;
                     housekeeping_cache.run_pending_tasks().await;
+                    gauge!(GCP_CREDENTIALS_ACTIVE).set(housekeeping_cache.entry_count() as f64);
                 }
             };
 
@@ -283,10 +297,15 @@ impl CredentialRegistry {
         &self,
         spec: &IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
-        self.cache
+        let result = self
+            .cache
             .try_get_with_by_ref(spec, self.build_on_tc_task(spec.clone()))
             .await
-            .map_err(|error| (*error).clone())
+            .map_err(|error| (*error).clone());
+        if result.is_ok() {
+            gauge!(GCP_CREDENTIALS_ACTIVE).set(self.cache.entry_count() as f64);
+        }
+        result
     }
 
     // guards against a slow caller evicting a freshly rebuilt healthy credential
@@ -315,10 +334,25 @@ impl CredentialRegistry {
     /// healthy source (the common case) leaves it untouched, or every retry would strand a live
     /// refresh task.
     async fn recover_ambient_source_if_dead(&self) {
-        let _ = self
+        match self
             .ambient_source
             .replace_if_failed(ambient_source_is_dead, self.build_ambient_source())
-            .await;
+            .await
+        {
+            Ok(true) => {
+                warn!(
+                    "replaced the shared ambient GCP credential source: its refresh task was proven dead"
+                );
+            }
+            Ok(false) => {}
+            Err(error) => {
+                warn!(
+                    error = %error,
+                    "failed to rebuild the ambient GCP credential source after its refresh task \
+                     was proven dead; a future mint attempt will retry"
+                );
+            }
+        }
     }
 
     /// Builds the ambient source credential, consulting the test override when compiled for tests.
@@ -375,18 +409,27 @@ impl CredentialRegistry {
                 {
                     return f(&spec);
                 }
-                registry.build_credentials(spec).await
+                let start = Instant::now();
+                let result = registry.build_credentials(spec).await;
+                histogram!(GCP_CREDENTIAL_BUILD_DURATION).record(start.elapsed().as_secs_f64());
+                result
             })
             .map_err(|_| GcpAuthError::Build {
                 audience: audience.clone(),
                 message: "TaskCenter is shutting down".to_owned(),
             })?;
-        task.await.unwrap_or_else(|_| {
+        let result = task.await.unwrap_or_else(|_| {
             Err(GcpAuthError::Build {
                 audience,
                 message: "GCP credential construction task failed".to_owned(),
             })
-        })
+        });
+        counter!(
+            GCP_CREDENTIAL_BUILDS,
+            "result" => if result.is_ok() { RESULT_SUCCESS } else { RESULT_ERROR }
+        )
+        .increment(1);
+        result
     }
 
     /// Resolves the credential(s) needed for `key` and builds the outer ID-token credential,
@@ -564,8 +607,20 @@ impl GcpTokenClient {
         };
 
         match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
-            Ok(Ok(token)) => Ok(token),
+            Ok(Ok(token)) => {
+                counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_SUCCESS).increment(1);
+                Ok(token)
+            }
             Ok(Err(error)) => {
+                counter!(
+                    GCP_TOKEN_MINTS,
+                    "outcome" => if error.is_transient() {
+                        MINT_OUTCOME_TRANSIENT_ERROR
+                    } else {
+                        MINT_OUTCOME_PERMANENT_ERROR
+                    }
+                )
+                .increment(1);
                 // Transient failures self-heal via the credential's own refresh loop, no need to
                 // evict the entry; a permanent failure will not recover, so evict it -- but only if
                 // the cache still holds the exact credential that produced the error.
@@ -583,11 +638,14 @@ impl GcpTokenClient {
                     message: error.to_string(),
                 })
             }
-            Err(_) => Err(GcpAuthError::Timeout {
-                audience: audience.to_owned(),
-                impersonate,
-                duration: MINT_ATTEMPT_TIMEOUT,
-            }),
+            Err(_) => {
+                counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_TIMEOUT).increment(1);
+                Err(GcpAuthError::Timeout {
+                    audience: audience.to_owned(),
+                    impersonate,
+                    duration: MINT_ATTEMPT_TIMEOUT,
+                })
+            }
         }
     }
 

@@ -40,6 +40,7 @@ mod aws_http_client;
 mod gcp;
 mod http;
 mod lambda;
+mod metric_definitions;
 pub mod pool;
 mod proxy;
 mod request_identity;
