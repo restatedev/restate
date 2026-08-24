@@ -33,7 +33,7 @@ pub struct IngestionApiOptions {
     ///
     /// Disable the experimental gRPC ingestion API on the ingress endpoint.
     ///
-    /// Since v1.8
+    /// Since v1.8.0
     pub disable: bool,
 
     /// # Maximum ingestion window size
@@ -43,7 +43,7 @@ pub struct IngestionApiOptions {
     ///
     /// Value is clipped at [`u32::MAX`]
     ///
-    /// Since v1.8
+    /// Since v1.8.0
     max_window_size: NonZeroByteCount,
 
     /// # Maximum concurrent streams
@@ -51,7 +51,7 @@ pub struct IngestionApiOptions {
     /// Maximum number of ingestion streams may have in flight before the server
     /// start rejecting them
     ///
-    /// Since v1.8
+    /// Since v1.8.0
     max_concurrent_streams: NonZeroUsize,
 }
 

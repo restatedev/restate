@@ -236,8 +236,14 @@ where
             schemas,
             state: State::WaitingStart,
             max_window_size,
-            window_threshold: (max_window_size.get() * UPDATE_WINDOW_THRESHOLD / 100) as i64,
-            reclaim_threshold: (max_window_size.get() * RECLAIM_WINDOW_THRESHOLD / 100),
+            window_threshold: (max_window_size
+                .get()
+                .saturating_mul(UPDATE_WINDOW_THRESHOLD)
+                / 100) as i64,
+            reclaim_threshold: (max_window_size
+                .get()
+                .saturating_mul(RECLAIM_WINDOW_THRESHOLD)
+                / 100),
         }
     }
 
