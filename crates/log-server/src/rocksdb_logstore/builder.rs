@@ -32,6 +32,9 @@ use crate::logstore::LogStoreState;
 use crate::rocksdb_logstore::keys::KeyPrefix;
 use crate::rocksdb_logstore::metadata_merge::{metadata_full_merge, metadata_partial_merge};
 
+const BLOB_GC_AGE_CUTOFF: f64 = 0.25;
+const BLOB_GC_FORCE_THRESHOLD: f64 = 0.5;
+
 #[derive(Clone)]
 pub struct RocksDbLogStoreBuilder {
     rocksdb: Arc<RocksDb>,
@@ -163,6 +166,19 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
         db_options.set_wal_size_limit_mb(0);
         db_options.set_wal_ttl_seconds(0);
 
+        if let Some(max_open_files) = log_server_config.rocksdb_max_open_files {
+            db_options.set_max_open_files(max_open_files.get().min(i32::MAX as u32) as i32);
+        } else {
+            db_options.set_max_open_files(-1);
+        }
+
+        // Sets the available buffer for writing to SST files.
+        db_options.set_writable_file_max_buffer_size(
+            log_server_config
+                .rocksdb_writable_file_max_buffer_size
+                .as_u64(),
+        );
+
         restate_rocksdb::configuration::set_background_work_budget(
             &mut db_options,
             // dedicated flush thread for log-server
@@ -172,8 +188,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
 
         if !log_server_config.rocksdb_disable_wal() {
             // RocksDB does not support recycling wal log files if wal is disabled when writing
-            db_options
-                .set_recycle_log_file_num(log_server_config.max_write_buffer_number() as usize);
+            db_options.set_recycle_log_file_num(log_server_config.num_write_buffers() as usize);
         }
 
         // log-server specific customizations
@@ -209,7 +224,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
 
     fn note_config_update(&self, db: &restate_rocksdb::RocksAccess) {
         let config = &Configuration::pinned().log_server;
-        update_data_cf_budget(db, config);
+        if let Err(err) = update_data_cf_options(db, config) {
+            warn!(
+                "Failed to update data CF options for {}/{DATA_CF}: {err}",
+                db.name(),
+            );
+        }
         // Keep metadata CF write_buffer_size in sync so it never triggers a flush on
         // its own (atomic_flush means any CF triggering a flush drags all CFs along).
         update_metadata_cf_write_buffer_size(db, config.write_buffer_size());
@@ -240,15 +260,34 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
     }
 }
 
-/// Dynamically updates the data CF sizing options to match the new memory budget.
-fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, opts: &LogServerOptions) {
+/// Dynamically updates the mutable data CF options from configuration.
+fn update_data_cf_options(
+    db: &restate_rocksdb::RocksAccess,
+    opts: &LogServerOptions,
+) -> Result<(), restate_rocksdb::RocksError> {
     let max_bytes_for_level_base_str = opts.max_bytes_for_level_base().to_restring();
     let write_buffer_size_str = opts.write_buffer_size().to_restring();
-    let max_write_buffer_number_str = opts.max_write_buffer_number().to_restring();
+    let max_write_buffer_number_str = opts.num_write_buffers().to_restring();
     let target_file_size_base_str = opts.target_file_size_base().to_restring();
     let max_compaction_bytes = opts.max_compaction_bytes().to_restring();
+    let level_zero_file_num_compaction_trigger =
+        opts.level_zero_file_num_compaction_trigger().to_restring();
+    let blob_separation_enabled = opts.rocksdb_enable_blob_separation.to_restring();
+    let min_blob_size = opts.rocksdb_blob_min_size().as_u64().to_restring();
+    let blob_compression_type = if opts.rocksdb_disable_blob_compression {
+        "kNoCompression"
+    } else {
+        "kZSTD"
+    };
+    let blob_gc_age_cutoff = BLOB_GC_AGE_CUTOFF.to_restring();
+    let blob_gc_force_threshold = BLOB_GC_FORCE_THRESHOLD.to_restring();
+    let blob_compaction_readahead_size = opts
+        .rocksdb
+        .rocksdb_compaction_readahead_size()
+        .get()
+        .to_restring();
 
-    if let Err(err) = db.set_options_cf(
+    db.set_options_cf(
         DATA_CF,
         &[
             ("write_buffer_size", &write_buffer_size_str),
@@ -256,13 +295,25 @@ fn update_data_cf_budget(db: &restate_rocksdb::RocksAccess, opts: &LogServerOpti
             ("max_write_buffer_number", &max_write_buffer_number_str),
             ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
             ("max_compaction_bytes", &max_compaction_bytes),
+            (
+                "level0_file_num_compaction_trigger",
+                &level_zero_file_num_compaction_trigger,
+            ),
+            ("enable_blob_files", &blob_separation_enabled),
+            ("min_blob_size", &min_blob_size),
+            ("blob_compression_type", blob_compression_type),
+            ("enable_blob_garbage_collection", &blob_separation_enabled),
+            ("blob_garbage_collection_age_cutoff", &blob_gc_age_cutoff),
+            (
+                "blob_garbage_collection_force_threshold",
+                &blob_gc_force_threshold,
+            ),
+            (
+                "blob_compaction_readahead_size",
+                &blob_compaction_readahead_size,
+            ),
         ],
-    ) {
-        warn!(
-            "Failed to update data CF memory budget for {}/{DATA_CF}: {err}",
-            db.name(),
-        );
-    }
+    )
 }
 
 /// Keeps the metadata CF write_buffer_size in sync with the data CF so that
@@ -352,7 +403,7 @@ fn cf_data_options(
     );
 
     opts.set_write_buffer_size(log_server_config.write_buffer_size());
-    opts.set_max_write_buffer_number(log_server_config.max_write_buffer_number() as i32);
+    opts.set_max_write_buffer_number(log_server_config.num_write_buffers() as i32);
     opts.set_target_file_size_base(log_server_config.target_file_size_base() as u64);
     opts.set_max_compaction_bytes(log_server_config.max_compaction_bytes() as u64);
     opts.set_max_bytes_for_level_base(log_server_config.max_bytes_for_level_base() as u64);
@@ -399,11 +450,11 @@ fn cf_data_options(
 
         // Blob GC: relocate live blobs during compaction to reclaim space after trimming.
         opts.set_enable_blob_gc(true);
-        opts.set_blob_gc_age_cutoff(0.25);
+        opts.set_blob_gc_age_cutoff(BLOB_GC_AGE_CUTOFF);
         // Trigger forced compactions when >=50% of data in eligible blob files is garbage.
         // Without this (default 1.0 = disabled), SSTs referencing trimmed blob data may
         // not be picked for compaction naturally, delaying disk space reclamation.
-        opts.set_blob_gc_force_threshold(0.5);
+        opts.set_blob_gc_force_threshold(BLOB_GC_FORCE_THRESHOLD);
         // Use the same readahead size for blob files as for SST files during compaction.
         // Blob GC reads blobs from old files during compaction; readahead improves
         // throughput, especially with direct I/O enabled.
@@ -427,7 +478,7 @@ fn cf_metadata_options(
     // triggers a flush (with atomic_flush, any CF triggering drags all CFs along).
     // Metadata writes are tiny (~20 bytes per op), so actual memory use is negligible.
     opts.set_write_buffer_size(log_server_config.write_buffer_size());
-    opts.set_max_write_buffer_number(log_server_config.max_write_buffer_number() as i32);
+    opts.set_max_write_buffer_number(log_server_config.num_write_buffers() as i32);
 
     // Do not slow down on l0 number of files writes even if it hurts read
     // amplification.
@@ -450,4 +501,36 @@ fn cf_metadata_options(
     // max_successive_merges at the default (0 = disabled) to avoid unnecessary memtable
     // lookups on the write path. Merge chains are naturally bounded by flush frequency.
     opts.set_merge_operator("MetadataMerge", metadata_full_merge, metadata_partial_merge);
+}
+
+#[cfg(test)]
+mod tests {
+    use test_log::test;
+
+    use restate_core::TaskCenter;
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::config::{Configuration, set_current_config};
+
+    use super::*;
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn dynamically_update_blob_and_l0_options() -> anyhow::Result<()> {
+        let config = Configuration::default();
+        set_current_config(config.clone());
+
+        RocksDbManager::init();
+        let builder = RocksDbLogStoreBuilder::create().await?;
+        let mut log_server_options = config.log_server;
+        log_server_options.rocksdb_enable_blob_separation = true;
+        log_server_options.rocksdb_l0_num_compaction_trigger = NonZeroU32::new(3).unwrap();
+        update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
+
+        log_server_options.rocksdb_enable_blob_separation = false;
+        update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
+
+        drop(builder);
+        TaskCenter::shutdown_node("test completed", 0).await;
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
 }

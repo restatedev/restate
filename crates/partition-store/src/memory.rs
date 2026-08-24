@@ -27,20 +27,22 @@ use crate::{PartitionDb, SharedState};
 const INITIAL_NUM_PARTITIONS: usize = 24;
 const DEBUG_MEMORY_REPORTING: bool = false;
 
-pub const MAX_WRITE_BUFFERS: u32 = 4;
-pub const NOMINAL_WRITE_BUFFERS: u32 = 4;
-// merge 2 memtables when flushing to L0
-pub const WRITE_BUFFERS_TO_MERGE: u32 = 2;
-pub const LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER: u32 = 2;
+// RocksDB applies this floor when opening a column family. Apply it here too so
+// dynamic updates use the same effective value.
+const MIN_WRITE_BUFFER_SIZE: usize = 64 * 1024;
+// We need at least 3 write buffers so we can accept writes while a flush is in progress and 2 older
+// memtables are being merged into one.
+const MIN_WRITE_BUFFERS: u32 = 3;
+// Merge 2 memtables when flushing to L0.
+const WRITE_BUFFERS_TO_MERGE: u32 = 2;
 /// Matches rocksdb default (target_file_size_base * 25)
-pub const COMPACTION_BYTES_MULTIPLIER: u32 = 25;
+const COMPACTION_BYTES_MULTIPLIER: u32 = 25;
 /// Try to keep the table files above this size if partition write buffers are too small
-pub const MIN_FILE_SIZE: usize = 16 * 1024 * 1024;
-/// The absolute minimum write buffer size
-pub const MIN_WRITE_BUFFER_SIZE: usize = 1024 * 1024;
+const MIN_FILE_SIZE: usize = 8 * 1024 * 1024;
 
 pub struct PartitionDbMemoryConfig {
     memory_budget: usize,
+    l0_num_compaction_trigger: u32,
     max_file_size: usize,
 }
 
@@ -48,6 +50,10 @@ impl PartitionDbMemoryConfig {
     pub fn calculate(memory_budget: usize, opts: &StorageOptions) -> Self {
         Self {
             memory_budget,
+            l0_num_compaction_trigger: opts
+                .rocksdb_l0_num_compaction_trigger
+                .get()
+                .min(i32::MAX as u32),
             max_file_size: MIN_FILE_SIZE.max(opts.rocksdb_max_file_size.as_usize()),
         }
     }
@@ -57,35 +63,74 @@ impl PartitionDbMemoryConfig {
     }
 
     pub fn write_buffer_size(&self) -> usize {
-        MIN_WRITE_BUFFER_SIZE.max(self.memory_budget / NOMINAL_WRITE_BUFFERS as usize)
+        MIN_WRITE_BUFFER_SIZE.max(
+            self.memory_budget()
+                .div_ceil(self.num_write_buffers() as usize),
+        )
     }
 
-    pub const fn min_write_buffer_number_to_merge(&self) -> u32 {
+    pub fn min_write_buffer_number_to_merge(&self) -> u32 {
         WRITE_BUFFERS_TO_MERGE
     }
 
-    pub const fn max_write_buffer_number(&self) -> u32 {
-        MAX_WRITE_BUFFERS
+    pub fn num_write_buffers(&self) -> u32 {
+        // We need at least 3 write buffers so we can accept writes while a flush is in progress and 2 older
+        // memtables are being merged into one.
+        MIN_WRITE_BUFFERS.max(
+            self.memory_budget()
+                .div_ceil(self.max_file_size)
+                .min(i32::MAX as usize) as u32,
+        )
     }
 
     pub const fn level_zero_file_num_compaction_trigger(&self) -> u32 {
-        LEVEL_ZERO_FILE_NUM_COMPACTION_TRIGGER
+        self.l0_num_compaction_trigger
     }
 
     pub fn max_bytes_for_level_base(&self) -> usize {
         self.write_buffer_size()
-            * self.min_write_buffer_number_to_merge() as usize
-            * self.level_zero_file_num_compaction_trigger() as usize
+            .saturating_mul(self.min_write_buffer_number_to_merge() as usize)
+            .saturating_mul(self.level_zero_file_num_compaction_trigger() as usize)
     }
 
     pub fn target_file_size_base(&self) -> usize {
-        // Set the target file within the range of acceptable values
-        self.write_buffer_size()
-            .clamp(MIN_FILE_SIZE, self.max_file_size)
+        self.write_buffer_size().max(self.max_file_size)
     }
 
     pub fn max_compaction_bytes(&self) -> usize {
-        self.target_file_size_base() * COMPACTION_BYTES_MULTIPLIER as usize
+        self.target_file_size_base()
+            .saturating_mul(COMPACTION_BYTES_MULTIPLIER as usize)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroU32;
+
+    use super::*;
+
+    #[test]
+    fn sanitize_rocksdb_sizing_limits() {
+        let mut options = StorageOptions::default();
+        options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MAX;
+
+        let config = PartitionDbMemoryConfig::calculate(1, &options);
+        assert_eq!(config.write_buffer_size(), MIN_WRITE_BUFFER_SIZE);
+        assert_eq!(
+            config.level_zero_file_num_compaction_trigger(),
+            i32::MAX as u32
+        );
+
+        options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MIN;
+        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options);
+        assert_eq!(config.num_write_buffers(), i32::MAX as u32);
+
+        options.rocksdb_max_file_size =
+            restate_util_bytecount::NonZeroByteCount::new(std::num::NonZeroUsize::MAX);
+        options.rocksdb_l0_num_compaction_trigger = NonZeroU32::MAX;
+        let config = PartitionDbMemoryConfig::calculate(usize::MAX, &options);
+        assert_eq!(config.max_bytes_for_level_base(), usize::MAX);
+        assert_eq!(config.max_compaction_bytes(), usize::MAX);
     }
 }
 
