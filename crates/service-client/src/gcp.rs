@@ -213,6 +213,33 @@ struct RegistrySlot {
 
 static REGISTRY: RwLock<Option<RegistrySlot>> = RwLock::new(None);
 
+/// Lives inside the registry's housekeeping future. `TaskKind::Credentials` is `OnCancel =
+/// "abort"`, so TaskCenter shutdown drops that future (running this type's `Drop`) without
+/// otherwise touching `REGISTRY`; without this, a stopped TaskCenter's registry -- its cache, its
+/// credentials, and their refresh tasks, plus the strong `Handle` pinning the dead TaskCenter
+/// alive -- would sit in the slot until the next `credential_registry()` call for a *different*
+/// TaskCenter happened to overwrite it.
+///
+/// `Drop` clears the slot only if it still holds *this* registry (compared by pointer via the
+/// same `Weak` this type carries), so a guard whose registry has already been superseded is a
+/// no-op rather than clobbering its successor. Sync-only and lock-only, no `.await`: `Drop` runs
+/// during future teardown, which cannot poll further futures.
+struct ClearRegistrySlotOnDrop {
+    registry: Weak<CredentialRegistry>,
+}
+
+impl Drop for ClearRegistrySlotOnDrop {
+    fn drop(&mut self) {
+        let Some(registry) = self.registry.upgrade() else {
+            return;
+        };
+        let mut slot = REGISTRY.write();
+        if matches!(slot.as_ref(), Some(current) if Arc::ptr_eq(&current.registry, &registry)) {
+            *slot = None;
+        }
+    }
+}
+
 /// Returns the credential registry for the current task center, building a fresh one on first
 /// use or whenever the current task center differs from the one the cached registry was built
 /// under.
@@ -254,7 +281,13 @@ impl CredentialRegistry {
             let cache = Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build();
 
             let housekeeping_cache = cache.clone();
+            let clear_slot_on_drop = ClearRegistrySlotOnDrop {
+                registry: self_weak.clone(),
+            };
             let housekeeping = async move {
+                // Held for the lifetime of this future, not polled -- its only job is running its
+                // Drop impl when TaskCenter shutdown aborts this task (see the type's doc comment).
+                let _clear_slot_on_drop = clear_slot_on_drop;
                 let mut interval = tokio::time::interval(CACHE_HOUSEKEEPING_INTERVAL);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
                 loop {
@@ -1199,6 +1232,60 @@ mod tests {
             "a new task center must get a fresh registry -- the old one's cache must not persist"
         );
         tc_b.shutdown_node("test done with TC-B", 0).await;
+    }
+
+    /// Complements the rebuild test above: that one proves a *new* task center gets a fresh
+    /// registry; this one proves the *old* registry actually dies at shutdown, not merely whenever
+    /// a later mint happens to replace it. `ClearRegistrySlotOnDrop` lives inside the
+    /// housekeeping future specifically so `TaskKind::Credentials`'s `OnCancel = "abort"` shutdown
+    /// path drops it.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn registry_is_dropped_at_shutdown_not_at_the_next_mint() {
+        use restate_core::{TaskCenterBuilder, TaskCenterFutureExt as _};
+
+        let audience = "https://tc-shutdown-drop.example.com";
+        let spec = IdTokenSpec::ambient(audience);
+
+        let tc = TaskCenterBuilder::default_for_tests()
+            .build()
+            .expect("task center builds")
+            .into_handle();
+
+        let weak = async {
+            add_build_override(spec.clone(), |_| {
+                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+            });
+            let registry = credential_registry();
+            let result = registry.get_or_build(&spec).await;
+            if let Err(error) = &result {
+                panic!("{error}");
+            }
+            Arc::downgrade(&registry)
+        }
+        .in_tc(&tc)
+        .await;
+
+        tc.shutdown_node("test done", 0).await;
+
+        // shutdown_node's cancel_tasks aborts an OnCancel="abort" task without awaiting its
+        // teardown (tokio's `JoinHandle::abort` only guarantees the task is dropped at its next
+        // poll, not synchronously with the call), so completion of shutdown_node does not
+        // strictly happen-after the guard's Drop. Poll for it instead of asserting immediately.
+        // Checking `strong_count() == 0` rather than `upgrade().is_none()` matters here: holding
+        // an `upgrade()`d Arc across the sleep would itself keep the registry alive, making the
+        // loop self-perpetuating.
+        let mut dropped = weak.strong_count() == 0;
+        for _ in 0..50 {
+            if dropped {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            dropped = weak.strong_count() == 0;
+        }
+        assert!(
+            dropped,
+            "the registry must be dropped at TaskCenter shutdown, not at the next mint"
+        );
     }
 
     /// The property construction via TaskCenter exists to provide: a real credential's `build()`
