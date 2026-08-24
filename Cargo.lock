@@ -9392,7 +9392,6 @@ dependencies = [
  "idna",
  "indexmap 2.14.0",
  "ipnet",
- "itertools 0.10.5",
  "itertools 0.14.0",
  "jemalloc_pprof",
  "lexical-parse-float",
