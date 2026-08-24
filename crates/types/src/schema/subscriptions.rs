@@ -40,47 +40,70 @@ impl PartialEq<&str> for Source {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Why this is not an enum anymore?
+//
+// it's because the entire subscription mechanism will be deprecated
+// once we merge the Ingestion API. This is only here now for
+// backward compatibility and should not be extended.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 #[serde(from = "serde_hacks::Sink", into = "serde_hacks::Sink")]
-pub enum Sink {
-    Invocation {
-        event_invocation_target_template: EventInvocationTargetTemplate,
-    },
+pub struct Sink {
+    #[bilrost(tag(1))]
+    pub event_invocation_target_template: EventInvocationTargetTemplate,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
+pub struct ServiceTemplate {
+    #[bilrost(tag(1))]
+    pub name: String,
+    #[bilrost(tag(2))]
+    pub handler: String,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
+pub struct VirtualObjectTemplate {
+    #[bilrost(tag(1))]
+    pub name: String,
+    #[bilrost(tag(2))]
+    pub handler: String,
+    #[bilrost(tag(3))]
+    pub handler_ty: VirtualObjectHandlerType,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
+pub struct WorkflowTemplate {
+    #[bilrost(tag(1))]
+    pub name: String,
+    #[bilrost(tag(2))]
+    pub handler: String,
+    #[bilrost(tag(3))]
+    pub handler_ty: WorkflowHandlerType,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum EventInvocationTargetTemplate {
-    Service {
-        name: String,
-        handler: String,
-    },
-    VirtualObject {
-        name: String,
-        handler: String,
-        handler_ty: VirtualObjectHandlerType,
-    },
-    Workflow {
-        name: String,
-        handler: String,
-        handler_ty: WorkflowHandlerType,
-    },
+    Unknown,
+    #[bilrost(tag(1))]
+    Service(ServiceTemplate),
+    #[bilrost(tag(2))]
+    VirtualObject(VirtualObjectTemplate),
+    #[bilrost(tag(3))]
+    Workflow(WorkflowTemplate),
 }
 
 impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::Service { name, handler, .. },
+        match &self.event_invocation_target_template {
+            EventInvocationTargetTemplate::Unknown => {
+                write!(f, "unknown")
             }
-            | Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::VirtualObject { name, handler, .. },
-            }
-            | Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::Workflow { name, handler, .. },
-            } => {
+            EventInvocationTargetTemplate::Service(ServiceTemplate { name, handler, .. })
+            | EventInvocationTargetTemplate::VirtualObject(VirtualObjectTemplate {
+                name,
+                handler,
+                ..
+            })
+            | EventInvocationTargetTemplate::Workflow(WorkflowTemplate { name, handler, .. }) => {
                 write!(f, "service://{name}/{handler}")
             }
         }
@@ -196,39 +219,41 @@ mod serde_hacks {
                     name,
                     handler,
                     ty: EventReceiverServiceType::Service,
-                } => Self::Invocation {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
-                        name,
-                        handler,
-                    },
+                } => Self {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service(
+                        ServiceTemplate { name, handler },
+                    ),
                 },
                 Sink::DeprecatedService {
                     name,
                     handler,
                     ty: EventReceiverServiceType::VirtualObject,
-                } => Self::Invocation {
-                    event_invocation_target_template:
-                        EventInvocationTargetTemplate::VirtualObject {
+                } => Self {
+                    event_invocation_target_template: EventInvocationTargetTemplate::VirtualObject(
+                        VirtualObjectTemplate {
                             name,
                             handler,
                             handler_ty: VirtualObjectHandlerType::Exclusive,
                         },
+                    ),
                 },
                 Sink::DeprecatedService {
                     name,
                     handler,
                     ty: EventReceiverServiceType::Workflow,
-                } => Self::Invocation {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Workflow {
-                        name,
-                        handler,
-                        handler_ty: WorkflowHandlerType::Workflow,
-                    },
+                } => Self {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Workflow(
+                        WorkflowTemplate {
+                            name,
+                            handler,
+                            handler_ty: WorkflowHandlerType::Workflow,
+                        },
+                    ),
                 },
                 Sink::Invocation {
                     event_invocation_target_template,
                     ..
-                } => Self::Invocation {
+                } => Self {
                     event_invocation_target_template,
                 },
             }
@@ -237,12 +262,8 @@ mod serde_hacks {
 
     impl From<super::Sink> for Sink {
         fn from(value: super::Sink) -> Self {
-            match value {
-                super::Sink::Invocation {
-                    event_invocation_target_template,
-                } => Self::Invocation {
-                    event_invocation_target_template,
-                },
+            Self::Invocation {
+                event_invocation_target_template: value.event_invocation_target_template,
             }
         }
     }
@@ -264,11 +285,13 @@ pub mod mocks {
                     cluster: "my-cluster".to_string(),
                     topic: "my-topic".to_string(),
                 },
-                sink: Sink::Invocation {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
-                        name: "MySvc".to_string(),
-                        handler: "MyMethod".to_string(),
-                    },
+                sink: Sink {
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service(
+                        ServiceTemplate {
+                            name: "MySvc".to_string(),
+                            handler: "MyMethod".to_string(),
+                        },
+                    ),
                 },
                 metadata: Default::default(),
             }

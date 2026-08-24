@@ -29,7 +29,10 @@ use crate::schema::invocation_target::{
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
-use crate::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Source, Subscription};
+use crate::schema::subscriptions::{
+    EventInvocationTargetTemplate, ServiceTemplate, Sink, Source, Subscription,
+    VirtualObjectTemplate, WorkflowTemplate,
+};
 use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
@@ -902,25 +905,27 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                Sink::Invocation {
+                Sink {
                     event_invocation_target_template: match handler_schemas.target_ty {
-                        InvocationTargetType::Service => EventInvocationTargetTemplate::Service {
-                            name: service_name.to_owned(),
-                            handler: handler_name.to_owned(),
-                        },
+                        InvocationTargetType::Service => {
+                            EventInvocationTargetTemplate::Service(ServiceTemplate {
+                                name: service_name.to_owned(),
+                                handler: handler_name.to_owned(),
+                            })
+                        }
                         InvocationTargetType::VirtualObject(handler_ty) => {
-                            EventInvocationTargetTemplate::VirtualObject {
+                            EventInvocationTargetTemplate::VirtualObject(VirtualObjectTemplate {
                                 name: service_name.to_owned(),
                                 handler: handler_name.to_owned(),
                                 handler_ty,
-                            }
+                            })
                         }
                         InvocationTargetType::Workflow(handler_ty) => {
-                            EventInvocationTargetTemplate::Workflow {
+                            EventInvocationTargetTemplate::Workflow(WorkflowTemplate {
                                 name: service_name.to_owned(),
                                 handler: handler_name.to_owned(),
                                 handler_ty,
-                            }
+                            })
                         }
                     },
                 }
@@ -1379,7 +1384,7 @@ impl Handler {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: HeaderValue::from_str(&ct)
-                        .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
+                        .map_err(|e| ServiceError::BadOutputContentType(ct.into(), e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
                 }),

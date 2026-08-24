@@ -30,7 +30,10 @@ use restate_types::limit_key::LimitKey;
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
-use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
+use restate_types::schema::subscriptions::{
+    EventInvocationTargetTemplate, ServiceTemplate, Sink, Subscription, VirtualObjectTemplate,
+    WorkflowTemplate,
+};
 use restate_util_string::{ReString, RestateString, RestrictedValueError};
 use restate_wal_protocol::{Command, Destination, Envelope, Source};
 
@@ -226,19 +229,22 @@ impl InvocationBuilder {
         partition: i32,
         offset: i64,
     ) -> Result<Box<ServiceInvocation>, anyhow::Error> {
-        let Sink::Invocation {
+        let Sink {
             event_invocation_target_template,
         } = subscription.sink();
 
         let invocation_target = match event_invocation_target_template {
-            EventInvocationTargetTemplate::Service { name, handler } => {
+            EventInvocationTargetTemplate::Unknown => {
+                bail!("invalid invocation target template");
+            }
+            EventInvocationTargetTemplate::Service(ServiceTemplate { name, handler }) => {
                 InvocationTarget::service(name.clone(), handler.clone())
             }
-            EventInvocationTargetTemplate::VirtualObject {
+            EventInvocationTargetTemplate::VirtualObject(VirtualObjectTemplate {
                 name,
                 handler,
                 handler_ty,
-            } => InvocationTarget::virtual_object(
+            }) => InvocationTarget::virtual_object(
                 name.clone(),
                 std::str::from_utf8(&key)
                     .map_err(|e| anyhow::anyhow!("The Kafka record key must be valid UTF-8: {e}"))?
@@ -246,11 +252,11 @@ impl InvocationBuilder {
                 handler.clone(),
                 *handler_ty,
             ),
-            EventInvocationTargetTemplate::Workflow {
+            EventInvocationTargetTemplate::Workflow(WorkflowTemplate {
                 name,
                 handler,
                 handler_ty,
-            } => InvocationTarget::workflow(
+            }) => InvocationTarget::workflow(
                 name.clone(),
                 std::str::from_utf8(&key)
                     .map_err(|e| anyhow::anyhow!("The Kafka record key must be valid UTF-8: {e}"))?
