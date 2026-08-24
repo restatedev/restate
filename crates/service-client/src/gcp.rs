@@ -33,8 +33,8 @@ use tracing::warn;
 
 use crate::metric_definitions::{
     GCP_CREDENTIAL_BUILD_DURATION, GCP_CREDENTIAL_BUILDS, GCP_CREDENTIALS_ACTIVE, GCP_TOKEN_MINTS,
-    MINT_OUTCOME_PERMANENT_ERROR, MINT_OUTCOME_SUCCESS, MINT_OUTCOME_TIMEOUT,
-    MINT_OUTCOME_TRANSIENT_ERROR, RESULT_ERROR, RESULT_SUCCESS,
+    MINT_OUTCOME_BUILD_ERROR, MINT_OUTCOME_PERMANENT_ERROR, MINT_OUTCOME_SUCCESS,
+    MINT_OUTCOME_TIMEOUT, MINT_OUTCOME_TRANSIENT_ERROR, RESULT_ERROR, RESULT_SUCCESS,
 };
 
 #[cfg(any(test, feature = "test_util"))]
@@ -636,7 +636,15 @@ impl GcpTokenClient {
         let (source, evictable) = match self.test_intercept(&spec, &impersonate) {
             Some(Ok(source)) => (source, false),
             Some(Err(error)) => return Err(error),
-            None => (credential_registry().get_or_build(&spec).await?, true),
+            None => match credential_registry().get_or_build(&spec).await {
+                Ok(source) => (source, true),
+                Err(error) => {
+                    // Each failed caller counts: a single failed single-flight build fails every
+                    // caller waiting on it, not just one.
+                    counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_BUILD_ERROR).increment(1);
+                    return Err(error);
+                }
+            },
         };
 
         match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
