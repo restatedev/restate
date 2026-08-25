@@ -26,18 +26,28 @@
 //!   (signalling the test that the snapshot is frozen) and resumes once
 //!   the test releases the latch.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
-use restate_storage_api::StorageError;
+use restate_core::TaskCenter;
+use restate_partition_store::{
+    PartitionDb, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
+};
+use restate_rocksdb::RocksDbManager;
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
-    CursorError, EntryId, EntryKey, EntryKind, EntryMetadata, EntryValue, Options, Status,
-    VQueueCursor, VQueueRunningCursor, VQueueStore,
+    CursorError, EntryId, EntryKey, EntryKind, EntryMetadata, EntryValue, Options, Stage, Status,
+    VQueueCursor, VQueueRunningCursor, VQueueStore, WriteVQueueTable,
 };
+use restate_storage_api::{StorageError, Transaction};
 use restate_types::clock::UniqueTimestamp;
+use restate_types::identifiers::{PartitionId, PartitionKey};
+use restate_types::partitions::Partition;
+use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
 use super::*;
@@ -255,6 +265,130 @@ impl VQueueStore for GatedStore {
             parked: self.parked.clone(),
             has_parked: false,
         }
+    }
+}
+
+struct GatedPartitionDb {
+    db: PartitionDb,
+    release: Arc<(Mutex<bool>, Condvar)>,
+    parked: Arc<(Mutex<bool>, Condvar)>,
+}
+
+impl GatedPartitionDb {
+    fn new(db: PartitionDb) -> Self {
+        Self {
+            db,
+            release: Arc::new((Mutex::new(false), Condvar::new())),
+            parked: Arc::new((Mutex::new(false), Condvar::new())),
+        }
+    }
+
+    fn release_refill_thread(&self) {
+        let (lock, cv) = &*self.release;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+    }
+
+    fn wait_until_parked(&self) {
+        let (lock, cv) = &*self.parked;
+        let mut parked = lock.lock().unwrap();
+        while !*parked {
+            parked = cv.wait(parked).unwrap();
+        }
+    }
+}
+
+struct GatedPartitionReader {
+    inner: <PartitionDb as VQueueStore>::InboxReader,
+    blocking: bool,
+    release: Arc<(Mutex<bool>, Condvar)>,
+    parked: Arc<(Mutex<bool>, Condvar)>,
+    has_parked: bool,
+}
+
+impl GatedPartitionReader {
+    fn block_until_released(&mut self) {
+        if !self.blocking || self.has_parked {
+            return;
+        }
+        self.has_parked = true;
+
+        let (lock, cv) = &*self.parked;
+        *lock.lock().unwrap() = true;
+        cv.notify_all();
+
+        let (lock, cv) = &*self.release;
+        let mut released = lock.lock().unwrap();
+        while !*released {
+            released = cv.wait(released).unwrap();
+        }
+    }
+}
+
+impl VQueueCursor for GatedPartitionReader {
+    fn seek_to_first(&mut self) {
+        self.inner.seek_to_first();
+    }
+
+    fn seek_after(&mut self, item: &EntryKey) {
+        self.inner.seek_after(item);
+    }
+
+    fn advance(&mut self) {
+        self.inner.advance();
+    }
+
+    fn peek(&mut self) -> Result<Option<(EntryKey, EntryValue)>, CursorError> {
+        self.block_until_released();
+        self.inner.peek()
+    }
+}
+
+impl VQueueStore for GatedPartitionDb {
+    type RunningReader = <PartitionDb as VQueueStore>::RunningReader;
+    type InboxReader = GatedPartitionReader;
+
+    fn new_run_reader(&self, qid: &VQueueId) -> Self::RunningReader {
+        self.db.new_run_reader(qid)
+    }
+
+    fn new_inbox_reader(&self, qid: &VQueueId, opts: Options) -> Self::InboxReader {
+        let blocking = opts.allow_blocking_io;
+        GatedPartitionReader {
+            inner: self.db.new_inbox_reader(qid, opts),
+            blocking,
+            release: Arc::clone(&self.release),
+            parked: Arc::clone(&self.parked),
+            has_parked: false,
+        }
+    }
+}
+
+async fn storage_test_environment() -> PartitionStore {
+    let rocksdb_manager = RocksDbManager::init();
+    TaskCenter::set_on_shutdown(Box::pin(async {
+        rocksdb_manager.shutdown().await;
+    }));
+
+    let manager = PartitionStoreManager::create(true)
+        .await
+        .expect("DB storage creation succeeds");
+    manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+            None,
+        )
+        .await
+        .expect("DB storage creation succeeds")
+}
+
+fn write_entries(
+    txn: &mut PartitionStoreTransaction<'_>,
+    qid: &VQueueId,
+    entries: impl IntoIterator<Item = (EntryKey, EntryValue)>,
+) {
+    for (key, value) in entries {
+        txn.put_vqueue_inbox(qid, Stage::Inbox, &key, &value);
     }
 }
 
@@ -477,4 +611,154 @@ async fn overflowed_overlay_refills_deferred_entries() {
         vec![target.0],
         "the next refill must recover the target deferred beyond the overlay horizon"
     );
+}
+
+#[restate_core::test]
+async fn tombstone_beyond_full_refill_does_not_advance_anchor() {
+    let entries = (1..=100).map(entry_at_seq).collect::<Vec<_>>();
+    let storage = GatedStore::new(entries.clone());
+    let qid = test_qid(6);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let skip = UnconfirmedAssignments::new();
+
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+
+    let removed = entries.last().unwrap();
+    storage.replace_entries(entries[..entries.len() - 1].to_vec());
+    queue.remove(&removed.0);
+
+    storage.release_refill_thread();
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+
+    assert_eq!(
+        drain_cache(&mut queue),
+        entries[..INBOX_CACHE_CAPACITY]
+            .iter()
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>(),
+    );
+
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+    assert!(
+        matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entries[INBOX_CACHE_CAPACITY].0),
+        "the next refill must continue after the last storage row covered by the previous refill",
+    );
+}
+
+#[restate_core::test]
+async fn real_non_blocking_refill_merges_committed_updates() {
+    let mut rocksdb = storage_test_environment().await;
+    let qid = test_qid(7);
+    let mut expected = (1..=128)
+        .map(|seq| entry_at_seq(seq * 2))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut txn = rocksdb.transaction();
+    write_entries(
+        &mut txn,
+        &qid,
+        expected.iter().map(|(key, value)| (*key, value.clone())),
+    );
+    txn.commit().await.expect("commit should succeed");
+    drop(txn);
+
+    let db = rocksdb.partition_db().clone();
+    db.flush_memtables(true)
+        .await
+        .expect("memtable flush should succeed");
+
+    let mut cold_reader = db.new_inbox_reader(
+        &qid,
+        Options {
+            allow_blocking_io: false,
+        },
+    );
+    cold_reader.seek_to_first();
+    assert!(
+        matches!(cold_reader.peek(), Err(CursorError::WouldBlock)),
+        "fresh SST-backed rows must exercise the non-blocking fallback",
+    );
+    drop(cold_reader);
+
+    let storage = GatedPartitionDb::new(db);
+    let mut queue = Queue::new(0, &storage, &qid);
+    let skip = UnconfirmedAssignments::new();
+
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+
+    let removed = [2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 240].map(|seq| entry_at_seq(seq).0);
+    let replacement = {
+        let mut entry = entry_at_seq(22);
+        entry.1.status = Status::Scheduled;
+        entry
+    };
+    let added = (1..=19).step_by(2).map(entry_at_seq).collect::<Vec<_>>();
+
+    let mut txn = rocksdb.transaction();
+    for key in &removed {
+        txn.delete_vqueue_inbox(&qid, Stage::Inbox, key);
+        expected.remove(key);
+    }
+    txn.delete_vqueue_inbox(&qid, Stage::Inbox, &replacement.0);
+    txn.put_vqueue_inbox(&qid, Stage::Inbox, &replacement.0, &replacement.1);
+    expected.insert(replacement.0, replacement.1.clone());
+    write_entries(&mut txn, &qid, added.iter().cloned());
+    expected.extend(added.iter().cloned());
+    txn.commit().await.expect("commit should succeed");
+    drop(txn);
+
+    for key in &removed {
+        queue.remove(key);
+    }
+    queue.remove(&replacement.0);
+    queue.enqueue(&replacement.0, &replacement.1);
+    for (key, value) in &added {
+        queue.enqueue(key, value);
+    }
+
+    storage.release_refill_thread();
+
+    let drained = tokio::time::timeout(Duration::from_secs(10), async {
+        let mut drained = Vec::new();
+        loop {
+            drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+            match queue.head() {
+                Some(QueueItem::Inbox { key, value }) => {
+                    drained.push((*key, value.status));
+                    queue.try_advance().unwrap();
+                }
+                Some(QueueItem::None) => break drained,
+                other => panic!("unexpected queue head: {other:?}"),
+            }
+        }
+    })
+    .await
+    .expect("queue drain should complete");
+
+    let mut persisted_reader = storage.db.new_inbox_reader(
+        &qid,
+        Options {
+            allow_blocking_io: true,
+        },
+    );
+    persisted_reader.seek_to_first();
+    let mut persisted = Vec::new();
+    while let Some((key, value)) = persisted_reader
+        .peek()
+        .expect("blocking storage read should succeed")
+    {
+        persisted.push((key, value.status));
+        persisted_reader.advance();
+    }
+
+    assert_eq!(
+        persisted,
+        expected
+            .iter()
+            .map(|(key, value)| (*key, value.status))
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(drained, persisted);
 }
