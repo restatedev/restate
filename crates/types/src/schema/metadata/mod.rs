@@ -138,11 +138,19 @@ mod storage {
     };
 
     use super::Schema;
-    use crate::{schema::metadata::ActiveServiceRevision, storage};
+    use crate::{config::Configuration, schema::metadata::ActiveServiceRevision, storage};
 
     impl StorageEncode for Schema {
         fn default_codec(&self) -> StorageCodecKind {
-            StorageCodecKind::Bilrost
+            if Configuration::pinned()
+                .common
+                .experimental
+                .is_schema_bilrost_encoding_enabled()
+            {
+                StorageCodecKind::Bilrost
+            } else {
+                StorageCodecKind::FlexbuffersSerde
+            }
         }
 
         fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {

@@ -864,6 +864,16 @@ experimental! {
     ///
     /// Since v1.7.9
     vqueues_async_refill,
+
+    /// # Use bilrost encoding for schemas
+    ///
+    /// When enabled, schema metadata object will use bilrost
+    /// encoding instead of the default flexbuffers
+    ///
+    /// This will be default from v1.9.0
+    ///
+    /// Since v1.8.0
+    schema_bilrost_encoding,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
