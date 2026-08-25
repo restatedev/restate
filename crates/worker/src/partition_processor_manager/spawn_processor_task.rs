@@ -100,33 +100,41 @@ where
             Some(partition.partition_id),
             {
                 move || async move {
-                    let open_partition_store = async {
+                    let cancellation = cancellation_token();
+                    let wait_for_delay = async {
                         if let Some(delay) = delay {
                             tokio::time::sleep(delay).await;
                         }
-
-                        match partition_store_manager
-                            .open(&partition, fast_forward_lsn)
-                            .await
-                        {
-                            Ok(partition_store) => Ok(partition_store),
-                            Err(e) => Err(ProcessorError::from(e)),
-                        }
                     };
 
-                    let partition_store = cancellation_token()
-                        .run_until_cancelled(open_partition_store)
-                        .await;
-                    let Some(partition_store) = partition_store else {
+                    if cancellation
+                        .run_until_cancelled(wait_for_delay)
+                        .await
+                        .is_none()
+                    {
                         info!(
                             partition_id = %partition.partition_id,
                             "Partition processor stopped due to cancellation signal"
                         );
                         return Ok(());
-                    };
+                    }
 
+                    // RocksDB operations continue on the storage pool if their awaiting future is
+                    // dropped. Once opening starts, drain it before honoring cancellation so a
+                    // replacement processor cannot race the abandoned open.
+                    let partition_store = partition_store_manager
+                        .open(&partition, fast_forward_lsn)
+                        .await;
 
-                    let mut partition_store = partition_store?;
+                    if cancellation.is_cancelled() {
+                        info!(
+                            partition_id = %partition.partition_id,
+                            "Partition processor stopped due to cancellation signal"
+                        );
+                        return Ok(());
+                    }
+
+                    let mut partition_store = partition_store.map_err(ProcessorError::from)?;
 
                     // verify that this partition store is not sealed
                     if let Some(seal) = partition_store.get_seal_marker().await? {

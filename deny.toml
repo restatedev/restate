@@ -100,9 +100,6 @@ skip = [
     { name = "windows_i686_msvc" },
     { name = "windows_aarch64_msvc" },
 
-    # Clash between tonic clap dependency (outdated) and hyper-rustls and prost-reflect
-    { name = "base64" },
-
     # The following is an internal dependency needed by librocksdb-sys
     { name = "syn" },
 

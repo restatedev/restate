@@ -32,7 +32,7 @@ dashmap = { workspace = true }
 derive_builder = { workspace = true }
 futures = { workspace = true }
 google-cloud-auth = { workspace = true }
-h2 = "0.4.16"
+h2 = { version = "0.4.18" }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }

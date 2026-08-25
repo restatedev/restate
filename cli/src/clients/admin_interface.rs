@@ -94,6 +94,16 @@ pub trait AdminClientInterface {
         id: &str,
     ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
 
+    fn pause_vqueue(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    fn resume_vqueue(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
     fn patch_state(
         &self,
         service: &str,
@@ -294,6 +304,22 @@ impl AdminClientInterface for AdminClient {
     ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
         let url = self.versioned_url(["invocations", id, "pause"]);
         self.run(reqwest::Method::PATCH, url)
+    }
+
+    fn pause_vqueue(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        let url = self.versioned_url(["vqueues", id, "pause"]);
+        self.run(reqwest::Method::POST, url)
+    }
+
+    fn resume_vqueue(
+        &self,
+        id: &str,
+    ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static {
+        let url = self.versioned_url(["vqueues", id, "resume"]);
+        self.run(reqwest::Method::POST, url)
     }
 
     fn patch_state(

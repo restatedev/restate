@@ -117,6 +117,7 @@ where
             .initial_stream_window_size(config.initial_stream_window_size)
             .initial_connection_window_size(config.initial_connection_window_size)
             .max_frame_size(config.max_frame_size)
+            .data_frame_budget(config.data_frame_budget)
             .keep_alive_interval(config.keep_alive_interval)
             .keep_alive_timeout(config.keep_alive_timeout)
             .keep_alive_interval_jitter(config.keep_alive_interval_jitter)
