@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use tracing::{debug, info, instrument};
 
-use restate_core::{Metadata, MetadataKind, TaskCenter};
+use restate_core::{Metadata, TaskCenter};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
@@ -448,12 +448,17 @@ impl<T: StorageEncode> Appender<T> {
                 }
             }
 
+            let mut wait_for_writable_segment = bifrost_inner.log_chain_watcher().subscribe(
+                log_id,
+                crate::log_chain_watcher::ChainCondition::WritableSegmentAfter(sealed_segment),
+            );
+
             tokio::select! {
                 biased;
                 // if error it means that metadata manager has stopped. We are shutting down.
                 // the check for shutdown in the loop above will catch if this happened and bubble
                 // up the shutdown error.
-                _ = metadata.wait_for_version(MetadataKind::Logs, log_metadata_version.next()) => {
+                _ = wait_for_writable_segment.wait() => {
                     // do not advance the sleep duration. Successive metadata updates that are
                     // irrelavant to this loglet should not increase the sleep duration.
                 }

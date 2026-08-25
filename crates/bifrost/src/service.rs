@@ -23,6 +23,7 @@ use restate_types::live::BoxLiveLoad;
 use restate_types::logs::metadata::ProviderKind;
 
 use crate::bifrost::BifrostInner;
+use crate::log_chain_watcher::{LogChainWatcher, LogChainWatcherHandle, LogChainWatcherReceiver};
 #[cfg(any(test, feature = "memory-loglet"))]
 use crate::providers::memory_loglet;
 use crate::watchdog::{Watchdog, WatchdogCommand};
@@ -32,6 +33,7 @@ pub struct BifrostService {
     inner: Arc<BifrostInner>,
     watchdog_tx: mpsc::UnboundedSender<WatchdogCommand>,
     watchdog_rx: mpsc::UnboundedReceiver<WatchdogCommand>,
+    log_chain_watcher_rx: LogChainWatcherReceiver,
     metadata_writer: MetadataWriter,
     factories: HashMap<ProviderKind, Box<dyn LogletProviderFactory>>,
 }
@@ -39,7 +41,11 @@ pub struct BifrostService {
 impl BifrostService {
     pub fn new(metadata_writer: MetadataWriter) -> Self {
         let (watchdog_tx, watchdog_rx) = tokio::sync::mpsc::unbounded_channel();
-        let inner = Arc::new(BifrostInner::new(watchdog_tx.clone()));
+        let (log_chain_watcher_tx, log_chain_watcher_rx) = tokio::sync::mpsc::unbounded_channel();
+        let inner = Arc::new(BifrostInner::new(
+            watchdog_tx.clone(),
+            LogChainWatcherHandle::new(log_chain_watcher_tx),
+        ));
 
         Self {
             inner,
@@ -47,6 +53,7 @@ impl BifrostService {
             watchdog_rx,
             metadata_writer,
             factories: HashMap::with_capacity(ProviderKind::LENGTH),
+            log_chain_watcher_rx,
         }
     }
 
@@ -151,6 +158,7 @@ impl BifrostService {
 
         // We spawn the watchdog as a background long-running task
         Watchdog::start(self.inner, self.watchdog_rx, self.metadata_writer)?;
+        LogChainWatcher::start(self.log_chain_watcher_rx)?;
 
         // Bifrost started!
         Ok(())
