@@ -16,28 +16,19 @@
 //! task-local context at the invoker's `JoinSet` boundary.
 
 use std::sync::{Arc, Weak};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use async_trait::async_trait;
-use metrics::{counter, gauge, histogram};
 use moka::future::Cache;
 use moka::ops::compute::Op;
-use parking_lot::RwLock;
-use restate_core::{Handle, TaskCenter, TaskKind};
+use parking_lot::Mutex;
+use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
 use tracing::warn;
 
-use crate::metric_definitions::{
-    GCP_CREDENTIAL_BUILD_DURATION, GCP_CREDENTIAL_BUILDS, GCP_CREDENTIALS_ACTIVE, GCP_TOKEN_MINTS,
-    MINT_OUTCOME_BUILD_ERROR, MINT_OUTCOME_PERMANENT_ERROR, MINT_OUTCOME_SUCCESS,
-    MINT_OUTCOME_TIMEOUT, MINT_OUTCOME_TRANSIENT_ERROR, RESULT_ERROR, RESULT_SUCCESS,
-};
-
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
-#[cfg(any(test, feature = "test_util"))]
-use parking_lot::Mutex;
 
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -186,97 +177,46 @@ struct TestHooks {
     ambient_source_override: Mutex<Option<AmbientSourceOverride>>,
 }
 
-struct RegistrySlot {
-    registry: Arc<CredentialRegistry>,
-    task_center: Handle,
-}
+static REGISTRY: Mutex<Weak<CredentialRegistry>> = Mutex::new(Weak::new());
 
-static REGISTRY: RwLock<Option<RegistrySlot>> = RwLock::new(None);
-
-/// Clears only its own registry slot when the housekeeping task is cancelled. Pointer equality
-/// prevents a stale guard from removing a successor registry.
-struct ClearRegistrySlotOnDrop {
-    registry: Weak<CredentialRegistry>,
-}
-
-impl Drop for ClearRegistrySlotOnDrop {
-    fn drop(&mut self) {
-        let Some(registry) = self.registry.upgrade() else {
-            return;
-        };
-        let mut slot = REGISTRY.write();
-        if matches!(slot.as_ref(), Some(current) if Arc::ptr_eq(&current.registry, &registry)) {
-            *slot = None;
-        }
-    }
-}
-
-/// Returns the registry for the ambient TaskCenter, replacing a previous generation. A registry
-/// built after its TaskCenter starts shutting down is deliberately not installed.
 fn credential_registry() -> Arc<CredentialRegistry> {
-    let current = TaskCenter::current();
-
-    if let Some(slot) = REGISTRY.read().as_ref()
-        && slot.task_center.ptr_eq(&current)
-    {
-        return slot.registry.clone();
+    let mut registry = REGISTRY.lock();
+    if let Some(current) = registry.upgrade() {
+        return current;
     }
 
-    let mut guard = REGISTRY.write();
-    if let Some(slot) = guard.as_ref()
-        && slot.task_center.ptr_eq(&current)
-    {
-        return slot.registry.clone();
-    }
-
-    let registry = CredentialRegistry::init(&current);
-    // If shutdown won the race, return this unregistered registry. Its attempted build will fail
-    // normally, and it cannot pin the dead generation.
-    if !current.is_shutdown_requested() {
-        *guard = Some(RegistrySlot {
-            registry: registry.clone(),
-            task_center: current,
-        });
-    }
-    registry
+    let current = CredentialRegistry::init();
+    *registry = Arc::downgrade(&current);
+    current
 }
 
 impl CredentialRegistry {
-    fn init(task_center: &Handle) -> Arc<Self> {
-        Arc::new_cyclic(|self_weak| {
-            crate::metric_definitions::describe_metrics();
+    fn init() -> Arc<Self> {
+        let registry = Arc::new_cyclic(|self_weak| Self {
+            self_weak: self_weak.clone(),
+            cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
+            ambient_source: RecoverableCell::new(),
+            #[cfg(any(test, feature = "test_util"))]
+            test_hooks: TestHooks::default(),
+        });
 
-            let cache = Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build();
-
-            let housekeeping_cache = cache.clone();
-            let clear_slot_on_drop = ClearRegistrySlotOnDrop {
-                registry: self_weak.clone(),
-            };
-            let housekeeping = async move {
-                let _clear_slot_on_drop = clear_slot_on_drop;
-                let mut interval = tokio::time::interval(CACHE_HOUSEKEEPING_INTERVAL);
-                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-                loop {
-                    interval.tick().await;
-                    housekeeping_cache.run_pending_tasks().await;
-                    gauge!(GCP_CREDENTIALS_ACTIVE).set(housekeeping_cache.entry_count() as f64);
-                }
-            };
-
-            let _ = task_center.spawn(
-                TaskKind::Credentials,
-                "gcp-credential-housekeeping",
-                housekeeping,
-            );
-
-            Self {
-                self_weak: self_weak.clone(),
-                cache,
-                ambient_source: RecoverableCell::new(),
-                #[cfg(any(test, feature = "test_util"))]
-                test_hooks: TestHooks::default(),
+        // This TaskCenter-owned future is the registry's only process-lifetime strong owner.
+        let housekeeping_registry = registry.clone();
+        let housekeeping = async move {
+            let mut interval = tokio::time::interval(CACHE_HOUSEKEEPING_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                interval.tick().await;
+                housekeeping_registry.cache.run_pending_tasks().await;
             }
-        })
+        };
+        let _ = TaskCenter::spawn(
+            TaskKind::Credentials,
+            "gcp-credential-housekeeping",
+            housekeeping,
+        );
+
+        registry
     }
 
     fn arc(&self) -> Arc<Self> {
@@ -289,15 +229,10 @@ impl CredentialRegistry {
         &self,
         spec: &IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
-        let result = self
-            .cache
+        self.cache
             .try_get_with_by_ref(spec, self.build_on_tc_task(spec.clone()))
             .await
-            .map_err(|error| (*error).clone());
-        if result.is_ok() {
-            gauge!(GCP_CREDENTIALS_ACTIVE).set(self.cache.entry_count() as f64);
-        }
-        result
+            .map_err(|error| (*error).clone())
     }
 
     async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<dyn IdTokenSource>) {
@@ -390,27 +325,18 @@ impl CredentialRegistry {
                 {
                     return f(&spec);
                 }
-                let start = Instant::now();
-                let result = registry.build_credentials(spec).await;
-                histogram!(GCP_CREDENTIAL_BUILD_DURATION).record(start.elapsed().as_secs_f64());
-                result
+                registry.build_credentials(spec).await
             })
             .map_err(|_| GcpAuthError::Build {
                 audience: audience.clone(),
                 message: "TaskCenter is shutting down".to_owned(),
             })?;
-        let result = task.await.unwrap_or_else(|_| {
+        task.await.unwrap_or_else(|_| {
             Err(GcpAuthError::Build {
                 audience,
                 message: "GCP credential construction task failed".to_owned(),
             })
-        });
-        counter!(
-            GCP_CREDENTIAL_BUILDS,
-            "result" => if result.is_ok() { RESULT_SUCCESS } else { RESULT_ERROR }
-        )
-        .increment(1);
-        result
+        })
     }
 
     async fn build_credentials(
@@ -562,31 +488,14 @@ impl GcpTokenClient {
                 let registry = credential_registry();
                 match registry.get_or_build(&spec).await {
                     Ok(source) => (source, Some(registry)),
-                    Err(error) => {
-                        // A failed single-flight build fails every waiting caller.
-                        counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_BUILD_ERROR)
-                            .increment(1);
-                        return Err(error);
-                    }
+                    Err(error) => return Err(error),
                 }
             }
         };
 
         match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
-            Ok(Ok(token)) => {
-                counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_SUCCESS).increment(1);
-                Ok(token)
-            }
+            Ok(Ok(token)) => Ok(token),
             Ok(Err(error)) => {
-                counter!(
-                    GCP_TOKEN_MINTS,
-                    "outcome" => if error.is_transient() {
-                        MINT_OUTCOME_TRANSIENT_ERROR
-                    } else {
-                        MINT_OUTCOME_PERMANENT_ERROR
-                    }
-                )
-                .increment(1);
                 // Transient errors may self-heal; evict permanent failures only if still current.
                 if let Some(registry) = &registry
                     && !error.is_transient()
@@ -602,14 +511,11 @@ impl GcpTokenClient {
                     message: error.to_string(),
                 })
             }
-            Err(_) => {
-                counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_TIMEOUT).increment(1);
-                Err(GcpAuthError::Timeout {
-                    audience: audience.to_owned(),
-                    impersonate,
-                    duration: MINT_ATTEMPT_TIMEOUT,
-                })
-            }
+            Err(_) => Err(GcpAuthError::Timeout {
+                audience: audience.to_owned(),
+                impersonate,
+                duration: MINT_ATTEMPT_TIMEOUT,
+            }),
         }
     }
 
