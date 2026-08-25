@@ -756,6 +756,49 @@ pub enum JournalRetentionPolicy {
 }
 
 impl CompletedInvocation {
+    pub fn from_pre_flight_invocation_metadata(
+        mut metadata: PreFlightInvocationMetadata,
+        journal_retention_policy: JournalRetentionPolicy,
+        response_result: ResponseResult,
+        timestamp: MillisSinceEpoch,
+    ) -> Self {
+        metadata
+            .timestamps
+            .record_completed_transition_time(timestamp);
+
+        let (journal_metadata, pinned_deployment) = match metadata.input {
+            PreFlightInvocationArgument::Input(_) => (JournalMetadata::empty(), None),
+            PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                pinned_deployment,
+            }) => (
+                if journal_retention_policy == JournalRetentionPolicy::Retain {
+                    journal_metadata
+                } else {
+                    JournalMetadata::empty()
+                },
+                pinned_deployment,
+            ),
+        };
+
+        Self {
+            invocation_target: metadata.invocation_target,
+            vqueue_id: metadata.vqueue_id,
+            limit_key: metadata.limit_key,
+            created_using_restate_version: metadata.created_using_restate_version,
+            source: metadata.source,
+            execution_time: metadata.execution_time,
+            idempotency_key: metadata.idempotency_key,
+            timestamps: metadata.timestamps,
+            response_result,
+            completion_retention_duration: metadata.completion_retention_duration,
+            journal_retention_duration: metadata.journal_retention_duration,
+            journal_metadata,
+            pinned_deployment,
+            random_seed: metadata.random_seed,
+        }
+    }
+
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,

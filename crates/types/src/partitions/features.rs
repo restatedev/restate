@@ -17,7 +17,8 @@ use crate::storage::{
     encode,
 };
 use crate::{
-    RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, SemanticRestateVersion,
+    RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_8_0,
+    SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -64,6 +65,10 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.5*
     EnableVqueuesSkipCompleted = 4,
+    /// Apply completion and journal retention when terminating a preflight invocation.
+    ///
+    /// *Since v1.8.0*
+    EnablePreflightInvocationTerminationRetention = 5,
 }
 
 impl PartitionFeatureChange {
@@ -81,6 +86,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueues => &RESTATE_VERSION_1_7_0,
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
+            Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -101,6 +107,10 @@ impl PartitionFeatureChange {
             Self::EnableUniqueRandomSeeds => {
                 !std::mem::replace(&mut features.unique_random_seeds, true)
             }
+            Self::EnablePreflightInvocationTerminationRetention => !std::mem::replace(
+                &mut features.preflight_invocation_termination_retention,
+                true,
+            ),
         }
     }
 }
@@ -151,6 +161,12 @@ pub struct PersistedFeatures {
     /// *Since v1.7.5*
     #[bilrost(tag(4))]
     pub vqueues_skip_completed: bool,
+
+    /// Apply completion and journal retention when terminating a preflight invocation.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(5))]
+    pub preflight_invocation_termination_retention: bool,
 }
 
 impl PersistedFeatures {
@@ -164,6 +180,8 @@ impl PersistedFeatures {
             self.unique_random_seeds.then_some("unique_random_seeds"),
             self.vqueues_skip_completed
                 .then_some("vqueues_skip_completed"),
+            self.preflight_invocation_termination_retention
+                .then_some("preflight_invocation_termination_retention"),
         ]
         .into_iter()
         .flatten()

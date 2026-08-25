@@ -840,6 +840,11 @@ experimental! {
     ///
     /// Since v1.7.5
     vqueues_migration_skip_completed,
+
+    /// Apply completion and journal retention when terminating a preflight invocation.
+    ///
+    /// Since v1.8.0
+    preflight_invocation_termination_retention,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
