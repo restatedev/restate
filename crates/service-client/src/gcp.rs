@@ -11,20 +11,9 @@
 //! GCP OIDC ID-token mint client for HTTP deployments hosted on Cloud Run and similar
 //! Google-fronted endpoints.
 //!
-//! Building a `google-cloud-auth` credential starts a background refresh task that lives as long as
-//! the credential does. The entire credential is cached in a process-global registry keyed by
-//! `(audience, impersonate_service_account)`; impersonated keys additionally share a process-wide
-//! ambient source credential (see [`CredentialRegistry::ambient_source`]). Construction runs as a
-//! [`TaskKind::Credentials`] task on TaskCenter's default runtime, so each credential's refresh task
-//! lands on a runtime with process lifetime rather than the runtime that happens to call `mint()`.
-//!
-//! `mint()` is reachable from invoker invocation tasks, which run on a plain `tokio::JoinSet`, not
-//! as `TaskCenter` tasks. The invoker's spawn boundary (`spawn_invocation_task` in
-//! `restate_invoker_impl`) guarantees an ambient `TaskCenter` for every invocation task regardless,
-//! by wrapping the spawned future with `TaskCenterFutureExt::in_current_tc` before handing it to
-//! the `JoinSet`. This module treats that guarantee as an invariant: [`credential_registry`] and
-//! `mint()` read [`TaskCenter::current`] directly, and registry construction and credential-build
-//! work spawn on `TaskCenter`'s default runtime.
+//! Credentials are cached in a registry bound to the ambient [`TaskCenter`]. Construction runs on
+//! its default runtime so refresh tasks have process lifetime. Invocation tasks inherit that
+//! task-local context at the invoker's `JoinSet` boundary.
 
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -54,10 +43,8 @@ const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
 
-/// moka evicts lazily; drive eviction when no mint attempts are happening
 const CACHE_HOUSEKEEPING_INTERVAL: Duration = Duration::from_secs(300);
 
-/// Bound on probing the shared ambient source's own cached state (see [`ambient_source_is_dead`])
 const AMBIENT_SOURCE_PROBE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Caps concurrent blocking `google-cloud-auth`/ADC builds, so a burst of distinct new keys (or a
@@ -109,9 +96,6 @@ struct IdTokenSpec {
     audience: String,
 }
 
-/// Internal seam that keeps the registry and the mint path testable without ADC or network: `Live`
-/// wraps a real `IDTokenCredentials`, while tests inject mocks and a test-only `Seeded` source (see
-/// [`GcpTokenClient::seed_for_test`]).
 #[async_trait]
 trait IdTokenSource: Send + Sync {
     async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError>;
@@ -126,11 +110,7 @@ impl IdTokenSource for Live {
     }
 }
 
-/// Credential registry: a cache of credential objects and the shared ambient credentials source,
-/// tied to the [`Handle`] that spawned its background housekeeping task. Every [`GcpTokenClient`]
-/// reaches its registry through [`credential_registry`], which resolves the ambient `TaskCenter`
-/// and rebuilds the registry whenever that differs from the one it was built under -- see that
-/// function's doc comment.
+/// Credentials and their shared ambient source, bound to one TaskCenter.
 struct CredentialRegistry {
     self_weak: Weak<CredentialRegistry>,
     cache: Cache<IdTokenSpec, Arc<dyn IdTokenSource>>,
@@ -139,8 +119,6 @@ struct CredentialRegistry {
     test_hooks: TestHooks,
 }
 
-/// A single cached, cheaply-cloneable value with single-flight, retry-on-error construction, and
-/// supporting replacement in case the stored value is later found to be failed.
 struct RecoverableCell<T> {
     cell: tokio::sync::Mutex<Option<T>>,
 }
@@ -201,13 +179,6 @@ type ConstructOverride =
 type AmbientSourceOverride =
     Arc<dyn Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync>;
 
-/// Lets unit tests drive the real moka-backed construction/eviction paths without ADC or network.
-/// One `TestHooks` per `CredentialRegistry`, so each test's own `TaskCenter` (see
-/// `#[restate_core::test]` and `credential_registry`'s doc comment) gets its own overrides: tests
-/// sharing a process under `nextest` do not interfere with each other even without process
-/// isolation. `build_overrides` is further keyed by `IdTokenSpec` so distinct-key tests within one
-/// registry don't interfere either; `ambient_source_override` is a single slot, since the ambient
-/// source itself is a single shared value per registry.
 #[cfg(any(test, feature = "test_util"))]
 #[derive(Default)]
 struct TestHooks {
@@ -222,17 +193,8 @@ struct RegistrySlot {
 
 static REGISTRY: RwLock<Option<RegistrySlot>> = RwLock::new(None);
 
-/// Lives inside the registry's housekeeping future. `TaskKind::Credentials` is `OnCancel =
-/// "abort"`, so TaskCenter shutdown drops that future (running this type's `Drop`) without
-/// otherwise touching `REGISTRY`; without this, a stopped TaskCenter's registry -- its cache, its
-/// credentials, and their refresh tasks, plus the strong `Handle` pinning the dead TaskCenter
-/// alive -- would sit in the slot until the next `credential_registry()` call for a *different*
-/// TaskCenter happened to overwrite it.
-///
-/// `Drop` clears the slot only if it still holds *this* registry (compared by pointer via the
-/// same `Weak` this type carries), so a guard whose registry has already been superseded is a
-/// no-op rather than clobbering its successor. Sync-only and lock-only, no `.await`: `Drop` runs
-/// during future teardown, which cannot poll further futures.
+/// Clears only its own registry slot when the housekeeping task is cancelled. Pointer equality
+/// prevents a stale guard from removing a successor registry.
 struct ClearRegistrySlotOnDrop {
     registry: Weak<CredentialRegistry>,
 }
@@ -249,26 +211,8 @@ impl Drop for ClearRegistrySlotOnDrop {
     }
 }
 
-/// Returns the credential registry for the ambient `TaskCenter`, building a fresh one on first
-/// use or whenever the ambient task center differs from the one the cached registry was built
-/// under. Reads [`TaskCenter::current`] directly: every caller runs inside an invocation task,
-/// which `restate_invoker_impl::spawn_invocation_task` guarantees carries the spawning task's
-/// `TaskCenter` task-locals (see the module doc comment) -- an absent task-local here is a
-/// programming bug to panic on, not a runtime condition to degrade gracefully from.
-///
-/// Embedded Restate creates and destroys task centers within one process (see
-/// `Restate::create`/`Restate::stop`); a registry's cache, ambient source, and housekeeping task
-/// are only meaningful for the task center that spawned that housekeeping task; that task center
-/// shutting down cancels it and orphans the registry, so a later `mint()` under a *new* task
-/// center must get a fresh registry, not the stale one. The fast (same task center) path costs
-/// one read-lock and one pointer comparison.
-///
-/// If the ambient task center is itself shutting down by the time a freshly built registry is
-/// ready to install, the registry is returned to this caller but left out of the slot: installing
-/// it would risk a shutdown/startup race displacing a new generation's registry with one whose
-/// housekeeping task may already be cancelled. An uninstalled registry costs this one caller a
-/// build attempt that fails normally against a dying TaskCenter; it cannot pin the dead generation
-/// for anyone else.
+/// Returns the registry for the ambient TaskCenter, replacing a previous generation. A registry
+/// built after its TaskCenter starts shutting down is deliberately not installed.
 fn credential_registry() -> Arc<CredentialRegistry> {
     let current = TaskCenter::current();
 
@@ -309,8 +253,6 @@ impl CredentialRegistry {
                 registry: self_weak.clone(),
             };
             let housekeeping = async move {
-                // Held for the lifetime of this future, not polled -- its only job is running its
-                // Drop impl when TaskCenter shutdown aborts this task (see the type's doc comment).
                 let _clear_slot_on_drop = clear_slot_on_drop;
                 let mut interval = tokio::time::interval(CACHE_HOUSEKEEPING_INTERVAL);
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -321,8 +263,6 @@ impl CredentialRegistry {
                 }
             };
 
-            // Managed (not unmanaged) so TaskCenter shutdown cancels and awaits it -- an
-            // unmanaged infinite loop races test-process teardown and shows up as a nextest leak.
             let _ = task_center.spawn(
                 TaskKind::Credentials,
                 "gcp-credential-housekeeping",
@@ -339,17 +279,12 @@ impl CredentialRegistry {
         })
     }
 
-    /// An owned handle to this registry, for moving into a spawned task that must outlive `&self`
-    /// (see [`Self::build_on_tc_task`]). Always upgradeable: every live `CredentialRegistry` is
-    /// reachable only through the [`Arc`] this weak reference was cloned from.
     fn arc(&self) -> Arc<Self> {
         self.self_weak
             .upgrade()
             .expect("a CredentialRegistry is always held by the Arc it was constructed in")
     }
 
-    // concurrent misses for the same key coalesce, with waiters seeing the same error; failures are
-    // not cached
     async fn get_or_build(
         &self,
         spec: &IdTokenSpec,
@@ -365,7 +300,6 @@ impl CredentialRegistry {
         result
     }
 
-    // guards against a slow caller evicting a freshly rebuilt healthy credential
     async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<dyn IdTokenSource>) {
         self.cache
             .entry_by_ref(spec)
@@ -385,11 +319,8 @@ impl CredentialRegistry {
             .await
     }
 
-    /// After a permanent *impersonated* mint failure -- which doesn't say whether the shared
-    /// source died or just this key's target service account is misconfigured -- replace the
-    /// source only if a probe proves its refresh task is gone; a misconfigured target with a
-    /// healthy source (the common case) leaves it untouched, or every retry would strand a live
-    /// refresh task.
+    /// Replace only a source whose refresh task is proven dead; a target-scoped failure must not
+    /// strand a healthy shared source.
     async fn recover_ambient_source_if_dead(&self) {
         match self
             .ambient_source
@@ -412,10 +343,6 @@ impl CredentialRegistry {
         }
     }
 
-    /// Builds the ambient source credential, consulting the test override when compiled for
-    /// tests. Spawned on [`TaskCenter::current`] -- the invocation task's ambient TaskCenter, an
-    /// invariant per the module doc comment -- so the source's own refresh task lands on that
-    /// `TaskCenter`'s default runtime regardless of which runtime is polling `mint()`.
     async fn build_ambient_source(
         &self,
     ) -> Result<google_cloud_auth::credentials::Credentials, String> {
@@ -444,19 +371,12 @@ impl CredentialRegistry {
         }
     }
 
-    /// Builds the outer credential for `spec` as a single [`TaskKind::Credentials`] task on
-    /// [`TaskCenter::current`] -- the invocation task's ambient TaskCenter -- so any refresh task
-    /// `build()` spawns internally lands on a runtime with process lifetime, not the runtime on
-    /// which `mint()` gets called. The test-override consult happens *inside* the spawned task
-    /// (not in [`Self::get_or_build`]) so mock-backed construction tests exercise this same
-    /// dispatch, rather than bypassing it.
     async fn build_on_tc_task(
         &self,
         spec: IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         let registry = self.arc();
-        // The spawned task needs ownership of `spec`; one audience copy stays behind for the two
-        // error paths, which consume it lazily.
+        // Credential refresh tasks spawned by build() must use the TaskCenter default runtime.
         let audience = spec.audience.clone();
         let task = TaskCenter::current()
             .spawn_unmanaged(TaskKind::Credentials, "gcp-credential-build", async move {
@@ -493,11 +413,6 @@ impl CredentialRegistry {
         result
     }
 
-    /// Resolves the credential(s) needed for `key` and builds the outer ID-token credential,
-    /// offloading the blocking `.build()` call. The impersonated arm first resolves the
-    /// process-wide ambient source: a permanent failure here can only ever strand the outer
-    /// refresh task, since the shared source's refresh task is independent of any single key and
-    /// is recovered separately (see [`CredentialRegistry::recover_ambient_source_if_dead`]).
     async fn build_credentials(
         &self,
         spec: IdTokenSpec,
@@ -506,8 +421,6 @@ impl CredentialRegistry {
             impersonate,
             audience,
         } = spec;
-        // The blocking closure takes ownership of the strings; one audience copy stays behind as
-        // run_blocking's panic context (builder errors already carry the audience themselves).
         let panic_context = audience.clone();
         match impersonate {
             None => run_blocking(panic_context, move || build_ambient_credentials(&audience)).await,
@@ -529,10 +442,8 @@ impl CredentialRegistry {
     }
 }
 
-/// A permanent error probing `source`'s own cached token state proves its refresh task already
-/// published that error and exited -- replacing it strands nothing live. Anything else (a token, a
-/// transient error, or the probe timing out) means the refresh task might still be alive, so it
-/// must be kept.
+/// A permanent probe error proves the source refresh task exited; all other outcomes may still be
+/// live and must be retained.
 async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credentials) -> bool {
     matches!(
         tokio::time::timeout(AMBIENT_SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new()))
@@ -541,11 +452,7 @@ async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credent
     )
 }
 
-/// Bounds concurrent blocking `google-cloud-auth`/ADC builds. Acquired strictly around the
-/// `spawn_blocking` call in [`spawn_bounded_blocking`] -- not around a whole key's construction --
-/// so a permit is never held while waiting on another. In particular,
-/// [`CredentialRegistry::build_credentials`] resolves the ambient source before entering this
-/// bound for the outer credential build.
+/// Bounds only the blocking call, never a whole key construction, so waits cannot deadlock.
 static BLOCKING_BUILD_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_BLOCKING_BUILDS);
 
 async fn spawn_bounded_blocking<T: Send + 'static>(
@@ -558,8 +465,6 @@ async fn spawn_bounded_blocking<T: Send + 'static>(
     tokio::task::spawn_blocking(build).await
 }
 
-/// Runs `build` on a blocking thread, mapping a panicked build thread to a `GcpAuthError` at this
-/// one call site.
 async fn run_blocking(
     audience: String,
     build: impl FnOnce() -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + 'static,
@@ -572,7 +477,6 @@ async fn run_blocking(
     })
 }
 
-/// Builds the outer credential for a non-impersonated token.
 fn build_ambient_credentials(audience: &str) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
@@ -593,7 +497,6 @@ fn build_ambient_credentials(audience: &str) -> Result<Arc<dyn IdTokenSource>, G
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
 }
 
-/// Builds the outer credential for an impersonated key, from the shared ambient `source`.
 fn build_impersonated_credentials(
     audience: &str,
     service_account: &str,
@@ -611,19 +514,13 @@ fn build_impersonated_credentials(
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
 }
 
-/// Token-mint client: a cheap handle to the process-global credential registry. `ServiceClient`
-/// clones share cached credentials and their refresh tasks. Outside tests this carries no state
-/// of its own: it is a stateless handle to [`credential_registry`], which resolves the ambient
-/// `TaskCenter` task-locals on the calling task at mint time (see that function's doc comment).
+/// Cheap handle to the TaskCenter-scoped credential registry.
 #[derive(Clone)]
 pub struct GcpTokenClient {
     #[cfg(any(test, feature = "test_util"))]
     inner: Arc<Inner>,
 }
 
-/// Instance-local test overlay. Kept separate from the global registry so tests that construct
-/// multiple `ServiceClient`s in one process cannot cross-contaminate each other by seeding a
-/// shared cache entry.
 #[cfg(any(test, feature = "test_util"))]
 struct Inner {
     test_force_failure: Mutex<Option<String>>,
@@ -657,11 +554,7 @@ impl GcpTokenClient {
             .unwrap_or("(ambient)")
             .to_owned();
 
-        // Test seeds/forced failures are never evicted: they live on this instance, not in the
-        // shared registry cache. `registry` is resolved at most once per mint call and reused for
-        // both the build and, on a permanent failure, eviction/recovery below -- those must act on
-        // the same registry generation that built the source, not whichever one happens to occupy
-        // the global slot by the time the error is handled.
+        // Recovery must act on the registry generation that built this source.
         let (source, registry) = match self.test_intercept(&spec, &impersonate) {
             Some(Ok(source)) => (source, None),
             Some(Err(error)) => return Err(error),
@@ -670,8 +563,7 @@ impl GcpTokenClient {
                 match registry.get_or_build(&spec).await {
                     Ok(source) => (source, Some(registry)),
                     Err(error) => {
-                        // Each failed caller counts: a single failed single-flight build fails
-                        // every caller waiting on it, not just one.
+                        // A failed single-flight build fails every waiting caller.
                         counter!(GCP_TOKEN_MINTS, "outcome" => MINT_OUTCOME_BUILD_ERROR)
                             .increment(1);
                         return Err(error);
@@ -695,9 +587,7 @@ impl GcpTokenClient {
                     }
                 )
                 .increment(1);
-                // Transient failures self-heal via the credential's own refresh loop, no need to
-                // evict the entry; a permanent failure will not recover, so evict it -- but only if
-                // the cache still holds the exact credential that produced the error.
+                // Transient errors may self-heal; evict permanent failures only if still current.
                 if let Some(registry) = &registry
                     && !error.is_transient()
                 {
@@ -723,9 +613,6 @@ impl GcpTokenClient {
         }
     }
 
-    /// Test seam consulted at the top of `mint()`: a forced failure or a seeded source, if any.
-    /// One expression in `mint()` covers both builds, so production and test compilation cannot
-    /// drift apart.
     #[cfg(any(test, feature = "test_util"))]
     fn test_intercept(
         &self,
@@ -757,9 +644,6 @@ impl GcpTokenClient {
         *self.inner.test_force_failure.lock() = Some(message.to_owned());
     }
 
-    /// Test-only: seed a token so subsequent `mint` calls with the same key return it directly.
-    /// Seeding is local to the `GcpTokenClient` instance, not the shared registry, so tests that
-    /// construct multiple `ServiceClient`s in one process do not interfere with each other.
     #[cfg(any(test, feature = "test_util"))]
     pub fn seed_for_test(&self, impersonate: Option<&str>, audience: &str, token: String) {
         struct MockToken(String);
@@ -892,9 +776,6 @@ mod tests {
             .lock() = Some(Arc::new(f));
     }
 
-    /// A `CredentialsProvider` a test can drive deterministically, with no SDK dependencies:
-    /// `Credentials::from(...)` wraps this so its `headers()` impl below is exactly what
-    /// `ambient_source_is_dead` observes.
     #[derive(Clone, Copy, Debug)]
     enum ProbeOutcome {
         Healthy,
@@ -966,19 +847,6 @@ mod tests {
         assert_eq!(builds.load(Ordering::SeqCst), 1);
     }
 
-    /// Pins P1's fix (restatedev/restate#5151): the ambient ADC source credential shared by every
-    /// impersonated key is a single process-wide refresh task, not one per key. Exercises
-    /// `CredentialRegistry::ambient_source` directly -- the single-flighted `RecoverableCell` an
-    /// impersonated construction resolves through before building its own outer credential (see
-    /// `CredentialRegistry::build_credentials`'s `Some(sa)` arm) -- rather than driving full
-    /// impersonated constructions, which would call the real, unmocked
-    /// `idtoken::impersonated::Builder` against the fake source.
-    ///
-    /// Relies on `ambient_source` being uninitialized when this test starts: `#[restate_core::test]`
-    /// builds a fresh `TaskCenter` per test, and `credential_registry` builds a fresh
-    /// `CredentialRegistry` for each new `TaskCenter` handle it sees (see that function's doc
-    /// comment), so this test gets its own registry regardless of what ran before it in the same
-    /// process.
     #[restate_core::test]
     async fn concurrent_ambient_source_resolutions_share_one_build() {
         let build_count = Arc::new(AtomicUsize::new(0));
@@ -1019,9 +887,6 @@ mod tests {
         }
     }
 
-    /// A shared ambient source whose refresh task has permanently died is replaced exactly once, by the
-    /// first permanent impersonated mint failure to probe it -- and the replacement is then reused
-    /// without further rebuilds.
     #[restate_core::test]
     async fn dead_ambient_source_is_replaced_after_permanent_impersonation_failure() {
         credential_registry()
@@ -1063,13 +928,10 @@ mod tests {
             "the dead source must be replaced exactly once"
         );
 
-        // The replacement is healthy and reusable without a further rebuild.
         assert!(credential_registry().ambient_source().await.is_ok());
         assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
-    /// A healthy shared ambient source is never replaced by a repeatedly-failing impersonation
-    /// target: the failure is scoped to that one key, and the source is provably fine.
     #[restate_core::test]
     async fn healthy_ambient_source_is_not_replaced_by_repeated_impersonation_failures() {
         credential_registry()
@@ -1135,11 +997,9 @@ mod tests {
         let first = client.mint(None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
-        // The entry must still be present and unchanged (no eviction on transient failure).
         let still_cached = credential_registry().cache.get(&cache_key).await;
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &dyn_source)));
 
-        // The mock "self-heals" on the next call, as a real credential's refresh loop would.
         let second = client.mint(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
     }
@@ -1172,11 +1032,6 @@ mod tests {
         let cache_key = IdTokenSpec::ambient(audience);
         let new_source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Token(token()));
 
-        /// Simulates a concurrent rebuild completing -- replacing this source in the registry
-        /// cache with `replacement` -- before this permanently-failing source's own error is
-        /// reported back to `mint()`. Driving the swap from inside `id_token()` exercises the
-        /// exact race `evict_if_unchanged`'s compare-and-evict guards against, through the real
-        /// `mint()` call path rather than by hand-simulating the two steps independently.
         struct SwapThenFail {
             spec: IdTokenSpec,
             replacement: Arc<dyn IdTokenSource>,
@@ -1217,15 +1072,6 @@ mod tests {
         );
     }
 
-    /// The registry must not survive its task center, proven two ways in one test: building under
-    /// a *new* task center after the old one shuts down gets a fresh registry (the old cache does
-    /// not persist), and the old registry's `Arc` is actually dropped at shutdown -- not merely
-    /// orphaned until some later mint happens to replace it. `ClearRegistrySlotOnDrop` lives
-    /// inside the housekeeping future specifically so `TaskKind::Credentials`'s `OnCancel =
-    /// "abort"` shutdown path drops it. Embedded Restate creates and destroys task centers within
-    /// a process (`Restate::create`/`Restate::stop`), and a registry's cache and ambient source
-    /// are only meaningful for the task center whose default runtime hosts their housekeeping and
-    /// construction tasks.
     #[tokio::test(flavor = "multi_thread")]
     async fn registry_is_dropped_at_shutdown_and_a_new_task_center_gets_a_fresh_one() {
         use restate_core::{TaskCenterBuilder, TaskCenterFutureExt as _};
@@ -1234,8 +1080,6 @@ mod tests {
         let spec = IdTokenSpec::ambient(audience);
         let build_count = Arc::new(AtomicUsize::new(0));
 
-        // Re-installed under each task center in turn: each gets its own fresh `CredentialRegistry`
-        // (and so its own, empty `TestHooks`), so the override must be added again for it to see it.
         let install_override = || {
             add_build_override(spec.clone(), {
                 let build_count = build_count.clone();
@@ -1264,13 +1108,8 @@ mod tests {
         assert_eq!(build_count.load(Ordering::SeqCst), 1);
         tc_a.shutdown_node("test done with TC-A", 0).await;
 
-        // shutdown_node's cancel_tasks aborts an OnCancel="abort" task without awaiting its
-        // teardown (tokio's `JoinHandle::abort` only guarantees the task is dropped at its next
-        // poll, not synchronously with the call), so completion of shutdown_node does not
-        // strictly happen-after the guard's Drop. Poll for it instead of asserting immediately.
-        // Checking `strong_count() == 0` rather than `upgrade().is_none()` matters here: holding
-        // an `upgrade()`d Arc across the sleep would itself keep the registry alive, making the
-        // loop self-perpetuating.
+        // Cancellation is asynchronous; don't upgrade the Weak while polling because that would
+        // keep the registry alive.
         let mut dropped = weak.strong_count() == 0;
         for _ in 0..50 {
             if dropped {
@@ -1306,19 +1145,6 @@ mod tests {
         tc_b.shutdown_node("test done with TC-B", 0).await;
     }
 
-    /// The property construction via TaskCenter exists to provide: a real credential's `build()`
-    /// spawns a background refresh task via a bare `tokio::spawn`, so that refresh task must land
-    /// on a runtime with process lifetime, not whatever runtime happened to call `mint()` --
-    /// otherwise dropping a partition's own runtime would silently kill every credential's
-    /// refresh task built while handling that partition.
-    ///
-    /// Builds its own `TaskCenter` with its own dedicated default runtime (standing in for the
-    /// server's real one), then drives construction from a separate, disposable "caller" runtime
-    /// that is dropped once construction returns. The build override -- now consulted *inside*
-    /// the spawned `TaskKind::Credentials` task, see `build_on_tc_task` -- stands in for a real
-    /// credential's `build()`: it spawns a probe child task and returns. The probe surviving the
-    /// caller runtime's drop proves it (and by extension any real `build()`) ran on TaskCenter's
-    /// default runtime, not the caller's.
     #[test]
     fn credential_construction_runs_on_task_centers_default_runtime_not_the_callers() {
         use restate_core::TaskCenterFutureExt as _;
@@ -1334,9 +1160,6 @@ mod tests {
         let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let probe_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        // Registers the override and resolves the registry in the same `run_sync` call, both
-        // under `task_center`'s ambient scope: `credential_registry` no longer takes a `Handle`
-        // parameter, so it must be called from within that scope to resolve the right one.
         let registry = task_center.run_sync(|| {
             let running = running.clone();
             let probe_completed = probe_completed.clone();
@@ -1354,6 +1177,7 @@ mod tests {
             credential_registry()
         });
 
+        // The probe must survive dropping the runtime that called mint().
         {
             let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
             let spec = IdTokenSpec::ambient(audience);
@@ -1362,9 +1186,6 @@ mod tests {
             if let Err(error) = &result {
                 panic!("{error}");
             }
-            // Dropping the caller runtime here. If the probe had landed on it instead of
-            // TaskCenter's default runtime, dropping it would abort the probe before it can ever
-            // observe `running` flip to false.
         }
 
         std::thread::sleep(Duration::from_millis(20));
@@ -1376,21 +1197,12 @@ mod tests {
         );
     }
 
-    /// A burst of concurrent distinct-key blocking builds is bounded by `BLOCKING_BUILD_PERMITS`,
-    /// not by tokio's much larger default blocking-thread-pool size -- proving the bound is
-    /// actually enforced, not merely declared, and that exceeding it does not deadlock.
-    ///
-    /// Drives concurrency directly through `run_blocking`, the production choke point both outer
-    /// and ambient-source construction share, rather than through `mint()`: the build override
-    /// consulted in `build_on_tc_task` (see the runtime-affinity test above) sits above
-    /// `run_blocking` and would bypass it entirely, so routing this test through `mint()` would
-    /// not exercise the semaphore at all. `run_blocking` is private but reachable directly from
-    /// this submodule, which is the least intrusive way to exercise it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn blocking_builds_are_bounded_and_never_deadlock() {
         let concurrent = Arc::new(AtomicUsize::new(0));
         let high_water_mark = Arc::new(AtomicUsize::new(0));
 
+        // Test the semaphore's production choke point directly; construction overrides bypass it.
         let tasks: Vec<_> = (0..4 * MAX_CONCURRENT_BLOCKING_BUILDS)
             .map(|_| {
                 let concurrent = concurrent.clone();
