@@ -76,11 +76,19 @@ pub struct Schema {
 
     #[bilrost(tag(2))]
     deployments: HashMap<DeploymentId, Deployment>,
-    #[bilrost(tag(3))]
+
+    // Bilrost does not serialize `active_service_revisions`. Instead, it is
+    // reconstructed during decoding, mirroring the behavior of the Serde proxy
+    // type `serde_hacks::Schema`. This reconstruction is implemented by
+    // `StorageDecode`.
+    //
+    // Consequently, this value is valid only after decoding with `StorageCodec`
+    // through the `StorageDecode` trait.
+    #[bilrost(ignore)]
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
-    #[bilrost(tag(4))]
+    #[bilrost(tag(3))]
     subscriptions: HashMap<SubscriptionId, Subscription>,
-    #[bilrost(tag(5))]
+    #[bilrost(tag(4))]
     kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
@@ -130,13 +138,11 @@ mod storage {
     };
 
     use super::Schema;
-    use crate::storage;
-
-    //flexbuffers_storage_encode_decode!(Schema);
+    use crate::{schema::metadata::ActiveServiceRevision, storage};
 
     impl StorageEncode for Schema {
         fn default_codec(&self) -> StorageCodecKind {
-            StorageCodecKind::FlexbuffersSerde
+            StorageCodecKind::Bilrost
         }
 
         fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
@@ -160,7 +166,13 @@ mod storage {
         {
             match kind {
                 StorageCodecKind::FlexbuffersSerde => storage::decode::decode_serde(buf, kind),
-                StorageCodecKind::Bilrost => storage::decode::decode_bilrost(buf),
+                StorageCodecKind::Bilrost => {
+                    let mut schema = storage::decode::decode_bilrost::<Schema, _>(buf)?;
+                    // rebuild active service index.
+                    schema.active_service_revisions =
+                        ActiveServiceRevision::create_index(schema.deployments.values());
+                    Ok(schema)
+                }
                 _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
             }
         }
@@ -327,24 +339,31 @@ impl Deployment {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct ServiceRevision {
     /// Fully qualified name of the service
+    #[bilrost(tag(1))]
     name: String,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
+    #[bilrost(tag(2))]
     handlers: HashMap<String, Handler>,
 
+    #[bilrost(tag(3))]
     ty: ServiceType,
 
     /// Documentation of the service, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(4))]
     documentation: Option<String>,
     /// Additional service metadata, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[bilrost(tag(5))]
     metadata: HashMap<String, String>,
     /// Latest revision of the service.
+    #[bilrost(tag(6))]
     revision: identifiers::ServiceRevision,
 
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
+    #[bilrost(tag(7))]
     public: bool,
 
     /// The retention duration of idempotent requests for this service.
@@ -353,6 +372,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(8))]
     idempotency_retention: Option<Duration>,
 
     /// The retention duration of workflows. Only available on workflow services.
@@ -361,6 +381,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(9))]
     workflow_completion_retention: Option<Duration>,
 
     /// The journal retention. When set, this applies to all requests to all handlers of this service.
@@ -372,6 +393,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(10))]
     journal_retention: Option<Duration>,
 
     /// This timer guards against stalled service/handler invocations. Once it expires,
@@ -387,6 +409,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(11))]
     inactivity_timeout: Option<Duration>,
 
     /// This timer guards against stalled service/handler invocations that are supposed to
@@ -403,11 +426,13 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(12))]
     abort_timeout: Option<Duration>,
 
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[bilrost(tag(13))]
     enable_lazy_state: Option<bool>,
 
     #[serde(
@@ -415,18 +440,23 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
+    #[bilrost(tag(14))]
     retry_policy_initial_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(15))]
     retry_policy_exponentiation_factor: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(16))]
     retry_policy_max_attempts: Option<NonZeroUsize>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
+    #[bilrost(tag(17))]
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(18))]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
 
     /// This is a cache for the computed value of ServiceOpenAPI
@@ -1415,13 +1445,20 @@ mod test_util {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use super::*;
 
-    use crate::config::{
-        ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
-        MaxAttempts,
+    use crate::{
+        config::{
+            ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
+            MaxAttempts,
+        },
+        storage::StorageCodec,
     };
     use googletest::prelude::*;
+    use notify::event::CreateKind::File;
+    use restate_platform::storage::StorageCodecKind;
 
     #[test]
     fn retry_policy_correctly_inferred_for_max_attempts_eq_to_1() {

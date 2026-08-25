@@ -71,6 +71,10 @@ impl TryFrom<VersionedValue> for GenericMetadataValue {
             .ok_or_else(|| anyhow::anyhow!("version is required"))?
             .into();
 
+        // todo(azmy): This code here assumes that all bytes are flexbuggers and hence
+        // it's okay to use the GenericMetadataValue which can only be decoded from
+        // flexbuffer. This is not true if the metadata raw bytes are actually bilrost
+        // or any other encoding type
         let value: GenericMetadataValue = StorageCodec::decode(&mut versioned_value.bytes)?;
         if value.version != version {
             anyhow::bail!("returned payload and metadata object versions must align");
