@@ -28,6 +28,16 @@ pub mod storage {
     use restate_types::invocation::InvocationTarget;
     use restate_types::journal::Entry;
 
+    pub fn has_result_reference(
+        reference: Option<EntryIndex>,
+    ) -> impl Matcher<ActualT = InvocationStatus> {
+        predicate(move |is: &InvocationStatus| {
+            let InvocationStatus::Completed(completed) = is else {
+                return false;
+            };
+            completed.response_result.referenced_journal_index() == reference
+        })
+    }
     pub fn has_journal_length(
         journal_length: EntryIndex,
     ) -> impl Matcher<ActualT = InvocationStatus> {

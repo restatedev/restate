@@ -161,6 +161,7 @@ mod tests {
 
     use bytes::Bytes;
     use googletest::prelude::{all, assert_that, none, ok, pat};
+    use rstest::rstest;
 
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -177,32 +178,14 @@ mod tests {
         invoker_end_effect, invoker_entry_effect, pinned_deployment,
     };
     use crate::partition::state_machine::tests::matchers::storage::{
-        has_commands, has_journal_length, is_variant,
+        has_commands, has_journal_length, has_result_reference, is_variant,
     };
 
+    #[rstest]
     #[restate_core::test]
-    async fn purge_completed_invocation_with_journal_and_embedded_result() {
-        run_purge_completed_invocation(false, false).await;
-    }
-
-    #[restate_core::test]
-    async fn purge_completed_invocation_with_journal_and_referenced_result() {
-        run_purge_completed_invocation(true, false).await;
-    }
-
-    #[restate_core::test]
-    async fn purge_completed_invocation_after_journal_purge_with_embedded_result() {
-        run_purge_completed_invocation(false, true).await;
-    }
-
-    #[restate_core::test]
-    async fn purge_completed_invocation_after_journal_purge_with_referenced_result() {
-        run_purge_completed_invocation(true, true).await;
-    }
-
     async fn run_purge_completed_invocation(
-        write_result_reference: bool,
-        purge_journal_first: bool,
+        #[values(false, true)] write_result_reference: bool,
+        #[values(false, true)] purge_journal_first: bool,
     ) {
         let mut test_env = TestEnv::create_with_features(PersistedFeatures {
             write_result_reference,
@@ -242,7 +225,8 @@ mod tests {
             ok(all!(
                 is_variant(InvocationStatusDiscriminants::Completed),
                 has_commands(2),
-                has_journal_length(2)
+                has_journal_length(2),
+                has_result_reference(write_result_reference.then_some(1))
             ))
         );
         test_env
@@ -251,19 +235,6 @@ mod tests {
                 [CommandType::Input.into(), CommandType::Output.into()],
             )
             .await;
-
-        let InvocationStatus::Completed(completed) = test_env
-            .storage()
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap()
-        else {
-            panic!("invocation must be completed");
-        };
-        assert_eq!(
-            completed.response_result.referenced_journal_index(),
-            write_result_reference.then_some(1)
-        );
 
         if purge_journal_first {
             test_env
