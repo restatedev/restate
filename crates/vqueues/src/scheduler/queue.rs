@@ -784,6 +784,14 @@ impl<S: VQueueStore> Queue<S> {
         // If we got less items than what we asked, then this must have been the end of the queue
         // at the time of the refill.
         let end_of_queue = items.len() < INBOX_CACHE_CAPACITY;
+        // A full result stopped before reaching storage EOF. Overlay entries beyond the last
+        // returned key cannot advance the anchor because storage may contain undiscovered rows
+        // in between. A fresh refill will observe those committed overlay changes directly.
+        let storage_horizon = if end_of_queue {
+            None
+        } else {
+            Some(items.last().expect("a full refill cannot be empty").0)
+        };
         // The queue is exhausted if we reached the end of queue and didn't add more items that
         // spilled over the overlay horizon.
         let queue_exhausted = end_of_queue && horizon.is_none();
@@ -804,16 +812,14 @@ impl<S: VQueueStore> Queue<S> {
             .into_iter()
             .merge_join_by(overlay, |(key, _), (overlay_key, _)| key.cmp(overlay_key))
         {
-            // First key at-or-above the horizon ends the merge: overlay
-            // entries are all below it by construction, and the merge
-            // walks ascending, so the rest is storage that the next
-            // refill will rediscover via `seek_after`.
+            // Stop before crossing either uncertain suffix. The storage horizon is inclusive,
+            // while the overlay horizon is exclusive.
             let key = match &either {
                 EitherOrBoth::Left((k, _))
                 | EitherOrBoth::Right((k, _))
                 | EitherOrBoth::Both((k, _), _) => *k,
             };
-            if horizon.is_some_and(|h| key >= h) {
+            if storage_horizon.is_some_and(|h| key > h) || horizon.is_some_and(|h| key >= h) {
                 break;
             }
             // Left is the item from db, right is the overlay
@@ -854,7 +860,7 @@ impl<S: VQueueStore> Queue<S> {
                     // In theory, we should never see a tombstone that impacts the existing
                     // cache.
                     debug_assert!(self.items.binary_search_by_key(&key, |&(k, _)| k).is_err());
-                    // we should push the anchor to this item.
+                    // This tombstone is within the storage coverage boundary established above.
                     refill_anchor = Some(key);
                 }
             }
