@@ -872,6 +872,10 @@ experimental! {
     ///
     /// This will be default from v1.9.0
     ///
+    /// NOTE: **Must** not be changed during runtime via hot reload or
+    /// it can cause schema object corruption. Make sure to stop the
+    /// server, change the flag, then start it again.
+    ///
     /// Since v1.8.0
     schema_bilrost_encoding,
 }
