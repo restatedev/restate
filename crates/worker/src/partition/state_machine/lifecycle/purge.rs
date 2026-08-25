@@ -160,3 +160,182 @@ where
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+
+    use bytes::Bytes;
+    use googletest::prelude::{all, assert_that, none, ok, pat};
+
+    use restate_storage_api::invocation_status_table::{
+        InvocationStatusDiscriminants, ReadInvocationStatusTable,
+    };
+    use restate_storage_api::journal_table_v2::ReadJournalTable;
+    use restate_types::invocation::{InvocationTarget, PurgeInvocationRequest, ServiceInvocation};
+    use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::partitions::PersistedFeatures;
+    use restate_types::service_protocol::ServiceProtocolVersion;
+    use restate_wal_protocol::v2::{Command, commands};
+
+    use crate::partition::state_machine::tests::TestEnv;
+    use crate::partition::state_machine::tests::fixtures::{
+        invoker_end_effect, invoker_entry_effect, pinned_deployment,
+    };
+    use crate::partition::state_machine::tests::matchers::storage::{
+        has_commands, has_journal_length, is_variant,
+    };
+
+    #[restate_core::test]
+    async fn purge_completed_invocation_with_journal_and_embedded_result() {
+        run_purge_completed_invocation(false, false).await;
+    }
+
+    #[restate_core::test]
+    async fn purge_completed_invocation_with_journal_and_referenced_result() {
+        run_purge_completed_invocation(true, false).await;
+    }
+
+    #[restate_core::test]
+    async fn purge_completed_invocation_after_journal_purge_with_embedded_result() {
+        run_purge_completed_invocation(false, true).await;
+    }
+
+    #[restate_core::test]
+    async fn purge_completed_invocation_after_journal_purge_with_referenced_result() {
+        run_purge_completed_invocation(true, true).await;
+    }
+
+    async fn run_purge_completed_invocation(
+        write_result_reference: bool,
+        purge_journal_first: bool,
+    ) {
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures {
+            write_result_reference,
+            ..PersistedFeatures::default()
+        })
+        .await;
+
+        let invocation_target = InvocationTarget::mock_virtual_object();
+        let invocation_id = InvocationId::mock_generate(&invocation_target);
+
+        test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id,
+                    invocation_target,
+                    completion_retention_duration: Duration::from_secs(60),
+                    journal_retention_duration: Duration::from_secs(60),
+                    ..ServiceInvocation::mock()
+                }),
+                pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+                invoker_entry_effect(
+                    invocation_id,
+                    OutputCommand {
+                        result: OutputResult::Success(Bytes::from_static(b"result")),
+                        name: Default::default(),
+                    },
+                ),
+                invoker_end_effect(invocation_id),
+            ])
+            .await;
+
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(all!(
+                is_variant(InvocationStatusDiscriminants::Completed),
+                has_commands(2),
+                has_journal_length(2)
+            ))
+        );
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [CommandType::Input.into(), CommandType::Output.into()],
+            )
+            .await;
+
+        let InvocationStatus::Completed(completed) = test_env
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+        else {
+            panic!("invocation must be completed");
+        };
+        assert_eq!(
+            completed.response_result.referenced_journal_index(),
+            write_result_reference.then_some(1)
+        );
+
+        if purge_journal_first {
+            test_env
+                .apply(commands::PurgeJournalCommand::test_envelope(
+                    PurgeInvocationRequest {
+                        invocation_id,
+                        response_sink: None,
+                    },
+                ))
+                .await;
+
+            assert_that!(
+                test_env
+                    .storage()
+                    .get_invocation_status(&invocation_id)
+                    .await,
+                ok(all!(
+                    is_variant(InvocationStatusDiscriminants::Completed),
+                    has_commands(0),
+                    has_journal_length(0)
+                ))
+            );
+            assert_that!(
+                test_env.storage().get_journal_entry(invocation_id, 0).await,
+                ok(none())
+            );
+            assert_eq!(
+                test_env
+                    .storage()
+                    .get_journal_entry(invocation_id, 1)
+                    .await
+                    .unwrap()
+                    .is_some(),
+                write_result_reference
+            );
+        }
+
+        test_env
+            .apply(commands::PurgeInvocationCommand::test_envelope(
+                PurgeInvocationRequest {
+                    invocation_id,
+                    response_sink: None,
+                },
+            ))
+            .await;
+
+        assert_that!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            pat!(InvocationStatus::Free)
+        );
+        for entry_index in 0..2 {
+            assert_that!(
+                test_env
+                    .storage()
+                    .get_journal_entry(invocation_id, entry_index)
+                    .await,
+                ok(none())
+            );
+        }
+
+        test_env.shutdown().await;
+    }
+}

@@ -94,19 +94,14 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
 
-    use crate::partition::state_machine::Action;
-    use crate::partition::state_machine::tests::TestEnv;
-    use crate::partition::state_machine::tests::fixtures::{
-        invoker_end_effect, invoker_entry_effect, pinned_deployment,
-    };
-    use crate::partition::state_machine::tests::matchers::storage::{
-        has_commands, has_journal_length, is_variant,
-    };
     use bytes::Bytes;
     use bytestring::ByteString;
-    use googletest::prelude::{all, assert_that, contains, eq, none, ok, pat, some};
+    use googletest::prelude::{all, assert_that, contains, eq, none, not, ok, pat, some};
+
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
@@ -117,13 +112,36 @@ mod tests {
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::partitions::PersistedFeatures;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::v2::{Command, commands};
-    use std::time::Duration;
+
+    use crate::partition::state_machine::Action;
+    use crate::partition::state_machine::tests::TestEnv;
+    use crate::partition::state_machine::tests::fixtures::{
+        invoker_end_effect, invoker_entry_effect, pinned_deployment,
+    };
+    use crate::partition::state_machine::tests::matchers::storage::{
+        has_commands, has_journal_length, is_variant,
+    };
 
     #[restate_core::test]
     async fn purge_journal_then_invocation() {
-        let mut test_env = TestEnv::create().await;
+        run_purge_journal_then_invocation(PersistedFeatures::default()).await;
+    }
+
+    #[restate_core::test]
+    async fn purge_journal_then_invocation_with_result_reference() {
+        run_purge_journal_then_invocation(PersistedFeatures {
+            write_result_reference: true,
+            ..PersistedFeatures::default()
+        })
+        .await;
+    }
+
+    async fn run_purge_journal_then_invocation(features: PersistedFeatures) {
+        let write_result_reference = features.write_result_reference;
+        let mut test_env = TestEnv::create_with_features(features).await;
 
         let idempotency_key = ByteString::from_static("my-idempotency-key");
         let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -182,6 +200,21 @@ mod tests {
                 has_journal_length(2)
             ))
         );
+        let InvocationStatus::Completed(completed) = test_env
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+        else {
+            panic!("invocation must be completed");
+        };
+
+        assert_eq!(completed.journal_metadata.length, 2);
+
+        assert_eq!(
+            completed.response_result.referenced_journal_index(),
+            write_result_reference.then_some(1)
+        );
 
         // We also retain the journal here
         test_env
@@ -201,6 +234,21 @@ mod tests {
             ))
             .await;
 
+        // The output remains available if the completed status references it.
+        assert_that!(
+            test_env.storage().get_journal_entry(invocation_id, 0).await,
+            ok(none())
+        );
+        assert_eq!(
+            test_env
+                .storage()
+                .get_journal_entry(invocation_id, 1)
+                .await
+                .unwrap()
+                .is_some(),
+            write_result_reference
+        );
+
         // At this point we should still be able to de-duplicate the invocation
         let request_id = PartitionProcessorRpcRequestId::default();
         let actions = test_env
@@ -212,18 +260,21 @@ mod tests {
                 ..ServiceInvocation::mock()
             }))
             .await;
-
-        // Note: We can no longer match on the response result
-        // after the journals has been purged. This is because
-        // we don't embed the result any longer in the completion
-        // message and instead keep a reference. Once the journal
-        // is gone, we should get ErrorCode "GONE".
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-            }))
+            all!(
+                contains(pat!(Action::IngressResponse {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })),
+                not(contains(pat!(Action::Invoke {
+                    invocation_id: eq(invocation_id),
+                })))
+            )
         );
 
         // And InvocationStatus still contains completed, but without commands and length
@@ -258,10 +309,15 @@ mod tests {
                 .unwrap(),
             pat!(InvocationStatus::Free)
         );
-        assert_that!(
-            test_env.storage().get_journal_entry(invocation_id, 0).await,
-            ok(none())
-        );
+        for entry_index in 0..2 {
+            assert_that!(
+                test_env
+                    .storage()
+                    .get_journal_entry(invocation_id, entry_index)
+                    .await,
+                ok(none())
+            );
+        }
 
         test_env.shutdown().await;
     }

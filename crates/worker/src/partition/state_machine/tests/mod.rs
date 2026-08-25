@@ -15,6 +15,7 @@ use super::*;
 mod delayed_send;
 pub mod fixtures;
 mod idempotency;
+mod invocation_end;
 mod kill_cancel;
 pub mod matchers;
 mod workflow;
