@@ -802,6 +802,7 @@ mod tests {
                 content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: ct.clone(),
                     set_content_type_if_empty: true,
+                    #[allow(deprecated)]
                     has_json_schema: false,
                 }),
                 json_schema: None,

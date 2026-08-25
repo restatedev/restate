@@ -1453,20 +1453,14 @@ mod test_util {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
 
     use super::*;
 
-    use crate::{
-        config::{
-            ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
-            MaxAttempts,
-        },
-        storage::StorageCodec,
+    use crate::config::{
+        ConfigurationBuilder, InvocationOptionsBuilder, InvocationRetryPolicyOptionsBuilder,
+        MaxAttempts,
     };
     use googletest::prelude::*;
-    use notify::event::CreateKind::File;
-    use restate_platform::storage::StorageCodecKind;
 
     #[test]
     fn retry_policy_correctly_inferred_for_max_attempts_eq_to_1() {

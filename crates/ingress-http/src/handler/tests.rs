@@ -1104,6 +1104,7 @@ async fn set_custom_content_type_on_response() {
                 content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: HeaderValue::from_static("application/cbor"),
                     set_content_type_if_empty: false,
+                    #[allow(deprecated)]
                     has_json_schema: false,
                 }),
                 json_schema: None,
@@ -1152,6 +1153,7 @@ async fn set_custom_content_type_on_empty_response() {
                 content_type_rule: OutputContentTypeRule::Set(OutputContentType {
                     content_type: HeaderValue::from_static("application/protobuf"),
                     set_content_type_if_empty: true,
+                    #[allow(deprecated)]
                     has_json_schema: false,
                 }),
                 json_schema: None,
