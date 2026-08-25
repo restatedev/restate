@@ -135,12 +135,8 @@ trait InvocationTaskRunner<SR> {
     ) -> AbortHandle;
 }
 
-/// Spawns `future` on `task_pool` as a named invocation task. Invocation tasks run on this plain
-/// `tokio::JoinSet`, not as `TaskCenter` tasks, so `future` is wrapped with `in_current_tc()` to
-/// carry the task-locals of the invoker task that calls this function -- needed by e.g. GCP
-/// credential minting, which treats an ambient `TaskCenter` as an invariant. Both
-/// `InvocationTaskRunner` impls that spawn onto the invocation-task `JoinSet` go through this one
-/// function, so the wrapper cannot be forgotten at one call site and not the other.
+/// `JoinSet` does not propagate TaskCenter task-locals; preserve the spawner's context for
+/// invocation code that needs it, including GCP credential construction.
 fn spawn_invocation_task<F>(
     task_pool: &mut JoinSet<()>,
     name: &'static str,
@@ -2275,11 +2271,6 @@ mod tests {
         }
     }
 
-    /// The production-boundary invariant `spawn_invocation_task` exists to provide: code running
-    /// inside an invocation task (e.g. GCP credential minting) can rely on an ambient `TaskCenter`
-    /// even though the invocation-task `JoinSet` is not itself a `TaskCenter` construct. Both
-    /// `InvocationTaskRunner` impls that spawn onto that `JoinSet` go through this one function,
-    /// so this test covers the real spawn path, not a parallel one that could drift from it.
     #[test(restate_core::test)]
     async fn spawn_invocation_task_carries_the_spawning_task_centers_context() {
         let spawning_tc = TaskCenter::current();
