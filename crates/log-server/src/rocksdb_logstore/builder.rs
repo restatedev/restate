@@ -22,9 +22,11 @@ use restate_rocksdb::{
 };
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
+use restate_types::logs::LogId;
 use restate_types::protobuf::common::{DatabaseKind, LogServerStatus};
 use restate_util_bytecount::ByteCount;
 
+use super::keys::KeyPrefixKind;
 use super::writer::LogStoreWriterBuilder;
 use super::{DATA_CF, METADATA_CF};
 use super::{RocksDbLogStore, RocksDbLogStoreError};
@@ -465,6 +467,23 @@ fn cf_data_options(
                 .get() as u64,
         );
     }
+
+    match (
+        log_server_config.rocksdb_partition_sst_by_loglet,
+        log_server_config.rocksdb_partition_sst_by_log,
+    ) {
+        (true, _) => {
+            // loglet always wins
+            opts.set_sst_partitioner_fixed_prefix(KeyPrefix::size());
+        }
+        (_, true) => {
+            // Keep all loglets for the same log together.
+            opts.set_sst_partitioner_fixed_prefix(size_of::<KeyPrefixKind>() + size_of::<LogId>())
+        }
+        _ => {
+            // Do not partition SST files
+        }
+    }
 }
 
 fn cf_metadata_options(
@@ -509,9 +528,101 @@ mod tests {
 
     use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
-    use restate_types::config::{Configuration, set_current_config};
+    use restate_types::config::{Configuration, node_dir, set_current_config};
+    use restate_types::logs::metadata::SegmentIndex;
+    use restate_types::logs::{LogletId, LogletOffset};
 
     use super::*;
+    use crate::rocksdb_logstore::keys::DataRecordKey;
+
+    #[test]
+    fn partition_compacted_ssts_by_log_and_loglet() -> anyhow::Result<()> {
+        let loglets = [
+            LogletId::new(LogId::new(1), SegmentIndex::OLDEST),
+            LogletId::new(LogId::new(1), SegmentIndex::OLDEST.next()),
+            LogletId::new(LogId::new(2), SegmentIndex::OLDEST),
+            LogletId::new(LogId::new(2), SegmentIndex::OLDEST.next()),
+        ];
+
+        for (name, partition_by_loglet, expected_partitions) in
+            [("by-log", false, 2), ("by-loglet", true, loglets.len())]
+        {
+            let mut config = LogServerOptions::default();
+            config.rocksdb_partition_sst_by_loglet = partition_by_loglet;
+            if !partition_by_loglet {
+                assert!(
+                    config.rocksdb_partition_sst_by_log,
+                    "log partitioning is enabled by default"
+                );
+            }
+
+            let block_options =
+                restate_rocksdb::configuration::create_default_block_options(&config.rocksdb, None);
+            let mut options = restate_rocksdb::configuration::create_default_cf_options(None);
+            cf_data_options(&mut options, &block_options, &config);
+            options.create_if_missing(true);
+            // Only the manual compaction below should determine the resulting file layout.
+            options.set_disable_auto_compactions(true);
+
+            let db =
+                rocksdb::DB::open(&options, node_dir().join(format!("sst-partitioner-{name}")))?;
+
+            // Overlapping flushes force compaction to rewrite the input files, which runs the
+            // SST partitioner instead of trivially moving a file to another level.
+            for round in 0..2u8 {
+                for loglet_id in loglets {
+                    for offset in 1..=4 {
+                        let key = DataRecordKey::new(loglet_id, LogletOffset::new(offset))
+                            .to_binary_array();
+                        db.put(key, [round])?;
+                    }
+                }
+                db.flush()?;
+            }
+            db.compact_range(None::<&[u8]>, None::<&[u8]>);
+
+            let files = db.live_files()?;
+            assert!(
+                files.len() >= expected_partitions,
+                "expected at least {expected_partitions} partitioned SSTs, got {}",
+                files.len()
+            );
+
+            let mut sst_spans_loglets = false;
+            for file in files {
+                let start = DataRecordKey::from_slice(
+                    file.start_key.as_deref().expect("SST has a smallest key"),
+                );
+                let end = DataRecordKey::from_slice(
+                    file.end_key.as_deref().expect("SST has a largest key"),
+                );
+
+                if partition_by_loglet {
+                    assert_eq!(
+                        start.loglet_id(),
+                        end.loglet_id(),
+                        "SST spans multiple loglets: {file:?}"
+                    );
+                } else {
+                    assert_eq!(
+                        start.loglet_id().log_id(),
+                        end.loglet_id().log_id(),
+                        "SST spans multiple logs: {file:?}"
+                    );
+                    sst_spans_loglets |= start.loglet_id() != end.loglet_id();
+                }
+            }
+
+            if !partition_by_loglet {
+                assert!(
+                    sst_spans_loglets,
+                    "log partitioning unexpectedly split every SST by loglet"
+                );
+            }
+        }
+
+        Ok(())
+    }
 
     #[test(restate_core::test(start_paused = true))]
     async fn dynamically_update_blob_and_l0_options() -> anyhow::Result<()> {

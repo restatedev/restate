@@ -225,6 +225,28 @@ pub struct LogServerOptions {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub rocksdb_disable_paranoid_checks: bool,
 
+    /// # Partition SST files by log ID
+    ///
+    /// Splits SST files by the log ID.
+    ///
+    /// [default] is true
+    ///
+    /// Since v1.7.7
+    pub rocksdb_partition_sst_by_log: bool,
+
+    /// # Partition SST files by loglet ID
+    ///
+    /// Splits SST files by the loglet ID. Enabling this option may reduce the cost of compaction
+    /// and trimming but may increase the number of SST files. If the number of SST files became a
+    /// concern, consider setting `rocksdb-max-open-files` to a reasonable value.
+    ///
+    /// This overrides `rocksdb-partition-sst-by-log` if both are enabled.
+    ///
+    /// [default] is false
+    ///
+    /// Since v1.7.7
+    pub rocksdb_partition_sst_by_loglet: bool,
+
     /// Starts in read-only mode
     ///
     /// This is useful for testing, debugging, and development.
@@ -440,6 +462,8 @@ impl Default for LogServerOptions {
             ),
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(8).unwrap(),
             rocksdb_max_open_files: None,
+            rocksdb_partition_sst_by_log: true,
+            rocksdb_partition_sst_by_loglet: false,
         }
     }
 }
