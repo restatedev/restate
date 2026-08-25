@@ -901,17 +901,49 @@ pub struct StorageOptions {
     /// Since v1.7.5
     rocksdb_max_sub_compactions: u32,
 
-    /// # Clamps target size for sst files
+    /// # Target size for SST files
     ///
     /// The target size for sst files. Restate uses this value to internally determine
     /// the number of memtables to keep in memory and how much to merge before flushing.
     ///
-    /// The value is automatically sanitized to 16 MiB if set to a smaller value.
+    /// The value is automatically sanitized to 8 MiB if set to a smaller value.
     ///
     /// [default] is 64 MiB
     ///
     /// Since v1.7.0
     pub rocksdb_max_file_size: NonZeroByteCount,
+
+    /// # Buffer size used for writing to SST files
+    ///
+    /// Sets the maximum buffer size that is used to write SST files to disk.
+    /// Larger values translate to larger IO operations which can be helpful
+    /// for slow or network-attached storage devices.
+    ///
+    /// [default] is 1 MiB
+    ///
+    /// Since v1.7.7
+    pub rocksdb_writable_file_max_buffer_size: NonZeroByteCount,
+
+    /// # Number of L0 files to trigger compaction
+    ///
+    /// Sets the number of files to trigger level-0 compaction.
+    ///
+    /// [default] is 2
+    ///
+    /// Since v1.7.7
+    pub rocksdb_l0_num_compaction_trigger: NonZeroU32,
+
+    /// # Max open files
+    ///
+    /// Sets the number of open files that can be used by the DB. You may need to
+    /// increase this if your database has a large working set. Unset means
+    /// files opened are always kept open.
+    ///
+    /// [default] is unset
+    ///
+    /// Since v1.7.7
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rocksdb_max_open_files: Option<NonZeroU32>,
 }
 
 impl StorageOptions {
@@ -1002,6 +1034,11 @@ impl Default for StorageOptions {
             rocksdb_max_file_size: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).unwrap(),
             ),
+            rocksdb_writable_file_max_buffer_size: NonZeroByteCount::new(
+                NonZeroUsize::new(1024 * 1024).unwrap(),
+            ),
+            rocksdb_l0_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
+            rocksdb_max_open_files: None,
         }
     }
 }

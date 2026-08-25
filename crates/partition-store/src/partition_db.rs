@@ -145,10 +145,12 @@ impl PartitionDb {
                 let max_bytes_for_level_base_str =
                     mem_config.max_bytes_for_level_base().to_restring();
                 let write_buffer_size_str = mem_config.write_buffer_size().to_restring();
-                let max_write_buffer_number_str =
-                    mem_config.max_write_buffer_number().to_restring();
+                let max_write_buffer_number_str = mem_config.num_write_buffers().to_restring();
                 let target_file_size_base_str = mem_config.target_file_size_base().to_restring();
                 let max_compaction_bytes = mem_config.max_compaction_bytes().to_restring();
+                let level_zero_file_num_compaction_trigger = mem_config
+                    .level_zero_file_num_compaction_trigger()
+                    .to_restring();
 
                 debug!(
                     "Updating memory budget for {}/{} to {}",
@@ -165,6 +167,10 @@ impl PartitionDb {
                         ("max_write_buffer_number", &max_write_buffer_number_str),
                         ("max_bytes_for_level_base", &max_bytes_for_level_base_str),
                         ("max_compaction_bytes", &max_compaction_bytes),
+                        (
+                            "level0_file_num_compaction_trigger",
+                            &level_zero_file_num_compaction_trigger,
+                        ),
                     ],
                 ) {
                     warn!(
@@ -585,6 +591,19 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
         // writes and flushes.
         db_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
 
+        // Sets the available buffer for writing to SST files.
+        db_options.set_writable_file_max_buffer_size(
+            storage_config
+                .rocksdb_writable_file_max_buffer_size
+                .as_u64(),
+        );
+
+        if let Some(max_open_files) = storage_config.rocksdb_max_open_files {
+            db_options.set_max_open_files(max_open_files.get().min(i32::MAX as u32) as i32);
+        } else {
+            db_options.set_max_open_files(-1);
+        }
+
         if self.use_multi_db_layout {
             // In multi-db layout we don't want every database to grown the thread pool
             restate_rocksdb::configuration::set_background_work_budget(
@@ -690,7 +709,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_min_write_buffer_number_to_merge(
             mem_config.min_write_buffer_number_to_merge() as i32,
         );
-        cf_options.set_max_write_buffer_number(mem_config.max_write_buffer_number() as i32);
+        cf_options.set_max_write_buffer_number(mem_config.num_write_buffers() as i32);
         cf_options.set_level_zero_file_num_compaction_trigger(
             mem_config.level_zero_file_num_compaction_trigger() as i32,
         );
