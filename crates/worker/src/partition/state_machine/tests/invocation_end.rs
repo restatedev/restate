@@ -24,6 +24,8 @@ use restate_types::partitions::PersistedFeatures;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_wal_protocol::v2::{Command, commands};
 
+use crate::partition::state_machine::tests::matchers::storage::has_result_reference;
+
 use super::TestEnv;
 use super::fixtures::{invoker_end_effect, invoker_entry_effect, pinned_deployment};
 use super::matchers::storage::{has_commands, has_journal_length, is_variant};
@@ -43,7 +45,7 @@ async fn zero_completion_retention_drops_invocation_and_journal_with_result_refe
             .unwrap(),
         pat!(InvocationStatus::Free)
     );
-    assert_journal_entries(&mut test_env, invocation_id, &[false, false]).await;
+    assert_journal_entries_exists(&mut test_env, invocation_id, &[false, false]).await;
 
     test_env.shutdown().await;
 }
@@ -54,18 +56,19 @@ async fn zero_journal_retention_keeps_referenced_output() {
         end_invocation(true, Duration::from_secs(60), Duration::ZERO, false).await;
 
     assert_completed_with_reference(&mut test_env, invocation_id, Some(1)).await;
-    assert_journal_entries(&mut test_env, invocation_id, &[false, true]).await;
+    assert_journal_entries_exists(&mut test_env, invocation_id, &[false, true]).await;
 
     test_env.shutdown().await;
 }
 
+// todo(azmy): Remove once write_result_reference becomes a default feature.
 #[restate_core::test]
 async fn zero_journal_retention_drops_all_journals_with_result_reference_disabled() {
     let (mut test_env, invocation_id) =
         end_invocation(false, Duration::from_secs(60), Duration::ZERO, false).await;
 
     assert_completed_with_reference(&mut test_env, invocation_id, None).await;
-    assert_journal_entries(&mut test_env, invocation_id, &[false, false]).await;
+    assert_journal_entries_exists(&mut test_env, invocation_id, &[false, false]).await;
 
     test_env.shutdown().await;
 }
@@ -76,7 +79,7 @@ async fn referenced_output_does_not_need_to_be_last_journal_entry() {
         end_invocation(true, Duration::from_secs(60), Duration::ZERO, true).await;
 
     assert_completed_with_reference(&mut test_env, invocation_id, Some(1)).await;
-    assert_journal_entries(&mut test_env, invocation_id, &[false, true, false]).await;
+    assert_journal_entries_exists(&mut test_env, invocation_id, &[false, true, false]).await;
     assert_that!(
         test_env
             .read_journal_entry::<OutputCommand>(invocation_id, 1)
@@ -170,20 +173,13 @@ async fn assert_completed_with_reference(
         all!(
             is_variant(InvocationStatusDiscriminants::Completed),
             has_commands(0),
-            has_journal_length(0)
+            has_journal_length(0),
+            has_result_reference(expected_output_index)
         )
-    );
-
-    let InvocationStatus::Completed(completed) = status else {
-        panic!("invocation must be completed");
-    };
-    assert_eq!(
-        completed.response_result.referenced_journal_index(),
-        expected_output_index
     );
 }
 
-async fn assert_journal_entries(
+async fn assert_journal_entries_exists(
     test_env: &mut TestEnv,
     invocation_id: InvocationId,
     expected_entries: &[bool],

@@ -101,6 +101,7 @@ mod tests {
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::prelude::{all, assert_that, contains, eq, none, not, ok, pat, some};
+    use rstest::rstest;
 
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -111,7 +112,9 @@ mod tests {
     use restate_types::invocation::{
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
-    use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::journal_v2::{
+        ClearAllStateCommand, CommandType, OutputCommand, OutputResult,
+    };
     use restate_types::partitions::PersistedFeatures;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::v2::{Command, commands};
@@ -122,24 +125,18 @@ mod tests {
         invoker_end_effect, invoker_entry_effect, pinned_deployment,
     };
     use crate::partition::state_machine::tests::matchers::storage::{
-        has_commands, has_journal_length, is_variant,
+        has_commands, has_journal_length, has_result_reference, is_variant,
     };
 
+    #[rstest]
+    #[case::embedded_results(PersistedFeatures::default(), false)]
+    #[case::with_result_reference(PersistedFeatures{write_result_reference: true, ..Default::default()}, false)]
+    #[case::with_result_reference_and_extra_journals(PersistedFeatures{write_result_reference: true, ..Default::default()}, true)]
     #[restate_core::test]
-    async fn purge_journal_then_invocation() {
-        run_purge_journal_then_invocation(PersistedFeatures::default()).await;
-    }
-
-    #[restate_core::test]
-    async fn purge_journal_then_invocation_with_result_reference() {
-        run_purge_journal_then_invocation(PersistedFeatures {
-            write_result_reference: true,
-            ..PersistedFeatures::default()
-        })
-        .await;
-    }
-
-    async fn run_purge_journal_then_invocation(features: PersistedFeatures) {
+    async fn run_purge_journal_then_invocation(
+        #[case] features: PersistedFeatures,
+        #[case] append_after_output: bool,
+    ) {
         let write_result_reference = features.write_result_reference;
         let mut test_env = TestEnv::create_with_features(features).await;
 
@@ -152,7 +149,7 @@ mod tests {
         let response_bytes = Bytes::from_static(b"123");
 
         // Create and complete a fresh invocation
-        let actions = test_env
+        test_env
             .apply_multiple([
                 commands::InvokeCommand::test_envelope(ServiceInvocation {
                     invocation_id,
@@ -171,9 +168,21 @@ mod tests {
                         name: Default::default(),
                     },
                 ),
-                invoker_end_effect(invocation_id),
             ])
             .await;
+
+        if append_after_output {
+            test_env
+                .apply(invoker_entry_effect(
+                    invocation_id,
+                    ClearAllStateCommand {
+                        name: Default::default(),
+                    },
+                ))
+                .await;
+        }
+
+        let actions = test_env.apply(invoker_end_effect(invocation_id)).await;
 
         // Assert response
         assert_that!(
@@ -188,6 +197,7 @@ mod tests {
             }))
         );
 
+        let expected_journal_length = if append_after_output { 3 } else { 2 };
         // InvocationStatus contains completed
         assert_that!(
             test_env
@@ -196,32 +206,20 @@ mod tests {
                 .await,
             ok(all!(
                 is_variant(InvocationStatusDiscriminants::Completed),
-                has_commands(2),
-                has_journal_length(2)
+                has_commands(expected_journal_length),
+                has_journal_length(expected_journal_length),
+                has_result_reference(write_result_reference.then_some(1))
             ))
-        );
-        let InvocationStatus::Completed(completed) = test_env
-            .storage()
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap()
-        else {
-            panic!("invocation must be completed");
-        };
-
-        assert_eq!(completed.journal_metadata.length, 2);
-
-        assert_eq!(
-            completed.response_result.referenced_journal_index(),
-            write_result_reference.then_some(1)
         );
 
         // We also retain the journal here
+        let mut journal_types = vec![CommandType::Input, CommandType::Output];
+        if append_after_output {
+            journal_types.push(CommandType::ClearAllState);
+        }
+
         test_env
-            .verify_journal_components(
-                invocation_id,
-                [CommandType::Input.into(), CommandType::Output.into()],
-            )
+            .verify_journal_components(invocation_id, journal_types.into_iter().map(Into::into))
             .await;
 
         // Now let's purge the journal
@@ -309,7 +307,7 @@ mod tests {
                 .unwrap(),
             pat!(InvocationStatus::Free)
         );
-        for entry_index in 0..2 {
+        for entry_index in 0..expected_journal_length {
             assert_that!(
                 test_env
                     .storage()
