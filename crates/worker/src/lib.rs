@@ -53,6 +53,8 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScanne
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
+use restate_types::errors::CANCELED_INVOCATION_ERROR;
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
@@ -282,4 +284,59 @@ where
 
         Ok(())
     }
+}
+
+pub(crate) trait ReadJournalTableExt {
+    fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>>;
+}
+
+impl<T> ReadJournalTableExt for T
+where
+    T: ReadJournalTable,
+{
+    async fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> Result<Option<ResponseResult>, ResolveResultError> {
+        match result_ref {
+            ResponseResultRef::Cancelled => {
+                Ok(Some(ResponseResult::Failure(CANCELED_INVOCATION_ERROR)))
+            }
+            ResponseResultRef::Killed => Ok(Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))),
+            ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            ResponseResultRef::Completed(completion) => self
+                .get_journal_entry(invocation_id, completion.entry_index)
+                .await?
+                .map(|entry| {
+                    if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
+                        let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                        Ok(match cmd.result {
+                            OutputResult::Success(s) => ResponseResult::Success(s),
+                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                        })
+                    } else {
+                        Err(ResolveResultError::BadEntryVariant(
+                            journal_v2::EntryType::Command(CommandType::Output),
+                        ))
+                    }
+                })
+                .transpose(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ResolveResultError {
+    #[error(transparent)]
+    Storage(#[from] restate_storage_api::StorageError),
+    #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
+    BadEntryVariant(journal_v2::EntryType),
+    #[error("failed to deserialize entry: {0}")]
+    EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
