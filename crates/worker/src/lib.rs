@@ -26,14 +26,13 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
-use futures::FutureExt;
-use futures::future;
-use futures::future::Either;
 use restate_core::network::Swimlane;
 use restate_ingestion_client::SessionOptions;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::ResponseResultRef;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_types::errors::CANCELED_INVOCATION_ERROR;
+use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
 use restate_types::journal_v2;
@@ -289,47 +288,42 @@ pub(crate) trait ReadJournalTableExt {
         &mut self,
         invocation_id: InvocationId,
         result_ref: &ResponseResultRef,
-    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>> + Send;
+    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>>;
 }
 
 impl<T> ReadJournalTableExt for T
 where
     T: ReadJournalTable,
 {
-    fn resolve_response_result_ref(
+    async fn resolve_response_result_ref(
         &mut self,
         invocation_id: InvocationId,
         result_ref: &ResponseResultRef,
-    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>> + Send {
+    ) -> Result<Option<ResponseResult>, ResolveResultError> {
         match result_ref {
-            ResponseResultRef::Success(bytes) => Either::Left(future::ready(Ok(Some(
-                ResponseResult::Success(bytes.clone()),
-            )))),
-            ResponseResultRef::Failure(err) => Either::Left(future::ready(Ok(Some(
-                ResponseResult::Failure(err.clone()),
-            )))),
-            ResponseResultRef::Reference(reference) => {
-                let fut = self.get_journal_entry(invocation_id, reference.entry_index);
-                async {
-                    fut.await?
-                        .map(|entry| {
-                            if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
-                                let cmd =
-                                    entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                                Ok(match cmd.result {
-                                    OutputResult::Success(s) => ResponseResult::Success(s),
-                                    OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                                })
-                            } else {
-                                Err(ResolveResultError::BadEntryVariant(
-                                    journal_v2::EntryType::Command(CommandType::Output),
-                                ))
-                            }
-                        })
-                        .transpose()
-                }
-                .right_future()
+            ResponseResultRef::Cancelled => {
+                Ok(Some(ResponseResult::Failure(CANCELED_INVOCATION_ERROR)))
             }
+            ResponseResultRef::Killed => Ok(Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))),
+            ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            ResponseResultRef::Completed(completion) => self
+                .get_journal_entry(invocation_id, completion.entry_index)
+                .await?
+                .map(|entry| {
+                    if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
+                        let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                        Ok(match cmd.result {
+                            OutputResult::Success(s) => ResponseResult::Success(s),
+                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                        })
+                    } else {
+                        Err(ResolveResultError::BadEntryVariant(
+                            journal_v2::EntryType::Command(CommandType::Output),
+                        ))
+                    }
+                })
+                .transpose(),
         }
     }
 }

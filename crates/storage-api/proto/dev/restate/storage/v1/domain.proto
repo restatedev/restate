@@ -202,6 +202,13 @@ message InvocationStatusV2 {
     PAUSED = 7;
   }
 
+  enum CompletionStatus {
+    SUCCESS = 0;
+    FAILURE = 1;
+    KILLED = 2;
+    CANCELLED = 3;
+  }
+
   Status status = 1;
 
   // Common
@@ -255,15 +262,22 @@ message InvocationStatusV2 {
   CombinatorType combinator_type = 33;
 
   // Completed
-  ResponseResultRef result = 18;
+  ResponseResult result = 18;
+
+  // if output_journal_index is set, then result(tag=18)
+  // must be null, and you must use completion_status instead
+  // If completion_status is et to Failure, the failure_status_code
+  // must hold the failure status code.
+  optional uint32 output_journal_index = 36;
+  optional CompletionStatus completion_status = 37;
+  optional uint32 failure_status_code = 38;
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
   // If empty, no limit was set
   string limit_key = 35;
-
-
 }
+
 
 
 // Slimmer version of InvocationStatusV2
@@ -321,6 +335,9 @@ message InvocationStatusV2Lazy {
 
   // Completed
   // optional bytes result_lazy = 18;
+  optional uint32 output_journal_index = 36;
+  optional InvocationStatusV2.CompletionStatus completion_status = 37;
+  optional uint32 failure_status_code = 38;
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
@@ -647,37 +664,12 @@ message ResponseFailure {
   repeated FailureMetadata failure_metadata = 3;
 }
 
-message ResponseReference {
-
-  message ResponseFailure {
-    uint32 failure_code = 1;
-    string failure_message = 2;
-  }
-
-  uint32 entry_idx = 1;
-  oneof result {
-    google.protobuf.Empty success = 2;
-    ResponseFailure failure = 3;
-  }
-}
-
 message ResponseResult {
   oneof response_result {
     ResponseSuccess response_success = 1;
     ResponseFailure response_failure = 2;
   }
 }
-
-// Keep compatible with ResponseResult
-message ResponseResultRef {
-  oneof response_result {
-    ResponseSuccess response_success = 1;
-    ResponseFailure response_failure = 2;
-    ResponseReference response_reference = 3;
-  }
-}
-
-
 
 message Event {
   bytes content = 1;
