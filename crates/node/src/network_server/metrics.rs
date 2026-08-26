@@ -287,7 +287,7 @@ pub async fn render_metrics(State(state): State<NodeCtrlHandlerState>) -> String
 
             // Memory Usage Stats (Gauges)
             let memory_usage = manager
-                .get_memory_usage_stats(&[])
+                .get_db_memory_usage_stats(db)
                 .expect("get_memory_usage_stats");
 
             format_rocksdb_property_for_prometheus(
