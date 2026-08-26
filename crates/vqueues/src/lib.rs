@@ -33,7 +33,7 @@ use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
 use restate_limiter::LimitKey;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, ExitResult, InFlightInvocationMetadata,
+    CompletedInvocation, ExitStatus, InFlightInvocationMetadata,
 };
 use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
@@ -1434,18 +1434,33 @@ where
 
         // How do we know if the invocation was "killed" or cancelled?
         let status = match completed.response_result.result() {
-            ExitResult::Success => Status::Succeeded,
-            ExitResult::Failure(ref e) => {
-                if e.code == restate_types::errors::codes::ABORTED {
-                    // Special handling for cancel/kill. Definitely not ideal, but the current
-                    // design leaves me with no other options.
+            ExitStatus::Success => Status::Succeeded,
+            ExitStatus::Cancelled => Status::Cancelled,
+            ExitStatus::Killed => Status::Killed,
+            ExitStatus::Failure((code, message)) => {
+                if code == restate_types::errors::codes::ABORTED {
+                    // If message is non None, it means this failure message is an embedded result
+                    // and in that case we must check the message body to detect if it's cancelled
+                    // of killed.
                     //
-                    // This takes the same approach as what the UI does to determine if the
-                    // invocation was killed or cancelled.
-                    match e.message.as_ref() {
-                        "cancelled" | "Cancelled" | "canceled" | "Canceled" => Status::Cancelled,
-                        "killed" | "Killed" => Status::Killed,
-                        _ => Status::Failed,
+                    // If None, it must be a Failure, because otherwise it would have
+                    // ExitStatus::Cancelled or Killed, if it was cancelled, or killed
+                    match message {
+                        None => Status::Failed,
+                        Some(message) => {
+                            // Special handling for cancel/kill. Definitely not ideal, but the current
+                            // design leaves me with no other options.
+                            //
+                            // This takes the same approach as what the UI does to determine if the
+                            // invocation was killed or cancelled.
+                            match message.as_ref() {
+                                "cancelled" | "Cancelled" | "canceled" | "Canceled" => {
+                                    Status::Cancelled
+                                }
+                                "killed" | "Killed" => Status::Killed,
+                                _ => Status::Failed,
+                            }
+                        }
                     }
                 } else {
                     Status::Failed
