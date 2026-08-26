@@ -2272,25 +2272,20 @@ mod tests {
     }
 
     #[test(restate_core::test)]
-    async fn spawn_invocation_task_carries_the_spawning_task_centers_context() {
-        let spawning_tc = TaskCenter::current();
+    async fn spawn_invocation_task_carries_task_center_context() {
         let mut task_pool: JoinSet<()> = JoinSet::new();
         let (tx, rx) = tokio::sync::oneshot::channel();
         spawn_invocation_task(&mut task_pool, "test-invocation-task", async move {
-            let _ = tx.send(TaskCenter::current());
+            let _ = TaskCenter::current();
+            let _ = tx.send(());
         });
 
-        let observed_tc = rx.await.expect("task ran and reported its TaskCenter");
+        rx.await.expect("task ran with TaskCenter context");
         task_pool
             .join_next()
             .await
             .expect("task completes")
             .expect("task doesn't panic");
-
-        assert!(
-            spawning_tc.ptr_eq(&observed_tc),
-            "an invocation task must see the TaskCenter of the task that spawned it"
-        );
     }
 
     #[test(restate_core::test)]

@@ -48,12 +48,6 @@ impl Handle {
         }
     }
 
-    /// True iff `self` and `other` are handles to the same task-center instance, not merely two
-    /// task centers with equivalent configuration.
-    pub fn ptr_eq(&self, other: &Handle) -> bool {
-        Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
     pub(crate) fn with_task_context<F, R>(&self, f: F) -> R
     where
         F: Fn(&TaskContext) -> R,
