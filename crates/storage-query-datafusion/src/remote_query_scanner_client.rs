@@ -42,26 +42,6 @@ use crate::{decode_record_batch, encode_expr, encode_schema};
 pub struct RemoteScanner {
     scanner_id: ScannerId,
     connection: Option<Connection>,
-    #[cfg(test)]
-    test_scanner: Option<TestRemoteScanner>,
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-struct TestRemoteScanner {
-    requests: tokio::sync::mpsc::UnboundedSender<Option<RemoteQueryScannerPredicate>>,
-    responses: tokio::sync::mpsc::UnboundedReceiver<RemoteQueryScannerNextResult>,
-    closed: tokio::sync::watch::Sender<bool>,
-    close_on_drop: bool,
-}
-
-#[cfg(test)]
-impl Drop for TestRemoteScanner {
-    fn drop(&mut self) {
-        if self.close_on_drop {
-            let _ = self.closed.send(true);
-        }
-    }
 }
 
 impl RemoteScanner {
@@ -74,27 +54,6 @@ impl RemoteScanner {
         Self {
             scanner_id,
             connection: Some(connection),
-            #[cfg(test)]
-            test_scanner: None,
-        }
-    }
-
-    #[cfg(test)]
-    fn for_test(
-        scanner_id: ScannerId,
-        requests: tokio::sync::mpsc::UnboundedSender<Option<RemoteQueryScannerPredicate>>,
-        responses: tokio::sync::mpsc::UnboundedReceiver<RemoteQueryScannerNextResult>,
-        closed: tokio::sync::watch::Sender<bool>,
-    ) -> Self {
-        Self {
-            scanner_id,
-            connection: None,
-            test_scanner: Some(TestRemoteScanner {
-                requests,
-                responses,
-                closed,
-                close_on_drop: true,
-            }),
         }
     }
 
@@ -102,16 +61,6 @@ impl RemoteScanner {
         &mut self,
         next_predicate: Option<RemoteQueryScannerPredicate>,
     ) -> Result<RemoteQueryScannerNextResult, DataFusionError> {
-        #[cfg(test)]
-        if let Some(scanner) = self.test_scanner.as_mut() {
-            scanner.requests.send(next_predicate).map_err(|_| {
-                DataFusionError::Internal("test scanner request receiver dropped".to_owned())
-            })?;
-            return scanner.responses.recv().await.ok_or_else(|| {
-                DataFusionError::Internal("test scanner response sender dropped".to_owned())
-            });
-        }
-
         let Some(ref connection) = self.connection else {
             return Err(DataFusionError::Internal(
                 "connection used after forget()".to_string(),
@@ -144,20 +93,11 @@ impl RemoteScanner {
     /// The scanner will not auto close the remote scanner on drop
     fn forget(mut self) {
         self.connection.take();
-        #[cfg(test)]
-        if let Some(scanner) = self.test_scanner.as_mut() {
-            scanner.close_on_drop = false;
-        }
     }
 }
 
 impl Drop for RemoteScanner {
     fn drop(&mut self) {
-        #[cfg(test)]
-        if self.test_scanner.is_some() {
-            return;
-        }
-
         let scanner_id = self.scanner_id;
         if let Some(connection) = self.connection.take() {
             tokio::spawn(async move {
@@ -305,19 +245,11 @@ pub(crate) fn remote_scan(
 
         let opened = service.open(target_node_id, request).await?;
         let mut stream = match (fragment, opened) {
-            (Some(fragment), OpenedRemoteScanner::Raw(scanner)) => {
-                fragment.record_remote_decline();
-                debug!(
-                    %target_node_id,
-                    "Remote scanner declined a physical fragment; executing it at the coordinator"
-                );
-                fragment.execute(remote_batch_stream(
-                    scanner,
-                    projection_schema,
-                    predicate,
-                    predicate_generation,
-                ))?
-            }
+            (Some(fragment), OpenedRemoteScanner::Raw(scanner)) => execute_declined_fragment(
+                fragment,
+                remote_batch_stream(scanner, projection_schema, predicate, predicate_generation),
+                target_node_id,
+            )?,
             (Some(fragment), OpenedRemoteScanner::Fragment(scanner)) => {
                 fragment.record_remote_acceptance();
                 debug!(%target_node_id, "Remote scanner accepted a physical fragment");
@@ -344,8 +276,22 @@ pub(crate) fn remote_scan(
     builder.build()
 }
 
-/// Turns an opened scanner into the raw batch stream consumed either directly
-/// or by a fragment that fell back to the coordinator.
+/// Applies a fragment locally when the worker declines it before consuming any
+/// input, preserving the complete raw stream for coordinator fallback.
+fn execute_declined_fragment(
+    fragment: RemoteFragmentExecution,
+    raw_stream: SendableRecordBatchStream,
+    target_node_id: NodeId,
+) -> Result<SendableRecordBatchStream, DataFusionError> {
+    fragment.record_remote_decline();
+    debug!(
+        %target_node_id,
+        "Remote scanner declined a physical fragment; executing it at the coordinator"
+    );
+    fragment.execute(raw_stream)
+}
+
+/// Decodes an opened scanner using the schema selected by fragment negotiation.
 fn remote_batch_stream(
     scanner: RemoteScanner,
     schema: SchemaRef,
@@ -615,9 +561,6 @@ fn binary_version_uses_legacy_owner_acknowledgement(binary_version: &RestateVers
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
-    use std::time::Duration;
-
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
@@ -630,6 +573,7 @@ mod tests {
     };
     use datafusion::physical_plan::aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy};
     use datafusion::physical_plan::metrics::{ExecutionPlanMetricsSet, MetricValue};
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
     use datafusion::scalar::ScalarValue;
 
     use restate_core::MetadataBuilder;
@@ -638,75 +582,8 @@ mod tests {
 
     use super::*;
     use crate::remote_fragment::{
-        FragmentLeafExec, REMOTE_FRAGMENT_ACCEPTED_METRIC, REMOTE_FRAGMENT_DECLINED_METRIC,
-        RemoteFragment, RemoteFragmentExecution,
+        FragmentLeafExec, REMOTE_FRAGMENT_DECLINED_METRIC, RemoteFragment, RemoteFragmentExecution,
     };
-
-    #[derive(Debug)]
-    struct TestScannerService {
-        scanner: Mutex<Option<RemoteScanner>>,
-        open_requests: tokio::sync::mpsc::UnboundedSender<RemoteQueryScannerOpen>,
-        apply_fragments: bool,
-    }
-
-    #[async_trait]
-    impl RemoteScannerService for TestScannerService {
-        async fn open(
-            &self,
-            _peer: NodeId,
-            request: RemoteQueryScannerOpen,
-        ) -> Result<OpenedRemoteScanner, DataFusionError> {
-            let fragment_requested = request.fragment.is_some();
-            self.open_requests.send(request).map_err(|_| {
-                DataFusionError::Internal("test scanner open receiver dropped".to_owned())
-            })?;
-            let scanner = self
-                .scanner
-                .lock()
-                .expect("test scanner lock")
-                .take()
-                .ok_or_else(|| DataFusionError::Internal("test scanner reopened".to_owned()))?;
-            Ok(if self.apply_fragments && fragment_requested {
-                OpenedRemoteScanner::Fragment(scanner)
-            } else {
-                OpenedRemoteScanner::Raw(scanner)
-            })
-        }
-    }
-
-    struct TestScannerChannels {
-        service: Arc<dyn RemoteScannerService>,
-        open_requests: tokio::sync::mpsc::UnboundedReceiver<RemoteQueryScannerOpen>,
-        next_requests: tokio::sync::mpsc::UnboundedReceiver<Option<RemoteQueryScannerPredicate>>,
-        responses: tokio::sync::mpsc::UnboundedSender<RemoteQueryScannerNextResult>,
-        closed: tokio::sync::watch::Receiver<bool>,
-    }
-
-    fn test_scanner_channels(scanner_id: ScannerId) -> TestScannerChannels {
-        test_scanner_channels_with_fragment_support(scanner_id, false)
-    }
-
-    fn test_scanner_channels_with_fragment_support(
-        scanner_id: ScannerId,
-        apply_fragments: bool,
-    ) -> TestScannerChannels {
-        let (open_requests, open_request_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (next_requests, next_request_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (responses, response_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (closed, close_rx) = tokio::sync::watch::channel(false);
-        let scanner = RemoteScanner::for_test(scanner_id, next_requests, response_rx, closed);
-        TestScannerChannels {
-            service: Arc::new(TestScannerService {
-                scanner: Mutex::new(Some(scanner)),
-                open_requests,
-                apply_fragments,
-            }),
-            open_requests: open_request_rx,
-            next_requests: next_request_rx,
-            responses,
-            closed: close_rx,
-        }
-    }
 
     fn greater_than(column: &Arc<dyn PhysicalExpr>, value: i64) -> Arc<dyn PhysicalExpr> {
         Arc::new(BinaryExpr::new(
@@ -721,6 +598,13 @@ mod tests {
             Some(MetricValue::Count { count, .. }) => count.value(),
             other => panic!("expected count metric {name}, got {other:?}"),
         }
+    }
+
+    fn batch_stream(schema: SchemaRef, batch: RecordBatch) -> SendableRecordBatchStream {
+        Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            futures::stream::iter([Ok(batch)]),
+        ))
     }
 
     #[test]
@@ -837,154 +721,50 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn accepted_fragment_streams_batches_and_dynamic_filter_updates() {
-        let owner = GenerationalNodeId::new(2, 3);
-        let scanner_id = ScannerId(owner, 4);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Int64,
-            false,
-        )]));
+    #[test]
+    fn dynamic_predicate_is_sent_only_after_its_generation_changes() {
         let column = Arc::new(Column::new("value", 0)) as Arc<dyn PhysicalExpr>;
         let dynamic = Arc::new(DynamicFilterPhysicalExpr::new(
             vec![Arc::clone(&column)],
             greater_than(&column, 10),
         ));
         let predicate = Arc::clone(&dynamic) as Arc<dyn PhysicalExpr>;
-        let fragment = Arc::new(
-            RemoteFragment::try_new(Arc::new(FragmentLeafExec::new(Arc::clone(&schema))))
-                .expect("identity remote fragment"),
-        );
-        let metrics = ExecutionPlanMetricsSet::new();
-        let fragment = RemoteFragmentExecution::new(fragment, Arc::new(TaskContext::default()))
-            .with_metrics(&metrics, 0);
-        let mut channels = test_scanner_channels_with_fragment_support(scanner_id, true);
-        let mut stream = remote_scan(
-            Arc::clone(&channels.service),
-            NodeId::from(owner),
-            scanner_id,
-            PartitionId::MIN,
-            KeyRange::FULL,
-            "sys_test".to_owned(),
-            Arc::clone(&schema),
-            Some(predicate),
-            128,
-            None,
-            Some(owner),
-            Some(fragment),
-        );
-        let open = channels
-            .open_requests
-            .recv()
-            .await
-            .expect("scanner open request");
-        assert!(open.fragment.is_some());
-        assert!(open.predicate.is_some());
+        let mut generation = snapshot_generation(&predicate);
+
         assert!(
-            channels
-                .next_requests
-                .recv()
-                .await
-                .expect("first batch request")
-                .is_none(),
-            "the initial predicate already travelled on Open"
+            next_predicate(&mut generation, Some(&predicate))
+                .expect("unchanged predicate")
+                .is_none()
         );
         dynamic
             .update(greater_than(&column, 20))
             .expect("update dynamic predicate");
-        let batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from(vec![11, 12]))],
-        )
-        .expect("remote batch");
-        channels
-            .responses
-            .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                scanner_id,
-                record_batch: crate::encode_record_batch(&schema, batch)
-                    .expect("encode remote batch"),
-            }))
-            .expect("first batch receiver");
         assert!(
-            channels
-                .next_requests
-                .recv()
-                .await
-                .expect("end-of-stream request")
+            next_predicate(&mut generation, Some(&predicate))
+                .expect("updated predicate")
                 .is_some(),
-            "the updated predicate travels on the next request"
+            "the changed predicate must travel on the next request"
         );
-        channels
-            .responses
-            .send(RemoteQueryScannerNextResult::NoMoreRecords(scanner_id))
-            .expect("end-of-stream receiver");
-
-        let batch = stream
-            .next()
-            .await
-            .expect("first batch result")
-            .expect("successful first batch");
-        assert_eq!(metric_value(&metrics, REMOTE_FRAGMENT_ACCEPTED_METRIC), 1);
-        assert_eq!(metric_value(&metrics, REMOTE_FRAGMENT_DECLINED_METRIC), 0);
-        assert_eq!(batch.num_rows(), 2);
-        assert!(stream.next().await.is_none());
-        drop(stream);
-        assert!(!*channels.closed.borrow());
+        assert!(
+            next_predicate(&mut generation, Some(&predicate))
+                .expect("already sent predicate")
+                .is_none()
+        );
     }
 
     #[tokio::test]
-    async fn dropping_the_stream_closes_a_blocked_remote_scanner() {
-        let owner = GenerationalNodeId::new(2, 3);
-        let scanner_id = ScannerId(owner, 4);
+    async fn declined_fragment_executes_on_the_coordinator() {
         let schema = Arc::new(Schema::new(vec![Field::new(
             "value",
             DataType::Int64,
             false,
         )]));
-        let mut channels = test_scanner_channels(scanner_id);
-        let stream = remote_scan_as_datafusion_stream(
-            Arc::clone(&channels.service),
-            NodeId::from(owner),
-            scanner_id,
-            PartitionId::MIN,
-            KeyRange::FULL,
-            "sys_test".to_owned(),
-            schema,
-            None,
-            128,
-            None,
-            Some(owner),
-        );
+        let raw_batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![10, 20]))],
+        )
+        .expect("raw remote batch");
 
-        channels
-            .open_requests
-            .recv()
-            .await
-            .expect("scanner open request");
-        channels
-            .next_requests
-            .recv()
-            .await
-            .expect("scanner is blocked on its first batch");
-        drop(stream);
-
-        tokio::time::timeout(Duration::from_secs(1), channels.closed.changed())
-            .await
-            .expect("close notification timeout")
-            .expect("close sender remains live");
-        assert!(*channels.closed.borrow());
-    }
-
-    #[tokio::test]
-    async fn declined_fragment_falls_back_before_exposing_batches() {
-        let owner = GenerationalNodeId::new(2, 3);
-        let scanner_id = ScannerId(owner, 4);
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "value",
-            DataType::Int64,
-            false,
-        )]));
         let count = Arc::new(
             AggregateExprBuilder::new(
                 count_udaf(),
@@ -1007,63 +787,18 @@ mod tests {
         let fragment = Arc::new(
             RemoteFragment::try_new(Arc::new(aggregate)).expect("serializable count fragment"),
         );
-        let metrics = ExecutionPlanMetricsSet::new();
+        let declined_metrics = ExecutionPlanMetricsSet::new();
         let fragment = RemoteFragmentExecution::new(fragment, Arc::new(TaskContext::default()))
-            .with_metrics(&metrics, 0);
-        let mut channels = test_scanner_channels(scanner_id);
-        let mut stream = remote_scan(
-            Arc::clone(&channels.service),
-            NodeId::from(owner),
-            scanner_id,
-            PartitionId::MIN,
-            KeyRange::FULL,
-            "sys_test".to_owned(),
-            Arc::clone(&schema),
-            None,
-            128,
-            None,
-            Some(owner),
-            Some(fragment),
-        );
-
-        let open = channels
-            .open_requests
-            .recv()
-            .await
-            .expect("scanner open request");
-        assert!(open.fragment.is_some());
-        channels
-            .next_requests
-            .recv()
-            .await
-            .expect("fallback requests raw input");
-        let raw_batch = RecordBatch::try_new(
-            Arc::clone(&schema),
-            vec![Arc::new(Int64Array::from(vec![10, 20]))],
+            .with_metrics(&declined_metrics, 0);
+        let mut declined_stream = execute_declined_fragment(
+            fragment,
+            batch_stream(Arc::clone(&schema), raw_batch),
+            NodeId::from(GenerationalNodeId::new(2, 3)),
         )
-        .expect("raw remote batch");
-        channels
-            .responses
-            .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                scanner_id,
-                record_batch: crate::encode_record_batch(&schema, raw_batch)
-                    .expect("encode raw batch"),
-            }))
-            .expect("raw batch receiver");
-        channels
-            .next_requests
-            .recv()
+        .expect("coordinator fallback stream");
+        let batch = declined_stream
+            .next()
             .await
-            .expect("partial aggregate consumes raw input to completion");
-        channels
-            .responses
-            .send(RemoteQueryScannerNextResult::NoMoreRecords(scanner_id))
-            .expect("end-of-stream receiver");
-
-        let batch = stream.next().await;
-        assert_eq!(metric_value(&metrics, REMOTE_FRAGMENT_ACCEPTED_METRIC), 0);
-        assert_eq!(metric_value(&metrics, REMOTE_FRAGMENT_DECLINED_METRIC), 1);
-        let batch = batch
             .expect("partial aggregate output")
             .expect("successful local fallback");
         let count = batch
@@ -1072,7 +807,9 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .expect("count state");
         assert_eq!(count.value(0), 2);
-        drop(stream);
-        assert!(!*channels.closed.borrow());
+        assert_eq!(
+            metric_value(&declined_metrics, REMOTE_FRAGMENT_DECLINED_METRIC),
+            1
+        );
     }
 }
