@@ -806,9 +806,16 @@ impl TaskCenterInner {
         any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")
     )))]
     async fn dump_tasks(self: &Arc<Self>, _: impl std::io::Write) {
-        warn!("Cannot dump tokio tasks; taskdump feature was not enabled at compile time")
+        warn!(
+            "Cannot dump tokio tasks; the taskdump feature was not enabled at compile time. \
+            It is disabled by default because dumping re-polls in-flight futures which can abort \
+            the process, see https://github.com/restatedev/restate/issues/5235"
+        )
     }
 
+    // TODO(#5235): re-polling live futures is not side-effect free. It can wake tasks from within
+    //  poll which panics on current_thread runtimes (RefCell already borrowed) and can escalate
+    //  into a process abort. Don't enable the taskdump feature until this is fixed.
     #[cfg(all(
         feature = "taskdump",
         target_os = "linux",
