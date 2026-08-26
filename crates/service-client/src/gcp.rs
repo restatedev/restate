@@ -103,7 +103,6 @@ impl IdTokenSource for Live {
 
 /// Credentials and their shared ambient source, bound to one TaskCenter.
 struct CredentialRegistry {
-    self_weak: Weak<CredentialRegistry>,
     cache: Cache<IdTokenSpec, Arc<dyn IdTokenSource>>,
     ambient_source: RecoverableCell<google_cloud_auth::credentials::Credentials>,
     #[cfg(any(test, feature = "test_util"))]
@@ -192,8 +191,7 @@ fn credential_registry() -> Arc<CredentialRegistry> {
 
 impl CredentialRegistry {
     fn init() -> Arc<Self> {
-        let registry = Arc::new_cyclic(|self_weak| Self {
-            self_weak: self_weak.clone(),
+        let registry = Arc::new(Self {
             cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
             ambient_source: RecoverableCell::new(),
             #[cfg(any(test, feature = "test_util"))]
@@ -219,14 +217,8 @@ impl CredentialRegistry {
         registry
     }
 
-    fn arc(&self) -> Arc<Self> {
-        self.self_weak
-            .upgrade()
-            .expect("a CredentialRegistry is always held by the Arc it was constructed in")
-    }
-
     async fn get_or_build(
-        &self,
+        self: &Arc<Self>,
         spec: &IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         self.cache
@@ -307,10 +299,10 @@ impl CredentialRegistry {
     }
 
     async fn build_on_tc_task(
-        &self,
+        self: &Arc<Self>,
         spec: IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
-        let registry = self.arc();
+        let registry = self.clone();
         // Credential refresh tasks spawned by build() must use the TaskCenter default runtime.
         let audience = spec.audience.clone();
         let task = TaskCenter::current()

@@ -49,10 +49,7 @@ impl Handle {
     }
 
     /// True iff `self` and `other` are handles to the same task-center instance, not merely two
-    /// task centers with equivalent configuration. Callers that cache work tied to "the current
-    /// task center" (e.g. a process-global registry rebuilt when embedded Restate tears down and
-    /// recreates its task center) use this to detect that the task center underneath them has
-    /// changed.
+    /// task centers with equivalent configuration.
     pub fn ptr_eq(&self, other: &Handle) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
     }
