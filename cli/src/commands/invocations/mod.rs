@@ -50,15 +50,36 @@ fn create_query_filter(query: &str) -> String {
     if let Ok(id) = q.parse::<InvocationId>() {
         format!("id = '{id}'")
     } else {
-        match q.find('/').unwrap_or_default() {
+        match q.matches('/').count() {
             0 => format!("target LIKE '{q}/%'"),
             // If there's one slash, let's add the wildcard depending on the service type,
             // so we discriminate correctly with serviceName/handlerName with workflowName/workflowKey
             1 => format!(
-                "(target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"
+                "((target = '{q}' AND target_service_ty = 'service') OR (target LIKE '{q}/%' AND target_service_ty != 'service'))"
             ),
             // Can only be exact match here
             _ => format!("target LIKE '{q}'"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::create_query_filter;
+
+    #[test]
+    fn creates_target_query_filters() {
+        assert_eq!(
+            create_query_filter("MyService"),
+            "target LIKE 'MyService/%'"
+        );
+        assert_eq!(
+            create_query_filter("Chat/session456"),
+            "((target = 'Chat/session456' AND target_service_ty = 'service') OR (target LIKE 'Chat/session456/%' AND target_service_ty != 'service'))"
+        );
+        assert_eq!(
+            create_query_filter("Chat/session456/send"),
+            "target LIKE 'Chat/session456/send'"
+        );
     }
 }
