@@ -231,6 +231,16 @@ impl RocksDbManager {
         Ok(builder.build()?)
     }
 
+    /// Returns aggregated memory usage for all databases if filter is empty
+    pub fn get_db_memory_usage_stats(
+        &self,
+        db: &Arc<RocksDb>,
+    ) -> Result<rocksdb::perf::MemoryUsage, RocksError> {
+        let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
+        builder.add_db(db.inner().as_raw_db());
+        Ok(builder.build()?)
+    }
+
     pub fn get_all_dbs(&self) -> Vec<Arc<RocksDb>> {
         self.dbs.read().values().filter_map(Weak::upgrade).collect()
     }
