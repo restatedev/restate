@@ -7,9 +7,9 @@
 // As of the Change Date specified in that file, in accordance with
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
-use std::mem;
+use std::{io::Write, mem};
 
-use bytes::{BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
 use serde::Serialize;
 
 use super::{StorageCodecKind, StorageEncodeError};
@@ -75,4 +75,16 @@ pub fn encode_bilrost<T: bilrost::Message>(
     value
         .encode(buf)
         .map_err(|err| StorageEncodeError::EncodeValue(err.into()))
+}
+
+/// Utility method to encode a [`bilrost::Message`] type
+pub fn encode_bilrost_writer<T: bilrost::Message, W: Write>(
+    value: &T,
+    writer: &mut W,
+) -> Result<(), StorageEncodeError> {
+    let reverse_buffer = value.encode_contiguous();
+    std::io::copy(&mut reverse_buffer.reader(), writer)
+        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+    Ok(())
 }

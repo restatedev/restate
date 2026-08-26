@@ -131,7 +131,7 @@ impl Versioned for Schema {
 }
 
 mod storage {
-    use bytes::BytesMut;
+    use bytes::{BufMut, BytesMut};
 
     use restate_platform::storage::{
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
@@ -147,7 +147,7 @@ mod storage {
                 .experimental
                 .is_schema_bilrost_encoding_enabled()
             {
-                StorageCodecKind::Bilrost
+                StorageCodecKind::ZstdBilrostDefault
             } else {
                 StorageCodecKind::FlexbuffersSerde
             }
@@ -158,17 +158,24 @@ mod storage {
                 StorageCodecKind::FlexbuffersSerde => {
                     storage::encode::encode_serde(self, buf, self.default_codec())
                 }
-                StorageCodecKind::Bilrost => storage::encode::encode_bilrost(self, buf),
+                StorageCodecKind::ZstdBilrostDefault => {
+                    let mut compressor = zstd::Encoder::new(buf.writer(), 0)
+                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+                    storage::encode::encode_bilrost_writer(self, &mut compressor)?;
+
+                    compressor
+                        .finish()
+                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+                    Ok(())
+                }
                 _ => unreachable!("unsupported StorageCodecKind"),
             }
         }
     }
 
     impl StorageDecode for Schema {
-        fn decode<B: bytes::Buf>(
-            buf: &mut B,
-            kind: StorageCodecKind,
-        ) -> Result<Self, StorageDecodeError>
+        fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
         where
             Self: Sized,
         {
@@ -180,6 +187,14 @@ mod storage {
                     schema.active_service_revisions =
                         ActiveServiceRevision::create_index(schema.deployments.values());
                     Ok(schema)
+                }
+                StorageCodecKind::ZstdBilrostDefault => {
+                    // Unfortunately bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer first
+                    // before decode payload as bilrost.
+                    let uncompressed = zstd::decode_all(buf.reader())
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                    storage::decode::decode_bilrost(uncompressed.as_ref())
                 }
                 _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
             }

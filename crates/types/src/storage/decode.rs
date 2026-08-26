@@ -18,7 +18,7 @@ use super::{StorageCodecKind, StorageDecodeError};
 
 /// Decode a [`DeserializeOwned`] type from a buffer using serde if it is supported by the codec.
 pub fn decode_serde<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
+    buf: B,
     codec: StorageCodecKind,
 ) -> Result<T, StorageDecodeError> {
     match codec {
@@ -33,7 +33,7 @@ pub fn decode_serde<T: DeserializeOwned, B: Buf>(
 
 /// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde.
 fn decode_serde_from_flexbuffers<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
+    mut buf: B,
 ) -> Result<T, flexbuffers::DeserializationError> {
     if buf.remaining() < mem::size_of::<u32>() {
         return Err(flexbuffers::DeserializationError::custom(format!(
@@ -70,9 +70,7 @@ fn decode_serde_from_flexbuffers<T: DeserializeOwned, B: Buf>(
 }
 
 /// Utility method to decode a [`DeserializeOwned`] type from Json using serde.
-fn decode_serde_from_json<T: DeserializeOwned, B: Buf>(
-    buf: &mut B,
-) -> Result<T, serde_json::Error> {
+fn decode_serde_from_json<T: DeserializeOwned, B: Buf>(buf: B) -> Result<T, serde_json::Error> {
     let deserializer = &mut serde_json::Deserializer::from_reader(buf.reader());
     let result = serde_path_to_error::deserialize(deserializer).map_err(|err| {
         error!(%err, "Json error at field {}", err.path());

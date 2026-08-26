@@ -453,7 +453,7 @@ mod storage {
 
     impl StorageDecode for RuleBook {
         fn decode<B: bytes::Buf>(
-            buf: &mut B,
+            buf: B,
             kind: StorageCodecKind,
         ) -> Result<Self, StorageDecodeError> {
             assert_eq!(kind, StorageCodecKind::Bilrost);
