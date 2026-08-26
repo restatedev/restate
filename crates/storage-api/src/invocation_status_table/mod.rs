@@ -719,31 +719,38 @@ impl InFlightInvocationMetadata {
     }
 }
 
-#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-// A stripped down version of InvocationError
-pub struct ExitFailure {
-    pub code: InvocationErrorCode,
-    pub message: Cow<'static, str>,
-}
-
-#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ExitResult {
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum ExitStatus {
     Success,
-    Failure(ExitFailure),
+    Cancelled,
+    Killed,
+    // Failure from embedded failures will
+    // also hold an error message.
+    // todo(azmy): drop the message once we no longer support
+    // embedded Failure result
+    Failure((InvocationErrorCode, Option<Cow<'static, str>>)),
 }
 
-#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ResponseReference {
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum CompletionStatus {
+    Success,
+    Failure(InvocationErrorCode),
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub struct CompletionReference {
     pub entry_index: EntryIndex,
-    pub result: ExitResult,
+    pub status: CompletionStatus,
 }
 
-#[derive(derive_more::Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 pub enum ResponseResultRef {
-    Reference(ResponseReference),
+    Cancelled,
+    Killed,
+    Completed(CompletionReference),
     // Embedded success/failure status
     // Used for overrides and backward compatibility
-    // with older ResponseResult
+    // with older ResponseResult.
     #[debug("Success(<data>)")]
     Success(Bytes),
     #[debug("Failure({_0})")]
@@ -758,21 +765,20 @@ impl ResponseResultRef {
         match (output_index, result) {
             (None, ResponseResult::Success(bytes)) => Self::Success(bytes),
             (None, ResponseResult::Failure(failure)) => Self::Failure(failure),
-            (Some(entry_index), result) => Self::Reference(ResponseReference {
+            (Some(entry_index), result) => Self::Completed(CompletionReference {
                 entry_index,
-                result: result.into(),
+                status: result.into(),
             }),
         }
     }
 
-    pub fn result(&self) -> ExitResult {
+    pub fn result(&self) -> ExitStatus {
         match self {
-            Self::Success(_) => ExitResult::Success,
-            Self::Failure(err) => ExitResult::Failure(ExitFailure {
-                code: err.code,
-                message: err.message.clone(),
-            }),
-            Self::Reference(reference) => reference.result.clone(),
+            Self::Cancelled => ExitStatus::Cancelled,
+            Self::Killed => ExitStatus::Killed,
+            Self::Success(_) => ExitStatus::Success,
+            Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
+            Self::Completed(completion) => completion.status.clone().into(),
         }
     }
 }
@@ -786,14 +792,20 @@ impl From<ResponseResult> for ResponseResultRef {
     }
 }
 
-impl From<ResponseResult> for ExitResult {
+impl From<ResponseResult> for CompletionStatus {
     fn from(value: ResponseResult) -> Self {
         match value {
             ResponseResult::Success(_) => Self::Success,
-            ResponseResult::Failure(failure) => Self::Failure(ExitFailure {
-                code: failure.code,
-                message: failure.message,
-            }),
+            ResponseResult::Failure(failure) => Self::Failure(failure.code),
+        }
+    }
+}
+
+impl From<CompletionStatus> for ExitStatus {
+    fn from(value: CompletionStatus) -> Self {
+        match value {
+            CompletionStatus::Success => Self::Success,
+            CompletionStatus::Failure(code) => Self::Failure((code, None)),
         }
     }
 }
