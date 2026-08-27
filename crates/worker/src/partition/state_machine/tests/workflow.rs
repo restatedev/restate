@@ -10,7 +10,7 @@
 
 use std::time::Duration;
 
-use restate_storage_api::invocation_status_table::CompletedInvocation;
+use restate_storage_api::invocation_status_table::{CompletedInvocation, ResponseResultRef};
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
