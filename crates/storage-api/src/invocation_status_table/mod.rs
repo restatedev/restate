@@ -838,7 +838,7 @@ impl CompletedInvocation {
     pub fn from_pre_flight_invocation_metadata(
         mut metadata: PreFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         metadata
@@ -869,7 +869,7 @@ impl CompletedInvocation {
             execution_time: metadata.execution_time,
             idempotency_key: metadata.idempotency_key,
             timestamps: metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: metadata.completion_retention_duration,
             journal_retention_duration: metadata.journal_retention_duration,
             journal_metadata,
