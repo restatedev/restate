@@ -265,7 +265,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                             row.completion_result("success");
                         }
                         ResponseResult::ResponseFailure(
-                            restate_storage_api::protobuf_types::v1::ResponseFailure {
+                            restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
                                 failure_code,
                                 failure_message,
                                 ..
