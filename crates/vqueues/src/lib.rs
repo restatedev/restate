@@ -1435,7 +1435,6 @@ where
         // How do we know if the invocation was "killed" or cancelled?
         let status = match completed.response_result.result() {
             ExitStatus::Success => Status::Succeeded,
-            ExitStatus::Cancelled => Status::Cancelled,
             ExitStatus::Killed => Status::Killed,
             ExitStatus::Failure((code, message)) => {
                 if code == restate_types::errors::codes::ABORTED {
