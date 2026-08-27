@@ -14,7 +14,7 @@ use rstest::*;
 
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, JournalMetadata, StatusTimestamps,
+    CompletedInvocation, JournalMetadata, ResponseResultRef, StatusTimestamps,
 };
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
