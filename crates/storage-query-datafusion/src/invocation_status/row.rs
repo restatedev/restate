@@ -11,7 +11,7 @@
 use restate_storage_api::protobuf_types::v1::invocation_status_v2::CompletionStatus;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
-use restate_types::errors::ConversionError;
+use restate_types::errors::{ConversionError, codes};
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
 
@@ -236,14 +236,16 @@ pub(crate) fn append_invocation_status_row<'a>(
                     Some(CompletionStatus::Success) => {
                         row.completion_result("success");
                     }
-                    Some(CompletionStatus::Cancelled) => {
-                        row.completion_result("cancelled");
-                    }
                     Some(CompletionStatus::Killed) => {
                         row.completion_result("killed");
                     }
                     Some(CompletionStatus::Failure) => {
-                        row.completion_result("failure");
+                        if invocation_status.inner.failure_status_code() == u32::from(codes::ABORTED) {
+                            row.completion_result("cancelled");
+                        } else {
+                            row.completion_result("failure");
+                        }
+
                         if row.is_completion_failure_defined() {
                             row.fmt_completion_failure(format_args!(
                                 "[{}]",
