@@ -944,6 +944,18 @@ pub struct StorageOptions {
     /// Since v1.7.7
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rocksdb_max_open_files: Option<NonZeroU32>,
+
+    /// # Max Successive Merge Operations
+    ///
+    /// When a merge operation is added to the memtable and the maximum number of
+    /// successive merges is reached, the value of the key will be calculated and
+    /// inserted into the memtable instead of the merge operation. This will
+    /// ensure that there are never more than max_successive_merges merge
+    /// operations in the memtable.
+    ///
+    /// Since v1.7.8
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    pub rocksdb_max_successive_merges: u16,
 }
 
 impl StorageOptions {
@@ -1039,6 +1051,7 @@ impl Default for StorageOptions {
             ),
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
             rocksdb_max_open_files: None,
+            rocksdb_max_successive_merges: 5000,
         }
     }
 }
