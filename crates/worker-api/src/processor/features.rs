@@ -41,6 +41,14 @@ pub trait PartitionFeatures {
     ///
     /// *Since v1.7.5*
     fn is_fully_migrated_to_vqueues(&self) -> bool;
+
+    /// Whether completion and journal retention should be respected when terminating an invocation
+    /// before it starts running.
+    ///
+    /// *Since v1.7.8*
+    fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -51,6 +59,9 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnableVqueues => self.vqueues,
             PartitionFeatureChange::EnableUniqueRandomSeeds => self.unique_random_seeds,
             PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
+            PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
+                self.preflight_invocation_termination_retention
+            }
         }
     }
 
@@ -72,6 +83,11 @@ impl PartitionFeatures for PersistedFeatures {
     #[inline]
     fn is_unique_random_seeds_enabled(&self) -> bool {
         self.unique_random_seeds
+    }
+
+    #[inline]
+    fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
+        self.preflight_invocation_termination_retention
     }
 }
 
@@ -97,6 +113,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
     fn is_unique_random_seeds_enabled(&self) -> bool {
         (**self).is_unique_random_seeds_enabled()
     }
+
+    fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
+        (**self).is_preflight_invocation_termination_retention_enabled()
+    }
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
@@ -118,5 +138,9 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_unique_random_seeds_enabled(&self) -> bool {
         (**self).is_unique_random_seeds_enabled()
+    }
+
+    fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
+        (**self).is_preflight_invocation_termination_retention_enabled()
     }
 }

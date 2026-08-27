@@ -1780,15 +1780,40 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         let InboxedInvocation {
             inbox_sequence_number,
-            metadata:
-                PreFlightInvocationMetadata {
-                    response_sinks,
-                    invocation_target,
-                    input,
-                    vqueue_id,
-                    ..
-                },
+            mut metadata,
         } = inboxed_invocation;
+        let response_sinks = std::mem::take(&mut metadata.response_sinks);
+        let invocation_target = metadata.invocation_target.clone();
+        let vqueue_id = metadata.vqueue_id.as_ref();
+        let (completion_retention, journal_retention) = if self
+            .processor
+            .fsm()
+            .features()
+            .is_preflight_invocation_termination_retention_enabled()
+        {
+            (
+                metadata.completion_retention_duration,
+                metadata.journal_retention_duration,
+            )
+        } else {
+            (Duration::ZERO, Duration::ZERO)
+        };
+        let span_context = metadata.span_context().clone();
+        let journal_to_drop = if journal_retention.is_zero()
+            && let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                pinned_deployment,
+            }) = &metadata.input
+        {
+            Some((
+                journal_metadata.length,
+                pinned_deployment
+                    .as_ref()
+                    .map(|pd| pd.service_protocol_version),
+            ))
+        } else {
+            None
+        };
 
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
@@ -1816,17 +1841,22 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 };
 
                 VQueue::get(
-                    &vqueue_id,
+                    vqueue_id,
                     self.storage,
                     self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
-                .end(record_unique_ts, &entry_status, new_status, Duration::ZERO);
+                .end(
+                    record_unique_ts,
+                    &entry_status,
+                    new_status,
+                    completion_retention,
+                );
             }
         } else {
-            // Delete inbox entry and invocation status.
+            // Delete the inbox entry.
             self.do_delete_inbox_entry(
                 invocation_target
                     .as_keyed_service_id()
@@ -1835,21 +1865,27 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             )
             .await?;
         }
-        self.do_free_invocation(&invocation_id)?;
 
-        // If there's a journal, delete journal
-        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
-            journal_metadata,
-            pinned_deployment,
-        }) = &input
-        {
-            let pinned_service_protocol_version = pinned_deployment
-                .as_ref()
-                .map(|pd| pd.service_protocol_version);
+        if completion_retention.is_zero() {
+            self.do_free_invocation(&invocation_id)?;
+        } else {
+            let completed_invocation = CompletedInvocation::from_pre_flight_invocation_metadata(
+                metadata,
+                if journal_retention.is_zero() {
+                    JournalRetentionPolicy::Drop
+                } else {
+                    JournalRetentionPolicy::Retain
+                },
+                ResponseResult::Failure(error.clone()),
+                self.record_created_at,
+            );
+            self.do_store_completed_invocation(invocation_id, completed_invocation)?;
+        }
 
+        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
             self.do_drop_journal(
                 &invocation_id,
-                journal_metadata.length,
+                journal_length,
                 pinned_service_protocol_version,
             )
             .await?;
@@ -1858,7 +1894,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         self.emit_invocation_end_span(
             &invocation_id,
             &invocation_target,
-            input.span_context(),
+            &span_context,
             Err(&error),
         );
 
@@ -1888,17 +1924,40 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
         };
 
-        let ScheduledInvocation {
-            metadata:
-                PreFlightInvocationMetadata {
-                    response_sinks,
-                    input,
-                    invocation_target,
-                    execution_time,
-                    vqueue_id,
-                    ..
-                },
-        } = scheduled_invocation;
+        let ScheduledInvocation { mut metadata } = scheduled_invocation;
+        let response_sinks = std::mem::take(&mut metadata.response_sinks);
+        let invocation_target = metadata.invocation_target.clone();
+        let execution_time = metadata.execution_time;
+        let vqueue_id = metadata.vqueue_id.as_ref();
+        let (completion_retention, journal_retention) = if self
+            .processor
+            .fsm()
+            .features()
+            .is_preflight_invocation_termination_retention_enabled()
+        {
+            (
+                metadata.completion_retention_duration,
+                metadata.journal_retention_duration,
+            )
+        } else {
+            (Duration::ZERO, Duration::ZERO)
+        };
+        let span_context = metadata.span_context().clone();
+        let journal_to_drop = if journal_retention.is_zero()
+            && let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
+                journal_metadata,
+                pinned_deployment,
+            }) = &metadata.input
+        {
+            Some((
+                journal_metadata.length,
+                pinned_deployment
+                    .as_ref()
+                    .map(|pd| pd.service_protocol_version),
+            ))
+        } else {
+            None
+        };
 
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
@@ -1926,14 +1985,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 };
 
                 VQueue::get(
-                    &vqueue_id,
+                    vqueue_id,
                     self.storage,
                     self.processor.vqueues_mut(),
                     self.is_leader.then_some(self.action_collector),
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
-                .end(record_unique_ts, &entry_status, new_status, Duration::ZERO);
+                .end(
+                    record_unique_ts,
+                    &entry_status,
+                    new_status,
+                    completion_retention,
+                );
             }
         } else {
             // Delete timer
@@ -1948,22 +2012,26 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
         }
 
-        // Free invocation
-        self.do_free_invocation(&invocation_id)?;
+        if completion_retention.is_zero() {
+            self.do_free_invocation(&invocation_id)?;
+        } else {
+            let completed_invocation = CompletedInvocation::from_pre_flight_invocation_metadata(
+                metadata,
+                if journal_retention.is_zero() {
+                    JournalRetentionPolicy::Drop
+                } else {
+                    JournalRetentionPolicy::Retain
+                },
+                ResponseResult::Failure(error.clone()),
+                self.record_created_at,
+            );
+            self.do_store_completed_invocation(invocation_id, completed_invocation)?;
+        }
 
-        // If there's a journal, delete journal
-        if let PreFlightInvocationArgument::Journal(PreFlightInvocationJournal {
-            journal_metadata,
-            pinned_deployment,
-        }) = &input
-        {
-            let pinned_service_protocol_version = pinned_deployment
-                .as_ref()
-                .map(|pd| pd.service_protocol_version);
-
+        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
             self.do_drop_journal(
                 &invocation_id,
-                journal_metadata.length,
+                journal_length,
                 pinned_service_protocol_version,
             )
             .await?;
@@ -1972,7 +2040,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         self.emit_invocation_end_span(
             &invocation_id,
             &invocation_target,
-            input.span_context(),
+            &span_context,
             Err(&error),
         );
 
