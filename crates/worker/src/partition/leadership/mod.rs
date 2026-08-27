@@ -591,6 +591,19 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
             }
 
+            if config
+                .common
+                .experimental
+                .is_preflight_invocation_termination_retention_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_preflight_invocation_termination_retention_enabled()
+            {
+                feature_changes
+                    .push(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -1251,6 +1264,7 @@ mod tests {
                 vqueues: true,
                 vqueues_skip_completed: true,
                 unique_random_seeds: true,
+                preflight_invocation_termination_retention: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
