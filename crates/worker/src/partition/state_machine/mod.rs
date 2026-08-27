@@ -42,8 +42,9 @@ use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
-    PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
-    PreFlightInvocationMetadata, ReadInvocationStatusTable, WriteInvocationStatusTable,
+    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
+    PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
