@@ -146,8 +146,8 @@ pub mod v1 {
         use crate::protobuf_types::ConversionError;
         use crate::protobuf_types::v1::invocation_status_v2::CompletionStatus;
         use crate::protobuf_types::v1::{
-            Future, NotificationEntryIndex, NotificationResultVariant, ResponseFailure,
-            ResponseSuccess,
+            Future, NotificationEntryIndex, NotificationResultVariant,
+            response_result::ResponseFailure, response_result::ResponseSuccess,
         };
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {

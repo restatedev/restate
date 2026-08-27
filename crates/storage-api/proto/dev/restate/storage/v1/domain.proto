@@ -279,7 +279,6 @@ message InvocationStatusV2 {
 }
 
 
-
 // Slimmer version of InvocationStatusV2
 message InvocationV2Lite {
   reserved 27;
@@ -656,15 +655,15 @@ message Entry {
   NotificationResultVariant notification_result_variant = 12;
 }
 
-message ResponseSuccess { bytes value = 1; }
-
-message ResponseFailure {
-  uint32 failure_code = 1;
-  bytes failure_message = 2;
-  repeated FailureMetadata failure_metadata = 3;
-}
-
 message ResponseResult {
+  message ResponseSuccess { bytes value = 1; }
+
+  message ResponseFailure {
+    uint32 failure_code = 1;
+    bytes failure_message = 2;
+    repeated FailureMetadata failure_metadata = 3;
+  }
+
   oneof response_result {
     ResponseSuccess response_success = 1;
     ResponseFailure response_failure = 2;
