@@ -25,9 +25,6 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
-use futures::FutureExt;
-use futures::future;
-use futures::future::Either;
 use tracing::info;
 
 use restate_bifrost::Bifrost;
@@ -53,7 +50,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScanne
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
-use restate_types::errors::CANCELED_INVOCATION_ERROR;
 use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::InvocationId;
@@ -63,7 +59,6 @@ use restate_types::journal_v2::CommandType;
 use restate_types::journal_v2::EntryMetadata;
 use restate_types::journal_v2::OutputCommand;
 use restate_types::journal_v2::OutputResult;
-use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -304,9 +299,6 @@ where
         result_ref: &ResponseResultRef,
     ) -> Result<Option<ResponseResult>, ResolveResultError> {
         match result_ref {
-            ResponseResultRef::Cancelled => {
-                Ok(Some(ResponseResult::Failure(CANCELED_INVOCATION_ERROR)))
-            }
             ResponseResultRef::Killed => Ok(Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))),
             ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
             ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
