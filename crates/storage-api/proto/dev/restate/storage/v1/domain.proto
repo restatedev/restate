@@ -206,7 +206,6 @@ message InvocationStatusV2 {
     SUCCESS = 0;
     FAILURE = 1;
     KILLED = 2;
-    CANCELLED = 3;
   }
 
   Status status = 1;

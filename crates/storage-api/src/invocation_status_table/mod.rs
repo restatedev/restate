@@ -722,7 +722,6 @@ impl InFlightInvocationMetadata {
 #[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 pub enum ExitStatus {
     Success,
-    Cancelled,
     Killed,
     // Failure from embedded failures will
     // also hold an error message.
@@ -745,7 +744,6 @@ pub struct CompletionReference {
 
 #[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 pub enum ResponseResultRef {
-    Cancelled,
     Killed,
     Completed(CompletionReference),
     // Embedded success/failure status
@@ -760,7 +758,6 @@ pub enum ResponseResultRef {
 impl ResponseResultRef {
     pub fn result(&self) -> ExitStatus {
         match self {
-            Self::Cancelled => ExitStatus::Cancelled,
             Self::Killed => ExitStatus::Killed,
             Self::Success(_) => ExitStatus::Success,
             Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),

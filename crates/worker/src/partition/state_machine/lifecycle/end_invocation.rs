@@ -30,7 +30,7 @@ use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::vqueue_table::{self, ReadVQueueTable, WriteVQueueTable};
-use restate_types::errors::{CANCELED_INVOCATION_ERROR, InvocationError, KILLED_INVOCATION_ERROR};
+use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
 use restate_types::sharding::WithPartitionKey;
@@ -58,13 +58,6 @@ pub enum EndInvocationReason {
     Failed(InvocationError),
     /// The invocation was killed.
     Killed,
-    /// The invocation was cancelled.
-    ///
-    /// Currently never constructed: cancellation travels through the invoker and arrives as
-    /// [`Self::Failed`] with an `ABORTED` code, which is deduced back to
-    /// [`vqueue_table::Status::Cancelled`] in [`EndInvocationCommand::apply`].
-    #[allow(dead_code)]
-    Cancelled,
 }
 
 enum Cached<T> {
@@ -240,7 +233,6 @@ where
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
         let end_status = match &reason {
-            EndInvocationReason::Cancelled => vqueue_table::Status::Cancelled,
             EndInvocationReason::Killed => {
                 if is_write_result_reference_enabled {
                     entries::OnJournalEntryCommand::from_entry(
@@ -281,7 +273,11 @@ where
                     invocation_metadata.journal_metadata.length += 1;
                 }
 
-                vqueue_table::Status::Failed
+                if err.code() == codes::ABORTED {
+                    vqueue_table::Status::Cancelled
+                } else {
+                    vqueue_table::Status::Failed
+                }
             }
             EndInvocationReason::Completed => {
                 let Some((_, response_result)) = response_cache.response_result(ctx).await? else {
@@ -311,9 +307,6 @@ where
             let response_result_ref = match is_write_result_reference_enabled {
                 // always embed, we can't reference the output entry
                 false => match reason {
-                    EndInvocationReason::Cancelled => {
-                        ResponseResultRef::Failure(CANCELED_INVOCATION_ERROR)
-                    }
                     EndInvocationReason::Killed => {
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
                     }
@@ -339,7 +332,6 @@ where
                 },
                 // try to reference if protocol-version >= v4, otherwise, embed
                 true => match reason {
-                    EndInvocationReason::Cancelled => ResponseResultRef::Cancelled,
                     EndInvocationReason::Killed => ResponseResultRef::Killed,
                     EndInvocationReason::Failed(err) => {
                         // this output was just inserted in the journal above.
@@ -392,14 +384,10 @@ where
                                     })
                                 }
                                 ResponseResult::Failure(err) => {
-                                    if err.code == restate_types::errors::codes::ABORTED {
-                                        ResponseResultRef::Cancelled
-                                    } else {
-                                        ResponseResultRef::Completed(CompletionReference {
-                                            entry_index,
-                                            status: CompletionStatus::Failure(err.code),
-                                        })
-                                    }
+                                    ResponseResultRef::Completed(CompletionReference {
+                                        entry_index,
+                                        status: CompletionStatus::Failure(err.code),
+                                    })
                                 }
                             },
                         }
@@ -428,7 +416,6 @@ where
                     };
                     response_result
                 }
-                ResponseResultRef::Cancelled => ResponseResult::Failure(CANCELED_INVOCATION_ERROR),
                 ResponseResultRef::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
             };
 
