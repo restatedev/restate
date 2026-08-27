@@ -11,9 +11,12 @@
 use bytes::{BufMut, Bytes, BytesMut};
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
+use restate_storage_api::{Result, StorageError};
+
 pub struct OwnedIterator<'a, DB: DBAccess> {
     iter: DBRawIteratorWithThreadMode<'a, DB>,
     arena: BytesMut,
+    done: bool,
 }
 
 impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
@@ -21,25 +24,34 @@ impl<'a, DB: DBAccess> OwnedIterator<'a, DB> {
         Self {
             iter,
             arena: BytesMut::new(),
+            done: false,
         }
     }
 }
 
 impl<DB: DBAccess> Iterator for OwnedIterator<'_, DB> {
-    type Item = (Bytes, Bytes);
+    type Item = Result<(Bytes, Bytes)>;
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        if let Some((k, v)) = self.iter.item() {
+        if self.done {
+            None
+        } else if let Some((k, v)) = self.iter.item() {
             self.arena.reserve(k.len() + v.len());
             self.arena.put_slice(k);
             let key = self.arena.split().freeze();
             self.arena.put_slice(v);
             let value = self.arena.split().freeze();
             self.iter.next();
-            Some((key, value))
+            Some(Ok((key, value)))
         } else {
-            None
+            self.done = true;
+            self.iter
+                .status()
+                .err()
+                .map(|err| Err(StorageError::Generic(err.into())))
         }
     }
 }
+
+impl<DB: DBAccess> std::iter::FusedIterator for OwnedIterator<'_, DB> {}

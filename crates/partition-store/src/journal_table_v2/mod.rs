@@ -280,7 +280,8 @@ fn delete_journal<S: StorageAccess>(
     let notification_id_index = OwnedIterator::new(storage.iterator_from(TableScan::Prefix(
         notification_id_to_notification_index.clone(),
     ))?)
-    .map(|(mut key, _)| {
+    .map(|item| {
+        let (mut key, _) = item?;
         let journal_key = JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
         let (_, _, notification_id) = journal_key.split();
         Ok(notification_id)
@@ -303,7 +304,8 @@ fn delete_journal<S: StorageAccess>(
     let completion_id_index = OwnedIterator::new(
         storage.iterator_from(TableScan::Prefix(completion_id_to_command_index.clone()))?,
     )
-    .map(|(mut key, _)| {
+    .map(|item| {
+        let (mut key, _) = item?;
         let journal_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key)?;
         let (_, _, completion_id) = journal_key.split();
         Ok(completion_id)
@@ -456,7 +458,8 @@ fn get_notifications_index<S: StorageAccess>(
         .invocation_uuid(invocation_id.invocation_uuid());
     let iter = storage.iterator_from(TableScan::Prefix(key))?;
     OwnedIterator::new(iter)
-        .map(|(mut key, mut value)| {
+        .map(|item| {
+            let (mut key, mut value) = item?;
             let journal_key =
                 JournalNotificationIdToNotificationIndexKey::deserialize_from(&mut key)?;
             let index = NotificationEntryIndex::decode(&mut value)
