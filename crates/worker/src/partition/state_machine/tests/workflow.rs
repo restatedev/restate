@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use prost::Message;
 
-use restate_storage_api::invocation_status_table::CompletedInvocation;
+use restate_storage_api::invocation_status_table::{CompletedInvocation, ResponseResultRef};
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_storage_api::timer_table::ReadTimerTable;
 use restate_types::deployment::PinnedDeployment;
