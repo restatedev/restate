@@ -246,7 +246,7 @@ pub(crate) fn append_invocation_status_row<'a>(
                         row.completion_result("failure");
                         if row.is_completion_failure_defined() {
                             row.fmt_completion_failure(format_args!(
-                                "Error Code: {}",
+                                "[{}]",
                                 invocation_status.inner.failure_status_code()
                             ));
                         }
@@ -258,6 +258,8 @@ pub(crate) fn append_invocation_status_row<'a>(
                         }
                     }
                     // Fallback to full result parsing.
+                    // todo: can be removed once the response_result
+                    // is not longer embedded
                     None => match invocation_status.response_result()? {
                         ResponseResult::ResponseSuccess(_) => {
                             row.completion_result("success");
