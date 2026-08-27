@@ -747,8 +747,11 @@ pub enum ResponseResultRef {
     Killed,
     Completed(CompletionReference),
     // Embedded success/failure status
-    // Used for overrides and backward compatibility
-    // with older ResponseResult.
+    // Only for backward compatibility
+    // with older invocation status
+    // (write_result_reference feature disabled)
+    // todo: Should eventually drop once there
+    // are no old invocation status.
     #[debug("Success(<data>)")]
     Success(Bytes),
     #[debug("Failure({_0})")]
