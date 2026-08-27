@@ -302,7 +302,8 @@ pub struct Http2KeepAliveOptions {
     /// # HTTP/2 Keep-alive interval
     ///
     /// Sets an interval for HTTP/2 PING frames should be sent to keep a
-    /// connection alive.
+    /// connection alive. This governs connections to HTTP deployments as well as
+    /// to the AWS Lambda API.
     ///
     /// `0` disables keep-alive pings entirely. Defaults to `40s`.
     ///

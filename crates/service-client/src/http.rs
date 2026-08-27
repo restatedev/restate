@@ -12,7 +12,6 @@ use std::error::Error;
 use std::fmt;
 use std::fmt::Debug;
 use std::pin::Pin;
-use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
@@ -25,9 +24,8 @@ use hyper::body::{Body, Incoming};
 use hyper::http::HeaderValue;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Method, Request, Response, Uri};
-use hyper_rustls::{ConfigBuilderExt, HttpsConnector};
+use hyper_rustls::HttpsConnector;
 use hyper_util::client::legacy::connect::HttpConnector;
-use rustls::{ClientConfig, KeyLogFile};
 use tower::Layer;
 
 use restate_types::config::HttpOptions;
@@ -35,27 +33,11 @@ use restate_types::config::HttpOptions;
 use crate::pool::conn::PermittedRecvStream;
 use crate::pool::tls::TlsConnector;
 use crate::pool::{self, Pool, TcpConnector};
-use crate::utils::ErrorExt;
+use crate::utils::{ErrorExt, TLS_CLIENT_CONFIG};
 
 use super::proxy::ProxyConnector;
 
 type ProxiedHttpsConnector = ProxyConnector<HttpsConnector<HttpConnector>>;
-
-static TLS_CLIENT_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
-    // We need to explicitly configure the crypto provider since we activate the ring as well as
-    // aws_lc_rs rustls feature, and they are mutually exclusive wrt auto installation. Moreover,
-    // we don't want that tests need to install a crypto provider when using the HttpClient
-    let mut builder = ClientConfig::builder_with_provider(Arc::new(
-        rustls::crypto::aws_lc_rs::default_provider(),
-    ))
-    .with_protocol_versions(rustls::DEFAULT_VERSIONS)
-    .expect("default versions are supported")
-    .with_native_roots()
-    .expect("Can load native certificates")
-    .with_no_client_auth();
-    builder.dangerous().cfg.key_log = Arc::new(KeyLogFile::new());
-    builder
-});
 
 // TODO
 //  for the time being we use BoxBody here to simplify the migration to hyper 1.0.
