@@ -117,7 +117,7 @@ impl KeyDecode for LockName {
         // they are valid utf-8 strings.
         let raw = unsafe { std::str::from_utf8_unchecked(string_data.chunk()) };
         // make the lock name a shared string (arc or inlined if small)
-        LockName::parse(raw).map_err(|e| StorageError::Generic(e.into()))
+        LockName::parse_unchecked(raw).map_err(|e| StorageError::Generic(e.into()))
     }
 }
 
