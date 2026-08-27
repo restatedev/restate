@@ -649,7 +649,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             KeyKind::full_merge,
             KeyKind::partial_merge,
         );
-        cf_options.set_max_successive_merges(5000);
+        cf_options.set_max_successive_merges(config.rocksdb_max_successive_merges as usize);
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
         if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
