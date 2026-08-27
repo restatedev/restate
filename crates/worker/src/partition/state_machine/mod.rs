@@ -42,9 +42,8 @@ use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
-    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
-    PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
-    ResponseResultRef, WriteInvocationStatusTable,
+    PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
+    PreFlightInvocationMetadata, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -2119,12 +2118,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
-        self.end_invocation(
+        lifecycle::EndInvocationCommand {
             invocation_id,
-            metadata,
-            Some(TerminationFlavor::Kill),
-            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-        )
+            invocation_metadata: metadata,
+            reason: lifecycle::EndInvocationReason::Killed,
+        }
+        .apply(self)
         .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
@@ -2157,12 +2156,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
-        self.end_invocation(
+        lifecycle::EndInvocationCommand {
             invocation_id,
-            metadata,
-            Some(TerminationFlavor::Kill),
-            Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-        )
+            invocation_metadata: metadata,
+            reason: lifecycle::EndInvocationReason::Killed,
+        }
+        .apply(self)
         .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
         Ok(())
@@ -2692,25 +2691,25 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?;
             }
             InvokerEffectKind::End => {
-                self.end_invocation(
-                    effect.invocation_id,
-                    invocation_status
+                lifecycle::EndInvocationCommand {
+                    invocation_id: effect.invocation_id,
+                    invocation_metadata: invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
-                    None,
-                    None,
-                )
+                    reason: lifecycle::EndInvocationReason::Completed,
+                }
+                .apply(self)
                 .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                self.end_invocation(
-                    effect.invocation_id,
-                    invocation_status
+                lifecycle::EndInvocationCommand {
+                    invocation_id: effect.invocation_id,
+                    invocation_metadata: invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
-                    None,
-                    Some(ResponseResult::Failure(e)),
-                )
+                    reason: lifecycle::EndInvocationReason::Failed(e),
+                }
+                .apply(self)
                 .await?;
             }
             InvokerEffectKind::Yield {
@@ -2800,210 +2799,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 command_index: command_index_to_ack,
             });
         }
-        Ok(())
-    }
-
-    /// TODO(slinkydeveloper) move this to lifecycle command
-    ///
-    /// `flavor` lets us know how the invocation ended. If `flavor` is `None`,
-    /// then we determine the termination status based on the `response_result_override`.
-    async fn end_invocation(
-        &mut self,
-        invocation_id: InvocationId,
-        invocation_metadata: InFlightInvocationMetadata,
-        flavor: Option<TerminationFlavor>,
-        // If given, this will override any Output Entry available in the journal table
-        response_result_override: Option<ResponseResult>,
-    ) -> Result<(), Error>
-    where
-        S: WriteInboxTable
-            + ReadInvocationStatusTable
-            + WriteInvocationStatusTable
-            + WriteVirtualObjectStatusTable
-            + WriteJournalTable
-            + ReadJournalTable
-            + WriteOutboxTable
-            + WriteFsmTable
-            + ReadStateTable
-            + WriteStateTable
-            + journal_table_v2::WriteJournalTable
-            + journal_table_v2::ReadJournalTable
-            + ReadVQueueTable
-            + WriteVQueueTable
-            + WriteLockTable
-            + WriteJournalEventsTable,
-    {
-        let invocation_target = invocation_metadata.invocation_target.clone();
-        let journal_length = invocation_metadata.journal_metadata.length;
-        let completion_retention = invocation_metadata.completion_retention_duration;
-        let journal_retention = invocation_metadata.journal_retention_duration;
-
-        let pinned_service_protocol_version = invocation_metadata
-            .pinned_deployment
-            .as_ref()
-            .map(|pd| pd.service_protocol_version);
-
-        let vqueue_id = invocation_metadata.vqueue_id.clone();
-        let mut end_status = vqueue_table::Status::Succeeded;
-        // If there are any response sinks, or we need to store back the completed status,
-        //  we need to find the latest output entry
-        if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
-            //  output_index can be None if the output is overridden or because
-            // read_last_output_entry detected protocol version <= V3.
-            // In that case, the results is embedded in the ResponseResult and we
-            // can't use Reference
-            let (output_index, response_result) = if let Some(response_result) =
-                response_result_override
-            {
-                // when the output is overridden, we have no way to reference
-                // output journal, so we return None instead.
-
-                (None, response_result)
-            } else if let Some((output_index, response_result)) = self
-                .read_last_output_entry_result(
-                    &invocation_id,
-                    journal_length,
-                    invocation_metadata
-                        .pinned_deployment
-                        .as_ref()
-                        .map(|pd| pd.service_protocol_version)
-                        .unwrap_or_default(),
-                )
-                .await?
-            {
-                (output_index, response_result)
-            } else {
-                // We don't panic on this, although it indicates a bug at the moment.
-                warn!("Invocation completed without an output entry. This is not supported yet.");
-                return Ok(());
-            };
-
-            if let ResponseResult::Failure(e) = &response_result {
-                if e.code() == restate_types::errors::codes::ABORTED {
-                    // special handling for cancel/kill. Definitely not ideal, but the current
-                    // design leaves me with no other options. In practice, to distinguish between
-                    // cancel and kill, the flavor will be used (in vqueues) to make the distinction.
-                    //
-                    // Kill is always passed in `flavor` but cancel must be deduced from the aborted
-                    // code.
-                    end_status = vqueue_table::Status::Cancelled;
-                } else {
-                    end_status = vqueue_table::Status::Failed;
-                }
-            }
-
-            // Send responses out
-            self.send_response_to_sinks(
-                invocation_metadata.response_sinks.clone(),
-                response_result.clone(),
-                Some(invocation_id),
-                None,
-                Some(&invocation_metadata.invocation_target),
-            )?;
-
-            // Notify invocation result
-            self.emit_invocation_end_span(
-                &invocation_id,
-                &invocation_metadata.invocation_target,
-                &invocation_metadata.journal_metadata.span_context,
-                match &response_result {
-                    ResponseResult::Success(_) => Ok(()),
-                    ResponseResult::Failure(err) => Err(err),
-                },
-            );
-
-            // Store the completed status, if needed
-            if !completion_retention.is_zero() {
-                // Only use `reference` if write-result-reference feature is enabled.
-                let output_index = if self
-                    .processor
-                    .fsm()
-                    .features()
-                    .is_write_result_reference_enabled()
-                {
-                    output_index
-                } else {
-                    // force embed
-                    None
-                };
-
-                let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
-                    invocation_metadata,
-                    if journal_retention.is_zero() {
-                        JournalRetentionPolicy::Drop
-                    } else {
-                        JournalRetentionPolicy::Retain
-                    },
-                    ResponseResultRef::new(response_result, output_index),
-                    self.record_created_at,
-                );
-                self.do_store_completed_invocation(invocation_id, completed_invocation)?;
-            }
-        } else {
-            // Just notify Ok, no need to read the output entry
-            self.emit_invocation_end_span(
-                &invocation_id,
-                &invocation_target,
-                &invocation_metadata.journal_metadata.span_context,
-                Ok(()),
-            );
-        }
-
-        // If no retention, immediately cleanup the invocation status
-        if completion_retention.is_zero() {
-            self.do_free_invocation(&invocation_id)?;
-        }
-
-        if journal_retention.is_zero() {
-            self.do_drop_journal(
-                &invocation_id,
-                journal_length,
-                pinned_service_protocol_version,
-            )
-            .await?;
-        }
-
-        if let Some(vqueue_id) = vqueue_id {
-            let Some(entry_status) = self
-                .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
-                .await?
-            else {
-                // Invocation has been removed already!
-                return Ok(());
-            };
-            let record_unique_ts =
-                UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-
-            // Make sure we report cancel/killed correctly.
-            end_status = match flavor {
-                Some(TerminationFlavor::Cancel) => vqueue_table::Status::Cancelled,
-                Some(TerminationFlavor::Kill) => vqueue_table::Status::Killed,
-                None => end_status,
-            };
-
-            VQueue::get(
-                &vqueue_id,
-                self.storage,
-                self.processor.vqueues_mut(),
-                self.is_leader.then_some(self.action_collector),
-            )
-            .await?
-            .expect("terminate expects vqueue to exist")
-            .end(
-                record_unique_ts,
-                &entry_status,
-                end_status,
-                completion_retention,
-            );
-        } else {
-            // Consume inbox and move on
-            self.consume_inbox(&invocation_target).await?;
-        }
-
         Ok(())
     }
 
