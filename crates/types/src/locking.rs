@@ -97,6 +97,26 @@ impl LockName {
         })
     }
 
+    /// Parses a `"service_name/key"` string into a [`LockName`].
+    ///
+    /// Both the service name must be non-empty. The key segment is allowed to be empty
+    /// to accommodate for previously allowed empty VO key names.
+    pub fn parse_unchecked(data: &str) -> Result<Self, ParseError> {
+        let mut it = data.match_indices('/');
+        let Some((key_offset, _)) = it.next() else {
+            return Err(ParseError::Malformed(data.into()));
+        };
+        let service_name = &data[..key_offset];
+        if service_name.is_empty() {
+            return Err(ParseError::EmptyServiceName(data.into()));
+        }
+        let key = &data[(key_offset + 1)..];
+        Ok(Self {
+            service_name: ServiceName::new(service_name),
+            key: ReString::new(key),
+        })
+    }
+
     /// Returns the key segment of this lock name.
     #[inline]
     pub const fn key(&self) -> &ReString {
