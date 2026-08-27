@@ -238,8 +238,24 @@ impl KeyKind {
         _unused: Option<&[u8]>,
         _operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        // Currently, we have no partial merge operator for any key. Change this
-        // if/when this is needed.
+        // TODO: Enable once the minimum forward-compatible version is v1.7.8, when all supported
+        // versions can decode the persisted VQueueMeta update-batch operand.
+        // let mut kind_buf = _key;
+        // let kind = match KeyKind::deserialize(&mut kind_buf) {
+        //     Ok(kind) => kind,
+        //     Err(e) => {
+        //         error!("Cannot apply partial merge operator; {e}");
+        //         return None;
+        //     }
+        // };
+        // trace!(?kind, "partial merge");
+        //
+        // match kind {
+        //     KeyKind::VQueueMeta => {
+        //         vqueue_meta_merge::partial_merge(_key, _unused, _operands)
+        //     }
+        //     _ => None,
+        // }
         None
     }
 }
