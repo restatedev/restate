@@ -8705,6 +8705,8 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-lambda",
  "aws-sdk-sts",
+ "aws-smithy-runtime-api",
+ "aws-smithy-types",
  "base64",
  "bs58",
  "bytes",
