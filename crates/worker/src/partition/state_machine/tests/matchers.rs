@@ -37,6 +37,7 @@ pub mod storage {
             };
             completed.response_result.referenced_journal_index() == reference
         })
+        .with_description("has result reference", "has NO result reference")
     }
     pub fn has_journal_length(
         journal_length: EntryIndex,
