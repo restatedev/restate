@@ -1570,7 +1570,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable
+            + ReadPromiseTable
+            + WritePromiseTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -2099,16 +2102,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable
+            + ReadPromiseTable
+            + WritePromiseTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
-        lifecycle::EndInvocationCommand {
+        lifecycle::EndInvocationCommand::new(
             invocation_id,
-            invocation_metadata: metadata,
-            reason: lifecycle::EndInvocationReason::Killed,
-        }
+            metadata,
+            lifecycle::EndInvocationReason::Killed,
+        )
         .apply(self)
         .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
@@ -2137,16 +2143,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable
+            + ReadPromiseTable
+            + WritePromiseTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
 
-        lifecycle::EndInvocationCommand {
+        lifecycle::EndInvocationCommand::new(
             invocation_id,
-            invocation_metadata: metadata,
-            reason: lifecycle::EndInvocationReason::Killed,
-        }
+            metadata,
+            lifecycle::EndInvocationReason::Killed,
+        )
         .apply(self)
         .await?;
         self.do_send_abort_invocation_to_invoker(invocation_id);
@@ -2677,24 +2686,24 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?;
             }
             InvokerEffectKind::End => {
-                lifecycle::EndInvocationCommand {
-                    invocation_id: effect.invocation_id,
-                    invocation_metadata: invocation_status
+                lifecycle::EndInvocationCommand::new(
+                    effect.invocation_id,
+                    invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
-                    reason: lifecycle::EndInvocationReason::Completed,
-                }
+                    lifecycle::EndInvocationReason::Completed,
+                )
                 .apply(self)
                 .await?;
             }
             InvokerEffectKind::Failed(e) => {
-                lifecycle::EndInvocationCommand {
-                    invocation_id: effect.invocation_id,
-                    invocation_metadata: invocation_status
+                lifecycle::EndInvocationCommand::new(
+                    effect.invocation_id,
+                    invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
-                    reason: lifecycle::EndInvocationReason::Failed(e),
-                }
+                    lifecycle::EndInvocationReason::Failed(e),
+                )
                 .apply(self)
                 .await?;
             }

@@ -8,14 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::timer_table::WriteTimerTable;
+use restate_types::journal_v2::{EntryIndex, OutputCommand, OutputResult};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, JournalRetentionPolicy,
-    ReadInvocationStatusTable, ResponseResultRef, WriteInvocationStatusTable,
+    CompletedInvocation, CompletionReference, CompletionStatus, InFlightInvocationMetadata,
+    JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
+    WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::{ReadJournalTable, WriteJournalTable};
@@ -34,14 +39,14 @@ use restate_vqueues::VQueue;
 use restate_worker_api::processor::PartitionFeatures;
 
 use crate::partition::processor::{FsmAccess, ProcessorContext};
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
 
 /// Terminal step of the invocation lifecycle: publishes the result, applies the retention
 /// policies and releases whatever the invocation was holding (vqueue entry or inbox lock).
 pub struct EndInvocationCommand {
-    pub invocation_id: InvocationId,
-    pub invocation_metadata: InFlightInvocationMetadata,
-    pub reason: EndInvocationReason,
+    invocation_id: InvocationId,
+    invocation_metadata: InFlightInvocationMetadata,
+    reason: EndInvocationReason,
 }
 
 /// How the invocation ended.
@@ -62,24 +67,115 @@ pub enum EndInvocationReason {
     Cancelled,
 }
 
-impl EndInvocationReason {
-    /// Result overriding any Output entry available in the journal table.
-    fn into_response_result_override(self) -> Option<ResponseResult> {
-        match self {
-            Self::Completed => None,
-            Self::Failed(e) => Some(ResponseResult::Failure(e)),
-            Self::Killed => Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR)),
-            Self::Cancelled => Some(ResponseResult::Failure(CANCELED_INVOCATION_ERROR)),
+enum Cached<T> {
+    None,
+    NotFound,
+    Found(T),
+}
+
+struct ResponseResultCache {
+    invocation_id: InvocationId,
+    journal_length: u32,
+    protocol_version: ServiceProtocolVersion,
+
+    entry_index: Option<EntryIndex>,
+    result: Cached<ResponseResult>,
+}
+
+impl ResponseResultCache {
+    pub fn new(
+        invocation_id: InvocationId,
+        journal_length: u32,
+        protocol_version: ServiceProtocolVersion,
+    ) -> Self {
+        Self {
+            invocation_id,
+            journal_length,
+            protocol_version,
+            entry_index: None,
+            result: Cached::None,
         }
     }
 
-    /// Terminal vqueue status forced by the reason. `None` means it has to be deduced from
-    /// the response result.
-    fn forced_end_status(&self) -> Option<vqueue_table::Status> {
-        match self {
-            Self::Completed | Self::Failed(_) => None,
-            Self::Killed => Some(vqueue_table::Status::Killed),
-            Self::Cancelled => Some(vqueue_table::Status::Cancelled),
+    async fn warmup<'s, S, P>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'s, S, P>,
+    ) -> Result<(), Error>
+    where
+        P: ProcessorContext,
+        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
+    {
+        match &self.result {
+            Cached::NotFound | Cached::Found(_) => {}
+            Cached::None => {
+                match ctx
+                    .read_last_output_entry_result(
+                        &self.invocation_id,
+                        self.journal_length,
+                        self.protocol_version,
+                    )
+                    .await?
+                {
+                    Some((index, response)) => {
+                        self.entry_index = index;
+                        self.result = Cached::Found(response);
+                    }
+                    None => self.result = Cached::NotFound,
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn response_result<'s, S, P>(
+        &mut self,
+        ctx: &mut StateMachineApplyContext<'s, S, P>,
+    ) -> Result<Option<(Option<EntryIndex>, &ResponseResult)>, Error>
+    where
+        P: ProcessorContext,
+        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
+    {
+        self.warmup(ctx).await?;
+
+        match &self.result {
+            Cached::None => {
+                unreachable!()
+            }
+            Cached::NotFound => Ok(None),
+            Cached::Found(response) => Ok(Some((self.entry_index, response))),
+        }
+    }
+
+    async fn into_response_result<'s, S, P>(
+        mut self,
+        ctx: &mut StateMachineApplyContext<'s, S, P>,
+    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
+    where
+        P: ProcessorContext,
+        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
+    {
+        self.warmup(ctx).await?;
+
+        match self.result {
+            Cached::None => {
+                unreachable!()
+            }
+            Cached::NotFound => Ok(None),
+            Cached::Found(response) => Ok(Some((self.entry_index, response))),
+        }
+    }
+}
+
+impl EndInvocationCommand {
+    pub fn new(
+        invocation_id: InvocationId,
+        invocation_metadata: InFlightInvocationMetadata,
+        reason: EndInvocationReason,
+    ) -> Self {
+        Self {
+            invocation_id,
+            invocation_metadata,
+            reason,
         }
     }
 }
@@ -102,87 +198,239 @@ where
         + ReadVQueueTable
         + WriteVQueueTable
         + WriteLockTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteTimerTable
+        + ReadPromiseTable
+        + WritePromiseTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let EndInvocationCommand {
             invocation_id,
-            invocation_metadata,
+            mut invocation_metadata,
             reason,
         } = self;
-
-        let forced_end_status = reason.forced_end_status();
-        let response_result_override = reason.into_response_result_override();
 
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
 
+        let mut response_cache = ResponseResultCache::new(
+            invocation_id,
+            journal_length,
+            invocation_metadata
+                .pinned_deployment
+                .as_ref()
+                .map(|pd| pd.service_protocol_version)
+                .unwrap_or_default(),
+        );
+
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
             .map(|pd| pd.service_protocol_version);
 
+        let is_write_result_reference_enabled = ctx
+            .processor
+            .fsm()
+            .features()
+            .is_write_result_reference_enabled();
+
         let vqueue_id = invocation_metadata.vqueue_id.clone();
-        let mut end_status = vqueue_table::Status::Succeeded;
+
+        let end_status = match &reason {
+            EndInvocationReason::Cancelled => vqueue_table::Status::Cancelled,
+            EndInvocationReason::Killed => {
+                if is_write_result_reference_enabled {
+                    entries::OnJournalEntryCommand::from_entry(
+                        invocation_id,
+                        ctx.get_invocation_status(&invocation_id).await?,
+                        OutputCommand {
+                            result: OutputResult::Failure(KILLED_INVOCATION_ERROR.into()),
+                            name: Default::default(),
+                        }
+                        .into(),
+                    )
+                    .apply(ctx)
+                    .await?;
+
+                    // hackish but necessary
+                    invocation_metadata.journal_metadata.commands += 1;
+                    invocation_metadata.journal_metadata.length += 1;
+                }
+
+                vqueue_table::Status::Killed
+            }
+            EndInvocationReason::Failed(err) => {
+                if is_write_result_reference_enabled {
+                    entries::OnJournalEntryCommand::from_entry(
+                        invocation_id,
+                        ctx.get_invocation_status(&invocation_id).await?,
+                        OutputCommand {
+                            result: OutputResult::Failure(err.clone().into()),
+                            name: Default::default(),
+                        }
+                        .into(),
+                    )
+                    .apply(ctx)
+                    .await?;
+
+                    // hackish but necessary
+                    invocation_metadata.journal_metadata.commands += 1;
+                    invocation_metadata.journal_metadata.length += 1;
+                }
+
+                vqueue_table::Status::Failed
+            }
+            EndInvocationReason::Completed => {
+                let Some((_, response_result)) = response_cache.response_result(ctx).await? else {
+                    // We don't panic on this, although it indicates a bug at the moment.
+                    warn!(
+                        "Invocation completed without an output entry. This is not supported yet."
+                    );
+                    return Ok(());
+                };
+
+                match response_result {
+                    ResponseResult::Success(_) => vqueue_table::Status::Succeeded,
+                    ResponseResult::Failure(err) => {
+                        if err.code == restate_types::errors::codes::ABORTED {
+                            vqueue_table::Status::Cancelled
+                        } else {
+                            vqueue_table::Status::Failed
+                        }
+                    }
+                }
+            }
+        };
+
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
-            //  output_index can be None if the output is overridden or because
-            // read_last_output_entry detected protocol version <= V3.
-            // In that case, the results is embedded in the ResponseResult and we
-            // can't use Reference
-            let (output_index, response_result) = if let Some(response_result) =
-                response_result_override
-            {
-                // when the output is overridden, we have no way to reference
-                // output journal, so we return None instead.
+            let response_result_ref = match is_write_result_reference_enabled {
+                // always embed, we can't reference the output entry
+                false => match reason {
+                    EndInvocationReason::Cancelled => {
+                        ResponseResultRef::Failure(CANCELED_INVOCATION_ERROR)
+                    }
+                    EndInvocationReason::Killed => {
+                        ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
+                    }
+                    EndInvocationReason::Failed(err) => ResponseResultRef::Failure(err),
+                    EndInvocationReason::Completed => {
+                        let Some((_, response_result)) =
+                            response_cache.response_result(ctx).await?
+                        else {
+                            warn!(
+                                "Invocation completed without an output entry. This is not supported yet."
+                            );
+                            return Ok(());
+                        };
 
-                (None, response_result)
-            } else if let Some((output_index, response_result)) = ctx
-                .read_last_output_entry_result(
-                    &invocation_id,
-                    journal_length,
-                    invocation_metadata
-                        .pinned_deployment
-                        .as_ref()
-                        .map(|pd| pd.service_protocol_version)
-                        .unwrap_or_default(),
-                )
-                .await?
-            {
-                (output_index, response_result)
-            } else {
-                // We don't panic on this, although it indicates a bug at the moment.
-                warn!("Invocation completed without an output entry. This is not supported yet.");
-                return Ok(());
+                        // bytes are cheaply clonable. Errors not so much.
+                        match response_result {
+                            ResponseResult::Success(bytes) => {
+                                ResponseResultRef::Success(bytes.clone())
+                            }
+                            ResponseResult::Failure(err) => ResponseResultRef::Failure(err.clone()),
+                        }
+                    }
+                },
+                // try to reference if protocol-version >= v4, otherwise, embed
+                true => match reason {
+                    EndInvocationReason::Cancelled => ResponseResultRef::Cancelled,
+                    EndInvocationReason::Killed => ResponseResultRef::Killed,
+                    EndInvocationReason::Failed(err) => {
+                        // this output was just inserted in the journal above.
+                        let Some((entry_index, _)) = response_cache.response_result(ctx).await?
+                        else {
+                            warn!(
+                                "Invocation completed without an output entry. This is not supported yet."
+                            );
+                            return Ok(());
+                        };
+
+                        // if entry_index is None, this means it is protocol-version < v4
+                        // and we will need to embed the error.
+                        match entry_index {
+                            None => ResponseResultRef::Failure(err),
+                            Some(entry_index) => {
+                                ResponseResultRef::Completed(CompletionReference {
+                                    entry_index,
+                                    status: CompletionStatus::Failure(err.code),
+                                })
+                            }
+                        }
+                    }
+                    EndInvocationReason::Completed => {
+                        let Some((entry_index, response_result)) =
+                            response_cache.response_result(ctx).await?
+                        else {
+                            warn!(
+                                "Invocation completed without an output entry. This is not supported yet."
+                            );
+                            return Ok(());
+                        };
+
+                        // if entry_index is None, this means  it is protocol-version < v4
+                        // and we will need to embed the error.
+                        match entry_index {
+                            None => match response_result {
+                                ResponseResult::Success(bytes) => {
+                                    ResponseResultRef::Success(bytes.clone())
+                                }
+                                ResponseResult::Failure(err) => {
+                                    ResponseResultRef::Failure(err.clone())
+                                }
+                            },
+                            Some(entry_index) => match response_result {
+                                ResponseResult::Success(_) => {
+                                    ResponseResultRef::Completed(CompletionReference {
+                                        entry_index,
+                                        status: CompletionStatus::Success,
+                                    })
+                                }
+                                ResponseResult::Failure(err) => {
+                                    if err.code == restate_types::errors::codes::ABORTED {
+                                        ResponseResultRef::Cancelled
+                                    } else {
+                                        ResponseResultRef::Completed(CompletionReference {
+                                            entry_index,
+                                            status: CompletionStatus::Failure(err.code),
+                                        })
+                                    }
+                                }
+                            },
+                        }
+                    }
+                },
             };
 
-            if let ResponseResult::Failure(e) = &response_result {
-                if e.code() == restate_types::errors::codes::ABORTED {
-                    // special handling for cancel/kill. Definitely not ideal, but the current
-                    // design leaves me with no other options. In practice, to distinguish between
-                    // cancel and kill, the reason will be used (in vqueues) to make the
-                    // distinction.
-                    //
-                    // Kill is always known from the reason but cancel must be deduced from the
-                    // aborted code.
-                    end_status = vqueue_table::Status::Cancelled;
-                } else {
-                    end_status = vqueue_table::Status::Failed;
+            // We still need to create a ResponseResult object to send to sinks
+            //
+            // Note: the cost of copy is only paid when is_write_result_reference_enabled is disabled.
+            // Once is_write_result_reference_enabled is on by default, there will be no copy
+            // since everything will be referenced via the Completed state
+            let response_result = match &response_result_ref {
+                ResponseResultRef::Success(bytes) => ResponseResult::Success(bytes.clone()),
+                ResponseResultRef::Failure(err) => ResponseResult::Failure(err.clone()),
+                ResponseResultRef::Completed(_) => {
+                    // extract directly from cache
+                    let Some((_, response_result)) =
+                        response_cache.into_response_result(ctx).await?
+                    else {
+                        // We don't panic on this, although it indicates a bug at the moment.
+                        warn!(
+                            "Invocation completed without an output entry. This is not supported yet."
+                        );
+                        return Ok(());
+                    };
+                    response_result
                 }
-            }
-
-            // Send responses out
-            ctx.send_response_to_sinks(
-                invocation_metadata.response_sinks.clone(),
-                response_result.clone(),
-                Some(invocation_id),
-                None,
-                Some(&invocation_metadata.invocation_target),
-            )?;
+                ResponseResultRef::Cancelled => ResponseResult::Failure(CANCELED_INVOCATION_ERROR),
+                ResponseResultRef::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
+            };
 
             // Notify invocation result
             ctx.emit_invocation_end_span(
@@ -195,21 +443,17 @@ where
                 },
             );
 
+            // Send responses out
+            ctx.send_response_to_sinks(
+                invocation_metadata.response_sinks.clone(),
+                response_result,
+                Some(invocation_id),
+                None,
+                Some(&invocation_metadata.invocation_target),
+            )?;
+
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
-                // Only use `reference` if write-result-reference feature is enabled.
-                let output_index = if ctx
-                    .processor
-                    .fsm()
-                    .features()
-                    .is_write_result_reference_enabled()
-                {
-                    output_index
-                } else {
-                    // force embed
-                    None
-                };
-
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
@@ -217,7 +461,7 @@ where
                     } else {
                         JournalRetentionPolicy::Retain
                     },
-                    ResponseResultRef::new(response_result, output_index),
+                    response_result_ref,
                     ctx.record_created_at,
                 );
                 ctx.do_store_completed_invocation(invocation_id, completed_invocation)?;
@@ -260,11 +504,6 @@ where
             };
             let record_unique_ts =
                 UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
-
-            // Make sure we report cancel/killed correctly.
-            if let Some(forced_end_status) = forced_end_status {
-                end_status = forced_end_status;
-            }
 
             VQueue::get(
                 &vqueue_id,
