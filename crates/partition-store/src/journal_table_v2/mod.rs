@@ -258,7 +258,7 @@ fn get_journal<'a, S: StorageAccess>(
     Ok(JournalEntryIter::new(iter, journal_length))
 }
 
-fn delete_journals<S: StorageAccess>(
+fn delete_journal<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     journals: impl Iterator<Item = EntryIndex>,
@@ -808,13 +808,13 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
         put_journal_entry(self, invocation_id, index, entry, related_completion_ids)
     }
 
-    fn delete_journals(
+    fn delete_journal(
         &mut self,
         invocation_id: &InvocationId,
         journals: impl Iterator<Item = EntryIndex>,
     ) -> Result<()> {
         self.assert_partition_key(invocation_id)?;
-        delete_journals(self, invocation_id, journals)
+        delete_journal(self, invocation_id, journals)
     }
 }
 
