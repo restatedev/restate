@@ -211,13 +211,13 @@ where
 
         if let InvocationStatus::Invoked(invoked_status) = invocation_status {
             // Check if using journal v2 by seeing if v2 has any entries
-            let mut journal_v2_stream =
-                std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
-                    &self.txn,
-                    *invocation_id,
-                    1, // Just check first entry to determine version
-                )?);
-            let journal_kind = if journal_v2_stream.next().await.transpose()?.is_some() {
+            let journal_v2_entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+                &mut self.txn,
+                *invocation_id,
+                0, // Just check first entry to determine version
+            )
+            .await?;
+            let journal_kind = if journal_v2_entry.is_some() {
                 JournalKind::V2
             } else {
                 JournalKind::V1
