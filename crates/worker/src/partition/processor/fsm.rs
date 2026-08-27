@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use restate_core::Metadata;
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::fsm_table::{
@@ -89,7 +90,8 @@ impl Fsm {
         let durable_point = storage.get_partition_durability().await?;
         let last_applied_lsn = storage.get_applied_lsn().await?.unwrap_or(Lsn::INVALID);
         // Load persisted partition configuration state (since v1.7.2)
-        let schema = storage.get_schema().await?.map(Arc::new);
+        let mut schema = storage.get_schema().await?.map(Arc::new);
+        dedup_in_memory_schema(&mut schema);
         // Load persisted partition configuration state (since v1.7.0)
         let rule_book = Arc::new(storage.get_rule_book().await?.unwrap_or_default());
         // Load persisted partition configuration state (since v1.6)
@@ -276,6 +278,7 @@ impl FsmMut for Fsm {
     fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: Arc<Schema>) {
         txn.put_schema(&schema).expect("infallible serde");
         self.schema = Some(schema);
+        dedup_in_memory_schema(&mut self.schema);
     }
 
     fn set_rule_book<S: WriteFsmTable>(&mut self, txn: &mut S, rule_book: Arc<RuleBook>) {
@@ -301,5 +304,32 @@ impl FsmMut for Fsm {
     fn set_inbox_seq_number<S: WriteFsmTable>(&mut self, txn: &mut S, seq: MessageIndex) {
         self.inbox_seq_number = seq;
         txn.put_inbox_seq_number(seq).expect("infallible serde");
+    }
+}
+
+/// The Schema's in-memory representation can be quite large (100s of MBs), each partition stores
+/// a copy of the schema in its FSM and deserializes it on startup, and updates it on UpsertSchema
+/// commands. This can result into a large steady memory footprint due to duplicating the schemas in memory.
+///
+/// All nodes have access to the latest global schema. So as a best-effort optimization, we can drop
+/// the partition's copy of the schema if its version matches the global schema version by Arc::clone-ing the
+/// global schema instead.
+///
+/// Note:
+///   - This is a best-effort before the schema might not have been loaded yet, or if we're starting from
+///     an old snapshot that has a schema that differs from the latest (though it'll eventually converge).
+///   - This doesn't save us from the initial memory spike due to parsing the schema object before deduping
+///     it. A better approach would be to store the version separately, and load the global schema directly
+///     if it matches (skipping parsing the locally stored schema altogether).
+///
+/// TODO: The large in-memory footprint of the schemas is coming from the JSON-schema definition of the
+/// handlers which the partition processors don't care about. Parsing only the relevant fields in the
+/// schema (via a SchemaLite adapter) can probably reduce the in-memory footprint quite a bit.
+fn dedup_in_memory_schema(schema: &mut Option<Arc<Schema>>) {
+    if let Some(schema) = schema {
+        let global_schema = Metadata::with_current(|m| m.schema());
+        if global_schema.version() == schema.version() {
+            *schema = global_schema.into_arc();
+        }
     }
 }
