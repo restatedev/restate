@@ -758,20 +758,6 @@ pub enum ResponseResultRef {
 }
 
 impl ResponseResultRef {
-    /// Create a new ResponseResultRef. It's the caller responsibility to make
-    /// sure the EntryIndex is valid (if set) and that it points to the journal
-    /// entry of the ResponseResult.
-    pub fn new(result: ResponseResult, output_index: Option<EntryIndex>) -> Self {
-        match (output_index, result) {
-            (None, ResponseResult::Success(bytes)) => Self::Success(bytes),
-            (None, ResponseResult::Failure(failure)) => Self::Failure(failure),
-            (Some(entry_index), result) => Self::Completed(CompletionReference {
-                entry_index,
-                status: result.into(),
-            }),
-        }
-    }
-
     pub fn result(&self) -> ExitStatus {
         match self {
             Self::Cancelled => ExitStatus::Cancelled,
