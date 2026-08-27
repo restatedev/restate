@@ -378,7 +378,7 @@ where
             }
         };
 
-        let retain_output = None;
+        let mut retain_journal_index = None;
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
@@ -475,12 +475,7 @@ where
 
             // Store the completed status, if needed
             if !completion_retention.is_zero() {
-                retain_output =
-                    if let ResponseResultRef::Completed(completion) = &response_result_ref {
-                        Some(completion.entry_index)
-                    } else {
-                        None
-                    };
+                retain_journal_index = response_result_ref.referenced_journal_index();
 
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
@@ -510,15 +505,11 @@ where
         }
 
         if journal_retention.is_zero() {
-            // drop the journals, and only retain
-            // the output journal if completion retention
-            // is not zero.
-            let retain_output = retain_output.filter(|_| !completion_retention.is_zero());
-
             ctx.do_drop_journal(
                 &invocation_id,
                 journal_length,
-                (0..journal_length).filter(|idx| retain_output.is_none_or(|retain| retain != *idx)),
+                (0..journal_length)
+                    .filter(|idx| retain_journal_index.is_none_or(|retain| retain != *idx)),
                 pinned_service_protocol_version,
             )
             .await?;
