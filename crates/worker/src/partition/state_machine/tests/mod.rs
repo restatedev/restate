@@ -62,6 +62,7 @@ use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest}
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
+use restate_types::journal_v2::{EntryMetadata, OutputCommand, OutputResult};
 use restate_types::logs::{Keys, SequenceNumber};
 use restate_types::partitions::{Partition, PersistedFeatures};
 use restate_types::sharding::KeyRange;
