@@ -83,7 +83,7 @@ struct ResponseResultCache {
 }
 
 impl ResponseResultCache {
-    pub fn new(
+    fn new(
         invocation_id: InvocationId,
         journal_length: u32,
         protocol_version: ServiceProtocolVersion,
@@ -293,7 +293,6 @@ where
         } = self;
 
         let invocation_target = invocation_metadata.invocation_target.clone();
-        let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
         let delete_pending_timers = InvocationUuid::is_deterministic(
@@ -301,6 +300,7 @@ where
             invocation_metadata.idempotency_key.as_deref(),
         );
 
+        let mut journal_length = invocation_metadata.journal_metadata.length;
         let mut response_cache = ResponseResultCache::new(
             invocation_id,
             journal_length,
@@ -337,6 +337,19 @@ where
                             name: Default::default(),
                         },
                     )?;
+
+                    // make sure journal_length and cache are updated with
+                    // the new length after the append.
+                    journal_length = invocation_metadata.journal_metadata.length;
+                    response_cache = ResponseResultCache::new(
+                        invocation_id,
+                        journal_length,
+                        invocation_metadata
+                            .pinned_deployment
+                            .as_ref()
+                            .map(|pd| pd.service_protocol_version)
+                            .unwrap_or_default(),
+                    );
                 }
 
                 vqueue_table::Status::Failed
