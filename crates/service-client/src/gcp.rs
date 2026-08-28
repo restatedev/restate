@@ -437,11 +437,17 @@ static BLOCKING_BUILD_PERMITS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_B
 async fn spawn_bounded_blocking<T: Send + 'static>(
     build: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, tokio::task::JoinError> {
-    let _permit = BLOCKING_BUILD_PERMITS
+    let permit = BLOCKING_BUILD_PERMITS
         .acquire()
         .await
         .expect("BLOCKING_BUILD_PERMITS is never closed");
-    tokio::task::spawn_blocking(build).await
+    tokio::task::spawn_blocking(move || {
+        // spawn_blocking work is not cancelled when its awaiting task is dropped, so the permit
+        // must remain with the blocking work rather than the caller future.
+        let _permit = permit;
+        build()
+    })
+    .await
 }
 
 async fn run_blocking(
@@ -646,7 +652,7 @@ impl Default for GcpTokenClient {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use super::*;
 
@@ -1249,5 +1255,58 @@ mod tests {
             mark <= MAX_CONCURRENT_BLOCKING_BUILDS,
             "at most {MAX_CONCURRENT_BLOCKING_BUILDS} blocking builds may run concurrently, saw {mark}"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn cancelled_callers_do_not_release_blocking_build_permits() {
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        let release = Arc::new((StdMutex::new(false), Condvar::new()));
+        let (started_tx, mut started_rx) =
+            tokio::sync::mpsc::channel(MAX_CONCURRENT_BLOCKING_BUILDS);
+
+        let builds: Vec<_> = (0..MAX_CONCURRENT_BLOCKING_BUILDS)
+            .map(|_| {
+                let release = release.clone();
+                let started_tx = started_tx.clone();
+                tokio::spawn(spawn_bounded_blocking(move || {
+                    started_tx.blocking_send(()).expect("receiver stays open");
+                    let (lock, wake) = &*release;
+                    let mut released = lock.lock().expect("release lock is not poisoned");
+                    while !*released {
+                        released = wake.wait(released).expect("release lock is not poisoned");
+                    }
+                }))
+            })
+            .collect();
+        for _ in 0..MAX_CONCURRENT_BLOCKING_BUILDS {
+            started_rx.recv().await.expect("blocking build starts");
+        }
+        for build in builds {
+            build.abort();
+        }
+
+        let replacement_started = Arc::new(AtomicBool::new(false));
+        let replacement = {
+            let replacement_started = replacement_started.clone();
+            tokio::spawn(spawn_bounded_blocking(move || {
+                replacement_started.store(true, Ordering::SeqCst);
+            }))
+        };
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(
+            !replacement_started.load(Ordering::SeqCst),
+            "cancelled callers must retain permits until their blocking work finishes"
+        );
+
+        let (lock, wake) = &*release;
+        *lock.lock().expect("release lock is not poisoned") = true;
+        wake.notify_all();
+        tokio::time::timeout(Duration::from_secs(1), replacement)
+            .await
+            .expect("replacement starts after blocking work exits")
+            .expect("replacement task does not panic")
+            .expect("blocking build does not panic");
     }
 }
