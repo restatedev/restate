@@ -28,7 +28,7 @@ define_table!(sys_invocation_status(
     /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
 
-    /// If `status = 'completed'`, this contains either `success`, `failure`, `cancelled`, or `killed``
+    /// If `status = 'completed'`, this contains either `success`, `failure`, or `killed``
     completion_result: DataType::LargeUtf8,
 
     /// if completion_result = 'success' or 'failure' this will hold index of the journal Output
