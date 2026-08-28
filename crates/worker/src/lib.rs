@@ -43,6 +43,7 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::invocation_status_table::CompletionReference;
 use restate_storage_api::invocation_status_table::ResponseResultRef;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
@@ -50,7 +51,6 @@ use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScanne
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
-use restate_types::errors::KILLED_INVOCATION_ERROR;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
@@ -299,11 +299,11 @@ where
         result_ref: &ResponseResultRef,
     ) -> Result<Option<ResponseResult>, ResolveResultError> {
         match result_ref {
-            ResponseResultRef::Killed => Ok(Some(ResponseResult::Failure(KILLED_INVOCATION_ERROR))),
             ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
             ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
-            ResponseResultRef::Completed(completion) => self
-                .get_journal_entry(invocation_id, completion.entry_index)
+            ResponseResultRef::Killed(entry_index)
+            | ResponseResultRef::Completed(CompletionReference { entry_index, .. }) => self
+                .get_journal_entry(invocation_id, *entry_index)
                 .await?
                 .map(|entry| {
                     if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
