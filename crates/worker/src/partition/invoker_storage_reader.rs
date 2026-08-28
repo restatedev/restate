@@ -11,6 +11,7 @@
 use std::pin::Pin;
 
 use bytes::Bytes;
+use futures::future::Either;
 use futures::{Stream, StreamExt, TryStreamExt};
 
 use restate_memory::{
@@ -23,6 +24,7 @@ use restate_storage_api::{
     BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
 };
 use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::schema::invocation_target::EagerStateConfig;
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -327,12 +329,36 @@ where
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
+        eager_state_config: EagerStateConfig,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
-        let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
-        Ok(EagerState::new_complete(Box::pin(PinnableMapErr::new(
-            stream,
-            InvokerStorageReaderError::from,
-        ))))
+        let (stream, partial) = match eager_state_config {
+            // Preload the full state.
+            EagerStateConfig::Eager => {
+                let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
+                let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
+                (Either::Left(stream), false)
+            }
+            // Lazy default: preload only the whitelisted keys via exact point reads and serve
+            // everything else on demand, so the result is partial.
+            EagerStateConfig::Lazy { always_eager_keys } => {
+                let keys: Vec<Bytes> = always_eager_keys
+                    .into_iter()
+                    .map(|k| k.into_bytes())
+                    .collect();
+                let stream = self
+                    .txn
+                    .get_user_states_budgeted(service_id, keys, budget)?;
+                let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
+                (Either::Right(stream), true)
+            }
+        };
+
+        let stream: Self::LocalMemoryPooledStateStream<'a> = Box::pin(stream);
+        Ok(if partial {
+            EagerState::new_partial(stream)
+        } else {
+            EagerState::new_complete(stream)
+        })
     }
 }

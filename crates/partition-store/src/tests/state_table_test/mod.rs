@@ -12,6 +12,8 @@ use super::{assert_stream_eq, storage_test_environment};
 
 use crate::PartitionStore;
 use bytes::Bytes;
+use futures::StreamExt;
+use restate_memory::LocalMemoryPool;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
@@ -67,6 +69,38 @@ async fn prefix_scans<T: ReadStateTable>(table: &T) {
     assert_stream_eq(result, expected).await;
 }
 
+async fn point_reads_budgeted<T: ReadStateTable>(table: &T) {
+    let service_id = ServiceId::with_partition_key(1337, "svc-1", "key-1");
+    let mut budget = LocalMemoryPool::unlimited();
+
+    // Whitelist interleaves present keys with an absent one: absent keys are
+    // omitted, present ones are returned with their leases.
+    let keys = vec![
+        Bytes::from_static(b"k1"),
+        Bytes::from_static(b"absent"),
+        Bytes::from_static(b"k2"),
+    ];
+    let stream = table
+        .get_user_states_budgeted(&service_id, keys, &mut budget)
+        .unwrap();
+    let mut got: Vec<(Bytes, Bytes)> = stream
+        .map(|entry| {
+            let (key, value, _lease) = entry.expect("point read should not fail");
+            (key, value)
+        })
+        .collect()
+        .await;
+    got.sort();
+
+    assert_eq!(
+        got,
+        vec![
+            (Bytes::from_static(b"k1"), Bytes::from_static(b"v1")),
+            (Bytes::from_static(b"k2"), Bytes::from_static(b"v2")),
+        ]
+    );
+}
+
 fn deletes<T: WriteStateTable>(table: &mut T) {
     table
         .delete_user_state(
@@ -103,6 +137,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     populate_data(&mut txn);
     point_lookup(&mut txn).await;
     prefix_scans(&txn).await;
+    point_reads_budgeted(&txn).await;
     deletes(&mut txn);
 
     txn.commit().await.expect("should not fail");

@@ -19,6 +19,7 @@ use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
+use restate_types::schema::invocation_target::EagerStateConfig;
 use restate_types::storage::StoredRawEntry;
 use restate_types::time::MillisSinceEpoch;
 
@@ -199,6 +200,7 @@ pub trait InvocationReaderTransaction {
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
+        eager_state_config: EagerStateConfig,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
 }
