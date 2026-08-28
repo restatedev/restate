@@ -297,26 +297,35 @@ where
         let journal_retention = invocation_metadata.journal_retention_duration;
 
         let mut journal_length = invocation_metadata.journal_metadata.length;
-        let mut response_cache = ResponseResultCache::new(
-            invocation_id,
-            journal_length,
-            invocation_metadata
-                .pinned_deployment
-                .as_ref()
-                .map(|pd| pd.service_protocol_version)
-                .unwrap_or_default(),
-        );
 
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
             .map(|pd| pd.service_protocol_version);
 
+        let mut response_cache = ResponseResultCache::new(
+            invocation_id,
+            journal_length,
+            pinned_service_protocol_version.unwrap_or_default(),
+        );
+
+        // The feature stores a *reference* (journal entry index) to the output entry instead of
+        // inlining the result bytes, and synthesizes a missing output entry on Killed/Failed.
+        // Both only work on journal table v2, which is used by invocations pinned to protocol
+        // version >= V4: `append_journal_entry` writes into journal table v2, and resolving the
+        // reference later reads from it as well (see
+        // `ResponseResultCache::read_last_output_entry_result`). Invocations pinned to <= V3 keep
+        // their journal in table v1, which has no addressable output entry, so we fall back to
+        // inlining the result for them.
+        //
+        // A missing pinned deployment means no user code has run yet, so the journal only holds
+        // entries we wrote ourselves in v2 format; it's safe to treat it as V4.
         let is_write_result_reference_enabled = ctx
             .processor
             .fsm()
             .features()
-            .is_write_result_reference_enabled();
+            .is_write_result_reference_enabled()
+            && pinned_service_protocol_version.is_none_or(|v| v >= ServiceProtocolVersion::V4);
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
@@ -345,11 +354,7 @@ where
                 response_cache = ResponseResultCache::new(
                     invocation_id,
                     journal_length,
-                    invocation_metadata
-                        .pinned_deployment
-                        .as_ref()
-                        .map(|pd| pd.service_protocol_version)
-                        .unwrap_or_default(),
+                    pinned_service_protocol_version.unwrap_or(ServiceProtocolVersion::V4),
                 );
             }
         }
