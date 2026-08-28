@@ -744,7 +744,7 @@ pub struct CompletionReference {
 
 #[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 pub enum ResponseResultRef {
-    Killed,
+    Killed(EntryIndex),
     Completed(CompletionReference),
     // Embedded success/failure status
     // Only for backward compatibility
@@ -761,7 +761,7 @@ pub enum ResponseResultRef {
 impl ResponseResultRef {
     pub fn result(&self) -> ExitStatus {
         match self {
-            Self::Killed => ExitStatus::Killed,
+            Self::Killed(_) => ExitStatus::Killed,
             Self::Success(_) => ExitStatus::Success,
             Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
             Self::Completed(completion) => completion.status.clone().into(),

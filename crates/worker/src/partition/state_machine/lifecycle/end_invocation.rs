@@ -320,36 +320,43 @@ where
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
+        if is_write_result_reference_enabled {
+            // auto append (error) output journal entry if one doesn't exist
+            let err = match &reason {
+                EndInvocationReason::Killed => Some(KILLED_INVOCATION_ERROR),
+                EndInvocationReason::Failed(err) => Some(err.clone()),
+                EndInvocationReason::Completed => None,
+            };
+
+            if let Some(err) = err {
+                append_journal_entry(
+                    ctx,
+                    &invocation_id,
+                    &mut invocation_metadata.journal_metadata,
+                    OutputCommand {
+                        result: OutputResult::Failure(err.into()),
+                        name: Default::default(),
+                    },
+                )?;
+
+                // make sure journal_length and cache are updated with
+                // the new length after the append.
+                journal_length = invocation_metadata.journal_metadata.length;
+                response_cache = ResponseResultCache::new(
+                    invocation_id,
+                    journal_length,
+                    invocation_metadata
+                        .pinned_deployment
+                        .as_ref()
+                        .map(|pd| pd.service_protocol_version)
+                        .unwrap_or_default(),
+                );
+            }
+        }
+
         let end_status = match &reason {
             EndInvocationReason::Killed => vqueue_table::Status::Killed,
-            EndInvocationReason::Failed(err) => {
-                if is_write_result_reference_enabled {
-                    append_journal_entry(
-                        ctx,
-                        &invocation_id,
-                        &mut invocation_metadata.journal_metadata,
-                        OutputCommand {
-                            result: OutputResult::Failure(err.clone().into()),
-                            name: Default::default(),
-                        },
-                    )?;
-
-                    // make sure journal_length and cache are updated with
-                    // the new length after the append.
-                    journal_length = invocation_metadata.journal_metadata.length;
-                    response_cache = ResponseResultCache::new(
-                        invocation_id,
-                        journal_length,
-                        invocation_metadata
-                            .pinned_deployment
-                            .as_ref()
-                            .map(|pd| pd.service_protocol_version)
-                            .unwrap_or_default(),
-                    );
-                }
-
-                vqueue_table::Status::Failed
-            }
+            EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
             EndInvocationReason::Completed => {
                 let Some((_, response_result)) = response_cache.response_result(ctx).await? else {
                     // We don't panic on this, although it indicates a bug at the moment.
@@ -403,28 +410,20 @@ where
                 },
                 // try to reference if protocol-version >= v4, otherwise, inline
                 true => match reason {
-                    EndInvocationReason::Killed => ResponseResultRef::Killed,
+                    EndInvocationReason::Killed => {
+                        // this output was just inserted in the journal above.
+                        let entry_index = invocation_metadata.journal_metadata.length - 1;
+
+                        ResponseResultRef::Killed(entry_index)
+                    }
                     EndInvocationReason::Failed(err) => {
                         // this output was just inserted in the journal above.
-                        let Some((entry_index, _)) = response_cache.response_result(ctx).await?
-                        else {
-                            warn!(
-                                "Invocation completed without an output entry. This is not supported yet."
-                            );
-                            return Ok(());
-                        };
+                        let entry_index = invocation_metadata.journal_metadata.length - 1;
 
-                        // if entry_index is None, this means it is protocol-version < v4
-                        // and we will need to inline the error.
-                        match entry_index {
-                            None => ResponseResultRef::Failure(err),
-                            Some(entry_index) => {
-                                ResponseResultRef::Completed(CompletionReference {
-                                    entry_index,
-                                    status: CompletionStatus::Failure(err.code),
-                                })
-                            }
-                        }
+                        ResponseResultRef::Completed(CompletionReference {
+                            entry_index,
+                            status: CompletionStatus::Failure(err.code),
+                        })
                     }
                     EndInvocationReason::Completed => {
                         let Some((entry_index, response_result)) =
@@ -476,7 +475,7 @@ where
             let response_result = match &response_result_ref {
                 ResponseResultRef::Success(bytes) => ResponseResult::Success(bytes.clone()),
                 ResponseResultRef::Failure(err) => ResponseResult::Failure(err.clone()),
-                ResponseResultRef::Completed(_) => {
+                ResponseResultRef::Killed(_) | ResponseResultRef::Completed(_) => {
                     // extract directly from cache
                     let Some((_, response_result)) =
                         response_cache.into_response_result(ctx).await?
@@ -489,7 +488,6 @@ where
                     };
                     response_result
                 }
-                ResponseResultRef::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
             };
 
             // Notify invocation result
