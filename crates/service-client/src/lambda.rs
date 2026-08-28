@@ -11,8 +11,6 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
 //! License Apache-2.0
 
-use crate::aws_http_client;
-use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
@@ -41,6 +39,9 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
+
+use crate::aws_http_client;
+use crate::utils::ErrorExt;
 
 /// # AssumeRole Cache Mode
 ///

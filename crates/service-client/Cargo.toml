@@ -41,7 +41,7 @@ http-body-util = { workspace = true }
 http-serde = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
-hyper-util = { workspace = true, features = ["client-legacy"] }
+hyper-util = { workspace = true, features = ["client-legacy", "client-proxy"] }
 jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
