@@ -3810,7 +3810,9 @@ pub mod v1 {
             ) {
                 let (result, completion_status, output_journal_index, failure_status_code) =
                     match self {
-                        Self::Killed => (None, Some(CompletionStatus::Killed), None, None),
+                        Self::Killed(index) => {
+                            (None, Some(CompletionStatus::Killed), Some(index), None)
+                        }
                         Self::Success(bytes) => {
                             let result = ResponseResult {
                                 response_result: Some(
@@ -3896,7 +3898,9 @@ pub mod v1 {
                                     expect_or_fail!(failure_status_code)?.into(),
                                 ),
                             }),
-                            CompletionStatus::Killed => Self::Killed,
+                            CompletionStatus::Killed => {
+                                Self::Killed(expect_or_fail!(output_journal_index)?)
+                            }
                         };
 
                         Ok(result)
