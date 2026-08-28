@@ -765,10 +765,10 @@ impl ResponseResultRef {
     /// Returns Some(index) only if the response result is a reference
     /// to an output journal. If embedded returns None
     pub fn referenced_journal_index(&self) -> Option<EntryIndex> {
-        if let Self::Completed(CompletionReference { entry_index, .. }) = self {
-            Some(*entry_index)
-        } else {
-            None
+        match self {
+            Self::Completed(CompletionReference { entry_index, .. }) => Some(*entry_index),
+            Self::Killed(entry_index) => Some(*entry_index),
+            Self::Success(_) | Self::Failure(_) => None,
         }
     }
 }
