@@ -19,13 +19,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
+use bytestring::ByteString;
 use http::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
 
 use restate_serde_util::MapAsVecItem;
-use restate_util_bytecount::ByteCount;
 use restate_util_time::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
@@ -42,8 +42,8 @@ use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
-    InvocationTargetResolver, OnMaxAttempts, OutputRules,
+    DeploymentStatus, EagerStateConfig, InputRules, InvocationAttemptOptions,
+    InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts, OutputRules,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -357,8 +357,14 @@ struct ServiceRevision {
 
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
+    /// Acts as the default for keys not matched by `always_eager_state_keys`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+
+    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true (best-effort,
+    /// bounded by the invoker eager state size limit). Ignored when `enable_lazy_state` is false.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    always_eager_state_keys: Vec<ByteString>,
 
     #[serde(
         default,
@@ -509,6 +515,11 @@ impl ServiceRevision {
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
+            always_eager_state_keys: self
+                .always_eager_state_keys
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             retry_policy,
             info,
         }
@@ -568,6 +579,10 @@ struct Handler {
     documentation: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true (best-effort,
+    /// bounded by the invoker eager state size limit). Overrides the service-level list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    always_eager_state_keys: Vec<ByteString>,
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
     #[serde(
@@ -657,6 +672,11 @@ impl Handler {
             },
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
+            always_eager_state_keys: self
+                .always_eager_state_keys
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             retry_policy: HandlerRetryPolicyMetadata {
                 initial_interval: self.retry_policy_initial_interval,
                 exponentiation_factor: self.retry_policy_exponentiation_factor,
@@ -852,13 +872,21 @@ impl InvocationTargetResolver for Schema {
         let service_revision = deployment.services.get(service_name)?;
         let handler = service_revision.handlers.get(handler_name)?;
 
-        let enable_lazy_state = handler
+        let default_lazy = handler
             .enable_lazy_state
-            .or(service_revision.enable_lazy_state);
-        let eager_state_size_limit = if enable_lazy_state == Some(true) {
-            Some(ByteCount::ZERO)
+            .or(service_revision.enable_lazy_state)
+            .unwrap_or(false);
+
+        let eager_state = if default_lazy {
+            // Handler whitelist overrides the service whitelist when non-empty.
+            let always_eager_keys = if handler.always_eager_state_keys.is_empty() {
+                service_revision.always_eager_state_keys.clone()
+            } else {
+                handler.always_eager_state_keys.clone()
+            };
+            EagerStateConfig::Lazy { always_eager_keys }
         } else {
-            None
+            EagerStateConfig::Eager
         };
 
         Some(InvocationAttemptOptions {
@@ -866,7 +894,7 @@ impl InvocationTargetResolver for Schema {
             inactivity_timeout: handler
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
-            eager_state_size_limit,
+            eager_state,
         })
     }
 

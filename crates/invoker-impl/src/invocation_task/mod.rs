@@ -35,7 +35,7 @@ use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, ServiceId};
 use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal::EntryIndex;
 use restate_types::journal::enriched::EnrichedRawEntry;
@@ -43,7 +43,9 @@ use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{
+    EagerStateConfig, InvocationAttemptOptions, InvocationTargetResolver,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
@@ -91,14 +93,18 @@ const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
-/// Collects state entries from an [`EagerState`] stream, respecting a size limit.
+/// Tells a protocol runner to eagerly read state for a keyed invocation per `config`. A runner
+/// receiving `None` is fully lazy (not keyed, or a lazy default with no always-eager keys).
+pub(super) struct EagerStateRead {
+    pub(super) service_id: ServiceId,
+    pub(super) config: EagerStateConfig,
+}
+
+/// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
 ///
-/// Returns a tuple of `(is_partial, entries, memory_lease)` where:
-/// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
-/// - `entries` contains the collected and mapped key-value bytes
-/// - `memory_lease` represents the memory that entries occupy
-///
-/// If the first entry already exceeds the size limit, then an empty entries [`Vec`] is returned.
+/// Returns `(is_partial, entries, memory_lease)`. `is_partial` is true if the source was already
+/// partial or the size limit truncated collection. If the first entry alone exceeds the limit,
+/// `entries` is empty.
 async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
@@ -537,7 +543,11 @@ where
                 self.invocation_target.service_name(),
                 self.invocation_target.handler_name(),
             )
-            .unwrap_or_default();
+            .unwrap_or(InvocationAttemptOptions {
+                abort_timeout: None,
+                inactivity_timeout: None,
+                eager_state: EagerStateConfig::Eager,
+            });
 
         // Override the inactivity timeout and abort timeout, if available
         if let Some(inactivity_timeout) = invocation_attempt_options.inactivity_timeout {
@@ -557,22 +567,10 @@ where
             )));
         }
 
-        // Resolve the effective eager state size limit:
-        // Per-handler/service override takes precedence over server-level config.
-        // 0 means "disable eager state", non-zero values are clamped to the message size limit.
-        if let Some(limit) = invocation_attempt_options.eager_state_size_limit {
-            let limit = limit.as_usize();
-            self.eager_state_size_limit = limit.min(self.message_size_limit.get());
-        }
-
-        // Determine if we need to read state (0 means lazy state / no eager state)
-        let keyed_service_id = if self.invocation_target.as_keyed_service_id().is_some()
-            && self.eager_state_size_limit > 0
-        {
-            self.invocation_target.as_keyed_service_id()
-        } else {
-            None
-        };
+        // The eager state size limit (a memory safety cap) always applies and comes solely from
+        // the server config; the per-handler/service config only carries the eager/lazy *policy*.
+        let eager_state = invocation_attempt_options.eager_state;
+        let keyed_service_id = self.invocation_target.as_keyed_service_id();
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
@@ -580,7 +578,10 @@ where
         ));
 
         if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
-            // Protocol runner for service protocol <= v3
+            // Protocol runner for service protocol <= v3. It has no per-key eager whitelist:
+            // preload all state only when the resolved policy is fully eager, else stay fully lazy.
+            let keyed_service_id =
+                keyed_service_id.filter(|_| matches!(eager_state, EagerStateConfig::Eager));
             let service_protocol_runner =
                 ServiceProtocolRunner::new(self, chosen_service_protocol_version);
             service_protocol_runner
@@ -594,7 +595,14 @@ where
                 )
                 .await
         } else {
-            // Protocol runner for service protocol v4+
+            // Protocol runner for service protocol v4+. Reads state upfront only for keyed targets
+            // that preload anything (eager default, or always-eager keys under a lazy default).
+            let state_read = keyed_service_id
+                .filter(|_| eager_state.reads_any_eager_state())
+                .map(|service_id| EagerStateRead {
+                    service_id,
+                    config: eager_state,
+                });
             let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
                 self,
                 chosen_service_protocol_version,
@@ -605,7 +613,7 @@ where
                 .run(
                     txn,
                     journal_metadata,
-                    keyed_service_id,
+                    state_read,
                     deployment,
                     reader_for_bidi,
                     invocation_budget,

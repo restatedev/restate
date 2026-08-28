@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, stream};
 use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
 use restate_errors::warn_it;
-use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
+use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
 use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -40,7 +40,6 @@ use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ServiceId;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
     SpanRelation,
@@ -56,7 +55,9 @@ use restate_types::journal_v2::{
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
-use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
+use restate_types::schema::invocation_target::{
+    DeploymentStatus, EagerStateConfig, InvocationTargetResolver,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
@@ -70,8 +71,8 @@ use crate::error::{
     RequestedErrorBehavior, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
-    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
+    EagerStateRead, InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType,
+    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
     service_protocol_version_to_header_value,
 };
@@ -134,17 +135,13 @@ where
     /// How often to release excess outbound budget capacity during the bidi-stream phase.
     const BUDGET_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
 
-    /// Run the service protocol interaction.
-    ///
-    /// # Arguments
-    /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
-    ///   state for this service upfront. If `None`, lazy state is used (either because this
-    ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    /// Run the service protocol interaction. `state_read` is `Some` to preload state upfront per
+    /// its config, or `None` for fully lazy state.
     pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
-        keyed_service_id: Option<ServiceId>,
+        state_read: Option<EagerStateRead>,
         deployment: Deployment,
         invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
@@ -222,7 +219,7 @@ where
                 txn,
                 protocol_type,
                 journal_metadata,
-                keyed_service_id,
+                state_read,
                 http_stream_tx,
                 &mut decoder_stream,
                 invocation_reader,
@@ -306,10 +303,10 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn run_inner<Txn, S, IR>(
         &mut self,
-        txn: Txn,
+        mut txn: Txn,
         protocol_type: ProtocolType,
         journal_metadata: JournalMetadata,
-        keyed_service_id: Option<ServiceId>,
+        state_read: Option<EagerStateRead>,
         mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
         invocation_reader: IR,
@@ -324,31 +321,62 @@ where
         let journal_size = journal_metadata.length;
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed (state is collected for the START message).
-            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
-            // budget. The per-entry leases are merged into a single lease that
-            // accompanies the start message frame.
-            let state = if let Some(ref service_id) = keyed_service_id {
-                Some(shortcircuit!(
-                    txn.read_state_budgeted(service_id, outbound_budget)
-                        .map_err(InvokerError::from_state_reader)
-                ))
+            // Read full state if anything might be preloaded; collect_eager_state applies the
+            // per-key policy. Budget-gated: each entry takes a lease from the outbound budget.
+            // Read and collect state for the START message. Eager preloads the full state; a lazy
+            // default with a whitelist does exact point lookups for just those keys (no full scan).
+            // Each branch keeps its own stream type, so we collect here and hand write_start the
+            // resulting entries. Budget-gated: each entry takes a lease from the outbound budget.
+            let size_limit = self.invocation_task.eager_state_size_limit;
+            let collected_state = if let Some(state_read) = &state_read {
+                let service_id = &state_read.service_id;
+                match &state_read.config {
+                    EagerStateConfig::Eager => {
+                        let state = shortcircuit!(
+                            txn.read_state_budgeted(service_id, outbound_budget)
+                                .map_err(InvokerError::from_state_reader)
+                        );
+                        shortcircuit!(
+                            collect_eager_state(Some(state), size_limit, |(key, value)| {
+                                StateEntry { key, value }
+                            })
+                            .await
+                        )
+                    }
+                    EagerStateConfig::Lazy { always_eager_keys } => {
+                        let keys: Vec<Bytes> = always_eager_keys
+                            .iter()
+                            .map(|k| k.clone().into_bytes())
+                            .collect();
+                        let entries = shortcircuit!(
+                            txn.read_state_keys_budgeted(service_id, &keys, outbound_budget)
+                                .await
+                                .map_err(InvokerError::from_state_reader)
+                        );
+                        let state = EagerState::new_partial(IgnorePinnableMemoryStream::new(
+                            stream::iter(entries.into_iter().map(Ok::<_, Txn::Error>)),
+                        ));
+                        shortcircuit!(
+                            collect_eager_state(Some(state), size_limit, |(key, value)| {
+                                StateEntry { key, value }
+                            })
+                            .await
+                        )
+                    }
+                }
             } else {
-                None
+                (true, Vec::new(), None)
             };
 
-            // Send start message with state (leases are merged inside write_start)
-            shortcircuit!(
-                self.write_start(
-                    &mut http_stream_tx,
-                    journal_size,
-                    state,
-                    self.invocation_task.retry_count_since_last_stored_entry,
-                    journal_metadata.last_modification_date.elapsed(),
-                    journal_metadata.random_seed
-                )
-                .await
-            );
+            // Send start message with the collected state (its merged lease travels with the frame)
+            shortcircuit!(self.write_start(
+                &mut http_stream_tx,
+                journal_size,
+                collected_state,
+                self.invocation_task.retry_count_since_last_stored_entry,
+                journal_metadata.last_modification_date.elapsed(),
+                journal_metadata.random_seed
+            ));
 
             // Read journal stream from storage and execute the replay.
             // LocalMemoryPool-gated: each entry acquires a lease before it's sent.
@@ -709,26 +737,16 @@ where
 
     // --- Read and write methods
 
-    async fn write_start<S, E>(
+    fn write_start(
         &mut self,
         http_stream_tx: &mut InvokerBodySender,
         journal_size: u32,
-        state: Option<EagerState<S>>,
+        collected_state: (bool, Vec<StateEntry>, Option<LocalMemoryLease>),
         retry_count_since_last_stored_entry: u32,
         duration_since_last_stored_entry: Duration,
         random_seed: u64,
-    ) -> Result<(), InvokerError>
-    where
-        S: PinnableMemoryStream<Item = Result<(Bytes, Bytes, LocalMemoryLease), E>> + Send,
-        E: InvocationReaderError,
-    {
-        // Collect state entries with size limit
-        let (partial_state, state_map, state_lease) = collect_eager_state(
-            state,
-            self.invocation_task.eager_state_size_limit,
-            |(key, value)| StateEntry { key, value },
-        )
-        .await?;
+    ) -> Result<(), InvokerError> {
+        let (partial_state, state_map, state_lease) = collected_state;
 
         let start_message = if self.service_protocol_version >= ServiceProtocolVersion::V7 {
             Message::new_start_message(
