@@ -101,11 +101,10 @@ use restate_types::journal::enriched::{
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal::*;
 use restate_types::journal_v2;
-use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
-    SignalResult, UnresolvedFuture,
+    CommandIndex, CompletionId, InputCommand, NotificationId, Signal, SignalResult,
+    UnresolvedFuture,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
@@ -4038,64 +4037,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.forward_completion(invocation_id, completion.entry_index);
         }
         Ok(())
-    }
-
-    async fn read_last_output_entry_result(
-        &mut self,
-        invocation_id: &InvocationId,
-        journal_length: EntryIndex,
-        service_protocol_version: ServiceProtocolVersion,
-    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
-    where
-        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
-    {
-        if service_protocol_version >= ServiceProtocolVersion::V4 {
-            // Find last output entry
-            for i in (0..journal_length).rev() {
-                let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
-                    self.storage,
-                    *invocation_id,
-                    i,
-                )
-                .await?
-                .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
-                if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
-                    let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                    return Ok(Some((
-                        Some(i),
-                        match cmd.result {
-                            OutputResult::Success(s) => ResponseResult::Success(s),
-                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                        },
-                    )));
-                }
-            }
-            Ok(None)
-        } else {
-            // Find last output entry
-            let mut output_entry = None;
-            for i in (0..journal_length).rev() {
-                if let JournalEntry::Entry(e) =
-                    ReadJournalTable::get_journal_entry(self.storage, invocation_id, i)
-                        .await?
-                        .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
-                    && e.ty() == EntryType::Output
-                {
-                    output_entry = Some(e);
-                    break;
-                }
-            }
-
-            output_entry
-                .map(|enriched_entry| {
-                    let_assert!(
-                        Entry::Output(e) =
-                            enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
-                    );
-                    Ok((None, e.result.into()))
-                })
-                .transpose()
-        }
     }
 
     fn emit_invocation_end_span(
