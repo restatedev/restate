@@ -25,15 +25,12 @@ use parking_lot::Mutex;
 use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
-use tokio::time::Instant;
 use tracing::warn;
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
 
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
-
-const TIMEOUT_EVICTION_WINDOW: Duration = MINT_ATTEMPT_TIMEOUT.saturating_mul(2);
 
 const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
 
@@ -106,55 +103,15 @@ impl IdTokenSource for Live {
 
 struct CachedCredential {
     inner: Arc<dyn IdTokenSource>,
-    timeout_state: Mutex<TimeoutState>,
-}
-
-#[derive(Default)]
-struct TimeoutState {
-    first_timed_out_attempt: Option<Instant>,
-    last_success: Option<Instant>,
 }
 
 impl CachedCredential {
     fn new(source: Arc<dyn IdTokenSource>) -> Arc<Self> {
-        Arc::new(Self {
-            inner: source,
-            timeout_state: Mutex::new(TimeoutState::default()),
-        })
+        Arc::new(Self { inner: source })
     }
 
     async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
         self.inner.id_token().await
-    }
-
-    fn clear_timeout(&self) {
-        let mut state = self.timeout_state.lock();
-        state.first_timed_out_attempt = None;
-        state.last_success = Some(Instant::now());
-    }
-
-    /// A dead refresh task can leave readers blocked rather than returning a permanent error, and
-    /// each cache read resets time-to-idle. Require two success-free timeout windows before
-    /// eviction, ignoring stale failures from attempts that started before the latest success.
-    fn should_evict_after_timeout(&self, attempt_started: Instant) -> bool {
-        let now = Instant::now();
-        let mut state = self.timeout_state.lock();
-        if state
-            .last_success
-            .is_some_and(|last_success| attempt_started <= last_success)
-        {
-            return false;
-        }
-        match state.first_timed_out_attempt {
-            Some(first_attempt) if now.duration_since(first_attempt) >= TIMEOUT_EVICTION_WINDOW => {
-                true
-            }
-            Some(_) => false,
-            None => {
-                state.first_timed_out_attempt = Some(attempt_started);
-                false
-            }
-        }
     }
 }
 
@@ -552,12 +509,8 @@ impl GcpTokenClient {
             }
         };
 
-        let attempt_started = Instant::now();
         match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
-            Ok(Ok(token)) => {
-                source.clear_timeout();
-                Ok(token)
-            }
+            Ok(Ok(token)) => Ok(token),
             Ok(Err(error)) => {
                 // Transient errors may self-heal; evict permanent failures only if still current.
                 if let Some(registry) = &registry
@@ -574,18 +527,11 @@ impl GcpTokenClient {
                     message: error.to_string(),
                 })
             }
-            Err(_) => {
-                if let Some(registry) = &registry
-                    && source.should_evict_after_timeout(attempt_started)
-                {
-                    registry.evict_if_unchanged(&spec, &source).await;
-                }
-                Err(GcpAuthError::Timeout {
-                    audience: audience.to_owned(),
-                    impersonate,
-                    duration: MINT_ATTEMPT_TIMEOUT,
-                })
-            }
+            Err(_) => Err(GcpAuthError::Timeout {
+                audience: audience.to_owned(),
+                impersonate,
+                duration: MINT_ATTEMPT_TIMEOUT,
+            }),
         }
     }
 
@@ -984,7 +930,7 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn repeated_timeouts_evict_after_two_attempt_windows() {
+    async fn timeout_keeps_entry() {
         let client = GcpTokenClient::new();
         let audience = "https://timeout.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
@@ -994,37 +940,8 @@ mod tests {
             .insert(cache_key.clone(), source.clone())
             .await;
 
-        let first = client.mint(None, audience).await;
-        assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
-        let still_cached = credential_registry().cache.get(&cache_key).await;
-        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &source)));
-
-        let second = client.mint(None, audience).await;
-        assert!(matches!(second, Err(GcpAuthError::Timeout { .. })));
-        assert!(credential_registry().cache.get(&cache_key).await.is_none());
-    }
-
-    #[restate_core::test(start_paused = true)]
-    async fn successful_mint_resets_timeout_tracking() {
-        let client = GcpTokenClient::new();
-        let audience = "https://timeout-reset.example.com";
-        let cache_key = IdTokenSpec::ambient(audience);
-        let source = CachedCredential::new(MockSource::new(|call| match call {
-            0 | 2 => MockOutcome::Hang,
-            _ => MockOutcome::Token(token()),
-        }));
-        credential_registry()
-            .cache
-            .insert(cache_key.clone(), source.clone())
-            .await;
-
-        let first = client.mint(None, audience).await;
-        assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
-        assert!(client.mint(None, audience).await.is_ok());
-
-        tokio::time::advance(TIMEOUT_EVICTION_WINDOW).await;
-        let after_success = client.mint(None, audience).await;
-        assert!(matches!(after_success, Err(GcpAuthError::Timeout { .. })));
+        let outcome = client.mint(None, audience).await;
+        assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
         let still_cached = credential_registry().cache.get(&cache_key).await;
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &source)));
     }
