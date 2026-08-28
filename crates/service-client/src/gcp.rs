@@ -305,14 +305,23 @@ impl CredentialRegistry {
                 .map_err(|e| e.to_string())
         };
         let task = TaskCenter::current()
-            .spawn_unmanaged(TaskKind::Credentials, "gcp-credential-build", async move {
-                spawn_bounded_blocking(build).await
-            })
-            .map_err(|_| "TaskCenter is shutting down".to_owned())?;
+            .spawn_unmanaged(
+                TaskKind::Credentials,
+                "gcp-ambient-credential-source-build",
+                async move { spawn_bounded_blocking(build).await },
+            )
+            .map_err(|_| {
+                "TaskCenter is shutting down while building the ambient GCP credential source"
+                    .to_owned()
+            })?;
         match task.await {
             Ok(Ok(result)) => result,
-            Ok(Err(join_error)) => Err(format!("construction task panicked: {join_error}")),
-            Err(_shutdown) => Err("GCP credential construction task failed".to_owned()),
+            Ok(Err(join_error)) => Err(format!(
+                "ambient GCP credential source construction task panicked: {join_error}"
+            )),
+            Err(_shutdown) => {
+                Err("ambient GCP credential source construction task failed".to_owned())
+            }
         }
     }
 
@@ -321,22 +330,27 @@ impl CredentialRegistry {
         spec: IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         let registry = self.clone();
-        // Credential refresh tasks spawned by build() must use the TaskCenter default runtime.
+        // google-cloud-auth uses bare tokio::spawn for refresh tasks. Build on the TaskCenter's
+        // default runtime so they do not inherit a short-lived partition runtime.
         let audience = spec.audience.clone();
         let task = TaskCenter::current()
-            .spawn_unmanaged(TaskKind::Credentials, "gcp-credential-build", async move {
-                #[cfg(any(test, feature = "test_util"))]
-                if let Some(f) = registry
-                    .test_hooks
-                    .build_overrides
-                    .lock()
-                    .get(&spec)
-                    .cloned()
-                {
-                    return f(&spec);
-                }
-                registry.build_credentials(spec).await
-            })
+            .spawn_unmanaged(
+                TaskKind::Credentials,
+                "gcp-id-token-credential-build",
+                async move {
+                    #[cfg(any(test, feature = "test_util"))]
+                    if let Some(f) = registry
+                        .test_hooks
+                        .build_overrides
+                        .lock()
+                        .get(&spec)
+                        .cloned()
+                    {
+                        return f(&spec);
+                    }
+                    registry.build_credentials(spec).await
+                },
+            )
             .map_err(|_| GcpAuthError::Build {
                 audience: audience.clone(),
                 message: "TaskCenter is shutting down".to_owned(),
@@ -1160,12 +1174,16 @@ mod tests {
             })
             .collect();
 
-        for task in tasks {
-            let result = task.await.expect("task doesn't panic");
-            if let Err(error) = &result {
-                panic!("{error}");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            for task in tasks {
+                let result = task.await.expect("task doesn't panic");
+                if let Err(error) = &result {
+                    panic!("{error}");
+                }
             }
-        }
+        })
+        .await
+        .expect("blocking builds complete without deadlocking");
 
         let mark = high_water_mark.load(Ordering::SeqCst);
         assert!(
