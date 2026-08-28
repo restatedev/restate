@@ -52,8 +52,6 @@ mod tests {
     use std::{ffi::OsString, num::NonZeroU8};
 
     use cling::Cling;
-    use futures::StreamExt;
-
     use restate_futures_util::overdue::OverdueLoggingExt;
     use restate_local_cluster_runner::{
         cluster::Cluster,
@@ -65,9 +63,9 @@ mod tests {
     use tracing::info;
 
     #[test_log::test(tokio::test)]
-    async fn restatectl_smoke_test() -> googletest::Result<()> {
+    async fn restatectl_status_with_zero_partitions() -> googletest::Result<()> {
         let mut config = Configuration::new_unix_sockets();
-        config.common.default_num_partitions = 1.try_into()?;
+        config.common.default_num_partitions = 0;
         config.common.auto_provision = true;
         config.bifrost.default_provider = ProviderKind::Replicated;
         config.common.default_replication =
@@ -76,7 +74,7 @@ mod tests {
         let roles = *config.roles();
 
         let mut cluster = Cluster::builder()
-            .temp_base_dir("restatectl_smoke_test")
+            .temp_base_dir("restatectl_status_with_zero_partitions")
             .nodes(NodeSpec::new_test_nodes(
                 config,
                 BinarySource::CargoTest,
@@ -87,9 +85,6 @@ mod tests {
             .build()
             .start()
             .await?;
-        // registering the search pattern as early as possible since we might miss it if it was
-        // logged too quickly.
-        let mut node = cluster.nodes[0].lines("Partition [0-9]+ started".parse()?);
 
         cluster
             .wait_healthy(Duration::from_secs(30))
@@ -100,19 +95,6 @@ mod tests {
             )
             .with_overdue(Duration::from_secs(20), tracing::Level::WARN)
             .await?;
-        {
-            // wait for the node to report that the partition has started
-            node.next()
-                .log_slow_after(
-                    Duration::from_secs(10),
-                    tracing::Level::INFO,
-                    "Node didn't start PPs yet",
-                )
-                .with_overdue(Duration::from_secs(20), tracing::Level::WARN)
-                .await;
-
-            drop(node);
-        }
 
         let node_address = cluster.nodes[0].advertised_address().to_string();
 
