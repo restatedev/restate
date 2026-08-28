@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
 use std::error::Error as StdError;
 use std::fmt;
 use std::ops::RangeInclusive;
@@ -18,7 +17,6 @@ use http::{HeaderName, HeaderValue};
 
 use restate_memory::OutOfMemoryKind;
 use restate_service_client::ServiceClientError;
-use restate_service_protocol::message::{EncodingError, MessageType};
 use restate_types::errors::{IdDecodeError, InvocationError, InvocationErrorCode, codes};
 use restate_types::identifiers::DeploymentId;
 use restate_types::journal::raw::RawEntryCodecError;
@@ -60,21 +58,12 @@ pub(crate) enum InvokerError {
     UnexpectedContentType(Option<HeaderValue>, HeaderValue),
     #[error("received unexpected message: {0:?}")]
     #[code(restate_errors::RT0012)]
-    UnexpectedMessage(MessageType),
-    #[error("received unexpected message: {0:?}")]
-    #[code(restate_errors::RT0012)]
     UnexpectedMessageV4(restate_service_protocol_v4::message_codec::MessageType),
     #[error("message encoding error: {0}")]
-    Encoding(
-        #[from]
-        #[code]
-        EncodingError,
-    ),
-    #[error("message encoding error: {0}")]
     #[code(restate_errors::RT0012)]
-    EncodingV2(#[from] journal_v2::encoding::DecodingError),
+    Encoding(#[from] journal_v2::encoding::DecodingError),
     #[error("message encoding error: {0}")]
-    EncoderV2(
+    Encoder(
         #[from]
         #[code]
         restate_service_protocol_v4::message_codec::EncodingError,
@@ -99,11 +88,6 @@ pub(crate) enum InvokerError {
     #[error("got empty AwaitingOnMessage")]
     #[code(restate_errors::RT0012)]
     EmptyAwaitingOnMessage,
-    #[error(
-        "got bad SuspensionMessage, suspending on journal indexes {0:?}, but journal length is {1}"
-    )]
-    #[code(restate_errors::RT0012)]
-    BadSuspensionMessage(HashSet<EntryIndex>, EntryIndex),
     #[error("malformed ProposeRunCompletionMessage, missing result field")]
     #[code(restate_errors::RT0012)]
     MalformedProposeRunCompletion,
@@ -136,9 +120,6 @@ pub(crate) enum InvokerError {
     #[code(restate_errors::RT0001)]
     AbortTimeoutFired(FriendlyDuration),
 
-    #[error("cannot process entry {1} (index {0}) because of a failed precondition: {2}")]
-    #[code(restate_errors::RT0017)]
-    EntryEnrichment(EntryIndex, EntryType, #[source] InvocationError),
     #[error("cannot process command {1} (command index {0}) because of a failed precondition: {2}")]
     CommandPrecondition(
         CommandIndex,
@@ -321,19 +302,6 @@ impl InvokerError {
         match self {
             InvokerError::Sdk(sdk_error) => *sdk_error.error,
             InvokerError::SdkV2(sdk_error) => *sdk_error.error,
-            InvokerError::EntryEnrichment(entry_index, entry_type, e) => {
-                let msg = format!(
-                    "Error when processing entry {} of type {}: {}",
-                    entry_index,
-                    entry_type,
-                    e.message()
-                );
-                let mut err = InvocationError::new(e.code(), msg);
-                if let Some(desc) = e.into_stacktrace() {
-                    err = err.with_stacktrace(desc);
-                }
-                err
-            }
             e @ InvokerError::BadNegotiatedServiceProtocolVersion(_) => {
                 InvocationError::new(codes::UNSUPPORTED_MEDIA_TYPE, e.to_string())
             }
@@ -417,16 +385,6 @@ pub(crate) struct SdkInvocationError {
     pub(crate) related_entry: Option<InvocationErrorRelatedEntry>,
     pub(crate) next_retry_interval_override: Option<Duration>,
     pub(crate) error: Box<InvocationError>,
-}
-
-impl SdkInvocationError {
-    pub(crate) fn unknown() -> Self {
-        Self {
-            related_entry: None,
-            next_retry_interval_override: None,
-            error: Default::default(),
-        }
-    }
 }
 
 impl fmt::Display for SdkInvocationError {

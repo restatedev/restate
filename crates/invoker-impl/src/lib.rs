@@ -49,7 +49,6 @@ use restate_types::identifiers::PartitionId;
 use restate_types::identifiers::{DeploymentId, InvocationId, WithPartitionKey};
 use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal::EntryIndex;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
 use restate_types::journal_v2::raw::{RawCommand, RawNotification};
@@ -65,7 +64,7 @@ use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
-    Effect, EffectKind, EntryEnricher, FencedEffect, InvocationStatusReport, YieldReason,
+    Effect, EffectKind, FencedEffect, InvocationStatusReport, YieldReason,
 };
 use restate_worker_api::resources::ReservedResources;
 
@@ -134,18 +133,16 @@ trait InvocationTaskRunner<SR> {
     ) -> AbortHandle;
 }
 
-struct DefaultInvocationTaskRunner<EE, Schemas> {
+struct DefaultInvocationTaskRunner<Schemas> {
     client: ServiceClient,
-    entry_enricher: EE,
     schemas: Live<Schemas>,
     action_token_bucket: Option<TokenBucket>,
     allow_protocol_v7: bool,
 }
 
-impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
+impl<IR, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<Schemas>
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
-    EE: EntryEnricher + Clone + Send + Sync + 'static,
     Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     fn start_invocation_task(
@@ -178,7 +175,6 @@ where
                     opts.message_size_warning.as_non_zero_usize(),
                     opts.message_size_limit(),
                     retry_count_since_last_stored_entry,
-                    self.entry_enricher.clone(),
                     self.schemas.clone(),
                     invoker_tx,
                     invoker_rx,
@@ -227,7 +223,7 @@ impl From<InvokerId> for u16 {
 }
 
 // -- Service implementation
-pub struct Service<StorageReader, EntryEnricher, Schemas> {
+pub struct Service<StorageReader, Schemas> {
     // Used for constructing the invoker sender and status reader
     input_tx: mpsc::UnboundedSender<InputCommand>,
     status_tx: mpsc::UnboundedSender<
@@ -237,12 +233,11 @@ pub struct Service<StorageReader, EntryEnricher, Schemas> {
     tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
-    inner:
-        ServiceInner<DefaultInvocationTaskRunner<EntryEnricher, Schemas>, Schemas, StorageReader>,
+    inner: ServiceInner<DefaultInvocationTaskRunner<Schemas>, Schemas, StorageReader>,
     invocation_token_bucket: Option<TokenBucket>,
 }
 
-impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnricher, Schemas> {
+impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         invoker_id: impl Into<InvokerId>,
@@ -252,14 +247,12 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         options: &InvokerOptions,
         schemas: Live<Schemas>,
         client: ServiceClient,
-        entry_enricher: TEntryEnricher,
         invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
         memory_pool: MemoryPool,
-    ) -> Service<StorageReader, TEntryEnricher, Schemas>
+    ) -> Service<StorageReader, Schemas>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
-        TEntryEnricher: EntryEnricher,
         Schemas: DeploymentResolver + InvocationTargetResolver + Clone,
     {
         let invoker_id = invoker_id.into();
@@ -280,7 +273,6 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                 invocation_tasks_rx,
                 invocation_task_runner: DefaultInvocationTaskRunner {
                     client,
-                    entry_enricher,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
                     allow_protocol_v7: Configuration::pinned()
@@ -318,15 +310,13 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
         sender: mpsc::Sender<FencedEffect>,
         service_client_options: &ServiceClientOptions,
         invoker_options: &InvokerOptions,
-        entry_enricher: TEntryEnricher,
         schemas: Live<Schemas>,
         invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
         memory_pool: MemoryPool,
-    ) -> Result<Service<StorageReader, TEntryEnricher, Schemas>, BuildError>
+    ) -> Result<Service<StorageReader, Schemas>, BuildError>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
-        TEntryEnricher: EntryEnricher,
         Schemas: DeploymentResolver + InvocationTargetResolver + Clone,
     {
         metric_definitions::describe_metrics();
@@ -341,7 +331,6 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
             invoker_options,
             schemas,
             client,
-            entry_enricher,
             invocation_token_bucket,
             action_token_bucket,
             memory_pool,
@@ -355,10 +344,9 @@ pub enum BuildError {
     ServiceClient(#[from] restate_service_client::BuildError),
 }
 
-impl<IR, EE, Schemas> Service<IR, EE, Schemas>
+impl<IR, Schemas> Service<IR, Schemas>
 where
     IR: InvocationReader + Clone + Send + Sync + 'static,
-    EE: EntryEnricher + Clone + Send + Sync + 'static,
     Schemas: DeploymentResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
     pub fn handle(&self) -> InvokerHandle {
@@ -578,14 +566,6 @@ where
                             x_restate_server_header
                         )
                     }
-                    InvocationTaskOutputInner::NewEntry {entry_index, entry, requires_ack} => {
-                        self.handle_new_entry(
-                            invocation_id,
-                            entry_index,
-                            *entry,
-                            requires_ack
-                        ).await
-                    },
                     InvocationTaskOutputInner::NewNotificationProposal { notification, requested_ack } => {
                         self.handle_new_notification_proposal(
                             invocation_id,
@@ -605,9 +585,6 @@ where
                     InvocationTaskOutputInner::Failed(e, returned_budget) => {
                         self.handle_invocation_task_failed(invocation_id, e, returned_budget).await
                     },
-                    InvocationTaskOutputInner::Suspended(indexes) => {
-                        self.handle_invocation_task_suspended(invocation_id, indexes).await
-                    }
                     InvocationTaskOutputInner::NewCommand { command, command_index, requested_ack } => {
                         self.handle_new_command(
                             invocation_id,
@@ -860,59 +837,6 @@ where
         skip_all,
         fields(
             restate.invocation.id = %invocation_id,
-            restate.journal.index = entry_index,
-            restate.journal.entry_type = ?entry.ty(),
-        )
-    )]
-    async fn handle_new_entry(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-        entry: EnrichedRawEntry,
-        requires_ack: bool,
-    ) {
-        if let Some((output_tx, ism)) = self
-            .invocation_state_machine_manager
-            .resolve_invocation(&invocation_id)
-        {
-            ism.notify_new_command(entry_index, requires_ack);
-            trace!(
-                restate.invocation.target = %ism.invocation_target,
-                "Received a new entry. Invocation state: {:?}",
-                ism.invocation_state_debug()
-            );
-            self.status_store.on_progress_made(&invocation_id);
-            if let Some(pinned_deployment) = ism.pinned_deployment_to_notify() {
-                let _ = output_tx
-                    .send(fence(
-                        ism.fencing_token,
-                        Effect {
-                            invocation_id,
-                            kind: EffectKind::PinnedDeployment(pinned_deployment),
-                        },
-                    ))
-                    .await;
-            }
-            let _ = output_tx
-                .send(fence(
-                    ism.fencing_token,
-                    Effect {
-                        invocation_id,
-                        kind: EffectKind::JournalEntry { entry_index, entry },
-                    },
-                ))
-                .await;
-        } else {
-            // If no state machine, this might be an entry for an aborted invocation.
-            trace!("No state machine found for given entry");
-        }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.invocation.id = %invocation_id,
             restate.journal.entry.ty = %notification.ty(),
             restate.journal.notification.id = ?notification.id(),
         )
@@ -1122,74 +1046,6 @@ where
         } else {
             // If no state machine, this might be a result for an aborted invocation.
             trace!("No state machine found for invocation task closed signal");
-        }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.invocation.id = %invocation_id,
-        )
-    )]
-    async fn handle_invocation_task_suspended(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_indexes: HashSet<EntryIndex>,
-    ) {
-        if let Some((sender, _, ism)) = self
-            .invocation_state_machine_manager
-            .remove_invocation(&invocation_id)
-        {
-            counter!(
-                INVOKER_INVOCATION_TASKS,
-                "status" => TASK_OP_SUSPENDED,
-                "partition_id" => self.invoker_id_label.clone()
-            )
-            .increment(1);
-            self.status_store.on_end(&invocation_id);
-
-            if ism.requested_pause {
-                // We should send pause instead
-                trace!(
-                    restate.invocation.target = %ism.invocation_target,
-                    "Pausing invocation after suspension"
-                );
-
-                let _ = sender
-                    .send(fence(
-                        ism.fencing_token,
-                        Effect {
-                            invocation_id,
-                            kind: EffectKind::Paused {
-                                paused_event: RawEvent::from(Event::Paused(PausedEvent {
-                                    last_failure: None,
-                                })),
-                            },
-                        },
-                    ))
-                    .await;
-            } else {
-                trace!(
-                    restate.invocation.target = %ism.invocation_target,
-                    "Suspending invocation"
-                );
-
-                let _ = sender
-                    .send(fence(
-                        ism.fencing_token,
-                        Effect {
-                            invocation_id,
-                            kind: EffectKind::Suspended {
-                                waiting_for_completed_entries: entry_indexes,
-                            },
-                        },
-                    ))
-                    .await;
-            }
-        } else {
-            // If no state machine, this might be a result for an aborted invocation.
-            trace!("No state machine found for invocation task suspended signal");
         }
     }
 
@@ -1986,8 +1842,6 @@ mod tests {
     use restate_types::errors::{InvocationError, codes};
     use restate_types::identifiers::ServiceRevision;
     use restate_types::invocation::ServiceType;
-    use restate_types::journal::enriched::EnrichedEntryHeader;
-    use restate_types::journal::raw::RawEntry;
     use restate_types::journal_events::EventType;
     use restate_types::journal_v2::{Command, Encoder, Entry, OutputCommand, OutputResult};
     use restate_types::live::Constant;
@@ -2285,7 +2139,6 @@ mod tests {
                 AssumeRoleCacheMode::None,
             )
             .unwrap(),
-            test_util::MockEntryEnricher,
             None,
             None,
             MemoryPool::unlimited(),
@@ -2415,82 +2268,6 @@ mod tests {
                 .in_flight()
         );
         assert!(!service_inner.quota.is_slot_available());
-    }
-
-    #[test(restate_core::test)]
-    async fn reclaim_quota_after_abort() {
-        let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(FriendlyDuration::ZERO)
-            .abort_timeout(FriendlyDuration::ZERO)
-            .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
-            .message_size_limit(None)
-            .build()
-            .unwrap();
-        let invocation_id = InvocationId::mock_random();
-
-        let (_, _status_tx, _effects_rx, mut service_inner) = ServiceInner::mock(
-            |invocation_id,
-             _service_id,
-             _storage_reader,
-             invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-             _| {
-                let _ = invoker_tx.send(InvocationTaskOutput {
-                    invocation_id,
-                    fencing_token: 0,
-                    inner: InvocationTaskOutputInner::NewEntry {
-                        entry_index: 1,
-                        entry: RawEntry::new(EnrichedEntryHeader::SetState {}, Bytes::default())
-                            .into(),
-                        requires_ack: false,
-                    },
-                });
-                pending() // Never ends
-            },
-            MockSchemas(
-                // fixed amount of retries so that an invocation eventually completes with a failure
-                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
-                Some(OnMaxAttempts::Kill),
-            ),
-            Some(NonZeroUsize::new(2).unwrap()),
-            EmptyStorageReader,
-        );
-
-        // Invoke the service
-        let budget = service_inner.test_budget();
-        service_inner.handle_invoke(
-            &invoker_options,
-            invocation_id,
-            0,
-            InvocationTarget::mock_virtual_object(),
-            budget,
-        );
-
-        // We should receive the new entry here
-        let invoker_effect = service_inner.invocation_tasks_rx.recv().await.unwrap();
-        assert_eq!(invoker_effect.invocation_id, invocation_id);
-        check!(let InvocationTaskOutputInner::NewEntry { .. } = invoker_effect.inner);
-
-        // Check the quota
-        assert_eq!(service_inner.quota.available_slots(), 1);
-
-        // Abort the invocation
-        service_inner.handle_abort_invocation(&invocation_id);
-
-        // Check the quota
-        assert_eq!(service_inner.quota.available_slots(), 2);
-
-        // Handle error coming after the abort (this should be noop)
-        service_inner
-            .handle_invocation_task_failed(
-                invocation_id,
-                InvokerError::EmptySuspensionMessage, /* any error is fine */
-                service_inner.test_budget(),
-            )
-            .await;
-
-        // Check the quota, should not be changed
-        assert_eq!(service_inner.quota.available_slots(), 2);
     }
 
     #[test(restate_core::test(start_paused = true))]
@@ -3206,7 +2983,7 @@ mod tests {
 
         // Simulate the invocation task suspending
         service_inner
-            .handle_invocation_task_suspended(
+            .handle_invocation_task_suspended_v2(
                 invocation_id,
                 HashSet::new(), // No pending entries
             )

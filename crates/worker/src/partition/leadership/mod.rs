@@ -35,7 +35,6 @@ use restate_invoker_impl::{
     InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
 };
 use restate_partition_store::PartitionStore;
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
 use restate_storage_api::invocation_status_table::{
@@ -78,7 +77,6 @@ use restate_worker_api::{
 use self::durability_tracker::DurabilityTracker;
 use self::fencing::FencingTokens;
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
-use crate::invoker_integration::EntryEnricher;
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
@@ -667,23 +665,19 @@ where
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
             let invoker_rx = ReceiverStream::new(invoker_rx);
 
-            let invoker: InvokerService<
-                InvokerStorageReader<PartitionStore>,
-                EntryEnricher<Schema, ProtobufRawEntryCodec>,
-                Schema,
-            > = InvokerService::from_options(
-                processor.partition_id(),
-                processor.key_range(),
-                InvokerStorageReader::new(partition_store.clone()),
-                invoker_tx,
-                &config.worker.invoker.service_client,
-                &config.worker.invoker,
-                EntryEnricher::new(schema.clone()),
-                schema,
-                node_ctx.invoker_capacity.invocation_token_bucket.clone(),
-                node_ctx.invoker_capacity.action_token_bucket.clone(),
-                node_ctx.invoker_capacity.memory_pool.clone(),
-            )?;
+            let invoker: InvokerService<InvokerStorageReader<PartitionStore>, Schema> =
+                InvokerService::from_options(
+                    processor.partition_id(),
+                    processor.key_range(),
+                    InvokerStorageReader::new(partition_store.clone()),
+                    invoker_tx,
+                    &config.worker.invoker.service_client,
+                    &config.worker.invoker,
+                    schema,
+                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
+                    node_ctx.invoker_capacity.action_token_bucket.clone(),
+                    node_ctx.invoker_capacity.memory_pool.clone(),
+                )?;
 
             let mut invoker_handle = invoker.handle();
 
