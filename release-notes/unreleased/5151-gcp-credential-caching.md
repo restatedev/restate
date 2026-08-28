@@ -25,7 +25,8 @@ steady-state mint calls never waiting on network I/O.
 ### Known Limitation
 
 A refresh task that is already mid-fetch when its cache entry is evicted is not cancelled
-immediately; it keeps running until the fetch resolves.
+immediately. It keeps running until the fetch resolves, then observes that the credential has no
+remaining receivers and exits.
 
 ### Related Issues
 
