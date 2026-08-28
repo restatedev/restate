@@ -8,38 +8,45 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
-use restate_storage_api::timer_table::WriteTimerTable;
-use restate_types::journal_v2::{EntryIndex, OutputCommand, OutputResult};
-use restate_types::service_protocol::ServiceProtocolVersion;
+use assert2::let_assert;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, CompletionReference, CompletionStatus, InFlightInvocationMetadata,
-    JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
+    JournalMetadata, JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
     WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::journal_table::{ReadJournalTable, WriteJournalTable};
-use restate_storage_api::journal_table_v2;
+use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
+use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{self, ReadVQueueTable, WriteVQueueTable};
-use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
+use restate_storage_api::{StorageError, journal_table_v2};
+use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
+use restate_types::journal::EntryType;
+use restate_types::journal_v2::{
+    self, CommandType, EntryIndex, EntryMetadata, OutputCommand, OutputResult,
+};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 use restate_worker_api::processor::PartitionFeatures;
 
 use crate::partition::processor::{FsmAccess, ProcessorContext};
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 /// Terminal step of the invocation lifecycle: publishes the result, applies the retention
 /// policies and releases whatever the invocation was holding (vqueue entry or inbox lock).
@@ -54,7 +61,7 @@ pub enum EndInvocationReason {
     /// The invoker reported the invocation ran to completion. The result is read from the
     /// last Output entry in the journal.
     Completed,
-    /// The invoker reported a terminal failure, which overrides any Output entry.
+    /// The invoker reported a terminal failure, The entry is appended at the end of the journal.
     Failed(InvocationError),
     /// The invocation was killed.
     Killed,
@@ -90,7 +97,64 @@ impl ResponseResultCache {
         }
     }
 
-    async fn warmup<'s, S, P>(
+    async fn read_last_output_entry_result<'s, S, P>(
+        &self,
+        ctx: &mut StateMachineApplyContext<'s, S, P>,
+    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
+    where
+        P: ProcessorContext,
+        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
+    {
+        if self.protocol_version >= ServiceProtocolVersion::V4 {
+            // Find last output entry
+            for i in (0..self.journal_length).rev() {
+                let entry = journal_table_v2::ReadJournalTable::get_journal_entry(
+                    ctx.storage,
+                    self.invocation_id,
+                    i,
+                )
+                .await?
+                .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
+                if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
+                    let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
+                    return Ok(Some((
+                        Some(i),
+                        match cmd.result {
+                            OutputResult::Success(s) => ResponseResult::Success(s),
+                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                        },
+                    )));
+                }
+            }
+            Ok(None)
+        } else {
+            // Find last output entry
+            let mut output_entry = None;
+            for i in (0..self.journal_length).rev() {
+                if let JournalEntry::Entry(e) =
+                    ReadJournalTable::get_journal_entry(ctx.storage, &self.invocation_id, i)
+                        .await?
+                        .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"))
+                    && e.ty() == EntryType::Output
+                {
+                    output_entry = Some(e);
+                    break;
+                }
+            }
+
+            output_entry
+                .map(|enriched_entry| {
+                    let_assert!(
+                        restate_types::journal::Entry::Output(e) =
+                            enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
+                    );
+                    Ok((None, e.result.into()))
+                })
+                .transpose()
+        }
+    }
+
+    async fn fetch<'s, S, P>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'s, S, P>,
     ) -> Result<(), Error>
@@ -100,22 +164,13 @@ impl ResponseResultCache {
     {
         match &self.result {
             Cached::NotFound | Cached::Found(_) => {}
-            Cached::None => {
-                match ctx
-                    .read_last_output_entry_result(
-                        &self.invocation_id,
-                        self.journal_length,
-                        self.protocol_version,
-                    )
-                    .await?
-                {
-                    Some((index, response)) => {
-                        self.entry_index = index;
-                        self.result = Cached::Found(response);
-                    }
-                    None => self.result = Cached::NotFound,
+            Cached::None => match self.read_last_output_entry_result(ctx).await? {
+                Some((index, response)) => {
+                    self.entry_index = index;
+                    self.result = Cached::Found(response);
                 }
-            }
+                None => self.result = Cached::NotFound,
+            },
         }
         Ok(())
     }
@@ -128,7 +183,7 @@ impl ResponseResultCache {
         P: ProcessorContext,
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
     {
-        self.warmup(ctx).await?;
+        self.fetch(ctx).await?;
 
         match &self.result {
             Cached::None => {
@@ -147,7 +202,7 @@ impl ResponseResultCache {
         P: ProcessorContext,
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
     {
-        self.warmup(ctx).await?;
+        self.fetch(ctx).await?;
 
         match self.result {
             Cached::None => {
@@ -157,6 +212,39 @@ impl ResponseResultCache {
             Cached::Found(response) => Ok(Some((self.entry_index, response))),
         }
     }
+}
+
+fn append_journal_entry<'s, S, P>(
+    ctx: &mut StateMachineApplyContext<'s, S, P>,
+    invocation_id: &InvocationId,
+    journal_meta: &mut JournalMetadata,
+    entry: impl Into<restate_types::journal_v2::Entry>,
+) -> Result<(), StorageError>
+where
+    P: ProcessorContext,
+    S: journal_table_v2::WriteJournalTable,
+{
+    let entry = entry.into().encode::<ServiceProtocolV4Codec>();
+    let entry_index = journal_meta.length;
+
+    // Update journal length
+    journal_meta.length += 1;
+    if matches!(entry.ty(), restate_types::journal_v2::EntryType::Command(_)) {
+        journal_meta.commands += 1;
+    }
+
+    // Store journal entry
+    journal_table_v2::WriteJournalTable::put_journal_entry(
+        ctx.storage,
+        invocation_id,
+        entry_index,
+        // Make sure that a deterministic append time is set based on Bifrost's record creation
+        // time. This ensures that the append time does not depend on the application time of
+        // the record and ensures that subsequent journal entries have monotonically increasing
+        // append times.
+        &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
+        &[],
+    )
 }
 
 impl EndInvocationCommand {
@@ -233,51 +321,21 @@ where
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
         let end_status = match &reason {
-            EndInvocationReason::Killed => {
-                if is_write_result_reference_enabled {
-                    entries::OnJournalEntryCommand::from_entry(
-                        invocation_id,
-                        ctx.get_invocation_status(&invocation_id).await?,
-                        OutputCommand {
-                            result: OutputResult::Failure(KILLED_INVOCATION_ERROR.into()),
-                            name: Default::default(),
-                        }
-                        .into(),
-                    )
-                    .apply(ctx)
-                    .await?;
-
-                    // hackish but necessary
-                    invocation_metadata.journal_metadata.commands += 1;
-                    invocation_metadata.journal_metadata.length += 1;
-                }
-
-                vqueue_table::Status::Killed
-            }
+            EndInvocationReason::Killed => vqueue_table::Status::Killed,
             EndInvocationReason::Failed(err) => {
                 if is_write_result_reference_enabled {
-                    entries::OnJournalEntryCommand::from_entry(
-                        invocation_id,
-                        ctx.get_invocation_status(&invocation_id).await?,
+                    append_journal_entry(
+                        ctx,
+                        &invocation_id,
+                        &mut invocation_metadata.journal_metadata,
                         OutputCommand {
                             result: OutputResult::Failure(err.clone().into()),
                             name: Default::default(),
-                        }
-                        .into(),
-                    )
-                    .apply(ctx)
-                    .await?;
-
-                    // hackish but necessary
-                    invocation_metadata.journal_metadata.commands += 1;
-                    invocation_metadata.journal_metadata.length += 1;
+                        },
+                    )?;
                 }
 
-                if err.code() == codes::ABORTED {
-                    vqueue_table::Status::Cancelled
-                } else {
-                    vqueue_table::Status::Failed
-                }
+                vqueue_table::Status::Failed
             }
             EndInvocationReason::Completed => {
                 let Some((_, response_result)) = response_cache.response_result(ctx).await? else {
@@ -305,7 +363,7 @@ where
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
             let response_result_ref = match is_write_result_reference_enabled {
-                // always embed, we can't reference the output entry
+                // always inline, we can't reference the output entry
                 false => match reason {
                     EndInvocationReason::Killed => {
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
@@ -330,7 +388,7 @@ where
                         }
                     }
                 },
-                // try to reference if protocol-version >= v4, otherwise, embed
+                // try to reference if protocol-version >= v4, otherwise, inline
                 true => match reason {
                     EndInvocationReason::Killed => ResponseResultRef::Killed,
                     EndInvocationReason::Failed(err) => {
@@ -344,7 +402,7 @@ where
                         };
 
                         // if entry_index is None, this means it is protocol-version < v4
-                        // and we will need to embed the error.
+                        // and we will need to inline the error.
                         match entry_index {
                             None => ResponseResultRef::Failure(err),
                             Some(entry_index) => {
@@ -366,8 +424,10 @@ where
                         };
 
                         // if entry_index is None, this means  it is protocol-version < v4
-                        // and we will need to embed the error.
+                        // and we will need to inline the error.
                         match entry_index {
+                            // Remove when deprecating protocol-version < 4
+                            // part of https://github.com/restatedev/restate/issues/3184
                             None => match response_result {
                                 ResponseResult::Success(bytes) => {
                                     ResponseResultRef::Success(bytes.clone())

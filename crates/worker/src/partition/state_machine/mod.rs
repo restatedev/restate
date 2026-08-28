@@ -14,8 +14,6 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
-// Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
-pub(crate) use lifecycle::resolve_pinned_deployment;
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
@@ -100,12 +98,11 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal::*;
-use restate_types::journal_v2;
-use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
+use restate_types::journal_v2::{self, CommandType, EntryMetadata, OutputCommand, OutputResult};
 use restate_types::journal_v2::{
-    CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
-    SignalResult, UnresolvedFuture,
+    CommandIndex, CompletionId, InputCommand, NotificationId, Signal, SignalResult,
+    UnresolvedFuture,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
