@@ -48,7 +48,7 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
+    EagerState, InvocationReader, InvocationReaderTransaction,
 };
 use restate_worker_api::invoker::{EntryEnricher, InvocationReaderError};
 
@@ -547,9 +547,7 @@ where
             self.abort_timeout = abort_timeout;
         }
 
-        if chosen_service_protocol_version < ServiceProtocolVersion::V4
-            && journal_metadata.journal_kind == JournalKind::V2
-        {
+        if chosen_service_protocol_version < ServiceProtocolVersion::V4 {
             // We don't support migrating from journal v2 to journal v1!
             shortcircuit!(Err(InvokerError::DeploymentDeprecated(
                 self.invocation_target.service_name().to_string(),

@@ -312,6 +312,7 @@ impl InvokerError {
                 RequestedErrorBehavior::retry(*retry_after)
             }
             InvokerError::MaxFutureDepthReached { .. } => RequestedErrorBehavior::Pause,
+            InvokerError::DeploymentDeprecated { .. } => RequestedErrorBehavior::Fail,
             _ => RequestedErrorBehavior::Retry,
         }
     }
