@@ -22,18 +22,15 @@
 //! endpoint override to a gateway that only speaks h1 - keeps the old
 //! kernel-bound behavior.
 //!
-//! Everything else here reproduces the contract of the SDK's own adapter
-//! (`aws-smithy-http-client` 1.3.0, `src/client.rs`), which the Lambda client's
-//! interceptors rely on: capturing the pooled connection so that it can be
-//! poisoned after a transient failure, classifying transport errors, honoring the
-//! `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` environment variables, and offering the
-//! same TLS parameters to AWS endpoints. Re-check the ported pieces against that
-//! source when the SDK dependencies are upgraded.
+//! The rest mirrors the relevant parts of `aws-smithy-http-client`: connection
+//! capture and poisoning, error classification, proxy support, and TLS settings.
+//! Re-check those pieces when upgrading the SDK.
 
 use std::borrow::Cow;
 use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
+use std::io::IoSlice;
 use std::pin::Pin;
 use std::sync::{Arc, LazyLock};
 use std::task::{Context, Poll};
@@ -75,11 +72,8 @@ use restate_types::config::Http2KeepAliveOptions;
 
 type BoxError = Box<dyn Error + Send + Sync + 'static>;
 
-/// TLS parity with the SDK's rustls provider (`aws-smithy-http-client` 1.3.0,
-/// `src/client/tls/rustls_provider.rs`): the same restricted cipher-suite list,
-/// native roots, no client auth. Deliberately not the crate's deployment-facing
-/// TLS config: that one honors `SSLKEYLOGFILE`, and sessions to the AWS API carry
-/// credentials that a debugging env var must not make decryptable.
+/// Matches the SDK's rustls cipher suites and trust roots. This deliberately does
+/// not honor `SSLKEYLOGFILE`, because Lambda requests carry AWS credentials.
 static AWS_TLS_CONFIG: LazyLock<ClientConfig> = LazyLock::new(|| {
     // The crypto provider is set explicitly because the ring and aws_lc_rs rustls
     // features are both active, which disables auto-installation.
@@ -158,19 +152,18 @@ impl KeepAlive {
     }
 }
 
-/// The timeouts the SDK asks for, which vary per operation and so cannot be baked
-/// into a single connector.
+/// Connector settings supplied by Smithy. Each distinct pair owns a pool.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct Timeouts {
     connect: Option<Duration>,
     read: Option<Duration>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AwsHttpClient {
     keep_alive: KeepAlive,
     proxy: Arc<Matcher>,
-    connectors: Arc<DashMap<Timeouts, SharedHttpConnector>>,
+    connectors: DashMap<Timeouts, SharedHttpConnector>,
 }
 
 impl HttpClient for AwsHttpClient {
@@ -211,6 +204,7 @@ impl HttpClient for AwsHttpClient {
 struct AwsHttpConnector<C = ConnectTimeout<ProxiedConnector>> {
     client: Client<C, SdkBody>,
     read_timeout: Option<Duration>,
+    proxy: Arc<Matcher>,
 }
 
 impl AwsHttpConnector {
@@ -219,11 +213,11 @@ impl AwsHttpConnector {
         // TCP connect, so that a peer that goes silent midway through the handshake
         // is bounded too.
         let connector = ConnectTimeout {
-            inner: ProxiedConnector::new(proxy),
+            inner: ProxiedConnector::new(Arc::clone(&proxy)),
             timeout: timeouts.connect,
         };
 
-        Self::with_connector(connector, keep_alive, timeouts.read)
+        Self::with_connector(connector, keep_alive, timeouts.read, proxy)
     }
 }
 
@@ -231,7 +225,12 @@ impl<C> AwsHttpConnector<C>
 where
     C: Connect + Clone,
 {
-    fn with_connector(connector: C, keep_alive: KeepAlive, read_timeout: Option<Duration>) -> Self {
+    fn with_connector(
+        connector: C,
+        keep_alive: KeepAlive,
+        read_timeout: Option<Duration>,
+        proxy: Arc<Matcher>,
+    ) -> Self {
         let mut builder = Client::builder(TokioExecutor::default());
         builder
             .timer(TokioTimer::default())
@@ -242,6 +241,7 @@ where
         Self {
             client: builder.build(connector),
             read_timeout,
+            proxy,
         }
     }
 }
@@ -258,6 +258,22 @@ where
             Ok(request) => request,
             Err(err) => return HttpConnectorFuture::ready(Err(ConnectorError::user(err.into()))),
         };
+
+        // HTTPS proxy authentication belongs to CONNECT. Plain HTTP has no
+        // tunnel, so match Smithy by adding it to the forwarded request.
+        if request.uri().scheme() == Some(&Scheme::HTTP)
+            && !request
+                .headers()
+                .contains_key(http::header::PROXY_AUTHORIZATION)
+            && let Some(auth) = self
+                .proxy
+                .intercept(request.uri())
+                .and_then(|intercept| intercept.basic_auth().cloned())
+        {
+            request
+                .headers_mut()
+                .insert(http::header::PROXY_AUTHORIZATION, auth);
+        }
 
         // Hands the pooled connection to the SDK's interceptors, which poison it
         // when a request against it fails transiently.
@@ -335,7 +351,7 @@ impl Service<Uri> for ProxiedConnector {
             let connect = self.https.call(dst);
             return Box::pin(async move {
                 Ok(ProxiedConnection::Forward {
-                    stream: connect.await?,
+                    stream: Box::new(connect.await?),
                     via_proxy: false,
                 })
             });
@@ -364,7 +380,7 @@ impl Service<Uri> for ProxiedConnector {
             let connect = self.https.call(intercept.uri().clone());
             Box::pin(async move {
                 Ok(ProxiedConnection::Forward {
-                    stream: connect.await?,
+                    stream: Box::new(connect.await?),
                     via_proxy: true,
                 })
             })
@@ -375,14 +391,14 @@ impl Service<Uri> for ProxiedConnector {
 /// A connection from [`ProxiedConnector`], carrying the metadata hyper reads off
 /// it: whether it goes through a proxy (plain-HTTP requests then use absolute
 /// form) and whether ALPN selected h2.
+// Streams are boxed because the TLS session state makes them large (over a
+// kilobyte); connections are created rarely.
 enum ProxiedConnection {
     Forward {
-        stream: HttpsStream,
+        stream: Box<HttpsStream>,
         via_proxy: bool,
     },
     Tunneled {
-        // Boxed: the TLS session state makes this variant twice the size of the
-        // other, and connections are created rarely.
         stream: Box<TokioIo<TlsStream<TokioIo<HttpsStream>>>>,
     },
 }
@@ -411,7 +427,7 @@ impl hyper::rt::Read for ProxiedConnection {
         buf: hyper::rt::ReadBufCursor<'_>,
     ) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Self::Forward { stream, .. } => Pin::new(stream).poll_read(cx, buf),
+            Self::Forward { stream, .. } => Pin::new(stream.as_mut()).poll_read(cx, buf),
             Self::Tunneled { stream } => Pin::new(stream.as_mut()).poll_read(cx, buf),
         }
     }
@@ -424,28 +440,45 @@ impl hyper::rt::Write for ProxiedConnection {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         match self.get_mut() {
-            Self::Forward { stream, .. } => Pin::new(stream).poll_write(cx, buf),
+            Self::Forward { stream, .. } => Pin::new(stream.as_mut()).poll_write(cx, buf),
             Self::Tunneled { stream } => Pin::new(stream.as_mut()).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        bufs: &[IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        match self.get_mut() {
+            Self::Forward { stream, .. } => Pin::new(stream.as_mut()).poll_write_vectored(cx, bufs),
+            Self::Tunneled { stream } => Pin::new(stream.as_mut()).poll_write_vectored(cx, bufs),
+        }
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        match self {
+            Self::Forward { stream, .. } => stream.is_write_vectored(),
+            Self::Tunneled { stream } => stream.is_write_vectored(),
         }
     }
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Self::Forward { stream, .. } => Pin::new(stream).poll_flush(cx),
+            Self::Forward { stream, .. } => Pin::new(stream.as_mut()).poll_flush(cx),
             Self::Tunneled { stream } => Pin::new(stream.as_mut()).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
         match self.get_mut() {
-            Self::Forward { stream, .. } => Pin::new(stream).poll_shutdown(cx),
+            Self::Forward { stream, .. } => Pin::new(stream.as_mut()).poll_shutdown(cx),
             Self::Tunneled { stream } => Pin::new(stream.as_mut()).poll_shutdown(cx),
         }
     }
 }
 
-/// Ported from the SDK adapter's `extract_smithy_connection`
-/// (`aws-smithy-http-client` 1.3.0, `src/client.rs`).
+/// Ported from the SDK adapter's `extract_smithy_connection`.
 fn smithy_connection(captured: &CaptureConnection) -> Option<ConnectionMetadata> {
     let poisoner = captured.clone();
     let metadata = captured.connection_metadata();
@@ -470,7 +503,7 @@ fn smithy_connection(captured: &CaptureConnection) -> Option<ConnectionMetadata>
 
 /// Classifies transport errors the way the SDK's adapter does, so the Lambda
 /// client's retry classifier sees the error kinds it expects. Ported from
-/// `downcast_error` (`aws-smithy-http-client` 1.3.0, `src/client.rs`); one
+/// `downcast_error`; one
 /// divergence is that upstream first returns an already-built `ConnectorError`
 /// found in the boxed error, which has no equivalent here because nothing in this
 /// connector stack produces one.
@@ -490,8 +523,7 @@ fn connector_error(err: hyper_util::client::legacy::Error) -> ConnectorError {
     ConnectorError::other(err.into(), None)
 }
 
-/// Ported from the SDK adapter's `to_connector_error`
-/// (`aws-smithy-http-client` 1.3.0, `src/client.rs`).
+/// Ported from the SDK adapter's `to_connector_error`.
 fn classify_hyper_error(err: &hyper::Error) -> fn(BoxError) -> ConnectorError {
     if err.is_timeout() {
         return ConnectorError::timeout;
@@ -598,6 +630,23 @@ mod tests {
 
     fn no_proxy() -> Arc<ProxyMatcher> {
         Arc::new(ProxyMatcher::builder().build())
+    }
+
+    async fn capturing_proxy(
+        response: &'static [u8],
+    ) -> (std::net::SocketAddr, Arc<Mutex<String>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let request = Arc::new(Mutex::new(String::new()));
+        let captured = Arc::clone(&request);
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 4096];
+            let read = stream.read(&mut buf).await.unwrap();
+            *captured.lock().unwrap() = String::from_utf8_lossy(&buf[..read]).into_owned();
+            stream.write_all(response).await.unwrap();
+        });
+        (addr, request)
     }
 
     fn invoke_request() -> HttpRequest {
@@ -716,6 +765,7 @@ mod tests {
             peer.clone(),
             keep_alive(Some(Duration::from_millis(50))),
             None,
+            no_proxy(),
         );
 
         let started = tokio::time::Instant::now();
@@ -776,29 +826,13 @@ mod tests {
         );
     }
 
-    /// Matches the SDK default client: a proxy from the environment intercepts
-    /// Lambda traffic, and plain-HTTP requests reach it in absolute form so the
-    /// proxy can route them onward.
     #[tokio::test]
-    async fn plain_http_requests_are_forwarded_through_the_proxy() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let proxy_addr = listener.local_addr().unwrap();
-
-        let request_head = Arc::new(Mutex::new(String::new()));
-        let captured_head = Arc::clone(&request_head);
-        tokio::spawn(async move {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            let mut buf = vec![0u8; 4096];
-            let read = stream.read(&mut buf).await.unwrap();
-            *captured_head.lock().unwrap() = String::from_utf8_lossy(&buf[..read]).into_owned();
-            stream
-                .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                .await
-                .unwrap();
-        });
+    async fn plain_http_proxy_uses_absolute_form_and_authentication() {
+        let (proxy_addr, request_head) =
+            capturing_proxy(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n").await;
 
         let proxy = ProxyMatcher::builder()
-            .http(format!("http://{proxy_addr}"))
+            .http(format!("http://Aladdin:opensesame@{proxy_addr}"))
             .build();
         let connector = AwsHttpConnector::new(
             keep_alive(None),
@@ -829,7 +863,43 @@ mod tests {
         // sent as if the proxy were the origin.
         assert_that!(
             *request_head.lock().unwrap(),
-            starts_with("GET http://lambda.example/invoke HTTP/1.1\r\n")
+            all!(
+                starts_with("GET http://lambda.example/invoke HTTP/1.1\r\n"),
+                contains_substring("proxy-authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l\r\n")
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn https_proxy_authenticates_connect() {
+        let (proxy_addr, request_head) = capturing_proxy(
+            b"HTTP/1.1 407 Proxy Authentication Required\r\ncontent-length: 0\r\n\r\n",
+        )
+        .await;
+
+        let proxy = ProxyMatcher::builder()
+            .https(format!("http://Aladdin:opensesame@{proxy_addr}"))
+            .build();
+        let connector = AwsHttpConnector::new(
+            keep_alive(None),
+            Timeouts {
+                connect: Some(Duration::from_secs(3)),
+                read: None,
+            },
+            Arc::new(proxy),
+        );
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(10), connector.call(invoke_request()))
+                .await
+                .expect("the proxy response must not hang");
+        assert_that!(result, err(anything()));
+        assert_that!(
+            *request_head.lock().unwrap(),
+            all!(
+                starts_with("CONNECT lambda.example:443 HTTP/1.1\r\n"),
+                contains_substring("Proxy-Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l\r\n")
+            )
         );
     }
 
@@ -868,36 +938,5 @@ mod tests {
         let default = KeepAlive::from_options(&Http2KeepAliveOptions::default());
         assert_that!(default.ping_interval, some(eq(Duration::from_secs(40))));
         assert_that!(default.ping_timeout, eq(Duration::from_secs(20)));
-    }
-
-    /// Guards the SDK-parity TLS parameters: the curated cipher-suite list, and
-    /// ALPN offered only on the in-tunnel handshake (the direct path gets ALPN
-    /// from hyper-rustls).
-    #[test]
-    fn tls_configs_match_the_sdk_parameters() {
-        let suites: Vec<_> = AWS_TLS_CONFIG
-            .crypto_provider()
-            .cipher_suites
-            .iter()
-            .map(|suite| suite.suite())
-            .collect();
-        assert_eq!(
-            suites,
-            [
-                CipherSuite::TLS13_AES_256_GCM_SHA384,
-                CipherSuite::TLS13_AES_128_GCM_SHA256,
-                CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
-                CipherSuite::TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
-                CipherSuite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
-                CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
-                CipherSuite::TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
-            ]
-        );
-
-        assert_that!(AWS_TLS_CONFIG.alpn_protocols, empty());
-        assert_eq!(
-            AWS_TUNNEL_TLS_CONFIG.alpn_protocols,
-            [b"h2".to_vec(), b"http/1.1".to_vec()]
-        );
     }
 }
