@@ -139,7 +139,7 @@ pub(super) const RECLAIM_WINDOW_THRESHOLD: u32 = 15; // 15% of max window size
 ///
 /// Cheaply cloneable: tonic clones the service per connection, so every field is
 /// shared/handle-like. It holds the [`IngestionClient`] used to append envelopes to
-/// the WAL, a [`Live`] handle to the schema (re-pinned per use to pick up updates)
+/// Bifrost, a [`Live`] handle to the schema (re-pinned per use to pick up updates)
 /// and the configured maximum send-window size handed to each stream.
 #[derive(Clone)]
 pub(crate) struct IngestionService<T, Schemas> {
@@ -180,6 +180,7 @@ where
             self.schemas.clone(),
             self.max_window_size,
         );
+        // todo(azmy): Handle shutdown signal and send the client proper shuting down error
         let response = futures::stream::unfold(stream, IngestionStream::step);
 
         Ok(Response::new(response.boxed()))
@@ -278,7 +279,7 @@ where
                     };
                 }
                 State::Processing { mut state } => {
-                    let result = match self.process(&mut state).await {
+                    let response = match self.process(&mut state).await {
                         Ok(result) => {
                             let last_committed = state.last_committed;
                             let (increment_bytes, state) = match result {
@@ -320,7 +321,7 @@ where
                         }
                     };
 
-                    return Some((Ok(result), self));
+                    return Some((Ok(response), self));
                 }
             }
         }
@@ -507,7 +508,7 @@ where
     }
 
     /// Returns `true` when the remaining window has fallen below
-    /// yield_threshold.
+    /// yield_threshold and the replenish capacity is above the reclaim threshold.
     fn should_yield(&self, state: &ProcessorState, replenish_size: u32) -> bool {
         state.current_window_size < self.window_threshold && replenish_size > self.reclaim_threshold
     }
@@ -886,6 +887,7 @@ impl<'a> Extractor for TraceContextExtractor<'a> {
         vec!["traceparent", "tracestate"]
     }
 }
+
 /// Seed hashed into a partition key for records that have no idempotency key.
 ///
 /// Combining the `producer` id with the record `offset` keeps the derived
