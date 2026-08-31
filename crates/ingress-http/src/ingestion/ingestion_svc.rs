@@ -93,7 +93,7 @@ pub mod proto {
 use proto::ingestion_svc_server::{IngestionSvc, IngestionSvcServer};
 use proto::{
     IngestionDefaults, IngestionInvocation, IngestionRequest, IngestionResponse, WindowUpdate,
-    ingestion_request, ingestion_request::Payload, ingestion_response,
+    ingestion_request, ingestion_request::Kind, ingestion_response,
 };
 use tracing::debug;
 
@@ -402,10 +402,10 @@ where
             })?;
 
         let payload = first
-            .payload
+            .kind
             .ok_or_else(|| Error::GoAway(GoAwayError::MissingRequestPayload))?;
 
-        let ingestion_request::Payload::Start(start) = payload else {
+        let ingestion_request::Kind::Start(start) = payload else {
             return Err(Error::GoAway(GoAwayError::ExpectingStartMessage));
         };
 
@@ -520,19 +520,19 @@ where
     ) -> Result<(), Error> {
         let request = request.map_err(|status| Error::GoAway(GoAwayError::unknown(status)))?;
 
-        let Some(payload) = request.payload else {
+        let Some(payload) = request.kind else {
             return Err(Error::GoAway(GoAwayError::MissingRequestPayload));
         };
 
         match payload {
-            Payload::Start(_) => {
+            Kind::Start(_) => {
                 return Err(Error::GoAway(GoAwayError::UnexpectedStartMessage));
             }
-            Payload::Defaults(defaults) => {
+            Kind::Defaults(defaults) => {
                 self.validate_defaults(&defaults)?;
                 state.defaults = defaults;
             }
-            Payload::Invocation(invocation) => {
+            Kind::Invocation(invocation) => {
                 if state.current_window_size < 0 {
                     return Err(Error::GoAway(GoAwayError::WindowSizeViolation));
                 }
