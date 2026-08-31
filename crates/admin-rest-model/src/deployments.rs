@@ -40,18 +40,14 @@ pub struct GoogleIdTokenAuth {
     pub audience: Option<bytestring::ByteString>,
     /// Full resource name of a GCP workload identity federation provider, e.g.
     /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
-    /// When set, Restate mints the ID token via the AWS -> GCP workload identity federation
-    /// chain instead of its ambient Application Default Credentials. Requires
-    /// `impersonate_service_account` to be set.
+    /// When set, use AWS-to-GCP federation instead of ambient Application Default Credentials.
+    /// Requires `impersonate_service_account`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub workload_identity_provider: Option<bytestring::ByteString>,
 }
 
-/// Failure that the URI-aware wire-to-persisted conversion may surface: either the operator left
-/// `audience` unset on the wire and the deployment URI has no derivable origin, or the auth block
-/// violates a `GoogleIdTokenAuth` invariant (see [`restate_types::deployment::GoogleIdTokenAuthError`]).
-/// The REST handler maps both to an `InvalidField` 400 response via [`Self::field`].
+/// Failure converting wire authentication into its persisted form.
 #[derive(Debug, thiserror::Error)]
 pub enum GoogleIdTokenAuthConversionError {
     #[error(
