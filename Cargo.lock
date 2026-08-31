@@ -8735,6 +8735,7 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-lambda",
  "aws-sdk-sts",
+ "aws-sigv4",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
  "base64 0.22.1",
@@ -8746,6 +8747,7 @@ dependencies = [
  "derive_builder",
  "futures",
  "google-cloud-auth",
+ "google-cloud-gax",
  "googletest",
  "h2",
  "http 1.5.0",
@@ -8780,6 +8782,7 @@ dependencies = [
  "tokio-util",
  "tower",
  "tracing",
+ "url",
  "zstd",
 ]
 
