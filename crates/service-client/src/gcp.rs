@@ -573,6 +573,9 @@ impl GcpTokenClient {
                     message: error.to_string(),
                 })
             }
+            // A timeout does not prove the refresh task dead, so retain the entry. A continuously
+            // used, wedged credential may keep timing out, but each caller remains bounded and no
+            // duplicate refresh task is created.
             Err(_) => Err(timeout_error()),
         }
     }
