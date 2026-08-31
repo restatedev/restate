@@ -23,7 +23,7 @@ use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use google_cloud_auth::credentials::Credentials as GoogleCredentials;
 use moka::future::Cache;
-use moka::ops::compute::Op;
+use moka::ops::compute::{CompResult, Op};
 use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
@@ -256,8 +256,13 @@ impl CredentialRegistry {
             .await
     }
 
-    async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<CredentialEntry>) {
-        self.cache
+    async fn evict_if_unchanged(
+        &self,
+        spec: &IdTokenSpec,
+        expected: &Arc<CredentialEntry>,
+    ) -> bool {
+        let result = self
+            .cache
             .entry_by_ref(spec)
             .and_compute_with(|entry| {
                 let op = match &entry {
@@ -267,6 +272,7 @@ impl CredentialRegistry {
                 std::future::ready(op)
             })
             .await;
+        matches!(result, CompResult::Removed(_))
     }
 
     async fn ambient_source(&self) -> Result<GoogleCredentials, String> {
@@ -541,7 +547,7 @@ impl GcpTokenClient {
             {
                 Ok(Ok(source)) => source,
                 Ok(Err(error)) => {
-                    registry.evict_if_unchanged(&spec, &entry).await;
+                    let _ = registry.evict_if_unchanged(&spec, &entry).await;
                     return Err(error);
                 }
                 Err(_) => return Err(timeout_error()),
@@ -552,8 +558,8 @@ impl GcpTokenClient {
             Ok(Err(error)) => {
                 // Transient errors may self-heal; evict permanent failures only if still current.
                 if !error.is_transient() {
-                    registry.evict_if_unchanged(&spec, &entry).await;
-                    if spec.impersonate.is_some() {
+                    let evicted = registry.evict_if_unchanged(&spec, &entry).await;
+                    if evicted && spec.impersonate.is_some() {
                         registry.recover_ambient_source_if_dead().await;
                     }
                 }
@@ -1086,10 +1092,29 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn aba_race_stale_caller_evict_is_a_no_op() {
+    async fn aba_race_stale_caller_cannot_evict_or_recover_source() {
         let client = GcpTokenClient::new();
         let audience = "https://aba.example.com";
-        let cache_key = IdTokenSpec::ambient(audience);
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        let cache_key = IdTokenSpec::impersonated(audience, service_account);
+
+        credential_registry()
+            .ambient_source
+            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
+                FakeCredentialsProvider::always(|| ProbeOutcome::Dead),
+            ))
+            .await;
+        let source_rebuilds = Arc::new(AtomicUsize::new(0));
+        add_ambient_source_override({
+            let source_rebuilds = source_rebuilds.clone();
+            move || {
+                source_rebuilds.fetch_add(1, Ordering::SeqCst);
+                Ok(google_cloud_auth::credentials::Credentials::from(
+                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                ))
+            }
+        });
+
         let new_source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Token(token()));
         let new_entry = ready_entry(new_source);
 
@@ -1121,7 +1146,7 @@ mod tests {
             .insert(cache_key.clone(), old_entry)
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = client.mint(Some(service_account), audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1131,6 +1156,11 @@ mod tests {
         assert!(
             matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_entry)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
+        );
+        assert_eq!(
+            source_rebuilds.load(Ordering::SeqCst),
+            0,
+            "a stale caller must not recover the shared source"
         );
     }
 
