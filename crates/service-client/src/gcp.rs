@@ -1552,7 +1552,6 @@ mod tests {
         }))
     }
 
-    /// Installs an offline access-token source for `provider` and reports how often it was built.
     fn counted_access_token_source_override(provider: &str) -> Arc<AtomicUsize> {
         let builds = Arc::new(AtomicUsize::new(0));
         federation::test_hooks::install_access_token_source_override(provider, {
@@ -1565,8 +1564,6 @@ mod tests {
         builds
     }
 
-    /// Unpacks a federated test spec onto [`federation::build_federated_source`]'s typed
-    /// signature, so tests can keep speaking in cache-key specs.
     async fn build_federated_source_for_spec(
         sources: &federation::FederatedAccessTokenSourceIndex,
         spec: IdTokenSpec,
@@ -1588,9 +1585,6 @@ mod tests {
         .await
     }
 
-    /// Seeds `provider`'s source with `seed`, then registers a cached outer credential for
-    /// `audience` that leases that source and always fails permanently. Returns the recovery
-    /// build counter for the source.
     async fn federated_recovery_fixture(
         provider: &str,
         audience: &str,
@@ -1618,8 +1612,6 @@ mod tests {
         builds
     }
 
-    /// An outer credential that holds a real lease on its provider's access-token source and
-    /// always fails permanently, so mint()'s recovery path runs against a known source state.
     struct LeasedFailingSource {
         _access_token_source: Arc<federation::FederatedAccessTokenSource>,
     }

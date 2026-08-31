@@ -40,10 +40,8 @@ pub enum HttpAuth {
 /// shape: callers building this value must supply a concrete audience, derived from the deployment
 /// URI when the operator did not provide one explicitly.
 ///
-/// Deliberately has no field for the AWS federation identity Restate uses to sign subject tokens;
-/// that identity is operator-controlled process configuration. See
-/// [`GcpFederationOptions`](crate::config::GcpFederationOptions) for why that identity is
-/// operator config, never something a registrant-controlled record like this one can carry.
+/// The AWS identity that signs federated subject tokens is operator configuration and is not part
+/// of this deployment-controlled record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GoogleIdTokenAuth {
     /// Service account email to impersonate via `iamcredentials:generateIdToken`. None means use
@@ -54,10 +52,8 @@ pub struct GoogleIdTokenAuth {
     audience: ByteString,
     /// Full resource name of a GCP workload identity federation provider, e.g.
     /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
-    /// When set, the ID token is minted via the AWS -> GCP federation chain (AWS role
-    /// assumption, SigV4 subject token, Google STS exchange, then impersonation) instead of the
-    /// server's ambient Application Default Credentials. Requires `impersonate_service_account`:
-    /// the external-account credential this chain produces cannot mint an ID token ambiently.
+    /// When set, use AWS-to-GCP federation instead of ambient Application Default Credentials.
+    /// Requires `impersonate_service_account`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workload_identity_provider: Option<ByteString>,
 }
