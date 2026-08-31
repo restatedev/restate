@@ -102,23 +102,9 @@ impl IdTokenSource for Live {
     }
 }
 
-struct CachedCredential {
-    inner: Arc<dyn IdTokenSource>,
-}
-
-impl CachedCredential {
-    fn new(source: Arc<dyn IdTokenSource>) -> Arc<Self> {
-        Arc::new(Self { inner: source })
-    }
-
-    async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-        self.inner.id_token().await
-    }
-}
-
 /// Process-wide credentials and their shared ambient source.
 struct CredentialRegistry {
-    cache: Cache<IdTokenSpec, Arc<CachedCredential>>,
+    cache: Cache<IdTokenSpec, Arc<dyn IdTokenSource>>,
     ambient_source: RecoverableCell<google_cloud_auth::credentials::Credentials>,
     #[cfg(any(test, feature = "test_util"))]
     test_hooks: TestHooks,
@@ -232,18 +218,14 @@ impl CredentialRegistry {
     async fn get_or_build(
         &'static self,
         spec: &IdTokenSpec,
-    ) -> Result<Arc<CachedCredential>, GcpAuthError> {
+    ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
         self.cache
-            .try_get_with_by_ref(spec, async {
-                self.build_on_tc_task(spec.clone())
-                    .await
-                    .map(CachedCredential::new)
-            })
+            .try_get_with_by_ref(spec, self.build_on_tc_task(spec.clone()))
             .await
             .map_err(|error| (*error).clone())
     }
 
-    async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<CachedCredential>) {
+    async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<dyn IdTokenSource>) {
         self.cache
             .entry_by_ref(spec)
             .and_compute_with(|entry| {
@@ -509,7 +491,7 @@ impl GcpTokenClient {
             .to_owned();
 
         let (source, registry) = match self.test_intercept(&spec, &impersonate) {
-            Some(Ok(source)) => (CachedCredential::new(source), None),
+            Some(Ok(source)) => (source, None),
             Some(Err(error)) => return Err(error),
             None => {
                 let registry = credential_registry();
@@ -924,7 +906,7 @@ mod tests {
             }
         });
         let dyn_source: Arc<dyn IdTokenSource> = source.clone();
-        let cached_source = CachedCredential::new(dyn_source);
+        let cached_source = dyn_source;
         credential_registry()
             .cache
             .insert(cache_key.clone(), cached_source.clone())
@@ -945,7 +927,7 @@ mod tests {
         let client = GcpTokenClient::new();
         let audience = "https://timeout.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
-        let source = CachedCredential::new(MockSource::new(|_| MockOutcome::Hang));
+        let source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Hang);
         credential_registry()
             .cache
             .insert(cache_key.clone(), source.clone())
@@ -962,9 +944,8 @@ mod tests {
         let client = GcpTokenClient::new();
         let audience = "https://permanent.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
-        let source = CachedCredential::new(MockSource::new(|_| {
-            MockOutcome::Error(permanent_error("misconfigured"))
-        }));
+        let source: Arc<dyn IdTokenSource> =
+            MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")));
         credential_registry()
             .cache
             .insert(cache_key.clone(), source.clone())
@@ -984,11 +965,11 @@ mod tests {
         let client = GcpTokenClient::new();
         let audience = "https://aba.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
-        let new_source = CachedCredential::new(MockSource::new(|_| MockOutcome::Token(token())));
+        let new_source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Token(token()));
 
         struct SwapThenFail {
             spec: IdTokenSpec,
-            replacement: Arc<CachedCredential>,
+            replacement: Arc<dyn IdTokenSource>,
         }
 
         #[async_trait]
@@ -1004,10 +985,10 @@ mod tests {
             }
         }
 
-        let old_source = CachedCredential::new(Arc::new(SwapThenFail {
+        let old_source: Arc<dyn IdTokenSource> = Arc::new(SwapThenFail {
             spec: cache_key.clone(),
             replacement: new_source.clone(),
-        }));
+        });
         credential_registry()
             .cache
             .insert(cache_key.clone(), old_source.clone())
