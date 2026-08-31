@@ -454,22 +454,22 @@ fn build_impersonated_credentials(
 #[derive(Clone)]
 pub struct GcpTokenClient {
     #[cfg(any(test, feature = "test_util"))]
-    inner: Arc<Inner>,
+    test_overrides: Arc<TestOverrides>,
 }
 
 #[cfg(any(test, feature = "test_util"))]
-struct Inner {
-    test_force_failure: Mutex<Option<String>>,
-    test_sources: Mutex<HashMap<IdTokenSpec, Arc<dyn IdTokenSource>>>,
+struct TestOverrides {
+    forced_failure: Mutex<Option<String>>,
+    tokens: Mutex<HashMap<IdTokenSpec, String>>,
 }
 
 impl GcpTokenClient {
     pub fn new() -> Self {
         Self {
             #[cfg(any(test, feature = "test_util"))]
-            inner: Arc::new(Inner {
-                test_force_failure: Mutex::new(None),
-                test_sources: Mutex::default(),
+            test_overrides: Arc::new(TestOverrides {
+                forced_failure: Mutex::new(None),
+                tokens: Mutex::default(),
             }),
         }
     }
@@ -490,25 +490,19 @@ impl GcpTokenClient {
             .unwrap_or("(ambient)")
             .to_owned();
 
-        let (source, registry) = match self.test_intercept(&spec, &impersonate) {
-            Some(Ok(source)) => (source, None),
-            Some(Err(error)) => return Err(error),
-            None => {
-                let registry = credential_registry();
-                match registry.get_or_build(&spec).await {
-                    Ok(source) => (source, Some(registry)),
-                    Err(error) => return Err(error),
-                }
-            }
-        };
+        #[cfg(any(test, feature = "test_util"))]
+        if let Some(result) = self.test_override(&spec, &impersonate) {
+            return result;
+        }
+
+        let registry = credential_registry();
+        let source = registry.get_or_build(&spec).await?;
 
         match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
             Ok(Ok(token)) => Ok(token),
             Ok(Err(error)) => {
                 // Transient errors may self-heal; evict permanent failures only if still current.
-                if let Some(registry) = &registry
-                    && !error.is_transient()
-                {
+                if !error.is_transient() {
                     registry.evict_if_unchanged(&spec, &source).await;
                     if spec.impersonate.is_some() {
                         registry.recover_ambient_source_if_dead().await;
@@ -529,57 +523,33 @@ impl GcpTokenClient {
     }
 
     #[cfg(any(test, feature = "test_util"))]
-    fn test_intercept(
+    fn test_override(
         &self,
         spec: &IdTokenSpec,
         impersonate: &str,
-    ) -> Option<Result<Arc<dyn IdTokenSource>, GcpAuthError>> {
-        if let Some(message) = self.inner.test_force_failure.lock().clone() {
+    ) -> Option<Result<String, GcpAuthError>> {
+        if let Some(message) = self.test_overrides.forced_failure.lock().clone() {
             return Some(Err(GcpAuthError::Mint {
                 audience: spec.audience.clone(),
                 impersonate: impersonate.to_owned(),
                 message,
             }));
         }
-        self.inner.test_sources.lock().get(spec).cloned().map(Ok)
-    }
-
-    #[cfg(not(any(test, feature = "test_util")))]
-    #[inline(always)]
-    fn test_intercept(
-        &self,
-        _spec: &IdTokenSpec,
-        _impersonate: &str,
-    ) -> Option<Result<Arc<dyn IdTokenSource>, GcpAuthError>> {
-        None
+        self.test_overrides.tokens.lock().get(spec).cloned().map(Ok)
     }
 
     #[cfg(any(test, feature = "test_util"))]
     pub fn force_mint_failure_for_test(&self, message: &str) {
-        *self.inner.test_force_failure.lock() = Some(message.to_owned());
+        *self.test_overrides.forced_failure.lock() = Some(message.to_owned());
     }
 
     #[cfg(any(test, feature = "test_util"))]
     pub fn seed_for_test(&self, impersonate: Option<&str>, audience: &str, token: String) {
-        struct MockToken(String);
-
-        #[async_trait]
-        impl IdTokenSource for MockToken {
-            async fn id_token(
-                &self,
-            ) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-                Ok(self.0.clone())
-            }
-        }
-
         let spec = IdTokenSpec {
             impersonate: impersonate.map(str::to_owned),
             audience: audience.to_owned(),
         };
-        self.inner
-            .test_sources
-            .lock()
-            .insert(spec, Arc::new(MockToken(token)));
+        self.test_overrides.tokens.lock().insert(spec, token);
     }
 }
 
