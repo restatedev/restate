@@ -31,6 +31,8 @@ pub enum AdminApiVersion {
     /// Added with v1.7.0. Added scope column to sys_state and sys_promise tables. More changes to
     /// follow with the vqueues changes. Removed sys_idempotency table.
     V4 = 4,
+    /// Added with v1.7.9. Added AWS-to-GCP workload identity federation to deployment auth.
+    V5 = 5,
 }
 
 impl AdminApiVersion {
