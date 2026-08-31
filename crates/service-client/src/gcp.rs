@@ -408,8 +408,9 @@ impl CredentialRegistry {
     }
 }
 
-/// A permanent probe error proves the source refresh task exited; all other outcomes may still be
-/// live and must be retained.
+// google-cloud-auth 1.16 publishes a permanent error before its refresh task exits and keeps
+// retrying transient errors. Probe through its public headers() API; success, transient errors,
+// and timeouts do not prove the source dead and must retain it.
 async fn ambient_source_is_dead(source: &GoogleCredentials) -> bool {
     matches!(
         tokio::time::timeout(AMBIENT_SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new()))
