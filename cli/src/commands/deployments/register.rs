@@ -80,6 +80,17 @@ pub struct Register {
     #[clap(long)]
     gcp_audience: Option<String>,
 
+    /// Full resource name of a GCP workload identity federation provider, e.g.
+    /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
+    /// When set, Restate mints the ID token via the AWS -> GCP workload identity federation
+    /// chain (an AWS role assumption signed and exchanged at this provider) instead of its
+    /// ambient Application Default Credentials. Requires the Restate server to be configured
+    /// with a `[gcp-federation]` AWS role, and requires
+    /// --gcp-impersonate-service-account: the resulting external-account credential cannot mint
+    /// an ID token ambiently. Implies --gcp-id-token.
+    #[clap(long, requires = "gcp_impersonate_service_account")]
+    gcp_workload_identity_provider: Option<String>,
+
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
     /// Use `--extra-header name=value` format and repeat --extra-header for each additional header.
@@ -199,6 +210,22 @@ fn parse_deployment(
     Ok(deployment)
 }
 
+/// Google ID-token auth is HTTP-only; Lambda deployments authenticate via `--assume-role-arn`
+/// instead. Rejected before any discovery or registration request is made.
+///
+/// `--gcp-workload-identity-provider` also requires `--gcp-impersonate-service-account`, but Clap
+/// enforces that at parse time.
+fn validate_gcp_auth_flags(id_token_auth_requested: bool, is_lambda_target: bool) -> Result<()> {
+    if id_token_auth_requested && is_lambda_target {
+        bail!(
+            "--gcp-id-token, --gcp-impersonate-service-account, --gcp-audience, and \
+             --gcp-workload-identity-provider are HTTP-only flags. Lambda deployments use \
+             --assume-role-arn instead."
+        );
+    }
+    Ok(())
+}
+
 // NOTE: Without parsing the proto descriptor, we can't detect the details of the
 // schema changes. We can only mention additions or removals of services or functions
 // and that's probably good enough for now!
@@ -229,13 +256,12 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     let id_token_auth = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
-        || discover_opts.gcp_audience.is_some();
-    if id_token_auth && matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)) {
-        bail!(
-            "--gcp-id-token, --gcp-impersonate-service-account, and --gcp-audience are \
-             HTTP-only flags. Lambda deployments use --assume-role-arn instead."
-        );
-    }
+        || discover_opts.gcp_audience.is_some()
+        || discover_opts.gcp_workload_identity_provider.is_some();
+    validate_gcp_auth_flags(
+        id_token_auth,
+        matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)),
+    )?;
 
     let id_token_auth = id_token_auth.then(|| {
         HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
@@ -244,6 +270,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 .clone()
                 .map(Into::into),
             audience: discover_opts.gcp_audience.clone().map(Into::into),
+            workload_identity_provider: discover_opts
+                .gcp_workload_identity_provider
+                .clone()
+                .map(Into::into),
         })
     });
 
@@ -826,4 +856,54 @@ fn infer_deployment_metadata_from_environment(metadata: &mut HashMap<String, Str
         "GITHUB_RUN_ID" => GITHUB_ACTIONS_RUN_ID,
         "GITHUB_SHA" => GIT_COMMIT,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Register, validate_gcp_auth_flags};
+
+    const PROVIDER: &str =
+        "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
+
+    #[derive(Parser)]
+    struct RegisterCommand {
+        #[clap(flatten)]
+        register: Register,
+    }
+
+    #[test]
+    fn google_id_token_auth_is_http_only() {
+        validate_gcp_auth_flags(true, true).expect_err("Google ID-token auth flags are HTTP-only");
+        validate_gcp_auth_flags(true, false).expect("Google ID-token auth is valid over HTTP");
+        validate_gcp_auth_flags(false, true).expect("no auth flags is valid for Lambda");
+    }
+
+    #[test]
+    fn provider_requires_impersonation_at_parse_time() {
+        let without_impersonation = RegisterCommand::try_parse_from([
+            "register",
+            "https://svc.example.com",
+            "--gcp-workload-identity-provider",
+            PROVIDER,
+        ]);
+        assert!(
+            without_impersonation.is_err(),
+            "a provider without --gcp-impersonate-service-account must be rejected"
+        );
+
+        let with_impersonation = RegisterCommand::try_parse_from([
+            "register",
+            "https://svc.example.com",
+            "--gcp-workload-identity-provider",
+            PROVIDER,
+            "--gcp-impersonate-service-account",
+            "sa@proj.iam.gserviceaccount.com",
+        ]);
+        assert!(
+            with_impersonation.is_ok(),
+            "a provider with impersonation must parse"
+        );
+    }
 }
