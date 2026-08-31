@@ -579,19 +579,7 @@ where
     where
         Schemas: InvocationTargetResolver,
     {
-        let execution_time = match (record.delay_ms, record.invoke_time_ts_ms) {
-            (None, None) => None,
-            (Some(_), Some(_)) => {
-                return Err(Error::BadRequestWithOffset(
-                    record.offset,
-                    BadRequestError::ConflictingExecutionTime,
-                ));
-            }
-            (Some(delay_ms), None) => {
-                Some(MillisSinceEpoch::after(Duration::from_millis(delay_ms)))
-            }
-            (None, Some(ts)) => Some(MillisSinceEpoch::from(ts)),
-        };
+        let execution_time = record.invoke_time_ts_ms.map(MillisSinceEpoch::from);
 
         let service = record
             .service
@@ -1017,8 +1005,6 @@ enum BadRequestError {
     MissingKey,
     #[error("Unexpected service key")]
     UnexpectedKey,
-    #[error("`delay_ms` and `invocation_time_ts_ms` are mutually exclusive")]
-    ConflictingExecutionTime,
     #[error("Scopes requires VQueues")]
     UnexpectedScope,
     #[error("Invalid scope: {0}")]
