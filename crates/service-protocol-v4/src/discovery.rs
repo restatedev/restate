@@ -274,7 +274,7 @@ impl DiscoveryClient for ServiceDiscovery {
             warn!(
                 "The registered endpoint is using a service protocol version that will be removed in the future releases. \
                      Please update the SDK to the latest release and re-register the deployment. \
-                     For more info, check https://docs.restate.dev/operate/versioning#deploying-new-service-versions",
+                     For more info, check https://docs.restate.dev/services/versioning#manual-versioning",
             );
         }
 

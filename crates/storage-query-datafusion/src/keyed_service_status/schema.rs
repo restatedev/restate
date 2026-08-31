@@ -24,6 +24,6 @@ define_table!(sys_keyed_service_status(
     /// The key of the virtual object/workflow.
     service_key: DataType::LargeUtf8,
 
-    /// [Invocation ID](/operate/invocation#invocation-identifier).
+    /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
     invocation_id: DataType::LargeUtf8,
 ));

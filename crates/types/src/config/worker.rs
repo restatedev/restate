@@ -1069,7 +1069,7 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
 /// Partition store object-store snapshotting settings. At a minimum, set `destination` to enable
 /// manual snapshotting via `restatectl`. Additionally, `snapshot-interval` and
 /// `snapshot-interval-num-records` can be used to configure automated periodic snapshots. For a
-/// complete example, see [Snapshots](https://docs.restate.dev/operate/snapshots).
+/// complete example, see [Snapshots](https://docs.restate.dev/server/snapshots).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

@@ -18,7 +18,7 @@ define_table!(sys_invocation_status(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// [Invocation ID](/operate/invocation#invocation-identifier).
+    /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
     id: DataType::LargeUtf8,
 
     /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
@@ -69,7 +69,7 @@ define_table!(sys_invocation_status(
     /// * `restart_as_new` if the invocation was created by restarting an old invocation as new.
     invoked_by: DataType::LargeUtf8,
 
-    /// The caller [Invocation ID](/operate/invocation#invocation-identifier) if `invoked_by = 'service'`.
+    /// The caller [Invocation ID](/services/invocation/managing-invocations#invocation-id) if `invoked_by = 'service'`.
     invoked_by_id: DataType::LargeUtf8,
 
     /// The subscription id if `invoked_by = 'subscription'`.

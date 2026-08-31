@@ -93,7 +93,7 @@ impl DurabilityTracker {
                     %durability_mode,
                     "Detected cluster environment with no snapshot repository configured. \
                     Automatic log trimming is disabled, please refer to \
-                    https://docs.restate.dev/operate/snapshots/ for more."
+                    https://docs.restate.dev/server/snapshots for more."
                 );
             }
         };
@@ -105,7 +105,7 @@ impl DurabilityTracker {
                     Due to the configured durability mode '{durability_mode}', the cluster might \
                     not be able to move partitions to other nodes for fail-over or rebalancing. \
                     Please configure the cluster to use a shared snapshot repository. Please refer \
-                    to https://docs.restate.dev/operate/snapshots/ for more."
+                    to https://docs.restate.dev/server/snapshots for more."
                 );
             }
         };
