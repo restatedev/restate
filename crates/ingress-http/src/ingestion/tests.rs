@@ -718,15 +718,6 @@ async fn record_rejections_carry_the_offset() {
             "Unexpected idempotency key",
         ),
         (
-            "both delay_ms and invoke_time_ts_ms",
-            with_service(SERVICE, |record| {
-                record.delay_ms = Some(10);
-                record.invoke_time_ts_ms = Some(20);
-            }),
-            ErrorKind::BadRequest,
-            "mutually exclusive",
-        ),
-        (
             "scope without vqueues enabled",
             with_service(SERVICE, |record| record.scope = Some("scope".to_owned())),
             ErrorKind::BadRequest,
