@@ -224,6 +224,9 @@ fn credential_registry() -> &'static CredentialRegistry {
 impl CredentialRegistry {
     fn new() -> Self {
         Self {
+            // Keys come only from operator-controlled deployment or discovery configuration, not
+            // invocation input. TTI removes abandoned attempts; a hard capacity would instead
+            // turn excess cardinality into credential rebuild churn. See #5184.
             cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
             ambient_source: RecoverableCredentialSource::new(),
             #[cfg(test)]
