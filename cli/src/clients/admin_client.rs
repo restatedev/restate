@@ -32,7 +32,7 @@ use super::errors::ApiError;
 
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V4;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -219,6 +219,7 @@ impl AdminClient {
                 AdminApiVersion::V2 => segments.push("v2").extend(path),
                 AdminApiVersion::V3 => segments.push("v3").extend(path),
                 AdminApiVersion::V4 => segments.push("v4").extend(path),
+                AdminApiVersion::V5 => segments.push("v5").extend(path),
             };
         }
 

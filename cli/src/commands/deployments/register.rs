@@ -82,12 +82,9 @@ pub struct Register {
 
     /// Full resource name of a GCP workload identity federation provider, e.g.
     /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
-    /// When set, Restate mints the ID token via the AWS -> GCP workload identity federation
-    /// chain (an AWS role assumption signed and exchanged at this provider) instead of its
-    /// ambient Application Default Credentials. Requires the Restate server to be configured
-    /// with a `[gcp-federation]` AWS role, and requires
-    /// --gcp-impersonate-service-account: the resulting external-account credential cannot mint
-    /// an ID token ambiently. Implies --gcp-id-token.
+    /// Use AWS-to-GCP workload identity federation instead of the server's ambient Application
+    /// Default Credentials. The server must have `[gcp-federation]` configured. Requires
+    /// --gcp-impersonate-service-account and implies --gcp-id-token.
     #[clap(long, requires = "gcp_impersonate_service_account")]
     gcp_workload_identity_provider: Option<String>,
 
@@ -226,6 +223,18 @@ fn validate_gcp_auth_flags(id_token_auth_requested: bool, is_lambda_target: bool
     Ok(())
 }
 
+fn validate_gcp_federation_support(
+    provider_requested: bool,
+    admin_api_version: AdminApiVersion,
+) -> Result<()> {
+    if provider_requested && admin_api_version < AdminApiVersion::V5 {
+        bail!(
+            "--gcp-workload-identity-provider requires a Restate server that supports Admin API v5; upgrade the server before registering this deployment"
+        );
+    }
+    Ok(())
+}
+
 // NOTE: Without parsing the proto descriptor, we can't detect the details of the
 // schema changes. We can only mention additions or removals of services or functions
 // and that's probably good enough for now!
@@ -243,6 +252,11 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
 
     // Preparing the discovery request
     let client = AdminClient::new(&env).await?;
+
+    validate_gcp_federation_support(
+        discover_opts.gcp_workload_identity_provider.is_some(),
+        client.admin_api_version,
+    )?;
 
     if discover_opts.breaking && client.admin_api_version < AdminApiVersion::V3 {
         bail!("--breaking is only supported when interacting with Restate >= 1.6");
@@ -862,7 +876,9 @@ fn infer_deployment_metadata_from_environment(metadata: &mut HashMap<String, Str
 mod tests {
     use clap::Parser;
 
-    use super::{Register, validate_gcp_auth_flags};
+    use restate_admin_rest_model::version::AdminApiVersion;
+
+    use super::{Register, validate_gcp_auth_flags, validate_gcp_federation_support};
 
     const PROVIDER: &str =
         "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r";
@@ -905,5 +921,17 @@ mod tests {
             with_impersonation.is_ok(),
             "a provider with impersonation must parse"
         );
+    }
+
+    #[test]
+    fn provider_requires_admin_api_v5() {
+        validate_gcp_federation_support(true, AdminApiVersion::V4)
+            .expect_err("an older server must be rejected before registration");
+        validate_gcp_federation_support(true, AdminApiVersion::Unknown)
+            .expect_err("an unverified server must be rejected before registration");
+        validate_gcp_federation_support(true, AdminApiVersion::V5)
+            .expect("Admin API v5 supports the provider field");
+        validate_gcp_federation_support(false, AdminApiVersion::V4)
+            .expect("existing registration options remain compatible with v4");
     }
 }

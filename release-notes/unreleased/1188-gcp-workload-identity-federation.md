@@ -90,5 +90,7 @@ restate dp register https://SERVICE_URL \
 
 `--gcp-workload-identity-provider` requires `--gcp-impersonate-service-account`. The deployment URI
 is the default ID-token audience; use `--gcp-audience` only when the service requires another value.
+The Restate CLI refuses to send federation configuration to a server that does not advertise Admin
+API v5.
 A deployment that requests federation on a server without `gcp-federation` configured fails closed
 with an actionable error and never sends an unauthenticated fallback request.
