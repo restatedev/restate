@@ -50,9 +50,20 @@ pub struct NetworkingOptions {
     pub handshake_timeout: NonZeroFriendlyDuration,
 
     /// # HTTP/2 Keep Alive Interval
+    ///
+    /// Interval at which HTTP/2 PING frames are sent on node-to-node
+    /// connections, to keep them alive and to detect peers that have become
+    /// unreachable.
+    ///
+    /// Applies both to the gRPC channels a node opens to its peers and to the
+    /// connections it accepts from them.
     pub http2_keep_alive_interval: NonZeroFriendlyDuration,
 
     /// # HTTP/2 Keep Alive Timeout
+    ///
+    /// How long to wait for a peer to acknowledge a keep-alive PING on a
+    /// node-to-node connection. If the acknowledgement does not arrive within
+    /// this timeout, the connection is closed and re-established.
     pub http2_keep_alive_timeout: NonZeroFriendlyDuration,
 
     /// # HTTP/2 Adaptive Window

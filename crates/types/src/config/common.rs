@@ -1143,9 +1143,16 @@ pub struct MetadataClientOptions {
     pub connect_timeout: NonZeroFriendlyDuration,
 
     /// # Metadata Store Keep Alive Interval
+    ///
+    /// Interval at which keep-alive probes are sent on the connection to the
+    /// metadata store, to keep it alive and to detect a store that has become
+    /// unreachable.
     pub keep_alive_interval: NonZeroFriendlyDuration,
 
     /// # Metadata Store Keep Alive Timeout
+    ///
+    /// How long to wait for a keep-alive probe to be acknowledged by the
+    /// metadata store before treating the connection as dead and closing it.
     pub keep_alive_timeout: NonZeroFriendlyDuration,
 
     /// # Backoff policy used by the metadata client
@@ -1250,6 +1257,14 @@ pub enum MetadataClientKind {
         object_store: ObjectStoreOptions,
 
         /// # Error retry policy
+        ///
+        /// Retry policy for the object store requests the metadata client
+        /// makes, covering both reads of the current metadata version and the
+        /// conditional writes used to update it.
+        ///
+        /// Retries here absorb the transient errors and throttling responses
+        /// object stores return under load, so a short or non-retrying policy
+        /// can surface those as metadata operation failures.
         #[serde(default = "MetadataClientKind::default_object_store_retry_policy")]
         object_store_retry_policy: RetryPolicy,
     },
