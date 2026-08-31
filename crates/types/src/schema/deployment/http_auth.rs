@@ -121,11 +121,16 @@ impl GoogleIdTokenAuth {
         self.impersonate_service_account.as_ref()
     }
 
-    pub fn into_parts(self) -> (ByteString, Option<ByteString>) {
-        (self.audience, self.impersonate_service_account)
-    }
     pub fn workload_identity_provider(&self) -> Option<&ByteString> {
         self.workload_identity_provider.as_ref()
+    }
+
+    pub fn into_parts(self) -> (ByteString, Option<ByteString>, Option<ByteString>) {
+        (
+            self.audience,
+            self.impersonate_service_account,
+            self.workload_identity_provider,
+        )
     }
 }
 

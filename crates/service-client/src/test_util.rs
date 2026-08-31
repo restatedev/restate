@@ -14,18 +14,18 @@ pub use crate::gcp::TestOverrideGuard as GcpTokenOverrideGuard;
 
 /// Return a scoped token override so tests do not need ambient Google credentials.
 pub fn override_gcp_token(
-    impersonate: Option<&str>,
+    service_account: Option<&str>,
     audience: &str,
     token: String,
 ) -> GcpTokenOverrideGuard {
-    crate::gcp::override_token_for_test(impersonate, audience, token)
+    crate::gcp::override_token_for_test(service_account, audience, token)
 }
 
 /// Return a scoped mint failure for the exact credential key under test.
 pub fn override_gcp_mint_failure(
-    impersonate: Option<&str>,
+    service_account: Option<&str>,
     audience: &str,
     message: &str,
 ) -> GcpTokenOverrideGuard {
-    crate::gcp::override_failure_for_test(impersonate, audience, message)
+    crate::gcp::override_failure_for_test(service_account, audience, message)
 }
