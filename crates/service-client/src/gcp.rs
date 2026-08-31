@@ -140,7 +140,7 @@ impl IdTokenSource for Live {
 struct CredentialRegistry {
     cache: Cache<IdTokenSpec, Arc<CredentialEntry>>,
     ambient_source: RecoverableCredentialSource,
-    #[cfg(any(test, feature = "test_util"))]
+    #[cfg(test)]
     test_hooks: TestHooks,
 }
 
@@ -199,13 +199,13 @@ impl RecoverableCredentialSource {
     }
 }
 
-#[cfg(any(test, feature = "test_util"))]
+#[cfg(test)]
 type ConstructOverride =
     Arc<dyn Fn(IdTokenSpec) -> BoxFuture<'static, Result<Credential, GcpAuthError>> + Send + Sync>;
-#[cfg(any(test, feature = "test_util"))]
+#[cfg(test)]
 type AmbientSourceOverride = Arc<dyn Fn() -> Result<GoogleCredentials, String> + Send + Sync>;
 
-#[cfg(any(test, feature = "test_util"))]
+#[cfg(test)]
 #[derive(Default)]
 struct TestHooks {
     build_overrides: Mutex<HashMap<IdTokenSpec, ConstructOverride>>,
@@ -226,7 +226,7 @@ impl CredentialRegistry {
         Self {
             cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
             ambient_source: RecoverableCredentialSource::new(),
-            #[cfg(any(test, feature = "test_util"))]
+            #[cfg(test)]
             test_hooks: TestHooks::default(),
         }
     }
@@ -300,7 +300,7 @@ impl CredentialRegistry {
     }
 
     async fn build_ambient_source(&self) -> Result<GoogleCredentials, String> {
-        #[cfg(any(test, feature = "test_util"))]
+        #[cfg(test)]
         {
             let override_fn = self.test_hooks.ambient_source_override.lock().clone();
             if let Some(f) = override_fn {
@@ -343,7 +343,7 @@ impl CredentialRegistry {
             TaskKind::Credentials,
             "gcp-id-token-credential-build",
             async move {
-                #[cfg(any(test, feature = "test_util"))]
+                #[cfg(test)]
                 if let Some(f) = {
                     registry
                         .test_hooks
