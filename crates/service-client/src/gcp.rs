@@ -19,6 +19,7 @@ use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use google_cloud_auth::credentials::Credentials as GoogleCredentials;
 use moka::future::Cache;
 use moka::ops::compute::Op;
 use restate_core::{TaskCenter, TaskKind};
@@ -105,23 +106,26 @@ impl IdTokenSource for Live {
 /// Process-wide credentials and their shared ambient source.
 struct CredentialRegistry {
     cache: Cache<IdTokenSpec, Arc<dyn IdTokenSource>>,
-    ambient_source: RecoverableCell<google_cloud_auth::credentials::Credentials>,
+    ambient_source: RecoverableCredentialSource,
     #[cfg(any(test, feature = "test_util"))]
     test_hooks: TestHooks,
 }
 
-struct RecoverableCell<T> {
-    cell: tokio::sync::Mutex<Option<T>>,
+struct RecoverableCredentialSource {
+    cell: tokio::sync::Mutex<Option<GoogleCredentials>>,
 }
 
-impl<T: Clone> RecoverableCell<T> {
+impl RecoverableCredentialSource {
     fn new() -> Self {
         Self {
             cell: tokio::sync::Mutex::new(None),
         }
     }
 
-    async fn get_or_build<E>(&self, build: impl Future<Output = Result<T, E>>) -> Result<T, E> {
+    async fn get_or_build(
+        &self,
+        build: impl Future<Output = Result<GoogleCredentials, String>>,
+    ) -> Result<GoogleCredentials, String> {
         let mut guard = self.cell.lock().await;
         if let Some(value) = guard.as_ref() {
             return Ok(value.clone());
@@ -133,16 +137,15 @@ impl<T: Clone> RecoverableCell<T> {
 
     // bounded by the probe's own timeout; swapped under lock so no need for external ABA checks.
     // Returns whether a replacement actually happened, so callers can log accordingly.
-    async fn replace_if_failed<E>(
+    async fn replace_if_dead(
         &self,
-        should_replace: impl AsyncFnOnce(&T) -> bool,
-        build: impl Future<Output = Result<T, E>>,
-    ) -> Result<bool, E> {
+        build: impl Future<Output = Result<GoogleCredentials, String>>,
+    ) -> Result<bool, String> {
         let mut guard = self.cell.lock().await;
         let Some(current) = guard.as_ref() else {
             return Ok(false);
         };
-        if !should_replace(current).await {
+        if !ambient_source_is_dead(current).await {
             return Ok(false);
         }
         match build.await {
@@ -158,7 +161,7 @@ impl<T: Clone> RecoverableCell<T> {
     }
 
     #[cfg(test)]
-    async fn seed_for_test(&self, value: T) {
+    async fn seed_for_test(&self, value: GoogleCredentials) {
         *self.cell.lock().await = Some(value);
     }
 }
@@ -167,8 +170,7 @@ impl<T: Clone> RecoverableCell<T> {
 type ConstructOverride =
     Arc<dyn Fn(&IdTokenSpec) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + Sync>;
 #[cfg(any(test, feature = "test_util"))]
-type AmbientSourceOverride =
-    Arc<dyn Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync>;
+type AmbientSourceOverride = Arc<dyn Fn() -> Result<GoogleCredentials, String> + Send + Sync>;
 
 #[cfg(any(test, feature = "test_util"))]
 #[derive(Default)]
@@ -190,7 +192,7 @@ impl CredentialRegistry {
     fn new() -> Self {
         Self {
             cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
-            ambient_source: RecoverableCell::new(),
+            ambient_source: RecoverableCredentialSource::new(),
             #[cfg(any(test, feature = "test_util"))]
             test_hooks: TestHooks::default(),
         }
@@ -238,7 +240,7 @@ impl CredentialRegistry {
             .await;
     }
 
-    async fn ambient_source(&self) -> Result<google_cloud_auth::credentials::Credentials, String> {
+    async fn ambient_source(&self) -> Result<GoogleCredentials, String> {
         self.ambient_source
             .get_or_build(self.build_ambient_source())
             .await
@@ -249,7 +251,7 @@ impl CredentialRegistry {
     async fn recover_ambient_source_if_dead(&self) {
         match self
             .ambient_source
-            .replace_if_failed(ambient_source_is_dead, self.build_ambient_source())
+            .replace_if_dead(self.build_ambient_source())
             .await
         {
             Ok(true) => {
@@ -268,9 +270,7 @@ impl CredentialRegistry {
         }
     }
 
-    async fn build_ambient_source(
-        &self,
-    ) -> Result<google_cloud_auth::credentials::Credentials, String> {
+    async fn build_ambient_source(&self) -> Result<GoogleCredentials, String> {
         #[cfg(any(test, feature = "test_util"))]
         {
             let override_fn = self.test_hooks.ambient_source_override.lock().clone();
@@ -374,7 +374,7 @@ impl CredentialRegistry {
 
 /// A permanent probe error proves the source refresh task exited; all other outcomes may still be
 /// live and must be retained.
-async fn ambient_source_is_dead(source: &google_cloud_auth::credentials::Credentials) -> bool {
+async fn ambient_source_is_dead(source: &GoogleCredentials) -> bool {
     matches!(
         tokio::time::timeout(AMBIENT_SOURCE_PROBE_TIMEOUT, source.headers(http::Extensions::new()))
             .await,
@@ -436,7 +436,7 @@ fn build_ambient_credentials(audience: &str) -> Result<Arc<dyn IdTokenSource>, G
 fn build_impersonated_credentials(
     audience: &str,
     service_account: &str,
-    source: google_cloud_auth::credentials::Credentials,
+    source: GoogleCredentials,
 ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
