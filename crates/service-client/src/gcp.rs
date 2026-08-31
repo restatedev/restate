@@ -19,12 +19,15 @@ use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use futures::FutureExt as _;
+use futures::future::{BoxFuture, Shared};
 use google_cloud_auth::credentials::Credentials as GoogleCredentials;
 use moka::future::Cache;
 use moka::ops::compute::Op;
 use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
+use tokio::time::Instant;
 use tracing::warn;
 
 #[cfg(any(test, feature = "test_util"))]
@@ -32,6 +35,8 @@ use ahash::HashMap;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
 
+// Bounds one caller's wait across credential construction and initial token acquisition.
+// Construction continues after a timeout and remains available to later callers.
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
 const CACHE_TIME_TO_IDLE: Duration = Duration::from_secs(3600);
@@ -94,6 +99,34 @@ trait IdTokenSource: Send + Sync {
     async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError>;
 }
 
+type Credential = Arc<dyn IdTokenSource>;
+type CredentialBuild = Shared<BoxFuture<'static, Result<Credential, GcpAuthError>>>;
+
+/// Cache-owned construction state. Retaining the shared future lets construction outlive any
+/// individual caller, while the once-lock ensures only one TaskCenter build is spawned per entry.
+struct CredentialEntry {
+    build: OnceLock<CredentialBuild>,
+}
+
+impl CredentialEntry {
+    fn new() -> Self {
+        Self {
+            build: OnceLock::new(),
+        }
+    }
+
+    async fn get_or_start(
+        &self,
+        registry: &'static CredentialRegistry,
+        spec: IdTokenSpec,
+    ) -> Result<Credential, GcpAuthError> {
+        self.build
+            .get_or_init(|| registry.start_build(spec))
+            .clone()
+            .await
+    }
+}
+
 struct Live(google_cloud_auth::credentials::idtoken::IDTokenCredentials);
 
 #[async_trait]
@@ -105,7 +138,7 @@ impl IdTokenSource for Live {
 
 /// Process-wide credentials and their shared ambient source.
 struct CredentialRegistry {
-    cache: Cache<IdTokenSpec, Arc<dyn IdTokenSource>>,
+    cache: Cache<IdTokenSpec, Arc<CredentialEntry>>,
     ambient_source: RecoverableCredentialSource,
     #[cfg(any(test, feature = "test_util"))]
     test_hooks: TestHooks,
@@ -168,7 +201,7 @@ impl RecoverableCredentialSource {
 
 #[cfg(any(test, feature = "test_util"))]
 type ConstructOverride =
-    Arc<dyn Fn(&IdTokenSpec) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + Sync>;
+    Arc<dyn Fn(IdTokenSpec) -> BoxFuture<'static, Result<Credential, GcpAuthError>> + Send + Sync>;
 #[cfg(any(test, feature = "test_util"))]
 type AmbientSourceOverride = Arc<dyn Fn() -> Result<GoogleCredentials, String> + Send + Sync>;
 
@@ -217,17 +250,13 @@ impl CredentialRegistry {
         );
     }
 
-    async fn get_or_build(
-        &'static self,
-        spec: &IdTokenSpec,
-    ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+    async fn get_entry(&self, spec: &IdTokenSpec) -> Arc<CredentialEntry> {
         self.cache
-            .try_get_with_by_ref(spec, self.build_on_tc_task(spec.clone()))
+            .get_with_by_ref(spec, async { Arc::new(CredentialEntry::new()) })
             .await
-            .map_err(|error| (*error).clone())
     }
 
-    async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<dyn IdTokenSource>) {
+    async fn evict_if_unchanged(&self, spec: &IdTokenSpec, expected: &Arc<CredentialEntry>) {
         self.cache
             .entry_by_ref(spec)
             .and_compute_with(|entry| {
@@ -305,48 +334,49 @@ impl CredentialRegistry {
         }
     }
 
-    async fn build_on_tc_task(
-        &'static self,
-        spec: IdTokenSpec,
-    ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+    fn start_build(&'static self, spec: IdTokenSpec) -> CredentialBuild {
         let registry = self;
         // google-cloud-auth uses bare tokio::spawn for refresh tasks. Build on the TaskCenter's
         // default runtime so they do not inherit a short-lived partition runtime.
         let audience = spec.audience.clone();
-        let task = TaskCenter::current()
-            .spawn_unmanaged(
-                TaskKind::Credentials,
-                "gcp-id-token-credential-build",
-                async move {
-                    #[cfg(any(test, feature = "test_util"))]
-                    if let Some(f) = registry
+        match TaskCenter::current().spawn_unmanaged(
+            TaskKind::Credentials,
+            "gcp-id-token-credential-build",
+            async move {
+                #[cfg(any(test, feature = "test_util"))]
+                if let Some(f) = {
+                    registry
                         .test_hooks
                         .build_overrides
                         .lock()
                         .get(&spec)
                         .cloned()
-                    {
-                        return f(&spec);
-                    }
-                    registry.build_credentials(spec).await
-                },
-            )
-            .map_err(|_| GcpAuthError::Build {
-                audience: audience.clone(),
-                message: "TaskCenter is shutting down".to_owned(),
-            })?;
-        task.await.unwrap_or_else(|_| {
-            Err(GcpAuthError::Build {
+                } {
+                    return f(spec).await;
+                }
+                registry.build_credentials(spec).await
+            },
+        ) {
+            Ok(task) => async move {
+                task.await.unwrap_or_else(|_| {
+                    Err(GcpAuthError::Build {
+                        audience,
+                        message: "GCP credential construction task failed".to_owned(),
+                    })
+                })
+            }
+            .boxed()
+            .shared(),
+            Err(_) => futures::future::ready(Err(GcpAuthError::Build {
                 audience,
-                message: "GCP credential construction task failed".to_owned(),
-            })
-        })
+                message: "TaskCenter is shutting down".to_owned(),
+            }))
+            .boxed()
+            .shared(),
+        }
     }
 
-    async fn build_credentials(
-        &self,
-        spec: IdTokenSpec,
-    ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+    async fn build_credentials(&self, spec: IdTokenSpec) -> Result<Credential, GcpAuthError> {
         let IdTokenSpec {
             impersonate,
             audience,
@@ -495,30 +525,45 @@ impl GcpTokenClient {
             return result;
         }
 
+        let deadline = Instant::now() + MINT_ATTEMPT_TIMEOUT;
+        let timeout_error = || GcpAuthError::Timeout {
+            audience: audience.to_owned(),
+            impersonate: impersonate.clone(),
+            duration: MINT_ATTEMPT_TIMEOUT,
+        };
         let registry = credential_registry();
-        let source = registry.get_or_build(&spec).await?;
+        let entry = tokio::time::timeout_at(deadline, registry.get_entry(&spec))
+            .await
+            .map_err(|_| timeout_error())?;
+        let source =
+            match tokio::time::timeout_at(deadline, entry.get_or_start(registry, spec.clone()))
+                .await
+            {
+                Ok(Ok(source)) => source,
+                Ok(Err(error)) => {
+                    registry.evict_if_unchanged(&spec, &entry).await;
+                    return Err(error);
+                }
+                Err(_) => return Err(timeout_error()),
+            };
 
-        match tokio::time::timeout(MINT_ATTEMPT_TIMEOUT, source.id_token()).await {
+        match tokio::time::timeout_at(deadline, source.id_token()).await {
             Ok(Ok(token)) => Ok(token),
             Ok(Err(error)) => {
                 // Transient errors may self-heal; evict permanent failures only if still current.
                 if !error.is_transient() {
-                    registry.evict_if_unchanged(&spec, &source).await;
+                    registry.evict_if_unchanged(&spec, &entry).await;
                     if spec.impersonate.is_some() {
                         registry.recover_ambient_source_if_dead().await;
                     }
                 }
                 Err(GcpAuthError::Mint {
                     audience: audience.to_owned(),
-                    impersonate,
+                    impersonate: impersonate.clone(),
                     message: error.to_string(),
                 })
             }
-            Err(_) => Err(GcpAuthError::Timeout {
-                audience: audience.to_owned(),
-                impersonate,
-                duration: MINT_ATTEMPT_TIMEOUT,
-            }),
+            Err(_) => Err(timeout_error()),
         }
     }
 
@@ -616,6 +661,17 @@ mod tests {
         }
     }
 
+    fn ready_entry(source: Credential) -> Arc<CredentialEntry> {
+        let entry = Arc::new(CredentialEntry::new());
+        assert!(
+            entry
+                .build
+                .set(futures::future::ready(Ok(source)).boxed().shared())
+                .is_ok()
+        );
+        entry
+    }
+
     impl IdTokenSpec {
         fn ambient(audience: &str) -> Self {
             IdTokenSpec {
@@ -642,13 +698,32 @@ mod tests {
 
     fn add_build_override(
         cache_key: IdTokenSpec,
-        f: impl Fn(&IdTokenSpec) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + Sync + 'static,
+        f: impl Fn(&IdTokenSpec) -> Result<Credential, GcpAuthError> + Send + Sync + 'static,
     ) {
+        let f = Arc::new(f);
         credential_registry()
             .test_hooks
             .build_overrides
             .lock()
-            .insert(cache_key, Arc::new(f));
+            .insert(
+                cache_key,
+                Arc::new(move |spec| {
+                    let result = f(&spec);
+                    futures::future::ready(result).boxed()
+                }),
+            );
+    }
+
+    fn add_async_build_override<F, Fut>(cache_key: IdTokenSpec, f: F)
+    where
+        F: Fn(IdTokenSpec) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Credential, GcpAuthError>> + Send + 'static,
+    {
+        credential_registry()
+            .test_hooks
+            .build_overrides
+            .lock()
+            .insert(cache_key, Arc::new(move |spec| f(spec).boxed()));
     }
 
     fn add_ambient_source_override(
@@ -732,6 +807,85 @@ mod tests {
 
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
+    }
+
+    #[restate_core::test]
+    async fn failed_shared_build_is_evicted_and_retried() {
+        let client = GcpTokenClient::new();
+        let audience = "https://build-retry.example.com";
+        let builds = Arc::new(AtomicUsize::new(0));
+
+        add_build_override(IdTokenSpec::ambient(audience), {
+            let builds = builds.clone();
+            move |_| match builds.fetch_add(1, Ordering::SeqCst) {
+                0 => Err(GcpAuthError::Build {
+                    audience: audience.to_owned(),
+                    message: "first build failed".to_owned(),
+                }),
+                _ => Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential),
+            }
+        });
+
+        let first = client.mint(None, audience).await;
+        assert!(matches!(first, Err(GcpAuthError::Build { .. })));
+        let second = client.mint(None, audience).await;
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(builds.load(Ordering::SeqCst), 2);
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn timed_out_caller_leaves_shared_construction_running() {
+        let client = GcpTokenClient::new();
+        let audience = "https://slow-construction.example.com";
+        let cache_key = IdTokenSpec::ambient(audience);
+        let builds = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+
+        add_async_build_override(cache_key.clone(), {
+            let builds = builds.clone();
+            let release = release.clone();
+            move |_| {
+                let builds = builds.clone();
+                let release = release.clone();
+                async move {
+                    builds.fetch_add(1, Ordering::SeqCst);
+                    release.notified().await;
+                    Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential)
+                }
+            }
+        });
+
+        let first = client.mint(None, audience).await;
+        assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        let entry = credential_registry()
+            .cache
+            .get(&cache_key)
+            .await
+            .expect("timed-out construction remains cached");
+
+        release.notify_waiters();
+        let second = client.mint(None, audience).await;
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(builds.load(Ordering::SeqCst), 1);
+        let cached = credential_registry().cache.get(&cache_key).await;
+        assert!(matches!(cached, Some(current) if Arc::ptr_eq(&current, &entry)));
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn construction_and_token_mint_share_one_deadline() {
+        let client = GcpTokenClient::new();
+        let audience = "https://shared-deadline.example.com";
+
+        add_async_build_override(IdTokenSpec::ambient(audience), move |_| async move {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            Ok(MockSource::new(|_| MockOutcome::Hang) as Credential)
+        });
+
+        let started = Instant::now();
+        let outcome = client.mint(None, audience).await;
+        assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
+        assert_eq!(started.elapsed(), MINT_ATTEMPT_TIMEOUT);
     }
 
     #[restate_core::test]
@@ -876,17 +1030,17 @@ mod tests {
             }
         });
         let dyn_source: Arc<dyn IdTokenSource> = source.clone();
-        let cached_source = dyn_source;
+        let cached_entry = ready_entry(dyn_source);
         credential_registry()
             .cache
-            .insert(cache_key.clone(), cached_source.clone())
+            .insert(cache_key.clone(), cached_entry.clone())
             .await;
 
         let first = client.mint(None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
         let still_cached = credential_registry().cache.get(&cache_key).await;
-        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &cached_source)));
+        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &cached_entry)));
 
         let second = client.mint(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
@@ -898,15 +1052,16 @@ mod tests {
         let audience = "https://timeout.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Hang);
+        let entry = ready_entry(source);
         credential_registry()
             .cache
-            .insert(cache_key.clone(), source.clone())
+            .insert(cache_key.clone(), entry.clone())
             .await;
 
         let outcome = client.mint(None, audience).await;
         assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
         let still_cached = credential_registry().cache.get(&cache_key).await;
-        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &source)));
+        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &entry)));
     }
 
     #[restate_core::test]
@@ -918,7 +1073,7 @@ mod tests {
             MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")));
         credential_registry()
             .cache
-            .insert(cache_key.clone(), source.clone())
+            .insert(cache_key.clone(), ready_entry(source))
             .await;
 
         let outcome = client.mint(None, audience).await;
@@ -936,10 +1091,11 @@ mod tests {
         let audience = "https://aba.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let new_source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Token(token()));
+        let new_entry = ready_entry(new_source);
 
         struct SwapThenFail {
             spec: IdTokenSpec,
-            replacement: Arc<dyn IdTokenSource>,
+            replacement: Arc<CredentialEntry>,
         }
 
         #[async_trait]
@@ -957,11 +1113,12 @@ mod tests {
 
         let old_source: Arc<dyn IdTokenSource> = Arc::new(SwapThenFail {
             spec: cache_key.clone(),
-            replacement: new_source.clone(),
+            replacement: new_entry.clone(),
         });
+        let old_entry = ready_entry(old_source);
         credential_registry()
             .cache
-            .insert(cache_key.clone(), old_source.clone())
+            .insert(cache_key.clone(), old_entry)
             .await;
 
         let outcome = client.mint(None, audience).await;
@@ -972,7 +1129,7 @@ mod tests {
 
         let cached = credential_registry().cache.get(&cache_key).await;
         assert!(
-            matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_source)),
+            matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_entry)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
         );
     }
@@ -1013,8 +1170,13 @@ mod tests {
         {
             let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
             let spec = IdTokenSpec::ambient(audience);
-            let result = caller_runtime
-                .block_on(async { registry.get_or_build(&spec).await }.in_tc(&task_center));
+            let result = caller_runtime.block_on(
+                async {
+                    let entry = registry.get_entry(&spec).await;
+                    entry.get_or_start(registry, spec).await
+                }
+                .in_tc(&task_center),
+            );
             if let Err(error) = &result {
                 panic!("{error}");
             }
