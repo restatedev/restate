@@ -208,17 +208,24 @@ impl AwsFederationCredentials {
     }
 }
 
-/// IAM denial is permanent so the source exits and can be rebuilt after IAM is fixed; other
-/// AssumeRole failures may resolve on retry.
+/// Configuration and authorization failures require operator action. Expired ambient credentials,
+/// transport failures, and unknown errors may recover on retry.
 fn federation_error_from_assume_role_failure(
     error: &aws_credential_types::provider::error::CredentialsError,
 ) -> FederationError {
     let message = format!("assuming the AWS federation role for GCP authentication: {error}");
-    let access_denied = matches!(
+    let permanent = matches!(
         assume_role_error_code(error),
-        Some("AccessDenied" | "AccessDeniedException")
+        Some(
+            "AccessDenied"
+                | "AccessDeniedException"
+                | "MalformedPolicyDocument"
+                | "PackedPolicyTooLarge"
+                | "RegionDisabledException"
+                | "ValidationError"
+        )
     );
-    if access_denied {
+    if permanent {
         FederationError::permanent(message)
     } else {
         FederationError::transient(message)
@@ -333,12 +340,8 @@ impl AwsSubjectTokenProvider {
             FederationError::permanent(format!("signing the GetCallerIdentity subject token: {e}"))
         })?;
 
-        // google-cloud-auth's built-in AWS credential source (`external_account_sources::aws_sourced`)
-        // form-urlencodes the AIP-4117 JSON envelope before returning it as the subject token; the
-        // STS token-exchange request then form-encodes the whole request body for transport, so the
-        // envelope arrives at Google encoded exactly twice: once by us, once by the transport layer.
-        // We match that convention here so the two encoding layers are exactly as Google expects,
-        // pinned by `programmatic_builder_sts_exchange_matches_expected_wire_format`.
+        // Match google-cloud-auth's AWS source: encode the envelope once here, before the STS
+        // request form-encodes it again. The wire-format test pins this otherwise subtle contract.
         let subject_token: String =
             url::form_urlencoded::byte_serialize(envelope.as_bytes()).collect();
         Ok(SubjectTokenBuilder::new(subject_token).build())
@@ -442,8 +445,6 @@ pub(super) struct FederatedAccessTokenSourceIndex {
 }
 
 impl FederatedAccessTokenSourceIndex {
-    /// Only cheap weak-map bookkeeping runs under this lock; slow construction is serialized by
-    /// the source's own credential slot.
     pub(super) fn get_or_create(&self, provider: &str) -> Arc<FederatedAccessTokenSource> {
         let mut entries = self.entries.lock();
         if let Some(existing) = entries.get(provider).and_then(Weak::upgrade) {
@@ -488,8 +489,7 @@ impl FederatedAccessTokenSourceIndex {
         }
     }
 
-    /// Drops index entries whose source has lost its last lease. Returns the number of entries
-    /// still leased, which tests assert on and which bounds the live refresh-task count.
+    /// Drops entries without a live lease and returns the number that remain.
     pub(super) fn reap_dead(&self) -> usize {
         let mut entries = self.entries.lock();
         entries.retain(|_, weak| weak.strong_count() > 0);
@@ -590,9 +590,7 @@ async fn build_federated_access_token_source(
         .map_err(|e| format!("building GCP workload identity federation source credentials: {e}"))
 }
 
-/// Federation-only test seams: they replace the Google STS access-token source with an offline
-/// stand-in, which also keeps outer credential construction offline (see
-/// [`build_federated_source`]).
+/// Offline substitutes for federation source construction.
 #[cfg(test)]
 pub(super) mod test_hooks {
     use std::collections::HashMap;
@@ -628,8 +626,6 @@ pub(super) mod test_hooks {
         OVERRIDES.lock().insert(provider.to_owned(), Arc::new(f));
     }
 
-    /// An outer ID-token credential that holds a real source lease but never starts a Google
-    /// refresh task, so source-lifecycle tests stay offline.
     pub(super) struct FederatedIdTokenCredentials {
         pub(super) _access_token_source: Arc<FederatedAccessTokenSource>,
     }
@@ -1009,8 +1005,9 @@ mod federation_tests {
         assert_eq!(configured_first.get(), Some(&Some(a)));
     }
 
-    fn assume_role_access_denied_error() -> aws_credential_types::provider::error::CredentialsError
-    {
+    fn assume_role_service_error(
+        code: &'static str,
+    ) -> aws_credential_types::provider::error::CredentialsError {
         use aws_sdk_sts::error::SdkError;
         use aws_sdk_sts::operation::assume_role::AssumeRoleError;
         use aws_smithy_runtime_api::client::orchestrator::HttpResponse;
@@ -1020,11 +1017,8 @@ mod federation_tests {
 
         let service_error = AssumeRoleError::generic(
             ErrorMetadata::builder()
-                .code("AccessDenied")
-                .message(
-                    "User: arn:aws:sts::123456789012:assumed-role/... is not authorized to \
-                     perform: sts:AssumeRole on resource: ...",
-                )
+                .code(code)
+                .message("simulated AssumeRole failure")
                 .build(),
         );
         let raw = HttpResponse::new(
@@ -1047,15 +1041,29 @@ mod federation_tests {
     }
 
     #[test]
-    fn assume_role_access_denied_classifies_permanent() {
-        let raw = assume_role_access_denied_error();
-        // The wire error code is recovered through the unmodeled `Unhandled` variant, not matched
-        // on `Display` text -- pin that alongside the classification it feeds.
-        assert_eq!(super::assume_role_error_code(&raw), Some("AccessDenied"));
+    fn assume_role_operator_errors_classify_permanent() {
+        for code in [
+            "AccessDenied",
+            "AccessDeniedException",
+            "MalformedPolicyDocument",
+            "PackedPolicyTooLarge",
+            "RegionDisabledException",
+            "ValidationError",
+        ] {
+            let raw = assume_role_service_error(code);
+            assert_eq!(super::assume_role_error_code(&raw), Some(code));
+            let error = super::federation_error_from_assume_role_failure(&raw);
+            assert!(!error.is_transient(), "{code} must be permanent");
+        }
+    }
+
+    #[test]
+    fn assume_role_expired_credentials_classify_transient() {
+        let raw = assume_role_service_error("ExpiredTokenException");
         let error = super::federation_error_from_assume_role_failure(&raw);
         assert!(
-            !error.is_transient(),
-            "an AssumeRole AccessDenied must classify as permanent, got {error:?}"
+            error.is_transient(),
+            "ambient credentials may rotate after expiry"
         );
     }
 
@@ -1070,7 +1078,6 @@ mod federation_tests {
         );
     }
 
-    /// A live weak-indexed source is reused; a dead entry is replaced on the next lookup.
     #[test]
     fn federated_access_token_source_upgrades_while_live_and_replaces_once_dead() {
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/lookup-test";
