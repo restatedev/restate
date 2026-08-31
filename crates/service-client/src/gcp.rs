@@ -11,17 +11,16 @@
 //! GCP OIDC ID-token mint client for HTTP deployments hosted on Cloud Run and similar
 //! Google-fronted endpoints.
 //!
-//! Credentials are cached in a registry bound to the ambient [`TaskCenter`]. Construction runs on
-//! its default runtime so refresh tasks have process lifetime. Invocation tasks inherit that
-//! task-local context at the invoker's `JoinSet` boundary.
+//! Credentials are cached in a process-wide registry. Construction runs on the ambient
+//! [`TaskCenter`]'s default runtime so refresh tasks have process lifetime. Invocation tasks
+//! inherit that task-local context at the invoker's `JoinSet` boundary.
 
-use std::sync::{Arc, Weak};
+use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use moka::future::Cache;
 use moka::ops::compute::Op;
-use parking_lot::Mutex;
 use restate_core::{TaskCenter, TaskKind};
 use thiserror::Error;
 use tokio::sync::Semaphore;
@@ -29,6 +28,8 @@ use tracing::warn;
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
+#[cfg(any(test, feature = "test_util"))]
+use parking_lot::Mutex;
 
 const MINT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -115,7 +116,7 @@ impl CachedCredential {
     }
 }
 
-/// Credentials and their shared ambient source, bound to one TaskCenter.
+/// Process-wide credentials and their shared ambient source.
 struct CredentialRegistry {
     cache: Cache<IdTokenSpec, Arc<CachedCredential>>,
     ambient_source: RecoverableCell<google_cloud_auth::credentials::Credentials>,
@@ -190,36 +191,35 @@ struct TestHooks {
     ambient_source_override: Mutex<Option<AmbientSourceOverride>>,
 }
 
-static REGISTRY: Mutex<Weak<CredentialRegistry>> = Mutex::new(Weak::new());
+static REGISTRY: OnceLock<CredentialRegistry> = OnceLock::new();
+static HOUSEKEEPING_STARTED: Once = Once::new();
 
-fn credential_registry() -> Arc<CredentialRegistry> {
-    let mut registry = REGISTRY.lock();
-    if let Some(current) = registry.upgrade() {
-        return current;
-    }
-
-    let current = CredentialRegistry::init();
-    *registry = Arc::downgrade(&current);
-    current
+fn credential_registry() -> &'static CredentialRegistry {
+    let registry = REGISTRY.get_or_init(CredentialRegistry::new);
+    HOUSEKEEPING_STARTED.call_once(|| registry.start_housekeeping());
+    registry
 }
 
 impl CredentialRegistry {
-    fn init() -> Arc<Self> {
-        let registry = Arc::new(Self {
+    fn new() -> Self {
+        Self {
             cache: Cache::builder().time_to_idle(CACHE_TIME_TO_IDLE).build(),
             ambient_source: RecoverableCell::new(),
             #[cfg(any(test, feature = "test_util"))]
             test_hooks: TestHooks::default(),
-        });
+        }
+    }
 
-        // This TaskCenter-owned future is the registry's only process-lifetime strong owner.
-        let housekeeping_registry = registry.clone();
+    fn start_housekeeping(&'static self) {
+        // Cache operations also drive Moka's maintenance. This loop makes cleanup of completely
+        // idle bookkeeping timely; if it fails, authentication remains correct, so the
+        // Credentials task kind logs the failure rather than shutting down the node.
         let housekeeping = async move {
             let mut interval = tokio::time::interval(CACHE_HOUSEKEEPING_INTERVAL);
             interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
                 interval.tick().await;
-                housekeeping_registry.cache.run_pending_tasks().await;
+                self.cache.run_pending_tasks().await;
             }
         };
         let _ = TaskCenter::spawn(
@@ -227,12 +227,10 @@ impl CredentialRegistry {
             "gcp-credential-housekeeping",
             housekeeping,
         );
-
-        registry
     }
 
     async fn get_or_build(
-        self: &Arc<Self>,
+        &'static self,
         spec: &IdTokenSpec,
     ) -> Result<Arc<CachedCredential>, GcpAuthError> {
         self.cache
@@ -326,10 +324,10 @@ impl CredentialRegistry {
     }
 
     async fn build_on_tc_task(
-        self: &Arc<Self>,
+        &'static self,
         spec: IdTokenSpec,
     ) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
-        let registry = self.clone();
+        let registry = self;
         // google-cloud-auth uses bare tokio::spawn for refresh tasks. Build on the TaskCenter's
         // default runtime so they do not inherit a short-lived partition runtime.
         let audience = spec.audience.clone();
@@ -470,7 +468,7 @@ fn build_impersonated_credentials(
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
 }
 
-/// Cheap handle to the TaskCenter-scoped credential registry.
+/// Cheap handle to the process-wide credential registry.
 #[derive(Clone)]
 pub struct GcpTokenClient {
     #[cfg(any(test, feature = "test_util"))]
@@ -510,7 +508,6 @@ impl GcpTokenClient {
             .unwrap_or("(ambient)")
             .to_owned();
 
-        // Recovery must act on the registry generation that built this source.
         let (source, registry) = match self.test_intercept(&spec, &impersonate) {
             Some(Ok(source)) => (CachedCredential::new(source), None),
             Some(Err(error)) => return Err(error),
@@ -1027,79 +1024,6 @@ mod tests {
             matches!(cached, Some(s) if Arc::ptr_eq(&s, &new_source)),
             "evict from a stale caller must not remove the freshly rebuilt healthy entry"
         );
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn registry_is_dropped_at_shutdown_and_a_new_task_center_gets_a_fresh_one() {
-        use restate_core::{TaskCenterBuilder, TaskCenterFutureExt as _};
-
-        let audience = "https://tc-lifecycle.example.com";
-        let spec = IdTokenSpec::ambient(audience);
-        let build_count = Arc::new(AtomicUsize::new(0));
-
-        let install_override = || {
-            add_build_override(spec.clone(), {
-                let build_count = build_count.clone();
-                move |_| {
-                    build_count.fetch_add(1, Ordering::SeqCst);
-                    Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
-                }
-            });
-        };
-
-        let tc_a = TaskCenterBuilder::default_for_tests()
-            .build()
-            .expect("task center builds")
-            .into_handle();
-        let weak = async {
-            install_override();
-            let registry = credential_registry();
-            let result = registry.get_or_build(&spec).await;
-            if let Err(error) = &result {
-                panic!("{error}");
-            }
-            Arc::downgrade(&registry)
-        }
-        .in_tc(&tc_a)
-        .await;
-        assert_eq!(build_count.load(Ordering::SeqCst), 1);
-        tc_a.shutdown_node("test done with TC-A", 0).await;
-
-        // Cancellation is asynchronous; don't upgrade the Weak while polling because that would
-        // keep the registry alive.
-        let mut dropped = weak.strong_count() == 0;
-        for _ in 0..50 {
-            if dropped {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-            dropped = weak.strong_count() == 0;
-        }
-        assert!(
-            dropped,
-            "the registry must be dropped at TaskCenter shutdown, not at the next mint"
-        );
-
-        let tc_b = TaskCenterBuilder::default_for_tests()
-            .build()
-            .expect("task center builds")
-            .into_handle();
-        async {
-            install_override();
-            let registry = credential_registry();
-            let result = registry.get_or_build(&spec).await;
-            if let Err(error) = &result {
-                panic!("{error}");
-            }
-        }
-        .in_tc(&tc_b)
-        .await;
-        assert_eq!(
-            build_count.load(Ordering::SeqCst),
-            2,
-            "a new task center must get a fresh registry -- the old one's cache must not persist"
-        );
-        tc_b.shutdown_node("test done with TC-B", 0).await;
     }
 
     #[test]
