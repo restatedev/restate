@@ -48,7 +48,7 @@ use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTarge
 use restate_types::time::MillisSinceEpoch;
 use restate_wal_protocol::{Command, DedupInformation, Destination, Envelope};
 
-use crate::ingestion::ingestion_svc::proto::ingestion_request::Payload;
+use crate::ingestion::ingestion_svc::proto::ingestion_request::Kind;
 use crate::ingestion::ingestion_svc::proto::{
     self, DeduplicationMode, ErrorKind, IngestionDefaults, IngestionInvocation, IngestionRequest,
     IngestionResponse, IngestionStart, ingestion_response,
@@ -104,10 +104,8 @@ struct TestStream {
 }
 
 impl TestStream {
-    fn send(&self, payload: Payload) {
-        self.send_request(IngestionRequest {
-            payload: Some(payload),
-        });
+    fn send(&self, kind: Kind) {
+        self.send_request(IngestionRequest { kind: Some(kind) });
     }
 
     fn send_request(&self, request: IngestionRequest) {
@@ -231,7 +229,7 @@ where
 {
     let mut stream = stream(max_window_size, handler);
 
-    stream.send(Payload::Start(start));
+    stream.send(Kind::Start(start));
 
     let (increment, last_committed) = stream.next_window_update().await;
     assert_eq!(increment, max_window_size);
@@ -334,7 +332,7 @@ async fn ingests_records_and_replenishes_window() {
 
     let first = invocation(0);
     let first_size = first.encoded_len() as u32;
-    stream.send(Payload::Invocation(first));
+    stream.send(Kind::Invocation(first));
 
     resolver
         .handle_next(|_keys, envelope| {
@@ -362,8 +360,8 @@ async fn ingests_records_and_replenishes_window() {
     let second = invocation(1);
     let third = invocation(2);
     let both_sizes = (second.encoded_len() + third.encoded_len()) as u32;
-    stream.send(Payload::Invocation(second));
-    stream.send(Payload::Invocation(third));
+    stream.send(Kind::Invocation(second));
+    stream.send(Kind::Invocation(third));
 
     for i in 1..=2 {
         resolver
@@ -414,7 +412,7 @@ async fn window_update_is_returned_early_when_window_is_low() {
     .await;
 
     for record in records {
-        stream.send(Payload::Invocation(record));
+        stream.send(Kind::Invocation(record));
     }
     stream.settle().await;
     stream.assert_no_response();
@@ -459,12 +457,12 @@ async fn exceeding_the_send_window_terminates_the_stream() {
     .await;
 
     // Legal: a single invocation larger than the whole window.
-    stream.send(Payload::Invocation(invocation_with_payload(0, 256)));
+    stream.send(Kind::Invocation(invocation_with_payload(0, 256)));
     stream.settle().await;
     stream.assert_no_response();
 
     // Illegal: the window is depleted and nothing has committed yet.
-    stream.send(Payload::Invocation(invocation(1)));
+    stream.send(Kind::Invocation(invocation(1)));
 
     let (error, last_committed) = stream.next_error().await;
     assert_eq!(error.kind(), ErrorKind::GoAway);
@@ -487,16 +485,16 @@ async fn offsets_must_strictly_increase() {
     .await;
 
     // A gap between 0 and 5 is fine.
-    stream.send(Payload::Invocation(invocation(0)));
+    stream.send(Kind::Invocation(invocation(0)));
     resolver.commit_next().await;
     assert_eq!(stream.next_window_update().await.1, Some(0));
 
-    stream.send(Payload::Invocation(invocation(5)));
+    stream.send(Kind::Invocation(invocation(5)));
     resolver.commit_next().await;
     assert_eq!(stream.next_window_update().await.1, Some(5));
 
     // Replaying an offset that was already submitted is not.
-    stream.send(Payload::Invocation(invocation(5)));
+    stream.send(Kind::Invocation(invocation(5)));
     let (error, last_committed) = stream.next_error().await;
     assert_eq!(error.kind(), ErrorKind::GoAway);
     assert_eq!(error.invocation_offset, None);
@@ -517,21 +515,21 @@ async fn start_frame_contract() {
         (
             "first frame is not a Start",
             IngestionRequest {
-                payload: Some(Payload::Defaults(defaults(Some(SERVICE), Some(HANDLER)))),
+                kind: Some(Kind::Defaults(defaults(Some(SERVICE), Some(HANDLER)))),
             },
             ErrorKind::GoAway,
             "Expecting Start message",
         ),
         (
-            "first frame has no payload",
-            IngestionRequest { payload: None },
+            "first frame has no kind",
+            IngestionRequest { kind: None },
             ErrorKind::GoAway,
             "Missing request payload",
         ),
         (
             "offset based deduplication without a producer id",
             IngestionRequest {
-                payload: Some(Payload::Start(IngestionStart {
+                kind: Some(Kind::Start(IngestionStart {
                     producer_id: String::new(),
                     ..start(None)
                 })),
@@ -542,7 +540,7 @@ async fn start_frame_contract() {
         (
             "unknown deduplication mode",
             IngestionRequest {
-                payload: Some(Payload::Start(IngestionStart {
+                kind: Some(Kind::Start(IngestionStart {
                     deduplication_mode: 42,
                     ..start(None)
                 })),
@@ -553,7 +551,7 @@ async fn start_frame_contract() {
         (
             "defaults referencing an unknown service",
             IngestionRequest {
-                payload: Some(Payload::Start(start(Some(defaults(
+                kind: Some(Kind::Start(start(Some(defaults(
                     Some("unknown.Service"),
                     None,
                 ))))),
@@ -564,7 +562,7 @@ async fn start_frame_contract() {
         (
             "defaults referencing an unknown handler",
             IngestionRequest {
-                payload: Some(Payload::Start(start(Some(defaults(
+                kind: Some(Kind::Start(start(Some(defaults(
                     Some(SERVICE),
                     Some("unknown"),
                 ))))),
@@ -606,19 +604,19 @@ async fn frames_rejected_while_processing() {
         (
             "a second Start frame",
             IngestionRequest {
-                payload: Some(Payload::Start(start(None))),
+                kind: Some(Kind::Start(start(None))),
             },
             "Unexpected Start message",
         ),
         (
             "a frame without payload",
-            IngestionRequest { payload: None },
+            IngestionRequest { kind: None },
             "Missing request payload",
         ),
         (
             "defaults referencing an unknown service",
             IngestionRequest {
-                payload: Some(Payload::Defaults(defaults(Some("unknown.Service"), None))),
+                kind: Some(Kind::Defaults(defaults(Some("unknown.Service"), None))),
             },
             "Unknown service unknown.Service",
         ),
@@ -746,7 +744,7 @@ async fn record_rejections_carry_the_offset() {
 
     for (case, record, kind, message) in cases {
         let mut stream = started_stream(4096, start(None), auto_commit).await;
-        stream.send(Payload::Invocation(record));
+        stream.send(Kind::Invocation(record));
 
         let (error, last_committed) = stream.next_error().await;
         assert_eq!(error.kind(), kind, "case: {case}");
@@ -775,7 +773,7 @@ async fn oversized_record_is_rejected_by_the_ingestion_client() {
     )
     .await;
 
-    stream.send(Payload::Invocation(invocation_with_payload(3, 1024)));
+    stream.send(Kind::Invocation(invocation_with_payload(3, 1024)));
 
     let (error, _) = stream.next_error().await;
     assert_eq!(error.kind(), ErrorKind::BadRequest);
@@ -805,7 +803,7 @@ async fn defaults_are_replaced_and_overridden_per_record() {
     .await;
 
     // Purely default-driven.
-    stream.send(Payload::Invocation(invocation(0)));
+    stream.send(Kind::Invocation(invocation(0)));
     let (invoke, _) = single_invoke(resolver.commit_next().await);
     assert_eq!(invoke.invocation_target.service_name(), SERVICE);
     assert_eq!(invoke.invocation_target.handler_name(), HANDLER);
@@ -826,7 +824,7 @@ async fn defaults_are_replaced_and_overridden_per_record() {
     assert_eq!(stream.next_window_update().await.1, Some(0));
 
     // Record-level overrides win, and its headers extend/override the defaults.
-    stream.send(Payload::Invocation(IngestionInvocation {
+    stream.send(Kind::Invocation(IngestionInvocation {
         service: Some(OBJECT.to_owned()),
         key: Some("object-key".to_owned()),
         idempotency_key: Some("from-record".to_owned()),
@@ -866,8 +864,8 @@ async fn defaults_are_replaced_and_overridden_per_record() {
 
     // A new defaults frame replaces the previous one instead of merging with it, so
     // the idempotency key and headers established above are gone.
-    stream.send(Payload::Defaults(defaults(Some(OBJECT), Some(HANDLER))));
-    stream.send(Payload::Invocation(IngestionInvocation {
+    stream.send(Kind::Defaults(defaults(Some(OBJECT), Some(HANDLER))));
+    stream.send(Kind::Invocation(IngestionInvocation {
         key: Some("other-key".to_owned()),
         ..invocation(2)
     }));
@@ -894,7 +892,7 @@ async fn deduplication_can_be_disabled() {
     )
     .await;
 
-    stream.send(Payload::Invocation(invocation(0)));
+    stream.send(Kind::Invocation(invocation(0)));
     let (invoke, dedup) = single_invoke(resolver.commit_next().await);
     assert_eq!(dedup, None);
     assert_eq!(invoke.invocation_target.service_name(), SERVICE);
@@ -915,8 +913,8 @@ async fn half_close_drains_inflight_records() {
     )
     .await;
 
-    stream.send(Payload::Invocation(invocation(0)));
-    stream.send(Payload::Invocation(invocation(1)));
+    stream.send(Kind::Invocation(invocation(0)));
+    stream.send(Kind::Invocation(invocation(1)));
     stream.settle().await;
 
     stream.half_close();

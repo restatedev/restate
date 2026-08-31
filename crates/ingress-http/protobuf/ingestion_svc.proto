@@ -48,8 +48,7 @@ message IngestionStart {
     string producer_id = 1;
     // Integration identification in format `name/version`
     string integration = 2;
-    // Deduplication strategy for this stream. Defaults to `OFFSET_BASED`
-    // when unset, which requires `producer_id` to be set.
+    // Deduplication strategy for this stream. Defaults to `DISABLED`.
     DeduplicationMode deduplication_mode = 3;
     // Initial ingestion defaults for the stream, letting the client
     // establish its defaults up front instead of following
@@ -95,7 +94,8 @@ enum DeduplicationMode {
     // This is the default: leaving `deduplication_mode` unset selects it.
     OFFSET_BASED = 1;
 }
-// A IngestionDefaults message defines the default values applied to all
+
+// An IngestionDefaults message defines the default values applied to all
 // subsequent records in the stream.
 // Each IngestionDefaults message must specify every field it wants to set:
 // its fields are not merged with those of previous IngestionDefaults messages.
@@ -179,7 +179,7 @@ message IngestionInvocation {
 }
 
 message IngestionRequest {
-    oneof payload {
+    oneof kind {
         IngestionStart start = 1;
         IngestionDefaults defaults = 2;
         IngestionInvocation invocation = 3;
