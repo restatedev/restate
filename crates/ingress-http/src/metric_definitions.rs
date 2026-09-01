@@ -14,7 +14,9 @@ use metrics::{Unit, describe_counter, describe_histogram};
 
 pub const HTTP_CONNECTION_CREATED: &str = "restate.ingress.http.connection_created.total";
 pub const HTTP_CONNECTION_DROPPED: &str = "restate.ingress.http.connection_dropped.total";
-pub const INGESTION_INGESTED: &str = "restate.ingress.ingestion.ingested.total";
+pub const INGESTION_COMMITTED_RECORDS: &str = "restate.ingress.ingestion.committed_records.total";
+pub const INGESTION_INFLIGHT_BYTES: &str = "restate.ingress.ingestion.inflight_bytes.total";
+pub const INGESTION_COMMITTED_BYTES: &str = "restate.ingress.ingestion.committed_bytes.total";
 
 pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
 // values of label `status` in INGRESS_REQUEST
@@ -52,8 +54,20 @@ pub(crate) fn describe_metrics() {
     );
 
     describe_counter!(
-        INGESTION_INGESTED,
+        INGESTION_COMMITTED_RECORDS,
         Unit::Count,
-        "Number of ingested invocations via the ingestion API"
+        "Number of ingested (committed) invocations via the ingestion API"
+    );
+
+    describe_counter!(
+        INGESTION_INFLIGHT_BYTES,
+        Unit::Count,
+        "Number of inflight bytes by the ingestion API"
+    );
+
+    describe_counter!(
+        INGESTION_COMMITTED_BYTES,
+        Unit::Count,
+        "Number of committed bytes by the ingestion API"
     );
 }

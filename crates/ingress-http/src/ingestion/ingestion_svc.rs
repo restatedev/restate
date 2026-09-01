@@ -100,7 +100,9 @@ use tracing::debug;
 
 use crate::ingestion::ingestion_svc::Error::BadRequestWithOffset;
 use crate::ingestion::ingestion_svc::proto::DeduplicationMode;
-use crate::metric_definitions::INGESTION_INGESTED;
+use crate::metric_definitions::{
+    INGESTION_COMMITTED_BYTES, INGESTION_COMMITTED_RECORDS, INGESTION_INFLIGHT_BYTES,
+};
 
 /// Builds the tonic server that serves [`IngestionSvc`], wrapping a fresh
 /// [`IngestionService`] configured with the given ingestion client, schema
@@ -483,8 +485,10 @@ where
                     state.inflight.pop_front();
                     let (offset, invocation_size) = committed.map_err(|_| Error::Shutdown)?;
 
+                    metrics::counter!(INGESTION_COMMITTED_RECORDS).increment(1);
+                    metrics::counter!(INGESTION_COMMITTED_BYTES).increment(invocation_size as u64);
+
                     state.last_committed = Some(offset);
-                    state.ingested_counter.increment(1);
                     replenish_size += invocation_size;
 
                     // Note: Peeking will actually try to fetch the next item from the stream
@@ -509,9 +513,10 @@ where
 
         // draining of inflight commits
         for commit in state.inflight.drain(..) {
-            let (offset, _) = commit.await.map_err(|_| Error::Shutdown)?;
+            let (offset, invocation_size) = commit.await.map_err(|_| Error::Shutdown)?;
             state.last_committed = Some(offset);
-            state.ingested_counter.increment(1);
+            metrics::counter!(INGESTION_COMMITTED_RECORDS).increment(1);
+            metrics::counter!(INGESTION_COMMITTED_BYTES).increment(invocation_size as u64);
         }
 
         Ok(ProcessorResult::Terminate)
@@ -572,6 +577,7 @@ where
                     .map_err(|err| Error::Ingestion(offset, err))?
                     .map(|_| (offset, invocation_size));
 
+                metrics::counter!(INGESTION_INFLIGHT_BYTES).increment(invocation_size as u64);
                 state.last_inflight = Some(offset);
                 state.inflight.push_back(commit);
             }
@@ -1081,8 +1087,6 @@ struct ProcessorState {
     producer: ReString,
     /// The `name/version` integration identifier from the `Start` frame.
     integration: ReString,
-    /// Counter incremented once per committed record.
-    ingested_counter: metrics::Counter,
     /// Current per-record defaults; replaced whenever a `Defaults` frame arrives.
     defaults: IngestionDefaults,
     /// Highest committed offset so far, or `None` if nothing has committed yet.
@@ -1112,7 +1116,6 @@ impl ProcessorState {
         Self {
             dedup_mode,
             producer,
-            ingested_counter: metrics::counter!(INGESTION_INGESTED),
             integration,
             defaults,
             last_committed: None,
