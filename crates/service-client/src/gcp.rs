@@ -142,9 +142,7 @@ pub(crate) struct IdTokenSpec {
 }
 
 impl IdTokenSpec {
-    pub(crate) fn from_deployment_auth(
-        auth: GoogleIdTokenAuth,
-    ) -> Result<Self, (ByteString, &'static str)> {
+    pub(crate) fn from_deployment_auth(auth: GoogleIdTokenAuth) -> Result<Self, GcpAuthError> {
         let (audience, service_account, provider) = auth.into_parts();
         let identity = match (provider, service_account) {
             (Some(provider), Some(service_account)) => {
@@ -153,11 +151,12 @@ impl IdTokenSpec {
             (None, Some(service_account)) => IdTokenIdentity::impersonated(service_account),
             (None, None) => IdTokenIdentity::Ambient,
             (Some(_), None) => {
-                return Err((
-                    audience,
-                    "GCP workload identity federation requires impersonate_service_account to be \
-                     set; re-register the deployment",
-                ));
+                return Err(GcpAuthError::Build {
+                    audience: audience.to_string(),
+                    message: "GCP workload identity federation requires \
+                              impersonate_service_account to be set; re-register the deployment"
+                        .to_owned(),
+                });
             }
         };
         Ok(Self { identity, audience })
@@ -371,8 +370,7 @@ pub(crate) async fn mint(spec: &IdTokenSpec) -> Result<String, GcpAuthError> {
                     IdTokenIdentity::Federated { provider, .. } => {
                         registry
                             .federated_access_token_sources
-                            .recover_if_dead(provider)
-                            .await;
+                            .spawn_recovery(provider.to_string(), message.clone());
                     }
                     IdTokenIdentity::Impersonated { .. } => {
                         registry.spawn_ambient_source_recovery(message.clone());
@@ -1117,7 +1115,7 @@ mod tests {
             }
         });
 
-        let first = mint_for_test(None, audience).await;
+        let first = mint_for_test(IdTokenIdentity::Ambient, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
 
         release_first_build.notify_one();
@@ -1135,7 +1133,7 @@ mod tests {
         .await
         .expect("the TaskCenter-owned build publishes its completed failure");
 
-        let second = mint_for_test(None, audience).await;
+        let second = mint_for_test(IdTokenIdentity::Ambient, audience).await;
         assert!(second.is_ok(), "{second:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 2);
     }
@@ -1264,10 +1262,10 @@ mod tests {
         });
 
         let started = Instant::now();
-        let outcome = mint_for_test(Some(service_account), audience).await;
+        let outcome = mint_for_test(IdTokenIdentity::impersonated(service_account), audience).await;
         assert!(matches!(outcome, Err(GcpAuthError::Mint { .. })));
         assert!(
-            started.elapsed() < AMBIENT_SOURCE_PROBE_TIMEOUT,
+            started.elapsed() < SOURCE_PROBE_TIMEOUT,
             "mint must not await the shared-source recovery probe"
         );
     }
@@ -1546,9 +1544,26 @@ mod tests {
         }))
     }
 
+    fn healthy_source_with_probe_signal(
+        probe_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    ) -> google_cloud_auth::credentials::Credentials {
+        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(
+            move || {
+                probe_tx.send(()).expect("the test still awaits a probe");
+                ProbeOutcome::Healthy
+            },
+        ))
+    }
+
     fn dead_source() -> google_cloud_auth::credentials::Credentials {
         google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(|| {
             ProbeOutcome::Dead
+        }))
+    }
+
+    fn hanging_source() -> google_cloud_auth::credentials::Credentials {
+        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(|| {
+            ProbeOutcome::Hang
         }))
     }
 
@@ -1562,6 +1577,16 @@ mod tests {
             }
         });
         builds
+    }
+
+    async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while counter.load(Ordering::SeqCst) < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("background recovery completes promptly");
     }
 
     async fn build_federated_source_for_spec(
@@ -1787,7 +1812,7 @@ mod tests {
 
         registry
             .federated_access_token_sources
-            .recover_if_dead(provider)
+            .recover_if_dead(provider, "test-triggered recovery")
             .await;
         assert_eq!(
             builds.load(Ordering::SeqCst),
@@ -1811,6 +1836,7 @@ mod tests {
         )
         .await;
         assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
+        wait_for_count(&builds, 1).await;
         assert_eq!(
             builds.load(Ordering::SeqCst),
             1,
@@ -1827,13 +1853,39 @@ mod tests {
         assert_eq!(builds.load(Ordering::SeqCst), 1);
     }
 
+    #[restate_core::test(start_paused = true)]
+    async fn permanent_federated_failure_does_not_await_source_recovery() {
+        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/detached-recovery";
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        let audience = "https://detached-federated-recovery.example.com";
+        federated_recovery_fixture(provider, audience, service_account, hanging_source()).await;
+
+        let started = Instant::now();
+        let outcome = mint_for_test(
+            IdTokenIdentity::federated(provider, service_account),
+            audience,
+        )
+        .await;
+        assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
+        assert!(
+            started.elapsed() < SOURCE_PROBE_TIMEOUT,
+            "mint must not await the federated-source recovery probe"
+        );
+    }
+
     #[restate_core::test]
     async fn healthy_federated_source_is_not_replaced_by_repeated_mint_failures() {
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/stable";
         let service_account = "sa@example.iam.gserviceaccount.com";
         let audience = "https://federated-stable.example.com";
-        let builds =
-            federated_recovery_fixture(provider, audience, service_account, healthy_source()).await;
+        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel();
+        let builds = federated_recovery_fixture(
+            provider,
+            audience,
+            service_account,
+            healthy_source_with_probe_signal(probe_tx),
+        )
+        .await;
 
         for _ in 0..5 {
             let outcome = mint_for_test(
@@ -1843,6 +1895,10 @@ mod tests {
             .await;
             assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
         }
+        tokio::time::timeout(Duration::from_secs(5), probe_rx.recv())
+            .await
+            .expect("source probe completes promptly")
+            .expect("at least one permanent failure probes the federated source");
 
         assert_eq!(
             builds.load(Ordering::SeqCst),
@@ -1861,9 +1917,14 @@ mod tests {
         let builds_a =
             federated_recovery_fixture(provider_a, audience_a, service_account, dead_source())
                 .await;
-        let builds_b =
-            federated_recovery_fixture(provider_b, audience_b, service_account, healthy_source())
-                .await;
+        let (provider_b_probe_tx, mut provider_b_probe_rx) = tokio::sync::mpsc::unbounded_channel();
+        let builds_b = federated_recovery_fixture(
+            provider_b,
+            audience_b,
+            service_account,
+            healthy_source_with_probe_signal(provider_b_probe_tx),
+        )
+        .await;
 
         let outcome_b = mint_for_test(
             IdTokenIdentity::federated(provider_b, service_account),
@@ -1871,6 +1932,10 @@ mod tests {
         )
         .await;
         assert_matches!(outcome_b, Err(GcpAuthError::Mint { .. }));
+        tokio::time::timeout(Duration::from_secs(5), provider_b_probe_rx.recv())
+            .await
+            .expect("provider_b source probe completes promptly")
+            .expect("provider_b's permanent failure probes its source");
         assert_eq!(
             builds_b.load(Ordering::SeqCst),
             0,
@@ -1888,6 +1953,7 @@ mod tests {
         )
         .await;
         assert_matches!(outcome_a, Err(GcpAuthError::Mint { .. }));
+        wait_for_count(&builds_a, 1).await;
         assert_eq!(
             builds_a.load(Ordering::SeqCst),
             1,
@@ -2037,7 +2103,7 @@ mod tests {
             caller_runtime.block_on(
                 registry
                     .federated_access_token_sources
-                    .recover_if_dead(provider)
+                    .recover_if_dead(provider, "test-triggered recovery")
                     .in_tc(&task_center),
             );
             // Ensure the child exists before dropping the runtime that might own it.
@@ -2050,7 +2116,7 @@ mod tests {
         // still finish and report back.
         allow_probe_to_finish_tx
             .send(())
-            .expect("the probe is still running");
+            .expect("a recovery-spawned task must survive the caller runtime's drop");
         probe_finished_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a task spawned during recovery must survive the caller runtime's drop");

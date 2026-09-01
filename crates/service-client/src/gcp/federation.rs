@@ -58,6 +58,9 @@ const GOOGLE_STS_TOKEN_URL: &str = "https://sts.googleapis.com/v1/token";
 /// race its expiry.
 const AWS_ROLE_REFRESH_MARGIN: Duration = Duration::from_secs(300);
 
+/// Bounds one AssumeRole request while the process-wide credential mutex is held.
+const AWS_ASSUME_ROLE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Operator configuration captured at node startup. An initialized `None` is intentional: later
 /// config reloads cannot enable federation for an already-running process.
 static FEDERATION_CONFIG: OnceLock<Option<GcpFederationOptions>> = OnceLock::new();
@@ -198,11 +201,18 @@ impl AwsFederationCredentials {
                 return Ok(creds.clone());
             }
         }
-        let fresh = self
-            .provider
-            .provide_credentials()
-            .await
-            .map_err(|e| federation_error_from_assume_role_failure(&e))?;
+        let fresh = tokio::time::timeout(
+            AWS_ASSUME_ROLE_TIMEOUT,
+            self.provider.provide_credentials(),
+        )
+        .await
+        .map_err(|_| {
+            FederationError::transient(format!(
+                "assuming the AWS federation role for GCP authentication timed out after {:?}",
+                AWS_ASSUME_ROLE_TIMEOUT
+            ))
+        })?
+        .map_err(|e| federation_error_from_assume_role_failure(&e))?;
         *guard = Some(fresh.clone());
         Ok(fresh)
     }
@@ -462,7 +472,15 @@ impl FederatedAccessTokenSourceIndex {
 
     /// Rebuild only a live source whose refresh task was proven permanently dead. Do not create
     /// an unleased replacement for an absent or already-dead weak entry.
-    pub(super) async fn recover_if_dead(&self, provider: &str) {
+    pub(super) fn spawn_recovery(&'static self, provider: String, triggering_error: String) {
+        let _ = TaskCenter::current().spawn_unmanaged(
+            TaskKind::Credentials,
+            "gcp-federated-access-token-source-recovery",
+            async move { self.recover_if_dead(&provider, &triggering_error).await },
+        );
+    }
+
+    pub(super) async fn recover_if_dead(&self, provider: &str, triggering_error: &str) {
         let Some(access_token_source) = self.entries.lock().get(provider).and_then(Weak::upgrade)
         else {
             return;
@@ -477,6 +495,7 @@ impl FederatedAccessTokenSourceIndex {
             Ok(true) => {
                 warn!(
                     provider_resource = %provider,
+                    triggering_error,
                     "replaced a federated GCP access-token source: its refresh task was proven dead"
                 );
             }
@@ -485,6 +504,7 @@ impl FederatedAccessTokenSourceIndex {
                 warn!(
                     provider_resource = %provider,
                     error = %error,
+                    triggering_error,
                     "failed to rebuild a federated GCP access-token source after its refresh task \
                      was proven dead; a future mint attempt will retry"
                 );
@@ -1080,6 +1100,36 @@ mod federation_tests {
             error.is_transient(),
             "an AssumeRole connector/timeout failure must classify as transient, got {error:?}"
         );
+    }
+
+    #[derive(Debug)]
+    struct HangingCredentialsProvider;
+
+    impl aws_credential_types::provider::ProvideCredentials for HangingCredentialsProvider {
+        fn provide_credentials<'a>(
+            &'a self,
+        ) -> aws_credential_types::provider::future::ProvideCredentials<'a>
+        where
+            Self: 'a,
+        {
+            aws_credential_types::provider::future::ProvideCredentials::new(std::future::pending())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn assume_role_request_is_bounded() {
+        let credentials = super::AwsFederationCredentials {
+            region: "us-east-1".to_owned(),
+            provider: aws_credential_types::provider::SharedCredentialsProvider::new(
+                HangingCredentialsProvider,
+            ),
+            cached: tokio::sync::Mutex::new(None),
+        };
+
+        let started = tokio::time::Instant::now();
+        let error = credentials.credentials().await.unwrap_err();
+        assert!(error.is_transient());
+        assert_eq!(started.elapsed(), super::AWS_ASSUME_ROLE_TIMEOUT);
     }
 
     #[test]

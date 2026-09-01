@@ -171,15 +171,8 @@ impl ServiceClient {
                         // operator left it unset. No fallback is needed here.
                         // Persisted records deserialize without constructor validation, so retain
                         // a fail-closed guard at this boundary.
-                        let spec = gcp::IdTokenSpec::from_deployment_auth(auth).map_err(
-                            |(audience, message)| {
-                                let error = gcp::GcpAuthError::Build {
-                                    audience: audience.into(),
-                                    message: message.to_owned(),
-                                };
-                                ServiceClientError::GcpAuth(uri.clone(), error)
-                            },
-                        )?;
+                        let spec = gcp::IdTokenSpec::from_deployment_auth(auth)
+                            .map_err(|error| ServiceClientError::GcpAuth(uri.clone(), error))?;
                         let token = gcp::mint(&spec)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
