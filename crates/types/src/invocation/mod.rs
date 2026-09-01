@@ -850,7 +850,7 @@ pub enum Source {
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     RestartAsNew(InvocationId),
-    // Since v1.8
+    // Since v1.8.0
     Ingestion,
     /// Internal calls for the non-deterministic built-in services
     Internal,

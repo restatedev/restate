@@ -1064,6 +1064,8 @@ impl DedupMode {
                 if producer.is_empty() {
                     return Err(GoAwayError::RequiredProducerID);
                 }
+                // NOTE: We cannot change this hasher because this would
+                // produce a different producer id.
                 let mut hasher = xxhash_rust::xxh3::Xxh3::default();
                 producer.hash(&mut hasher);
                 Self::OffsetBased(hasher.digest128())
@@ -1073,6 +1075,7 @@ impl DedupMode {
         Ok(value)
     }
 }
+
 /// Per-stream context held while in [`State::Processing`].
 ///
 /// Created once the `Start` frame is accepted and carried for the lifetime of the

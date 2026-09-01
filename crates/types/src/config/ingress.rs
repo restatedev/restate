@@ -23,10 +23,7 @@ use super::{CommonOptions, KafkaClusterOptions, ListenerOptions};
 /// # Ingestion API options
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-#[cfg_attr(
-    feature = "schemars",
-    schemars(rename = "IngestionApiOptions", default)
-)]
+#[cfg_attr(feature = "schemars", schemars(default))]
 #[serde(default, rename_all = "kebab-case")]
 pub struct IngestionApiOptions {
     /// # Disable the gRPC ingestion API
