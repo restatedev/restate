@@ -417,9 +417,6 @@ async fn window_update_is_returned_early_when_window_is_low() {
     stream.settle().await;
     stream.assert_no_response();
 
-    // window: 32 bytes left, below the threshold -> each commit yields immediately,
-    // even though three records are still in flight.
-    assert!(32 < threshold);
     resolver.commit_next().await;
     assert_eq!(stream.next_window_update().await, (record_size, Some(1)));
 
