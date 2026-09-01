@@ -645,7 +645,7 @@ fn test_override(spec: &IdTokenSpec, impersonate: &str) -> Option<Result<String,
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use super::*;
 
@@ -912,7 +912,9 @@ mod tests {
             .await
             .expect("timed-out construction remains cached");
 
-        release.notify_waiters();
+        // notify_one stores a permit if construction was descheduled between incrementing the
+        // counter above and registering its waiter.
+        release.notify_one();
         let second = mint_for_test(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
@@ -955,7 +957,7 @@ mod tests {
         assert_eq!(build_count.load(Ordering::SeqCst), 1);
     }
 
-    #[restate_core::test]
+    #[restate_core::test(start_paused = true)]
     async fn ambient_source_is_dead_only_for_a_proven_permanent_error() {
         let cases = [
             (ProbeOutcome::Healthy, false),
@@ -1211,20 +1213,28 @@ mod tests {
             .into_handle();
 
         let audience = "https://runtime-affinity.example.com";
-        let running = Arc::new(std::sync::atomic::AtomicBool::new(true));
-        let probe_completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (probe_started_tx, probe_started_rx) = std::sync::mpsc::channel();
+        let (probe_finished_tx, probe_finished_rx) = std::sync::mpsc::channel();
+        let (allow_probe_to_finish_tx, allow_probe_to_finish_rx) = tokio::sync::oneshot::channel();
+        let allow_probe_to_finish_rx = Mutex::new(Some(allow_probe_to_finish_rx));
 
         let registry = task_center.run_sync(|| {
-            let running = running.clone();
-            let probe_completed = probe_completed.clone();
             add_build_override(IdTokenSpec::ambient(audience), move |_| {
-                let running = running.clone();
-                let probe_completed = probe_completed.clone();
+                let probe_started_tx = probe_started_tx.clone();
+                let probe_finished_tx = probe_finished_tx.clone();
+                let allow_probe_to_finish_rx = allow_probe_to_finish_rx
+                    .lock()
+                    .take()
+                    .expect("credential builds once");
+                // Simulate the library refresh task spawned during credential construction.
                 tokio::spawn(async move {
-                    while running.load(Ordering::SeqCst) {
-                        tokio::time::sleep(Duration::from_millis(5)).await;
-                    }
-                    probe_completed.store(true, Ordering::SeqCst);
+                    probe_started_tx
+                        .send(())
+                        .expect("the test still awaits the probe");
+                    let _ = allow_probe_to_finish_rx.await;
+                    probe_finished_tx
+                        .send(())
+                        .expect("the test still awaits the probe");
                 });
                 Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
             });
@@ -1245,37 +1255,62 @@ mod tests {
             if let Err(error) = &result {
                 panic!("{error}");
             }
+            // Ensure the child exists before dropping the runtime that might own it.
+            probe_started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("credential construction spawns a probe child task");
         }
 
-        std::thread::sleep(Duration::from_millis(20));
-        running.store(false, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(100));
-        assert!(
-            probe_completed.load(Ordering::SeqCst),
-            "a task spawned during construction must survive the caller runtime's drop"
-        );
+        // A child owned by the caller runtime was cancelled above; one owned by the TaskCenter can
+        // still finish and report back.
+        allow_probe_to_finish_tx
+            .send(())
+            .expect("the probe is still running");
+        probe_finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a task spawned during construction must survive the caller runtime's drop");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn blocking_builds_are_bounded_and_never_deadlock() {
-        let concurrent = Arc::new(AtomicUsize::new(0));
-        let high_water_mark = Arc::new(AtomicUsize::new(0));
+        use std::sync::{Condvar, Mutex as StdMutex};
+
+        let release = Arc::new((StdMutex::new(false), Condvar::new()));
+        let (started_tx, mut started_rx) =
+            tokio::sync::mpsc::channel(4 * MAX_CONCURRENT_BLOCKING_BUILDS);
 
         // Test the semaphore's production choke point directly; construction overrides bypass it.
         let tasks: Vec<_> = (0..4 * MAX_CONCURRENT_BLOCKING_BUILDS)
             .map(|_| {
-                let concurrent = concurrent.clone();
-                let high_water_mark = high_water_mark.clone();
+                let release = release.clone();
+                let started_tx = started_tx.clone();
                 tokio::spawn(run_blocking("test".to_owned(), move || {
-                    let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
-                    high_water_mark.fetch_max(now, Ordering::SeqCst);
-                    std::thread::sleep(Duration::from_millis(20));
-                    concurrent.fetch_sub(1, Ordering::SeqCst);
+                    started_tx.blocking_send(()).expect("receiver stays open");
+                    let (lock, wake) = &*release;
+                    let mut released = lock.lock().expect("release lock is not poisoned");
+                    while !*released {
+                        released = wake.wait(released).expect("release lock is not poisoned");
+                    }
                     Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
                 }))
             })
             .collect();
 
+        for _ in 0..MAX_CONCURRENT_BLOCKING_BUILDS {
+            started_rx.recv().await.expect("blocking build starts");
+        }
+        assert_eq!(BLOCKING_BUILD_PERMITS.available_permits(), 0);
+        assert!(
+            matches!(
+                started_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "no additional blocking build may start while all permits are held"
+        );
+
+        let (lock, wake) = &*release;
+        *lock.lock().expect("release lock is not poisoned") = true;
+        wake.notify_all();
         tokio::time::timeout(Duration::from_secs(2), async {
             for task in tasks {
                 let result = task.await.expect("task doesn't panic");
@@ -1286,12 +1321,6 @@ mod tests {
         })
         .await
         .expect("blocking builds complete without deadlocking");
-
-        let mark = high_water_mark.load(Ordering::SeqCst);
-        assert!(
-            mark <= MAX_CONCURRENT_BLOCKING_BUILDS,
-            "at most {MAX_CONCURRENT_BLOCKING_BUILDS} blocking builds may run concurrently, saw {mark}"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -1323,19 +1352,12 @@ mod tests {
             build.abort();
         }
 
-        let replacement_started = Arc::new(AtomicBool::new(false));
-        let replacement = {
-            let replacement_started = replacement_started.clone();
-            tokio::spawn(spawn_bounded_blocking(move || {
-                replacement_started.store(true, Ordering::SeqCst);
-            }))
-        };
-
-        tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(
-            !replacement_started.load(Ordering::SeqCst),
+        assert_eq!(
+            BLOCKING_BUILD_PERMITS.available_permits(),
+            0,
             "cancelled callers must retain permits until their blocking work finishes"
         );
+        let replacement = tokio::spawn(spawn_bounded_blocking(|| {}));
 
         let (lock, wake) = &*release;
         *lock.lock().expect("release lock is not poisoned") = true;
