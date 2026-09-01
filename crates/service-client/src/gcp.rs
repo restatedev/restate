@@ -146,6 +146,18 @@ impl CredentialEntry {
             .clone()
             .await
     }
+
+    fn completed_build_failed(&self) -> bool {
+        // The TaskCenter-owned build can finish after its only waiter times out, leaving the
+        // Shared wrapper unpolled. Poll once to harvest an already-completed task without waiting.
+        self.build.get().is_some_and(|build| match build.peek() {
+            Some(result) => result.is_err(),
+            None => build
+                .clone()
+                .now_or_never()
+                .is_some_and(|result| result.is_err()),
+        })
+    }
 }
 
 struct Live(google_cloud_auth::credentials::idtoken::IDTokenCredentials);
@@ -189,13 +201,15 @@ impl RecoverableCredentialSource {
         Ok(value)
     }
 
-    // bounded by the probe's own timeout; swapped under lock so no need for external ABA checks.
-    // Returns whether a replacement actually happened, so callers can log accordingly.
+    // Recovery is idempotent. Do not queue another probe behind a build or recovery already
+    // holding the slot; a later failed mint can retry if the in-flight operation does not heal it.
     async fn replace_if_dead(
         &self,
         build: impl Future<Output = Result<GoogleCredentials, String>>,
     ) -> Result<bool, String> {
-        let mut guard = self.cell.lock().await;
+        let Ok(mut guard) = self.cell.try_lock() else {
+            return Ok(false);
+        };
         let Some(current) = guard.as_ref() else {
             return Ok(false);
         };
@@ -238,7 +252,11 @@ static HOUSEKEEPING_STARTED: Once = Once::new();
 
 fn credential_registry() -> &'static CredentialRegistry {
     let registry = REGISTRY.get_or_init(CredentialRegistry::new);
-    HOUSEKEEPING_STARTED.call_once(|| registry.start_housekeeping());
+    // Do not poison the Once if an embedding caller reaches the registry without TaskCenter
+    // context. A later production caller can still start housekeeping.
+    if TaskCenter::try_current().is_some() {
+        HOUSEKEEPING_STARTED.call_once(|| registry.start_housekeeping());
+    }
     registry
 }
 
@@ -276,17 +294,18 @@ pub(crate) async fn mint(spec: &IdTokenSpec) -> Result<String, GcpAuthError> {
     match tokio::time::timeout_at(deadline, source.id_token()).await {
         Ok(Ok(token)) => Ok(token),
         Ok(Err(error)) => {
+            let message = error.to_string();
             // Transient errors may self-heal; evict permanent failures only if still current.
             if !error.is_transient() {
                 let evicted = registry.evict_if_unchanged(spec, &entry).await;
                 if evicted && spec.impersonate.is_some() {
-                    registry.recover_ambient_source_if_dead().await;
+                    registry.spawn_ambient_source_recovery(message.clone());
                 }
             }
             Err(GcpAuthError::Mint {
                 audience: audience.to_owned(),
                 impersonate: impersonate.to_owned(),
-                message: error.to_string(),
+                message,
             })
         }
         // A timeout does not prove the refresh task dead, so retain the entry. A continuously
@@ -329,9 +348,18 @@ impl CredentialRegistry {
     }
 
     async fn get_entry(&self, spec: &IdTokenSpec) -> Arc<CredentialEntry> {
-        self.cache
-            .get_with_by_ref(spec, async { Arc::new(CredentialEntry::new()) })
-            .await
+        loop {
+            let entry = self
+                .cache
+                .get_with_by_ref(spec, async { Arc::new(CredentialEntry::new()) })
+                .await;
+            // A caller may time out while construction continues and later fails. Do not make the
+            // next caller consume that completed, stale error before it can start a fresh build.
+            if !entry.completed_build_failed() {
+                return entry;
+            }
+            let _ = self.evict_if_unchanged(spec, &entry).await;
+        }
     }
 
     async fn evict_if_unchanged(
@@ -361,7 +389,15 @@ impl CredentialRegistry {
 
     /// Replace only a source whose refresh task is proven dead; a target-scoped failure must not
     /// strand a healthy shared source.
-    async fn recover_ambient_source_if_dead(&self) {
+    fn spawn_ambient_source_recovery(&'static self, triggering_error: String) {
+        let _ = TaskCenter::current().spawn_unmanaged(
+            TaskKind::Credentials,
+            "gcp-ambient-credential-source-recovery",
+            async move { self.recover_ambient_source_if_dead(&triggering_error).await },
+        );
+    }
+
+    async fn recover_ambient_source_if_dead(&self, triggering_error: &str) {
         match self
             .ambient_source
             .replace_if_dead(self.build_ambient_source())
@@ -369,6 +405,7 @@ impl CredentialRegistry {
         {
             Ok(true) => {
                 warn!(
+                    triggering_error,
                     "replaced the shared ambient GCP credential source: its refresh task was proven dead"
                 );
             }
@@ -376,6 +413,7 @@ impl CredentialRegistry {
             Err(error) => {
                 warn!(
                     error = %error,
+                    triggering_error,
                     "failed to rebuild the ambient GCP credential source after its refresh task \
                      was proven dead; a future mint attempt will retry"
                 );
@@ -653,6 +691,14 @@ mod tests {
         "test-token".to_owned()
     }
 
+    fn ok_source() -> Credential {
+        MockSource::new(|_| MockOutcome::Token(token()))
+    }
+
+    fn permanently_failing_source() -> Credential {
+        MockSource::new(|_| MockOutcome::Error(permanent_error("impersonation misconfigured")))
+    }
+
     #[test]
     fn ambient_unsupported_error_is_actionable_and_leak_free() {
         let err = GcpAuthError::AmbientUnsupported {
@@ -839,6 +885,12 @@ mod tests {
         }
     }
 
+    fn credential_source(outcome: ProbeOutcome) -> google_cloud_auth::credentials::Credentials {
+        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(
+            move || outcome,
+        ))
+    }
+
     #[restate_core::test]
     async fn single_flight_builds_once_under_concurrent_misses() {
         let audience = "https://single-flight.example.com";
@@ -848,7 +900,7 @@ mod tests {
             let builds = builds.clone();
             move |_| {
                 builds.fetch_add(1, Ordering::SeqCst);
-                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+                Ok(ok_source())
             }
         });
 
@@ -871,7 +923,7 @@ mod tests {
                     audience: audience.to_owned(),
                     message: "first build failed".to_owned(),
                 }),
-                _ => Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential),
+                _ => Ok(ok_source()),
             }
         });
 
@@ -898,7 +950,7 @@ mod tests {
                 async move {
                     builds.fetch_add(1, Ordering::SeqCst);
                     release.notified().await;
-                    Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential)
+                    Ok(ok_source())
                 }
             }
         });
@@ -923,6 +975,59 @@ mod tests {
     }
 
     #[restate_core::test(start_paused = true)]
+    async fn completed_failure_after_caller_timeout_is_rebuilt_for_the_next_caller() {
+        let audience = "https://stale-build-failure.example.com";
+        let builds = Arc::new(AtomicUsize::new(0));
+        let release_first_build = Arc::new(tokio::sync::Notify::new());
+        let first_build_finished = Arc::new(tokio::sync::Notify::new());
+
+        add_async_build_override(IdTokenSpec::ambient(audience), {
+            let builds = builds.clone();
+            let release_first_build = release_first_build.clone();
+            let first_build_finished = first_build_finished.clone();
+            move |_| {
+                let release_first_build = release_first_build.clone();
+                let first_build_finished = first_build_finished.clone();
+                let build = builds.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if build == 0 {
+                        release_first_build.notified().await;
+                        first_build_finished.notify_one();
+                        Err(GcpAuthError::Build {
+                            audience: audience.to_owned(),
+                            message: "first build failed after its caller timed out".to_owned(),
+                        })
+                    } else {
+                        Ok(ok_source())
+                    }
+                }
+            }
+        });
+
+        let first = mint_for_test(None, audience).await;
+        assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
+
+        release_first_build.notify_one();
+        first_build_finished.notified().await;
+        let failed_entry = credential_registry()
+            .cache
+            .get(&IdTokenSpec::ambient(audience))
+            .await
+            .expect("timed-out construction remains cached");
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !failed_entry.completed_build_failed() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the TaskCenter-owned build publishes its completed failure");
+
+        let second = mint_for_test(None, audience).await;
+        assert!(second.is_ok(), "{second:?}");
+        assert_eq!(builds.load(Ordering::SeqCst), 2);
+    }
+
+    #[restate_core::test(start_paused = true)]
     async fn construction_and_token_mint_share_one_deadline() {
         let audience = "https://shared-deadline.example.com";
 
@@ -944,9 +1049,7 @@ mod tests {
             let build_count = build_count.clone();
             move || {
                 build_count.fetch_add(1, Ordering::SeqCst);
-                Ok(google_cloud_auth::credentials::Credentials::from(
-                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
-                ))
+                Ok(credential_source(ProbeOutcome::Healthy))
             }
         });
 
@@ -966,9 +1069,7 @@ mod tests {
             (ProbeOutcome::Hang, false),
         ];
         for (outcome, expected_dead) in cases {
-            let source = google_cloud_auth::credentials::Credentials::from(
-                FakeCredentialsProvider::always(move || outcome),
-            );
+            let source = credential_source(outcome);
             assert_eq!(
                 ambient_source_is_dead(&source).await,
                 expected_dead,
@@ -977,32 +1078,45 @@ mod tests {
         }
     }
 
+    #[restate_core::test(start_paused = true)]
+    async fn source_recovery_does_not_queue_behind_an_in_progress_operation() {
+        let source = RecoverableCredentialSource::new();
+        let _operation = source.cell.lock().await;
+
+        let replaced = tokio::time::timeout(
+            Duration::from_secs(1),
+            source.replace_if_dead(async { unreachable!("a busy source is not rebuilt") }),
+        )
+        .await
+        .expect("redundant recovery returns without waiting")
+        .expect("skipping recovery is not an error");
+        assert!(!replaced);
+    }
+
     #[restate_core::test]
     async fn dead_ambient_source_is_replaced_after_permanent_impersonation_failure() {
         credential_registry()
             .ambient_source
-            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
-                FakeCredentialsProvider::always(|| ProbeOutcome::Dead),
-            ))
+            .seed_for_test(credential_source(ProbeOutcome::Dead))
             .await;
 
         let build_count = Arc::new(AtomicUsize::new(0));
+        let (recovery_started_tx, mut recovery_started_rx) = tokio::sync::mpsc::unbounded_channel();
         add_ambient_source_override({
             let build_count = build_count.clone();
             move || {
                 build_count.fetch_add(1, Ordering::SeqCst);
-                Ok(google_cloud_auth::credentials::Credentials::from(
-                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
-                ))
+                recovery_started_tx
+                    .send(())
+                    .expect("the test still awaits recovery");
+                Ok(credential_source(ProbeOutcome::Healthy))
             }
         });
 
         let audience = "https://ambient-recovery.example.com";
         let service_account = "sa@example.iam.gserviceaccount.com";
         add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
-            Ok(MockSource::new(|_| {
-                MockOutcome::Error(permanent_error("impersonation misconfigured"))
-            }) as Arc<dyn IdTokenSource>)
+            Ok(permanently_failing_source())
         });
 
         let outcome = mint_for_test(Some(service_account), audience).await;
@@ -1010,23 +1124,53 @@ mod tests {
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
         );
+        tokio::time::timeout(Duration::from_secs(5), recovery_started_rx.recv())
+            .await
+            .expect("source recovery starts promptly")
+            .expect("permanent failure schedules source recovery without awaiting it");
 
+        assert!(credential_registry().ambient_source().await.is_ok());
         assert_eq!(
             build_count.load(Ordering::SeqCst),
             1,
             "the dead source must be replaced exactly once"
         );
+    }
 
-        assert!(credential_registry().ambient_source().await.is_ok());
-        assert_eq!(build_count.load(Ordering::SeqCst), 1);
+    #[restate_core::test(start_paused = true)]
+    async fn permanent_failure_does_not_await_source_recovery() {
+        credential_registry()
+            .ambient_source
+            .seed_for_test(credential_source(ProbeOutcome::Hang))
+            .await;
+
+        let audience = "https://detached-ambient-recovery.example.com";
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
+            Ok(permanently_failing_source())
+        });
+
+        let started = Instant::now();
+        let outcome = mint_for_test(Some(service_account), audience).await;
+        assert!(matches!(outcome, Err(GcpAuthError::Mint { .. })));
+        assert!(
+            started.elapsed() < AMBIENT_SOURCE_PROBE_TIMEOUT,
+            "mint must not await the shared-source recovery probe"
+        );
     }
 
     #[restate_core::test]
     async fn healthy_ambient_source_is_not_replaced_by_repeated_impersonation_failures() {
+        let (probe_finished_tx, mut probe_finished_rx) = tokio::sync::mpsc::unbounded_channel();
         credential_registry()
             .ambient_source
             .seed_for_test(google_cloud_auth::credentials::Credentials::from(
-                FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
+                FakeCredentialsProvider::always(move || {
+                    probe_finished_tx
+                        .send(())
+                        .expect("the test still awaits the source probe");
+                    ProbeOutcome::Healthy
+                }),
             ))
             .await;
 
@@ -1035,18 +1179,14 @@ mod tests {
             let build_count = build_count.clone();
             move || {
                 build_count.fetch_add(1, Ordering::SeqCst);
-                Ok(google_cloud_auth::credentials::Credentials::from(
-                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
-                ))
+                Ok(credential_source(ProbeOutcome::Healthy))
             }
         });
 
         let audience = "https://ambient-stable.example.com";
         let service_account = "sa@example.iam.gserviceaccount.com";
         add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
-            Ok(MockSource::new(|_| {
-                MockOutcome::Error(permanent_error("impersonation misconfigured"))
-            }) as Arc<dyn IdTokenSource>)
+            Ok(permanently_failing_source())
         });
 
         for _ in 0..5 {
@@ -1056,6 +1196,10 @@ mod tests {
                 "{outcome:?}"
             );
         }
+        tokio::time::timeout(Duration::from_secs(5), probe_finished_rx.recv())
+            .await
+            .expect("source probe completes promptly")
+            .expect("at least one permanent failure probes the shared source");
 
         assert_eq!(
             build_count.load(Ordering::SeqCst),
@@ -1064,69 +1208,65 @@ mod tests {
         );
     }
 
-    #[restate_core::test]
-    async fn transient_error_keeps_entry_and_self_heals() {
-        let audience = "https://transient.example.com";
-        let cache_key = IdTokenSpec::ambient(audience);
-        let source = MockSource::new(|call| {
-            if call == 0 {
-                MockOutcome::Error(transient_error("temporarily unavailable"))
-            } else {
-                MockOutcome::Token(token())
-            }
-        });
-        let dyn_source: Arc<dyn IdTokenSource> = source.clone();
-        let cached_entry = ready_entry(dyn_source);
-        credential_registry()
-            .cache
-            .insert(cache_key.clone(), cached_entry.clone())
-            .await;
-
-        let first = mint_for_test(None, audience).await;
-        assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
-
-        let still_cached = credential_registry().cache.get(&cache_key).await;
-        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &cached_entry)));
-
-        let second = mint_for_test(None, audience).await;
-        assert!(second.is_ok(), "{second:?}");
+    #[derive(Clone, Copy, Debug)]
+    enum MintFailure {
+        Transient,
+        Timeout,
+        Permanent,
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn timeout_keeps_entry() {
-        let audience = "https://timeout.example.com";
-        let cache_key = IdTokenSpec::ambient(audience);
-        let source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Hang);
-        let entry = ready_entry(source);
-        credential_registry()
-            .cache
-            .insert(cache_key.clone(), entry.clone())
-            .await;
+    async fn mint_failure_policy_controls_cache_eviction() {
+        for (name, failure, retained) in [
+            ("transient", MintFailure::Transient, true),
+            ("timeout", MintFailure::Timeout, true),
+            ("permanent", MintFailure::Permanent, false),
+        ] {
+            let audience = format!("https://{name}.example.com");
+            let cache_key = IdTokenSpec::ambient(&audience);
+            let source: Credential = match failure {
+                MintFailure::Transient => MockSource::new(|call| {
+                    if call == 0 {
+                        MockOutcome::Error(transient_error("temporarily unavailable"))
+                    } else {
+                        MockOutcome::Token(token())
+                    }
+                }),
+                MintFailure::Timeout => MockSource::new(|_| MockOutcome::Hang),
+                MintFailure::Permanent => {
+                    MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")))
+                }
+            };
+            let entry = ready_entry(source);
+            credential_registry()
+                .cache
+                .insert(cache_key.clone(), entry.clone())
+                .await;
 
-        let outcome = mint_for_test(None, audience).await;
-        assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
-        let still_cached = credential_registry().cache.get(&cache_key).await;
-        assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &entry)));
-    }
+            let outcome = mint_for_test(None, &audience).await;
+            match failure {
+                MintFailure::Timeout => {
+                    assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })))
+                }
+                MintFailure::Transient | MintFailure::Permanent => {
+                    assert!(matches!(outcome, Err(GcpAuthError::Mint { .. })))
+                }
+            }
 
-    #[restate_core::test]
-    async fn permanent_error_evicts_conditionally() {
-        let audience = "https://permanent.example.com";
-        let cache_key = IdTokenSpec::ambient(audience);
-        let source: Arc<dyn IdTokenSource> =
-            MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")));
-        credential_registry()
-            .cache
-            .insert(cache_key.clone(), ready_entry(source))
-            .await;
-
-        let outcome = mint_for_test(None, audience).await;
-        assert!(
-            matches!(outcome, Err(GcpAuthError::Mint { .. })),
-            "{outcome:?}"
-        );
-
-        assert!(credential_registry().cache.get(&cache_key).await.is_none());
+            let cached = credential_registry().cache.get(&cache_key).await;
+            assert_eq!(
+                cached.is_some(),
+                retained,
+                "unexpected cache policy for {name}"
+            );
+            if retained {
+                assert!(matches!(cached, Some(current) if Arc::ptr_eq(&current, &entry)));
+            }
+            if matches!(failure, MintFailure::Transient) {
+                let healed = mint_for_test(None, &audience).await;
+                assert!(healed.is_ok(), "{healed:?}");
+            }
+        }
     }
 
     #[restate_core::test]
@@ -1137,22 +1277,18 @@ mod tests {
 
         credential_registry()
             .ambient_source
-            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
-                FakeCredentialsProvider::always(|| ProbeOutcome::Dead),
-            ))
+            .seed_for_test(credential_source(ProbeOutcome::Dead))
             .await;
         let source_rebuilds = Arc::new(AtomicUsize::new(0));
         add_ambient_source_override({
             let source_rebuilds = source_rebuilds.clone();
             move || {
                 source_rebuilds.fetch_add(1, Ordering::SeqCst);
-                Ok(google_cloud_auth::credentials::Credentials::from(
-                    FakeCredentialsProvider::always(|| ProbeOutcome::Healthy),
-                ))
+                Ok(credential_source(ProbeOutcome::Healthy))
             }
         });
 
-        let new_source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Token(token()));
+        let new_source = ok_source();
         let new_entry = ready_entry(new_source);
 
         struct SwapThenFail {
@@ -1236,7 +1372,7 @@ mod tests {
                         .send(())
                         .expect("the test still awaits the probe");
                 });
-                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+                Ok(ok_source())
             });
             credential_registry()
         });
@@ -1265,7 +1401,7 @@ mod tests {
         // still finish and report back.
         allow_probe_to_finish_tx
             .send(())
-            .expect("the probe is still running");
+            .expect("a task spawned during construction must survive the caller runtime's drop");
         probe_finished_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a task spawned during construction must survive the caller runtime's drop");
@@ -1279,7 +1415,8 @@ mod tests {
         let (started_tx, mut started_rx) =
             tokio::sync::mpsc::channel(4 * MAX_CONCURRENT_BLOCKING_BUILDS);
 
-        // Test the semaphore's production choke point directly; construction overrides bypass it.
+        // Test the process-global semaphore's production choke point directly. This suite uses
+        // nextest process isolation; construction overrides in the other tests bypass it.
         let tasks: Vec<_> = (0..4 * MAX_CONCURRENT_BLOCKING_BUILDS)
             .map(|_| {
                 let release = release.clone();
@@ -1291,7 +1428,7 @@ mod tests {
                     while !*released {
                         released = wake.wait(released).expect("release lock is not poisoned");
                     }
-                    Ok(MockSource::new(|_| MockOutcome::Token(token())) as Arc<dyn IdTokenSource>)
+                    Ok(ok_source())
                 }))
             })
             .collect();
@@ -1362,7 +1499,7 @@ mod tests {
         let (lock, wake) = &*release;
         *lock.lock().expect("release lock is not poisoned") = true;
         wake.notify_all();
-        tokio::time::timeout(Duration::from_secs(1), replacement)
+        tokio::time::timeout(Duration::from_secs(5), replacement)
             .await
             .expect("replacement starts after blocking work exits")
             .expect("replacement task does not panic")
