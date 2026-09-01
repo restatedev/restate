@@ -502,8 +502,13 @@ where
                     // Note: Peeking will actually try to fetch the next item from the stream
                     // and hence consume memory that is not (yet) counted against the
                     // inflight window.
-                    let has_pending = inbound.peek().now_or_never().is_some();
-                    if (state.inflight.is_empty()&&!has_pending) || replenish_size >= self.reclaim_threshold {
+                    let has_pending_invocation = matches!(
+                        inbound.peek().now_or_never(),
+                        Some(Some(Ok(IngestionRequest { kind: Some(Kind::Invocation(_)) })))
+                    );
+                    if (state.inflight.is_empty() && !has_pending_invocation)
+                        || replenish_size >= self.reclaim_threshold
+                    {
                         // yielding now will force the stream to send a
                         // window update message to restore the window size
                         // and also update the last committed offset.
