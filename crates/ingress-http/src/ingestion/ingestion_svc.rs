@@ -51,17 +51,18 @@
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::time::Duration;
 
 use futures::future::OptionFuture;
-use futures::stream::BoxStream;
-use futures::{Stream, StreamExt};
+use futures::stream::{BoxStream, Peekable};
+use futures::{FutureExt, Stream, StreamExt};
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use prost::Message;
-use tokio_util::time::FutureExt;
+use tokio_util::time::FutureExt as TokioFutureExt;
 use tonic::{Request, Response, Status, Streaming};
 
 use restate_core::network::TransportConnect;
@@ -187,8 +188,11 @@ where
     }
 }
 
-pub(super) struct IngestionStream<I, S, Schemas> {
-    inbound: S,
+pub(super) struct IngestionStream<I, S, Schemas>
+where
+    S: Stream,
+{
+    inbound: Peekable<S>,
     ingestion_client: I,
     schemas: Live<Schemas>,
     state: State,
@@ -232,7 +236,7 @@ where
         max_window_size: NonZeroU32,
     ) -> Self {
         Self {
-            inbound,
+            inbound: inbound.peekable(),
             ingestion_client,
             schemas,
             state: State::WaitingStart,
@@ -463,8 +467,10 @@ where
 
         loop {
             let head = OptionFuture::from(state.inflight.front_mut());
+            let mut inbound = Pin::new(&mut self.inbound);
+
             tokio::select! {
-                incoming = self.inbound.next() => {
+                incoming = inbound.next() => {
                     let Some(incoming) = incoming else {
                         // drain.
                         break;
@@ -481,7 +487,11 @@ where
                     state.ingested_counter.increment(1);
                     replenish_size += invocation_size;
 
-                    if state.inflight.is_empty() || self.should_yield(state, replenish_size) {
+                    // Note: Peeking will actually try to fetch the next item from the stream
+                    // and hence consume memory that is not (yet) counted against the
+                    // inflight window.
+                    let has_pending = inbound.peek().now_or_never().is_some();
+                    if (state.inflight.is_empty()&&!has_pending) || self.should_yield(state, replenish_size) {
                         // yielding now will force the stream to send a
                         // window update message to restore the window size
                         // and also update the last committed offset.
