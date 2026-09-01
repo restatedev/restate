@@ -199,6 +199,13 @@ message IngestionRequest {
 // more requests until the next window update; sending
 // more invocations while the window is depleted can
 // result in a GO_AWAY error.
+//
+// Before the first WindowUpdate is received, the client
+// may assume an initial window of 32 KiB. This is the
+// smallest window the server will ever grant, so it's
+// always safe to start sending against it; every
+// WindowUpdate that follows can only grow the window
+// beyond that point.
 message WindowUpdate {
     uint32 increment_bytes = 1;
 }

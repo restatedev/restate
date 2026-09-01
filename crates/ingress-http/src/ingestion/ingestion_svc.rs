@@ -125,6 +125,12 @@ where
     .max_encoding_message_size(max_message_size)
 }
 
+/// The initial send window every client may assume before it has seen any
+/// `WindowUpdate`. This is the floor of the protocol: the server never
+/// advertises less than this, but it can grow the window beyond it by
+/// sending `WindowUpdate` messages.
+pub const MIN_WINDOW_SIZE: NonZeroU32 = NonZeroU32::new(32 * 1024).expect("non-zero"); // 32KiB according to specs
+
 /// Window-replenishment threshold, as a percentage of the maximum window size.
 ///
 /// While records are still in flight the server withholds `WindowUpdate`
@@ -237,6 +243,10 @@ where
         schemas: Live<Schemas>,
         max_window_size: NonZeroU32,
     ) -> Self {
+        // the protocol floor: a client may always spend `MIN_WINDOW_SIZE`, so a
+        // stream can never operate on a smaller window than that.
+        let max_window_size = max_window_size.max(MIN_WINDOW_SIZE);
+
         Self {
             inbound: inbound.peekable(),
             ingestion_client,
@@ -443,11 +453,13 @@ where
 
     /// Runs one processing burst and returns when it is time to emit a response.
     ///
-    /// Before doing any work, if there is nothing in flight and no window credit,
-    /// it returns `Continue(max_window_size)` so the very first response advertises
-    /// the initial window to the client.
+    /// The client starts out on the implicit [`MIN_WINDOW_SIZE`] and is never told
+    /// about it, so nothing is emitted up front. The credit the server is willing
+    /// to grant on top of that floor is instead seeded into `replenish_size` before
+    /// any work is done, and rides along with the next `WindowUpdate` this burst
+    /// produces.
     ///
-    /// Otherwise it drives a `select!` loop that concurrently:
+    /// It drives a `select!` loop that concurrently:
     /// * pulls the next inbound frame and applies it via [`Self::handle_incoming`]
     ///   (buffering the resulting commit future in `inflight`), and
     /// * awaits the oldest inflight commit; on completion it pops it, advances
@@ -459,13 +471,13 @@ where
     /// signals the window is low. When the inbound stream ends it drains the
     /// remaining inflight commits in order and returns `Terminate`.
     async fn process(&mut self, state: &mut ProcessorState) -> Result<ProcessorResult, Error> {
-        if state.inflight.is_empty() && state.current_window_size <= 0 {
-            // yielding now will send a window update message
-            // to communicate the initial server window sizes.
-            return Ok(ProcessorResult::Continue(self.max_window_size.get()));
-        }
-
         let mut replenish_size: u32 = 0;
+
+        // Start of the stream: nothing has been sent yet and the window is still
+        // at the minimum the client assumed, so top it up to the maximum window.
+        if state.inflight.is_empty() && state.current_window_size == MIN_WINDOW_SIZE.get() as i64 {
+            replenish_size = self.max_window_size.get() - MIN_WINDOW_SIZE.get();
+        }
 
         loop {
             let head = OptionFuture::from(state.inflight.front_mut());
@@ -1123,7 +1135,7 @@ impl ProcessorState {
             defaults,
             last_committed: None,
             last_inflight: None,
-            current_window_size: 0,
+            current_window_size: MIN_WINDOW_SIZE.get() as i64,
             inflight: VecDeque::default(),
         }
     }
