@@ -32,10 +32,10 @@
 //! amount. A [`WindowUpdate`] response returns credit to the client and doubles as
 //! an ack of `Response.last_committed`.
 //!
-//! To avoid a response per commit, the server only yields a `WindowUpdate` when
-//! there is nothing left in flight or when the window has dropped to
-//! [`UPDATE_WINDOW_THRESHOLD`] of its maximum (see
-//! [`IngestionStream::should_yield`]). The client may let the window go negative
+//! To avoid a response per commit, the server accumulates the bytes reclaimed by
+//! committed records and only yields a `WindowUpdate` once they reach
+//! [`RECLAIM_WINDOW_THRESHOLD`] percent of the maximum window, or once there is
+//! nothing left in flight to wait for. The client may let the window go negative
 //! for a single oversized invocation, but sending more once it is depleted is a
 //! protocol violation and results in a `GO_AWAY` error.
 //!
@@ -131,18 +131,23 @@ where
 /// sending `WindowUpdate` messages.
 pub const MIN_WINDOW_SIZE: NonZeroU32 = NonZeroU32::new(32 * 1024).expect("non-zero"); // 32KiB according to specs
 
-/// Window-replenishment threshold, as a percentage of the maximum window size.
+/// Percentage of the maximum window size that must be reclaimed before a
+/// `WindowUpdate` is sent to the client.
 ///
-/// While records are still in flight the server withholds `WindowUpdate`
-/// responses until the remaining window drops to this percentage of its maximum,
-/// batching acks instead of replying after every commit. See
-/// [`IngestionStream::should_yield`].
-pub(super) const UPDATE_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
-
-/// Once window sizes falls below the UPDATE_WINDOW_THRESHOLD, only
-/// send a Window update if the reclaimed window is greater than this
-/// threshold
-pub(super) const RECLAIM_WINDOW_THRESHOLD: u32 = 15; // 15% of max window size
+/// Sending an update for every committed record would be wasteful, so updates
+/// are batched: reclaimed credit is withheld until it reaches this percentage
+/// of the maximum window size, then handed back in a single `WindowUpdate`.
+///
+/// The scheme is modelled on HTTP/2 flow control. The h2 spec deliberately
+/// leaves the update algorithm to implementations; the Rust `h2` crate uses a
+/// single 50% threshold on reclaimed bytes, and we follow that here. It may
+/// become configurable later.
+///
+/// The two knobs that trade memory against stalls are the maximum window size
+/// and this threshold. A larger window with a lower threshold (more frequent
+/// updates) reduces stalls on high-latency connections at the cost of more
+/// memory held per stream.
+pub(super) const RECLAIM_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
 
 /// The [`IngestionSvc`] implementation.
 ///
@@ -206,12 +211,7 @@ where
     state: State,
     max_window_size: NonZeroU32,
 
-    /// Threshold at which the stream yields back
-    /// a window update message once current_window_size
-    /// go below this value.
-    window_threshold: i64,
-    /// Once window size drops below the window_threshold, don't
-    /// yield until the reclaimed window size is greater than
+    /// Don't yield until the reclaimed window size is greater than
     /// this reclaim threshold.
     reclaim_threshold: u32,
 }
@@ -253,10 +253,6 @@ where
             schemas,
             state: State::WaitingStart,
             max_window_size,
-            window_threshold: (max_window_size
-                .get()
-                .saturating_mul(UPDATE_WINDOW_THRESHOLD)
-                / 100) as i64,
             reclaim_threshold: (max_window_size
                 .get()
                 .saturating_mul(RECLAIM_WINDOW_THRESHOLD)
@@ -467,8 +463,8 @@ where
     ///   `replenish_size`.
     ///
     /// It returns `Continue(replenish_size)` (asking the server to send a
-    /// `WindowUpdate`) once nothing is left in flight or [`Self::should_yield`]
-    /// signals the window is low. When the inbound stream ends it drains the
+    /// `WindowUpdate`) once nothing is left in flight, or once `replenish_size`
+    /// has reached `reclaim_threshold`. When the inbound stream ends it drains the
     /// remaining inflight commits in order and returns `Terminate`.
     async fn process(&mut self, state: &mut ProcessorState) -> Result<ProcessorResult, Error> {
         let mut replenish_size: u32 = 0;
@@ -507,7 +503,7 @@ where
                     // and hence consume memory that is not (yet) counted against the
                     // inflight window.
                     let has_pending = inbound.peek().now_or_never().is_some();
-                    if (state.inflight.is_empty()&&!has_pending) || self.should_yield(state, replenish_size) {
+                    if (state.inflight.is_empty()&&!has_pending) || replenish_size >= self.reclaim_threshold {
                         // yielding now will force the stream to send a
                         // window update message to restore the window size
                         // and also update the last committed offset.
@@ -532,12 +528,6 @@ where
         }
 
         Ok(ProcessorResult::Terminate)
-    }
-
-    /// Returns `true` when the remaining window has fallen below
-    /// yield_threshold and the replenish capacity is above the reclaim threshold.
-    fn should_yield(&self, state: &ProcessorState, replenish_size: u32) -> bool {
-        state.current_window_size < self.window_threshold && replenish_size > self.reclaim_threshold
     }
 
     /// Applies a single inbound frame to `state`.
