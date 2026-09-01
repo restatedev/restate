@@ -156,15 +156,12 @@ impl ServiceClient {
                 let path = parts.path;
                 let mut headers = parts.headers;
                 async move {
-                    if let Some(HttpAuth::GoogleIdToken(auth)) = &auth {
+                    if let Some(HttpAuth::GoogleIdToken(auth)) = auth {
                         // The persisted record carries a concrete audience; the wire-to-persisted
                         // conversion at register/re-register time derives one from the URI when the
                         // operator left it unset. No fallback is needed here.
-                        let audience = auth.audience().to_string();
-                        let impersonate = auth
-                            .impersonate_service_account()
-                            .map(|b| b.as_ref());
-                        let token = gcp::mint(impersonate, &audience)
+                        let spec = gcp::IdTokenSpec::from_deployment_auth(auth);
+                        let token = gcp::mint(&spec)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
 
@@ -173,10 +170,8 @@ impl ServiceClient {
                                 ServiceClientError::GcpAuth(
                                     uri.clone(),
                                     gcp::GcpAuthError::Mint {
-                                        audience: audience.clone(),
-                                        impersonate: impersonate
-                                            .unwrap_or("(ambient)")
-                                            .to_owned(),
+                                        audience: spec.audience().to_owned(),
+                                        impersonate: spec.impersonate_context().to_owned(),
                                         message: format!(
                                             "minted token cannot be used as an HTTP header value: {e}"
                                         ),

@@ -64,6 +64,10 @@ impl GoogleIdTokenAuth {
     pub fn impersonate_service_account(&self) -> Option<&ByteString> {
         self.impersonate_service_account.as_ref()
     }
+
+    pub fn into_parts(self) -> (ByteString, Option<ByteString>) {
+        (self.audience, self.impersonate_service_account)
+    }
 }
 
 /// Derive the OIDC audience from a deployment URI:
