@@ -53,7 +53,7 @@ use crate::ingestion::ingestion_svc::proto::{
     self, DeduplicationMode, ErrorKind, IngestionDefaults, IngestionInvocation, IngestionRequest,
     IngestionResponse, IngestionStart, ingestion_response,
 };
-use crate::ingestion::ingestion_svc::{IngestionStream, MIN_WINDOW_SIZE, UPDATE_WINDOW_THRESHOLD};
+use crate::ingestion::ingestion_svc::{IngestionStream, MIN_WINDOW_SIZE, RECLAIM_WINDOW_THRESHOLD};
 use crate::mocks::{MockSchemas, mock_schemas};
 
 const PRODUCER: &str = "test-producer";
@@ -382,22 +382,22 @@ async fn ingests_records_and_replenishes_window() {
     assert_eq!(stream.next_window_update().await, (both_sizes, Some(2)));
 }
 
-/// Once the window drops below [`UPDATE_WINDOW_THRESHOLD`] the server must not wait
-/// for the in-flight queue to drain before returning credit, otherwise a client
-/// that keeps the pipeline full would stall.
+/// While the pipeline stays busy the server does not answer every commit: the
+/// reclaimed bytes are accumulated and only handed back once they reach
+/// [`RECLAIM_WINDOW_THRESHOLD`] percent of the maximum window. Whatever is left
+/// over is returned as soon as the pipeline runs dry.
 #[tokio::test(start_paused = true)]
-async fn window_update_is_returned_early_when_window_is_low() {
+async fn window_updates_are_batched_until_the_reclaim_threshold() {
     // The window is the protocol minimum, so the server has no extra credit to
     // advertise and the client owns the whole window from the first frame.
     let max_window_size = TEST_WINDOW_SIZE;
-    let threshold = max_window_size * UPDATE_WINDOW_THRESHOLD / 100;
+    let threshold = max_window_size * RECLAIM_WINDOW_THRESHOLD / 100;
 
     // Offsets 1..=4 so that every record encodes to the same size (offset 0 is the
     // proto3 default and is not encoded at all, which would make the first record
-    // shorter than the rest). Payloads are sized so that four records fill most of
-    // the window: once all four are in flight it is below the threshold.
+    // shorter than the rest).
     let records: Vec<_> = (1..=4)
-        .map(|o| invocation_with_payload(o, 8 * 1024 - 200))
+        .map(|o| invocation_with_payload(o, 7 * 1024 - 200))
         .collect();
     let record_size = records[0].encoded_len() as u32;
     assert!(
@@ -406,8 +406,11 @@ async fn window_update_is_returned_early_when_window_is_low() {
             .all(|r| r.encoded_len() as u32 == record_size)
     );
 
-    // What is left of the window once all four records are in flight.
-    let spare = max_window_size - 4 * record_size;
+    // All four records fit in the window, and it takes exactly three commits to
+    // reclaim enough bytes to cross the threshold.
+    assert!(4 * record_size <= max_window_size);
+    assert!(2 * record_size < threshold);
+    assert!(3 * record_size >= threshold);
 
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
@@ -422,26 +425,27 @@ async fn window_update_is_returned_early_when_window_is_low() {
     stream.settle().await;
     stream.assert_no_response();
 
-    resolver.commit_next().await;
-    assert_eq!(stream.next_window_update().await, (record_size, Some(1)));
+    // The first two commits reclaim less than the threshold. Records are still in
+    // flight, so the credit is withheld instead of being sent right away.
+    for _ in 0..2 {
+        resolver.commit_next().await;
+        stream.settle().await;
+        stream.assert_no_response();
+    }
 
-    // window: spare + one record, still below the threshold.
-    assert!(spare + record_size < threshold);
-    resolver.commit_next().await;
-    assert_eq!(stream.next_window_update().await, (record_size, Some(2)));
-
-    // window: spare + two records, back above the threshold, so the last two commits
-    // are batched into a single response.
-    assert!(spare + 2 * record_size >= threshold);
-    resolver.commit_next().await;
-    stream.settle().await;
-    stream.assert_no_response();
-
+    // The third commit takes the reclaimed bytes over the threshold: all three are
+    // returned at once, acking the third offset.
     resolver.commit_next().await;
     assert_eq!(
         stream.next_window_update().await,
-        (2 * record_size, Some(4))
+        (3 * record_size, Some(3))
     );
+
+    // The last commit is below the threshold on its own, but nothing is left in
+    // flight and no frame is pending, so the server returns it immediately rather
+    // than sitting on the credit.
+    resolver.commit_next().await;
+    assert_eq!(stream.next_window_update().await, (record_size, Some(4)));
 }
 
 /// Until the first `WindowUpdate` arrives the client is bound by
