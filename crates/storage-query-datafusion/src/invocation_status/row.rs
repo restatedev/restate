@@ -346,7 +346,7 @@ fn fill_invoked_by(
             }
         }
         Source::Ingestion(_) => {
-            row.invoked_by("ingestion_ingestion");
+            row.invoked_by("ingress_ingestion");
         }
     }
 
