@@ -1624,10 +1624,10 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn outer_credentials_for_one_provider_share_and_release_one_access_token_source() {
+    async fn outer_credentials_share_release_and_rebuild_one_access_token_source() {
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/shared-lease";
         let service_account = "sa@example.iam.gserviceaccount.com";
-        counted_access_token_source_override(provider);
+        let builds = counted_access_token_source_override(provider);
 
         let registry = credential_registry();
         let spec_a = IdTokenSpec::federated(
@@ -1652,6 +1652,11 @@ mod tests {
         )
         .await
         .expect("outer construction succeeds");
+        assert_eq!(
+            builds.load(Ordering::SeqCst),
+            1,
+            "both outer credentials must share one access-token source build"
+        );
 
         let weak = registry
             .federated_access_token_sources
@@ -1692,34 +1697,10 @@ mod tests {
             0,
             "evicting the last outer credential must drop the last lease"
         );
-    }
-
-    #[restate_core::test]
-    async fn reap_removes_a_federated_access_token_source_after_its_last_outer_credential_expires()
-    {
-        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/reap-test";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        let builds = counted_access_token_source_override(provider);
-
-        let registry = credential_registry();
-        let spec =
-            IdTokenSpec::federated("https://reap-test.example.com", provider, service_account);
-        let outer =
-            build_federated_source_for_spec(&registry.federated_access_token_sources, spec.clone())
-                .await
-                .expect("outer construction succeeds");
-        registry
-            .cache
-            .insert(spec.clone(), ready_entry(outer))
-            .await;
-        assert_eq!(builds.load(Ordering::SeqCst), 1);
-
-        registry.cache.invalidate(&spec).await;
-        registry.cache.run_pending_tasks().await;
         assert_eq!(
             registry.federated_access_token_sources.reap_dead(),
             0,
-            "the live count must reflect removal once the last outer credential expires"
+            "the source must be reaped after its last outer credential releases it"
         );
         assert!(
             registry
@@ -1729,12 +1710,12 @@ mod tests {
             "the map key itself must be gone after reaping, not merely a dead tombstone"
         );
 
-        let second_spec = IdTokenSpec::federated(
-            "https://reap-test-second.example.com",
+        let spec_c = IdTokenSpec::federated(
+            "https://shared-lease-c.example.com",
             provider,
             service_account,
         );
-        build_federated_source_for_spec(&registry.federated_access_token_sources, second_spec)
+        build_federated_source_for_spec(&registry.federated_access_token_sources, spec_c)
             .await
             .expect("outer construction succeeds");
         assert_eq!(
@@ -2027,21 +2008,24 @@ mod tests {
             .get_or_create(provider);
         task_center.block_on(access_token_source.credentials.seed_for_test(dead_source()));
 
-        // The probe child task reports on channels, so the assertions never wait on a timer.
-        let (started_tx, started_rx) = std::sync::mpsc::channel();
-        let (survived_tx, survived_rx) = std::sync::mpsc::channel();
-        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-        let release_rx = Mutex::new(Some(release_rx));
+        let (probe_started_tx, probe_started_rx) = std::sync::mpsc::channel();
+        let (probe_finished_tx, probe_finished_rx) = std::sync::mpsc::channel();
+        let (allow_probe_to_finish_tx, allow_probe_to_finish_rx) = tokio::sync::oneshot::channel();
+        let allow_probe_to_finish_rx = Mutex::new(Some(allow_probe_to_finish_rx));
         federation::test_hooks::install_access_token_source_override(provider, move || {
-            let started_tx = started_tx.clone();
-            let survived_tx = survived_tx.clone();
-            let release_rx = release_rx.lock().take().expect("recovery builds once");
+            let probe_started_tx = probe_started_tx.clone();
+            let probe_finished_tx = probe_finished_tx.clone();
+            let allow_probe_to_finish_rx = allow_probe_to_finish_rx
+                .lock()
+                .take()
+                .expect("recovery builds once");
+            // Simulate the library refresh task spawned while rebuilding the shared source.
             tokio::spawn(async move {
-                started_tx
+                probe_started_tx
                     .send(())
                     .expect("the test still awaits the probe");
-                let _ = release_rx.await;
-                survived_tx
+                let _ = allow_probe_to_finish_rx.await;
+                probe_finished_tx
                     .send(())
                     .expect("the test still awaits the probe");
             });
@@ -2056,15 +2040,18 @@ mod tests {
                     .recover_if_dead(provider)
                     .in_tc(&task_center),
             );
-            started_rx
+            // Ensure the child exists before dropping the runtime that might own it.
+            probe_started_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("recovery spawns a probe child task");
         }
 
-        // The caller runtime is now dropped. Only a probe on the TaskCenter default runtime can
-        // still observe the release and report back.
-        release_tx.send(()).expect("the probe is still running");
-        survived_rx
+        // A child owned by the caller runtime was cancelled above; one owned by the TaskCenter can
+        // still finish and report back.
+        allow_probe_to_finish_tx
+            .send(())
+            .expect("the probe is still running");
+        probe_finished_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("a task spawned during recovery must survive the caller runtime's drop");
     }

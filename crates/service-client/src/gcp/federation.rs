@@ -214,6 +214,9 @@ fn federation_error_from_assume_role_failure(
     error: &aws_credential_types::provider::error::CredentialsError,
 ) -> FederationError {
     let message = format!("assuming the AWS federation role for GCP authentication: {error}");
+    // These are stable STS API error codes, see AssumeRole and common error references:
+    // https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html#API_AssumeRole_Errors
+    // https://docs.aws.amazon.com/STS/latest/APIReference/CommonErrors.html
     let permanent = matches!(
         assume_role_error_code(error),
         Some(
@@ -872,25 +875,33 @@ mod federation_tests {
         let subject_token_wire = form
             .get("subject_token")
             .expect("subject_token field present");
-        let envelope = build_subject_token(
-            &fixed_credentials(),
-            "us-east-1",
-            PROVIDER,
-            SystemTime::now(),
-        )
-        .expect("rebuilding an envelope with the same shape succeeds");
-        // Time-dependent (SigV4 signs the request time), so compare shape rather than equality:
-        // both must be a once-encoded JSON envelope with the same structural fields.
+        assert!(
+            serde_json::from_str::<serde_json::Value>(subject_token_wire).is_err(),
+            "transport decoding must leave the subject-token envelope percent-encoded"
+        );
         let decoded_wire: String = url::form_urlencoded::parse(subject_token_wire.as_bytes())
             .next()
             .map(|(k, _)| k.into_owned())
             .expect("subject token decodes to one key");
         let decoded_wire_json: serde_json::Value =
             serde_json::from_str(&decoded_wire).expect("decoded subject token is JSON");
-        let envelope_json: serde_json::Value =
-            serde_json::from_str(&envelope).expect("locally-built envelope is JSON");
-        assert_eq!(decoded_wire_json["method"], envelope_json["method"]);
-        assert_eq!(decoded_wire_json["url"], envelope_json["url"]);
+        assert_eq!(decoded_wire_json["method"], "POST");
+        assert_eq!(
+            decoded_wire_json["url"],
+            "https://sts.us-east-1.amazonaws.com/?Action=GetCallerIdentity&Version=2011-06-15"
+        );
+        assert!(
+            decoded_wire_json["headers"]
+                .as_array()
+                .expect("headers are an array")
+                .iter()
+                .any(|header| {
+                    header["key"]
+                        .as_str()
+                        .is_some_and(|key| key.eq_ignore_ascii_case("x-goog-cloud-target-resource"))
+                        && header["value"] == PROVIDER
+                })
+        );
 
         assert_eq!(
             env_before,
@@ -963,23 +974,21 @@ mod federation_tests {
     }
 
     #[test]
-    fn initialization_rejects_invalid_aws_role_arn() {
-        let config = super::GcpFederationOptions {
-            aws_role_arn: "not-an-arn".to_owned(),
-            aws_role_session_name: "valid-session".to_owned(),
-        };
-        super::initialize_config_once(&std::sync::OnceLock::new(), Some(config))
-            .expect_err("invalid aws-role-arn must be rejected");
-    }
-
-    #[test]
-    fn initialization_rejects_invalid_session_name() {
-        let config = super::GcpFederationOptions {
-            aws_role_arn: "arn:aws:iam::123456789012:role/RestateCloudGcpFederation".to_owned(),
-            aws_role_session_name: "has a space".to_owned(),
-        };
-        super::initialize_config_once(&std::sync::OnceLock::new(), Some(config))
-            .expect_err("invalid aws-role-session-name must be rejected");
+    fn initialization_rejects_invalid_config() {
+        for (aws_role_arn, aws_role_session_name) in [
+            ("not-an-arn", "valid-session"),
+            (
+                "arn:aws:iam::123456789012:role/RestateCloudGcpFederation",
+                "has a space",
+            ),
+        ] {
+            let config = super::GcpFederationOptions {
+                aws_role_arn: aws_role_arn.to_owned(),
+                aws_role_session_name: aws_role_session_name.to_owned(),
+            };
+            super::initialize_config_once(&std::sync::OnceLock::new(), Some(config))
+                .expect_err("invalid federation configuration must be rejected");
+        }
     }
 
     fn fixture_config(aws_role_arn: &str) -> super::GcpFederationOptions {
@@ -1041,30 +1050,25 @@ mod federation_tests {
     }
 
     #[test]
-    fn assume_role_operator_errors_classify_permanent() {
-        for code in [
-            "AccessDenied",
-            "AccessDeniedException",
-            "MalformedPolicyDocument",
-            "PackedPolicyTooLarge",
-            "RegionDisabledException",
-            "ValidationError",
+    fn assume_role_service_errors_are_classified() {
+        for (code, expected_transient) in [
+            ("AccessDenied", false),
+            ("AccessDeniedException", false),
+            ("MalformedPolicyDocument", false),
+            ("PackedPolicyTooLarge", false),
+            ("RegionDisabledException", false),
+            ("ValidationError", false),
+            ("ExpiredTokenException", true),
         ] {
             let raw = assume_role_service_error(code);
             assert_eq!(super::assume_role_error_code(&raw), Some(code));
             let error = super::federation_error_from_assume_role_failure(&raw);
-            assert!(!error.is_transient(), "{code} must be permanent");
+            assert_eq!(
+                error.is_transient(),
+                expected_transient,
+                "unexpected classification for {code}"
+            );
         }
-    }
-
-    #[test]
-    fn assume_role_expired_credentials_classify_transient() {
-        let raw = assume_role_service_error("ExpiredTokenException");
-        let error = super::federation_error_from_assume_role_failure(&raw);
-        assert!(
-            error.is_transient(),
-            "ambient credentials may rotate after expiry"
-        );
     }
 
     #[test]
@@ -1090,15 +1094,23 @@ mod federation_tests {
             "a live provider must always resolve to the same access-token source"
         );
 
-        let dead_ptr = Arc::as_ptr(&first);
+        let first_weak = Arc::downgrade(&first);
         drop(first);
         drop(second);
+        assert!(
+            first_weak.upgrade().is_none(),
+            "the original source must die after its last strong reference drops"
+        );
+
         let third = sources.get_or_create(provider);
-        assert_ne!(
-            Arc::as_ptr(&third),
-            dead_ptr,
-            "once every strong reference drops, the next lookup must replace the tombstone with \
-             a fresh instance, never resurrect the dead one"
+        let indexed = sources
+            .weak_for_test(provider)
+            .expect("the dead tombstone must be replaced")
+            .upgrade()
+            .expect("the replacement must be live");
+        assert!(
+            Arc::ptr_eq(&third, &indexed),
+            "the index must point at the fresh source returned by the lookup"
         );
     }
 }
