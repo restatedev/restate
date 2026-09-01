@@ -221,6 +221,69 @@ fn credential_registry() -> &'static CredentialRegistry {
     registry
 }
 
+/// Mint an OIDC ID token for the given audience. If `impersonate_service_account` is set, the
+/// token is minted via the IAM Credentials `generateIdToken` API for that service account;
+/// otherwise it is minted from ambient ADC identity.
+pub(crate) async fn mint(
+    impersonate_service_account: Option<&str>,
+    audience: &str,
+) -> Result<String, GcpAuthError> {
+    let spec = IdTokenSpec {
+        impersonate: impersonate_service_account.map(str::to_owned),
+        audience: audience.to_owned(),
+    };
+    let impersonate = impersonate_service_account
+        .unwrap_or("(ambient)")
+        .to_owned();
+
+    #[cfg(any(test, feature = "test_util"))]
+    if let Some(result) = test_override(&spec, &impersonate) {
+        return result;
+    }
+
+    let deadline = Instant::now() + MINT_ATTEMPT_TIMEOUT;
+    let timeout_error = || GcpAuthError::Timeout {
+        audience: audience.to_owned(),
+        impersonate: impersonate.clone(),
+        duration: MINT_ATTEMPT_TIMEOUT,
+    };
+    let registry = credential_registry();
+    let entry = tokio::time::timeout_at(deadline, registry.get_entry(&spec))
+        .await
+        .map_err(|_| timeout_error())?;
+    let source =
+        match tokio::time::timeout_at(deadline, entry.get_or_start(registry, spec.clone())).await {
+            Ok(Ok(source)) => source,
+            Ok(Err(error)) => {
+                let _ = registry.evict_if_unchanged(&spec, &entry).await;
+                return Err(error);
+            }
+            Err(_) => return Err(timeout_error()),
+        };
+
+    match tokio::time::timeout_at(deadline, source.id_token()).await {
+        Ok(Ok(token)) => Ok(token),
+        Ok(Err(error)) => {
+            // Transient errors may self-heal; evict permanent failures only if still current.
+            if !error.is_transient() {
+                let evicted = registry.evict_if_unchanged(&spec, &entry).await;
+                if evicted && spec.impersonate.is_some() {
+                    registry.recover_ambient_source_if_dead().await;
+                }
+            }
+            Err(GcpAuthError::Mint {
+                audience: audience.to_owned(),
+                impersonate: impersonate.clone(),
+                message: error.to_string(),
+            })
+        }
+        // A timeout does not prove the refresh task dead, so retain the entry. A continuously
+        // used, wedged credential may keep timing out, but each caller remains bounded and no
+        // duplicate refresh task is created.
+        Err(_) => Err(timeout_error()),
+    }
+}
+
 impl CredentialRegistry {
     fn new() -> Self {
         Self {
@@ -490,130 +553,81 @@ fn build_impersonated_credentials(
     Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
 }
 
-/// Cheap handle to the process-wide credential registry.
-#[derive(Clone)]
-pub struct GcpTokenClient {
-    #[cfg(any(test, feature = "test_util"))]
-    test_overrides: Arc<TestOverrides>,
+#[cfg(any(test, feature = "test_util"))]
+enum TestOverride {
+    Token(String),
+    Failure(String),
 }
 
 #[cfg(any(test, feature = "test_util"))]
-struct TestOverrides {
-    forced_failure: Mutex<Option<String>>,
-    tokens: Mutex<HashMap<IdTokenSpec, String>>,
+static TEST_OVERRIDES: std::sync::LazyLock<Mutex<HashMap<IdTokenSpec, Arc<TestOverride>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::default()));
+
+#[cfg(any(test, feature = "test_util"))]
+pub struct TestOverrideGuard {
+    spec: IdTokenSpec,
+    installed: Arc<TestOverride>,
 }
 
-impl GcpTokenClient {
-    pub fn new() -> Self {
-        Self {
-            #[cfg(any(test, feature = "test_util"))]
-            test_overrides: Arc::new(TestOverrides {
-                forced_failure: Mutex::new(None),
-                tokens: Mutex::default(),
-            }),
+#[cfg(any(test, feature = "test_util"))]
+impl Drop for TestOverrideGuard {
+    fn drop(&mut self) {
+        let mut overrides = TEST_OVERRIDES.lock();
+        if matches!(overrides.get(&self.spec), Some(current) if Arc::ptr_eq(current, &self.installed))
+        {
+            overrides.remove(&self.spec);
         }
     }
+}
 
-    /// Mint an OIDC ID token for the given audience. If `impersonate_service_account` is set, the
-    /// token is minted via the IAM Credentials `generateIdToken` API for that service account;
-    /// otherwise it is minted from ambient ADC identity.
-    pub async fn mint(
-        &self,
-        impersonate_service_account: Option<&str>,
-        audience: &str,
-    ) -> Result<String, GcpAuthError> {
-        let spec = IdTokenSpec {
-            impersonate: impersonate_service_account.map(str::to_owned),
-            audience: audience.to_owned(),
-        };
-        let impersonate = impersonate_service_account
-            .unwrap_or("(ambient)")
-            .to_owned();
+#[cfg(any(test, feature = "test_util"))]
+fn install_test_override(spec: IdTokenSpec, value: TestOverride) -> TestOverrideGuard {
+    let installed = Arc::new(value);
+    TEST_OVERRIDES
+        .lock()
+        .insert(spec.clone(), installed.clone());
+    TestOverrideGuard { spec, installed }
+}
 
-        #[cfg(any(test, feature = "test_util"))]
-        if let Some(result) = self.test_override(&spec, &impersonate) {
-            return result;
-        }
-
-        let deadline = Instant::now() + MINT_ATTEMPT_TIMEOUT;
-        let timeout_error = || GcpAuthError::Timeout {
-            audience: audience.to_owned(),
-            impersonate: impersonate.clone(),
-            duration: MINT_ATTEMPT_TIMEOUT,
-        };
-        let registry = credential_registry();
-        let entry = tokio::time::timeout_at(deadline, registry.get_entry(&spec))
-            .await
-            .map_err(|_| timeout_error())?;
-        let source =
-            match tokio::time::timeout_at(deadline, entry.get_or_start(registry, spec.clone()))
-                .await
-            {
-                Ok(Ok(source)) => source,
-                Ok(Err(error)) => {
-                    let _ = registry.evict_if_unchanged(&spec, &entry).await;
-                    return Err(error);
-                }
-                Err(_) => return Err(timeout_error()),
-            };
-
-        match tokio::time::timeout_at(deadline, source.id_token()).await {
-            Ok(Ok(token)) => Ok(token),
-            Ok(Err(error)) => {
-                // Transient errors may self-heal; evict permanent failures only if still current.
-                if !error.is_transient() {
-                    let evicted = registry.evict_if_unchanged(&spec, &entry).await;
-                    if evicted && spec.impersonate.is_some() {
-                        registry.recover_ambient_source_if_dead().await;
-                    }
-                }
-                Err(GcpAuthError::Mint {
-                    audience: audience.to_owned(),
-                    impersonate: impersonate.clone(),
-                    message: error.to_string(),
-                })
-            }
-            // A timeout does not prove the refresh task dead, so retain the entry. A continuously
-            // used, wedged credential may keep timing out, but each caller remains bounded and no
-            // duplicate refresh task is created.
-            Err(_) => Err(timeout_error()),
-        }
-    }
-
-    #[cfg(any(test, feature = "test_util"))]
-    fn test_override(
-        &self,
-        spec: &IdTokenSpec,
-        impersonate: &str,
-    ) -> Option<Result<String, GcpAuthError>> {
-        if let Some(message) = self.test_overrides.forced_failure.lock().clone() {
-            return Some(Err(GcpAuthError::Mint {
-                audience: spec.audience.clone(),
-                impersonate: impersonate.to_owned(),
-                message,
-            }));
-        }
-        self.test_overrides.tokens.lock().get(spec).cloned().map(Ok)
-    }
-
-    #[cfg(any(test, feature = "test_util"))]
-    pub fn force_mint_failure_for_test(&self, message: &str) {
-        *self.test_overrides.forced_failure.lock() = Some(message.to_owned());
-    }
-
-    #[cfg(any(test, feature = "test_util"))]
-    pub fn seed_for_test(&self, impersonate: Option<&str>, audience: &str, token: String) {
-        let spec = IdTokenSpec {
+#[cfg(any(test, feature = "test_util"))]
+pub(crate) fn override_token_for_test(
+    impersonate: Option<&str>,
+    audience: &str,
+    token: String,
+) -> TestOverrideGuard {
+    install_test_override(
+        IdTokenSpec {
             impersonate: impersonate.map(str::to_owned),
             audience: audience.to_owned(),
-        };
-        self.test_overrides.tokens.lock().insert(spec, token);
-    }
+        },
+        TestOverride::Token(token),
+    )
 }
 
-impl Default for GcpTokenClient {
-    fn default() -> Self {
-        Self::new()
+#[cfg(any(test, feature = "test_util"))]
+pub(crate) fn override_failure_for_test(
+    impersonate: Option<&str>,
+    audience: &str,
+    message: &str,
+) -> TestOverrideGuard {
+    install_test_override(
+        IdTokenSpec {
+            impersonate: impersonate.map(str::to_owned),
+            audience: audience.to_owned(),
+        },
+        TestOverride::Failure(message.to_owned()),
+    )
+}
+
+#[cfg(any(test, feature = "test_util"))]
+fn test_override(spec: &IdTokenSpec, impersonate: &str) -> Option<Result<String, GcpAuthError>> {
+    match TEST_OVERRIDES.lock().get(spec)?.as_ref() {
+        TestOverride::Token(token) => Some(Ok(token.clone())),
+        TestOverride::Failure(message) => Some(Err(GcpAuthError::Mint {
+            audience: spec.audience.clone(),
+            impersonate: impersonate.to_owned(),
+            message: message.clone(),
+        })),
     }
 }
 
@@ -804,7 +818,6 @@ mod tests {
 
     #[restate_core::test]
     async fn single_flight_builds_once_under_concurrent_misses() {
-        let client = GcpTokenClient::new();
         let audience = "https://single-flight.example.com";
         let builds = Arc::new(AtomicUsize::new(0));
 
@@ -816,7 +829,7 @@ mod tests {
             }
         });
 
-        let results = futures::future::join_all((0..64).map(|_| client.mint(None, audience))).await;
+        let results = futures::future::join_all((0..64).map(|_| mint(None, audience))).await;
 
         assert!(results.iter().all(|r| r.is_ok()), "{results:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
@@ -824,7 +837,6 @@ mod tests {
 
     #[restate_core::test]
     async fn failed_shared_build_is_evicted_and_retried() {
-        let client = GcpTokenClient::new();
         let audience = "https://build-retry.example.com";
         let builds = Arc::new(AtomicUsize::new(0));
 
@@ -839,16 +851,15 @@ mod tests {
             }
         });
 
-        let first = client.mint(None, audience).await;
+        let first = mint(None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Build { .. })));
-        let second = client.mint(None, audience).await;
+        let second = mint(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 2);
     }
 
     #[restate_core::test(start_paused = true)]
     async fn timed_out_caller_leaves_shared_construction_running() {
-        let client = GcpTokenClient::new();
         let audience = "https://slow-construction.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let builds = Arc::new(AtomicUsize::new(0));
@@ -868,7 +879,7 @@ mod tests {
             }
         });
 
-        let first = client.mint(None, audience).await;
+        let first = mint(None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Timeout { .. })));
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         let entry = credential_registry()
@@ -878,7 +889,7 @@ mod tests {
             .expect("timed-out construction remains cached");
 
         release.notify_waiters();
-        let second = client.mint(None, audience).await;
+        let second = mint(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
         assert_eq!(builds.load(Ordering::SeqCst), 1);
         let cached = credential_registry().cache.get(&cache_key).await;
@@ -887,7 +898,6 @@ mod tests {
 
     #[restate_core::test(start_paused = true)]
     async fn construction_and_token_mint_share_one_deadline() {
-        let client = GcpTokenClient::new();
         let audience = "https://shared-deadline.example.com";
 
         add_async_build_override(IdTokenSpec::ambient(audience), move |_| async move {
@@ -896,7 +906,7 @@ mod tests {
         });
 
         let started = Instant::now();
-        let outcome = client.mint(None, audience).await;
+        let outcome = mint(None, audience).await;
         assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
         assert_eq!(started.elapsed(), MINT_ATTEMPT_TIMEOUT);
     }
@@ -961,7 +971,6 @@ mod tests {
             }
         });
 
-        let client = GcpTokenClient::new();
         let audience = "https://ambient-recovery.example.com";
         let service_account = "sa@example.iam.gserviceaccount.com";
         add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
@@ -970,7 +979,7 @@ mod tests {
             }) as Arc<dyn IdTokenSource>)
         });
 
-        let outcome = client.mint(Some(service_account), audience).await;
+        let outcome = mint(Some(service_account), audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1006,7 +1015,6 @@ mod tests {
             }
         });
 
-        let client = GcpTokenClient::new();
         let audience = "https://ambient-stable.example.com";
         let service_account = "sa@example.iam.gserviceaccount.com";
         add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
@@ -1016,7 +1024,7 @@ mod tests {
         });
 
         for _ in 0..5 {
-            let outcome = client.mint(Some(service_account), audience).await;
+            let outcome = mint(Some(service_account), audience).await;
             assert!(
                 matches!(outcome, Err(GcpAuthError::Mint { .. })),
                 "{outcome:?}"
@@ -1032,7 +1040,6 @@ mod tests {
 
     #[restate_core::test]
     async fn transient_error_keeps_entry_and_self_heals() {
-        let client = GcpTokenClient::new();
         let audience = "https://transient.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let source = MockSource::new(|call| {
@@ -1049,19 +1056,18 @@ mod tests {
             .insert(cache_key.clone(), cached_entry.clone())
             .await;
 
-        let first = client.mint(None, audience).await;
+        let first = mint(None, audience).await;
         assert!(matches!(first, Err(GcpAuthError::Mint { .. })), "{first:?}");
 
         let still_cached = credential_registry().cache.get(&cache_key).await;
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &cached_entry)));
 
-        let second = client.mint(None, audience).await;
+        let second = mint(None, audience).await;
         assert!(second.is_ok(), "{second:?}");
     }
 
     #[restate_core::test(start_paused = true)]
     async fn timeout_keeps_entry() {
-        let client = GcpTokenClient::new();
         let audience = "https://timeout.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let source: Arc<dyn IdTokenSource> = MockSource::new(|_| MockOutcome::Hang);
@@ -1071,7 +1077,7 @@ mod tests {
             .insert(cache_key.clone(), entry.clone())
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = mint(None, audience).await;
         assert!(matches!(outcome, Err(GcpAuthError::Timeout { .. })));
         let still_cached = credential_registry().cache.get(&cache_key).await;
         assert!(matches!(still_cached, Some(s) if Arc::ptr_eq(&s, &entry)));
@@ -1079,7 +1085,6 @@ mod tests {
 
     #[restate_core::test]
     async fn permanent_error_evicts_conditionally() {
-        let client = GcpTokenClient::new();
         let audience = "https://permanent.example.com";
         let cache_key = IdTokenSpec::ambient(audience);
         let source: Arc<dyn IdTokenSource> =
@@ -1089,7 +1094,7 @@ mod tests {
             .insert(cache_key.clone(), ready_entry(source))
             .await;
 
-        let outcome = client.mint(None, audience).await;
+        let outcome = mint(None, audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"
@@ -1100,7 +1105,6 @@ mod tests {
 
     #[restate_core::test]
     async fn aba_race_stale_caller_cannot_evict_or_recover_source() {
-        let client = GcpTokenClient::new();
         let audience = "https://aba.example.com";
         let service_account = "sa@example.iam.gserviceaccount.com";
         let cache_key = IdTokenSpec::impersonated(audience, service_account);
@@ -1153,7 +1157,7 @@ mod tests {
             .insert(cache_key.clone(), old_entry)
             .await;
 
-        let outcome = client.mint(Some(service_account), audience).await;
+        let outcome = mint(Some(service_account), audience).await;
         assert!(
             matches!(outcome, Err(GcpAuthError::Mint { .. })),
             "{outcome:?}"

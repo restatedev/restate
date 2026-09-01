@@ -29,7 +29,7 @@ use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
 
-pub use crate::gcp::{GcpAuthError, GcpTokenClient};
+pub use crate::gcp::GcpAuthError;
 pub use crate::http::HttpClient;
 pub use crate::http::HttpError;
 pub use crate::lambda::AssumeRoleCacheMode;
@@ -44,7 +44,7 @@ pub mod pool;
 mod proxy;
 mod request_identity;
 #[cfg(any(test, feature = "test_util"))]
-mod test_util;
+pub mod test_util;
 mod utils;
 
 /// Header slot we always use for the Restate-minted Google ID token on HTTP deployments with GCP
@@ -60,7 +60,6 @@ pub type ResponseBody = http_body_util::Either<http::ResponseBody, Full<Bytes>>;
 pub struct ServiceClient {
     http: HttpClient,
     lambda: LambdaClient,
-    pub(crate) gcp: GcpTokenClient,
     // this can be changed to re-read periodically if necessary
     request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
     additional_request_headers: HashMap<HeaderName, HeaderValue>,
@@ -70,14 +69,12 @@ impl ServiceClient {
     pub(crate) fn new(
         http: HttpClient,
         lambda: LambdaClient,
-        gcp: GcpTokenClient,
         request_identity_key: Arc<ArcSwapOption<request_identity::v1::SigningKey>>,
         additional_request_headers: HashMap<HeaderName, HeaderValue>,
     ) -> Self {
         Self {
             http,
             lambda,
-            gcp,
             request_identity_key,
             additional_request_headers,
         }
@@ -107,7 +104,6 @@ impl ServiceClient {
                 &options.http.http_keep_alive_options,
                 assume_role_cache_mode,
             ),
-            GcpTokenClient::new(),
             request_identity_key,
             options
                 .additional_request_headers
@@ -161,7 +157,6 @@ impl ServiceClient {
         match parts.address {
             Endpoint::Http(uri, version, auth) => {
                 let http = self.http.clone();
-                let gcp = self.gcp.clone();
                 let method = parts.method.into();
                 let path = parts.path;
                 let mut headers = parts.headers;
@@ -174,8 +169,7 @@ impl ServiceClient {
                         let impersonate = auth
                             .impersonate_service_account()
                             .map(|b| b.as_ref());
-                        let token = gcp
-                            .mint(impersonate, &audience)
+                        let token = gcp::mint(impersonate, &audience)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
 

@@ -18,7 +18,7 @@
 //! leaving any customer-supplied `Authorization` in `additional_headers`
 //! to pass through to the workload.
 //!
-//! The token is pre-seeded into `GcpTokenClient`'s cache so the test
+//! Token minting is overridden for the exact credential key under test, so the test
 //! does not depend on ADC discovery or external network. The
 //! google-cloud-auth crate is exercised in its own test suite.
 
@@ -38,6 +38,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
+use restate_service_client::test_util::{override_gcp_mint_failure, override_gcp_token};
 use restate_service_client::{Endpoint, Method as ClientMethod, Parts, ServiceClient};
 use restate_types::config::ServiceClientOptions;
 use restate_types::deployment::{GoogleIdTokenAuth, HttpAuth};
@@ -161,9 +162,7 @@ async fn bearer_attached_with_persisted_audience() {
 
     let client = build_service_client();
     let token = fake_jwt_with_audience(&expected_audience);
-    client
-        .gcp_for_test()
-        .seed_for_test(None, &expected_audience, token.clone());
+    let _token_override = override_gcp_token(None, &expected_audience, token.clone());
 
     let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
         ByteString::from(expected_audience.clone()),
@@ -204,9 +203,7 @@ async fn customer_authorization_passes_through_alongside_minted_xsa() {
 
     let client = build_service_client();
     let token = fake_jwt_with_audience(&expected_audience);
-    client
-        .gcp_for_test()
-        .seed_for_test(None, &expected_audience, token.clone());
+    let _token_override = override_gcp_token(None, &expected_audience, token.clone());
 
     let mut extra = hyper::HeaderMap::new();
     extra.insert(
@@ -249,9 +246,7 @@ async fn bearer_uses_explicit_audience_when_provided() {
 
     let client = build_service_client();
     let token = fake_jwt_with_audience(explicit_audience);
-    client
-        .gcp_for_test()
-        .seed_for_test(None, explicit_audience, token);
+    let _token_override = override_gcp_token(None, explicit_audience, token);
 
     let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
         ByteString::from_static(explicit_audience),
@@ -278,9 +273,8 @@ async fn mint_failure_does_not_send_unauthenticated_request() {
     let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
 
     let client = build_service_client();
-    client
-        .gcp_for_test()
-        .force_mint_failure_for_test("simulated ADC failure");
+    let _failure_override =
+        override_gcp_mint_failure(None, "https://example.test", "simulated ADC failure");
 
     let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
         ByteString::from_static("https://example.test"),
