@@ -259,6 +259,7 @@ fn find_local_tail(
         return Ok(decoded_key.offset().next());
     }
 
+    iter.status()?;
     Ok(LogletOffset::OLDEST)
 }
 

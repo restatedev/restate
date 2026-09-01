@@ -295,15 +295,9 @@ where
             },
         );
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
-        // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-        }
+        let (vqueue_id, q_meta) = meta.split_mut();
+        self.storage
+            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -379,8 +373,8 @@ where
             },
         );
 
-        meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
@@ -489,14 +483,9 @@ where
             },
         );
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
         // Update vqueue meta in storage
-        self.storage.update_vqueue(vqueue_id, &update);
-
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(vqueue_id);
-        }
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -722,15 +711,9 @@ where
             },
         );
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
         // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if was_active_before && !is_active_now {
-            self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-        }
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         let stats = match next_stage {
             Stage::Paused => Self::mark_pause(at, header.stats()),
@@ -797,13 +780,8 @@ where
             },
         );
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
-
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-        }
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -964,13 +942,8 @@ where
             new_status,
         );
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if was_active_before && !is_active_now {
-            self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-        }
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
@@ -994,7 +967,13 @@ where
 
         if delete_after.is_zero() {
             // Delete immediately!
-            self.delete(at, vqueue_id, header.entry_id(), &modified_key);
+            self.delete(
+                at,
+                vqueue_id,
+                header.entry_id(),
+                &modified_key,
+                header.metadata(),
+            );
         }
     }
 
@@ -1008,6 +987,7 @@ where
         vqueue_id: &VQueueId,
         entry_id: &EntryId,
         entry_key: &EntryKey,
+        entry_metadata: &EntryMetadata,
     ) {
         let meta = self.cache.get_mut(self.handle).unwrap();
         assert_eq!(vqueue_id, meta.vqueue_id());
@@ -1034,9 +1014,8 @@ where
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
-        // update cache
-        let _ = meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(entry_metadata));
     }
 
     /// A specialized version of run designed for inline execution of an entry.
@@ -1073,8 +1052,8 @@ where
             },
         );
 
-        meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
         // Move to finish
@@ -1089,12 +1068,8 @@ where
 
         let stats = Self::mark_transition(at, &stats);
 
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
-
-        if was_active_before && !is_active_now {
-            self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-        }
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
 
         // Move the entry to Finished stage
         // for future: Use this to set the deletion time.
@@ -1153,32 +1128,26 @@ where
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key);
-        // update cache
-        let _ = meta.apply_update(&update);
-        self.storage.update_vqueue(vqueue_id, &update);
+
+        self.storage
+            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
     }
 
     /// Marks this vqueue as paused
     pub fn pause_queue(&mut self, at: UniqueTimestamp) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
+        let slot = self.cache.get_mut(self.handle).unwrap();
 
-        if meta.meta().queue_is_paused() {
+        if slot.meta().queue_is_paused() {
             // queue is already paused
             return;
         }
 
-        debug!(qid = %meta.vqueue_id(), "Pausing vqueue");
+        debug!(qid = %slot.vqueue_id(), "Pausing vqueue");
         let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
         // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if was_active_before && !is_active_now {
-            self.storage.mark_vqueue_as_dormant(meta.vqueue_id());
-        }
+        let (vqueue_id, meta) = slot.split_mut();
+        self.storage.update_vqueue(vqueue_id, meta, &update, None);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
@@ -1189,26 +1158,22 @@ where
 
     /// Marks this vqueue as resumed
     pub fn resume_queue(&mut self, at: UniqueTimestamp) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
+        let slot = self.cache.get_mut(self.handle).unwrap();
 
-        if !meta.meta().queue_is_paused() {
+        if !slot.meta().queue_is_paused() {
             // queue is not paused
             return;
         }
-        debug!(qid = %meta.vqueue_id(), "Resuming vqueue");
+        debug!(qid = %slot.vqueue_id(), "Resuming vqueue");
         let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
 
-        // Update cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
         // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
+        let (vqueue_id, meta) = slot.split_mut();
+        self.storage.update_vqueue(vqueue_id, meta, &update, None);
 
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-        }
-
-        if is_active_now && let Some(collector) = self.action_collector.as_deref_mut() {
+        if meta.is_active()
+            && let Some(collector) = self.action_collector.as_deref_mut()
+        {
             let mut event = VQueueEvent::new(self.handle);
             event.push(EventDetails::QueueResumed);
             collector.push(A::from(event));
@@ -1387,15 +1352,9 @@ where
             },
         );
 
-        // Update vqueue meta cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
-        // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-        }
+        let (vqueue_id, q_meta) = meta.split_mut();
+        self.storage
+            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -1508,11 +1467,9 @@ where
             },
         );
 
-        // Update vqueue meta cache
-        meta.apply_update(&update);
-
-        // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
+        let (vqueue_id, q_meta) = meta.split_mut();
+        self.storage
+            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -1624,15 +1581,9 @@ where
             },
         );
 
-        // Update vqueue meta cache
-        let (was_active_before, is_active_now) = meta.apply_update(&update);
-
-        // Update vqueue meta in storage
-        self.storage.update_vqueue(meta.vqueue_id(), &update);
-
-        if !was_active_before && is_active_now {
-            self.storage.mark_vqueue_as_active(meta.vqueue_id());
-        }
+        let (vqueue_id, q_meta) = meta.split_mut();
+        self.storage
+            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {

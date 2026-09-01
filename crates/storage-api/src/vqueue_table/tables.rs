@@ -105,7 +105,17 @@ pub trait WriteVQueueTable {
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
 
     /// Update VQueueMeta with a set of differential updates.
-    fn update_vqueue(&mut self, qid: &VQueueId, update: &super::metadata::Update);
+    /// The `meta` **must** match the vqueue metadata on disk prior to the update,
+    /// then it gets updated in place.
+    ///
+    /// Pass `entry_metadata` if the update impacts a single entry.
+    fn update_vqueue(
+        &mut self,
+        qid: &VQueueId,
+        meta: &mut VQueueMeta,
+        update: &super::metadata::Update,
+        entry_metadata: Option<&EntryMetadata>,
+    );
 
     /// Places an entry onto an inbox stage
     fn put_vqueue_inbox(
@@ -126,29 +136,6 @@ pub trait WriteVQueueTable {
 
     /// Deletes entry from inbox unconditionally
     fn delete_vqueue_inbox(&mut self, qid: &VQueueId, stage: Stage, key: &EntryKey);
-
-    /// Adds a vqueue to the list of active vqueues
-    ///
-    /// A vqueue is considered active when it's of interest to the scheduler.
-    ///
-    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
-    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
-    /// paused, the scheduler will only be interested in its "running" entries and not in its
-    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
-    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
-    /// considered dormant until it's unpaused.
-    ///
-    /// A vqueue that is "not" active does not mean it's "empty". It could be paused or
-    /// only contains entries in parked or completed states. As such, it's not considered
-    /// by the scheduler and it's considered "dormant".
-    fn mark_vqueue_as_active(&mut self, qid: &VQueueId);
-
-    /// Removes the vqueue from the list of active vqueues
-    ///
-    /// A dormant vqueue is not necessarily `empty`. It's a vqueue _might_ have items (or not)
-    /// in parked or completed states, or it might have waiting items in its inbox but the
-    /// vqueue is paused and would not be visible to the scheduler.
-    fn mark_vqueue_as_dormant(&mut self, qid: &VQueueId);
 
     // Left intentionally for future reference if/when we need to store extra state
     // fn put_vqueue_entry_state<E>(

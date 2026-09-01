@@ -435,8 +435,6 @@ pub struct CommonOptions {
     /// NOTE 1: This config entry only impacts the initial number of partitions, the
     /// value of this entry is ignored for provisioned nodes/clusters.
     ///
-    /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
-    ///
     /// Default: 24
     pub default_num_partitions: u16,
 
@@ -845,6 +843,15 @@ experimental! {
     ///
     /// Since v1.7.8
     preflight_invocation_termination_retention,
+
+    /// # Enables one-time orphaned journal completion-id index cleanup
+    ///
+    /// When enabled, partition startup waits for the cleanup to complete before processing
+    /// records. Successful completion is persisted per partition; cancellation or failure leaves
+    /// the cleanup pending for the next startup.
+    ///
+    /// Since v1.7.9
+    jc_orphan_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
