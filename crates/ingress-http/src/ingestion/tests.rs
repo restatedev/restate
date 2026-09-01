@@ -53,7 +53,7 @@ use crate::ingestion::ingestion_svc::proto::{
     self, DeduplicationMode, ErrorKind, IngestionDefaults, IngestionInvocation, IngestionRequest,
     IngestionResponse, IngestionStart, ingestion_response,
 };
-use crate::ingestion::ingestion_svc::{IngestionStream, UPDATE_WINDOW_THRESHOLD};
+use crate::ingestion::ingestion_svc::{IngestionStream, MIN_WINDOW_SIZE, UPDATE_WINDOW_THRESHOLD};
 use crate::mocks::{MockSchemas, mock_schemas};
 
 const PRODUCER: &str = "test-producer";
@@ -66,6 +66,11 @@ const WORKFLOW: &str = "greeter.GreeterWorkflow";
 const PRIVATE: &str = "greeter.PrivateGreeter";
 const DEPRECATED: &str = "greeter.DeprecatedGreeter";
 const HANDLER: &str = "greet";
+
+/// Default window for tests that are not about flow control. At exactly the
+/// protocol minimum the server has no extra credit to advertise, so every
+/// `WindowUpdate` such a test sees is a plain per-commit replenishment.
+const TEST_WINDOW_SIZE: u32 = MIN_WINDOW_SIZE.get();
 
 /// Opens a new `Ingest` stream with the given maximum send window, driving its
 /// responses in the background.
@@ -222,19 +227,15 @@ fn invocation_with_payload(offset: u64, payload_len: usize) -> IngestionInvocati
     }
 }
 
-/// Opens a stream, sends `start` and consumes the initial window advertisement.
-async fn started_stream<F>(max_window_size: u32, start: IngestionStart, handler: F) -> TestStream
+/// Opens a stream and sends `start`. The server does not answer it: the client
+/// runs on the implicit [`MIN_WINDOW_SIZE`] until the first `WindowUpdate`
+/// arrives, see [`initial_window_is_topped_up_with_the_first_ack`].
+fn started_stream<F>(max_window_size: u32, start: IngestionStart, handler: F) -> TestStream
 where
     F: MockIngestHandler<Envelope> + Send + 'static,
 {
-    let mut stream = stream(max_window_size, handler);
-
+    let stream = stream(max_window_size, handler);
     stream.send(Kind::Start(start));
-
-    let (increment, last_committed) = stream.next_window_update().await;
-    assert_eq!(increment, max_window_size);
-    assert_eq!(last_committed, None);
-
     stream
 }
 
@@ -315,8 +316,8 @@ impl MockIngestHandler<Envelope> for IngestHandler {
 
 // -- Tests --------------------------------------------------------------------
 
-/// Happy path: the stream advertises its window up front, builds one envelope per
-/// record, and replenishes the window while advancing `last_committed`. It also
+/// Happy path: the stream builds one envelope per record and replenishes the
+/// window while advancing `last_committed`. It also
 /// pins the ack batching: while records are still in flight and the window is
 /// healthy, commits do not each get their own response.
 #[tokio::test(start_paused = true)]
@@ -324,11 +325,10 @@ async fn ingests_records_and_replenishes_window() {
     let (handler, mut resolver) = IngestHandler::new();
 
     let mut stream = started_stream(
-        4096,
+        TEST_WINDOW_SIZE,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         handler,
-    )
-    .await;
+    );
 
     let first = invocation(0);
     let first_size = first.encoded_len() as u32;
@@ -387,10 +387,18 @@ async fn ingests_records_and_replenishes_window() {
 /// that keeps the pipeline full would stall.
 #[tokio::test(start_paused = true)]
 async fn window_update_is_returned_early_when_window_is_low() {
+    // The window is the protocol minimum, so the server has no extra credit to
+    // advertise and the client owns the whole window from the first frame.
+    let max_window_size = TEST_WINDOW_SIZE;
+    let threshold = max_window_size * UPDATE_WINDOW_THRESHOLD / 100;
+
     // Offsets 1..=4 so that every record encodes to the same size (offset 0 is the
     // proto3 default and is not encoded at all, which would make the first record
-    // shorter than the rest).
-    let records: Vec<_> = (1..=4).map(|o| invocation_with_payload(o, 90)).collect();
+    // shorter than the rest). Payloads are sized so that four records fill most of
+    // the window: once all four are in flight it is below the threshold.
+    let records: Vec<_> = (1..=4)
+        .map(|o| invocation_with_payload(o, 8 * 1024 - 200))
+        .collect();
     let record_size = records[0].encoded_len() as u32;
     assert!(
         records
@@ -398,18 +406,15 @@ async fn window_update_is_returned_early_when_window_is_low() {
             .all(|r| r.encoded_len() as u32 == record_size)
     );
 
-    // Four records fit in the window with 32 bytes to spare, so the window is below
-    // the threshold (half of the maximum) once all four are in flight.
-    let max_window_size = 4 * record_size + 32;
-    let threshold = max_window_size * UPDATE_WINDOW_THRESHOLD / 100;
+    // What is left of the window once all four records are in flight.
+    let spare = max_window_size - 4 * record_size;
 
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
         max_window_size,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         handler,
-    )
-    .await;
+    );
 
     for record in records {
         stream.send(Kind::Invocation(record));
@@ -420,14 +425,14 @@ async fn window_update_is_returned_early_when_window_is_low() {
     resolver.commit_next().await;
     assert_eq!(stream.next_window_update().await, (record_size, Some(1)));
 
-    // window: 32 + one record, still below the threshold.
-    assert!(32 + record_size < threshold);
+    // window: spare + one record, still below the threshold.
+    assert!(spare + record_size < threshold);
     resolver.commit_next().await;
     assert_eq!(stream.next_window_update().await, (record_size, Some(2)));
 
-    // window: 32 + two records, back above the threshold, so the last two commits
+    // window: spare + two records, back above the threshold, so the last two commits
     // are batched into a single response.
-    assert!(32 + 2 * record_size >= threshold);
+    assert!(spare + 2 * record_size >= threshold);
     resolver.commit_next().await;
     stream.settle().await;
     stream.assert_no_response();
@@ -439,22 +444,27 @@ async fn window_update_is_returned_early_when_window_is_low() {
     );
 }
 
-/// A single oversized invocation may take the window negative, but sending anything
-/// else before the window is replenished is a protocol violation.
+/// Until the first `WindowUpdate` arrives the client is bound by
+/// [`MIN_WINDOW_SIZE`], not by the (larger) window the server is configured with.
+/// A single oversized invocation may take that window negative, but sending
+/// anything else before it is replenished is a protocol violation.
 #[tokio::test(start_paused = true)]
 async fn exceeding_the_send_window_terminates_the_stream() {
     // The resolver is kept alive but never used: nothing commits, so the window is
     // never replenished.
     let (handler, _resolver) = IngestHandler::new();
     let mut stream = started_stream(
-        64,
+        2 * MIN_WINDOW_SIZE.get(),
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         handler,
-    )
-    .await;
+    );
 
-    // Legal: a single invocation larger than the whole window.
-    stream.send(Kind::Invocation(invocation_with_payload(0, 256)));
+    // Legal: a single invocation larger than the initial window. It still fits the
+    // configured maximum, which the client is not allowed to assume.
+    stream.send(Kind::Invocation(invocation_with_payload(
+        0,
+        MIN_WINDOW_SIZE.get() as usize + 1024,
+    )));
     stream.settle().await;
     stream.assert_no_response();
 
@@ -469,17 +479,61 @@ async fn exceeding_the_send_window_terminates_the_stream() {
     stream.assert_terminated().await;
 }
 
+/// A server configured with more than [`MIN_WINDOW_SIZE`] does not advertise the
+/// extra credit up front: the client starts on the implicit minimum and the top-up
+/// rides along with the first ack.
+#[tokio::test(start_paused = true)]
+async fn initial_window_is_topped_up_with_the_first_ack() {
+    let max_window_size = 2 * MIN_WINDOW_SIZE.get();
+
+    let (handler, mut resolver) = IngestHandler::new();
+    let mut stream = started_stream(
+        max_window_size,
+        start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
+        handler,
+    );
+
+    // Nothing is sent in response to `Start`; the client runs on the minimum window.
+    stream.settle().await;
+    stream.assert_no_response();
+
+    let record = invocation(0);
+    let record_size = record.encoded_len() as u32;
+    stream.send(Kind::Invocation(record));
+    resolver.commit_next().await;
+
+    assert_eq!(
+        stream.next_window_update().await,
+        (
+            max_window_size - MIN_WINDOW_SIZE.get() + record_size,
+            Some(0)
+        ),
+        "the first update carries the credit above the minimum plus the committed record"
+    );
+
+    // The client is now at the configured maximum, so later updates only replenish.
+    let record = invocation(1);
+    let record_size = record.encoded_len() as u32;
+    stream.send(Kind::Invocation(record));
+    resolver.commit_next().await;
+
+    assert_eq!(
+        stream.next_window_update().await,
+        (record_size, Some(1)),
+        "the top-up is granted exactly once"
+    );
+}
+
 /// Offsets may skip, but must strictly increase within a stream. The error frame
 /// must report the last committed offset so the client knows where to resume.
 #[tokio::test(start_paused = true)]
 async fn offsets_must_strictly_increase() {
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
-        4096,
+        TEST_WINDOW_SIZE,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         handler,
-    )
-    .await;
+    );
 
     // A gap between 0 and 5 is fine.
     stream.send(Kind::Invocation(invocation(0)));
@@ -570,7 +624,7 @@ async fn start_frame_contract() {
     ];
 
     for (case, request, kind, message) in cases {
-        let mut stream = stream(4096, auto_commit);
+        let mut stream = stream(TEST_WINDOW_SIZE, auto_commit);
         stream.send_request(request);
 
         let (error, last_committed) = stream.next_error().await;
@@ -586,7 +640,7 @@ async fn start_frame_contract() {
 /// open indefinitely.
 #[tokio::test(start_paused = true)]
 async fn missing_start_frame_times_out() {
-    let mut stream = stream(4096, auto_commit);
+    let mut stream = stream(TEST_WINDOW_SIZE, auto_commit);
 
     let (error, _) = stream.next_error().await;
     assert_eq!(error.kind(), ErrorKind::GoAway);
@@ -621,11 +675,10 @@ async fn frames_rejected_while_processing() {
 
     for (case, request, message) in cases {
         let mut stream = started_stream(
-            4096,
+            TEST_WINDOW_SIZE,
             start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
             auto_commit,
-        )
-        .await;
+        );
 
         stream.send_request(request);
         let (error, _) = stream.next_error().await;
@@ -731,7 +784,7 @@ async fn record_rejections_carry_the_offset() {
     ];
 
     for (case, record, kind, message) in cases {
-        let mut stream = started_stream(4096, start(None), auto_commit).await;
+        let mut stream = started_stream(TEST_WINDOW_SIZE, start(None), auto_commit);
         stream.send(Kind::Invocation(record));
 
         let (error, last_committed) = stream.next_error().await;
@@ -748,7 +801,7 @@ async fn record_rejections_carry_the_offset() {
 #[tokio::test(start_paused = true)]
 async fn oversized_record_is_rejected_by_the_ingestion_client() {
     let mut stream = started_stream(
-        64 * 1024,
+        TEST_WINDOW_SIZE,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         |_keys, _record: Envelope| {
             std::future::ready::<Result<RecordCommit, IngestionError>>(Err(
@@ -758,8 +811,7 @@ async fn oversized_record_is_rejected_by_the_ingestion_client() {
                 },
             ))
         },
-    )
-    .await;
+    );
 
     stream.send(Kind::Invocation(invocation_with_payload(3, 1024)));
 
@@ -777,7 +829,7 @@ async fn oversized_record_is_rejected_by_the_ingestion_client() {
 async fn defaults_are_replaced_and_overridden_per_record() {
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
-        64 * 1024,
+        TEST_WINDOW_SIZE,
         start(Some(IngestionDefaults {
             headers: HashMap::from([
                 ("a".to_owned(), "1".to_owned()),
@@ -787,8 +839,7 @@ async fn defaults_are_replaced_and_overridden_per_record() {
             ..defaults(Some(SERVICE), Some(HANDLER))
         })),
         handler,
-    )
-    .await;
+    );
 
     // Purely default-driven.
     stream.send(Kind::Invocation(invocation(0)));
@@ -870,15 +921,14 @@ async fn defaults_are_replaced_and_overridden_per_record() {
 async fn deduplication_can_be_disabled() {
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
-        4096,
+        TEST_WINDOW_SIZE,
         IngestionStart {
             producer_id: String::new(),
             deduplication_mode: DeduplicationMode::Disabled.into(),
             ..start(Some(defaults(Some(SERVICE), Some(HANDLER))))
         },
         handler,
-    )
-    .await;
+    );
 
     stream.send(Kind::Invocation(invocation(0)));
     let (invoke, dedup) = single_invoke(resolver.commit_next().await);
@@ -895,11 +945,10 @@ async fn deduplication_can_be_disabled() {
 async fn half_close_drains_inflight_records() {
     let (handler, mut resolver) = IngestHandler::new();
     let mut stream = started_stream(
-        4096,
+        TEST_WINDOW_SIZE,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
         handler,
-    )
-    .await;
+    );
 
     stream.send(Kind::Invocation(invocation(0)));
     stream.send(Kind::Invocation(invocation(1)));

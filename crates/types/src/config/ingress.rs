@@ -38,6 +38,9 @@ pub struct IngestionApiOptions {
     /// Maximum number of bytes an ingestion stream may have in flight before the server
     /// applies back pressure.
     ///
+    /// Values below 32KiB, the minimum window defined by the ingestion
+    /// protocol, are rounded up to 32KiB
+    ///
     /// Value is clipped at [`u32::MAX`]
     ///
     /// Since v1.8.0
@@ -54,7 +57,12 @@ pub struct IngestionApiOptions {
 
 impl IngestionApiOptions {
     pub fn max_window_size(&self) -> NonZeroU32 {
-        let value = self.max_window_size.as_u64().min(u32::MAX as u64) as u32;
+        // 32KiB is the min window defined by the protocol.
+        let value = self
+            .max_window_size
+            .as_u64()
+            .max(32 * 1024)
+            .min(u32::MAX as u64) as u32;
         NonZeroU32::new(value).expect("byte count is non-zero")
     }
 
