@@ -8,17 +8,24 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Test-only helpers on `ServiceClient`. Compiled when the crate is built with `cfg(test)` or with
-//! the `test_util` feature so integration tests can seed the GCP token cache without touching a
-//! real metadata server.
+//! Test-only helpers compiled with `cfg(test)` or the `test_util` feature.
 
-use crate::ServiceClient;
-use crate::gcp::GcpTokenClient;
+pub use crate::gcp::TestOverrideGuard as GcpTokenOverrideGuard;
 
-impl ServiceClient {
-    /// Test-only accessor for the underlying GCP token client. Lets integration tests seed the
-    /// cache so token mint does not need to contact a real metadata server.
-    pub fn gcp_for_test(&self) -> &GcpTokenClient {
-        &self.gcp
-    }
+/// Return a scoped token override so tests do not need ambient Google credentials.
+pub fn override_gcp_token(
+    impersonate: Option<&str>,
+    audience: &str,
+    token: String,
+) -> GcpTokenOverrideGuard {
+    crate::gcp::override_token_for_test(impersonate, audience, token)
+}
+
+/// Return a scoped mint failure for the exact credential key under test.
+pub fn override_gcp_mint_failure(
+    impersonate: Option<&str>,
+    audience: &str,
+    message: &str,
+) -> GcpTokenOverrideGuard {
+    crate::gcp::override_failure_for_test(impersonate, audience, message)
 }
