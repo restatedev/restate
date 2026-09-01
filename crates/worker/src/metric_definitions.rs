@@ -53,6 +53,9 @@ pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const NUM_ACTIVE_PARTITION_LEADERS: &str = "restate.num_active_partition_leaders";
+// contains 'feature' label
+pub const NUM_PARTITIONS_FEATURE_ENABLED: &str = "restate.num_partitions_feature_enabled";
+pub const FEATURE_LABEL: &str = "feature";
 pub const PARTITION_TIME_SINCE_LAST_STATUS_UPDATE: &str =
     "restate.partition.time_since_last_status_update.seconds";
 pub const PARTITION_APPLIED_LSN_LAG: &str = "restate.partition.applied_lsn_lag";
@@ -128,6 +131,12 @@ pub(crate) fn describe_metrics() {
         NUM_ACTIVE_PARTITION_LEADERS,
         Unit::Count,
         "Number of active partition leaders started by partition processor manager on this node"
+    );
+
+    describe_gauge!(
+        NUM_PARTITIONS_FEATURE_ENABLED,
+        Unit::Count,
+        "Number of partitions on this node with the given state-machine feature enabled, dimensioned by feature"
     );
 
     describe_gauge!(

@@ -76,8 +76,8 @@ use restate_types::net::partition_processor_manager::{
 use restate_types::net::{RpcRequest as _, UnaryMessage};
 use restate_types::nodes_config::{NodesConfigError, NodesConfiguration, WorkerState};
 use restate_types::partition_table::PartitionTable;
-use restate_types::partitions::Partition;
 use restate_types::partitions::state::PartitionReplicaSetStates;
+use restate_types::partitions::{Partition, PersistedFeatures};
 use restate_types::protobuf::common::WorkerStatus;
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
@@ -86,12 +86,13 @@ use restate_worker_api::invoker::capacity::InvokerCapacity;
 use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 
 use crate::metric_definitions::{
-    ERROR_STOP, FLARE_REASON_AHEAD_OF_LOG, FLARE_REASON_MIGRATION_BARRIER,
+    ERROR_STOP, FEATURE_LABEL, FLARE_REASON_AHEAD_OF_LOG, FLARE_REASON_MIGRATION_BARRIER,
     FLARE_REASON_SNAPSHOT_UNAVAILABLE, FLARE_REASON_VERSION_BARRIER, GAP_STOP, NORMAL_STOP,
-    NUM_ACTIVE_PARTITION_LEADERS, NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS, PARTITION_APPLIED_LSN_LAG,
-    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG,
-    PARTITION_START, PARTITION_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL,
-    SNAPSHOT_AGE, STARTUP_ERROR_STOP, TYPE_LABEL,
+    NUM_ACTIVE_PARTITION_LEADERS, NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS,
+    NUM_PARTITIONS_FEATURE_ENABLED, PARTITION_APPLIED_LSN_LAG, PARTITION_BLOCKED_FLARE,
+    PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG, PARTITION_START, PARTITION_STOP,
+    PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL, SNAPSHOT_AGE, STARTUP_ERROR_STOP,
+    TYPE_LABEL,
 };
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
@@ -868,7 +869,7 @@ where
         let mut applied_lsn_lag_samples = Vec::with_capacity(self.processor_states.len());
         let mut snapshot_age_samples = Vec::with_capacity(self.processor_states.len());
 
-        let statuses = self
+        let statuses: BTreeMap<_, _> = self
             .processor_states
             .iter()
             .filter_map(|(partition_id, processor_state)| {
@@ -922,6 +923,28 @@ where
         gauge!(PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG).set(num_unknown_applied_lsn_lag as f64);
         gauge!(NUM_ACTIVE_PARTITIONS).set(self.processor_states.len() as f64);
         gauge!(NUM_ACTIVE_PARTITION_LEADERS).set(num_active_leaders as f64);
+        // exhaustive literal rather than Default: adding a feature must extend this so
+        // every known feature keeps reporting a series, including 0 when disabled
+        let all_features = PersistedFeatures {
+            journal_v2: true,
+            vqueues: true,
+            unique_random_seeds: true,
+            vqueues_skip_completed: true,
+            preflight_invocation_termination_retention: true,
+        };
+        for feature in all_features.enabled_names() {
+            let num_enabled = statuses
+                .values()
+                .filter(|status| {
+                    status
+                        .enabled_features
+                        .enabled_names()
+                        .any(|f| f == feature)
+                })
+                .count();
+            gauge!(NUM_PARTITIONS_FEATURE_ENABLED, FEATURE_LABEL => feature)
+                .set(num_enabled as f64);
+        }
         statuses
     }
 
