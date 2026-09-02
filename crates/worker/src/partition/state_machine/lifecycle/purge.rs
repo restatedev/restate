@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::output_table::WriteOutputTable;
 use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
@@ -52,7 +53,8 @@ where
         + WriteStateTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -107,6 +109,7 @@ where
                     .map(|pd| pd.service_protocol_version);
 
                 ctx.do_free_invocation(invocation_id)?;
+                ctx.storage.delete_output(invocation_id)?;
 
                 // For workflow, we should also clean up the associated state and promises.
                 if invocation_target.invocation_target_ty()
