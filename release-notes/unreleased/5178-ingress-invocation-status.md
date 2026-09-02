@@ -21,14 +21,13 @@ completed with a failure, the terminal `error`:
 
 ```json
 {
-  "stage": "created",
-  "error": null
+  "stage": "created"
 }
 ```
 
 - `stage`: one of `created` (accepted but not yet started — scheduled or inboxed), `started`
   (running — invoked, suspended or paused), or `completed` (finished — succeeded, failed or killed).
-- `error`: populated only when `stage` is `completed` and the invocation failed; `null` otherwise.
+- `error`: present only when `stage` is `completed` and the invocation failed; omitted otherwise.
 
 The response also carries the `x-restate-id` header with the resolved invocation id. Unknown
 invocations return `404 Not Found`.
