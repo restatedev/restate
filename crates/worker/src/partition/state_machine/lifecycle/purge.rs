@@ -134,7 +134,6 @@ where
                     .map(|pd| pd.service_protocol_version);
 
                 ctx.do_free_invocation(invocation_id)?;
-                ctx.storage.delete_output(invocation_id)?;
 
                 // For workflow, we should also clean up the associated state and promises.
                 if invocation_target.invocation_target_ty()
