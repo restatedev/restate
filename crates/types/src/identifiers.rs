@@ -10,8 +10,12 @@
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
 
+mod canonical;
 mod partitioned;
 
+pub use canonical::{
+    CanonicalEntryId, CanonicalIdParseError, CanonicalInvocationId, CanonicalStateMutationId,
+};
 pub use partitioned::PartitionedResourceId;
 pub use restate_sharding::{PartitionKey, WithPartitionKey};
 
