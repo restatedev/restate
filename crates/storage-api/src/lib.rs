@@ -71,6 +71,7 @@ pub mod journal_table;
 pub mod journal_table_v2;
 pub mod lock_table;
 pub mod outbox_table;
+pub mod output_table;
 pub mod promise_table;
 pub mod protobuf_types;
 pub mod service_status_table;
