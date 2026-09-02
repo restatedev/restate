@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::output_table::WriteOutputTable;
 use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
@@ -19,6 +18,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::output_table::WriteOutputTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::{
@@ -109,7 +109,6 @@ where
                     .map(|pd| pd.service_protocol_version);
 
                 ctx.do_free_invocation(invocation_id)?;
-                ctx.storage.delete_output(invocation_id)?;
 
                 // For workflow, we should also clean up the associated state and promises.
                 if invocation_target.invocation_target_ty()
