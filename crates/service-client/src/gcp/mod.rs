@@ -135,6 +135,11 @@ impl IdTokenIdentity {
     }
 }
 
+/// Cache key for the process-wide ID-token credential registry. `IdTokenIdentity::Federated`
+/// carries the AWS federation provider but not the operator's AWS identity: the provider is a
+/// sufficient key while the process has exactly one operator-configured AWS federation identity.
+/// If deployments can later select among AWS identities, that identity must become part of this
+/// key as well as `FederatedAccessTokenSourceIndex`'s.
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) struct IdTokenSpec {
     identity: IdTokenIdentity,
