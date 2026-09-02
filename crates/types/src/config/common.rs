@@ -777,13 +777,6 @@ experimental! {
     /// Since v1.7.0
     invoker_yield,
 
-    /// # Enables unique random seeds
-    ///
-    /// When enabled, invocations get a unique random seed assigned.
-    ///
-    /// Since v1.7.0
-    unique_random_seeds,
-
     /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
