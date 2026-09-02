@@ -1205,119 +1205,118 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn dead_ambient_source_is_replaced_after_permanent_impersonation_failure() {
-        credential_registry()
-            .ambient_source
-            .seed_for_test(credential_source(ProbeOutcome::Dead))
+    async fn dead_shared_source_is_replaced_after_permanent_outer_failure() {
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        for (name, source_kind) in [
+            ("ambient", RecoverySourceUnderTest::Ambient),
+            (
+                "federated",
+                RecoverySourceUnderTest::Federated(
+                    "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/recovery",
+                ),
+            ),
+        ] {
+            let audience = format!("https://{name}-recovery.example.com");
+            let fixture = recovery_fixture(
+                source_kind,
+                &audience,
+                service_account,
+                credential_source(ProbeOutcome::Dead),
+            )
             .await;
 
-        let build_count = Arc::new(AtomicUsize::new(0));
-        let (recovery_started_tx, mut recovery_started_rx) = tokio::sync::mpsc::unbounded_channel();
-        add_ambient_source_override({
-            let build_count = build_count.clone();
-            move || {
-                build_count.fetch_add(1, Ordering::SeqCst);
-                recovery_started_tx
-                    .send(())
-                    .expect("the test still awaits recovery");
-                Ok(credential_source(ProbeOutcome::Healthy))
-            }
-        });
+            let outcome = mint_for_test(fixture.identity.clone(), &audience).await;
+            assert!(
+                matches!(&outcome, Err(GcpAuthError::Mint { .. })),
+                "{name}: {outcome:?}"
+            );
+            wait_for_count(&fixture.rebuilds, 1).await;
+            assert_eq!(
+                fixture.rebuilds.load(Ordering::SeqCst),
+                1,
+                "the {name} source must be replaced exactly once"
+            );
 
-        let audience = "https://ambient-recovery.example.com";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
-            Ok(permanently_failing_source())
-        });
-
-        let outcome = mint_for_test(IdTokenIdentity::impersonated(service_account), audience).await;
-        assert!(
-            matches!(outcome, Err(GcpAuthError::Mint { .. })),
-            "{outcome:?}"
-        );
-        tokio::time::timeout(Duration::from_secs(5), recovery_started_rx.recv())
-            .await
-            .expect("source recovery starts promptly")
-            .expect("permanent failure schedules source recovery without awaiting it");
-
-        assert!(credential_registry().ambient_source().await.is_ok());
-        assert_eq!(
-            build_count.load(Ordering::SeqCst),
-            1,
-            "the dead source must be replaced exactly once"
-        );
+            let reused = fixture
+                .source
+                .credentials()
+                .get_or_build(async { unreachable!("the recovered source must be reused") })
+                .await;
+            assert!(reused.is_ok(), "{name}: {reused:?}");
+            assert_eq!(fixture.rebuilds.load(Ordering::SeqCst), 1);
+        }
     }
 
     #[restate_core::test(start_paused = true)]
-    async fn permanent_failure_does_not_await_source_recovery() {
-        credential_registry()
-            .ambient_source
-            .seed_for_test(credential_source(ProbeOutcome::Hang))
+    async fn permanent_outer_failure_does_not_await_source_recovery() {
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        for (name, source_kind) in [
+            ("ambient", RecoverySourceUnderTest::Ambient),
+            (
+                "federated",
+                RecoverySourceUnderTest::Federated(
+                    "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/detached-recovery",
+                ),
+            ),
+        ] {
+            let audience = format!("https://detached-{name}-recovery.example.com");
+            let fixture = recovery_fixture(
+                source_kind,
+                &audience,
+                service_account,
+                credential_source(ProbeOutcome::Hang),
+            )
             .await;
 
-        let audience = "https://detached-ambient-recovery.example.com";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
-            Ok(permanently_failing_source())
-        });
-
-        let started = Instant::now();
-        let outcome = mint_for_test(IdTokenIdentity::impersonated(service_account), audience).await;
-        assert!(matches!(outcome, Err(GcpAuthError::Mint { .. })));
-        assert!(
-            started.elapsed() < SOURCE_PROBE_TIMEOUT,
-            "mint must not await the shared-source recovery probe"
-        );
+            let started = Instant::now();
+            let outcome = mint_for_test(fixture.identity, &audience).await;
+            assert!(
+                matches!(&outcome, Err(GcpAuthError::Mint { .. })),
+                "{name}: {outcome:?}"
+            );
+            assert!(
+                started.elapsed() < SOURCE_PROBE_TIMEOUT,
+                "mint must not await the {name} source-recovery probe"
+            );
+        }
     }
 
     #[restate_core::test]
-    async fn healthy_ambient_source_is_not_replaced_by_repeated_impersonation_failures() {
-        let (probe_finished_tx, mut probe_finished_rx) = tokio::sync::mpsc::unbounded_channel();
-        credential_registry()
-            .ambient_source
-            .seed_for_test(google_cloud_auth::credentials::Credentials::from(
-                FakeCredentialsProvider::always(move || {
-                    probe_finished_tx
-                        .send(())
-                        .expect("the test still awaits the source probe");
-                    ProbeOutcome::Healthy
-                }),
-            ))
+    async fn healthy_shared_source_is_not_replaced_by_outer_failures() {
+        let service_account = "sa@example.iam.gserviceaccount.com";
+        for (name, source_kind) in [
+            ("ambient", RecoverySourceUnderTest::Ambient),
+            (
+                "federated",
+                RecoverySourceUnderTest::Federated(
+                    "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/stable",
+                ),
+            ),
+        ] {
+            let audience = format!("https://{name}-stable.example.com");
+            let probes = Arc::new(AtomicUsize::new(0));
+            let fixture = recovery_fixture(
+                source_kind,
+                &audience,
+                service_account,
+                healthy_source_with_probe_count(probes.clone()),
+            )
             .await;
 
-        let build_count = Arc::new(AtomicUsize::new(0));
-        add_ambient_source_override({
-            let build_count = build_count.clone();
-            move || {
-                build_count.fetch_add(1, Ordering::SeqCst);
-                Ok(credential_source(ProbeOutcome::Healthy))
+            for _ in 0..5 {
+                let outcome = mint_for_test(fixture.identity.clone(), &audience).await;
+                assert!(
+                    matches!(&outcome, Err(GcpAuthError::Mint { .. })),
+                    "{name}: {outcome:?}"
+                );
             }
-        });
-
-        let audience = "https://ambient-stable.example.com";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
-            Ok(permanently_failing_source())
-        });
-
-        for _ in 0..5 {
-            let outcome =
-                mint_for_test(IdTokenIdentity::impersonated(service_account), audience).await;
-            assert!(
-                matches!(outcome, Err(GcpAuthError::Mint { .. })),
-                "{outcome:?}"
+            wait_for_count(&probes, 1).await;
+            assert_eq!(
+                fixture.rebuilds.load(Ordering::SeqCst),
+                0,
+                "a healthy {name} source must not be replaced by an outer failure"
             );
         }
-        tokio::time::timeout(Duration::from_secs(5), probe_finished_rx.recv())
-            .await
-            .expect("source probe completes promptly")
-            .expect("at least one permanent failure probes the shared source");
-
-        assert_eq!(
-            build_count.load(Ordering::SeqCst),
-            0,
-            "a healthy source must never be replaced by an impersonation-only failure"
-        );
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -1453,70 +1452,34 @@ mod tests {
     fn credential_construction_runs_on_task_centers_default_runtime_not_the_callers() {
         use restate_core::TaskCenterFutureExt as _;
 
-        let default_runtime = tokio::runtime::Runtime::new().expect("default runtime builds");
-        let task_center = restate_core::TaskCenterBuilder::default()
-            .default_runtime_handle(default_runtime.handle().clone())
-            .build()
-            .expect("task center builds")
-            .into_handle();
-
         let audience = "https://runtime-affinity.example.com";
-        let (probe_started_tx, probe_started_rx) = std::sync::mpsc::channel();
-        let (probe_finished_tx, probe_finished_rx) = std::sync::mpsc::channel();
-        let (allow_probe_to_finish_tx, allow_probe_to_finish_rx) = tokio::sync::oneshot::channel();
-        let allow_probe_to_finish_rx = Mutex::new(Some(allow_probe_to_finish_rx));
-
-        let registry = task_center.run_sync(|| {
-            add_build_override(IdTokenSpec::ambient(audience), move |_| {
-                let probe_started_tx = probe_started_tx.clone();
-                let probe_finished_tx = probe_finished_tx.clone();
-                let allow_probe_to_finish_rx = allow_probe_to_finish_rx
-                    .lock()
-                    .take()
-                    .expect("credential builds once");
-                // Simulate the library refresh task spawned during credential construction.
-                tokio::spawn(async move {
-                    probe_started_tx
-                        .send(())
-                        .expect("the test still awaits the probe");
-                    let _ = allow_probe_to_finish_rx.await;
-                    probe_finished_tx
-                        .send(())
-                        .expect("the test still awaits the probe");
-                });
-                Ok(ok_source())
-            });
-            credential_registry()
-        });
-
-        // The probe must survive dropping the runtime that called mint().
-        {
-            let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
-            let spec = IdTokenSpec::ambient(audience);
-            let result = caller_runtime.block_on(
-                async {
-                    let entry = registry.get_entry(&spec).await;
-                    entry.get_or_start(registry, &spec).await
+        assert_child_survives_caller_runtime(
+            "credential construction",
+            |task_center, refresh_task| {
+                task_center.run_sync(|| {
+                    add_build_override(IdTokenSpec::ambient(audience), move |_| {
+                        // Simulate the library refresh task spawned during construction.
+                        refresh_task.spawn();
+                        Ok(ok_source())
+                    });
+                    credential_registry()
+                })
+            },
+            |caller_runtime, task_center, registry| {
+                let registry = *registry;
+                let spec = IdTokenSpec::ambient(audience);
+                let result = caller_runtime.block_on(
+                    async {
+                        let entry = registry.get_entry(&spec).await;
+                        entry.get_or_start(registry, &spec).await
+                    }
+                    .in_tc(task_center),
+                );
+                if let Err(error) = &result {
+                    panic!("{error}");
                 }
-                .in_tc(&task_center),
-            );
-            if let Err(error) = &result {
-                panic!("{error}");
-            }
-            // Ensure the child exists before dropping the runtime that might own it.
-            probe_started_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("credential construction spawns a probe child task");
-        }
-
-        // A child owned by the caller runtime was cancelled above; one owned by the TaskCenter can
-        // still finish and report back.
-        allow_probe_to_finish_tx
-            .send(())
-            .expect("a task spawned during construction must survive the caller runtime's drop");
-        probe_finished_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("a task spawned during construction must survive the caller runtime's drop");
+            },
+        );
     }
 
     #[test]
@@ -1538,33 +1501,82 @@ mod tests {
         assert!(message.contains("PERMISSION_DENIED"), "{message}");
     }
 
-    fn healthy_source() -> google_cloud_auth::credentials::Credentials {
-        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(|| {
-            ProbeOutcome::Healthy
-        }))
+    struct RuntimeSurvivalTask {
+        started_tx: std::sync::mpsc::Sender<()>,
+        finished_tx: std::sync::mpsc::Sender<()>,
+        finish_barrier: Arc<Mutex<Option<tokio::sync::oneshot::Receiver<()>>>>,
     }
 
-    fn healthy_source_with_probe_signal(
-        probe_tx: tokio::sync::mpsc::UnboundedSender<()>,
+    impl RuntimeSurvivalTask {
+        fn spawn(&self) {
+            let started_tx = self.started_tx.clone();
+            let finished_tx = self.finished_tx.clone();
+            let finish_barrier = self
+                .finish_barrier
+                .lock()
+                .take()
+                .expect("the simulated refresh task spawns once");
+            tokio::spawn(async move {
+                started_tx.send(()).expect("the test awaits task startup");
+                let _ = finish_barrier.await;
+                finished_tx
+                    .send(())
+                    .expect("the test awaits task completion");
+            });
+        }
+    }
+
+    fn assert_child_survives_caller_runtime<State>(
+        context: &str,
+        install_hook: impl FnOnce(&restate_core::Handle, RuntimeSurvivalTask) -> State,
+        run_action: impl FnOnce(&tokio::runtime::Runtime, &restate_core::Handle, &State),
+    ) {
+        let default_runtime = tokio::runtime::Runtime::new().expect("default runtime builds");
+        let task_center = restate_core::TaskCenterBuilder::default()
+            .default_runtime_handle(default_runtime.handle().clone())
+            .build()
+            .expect("task center builds")
+            .into_handle();
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let (allow_finish_tx, finish_barrier) = tokio::sync::oneshot::channel();
+        let refresh_task = RuntimeSurvivalTask {
+            started_tx,
+            finished_tx,
+            finish_barrier: Arc::new(Mutex::new(Some(finish_barrier))),
+        };
+        let state = install_hook(&task_center, refresh_task);
+
+        {
+            let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
+            run_action(&caller_runtime, &task_center, &state);
+            started_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| panic!("{context} must spawn the simulated refresh task"));
+        }
+
+        allow_finish_tx.send(()).unwrap_or_else(|_| {
+            panic!("the task spawned during {context} must survive the caller runtime's drop")
+        });
+        finished_rx
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap_or_else(|_| {
+                panic!(
+                    "the task spawned during {context} must finish after the caller runtime drops"
+                )
+            });
+    }
+
+    fn healthy_source_with_probe_count(
+        probes: Arc<AtomicUsize>,
     ) -> google_cloud_auth::credentials::Credentials {
         google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(
             move || {
-                probe_tx.send(()).expect("the test still awaits a probe");
+                probes.fetch_add(1, Ordering::SeqCst);
                 ProbeOutcome::Healthy
             },
         ))
-    }
-
-    fn dead_source() -> google_cloud_auth::credentials::Credentials {
-        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(|| {
-            ProbeOutcome::Dead
-        }))
-    }
-
-    fn hanging_source() -> google_cloud_auth::credentials::Credentials {
-        google_cloud_auth::credentials::Credentials::from(FakeCredentialsProvider::always(|| {
-            ProbeOutcome::Hang
-        }))
     }
 
     fn counted_access_token_source_override(provider: &str) -> Arc<AtomicUsize> {
@@ -1573,7 +1585,7 @@ mod tests {
             let builds = builds.clone();
             move || {
                 builds.fetch_add(1, Ordering::SeqCst);
-                Ok(healthy_source())
+                Ok(credential_source(ProbeOutcome::Healthy))
             }
         });
         builds
@@ -1610,31 +1622,93 @@ mod tests {
         .await
     }
 
-    async fn federated_recovery_fixture(
-        provider: &str,
+    #[derive(Clone, Copy, Debug)]
+    enum RecoverySourceUnderTest {
+        Ambient,
+        Federated(&'static str),
+    }
+
+    impl RecoverySourceUnderTest {
+        fn identity(self, service_account: &str) -> IdTokenIdentity {
+            match self {
+                Self::Ambient => IdTokenIdentity::impersonated(service_account),
+                Self::Federated(provider) => IdTokenIdentity::federated(provider, service_account),
+            }
+        }
+    }
+
+    enum RecoverySourceHandle {
+        Ambient(&'static RecoverableCredentialSource),
+        Federated(Arc<federation::FederatedAccessTokenSource>),
+    }
+
+    impl RecoverySourceHandle {
+        fn credentials(&self) -> &RecoverableCredentialSource {
+            match self {
+                Self::Ambient(source) => source,
+                Self::Federated(source) => &source.credentials,
+            }
+        }
+    }
+
+    struct RecoveryFixture {
+        identity: IdTokenIdentity,
+        source: RecoverySourceHandle,
+        rebuilds: Arc<AtomicUsize>,
+    }
+
+    async fn recovery_fixture(
+        source_kind: RecoverySourceUnderTest,
         audience: &str,
         service_account: &str,
         seed: google_cloud_auth::credentials::Credentials,
-    ) -> Arc<AtomicUsize> {
+    ) -> RecoveryFixture {
         let registry = credential_registry();
-        let access_token_source = registry
-            .federated_access_token_sources
-            .get_or_create(provider);
-        access_token_source.credentials.seed_for_test(seed).await;
-
-        let builds = counted_access_token_source_override(provider);
-        add_build_override(
-            IdTokenSpec::federated(audience, provider, service_account),
-            {
-                let access_token_source = access_token_source.clone();
-                move |_| {
-                    Ok(Arc::new(LeasedFailingSource {
-                        _access_token_source: access_token_source.clone(),
-                    }) as Credential)
-                }
-            },
-        );
-        builds
+        let identity = source_kind.identity(service_account);
+        let (source, rebuilds) = match source_kind {
+            RecoverySourceUnderTest::Ambient => {
+                let rebuilds = Arc::new(AtomicUsize::new(0));
+                add_ambient_source_override({
+                    let rebuilds = rebuilds.clone();
+                    move || {
+                        rebuilds.fetch_add(1, Ordering::SeqCst);
+                        Ok(credential_source(ProbeOutcome::Healthy))
+                    }
+                });
+                add_build_override(IdTokenSpec::impersonated(audience, service_account), |_| {
+                    Ok(permanently_failing_source())
+                });
+                (
+                    RecoverySourceHandle::Ambient(&registry.ambient_source),
+                    rebuilds,
+                )
+            }
+            RecoverySourceUnderTest::Federated(provider) => {
+                let access_token_source = registry
+                    .federated_access_token_sources
+                    .get_or_create(provider);
+                let rebuilds = counted_access_token_source_override(provider);
+                let outer_credential_lease = access_token_source.clone();
+                add_build_override(
+                    IdTokenSpec::federated(audience, provider, service_account),
+                    move |_| {
+                        Ok(Arc::new(LeasedFailingSource {
+                            _access_token_source: outer_credential_lease.clone(),
+                        }) as Credential)
+                    },
+                );
+                (
+                    RecoverySourceHandle::Federated(access_token_source),
+                    rebuilds,
+                )
+            }
+        };
+        source.credentials().seed_for_test(seed).await;
+        RecoveryFixture {
+            identity,
+            source,
+            rebuilds,
+        }
     }
 
     struct LeasedFailingSource {
@@ -1798,17 +1872,13 @@ mod tests {
             .get_or_create(provider);
         access_token_source
             .credentials
-            .seed_for_test(dead_source())
+            .seed_for_test(credential_source(ProbeOutcome::Dead))
             .await;
         let builds = counted_access_token_source_override(provider);
 
         // Stands in for the failed outer credential mint() still holds while it recovers.
         let lease = federation::test_hooks::leased_credential(access_token_source);
-        assert_eq!(
-            registry.federated_access_token_sources.reap_dead(),
-            1,
-            "a reap must not drop a source that a live outer credential still leases"
-        );
+        registry.federated_access_token_sources.reap_dead();
 
         registry
             .federated_access_token_sources
@@ -1823,106 +1893,25 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn dead_federated_source_is_replaced_after_permanent_mint_failure() {
-        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/recovery";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        let audience = "https://federated-recovery.example.com";
-        let builds =
-            federated_recovery_fixture(provider, audience, service_account, dead_source()).await;
-
-        let outcome = mint_for_test(
-            IdTokenIdentity::federated(provider, service_account),
-            audience,
-        )
-        .await;
-        assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
-        wait_for_count(&builds, 1).await;
-        assert_eq!(
-            builds.load(Ordering::SeqCst),
-            1,
-            "the dead federated source must be replaced exactly once"
-        );
-
-        let reused = credential_registry()
-            .federated_access_token_sources
-            .get_or_create(provider)
-            .credentials
-            .get_or_build(async { unreachable!("the slot must already hold the recovered source") })
-            .await;
-        assert!(reused.is_ok());
-        assert_eq!(builds.load(Ordering::SeqCst), 1);
-    }
-
-    #[restate_core::test(start_paused = true)]
-    async fn permanent_federated_failure_does_not_await_source_recovery() {
-        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/detached-recovery";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        let audience = "https://detached-federated-recovery.example.com";
-        federated_recovery_fixture(provider, audience, service_account, hanging_source()).await;
-
-        let started = Instant::now();
-        let outcome = mint_for_test(
-            IdTokenIdentity::federated(provider, service_account),
-            audience,
-        )
-        .await;
-        assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
-        assert!(
-            started.elapsed() < SOURCE_PROBE_TIMEOUT,
-            "mint must not await the federated-source recovery probe"
-        );
-    }
-
-    #[restate_core::test]
-    async fn healthy_federated_source_is_not_replaced_by_repeated_mint_failures() {
-        let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/stable";
-        let service_account = "sa@example.iam.gserviceaccount.com";
-        let audience = "https://federated-stable.example.com";
-        let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel();
-        let builds = federated_recovery_fixture(
-            provider,
-            audience,
-            service_account,
-            healthy_source_with_probe_signal(probe_tx),
-        )
-        .await;
-
-        for _ in 0..5 {
-            let outcome = mint_for_test(
-                IdTokenIdentity::federated(provider, service_account),
-                audience,
-            )
-            .await;
-            assert_matches!(outcome, Err(GcpAuthError::Mint { .. }));
-        }
-        tokio::time::timeout(Duration::from_secs(5), probe_rx.recv())
-            .await
-            .expect("source probe completes promptly")
-            .expect("at least one permanent failure probes the federated source");
-
-        assert_eq!(
-            builds.load(Ordering::SeqCst),
-            0,
-            "a healthy federated source must never be replaced by an impersonation-only failure"
-        );
-    }
-
-    #[restate_core::test]
     async fn recovery_is_scoped_to_the_provider_whose_mint_failed() {
         let provider_a = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/aaaa";
         let provider_b = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/bbbb";
         let service_account = "sa@example.iam.gserviceaccount.com";
         let audience_a = "https://federated-independent-a.example.com";
         let audience_b = "https://federated-independent-b.example.com";
-        let builds_a =
-            federated_recovery_fixture(provider_a, audience_a, service_account, dead_source())
-                .await;
-        let (provider_b_probe_tx, mut provider_b_probe_rx) = tokio::sync::mpsc::unbounded_channel();
-        let builds_b = federated_recovery_fixture(
-            provider_b,
+        let fixture_a = recovery_fixture(
+            RecoverySourceUnderTest::Federated(provider_a),
+            audience_a,
+            service_account,
+            credential_source(ProbeOutcome::Dead),
+        )
+        .await;
+        let provider_b_probes = Arc::new(AtomicUsize::new(0));
+        let fixture_b = recovery_fixture(
+            RecoverySourceUnderTest::Federated(provider_b),
             audience_b,
             service_account,
-            healthy_source_with_probe_signal(provider_b_probe_tx),
+            healthy_source_with_probe_count(provider_b_probes.clone()),
         )
         .await;
 
@@ -1932,17 +1921,14 @@ mod tests {
         )
         .await;
         assert_matches!(outcome_b, Err(GcpAuthError::Mint { .. }));
-        tokio::time::timeout(Duration::from_secs(5), provider_b_probe_rx.recv())
-            .await
-            .expect("provider_b source probe completes promptly")
-            .expect("provider_b's permanent failure probes its source");
+        wait_for_count(&provider_b_probes, 1).await;
         assert_eq!(
-            builds_b.load(Ordering::SeqCst),
+            fixture_b.rebuilds.load(Ordering::SeqCst),
             0,
             "provider_b's healthy source must not be replaced"
         );
         assert_eq!(
-            builds_a.load(Ordering::SeqCst),
+            fixture_a.rebuilds.load(Ordering::SeqCst),
             0,
             "a mint against provider_b must never rebuild provider_a's source"
         );
@@ -1953,14 +1939,14 @@ mod tests {
         )
         .await;
         assert_matches!(outcome_a, Err(GcpAuthError::Mint { .. }));
-        wait_for_count(&builds_a, 1).await;
+        wait_for_count(&fixture_a.rebuilds, 1).await;
         assert_eq!(
-            builds_a.load(Ordering::SeqCst),
+            fixture_a.rebuilds.load(Ordering::SeqCst),
             1,
             "provider_a's dead source must be replaced exactly once"
         );
         assert_eq!(
-            builds_b.load(Ordering::SeqCst),
+            fixture_b.rebuilds.load(Ordering::SeqCst),
             0,
             "recovering provider_a's source must never touch provider_b's"
         );
@@ -2060,66 +2046,35 @@ mod tests {
     fn federated_source_recovery_runs_on_task_centers_default_runtime() {
         use restate_core::TaskCenterFutureExt as _;
 
-        let default_runtime = tokio::runtime::Runtime::new().expect("default runtime builds");
-        let task_center = restate_core::TaskCenterBuilder::default()
-            .default_runtime_handle(default_runtime.handle().clone())
-            .build()
-            .expect("task center builds")
-            .into_handle();
-
         let provider = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/recovery-runtime";
-        let registry = task_center.run_sync(credential_registry);
-        let access_token_source = registry
-            .federated_access_token_sources
-            .get_or_create(provider);
-        task_center.block_on(access_token_source.credentials.seed_for_test(dead_source()));
-
-        let (probe_started_tx, probe_started_rx) = std::sync::mpsc::channel();
-        let (probe_finished_tx, probe_finished_rx) = std::sync::mpsc::channel();
-        let (allow_probe_to_finish_tx, allow_probe_to_finish_rx) = tokio::sync::oneshot::channel();
-        let allow_probe_to_finish_rx = Mutex::new(Some(allow_probe_to_finish_rx));
-        federation::test_hooks::install_access_token_source_override(provider, move || {
-            let probe_started_tx = probe_started_tx.clone();
-            let probe_finished_tx = probe_finished_tx.clone();
-            let allow_probe_to_finish_rx = allow_probe_to_finish_rx
-                .lock()
-                .take()
-                .expect("recovery builds once");
-            // Simulate the library refresh task spawned while rebuilding the shared source.
-            tokio::spawn(async move {
-                probe_started_tx
-                    .send(())
-                    .expect("the test still awaits the probe");
-                let _ = allow_probe_to_finish_rx.await;
-                probe_finished_tx
-                    .send(())
-                    .expect("the test still awaits the probe");
-            });
-            Ok(healthy_source())
-        });
-
-        {
-            let caller_runtime = tokio::runtime::Runtime::new().expect("caller runtime builds");
-            caller_runtime.block_on(
-                registry
+        assert_child_survives_caller_runtime(
+            "federated source recovery",
+            |task_center, refresh_task| {
+                let registry = task_center.run_sync(credential_registry);
+                let access_token_source = registry
                     .federated_access_token_sources
-                    .recover_if_dead(provider, "test-triggered recovery")
-                    .in_tc(&task_center),
-            );
-            // Ensure the child exists before dropping the runtime that might own it.
-            probe_started_rx
-                .recv_timeout(Duration::from_secs(5))
-                .expect("recovery spawns a probe child task");
-        }
-
-        // A child owned by the caller runtime was cancelled above; one owned by the TaskCenter can
-        // still finish and report back.
-        allow_probe_to_finish_tx
-            .send(())
-            .expect("a recovery-spawned task must survive the caller runtime's drop");
-        probe_finished_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("a task spawned during recovery must survive the caller runtime's drop");
+                    .get_or_create(provider);
+                task_center.block_on(
+                    access_token_source
+                        .credentials
+                        .seed_for_test(credential_source(ProbeOutcome::Dead)),
+                );
+                federation::test_hooks::install_access_token_source_override(provider, move || {
+                    // Simulate the library refresh task spawned while rebuilding the source.
+                    refresh_task.spawn();
+                    Ok(credential_source(ProbeOutcome::Healthy))
+                });
+                (registry, access_token_source)
+            },
+            |caller_runtime, task_center, (registry, _source_lease)| {
+                caller_runtime.block_on(
+                    registry
+                        .federated_access_token_sources
+                        .recover_if_dead(provider, "test-triggered recovery")
+                        .in_tc(task_center),
+                );
+            },
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
