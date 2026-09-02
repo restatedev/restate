@@ -20,7 +20,7 @@ use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, ServiceInvocationSpanContext, Source,
@@ -737,15 +737,9 @@ pub enum CompletionStatus {
 }
 
 #[derive(derive_more::Debug, Clone, PartialEq, Eq)]
-pub struct CompletionReference {
-    pub entry_index: EntryIndex,
-    pub status: CompletionStatus,
-}
-
-#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
 pub enum ResponseResultRef {
-    Killed(EntryIndex),
-    Completed(CompletionReference),
+    Killed,
+    Completed(CompletionStatus),
     // Embedded success/failure status
     // Only for backward compatibility
     // with older invocation status
@@ -761,10 +755,10 @@ pub enum ResponseResultRef {
 impl ResponseResultRef {
     pub fn result(&self) -> ExitStatus {
         match self {
-            Self::Killed(_) => ExitStatus::Killed,
+            Self::Killed => ExitStatus::Killed,
             Self::Success(_) => ExitStatus::Success,
             Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
-            Self::Completed(completion) => completion.status.clone().into(),
+            Self::Completed(status) => status.clone().into(),
         }
     }
 }

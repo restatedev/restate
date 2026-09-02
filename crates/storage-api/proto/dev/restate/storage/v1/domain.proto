@@ -267,9 +267,8 @@ message InvocationStatusV2 {
   // must be null, and you must use completion_status instead
   // If completion_status is et to Failure, the failure_status_code
   // must hold the failure status code.
-  optional uint32 output_journal_index = 36;
-  optional CompletionStatus completion_status = 37;
-  optional uint32 failure_status_code = 38;
+  optional CompletionStatus completion_status = 36;
+  optional uint32 failure_status_code = 37;
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
@@ -333,9 +332,8 @@ message InvocationStatusV2Lazy {
 
   // Completed
   // optional bytes result_lazy = 18;
-  optional uint32 output_journal_index = 36;
-  optional InvocationStatusV2.CompletionStatus completion_status = 37;
-  optional uint32 failure_status_code = 38;
+  optional InvocationStatusV2.CompletionStatus completion_status = 36;
+  optional uint32 failure_status_code = 37;
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;

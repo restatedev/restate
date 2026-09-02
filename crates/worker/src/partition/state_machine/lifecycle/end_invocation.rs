@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use assert2::let_assert;
+use restate_storage_api::output_table::WriteOutputTable;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use tracing::warn;
 
@@ -18,8 +19,8 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, CompletionReference, CompletionStatus, InFlightInvocationMetadata,
-    JournalMetadata, JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
+    CompletedInvocation, CompletionStatus, InFlightInvocationMetadata, JournalMetadata,
+    JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
     WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -36,9 +37,7 @@ use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
 use restate_types::journal::EntryType;
-use restate_types::journal_v2::{
-    self, CommandType, EntryIndex, EntryMetadata, OutputCommand, OutputResult,
-};
+use restate_types::journal_v2::{self, CommandType, EntryMetadata, OutputCommand, OutputResult};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
@@ -78,7 +77,6 @@ struct ResponseResultCache {
     journal_length: u32,
     protocol_version: ServiceProtocolVersion,
 
-    entry_index: Option<EntryIndex>,
     result: Cached<ResponseResult>,
 }
 
@@ -92,7 +90,6 @@ impl ResponseResultCache {
             invocation_id,
             journal_length,
             protocol_version,
-            entry_index: None,
             result: Cached::None,
         }
     }
@@ -100,7 +97,7 @@ impl ResponseResultCache {
     async fn read_last_output_entry_result<'s, S, P>(
         &self,
         ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
+    ) -> Result<Option<ResponseResult>, Error>
     where
         P: ProcessorContext,
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
@@ -117,13 +114,10 @@ impl ResponseResultCache {
                 .unwrap_or_else(|| panic!("There should be a journal entry at index {i}"));
                 if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
                     let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                    return Ok(Some((
-                        Some(i),
-                        match cmd.result {
-                            OutputResult::Success(s) => ResponseResult::Success(s),
-                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                        },
-                    )));
+                    return Ok(Some(match cmd.result {
+                        OutputResult::Success(s) => ResponseResult::Success(s),
+                        OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
+                    }));
                 }
             }
             Ok(None)
@@ -148,7 +142,7 @@ impl ResponseResultCache {
                         restate_types::journal::Entry::Output(e) =
                             enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
-                    Ok((None, e.result.into()))
+                    Ok(e.result.into())
                 })
                 .transpose()
         }
@@ -165,8 +159,7 @@ impl ResponseResultCache {
         match &self.result {
             Cached::NotFound | Cached::Found(_) => {}
             Cached::None => match self.read_last_output_entry_result(ctx).await? {
-                Some((index, response)) => {
-                    self.entry_index = index;
+                Some(response) => {
                     self.result = Cached::Found(response);
                 }
                 None => self.result = Cached::NotFound,
@@ -178,7 +171,7 @@ impl ResponseResultCache {
     async fn response_result<'s, S, P>(
         &mut self,
         ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<Option<(Option<EntryIndex>, &ResponseResult)>, Error>
+    ) -> Result<Option<&ResponseResult>, Error>
     where
         P: ProcessorContext,
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
@@ -190,14 +183,14 @@ impl ResponseResultCache {
                 unreachable!()
             }
             Cached::NotFound => Ok(None),
-            Cached::Found(response) => Ok(Some((self.entry_index, response))),
+            Cached::Found(response) => Ok(Some(response)),
         }
     }
 
     async fn into_response_result<'s, S, P>(
         mut self,
         ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<Option<(Option<EntryIndex>, ResponseResult)>, Error>
+    ) -> Result<Option<ResponseResult>, Error>
     where
         P: ProcessorContext,
         S: ReadJournalTable + journal_table_v2::ReadJournalTable,
@@ -209,7 +202,7 @@ impl ResponseResultCache {
                 unreachable!()
             }
             Cached::NotFound => Ok(None),
-            Cached::Found(response) => Ok(Some((self.entry_index, response))),
+            Cached::Found(response) => Ok(Some(response)),
         }
     }
 }
@@ -282,7 +275,8 @@ where
         + WriteJournalEventsTable
         + WriteTimerTable
         + ReadPromiseTable
-        + WritePromiseTable,
+        + WritePromiseTable
+        + WriteOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -363,7 +357,7 @@ where
             EndInvocationReason::Killed => vqueue_table::Status::Killed,
             EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
             EndInvocationReason::Completed => {
-                let Some((_, response_result)) = response_cache.response_result(ctx).await? else {
+                let Some(response_result) = response_cache.response_result(ctx).await? else {
                     // We don't panic on this, although it indicates a bug at the moment.
                     warn!(
                         "Invocation completed without an output entry. This is not supported yet."
@@ -395,8 +389,7 @@ where
                     }
                     EndInvocationReason::Failed(err) => ResponseResultRef::Failure(err),
                     EndInvocationReason::Completed => {
-                        let Some((_, response_result)) =
-                            response_cache.response_result(ctx).await?
+                        let Some(response_result) = response_cache.response_result(ctx).await?
                         else {
                             warn!(
                                 "Invocation completed without an output entry. This is not supported yet."
@@ -413,63 +406,35 @@ where
                         }
                     }
                 },
-                // try to reference if protocol-version >= v4, otherwise, inline
-                true => match reason {
-                    EndInvocationReason::Killed => {
-                        // this output was just inserted in the journal above.
-                        let entry_index = invocation_metadata.journal_metadata.length - 1;
+                true => {
+                    // write result to output table
+                    // the output here can be synthetic (on kill or failure) as
+                    // done above, or organic from the invocation completion. In call cases,
+                    // we need to insert the output into the output table.
+                    let Some(response_result) = response_cache.response_result(ctx).await? else {
+                        warn!(
+                            "Invocation completed without an output entry. This is not supported yet."
+                        );
+                        return Ok(());
+                    };
 
-                        ResponseResultRef::Killed(entry_index)
-                    }
-                    EndInvocationReason::Failed(err) => {
-                        // this output was just inserted in the journal above.
-                        let entry_index = invocation_metadata.journal_metadata.length - 1;
+                    ctx.storage.put_output(&invocation_id, response_result)?;
 
-                        ResponseResultRef::Completed(CompletionReference {
-                            entry_index,
-                            status: CompletionStatus::Failure(err.code),
-                        })
-                    }
-                    EndInvocationReason::Completed => {
-                        let Some((entry_index, response_result)) =
-                            response_cache.response_result(ctx).await?
-                        else {
-                            warn!(
-                                "Invocation completed without an output entry. This is not supported yet."
-                            );
-                            return Ok(());
-                        };
-
-                        // if entry_index is None, this means  it is protocol-version < v4
-                        // and we will need to inline the error.
-                        match entry_index {
-                            // Remove when deprecating protocol-version < 4
-                            // part of https://github.com/restatedev/restate/issues/3184
-                            None => match response_result {
-                                ResponseResult::Success(bytes) => {
-                                    ResponseResultRef::Success(bytes.clone())
-                                }
-                                ResponseResult::Failure(err) => {
-                                    ResponseResultRef::Failure(err.clone())
-                                }
-                            },
-                            Some(entry_index) => match response_result {
-                                ResponseResult::Success(_) => {
-                                    ResponseResultRef::Completed(CompletionReference {
-                                        entry_index,
-                                        status: CompletionStatus::Success,
-                                    })
-                                }
-                                ResponseResult::Failure(err) => {
-                                    ResponseResultRef::Completed(CompletionReference {
-                                        entry_index,
-                                        status: CompletionStatus::Failure(err.code),
-                                    })
-                                }
-                            },
+                    match reason {
+                        EndInvocationReason::Killed => ResponseResultRef::Killed,
+                        EndInvocationReason::Failed(err) => {
+                            ResponseResultRef::Completed(CompletionStatus::Failure(err.code))
                         }
+                        EndInvocationReason::Completed => match response_result {
+                            ResponseResult::Success(_) => {
+                                ResponseResultRef::Completed(CompletionStatus::Success)
+                            }
+                            ResponseResult::Failure(err) => {
+                                ResponseResultRef::Completed(CompletionStatus::Failure(err.code))
+                            }
+                        },
                     }
-                },
+                }
             };
 
             // We still need to create a ResponseResult object to send to sinks
@@ -480,18 +445,10 @@ where
             let response_result = match &response_result_ref {
                 ResponseResultRef::Success(bytes) => ResponseResult::Success(bytes.clone()),
                 ResponseResultRef::Failure(err) => ResponseResult::Failure(err.clone()),
-                ResponseResultRef::Killed(_) | ResponseResultRef::Completed(_) => {
-                    // extract directly from cache
-                    let Some((_, response_result)) =
-                        response_cache.into_response_result(ctx).await?
-                    else {
-                        // We don't panic on this, although it indicates a bug at the moment.
-                        warn!(
-                            "Invocation completed without an output entry. This is not supported yet."
-                        );
-                        return Ok(());
-                    };
-                    response_result
+                ResponseResultRef::Killed | ResponseResultRef::Completed(_) => {
+                    // Note: we can only be here iff response_result has been inserted
+                    // into the output table, so it's safe to just unwrap()
+                    response_cache.into_response_result(ctx).await?.unwrap()
                 }
             };
 
