@@ -1657,7 +1657,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteTimerTable,
+            + WriteTimerTable
+            + WriteOutputTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1813,7 +1814,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteJournalEventsTable
-            + WriteLockTable,
+            + WriteLockTable
+            + WriteOutputTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1959,7 +1961,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteOutputTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -4509,13 +4512,15 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn do_free_invocation(&mut self, invocation_id: &InvocationId) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteOutputTable,
     {
         debug_if_leader!(
             self.is_leader,
             restate.invocation.id = %invocation_id,
             "Effect: Free invocation"
         );
+
+        self.storage.delete_output(invocation_id)?;
 
         self.storage
             .delete_invocation_status(invocation_id)

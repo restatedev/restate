@@ -10,7 +10,7 @@
 
 use crate::{
     deployment, inbox, invocation_state, invocation_status, journal, journal_events,
-    keyed_service_status, promise, rules, scheduler_status, service, state, user_limits,
+    keyed_service_status, output, promise, rules, scheduler_status, service, state, user_limits,
     vqueue_entry_status, vqueue_meta, vqueues,
 };
 use std::borrow::Cow;
@@ -24,6 +24,7 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     journal::schema::TABLE_DOCS,
     journal_events::schema::TABLE_DOCS,
     keyed_service_status::schema::TABLE_DOCS,
+    output::schema::TABLE_DOCS,
     promise::schema::TABLE_DOCS,
     rules::schema::TABLE_DOCS,
     scheduler_status::schema::TABLE_DOCS,
