@@ -695,7 +695,7 @@ mod federation_tests {
     }
 
     #[test]
-    fn subject_token_has_the_shape_google_sts_expects() {
+    fn subject_token_has_the_shape_and_replay_binding_google_sts_expects() {
         let token =
             build_subject_token(&fixed_credentials(), "us-east-1", PROVIDER, fixed_time()).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&token).unwrap();
@@ -725,16 +725,6 @@ mod federation_tests {
         assert!(names.contains(&"x-amz-date"), "{names:?}");
         assert!(names.contains(&"x-amz-security-token"), "{names:?}");
         assert!(names.contains(&"x-goog-cloud-target-resource"), "{names:?}");
-    }
-
-    /// The provider resource name must be covered by the signature. If it were not, a signed
-    /// envelope minted for one workload identity pool could be replayed against another -- which
-    /// is the environment-isolation boundary this authentication scheme relies on.
-    #[test]
-    fn target_resource_is_a_signed_header() {
-        let token =
-            build_subject_token(&fixed_credentials(), "us-east-1", PROVIDER, fixed_time()).unwrap();
-        let parsed: serde_json::Value = serde_json::from_str(&token).unwrap();
 
         let authorization = parsed["headers"]
             .as_array()
@@ -751,6 +741,8 @@ mod federation_tests {
             .unwrap()
             .to_owned();
 
+        // The provider resource name must be covered by the signature. Otherwise, an envelope
+        // minted for one identity pool could be replayed against another.
         assert!(
             authorization.contains("x-goog-cloud-target-resource"),
             "target resource not in SignedHeaders: {authorization}"
@@ -1070,7 +1062,7 @@ mod federation_tests {
     }
 
     #[test]
-    fn assume_role_service_errors_are_classified() {
+    fn assume_role_failures_are_classified() {
         for (code, expected_transient) in [
             ("AccessDenied", false),
             ("AccessDeniedException", false),
@@ -1089,10 +1081,7 @@ mod federation_tests {
                 "unexpected classification for {code}"
             );
         }
-    }
 
-    #[test]
-    fn assume_role_dispatch_timeout_classifies_transient() {
         let raw = assume_role_dispatch_timeout_error();
         assert_eq!(super::assume_role_error_code(&raw), None);
         let error = super::federation_error_from_assume_role_failure(&raw);
