@@ -170,6 +170,7 @@ impl KeyKind {
             b"ib" => Some(KeyKind::Inbox),
             b"is" => Some(KeyKind::InvocationStatusV1),
             b"iS" => Some(KeyKind::InvocationStatus),
+            b"io" => Some(KeyKind::Output),
             b"jo" => Some(KeyKind::Journal),
             b"j2" => Some(KeyKind::JournalV2),
             b"je" => Some(KeyKind::JournalEvent),
