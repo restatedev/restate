@@ -21,6 +21,8 @@ pub(crate) enum WorkflowRequestType {
     Attach(ReString, ReString),
     /// (name, key)
     GetOutput(ReString, ReString),
+    /// (name, key)
+    Status(ReString, ReString),
 }
 
 impl WorkflowRequestType {
@@ -41,6 +43,7 @@ impl WorkflowRequestType {
         match path_parts.next().ok_or(HandlerError::BadWorkflowPath)? {
             "output" => Ok(WorkflowRequestType::GetOutput(workflow_name, workflow_key)),
             "attach" => Ok(WorkflowRequestType::Attach(workflow_name, workflow_key)),
+            "status" => Ok(WorkflowRequestType::Status(workflow_name, workflow_key)),
             _ => Err(HandlerError::NotFound),
         }
     }
@@ -59,6 +62,7 @@ pub(crate) enum InvocationTargetType {
 pub(crate) enum InvocationRequestType {
     Attach(InvocationTargetType),
     GetOutput(InvocationTargetType),
+    Status(InvocationTargetType),
 }
 
 impl InvocationRequestType {
@@ -119,6 +123,7 @@ impl InvocationRequestType {
         // Output or attach
         match last_chunk {
             "output" => Ok(InvocationRequestType::GetOutput(invocation_target)),
+            "status" => Ok(InvocationRequestType::Status(invocation_target)),
             "attach" => Ok(InvocationRequestType::Attach(invocation_target)),
             _ => Err(HandlerError::NotFound),
         }
@@ -238,8 +243,8 @@ impl ServiceRequestType {
 ///   - `send/{service}/{handler}` or `send/{service}/{key}/{handler}`
 ///   - `scope/{scopeKey}/call/{service}/{handler}`
 ///   - `scope/{scopeKey}/send/{service}/{key}/{handler}`
-///   - `attach/{invocation_id}` or `output/{invocation_id}`
-///   - `attach` or `output` (POST with body describing the target)
+///   - `attach/{invocation_id}` or `output/{invocation_id}` or `status/{invocation_id}`
+///   - `attach` or `output` or `status` (POST with body describing the target)
 ///   - `lookup`
 fn parse_restate_api_verb<'a, Schemas>(
     verb: &str,
@@ -259,11 +264,13 @@ where
             let inner_verb = path_parts.next().ok_or(HandlerError::BadRestateApiPath)?;
             parse_call_or_send(inner_verb, Some(scope_key), path_parts, schemas)
         }
-        "attach" | "output" => match path_parts.next() {
+        "attach" | "output" | "status" => match path_parts.next() {
             None => Ok(if verb == "attach" {
                 RequestType::AttachByTarget
-            } else {
+            } else if verb == "output" {
                 RequestType::OutputByTarget
+            } else {
+                RequestType::StatusByTarget
             }),
             Some(id_str) => {
                 if path_parts.next().is_some() {
@@ -274,8 +281,10 @@ where
                     .map_err(|e| HandlerError::BadInvocationId(id_str.to_owned(), e))?;
                 Ok(if verb == "attach" {
                     RequestType::Attach(invocation_id)
-                } else {
+                } else if verb == "output" {
                     RequestType::Output(invocation_id)
+                } else {
+                    RequestType::Status(invocation_id)
                 })
             }
         },
