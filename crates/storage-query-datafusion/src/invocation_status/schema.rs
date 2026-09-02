@@ -31,10 +31,6 @@ define_table!(sys_invocation_status(
     /// If `status = 'completed'`, this contains either `success`, `failure`, or `killed``
     completion_result: DataType::LargeUtf8,
 
-    /// if completion_result = 'success' or 'failure' this will hold index of the journal Output
-    /// entry.
-    output_journal_index: DataType::UInt32,
-
     /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
     completion_failure: DataType::LargeUtf8,
 

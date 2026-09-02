@@ -140,7 +140,7 @@ pub mod v1 {
             span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            self, CompletionReference, PreFlightInvocationArgument, PreFlightInvocationInput,
+            self, PreFlightInvocationArgument, PreFlightInvocationInput,
             PreFlightInvocationJournal, ResponseResultRef,
         };
         use crate::protobuf_types::ConversionError;
@@ -437,7 +437,6 @@ pub mod v1 {
                     result,
                     completion_status,
                     failure_status_code,
-                    output_journal_index,
                     hotfix_apply_cancellation_after_deployment_is_pinned,
                 } = value;
 
@@ -686,7 +685,6 @@ pub mod v1 {
                         let response_result = ResponseResultRef::create(
                             result,
                             completion_status,
-                            output_journal_index,
                             failure_status_code,
                         )?;
 
@@ -800,7 +798,6 @@ pub mod v1 {
                         result: None,
                         completion_status: None,
                         failure_status_code: None,
-                        output_journal_index: None,
                         random_seed,
                     },
                     crate::invocation_status_table::InvocationStatus::Scheduled(
@@ -887,7 +884,6 @@ pub mod v1 {
                             result: None,
                             completion_status: None,
                             failure_status_code: None,
-                            output_journal_index: None,
                             random_seed,
                         }
                     }
@@ -962,7 +958,6 @@ pub mod v1 {
                         result: None,
                         completion_status: None,
                         failure_status_code: None,
-                        output_journal_index: None,
                         random_seed,
                     },
                     crate::invocation_status_table::InvocationStatus::Inboxed(
@@ -1049,7 +1044,6 @@ pub mod v1 {
                             result: None,
                             completion_status: None,
                             failure_status_code: None,
-                            output_journal_index: None,
                             random_seed,
                         }
                     }
@@ -1129,7 +1123,6 @@ pub mod v1 {
                             result: None,
                             completion_status: None,
                             failure_status_code: None,
-                            output_journal_index: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1233,7 +1226,6 @@ pub mod v1 {
                             result: None,
                             completion_status: None,
                             failure_status_code: None,
-                            output_journal_index: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1314,7 +1306,6 @@ pub mod v1 {
                             result: None,
                             completion_status: None,
                             failure_status_code: None,
-                            output_journal_index: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1345,7 +1336,7 @@ pub mod v1 {
                             ),
                         };
 
-                        let (result, completion_status, output_journal_index, failure_status_code) =
+                        let (result, completion_status, failure_status_code) =
                             response_result.split();
 
                         InvocationStatusV2 {
@@ -1394,7 +1385,6 @@ pub mod v1 {
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result,
                             completion_status: completion_status.map(Into::into),
-                            output_journal_index,
                             failure_status_code,
                             random_seed,
                         }
@@ -3806,69 +3796,55 @@ pub mod v1 {
                 Option<ResponseResult>,
                 Option<CompletionStatus>,
                 Option<u32>,
-                Option<u32>,
             ) {
-                let (result, completion_status, output_journal_index, failure_status_code) =
-                    match self {
-                        Self::Killed(index) => {
-                            (None, Some(CompletionStatus::Killed), Some(index), None)
-                        }
-                        Self::Success(bytes) => {
-                            let result = ResponseResult {
-                                response_result: Some(
-                                    response_result::ResponseResult::ResponseSuccess(
-                                        ResponseSuccess { value: bytes },
-                                    ),
-                                ),
-                            };
-                            (Some(result), None, None, None)
-                        }
-                        Self::Failure(err) => {
-                            let result = ResponseResult {
-                                response_result: Some(
-                                    response_result::ResponseResult::ResponseFailure(
-                                        ResponseFailure {
-                                            failure_code: err.code().into(),
-                                            failure_message: Bytes::copy_from_slice(
-                                                err.message().as_ref(),
-                                            ),
-                                            failure_metadata: err
-                                                .metadata
-                                                .into_iter()
-                                                .map(|(key, value)| FailureMetadata { key, value })
-                                                .collect(),
-                                        },
-                                    ),
-                                ),
-                            };
-                            (Some(result), None, None, None)
-                        }
-                        Self::Completed(completion) => {
-                            let (status, code) = match completion.status {
-                                invocation_status_table::CompletionStatus::Failure(code) => {
-                                    (CompletionStatus::Failure, Some(code.into()))
-                                }
-                                invocation_status_table::CompletionStatus::Success => {
-                                    (CompletionStatus::Success, None)
-                                }
-                            };
+                let (result, completion_status, failure_status_code) = match self {
+                    Self::Killed => (None, Some(CompletionStatus::Killed), None),
+                    Self::Success(bytes) => {
+                        let result = ResponseResult {
+                            response_result: Some(
+                                response_result::ResponseResult::ResponseSuccess(ResponseSuccess {
+                                    value: bytes,
+                                }),
+                            ),
+                        };
+                        (Some(result), None, None)
+                    }
+                    Self::Failure(err) => {
+                        let result = ResponseResult {
+                            response_result: Some(
+                                response_result::ResponseResult::ResponseFailure(ResponseFailure {
+                                    failure_code: err.code().into(),
+                                    failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                                    failure_metadata: err
+                                        .metadata
+                                        .into_iter()
+                                        .map(|(key, value)| FailureMetadata { key, value })
+                                        .collect(),
+                                }),
+                            ),
+                        };
+                        (Some(result), None, None)
+                    }
+                    Self::Completed(status) => {
+                        let (status, code) = match status {
+                            invocation_status_table::CompletionStatus::Failure(code) => {
+                                (CompletionStatus::Failure, Some(code.into()))
+                            }
+                            invocation_status_table::CompletionStatus::Success => {
+                                (CompletionStatus::Success, None)
+                            }
+                        };
 
-                            (None, Some(status), Some(completion.entry_index), code)
-                        }
-                    };
+                        (None, Some(status), code)
+                    }
+                };
 
-                (
-                    result,
-                    completion_status,
-                    output_journal_index,
-                    failure_status_code,
-                )
+                (result, completion_status, failure_status_code)
             }
 
             fn create(
                 result: Option<ResponseResult>,
                 completion_status: Option<i32>,
-                output_journal_index: Option<u32>,
                 failure_status_code: Option<u32>,
             ) -> Result<Self, ConversionError> {
                 let completion_status = completion_status
@@ -3888,19 +3864,15 @@ pub mod v1 {
                     (Some(result), None) => Ok(result.try_into()?),
                     (None, Some(status)) => {
                         let result = match status {
-                            CompletionStatus::Success => Self::Completed(CompletionReference {
-                                entry_index: expect_or_fail!(output_journal_index)?,
-                                status: invocation_status_table::CompletionStatus::Success,
-                            }),
-                            CompletionStatus::Failure => Self::Completed(CompletionReference {
-                                entry_index: expect_or_fail!(output_journal_index)?,
-                                status: invocation_status_table::CompletionStatus::Failure(
-                                    expect_or_fail!(failure_status_code)?.into(),
-                                ),
-                            }),
-                            CompletionStatus::Killed => {
-                                Self::Killed(expect_or_fail!(output_journal_index)?)
+                            CompletionStatus::Success => {
+                                Self::Completed(invocation_status_table::CompletionStatus::Success)
                             }
+                            CompletionStatus::Failure => {
+                                Self::Completed(invocation_status_table::CompletionStatus::Failure(
+                                    expect_or_fail!(failure_status_code)?.into(),
+                                ))
+                            }
+                            CompletionStatus::Killed => Self::Killed,
                         };
 
                         Ok(result)
