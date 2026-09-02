@@ -14,7 +14,7 @@ use tracing::{debug, trace};
 
 use restate_platform::hash::HashMap;
 use restate_storage_api::StorageError;
-use restate_storage_api::vqueue_table::metadata::{self, VQueueMeta};
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
 use restate_types::sharding::PartitionKey;
 use restate_types::vqueues::VQueueId;
@@ -100,14 +100,13 @@ impl Slot {
         &self.meta
     }
 
-    /// Returns is_active of the vqueue before and after all the updates
-    /// in the form of a tuple (before, after).
-    pub fn apply_update(&mut self, update: &metadata::Update) -> (bool, bool) {
-        let before = self.meta.is_active();
-        self.meta.apply_update(update);
-        let after = self.meta.is_active();
+    #[inline(always)]
+    pub(super) fn split_mut(&mut self) -> (&VQueueId, &mut VQueueMeta) {
+        (&self.qid, &mut self.meta)
+    }
 
-        (before, after)
+    pub(super) fn meta_mut(&mut self) -> &mut VQueueMeta {
+        &mut self.meta
     }
 }
 

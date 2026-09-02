@@ -93,7 +93,13 @@ where
                     )
                     .await?
                     .expect("purging in a non-existent vqueue")
-                    .delete(at, vqueue_id, &entry_id, header.entry_key());
+                    .delete(
+                        at,
+                        vqueue_id,
+                        &entry_id,
+                        header.entry_key(),
+                        header.metadata(),
+                    );
                 }
 
                 let pinned_service_protocol_version = pinned_deployment
