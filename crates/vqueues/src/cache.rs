@@ -168,6 +168,16 @@ impl VQueuesMetaCache {
         evicted
     }
 
+    /// Removes a single vqueue from the cache, returning its slot.
+    ///
+    /// Callers must ensure the scheduler no longer references the handle; this
+    /// holds for inactive vqueues (see [`Self::compact`]).
+    pub(super) fn remove(&mut self, handle: VQueueHandle) -> Option<Slot> {
+        let slot = self.slab.remove(handle)?;
+        self.queues.remove(&slot.qid);
+        Some(slot)
+    }
+
     /// Runs compaction if the cache exceeds its target capacity and the cache contains possibly
     /// compactable entries. Returns the number of compacted entries.
     pub fn try_compact(&mut self) -> usize {

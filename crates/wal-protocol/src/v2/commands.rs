@@ -26,7 +26,7 @@ pub use crate::control::UpsertRuleBookCommand;
 use crate::timer;
 // Re-epxort vqueues commands
 pub use crate::invocation::PauseInvocationCommand;
-pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
+pub use crate::vqueues::{PurgeVQueueMetaCommand, VQueuesPauseCommand, VQueuesResumeCommand};
 
 pub use crate::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, UpsertSchemaCommand,
@@ -472,4 +472,9 @@ command! {
 command! {
     @kind=CommandKind::VQueuesResume,
     @command=VQueuesResumeCommand
+}
+
+command! {
+    @kind=CommandKind::PurgeVQueueMeta,
+    @command=PurgeVQueueMetaCommand
 }

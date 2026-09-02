@@ -664,6 +664,28 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 }
                 Ok(())
             }
+            CommandKind::PurgeVQueueMeta => {
+                let purge = envelope
+                    .into_typed::<commands::PurgeVQueueMetaCommand>()
+                    .into_inner()?;
+                for qid in purge.vqueues.iter() {
+                    let Some(vqueue) = VQueue::get(
+                        qid,
+                        self.storage,
+                        self.processor.vqueues_mut(),
+                        self.is_leader.then_some(self.action_collector),
+                    )
+                    .await?
+                    else {
+                        // Already gone.
+                        continue;
+                    };
+                    // Re-validated at apply time: only vqueues that are still
+                    // obsolete (fully empty) and not paused are deleted.
+                    vqueue.purge_meta_if_obsolete();
+                }
+                Ok(())
+            }
         }
     }
 
