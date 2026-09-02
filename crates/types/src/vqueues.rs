@@ -12,6 +12,7 @@ mod entry_id;
 mod seq;
 mod vqueue_id;
 
+pub use crate::identifiers::CanonicalEntryId;
 pub use entry_id::{EntryId, EntryIdDisplay, EntryKind, VQueueEntryId};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
@@ -23,4 +24,6 @@ pub enum ParseError {
     Length,
     #[error("unknown entry kind: {0}")]
     UnknownEntryKind(u8),
+    #[error("sequence number exceeds 56 bits: {0}")]
+    SequenceOutOfRange(u64),
 }

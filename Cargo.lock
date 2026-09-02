@@ -9070,6 +9070,7 @@ dependencies = [
  "ulid",
  "utoipa",
  "xxhash-rust",
+ "zerocopy",
 ]
 
 [[package]]

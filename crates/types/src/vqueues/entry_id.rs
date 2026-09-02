@@ -12,7 +12,9 @@ use std::str::FromStr;
 
 use crate::errors::IdDecodeError;
 use crate::id_util::{IdDecoder, IdEncoder};
-use crate::identifiers::{InvocationId, InvocationUuid, PartitionKey, ResourceId, StateMutationId};
+use crate::identifiers::{
+    CanonicalEntryId, InvocationId, InvocationUuid, PartitionKey, ResourceId, StateMutationId,
+};
 
 use super::ParseError;
 
@@ -160,6 +162,11 @@ impl From<VQueueEntryId> for EntryId {
     strum::FromRepr,
     bilrost::Enumeration,
     strum::Display,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+    zerocopy::TryFromBytes,
+    zerocopy::Unaligned,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
@@ -314,6 +321,16 @@ impl EntryId {
                 self.remainder,
             )),
             _ => None,
+        }
+    }
+}
+
+impl From<CanonicalEntryId> for EntryId {
+    #[inline]
+    fn from(value: CanonicalEntryId) -> Self {
+        Self {
+            kind: value.kind(),
+            remainder: *value.remainder(),
         }
     }
 }

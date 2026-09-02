@@ -13,6 +13,7 @@ mod append_invocation_response;
 mod append_signal;
 mod cancel_invocation;
 mod get_invocation_output;
+mod get_invocation_status;
 mod kill_invocation;
 mod pause_invocation;
 mod purge_invocation;
@@ -145,6 +146,10 @@ where
                     response_mode,
                 })
                 .await
+            }
+            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
+                self.handle(get_invocation_status::Request { invocation_id })
+                    .await
             }
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
                 self.handle(append_invocation_response::Request {

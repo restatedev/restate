@@ -297,6 +297,7 @@ vergen = { version = "8.0.0", default-features = false }
 wildmatch = "2.6.1"
 x509-parser = "0.16"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+zerocopy = { version = "0.8", features = ["derive"] }
 zstd = { version = "0.13" }
 
 [patch.crates-io.restate-workspace-hack]

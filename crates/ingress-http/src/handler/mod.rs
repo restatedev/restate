@@ -63,10 +63,14 @@ enum RequestType {
     Attach(InvocationId),
     /// `GET /restate/output/{invocation_id}`
     Output(InvocationId),
+    /// `GET /restate/status/{invocation_id}`
+    Status(InvocationId),
     /// `POST /restate/attach` with a body resolving to an invocation target
     AttachByTarget,
     /// `POST /restate/output` with a body resolving to an invocation target
     OutputByTarget,
+    /// `POST /restate/status` with a body resolving to an invocation target
+    StatusByTarget,
     /// `POST /restate/lookup`
     Lookup,
 }
@@ -140,8 +144,12 @@ where
                     )
                     .await
                 }
+                RequestType::Status(invocation_id) => {
+                    this.handle_invocation_get_status(req, invocation_id).await
+                }
                 RequestType::AttachByTarget => this.handle_attach_by_target(req).await,
                 RequestType::OutputByTarget => this.handle_output_by_target(req).await,
+                RequestType::StatusByTarget => this.handle_status_by_target(req).await,
                 RequestType::Lookup => this.handle_lookup(req).await,
             }
         }
