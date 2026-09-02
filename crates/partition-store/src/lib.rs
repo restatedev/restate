@@ -24,6 +24,7 @@ mod memory;
 mod metric_definitions;
 pub mod migrations;
 pub mod outbox_table;
+pub mod output_table;
 mod owned_iter;
 mod partition_db;
 mod partition_store;
