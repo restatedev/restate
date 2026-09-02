@@ -542,6 +542,11 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableJournalV2);
             }
 
+            // Since v1.8.0 we're enabling unique random seeds by default
+            if !processor.fsm().features().is_unique_random_seeds_enabled() {
+                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
+            }
+
             // Opt this partition in to vqueues if the operator has flipped the experimental config
             // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
             // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
@@ -581,14 +586,6 @@ where
                         feature_changes.push(PartitionFeatureChange::EnableVqueuesSkipCompleted);
                     }
                 }
-            }
-
-            // Persist a unique random seed on new invocations. Needs to be opted-in because
-            // it was only introduced with v1.7.0
-            if config.common.experimental.is_unique_random_seeds_enabled()
-                && !processor.fsm().features().is_unique_random_seeds_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
             }
 
             if config
@@ -1191,9 +1188,9 @@ mod tests {
             )
             .await?;
 
-        // Since v1.7.0, winning the campaign first proposes a VersionBarrier to enable
-        // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
-        // is applied.
+        // Since v1.7.0, winning the campaign first proposes a VersionBarrier to enable the
+        // journal-v2 and (since v1.8.0) unique-random-seeds defaults; the processor stays
+        // `BecomingLeader` until that barrier is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
@@ -1204,11 +1201,17 @@ mod tests {
                 .feature_changes
                 .contains(&PartitionFeatureChange::EnableJournalV2.id())
         );
+        assert!(
+            barrier
+                .feature_changes
+                .contains(&PartitionFeatureChange::EnableUniqueRandomSeeds.id())
+        );
 
         // Simulate the barrier being applied to the FSM, then complete the transition
         // into a full leader (no further feature changes remain to be proposed).
         ctx.set_enabled_features_in_memory(PersistedFeatures {
             journal_v2: true,
+            unique_random_seeds: true,
             ..PersistedFeatures::default()
         });
         state
