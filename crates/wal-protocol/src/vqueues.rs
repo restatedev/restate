@@ -31,6 +31,21 @@ pub struct VQueuesResumeCommand {
 
 bilrost_storage_encode_decode!(VQueuesResumeCommand);
 
+/// Purges the metadata records of obsolete vqueues from the partition store.
+///
+/// Appliers re-validate at apply time: only vqueues that are still obsolete
+/// (fully empty, including the `Finished` stage) and not paused are deleted;
+/// all other ids are skipped.
+///
+/// Note: Within a single command, all VQueue IDs must be on the same partition-key
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PurgeVQueueMetaCommand {
+    #[bilrost(tag(1))]
+    pub vqueues: Vec<VQueueId>,
+}
+
+bilrost_storage_encode_decode!(PurgeVQueueMetaCommand);
+
 impl VQueuesPauseCommand {
     pub fn bilrost_encode<B: BufMut>(&self, b: &mut B) -> Result<(), bilrost::EncodeError> {
         bilrost::Message::encode(self, b)

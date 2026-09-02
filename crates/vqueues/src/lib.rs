@@ -1180,6 +1180,30 @@ where
         }
     }
 
+    /// Purges this vqueue's metadata from storage and the cache if it's obsolete.
+    ///
+    /// The metadata is deleted only when the vqueue holds no entries in any stage
+    /// (see [`VQueueMeta::is_obsolete`]) and is not paused, since purging would
+    /// silently drop the pause flag. Obsolete vqueues are inactive, so the
+    /// scheduler holds no reference to the evicted handle and no active-index key
+    /// exists on disk; the meta record is all there is to delete.
+    ///
+    /// Returns true if the metadata was purged.
+    pub fn purge_meta_if_obsolete(self) -> bool {
+        let meta = self.meta();
+        if !meta.is_obsolete() || meta.queue_is_paused() {
+            return false;
+        }
+
+        let slot = self
+            .cache
+            .remove(self.handle)
+            .expect("purged vqueue is cached");
+        debug!(qid = %slot.vqueue_id(), "Purging obsolete vqueue metadata");
+        self.storage.delete_vqueue(slot.vqueue_id());
+        true
+    }
+
     pub fn update_entry_metadata(
         &mut self,
         header: &impl EntryStatusHeader,
@@ -1603,5 +1627,107 @@ where
             stats,
             status,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_core::TaskCenter;
+    use restate_partition_store::{PartitionStore, PartitionStoreManager};
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
+    use restate_types::vqueues::EntryKind;
+
+    use super::*;
+
+    async fn storage_test_environment() -> PartitionStore {
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
+
+        let manager = PartitionStoreManager::create(true)
+            .await
+            .expect("DB storage creation succeeds");
+        manager
+            .open(
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+                None,
+            )
+            .await
+            .expect("DB storage creation succeeds")
+    }
+
+    #[restate_core::test]
+    async fn purge_meta_only_purges_obsolete_unpaused_vqueues() {
+        let mut store = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(16);
+
+        let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+        let empty_qid = VQueueId::custom(1, "empty");
+        let busy_qid = VQueueId::custom(2, "busy");
+        let paused_qid = VQueueId::custom(3, "paused");
+        let new_meta = || VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+
+        let mut txn = store.transaction();
+
+        // Obsolete: created but never used.
+        VQueue::<VQueueEvent, _>::get_or_insert_with(&empty_qid, &mut txn, &mut cache, new_meta)
+            .await
+            .unwrap();
+
+        // Non-obsolete: holds an inbox entry.
+        let mut busy =
+            VQueue::<VQueueEvent, _>::get_or_insert_with(&busy_qid, &mut txn, &mut cache, new_meta)
+                .await
+                .unwrap();
+        busy.enqueue_new(
+            at,
+            1u64,
+            None,
+            EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]),
+            EntryMetadata::default(),
+        );
+
+        // Empty but paused: the pause flag must survive a purge attempt.
+        let mut paused = VQueue::<VQueueEvent, _>::get_or_insert_with(
+            &paused_qid,
+            &mut txn,
+            &mut cache,
+            new_meta,
+        )
+        .await
+        .unwrap();
+        paused.pause_queue(at);
+
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        let mut txn = store.transaction();
+        for (qid, expect_purged) in [(&empty_qid, true), (&busy_qid, false), (&paused_qid, false)] {
+            let vqueue = VQueue::<VQueueEvent, _>::get(qid, &mut txn, &mut cache, None)
+                .await
+                .unwrap()
+                .expect("vqueue is known");
+            assert_eq!(vqueue.purge_meta_if_obsolete(), expect_purged, "{qid}");
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        // Purged: gone from both storage and cache; the others are retained.
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&empty_qid).await.unwrap().is_none());
+        assert!(cache.view().handle_for(&empty_qid).is_none());
+        assert!(txn.get_vqueue(&busy_qid).await.unwrap().is_some());
+        assert!(cache.view().handle_for(&busy_qid).is_some());
+        let paused_meta = txn
+            .get_vqueue(&paused_qid)
+            .await
+            .unwrap()
+            .expect("paused vqueue meta is retained");
+        assert!(paused_meta.queue_is_paused());
     }
 }

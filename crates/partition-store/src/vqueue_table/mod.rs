@@ -249,6 +249,12 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
     }
 
+    fn delete_vqueue(&mut self, qid: &VQueueId) {
+        // Cannot use single delete: the meta key is written once with put and
+        // updated many times with merge afterwards.
+        self.raw_delete_cf(KeyKind::VQueueMeta, MetaKey::from(qid).to_bytes());
+    }
+
     fn put_vqueue_inbox(
         &mut self,
         qid: &VQueueId,
