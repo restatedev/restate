@@ -220,12 +220,6 @@ pub(crate) fn append_invocation_status_row<'a>(
                 );
             }
 
-            if row.is_output_journal_index_defined()
-                && let Some(index) = invocation_status.inner.output_journal_index
-            {
-                row.output_journal_index(index);
-            }
-
             if row.is_completion_result_defined()
                 || row.is_completion_failure_defined()
                 || row.is_completion_failure_code_defined()

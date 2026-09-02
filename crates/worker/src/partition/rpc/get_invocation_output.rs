@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
+use restate_storage_api::output_table::ReadOutputTable;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
@@ -20,14 +22,14 @@ use restate_types::net::partition_processor::{
 };
 use restate_wal_protocol::v2::commands;
 
-use crate::ReadJournalTableExt;
+use crate::ReadOutputTableExt;
 use crate::partition::state_machine;
 
 use super::*;
 
 impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
-    TStorage: ReadInvocationStatusTable + ReadJournalTable,
+    TStorage: ReadInvocationStatusTable + ReadOutputTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -47,7 +49,7 @@ where
                         request_id,
                         response: match self
                             .storage
-                            .resolve_response_result_ref(invocation_id, &completed.response_result)
+                            .resolve_response_result_ref(&invocation_id, &completed.response_result)
                             .await?
                         {
                             None => InvocationOutputResponse::Gone,
@@ -72,7 +74,7 @@ where
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationOutputRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadJournalTable,
+    Storage: ReadInvocationStatusTable + ReadOutputTable,
 {
     async fn handle(
         mut self,

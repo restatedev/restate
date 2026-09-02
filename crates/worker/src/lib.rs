@@ -43,9 +43,12 @@ use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::CompletionReference;
 use restate_storage_api::invocation_status_table::ResponseResultRef;
+use restate_storage_api::invocation_status_table::ResponseResultRef;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
+use restate_storage_api::output_table::ReadOutputTable;
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::Version;
@@ -54,11 +57,6 @@ use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
-use restate_types::journal_v2;
-use restate_types::journal_v2::CommandType;
-use restate_types::journal_v2::EntryMetadata;
-use restate_types::journal_v2::OutputCommand;
-use restate_types::journal_v2::OutputResult;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -281,54 +279,29 @@ where
     }
 }
 
-pub(crate) trait ReadJournalTableExt {
+pub(crate) trait ReadOutputTableExt {
     fn resolve_response_result_ref(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         result_ref: &ResponseResultRef,
-    ) -> impl Future<Output = Result<Option<ResponseResult>, ResolveResultError>>;
+    ) -> impl Future<Output = Result<Option<ResponseResult>, StorageError>>;
 }
 
-impl<T> ReadJournalTableExt for T
+impl<T> ReadOutputTableExt for T
 where
-    T: ReadJournalTable,
+    T: ReadOutputTable,
 {
     async fn resolve_response_result_ref(
         &mut self,
-        invocation_id: InvocationId,
+        invocation_id: &InvocationId,
         result_ref: &ResponseResultRef,
-    ) -> Result<Option<ResponseResult>, ResolveResultError> {
+    ) -> Result<Option<ResponseResult>, StorageError> {
         match result_ref {
             ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
             ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
-            ResponseResultRef::Killed(entry_index)
-            | ResponseResultRef::Completed(CompletionReference { entry_index, .. }) => self
-                .get_journal_entry(invocation_id, *entry_index)
-                .await?
-                .map(|entry| {
-                    if entry.ty() == journal_v2::EntryType::Command(CommandType::Output) {
-                        let cmd = entry.decode::<ServiceProtocolV4Codec, OutputCommand>()?;
-                        Ok(match cmd.result {
-                            OutputResult::Success(s) => ResponseResult::Success(s),
-                            OutputResult::Failure(f) => ResponseResult::Failure(f.into()),
-                        })
-                    } else {
-                        Err(ResolveResultError::BadEntryVariant(
-                            journal_v2::EntryType::Command(CommandType::Output),
-                        ))
-                    }
-                })
-                .transpose(),
+            ResponseResultRef::Killed | ResponseResultRef::Completed(_) => {
+                self.get_output(invocation_id).await
+            }
         }
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum ResolveResultError {
-    #[error(transparent)]
-    Storage(#[from] restate_storage_api::StorageError),
-    #[error("expecting entry type {0:?}, but wasn't. This indicates data corruption.")]
-    BadEntryVariant(journal_v2::EntryType),
-    #[error("failed to deserialize entry: {0}")]
-    EntryDecoding(#[from] journal_v2::raw::RawEntryError),
 }
