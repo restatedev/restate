@@ -361,9 +361,6 @@ impl Parts {
         mut headers: HeaderMap<HeaderValue>,
     ) -> Self {
         let address = match deployment.ty {
-            DeploymentType::Unknown => {
-                todo!("handle unknown deployment type");
-            }
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,

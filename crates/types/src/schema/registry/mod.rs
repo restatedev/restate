@@ -419,7 +419,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
 
         let existing_http_auth = match &existing_deployment.ty {
             DeploymentType::Http { auth, .. } => auth.clone(),
-            DeploymentType::Lambda { .. } | DeploymentType::Unknown => None,
+            DeploymentType::Lambda { .. } => None,
         };
 
         // Merge with update changes requested
@@ -521,12 +521,6 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                     )),
                     false,
                 ),
-                (_, DeploymentType::Unknown) => {
-                    return Err(SchemaRegistryErrorInner::Internal(
-                        "Existing deployment has an unknown type".into(),
-                    )
-                    .into());
-                }
             };
 
         // PATCH preserves the persisted `auth` field verbatim. To rotate audience or

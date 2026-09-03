@@ -110,6 +110,14 @@ impl Schema {
     pub fn touch(&mut self) {
         self.version = self.version.next();
     }
+
+    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
+        for deployment in self.deployments.values() {
+            deployment.verify()?
+        }
+
+        Ok(())
+    }
 }
 
 impl GlobalMetadata for Schema {
@@ -188,7 +196,15 @@ mod storage {
             Self: Sized,
         {
             match kind {
-                StorageCodecKind::FlexbuffersSerde => storage::decode::decode_serde(buf, kind),
+                StorageCodecKind::FlexbuffersSerde => {
+                    let schema = storage::decode::decode_serde::<Schema, _>(buf, kind)?;
+
+                    schema
+                        .verify()
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                    Ok(schema)
+                }
                 StorageCodecKind::ZstdBilrostDefault => {
                     // Unfortunately bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer first
                     // before decode payload as bilrost.
@@ -197,6 +213,11 @@ mod storage {
 
                     let mut schema =
                         storage::decode::decode_bilrost::<Schema, _>(uncompressed.as_ref())?;
+
+                    schema
+                        .verify()
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
                     // rebuild active service index.
                     schema.active_service_revisions =
                         ActiveServiceRevision::create_index(schema.deployments.values());
@@ -210,11 +231,9 @@ mod storage {
 
 // -- Data model
 
-#[derive(Debug, Clone, bilrost::Message)]
+#[derive(Debug, Clone)]
 struct ActiveServiceRevision {
-    #[bilrost(tag(1))]
     deployment_id: DeploymentId,
-    #[bilrost(tag(2), encoding(Arced))]
     service_revision: Arc<ServiceRevision>,
 }
 
@@ -284,30 +303,33 @@ pub struct DeploymentLimits {
 struct Deployment {
     #[bilrost(tag = 1)]
     id: DeploymentId,
-    #[bilrost(tag = 2)]
-    ty: DeploymentType,
-    #[bilrost(tag = 3)]
-    delivery_options: DeliveryOptions,
+    // NOTE: ty is a required field never set it to None
+    // it's only Option to work around bilrost encoding limitation
+    // for enum types with no default empty variant
+    #[bilrost(oneof(2, 3))]
+    ty: Option<DeploymentType>,
     #[bilrost(tag = 4)]
+    delivery_options: DeliveryOptions,
+    #[bilrost(tag = 5)]
     supported_protocol_versions: RangeInclusive<i32>,
 
     /// Declared SDK during discovery
-    #[bilrost(tag = 5)]
-    sdk_version: Option<String>,
     #[bilrost(tag = 6)]
+    sdk_version: Option<String>,
+    #[bilrost(tag = 7)]
     created_at: MillisSinceEpoch,
 
     /// User provided metadata during registration
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
-    #[bilrost(tag = 7)]
+    #[bilrost(tag = 8)]
     metadata: HashMap<String, String>,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
-    #[bilrost(tag = 8, encoding(map<general_packed, Arced>))]
+    #[bilrost(tag = 9, encoding(map<general_packed, Arced>))]
     services: HashMap<String, Arc<ServiceRevision>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[bilrost(tag = 9)]
+    #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
 }
 
@@ -320,10 +342,18 @@ impl MapAsVecItem for Deployment {
 }
 
 impl Deployment {
+    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
+        if self.ty.is_none() {
+            return Err(UnknownDeploymentType(self.id));
+        }
+
+        Ok(())
+    }
+
     fn to_deployment(&self) -> deployment::Deployment {
         deployment::Deployment {
             id: self.id,
-            ty: self.ty.clone(),
+            ty: self.ty.clone().expect("required field"),
             supported_protocol_versions: self.supported_protocol_versions.clone(),
             sdk_version: self.sdk_version.clone(),
             created_at: self.created_at,
@@ -338,7 +368,8 @@ impl Deployment {
         other_addess: &DeploymentAddress,
         other_additional_headers: &Headers,
     ) -> bool {
-        match (&self.ty, other_addess) {
+        let ty = self.ty.as_ref().expect("required field");
+        match (ty, other_addess) {
             (
                 DeploymentType::Http {
                     address: this_address,
@@ -363,6 +394,10 @@ impl Deployment {
         }
     }
 }
+
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("invalid deployment has unknown deployment type")]
+pub struct UnknownDeploymentType(pub DeploymentId);
 
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
@@ -830,7 +865,12 @@ impl DeploymentResolver for Schema {
                     dp.to_deployment(),
                     dp.services
                         .values()
-                        .map(|s| s.to_service_metadata(*dp_id, Some(dp.ty.protocol_type())))
+                        .map(|s| {
+                            s.to_service_metadata(
+                                *dp_id,
+                                dp.ty.as_ref().map(|ty| ty.protocol_type()),
+                            )
+                        })
                         .collect(),
                 )
             })
@@ -851,7 +891,12 @@ impl DeploymentResolver for Schema {
                 dp.to_deployment(),
                 dp.services
                     .values()
-                    .map(|s| s.to_service_metadata(*deployment_id, Some(dp.ty.protocol_type())))
+                    .map(|s| {
+                        s.to_service_metadata(
+                            *deployment_id,
+                            dp.ty.as_ref().map(|ty| ty.protocol_type()),
+                        )
+                    })
                     .collect(),
             )
         })
@@ -1063,7 +1108,7 @@ impl ServiceMetadataResolver for Schema {
                 let protocol_type = self
                     .deployments
                     .get(&revision.deployment_id)
-                    .map(|dp| dp.ty.protocol_type());
+                    .and_then(|dp| dp.ty.as_ref().map(|ty| ty.protocol_type()));
 
                 revision.as_service_metadata(protocol_type)
             })
@@ -1086,7 +1131,8 @@ impl ServiceMetadataResolver for Schema {
                 let protocol_type = self
                     .deployments
                     .get(&revision.deployment_id)
-                    .map(|dp| dp.ty.protocol_type());
+                    .and_then(|dp| dp.ty.as_ref().map(|ty| ty.protocol_type()));
+
                 revision.as_service_metadata(protocol_type)
             })
             .collect()

@@ -157,11 +157,10 @@ impl EndpointLambdaCompression {
 // TODO this type is serde because it represents how data is stored in the schema registry
 //  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, bilrost::Oneof)]
 #[serde(from = "serde_hacks::DeploymentType")]
 pub enum DeploymentType {
-    Unknown,
-    #[bilrost(tag = 1, message)]
+    #[bilrost(tag = 2, message)]
     Http {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
         #[bilrost(tag = 1, encoding(RestateEncoding))]
@@ -175,7 +174,7 @@ pub enum DeploymentType {
         #[bilrost(oneof(4))]
         auth: Option<HttpAuth>,
     },
-    #[bilrost(tag = 2, message)]
+    #[bilrost(tag = 3, message)]
     Lambda {
         #[bilrost(tag = 1)]
         arn: LambdaARN,
@@ -197,7 +196,6 @@ impl DeploymentType {
                 match self {
                     Wrapper(DeploymentType::Http { address, .. }) => address.fmt(f),
                     Wrapper(DeploymentType::Lambda { arn, .. }) => arn.fmt(f),
-                    Wrapper(DeploymentType::Unknown) => f.write_str("unknown"),
                 }
             }
         }
@@ -217,9 +215,6 @@ impl DeploymentType {
                 ..
             } => LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
                 .into(),
-            DeploymentType::Unknown => {
-                todo!("handle unknown deployment type")
-            }
         }
     }
 
@@ -234,7 +229,6 @@ impl DeploymentType {
         match self {
             DeploymentType::Http { protocol_type, .. } => *protocol_type,
             DeploymentType::Lambda { .. } => ProtocolType::RequestResponse,
-            DeploymentType::Unknown => ProtocolType::RequestResponse,
         }
     }
 
@@ -249,7 +243,6 @@ impl DeploymentType {
                 ..
             } => "Http/request-response",
             DeploymentType::Lambda { .. } => "Lambda",
-            DeploymentType::Unknown => "unknown",
         }
     }
 }

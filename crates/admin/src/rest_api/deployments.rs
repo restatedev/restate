@@ -488,9 +488,6 @@ fn to_deployment_response(
     services: Vec<(String, ServiceRevision)>,
 ) -> DeploymentResponse {
     match ty {
-        DeploymentType::Unknown => {
-            todo!("handle unknown deployment type");
-        }
         DeploymentType::Http {
             http_version,
             protocol_type,
@@ -553,9 +550,6 @@ fn to_detailed_deployment_response(
     services: Vec<ServiceMetadata>,
 ) -> DetailedDeploymentResponse {
     match ty {
-        DeploymentType::Unknown => {
-            todo!("handle unknown deployment type")
-        }
         DeploymentType::Http {
             http_version,
             protocol_type,

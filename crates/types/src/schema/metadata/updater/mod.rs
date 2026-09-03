@@ -377,7 +377,7 @@ impl SchemaUpdater {
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
-                            restate.deployment.address = %existing_deployment.ty.address_display(),
+                            restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
@@ -437,10 +437,10 @@ impl SchemaUpdater {
             deployment_id,
             Deployment {
                 id: deployment_id,
-                ty: Self::create_deployment_ty(
+                ty: Some(Self::create_deployment_ty(
                     deployment_address,
                     discovery_response.deployment_type_parameters,
-                ),
+                )),
                 delivery_options: DeliveryOptions::new(additional_headers),
                 supported_protocol_versions: discovery_response.supported_protocol_versions,
                 sdk_version: discovery_response.sdk_version,
@@ -676,10 +676,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update only these 3 fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     sdk_version: discovery_response.sdk_version,
 
@@ -717,7 +717,7 @@ impl SchemaUpdater {
                 if !proposed_services.contains_key(&service.name) {
                     warn!(
                         restate.deployment.id = %deployment_id,
-                        restate.deployment.address = %existing_deployment.ty.address_display(),
+                        restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                         "Going to remove service {} due to a forced deployment update",
                         service.name
                     );
@@ -783,10 +783,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update all these fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     supported_protocol_versions: discovery_response.supported_protocol_versions,
                     sdk_version: discovery_response.sdk_version,

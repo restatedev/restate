@@ -470,9 +470,6 @@ where
         }
 
         let address = match deployment_metadata.ty {
-            DeploymentType::Unknown => {
-                todo!("handle unknown deployment type");
-            }
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,

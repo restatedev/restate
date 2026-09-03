@@ -21,7 +21,6 @@ pub(crate) fn append_deployment_row(
     row.fmt_id(deployment.id);
 
     match deployment.ty {
-        DeploymentType::Unknown => row.ty("unknown"),
         DeploymentType::Http { .. } => {
             row.ty("http");
         }
