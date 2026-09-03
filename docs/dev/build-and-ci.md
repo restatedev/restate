@@ -199,6 +199,7 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 - `features`: Cargo features to enable
 - `pushToDockerHub`: Push to Docker Hub in addition to GHCR
 - `profile`: Select which Cargo profile to build
+- `runnerSize`: Select a `16x` or `32x` runner; `auto` uses `32x` for Parca builds and `16x` otherwise
 
 **Build optimizations:**
 - Uses `sccache` with WarpBuild cache
