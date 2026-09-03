@@ -246,17 +246,16 @@ pub(crate) async fn get_partition_seal<S: StorageAccess>(
     })
 }
 
-pub(crate) async fn seal_partition<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
+pub(crate) async fn seal_partition(
+    storage: &mut PartitionStore,
     seal: &PartitionSeal,
 ) -> Result<()> {
     let key = PartitionStateMachineKey {
-        partition_id: partition_id.into(),
+        partition_id: storage.partition_id().into(),
         state_id: fsm_variable::SEAL_MARKER,
     };
 
-    storage.put_kv_raw(
+    storage.put_kv_raw_with_wal(
         key,
         serde_json::to_vec(seal).map_err(|e| StorageError::Conversion(e.into()))?,
     )?;
