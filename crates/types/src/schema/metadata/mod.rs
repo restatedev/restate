@@ -199,6 +199,7 @@ mod storage {
                 StorageCodecKind::FlexbuffersSerde => {
                     let schema = storage::decode::decode_serde::<Schema, _>(buf, kind)?;
 
+                    // note: the rebuild of `active_service_revisions` is done in the serde_hacks deserializer
                     schema
                         .verify()
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
