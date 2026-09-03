@@ -50,6 +50,8 @@ use restate_types::partitions::Partition;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
+use crate::scheduler::PermitBuilder;
+
 use super::*;
 
 // ---------- helpers ----------
@@ -153,6 +155,11 @@ impl GatedStore {
         let (lock, cv) = &*self.release;
         *lock.lock().unwrap() = true;
         cv.notify_all();
+    }
+
+    fn reset_refill_gate(&self) {
+        *self.release.0.lock().unwrap() = false;
+        *self.parked.0.lock().unwrap() = false;
     }
 
     fn wait_until_parked(&self) {
@@ -441,6 +448,142 @@ async fn tombstone_in_overlay_suppresses_storage_row() {
     assert!(
         !drained.contains(&r_target.0),
         "deleted row should be suppressed by overlay tombstone, got: {drained:?}",
+    );
+}
+
+/// A frozen refill must not restore an assignment confirmed while it was in flight.
+#[restate_core::test]
+async fn confirmed_assignment_is_not_restored_from_refill_snapshot() {
+    let dispatched = entry_at_seq(1);
+    let waiting = entry_at_seq(2);
+    let storage = GatedStore::new(vec![dispatched.clone(), waiting.clone()]);
+    let qid = test_qid(8);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut skip = UnconfirmedAssignments::new();
+    skip.insert(
+        dispatched.0,
+        (PermitBuilder::default(), EntryMetadata::default()),
+    );
+
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+
+    storage.replace_entries(vec![waiting.clone()]);
+    skip.remove(&dispatched.0);
+
+    storage.release_refill_thread();
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+
+    assert_eq!(
+        drain_cache(&mut queue),
+        vec![waiting.0],
+        "the frozen refill must not resurrect a confirmed running entry",
+    );
+}
+
+/// A stale unconfirmed assignment must not hide a later durable re-enqueue of the same entry.
+///
+/// This issue describes a race condition. A duplicate entry might get into the scheduler
+/// during an async refill. This happens when a previously proposed but not-yet-confirmed
+/// entry in the queue gets confirmed during the async refill. In that case, the async
+/// refill will return the yet-unconfirmed (not running) entry from RocksDB. But because
+/// the scheduler will have received the confirmation, it will have cleared that entry
+/// from its memory. This will lead it to re-load the entry, which will then get stuck
+/// indefinitely in scheduler's unconfirmed_assignments, because restate rejects running it.
+///
+/// When the invocation returns legitimately to the queue next time, due to it existing
+/// in the scheduler's internal inbox, the scheduler will ignore it, leading to a stuck
+/// invocation.
+///
+/// Note: The async RocksDB refill can bring back the bad entry, because of the write-ahead
+/// log. An entry with earlier queue key might get placed into the inbox, hence causing async refill
+/// to start loading from an earlier index.
+#[restate_core::test]
+async fn reenqueued_unconfirmed_assignment_is_not_lost_during_refill() {
+    let earlier = entry_at_seq(10);
+    let returned = entry_at_seq(100);
+    let later_a = entry_at_seq(200);
+    let later_b = entry_at_seq(300);
+    let storage = GatedStore::new(vec![returned.clone()]);
+    let qid = test_qid(9);
+    let mut queue: Queue<GatedStore> = Queue::new(0, &storage, &qid);
+    let mut skip = UnconfirmedAssignments::new();
+    skip.insert(
+        returned.0,
+        (PermitBuilder::default(), EntryMetadata::default()),
+    );
+
+    // Restore a confirmed Running entry from the refill's stale Inbox snapshot.
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+    storage.replace_entries(vec![]);
+    skip.remove(&returned.0);
+    storage.release_refill_thread();
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+
+    assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == returned.0));
+
+    // Dispatch the stale row. The durable entry is already Running, so applying
+    // this decision produces no confirmation and leaves the assignment behind.
+    skip.insert(
+        returned.0,
+        (PermitBuilder::default(), EntryMetadata::default()),
+    );
+    queue.try_advance().unwrap();
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        queue.poll_advance_if_needed(&mut cx, &storage, &skip, &qid, true, false),
+        Poll::Ready(Ok(QueueItem::None)),
+    ));
+
+    // Model one committed WAL batch: the first event re-seeds the empty cache
+    // below `returned`; the later entries are left for the next refill.
+    storage.replace_entries(vec![earlier.clone(), later_a.clone(), later_b.clone()]);
+    assert!(queue.enqueue(&earlier.0, &earlier.1));
+    assert!(!queue.enqueue(&later_a.0, &later_a.1));
+    assert!(!queue.enqueue(&later_b.0, &later_b.1));
+
+    skip.insert(
+        earlier.0,
+        (PermitBuilder::default(), EntryMetadata::default()),
+    );
+    queue.try_advance().unwrap();
+    storage.reset_refill_gate();
+    poll_once_expect_pending(&mut queue, &storage, &skip, &qid);
+    storage.wait_until_parked();
+
+    // The final completion returns the original invocation to Inbox while the
+    // second refill is in flight.
+    skip.remove(&earlier.0);
+    storage.replace_entries(vec![returned.clone(), later_a.clone(), later_b.clone()]);
+    assert!(!queue.enqueue(&returned.0, &returned.1));
+
+    storage.release_refill_thread();
+    drive_until_ready(&mut queue, &storage, &skip, &qid).await;
+
+    for entry in [&later_a, &later_b] {
+        assert!(matches!(queue.head(), Some(QueueItem::Inbox { key, .. }) if *key == entry.0));
+        skip.insert(
+            entry.0,
+            (PermitBuilder::default(), EntryMetadata::default()),
+        );
+        queue.try_advance().unwrap();
+        skip.remove(&entry.0);
+    }
+    storage.replace_entries(vec![returned.clone()]);
+
+    // Durable Inbox count and stale assignment count are both one, so the
+    // scheduler declares the queue empty without another storage refill.
+    let mut cx = Context::from_waker(Waker::noop());
+    assert!(matches!(
+        queue.poll_advance_if_needed(&mut cx, &storage, &skip, &qid, true, false),
+        Poll::Ready(Ok(QueueItem::None)),
+    ));
+
+    assert_eq!(
+        drain_cache(&mut queue),
+        vec![returned.0],
+        "the durable re-enqueue must remain schedulable despite the stale assignment",
     );
 }
 
