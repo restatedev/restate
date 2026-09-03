@@ -193,8 +193,7 @@ impl Add<Duration> for MillisSinceEpoch {
     type Output = MillisSinceEpoch;
 
     fn add(self, rhs: Duration) -> Self::Output {
-        let millis =
-            u64::try_from(rhs.as_millis()).expect("millis since Unix epoch should fit in u64");
+        let millis = u64::try_from(rhs.as_millis()).unwrap_or(u64::MAX);
         MillisSinceEpoch::new(self.as_u64().saturating_add(millis))
     }
 }
@@ -203,8 +202,7 @@ impl Sub<Duration> for MillisSinceEpoch {
     type Output = MillisSinceEpoch;
 
     fn sub(self, rhs: Duration) -> Self::Output {
-        let millis =
-            u64::try_from(rhs.as_millis()).expect("millis since Unix epoch should fit in u64");
+        let millis = u64::try_from(rhs.as_millis()).unwrap_or(u64::MAX);
         MillisSinceEpoch::new(self.as_u64().saturating_sub(millis))
     }
 }
