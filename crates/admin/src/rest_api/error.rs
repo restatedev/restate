@@ -18,6 +18,7 @@ use codederror::{Code, CodedError};
 use restate_core::ShutdownError;
 use restate_types::identifiers::{DeploymentId, SubscriptionId};
 use restate_types::invocation::ServiceType;
+use restate_types::schema::deployment::UnknownDeploymentTypeError;
 use restate_types::schema::registry::{HttpAuthValidationError, SchemaRegistryError};
 use restate_util_string::RestrictedValueError;
 
@@ -272,6 +273,8 @@ pub enum MetaApiError {
     InvalidField(&'static str, String),
     #[error("The requested deployment '{0}' does not exist")]
     DeploymentNotFound(DeploymentId),
+    #[error(transparent)]
+    DeploymentInvalid(#[from] UnknownDeploymentTypeError),
     #[error("The requested service '{0}' does not exist")]
     ServiceNotFound(String),
     #[error("The requested handler '{handler_name}' on service '{service_name}' does not exist")]

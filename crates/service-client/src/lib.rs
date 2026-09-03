@@ -27,7 +27,9 @@ use hyper::{HeaderMap, Response, Uri};
 use restate_types::config::ServiceClientOptions;
 use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
-use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
+use restate_types::schema::deployment::{
+    Deployment, DeploymentType, EndpointLambdaCompression, UnknownDeploymentTypeError,
+};
 
 pub use crate::gcp::{GcpAuthError, GcpTokenClient, IdTokenCacheMode};
 pub use crate::http::HttpClient;
@@ -359,11 +361,9 @@ impl Parts {
         method: Method,
         path: PathAndQuery,
         mut headers: HeaderMap<HeaderValue>,
-    ) -> Self {
+    ) -> Result<Self, UnknownDeploymentTypeError> {
         let address = match deployment.ty {
-            DeploymentType::Unknown => {
-                todo!("handle unknown deployment type");
-            }
+            DeploymentType::Unknown => return Err(UnknownDeploymentTypeError(deployment.id)),
             DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
@@ -379,7 +379,7 @@ impl Parts {
 
         headers.extend(deployment.additional_headers);
 
-        Self::new(method, address, path, headers)
+        Ok(Self::new(method, address, path, headers))
     }
 
     pub fn with_request_identity_sub_field(mut self, sub_field: ByteString) -> Self {
