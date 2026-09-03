@@ -281,6 +281,7 @@ impl LogStore for RocksDbLogStore {
                         );
                         decoded_key.offset().next()
                     } else {
+                        iterator.status().map_err(RocksDbLogStoreError::from)?;
                         trace!(
                             %loglet_id,
                             "No data records for loglet {}", loglet_id

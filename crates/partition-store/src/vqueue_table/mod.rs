@@ -166,6 +166,44 @@ impl ScanVQueueTable for PartitionDb {
     }
 }
 
+// Helpers for internal management of vqueues
+impl PartitionStoreTransaction<'_> {
+    /// Adds a vqueue to the list of active vqueues
+    ///
+    /// A vqueue is considered active when it's of interest to the scheduler.
+    ///
+    /// The scheduler cares about vqueues that have entries that are already running or that are waiting
+    /// to run. With some special rules to consider when the queue is paused. When the vqueue is
+    /// paused, the scheduler will only be interested in its "running" entries and not in its
+    /// waiting entries. Therefore, it will remain to be "active" as long as it has running
+    /// entries. Once running entries are moved to waiting or completed, the vqueue is be
+    /// considered dormant until it's unpaused.
+    ///
+    /// A vqueue that is "not" active does not mean it's "empty". It could be paused or
+    /// only contains entries in parked or completed states. As such, it's not considered
+    /// by the scheduler and it's considered "dormant".
+    fn mark_vqueue_as_active(&mut self, qid: &VQueueId) {
+        let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
+        ActiveKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key_buffer.as_mut());
+        self.raw_put_cf(KeyKind::VQueueActive, key_buffer, []);
+    }
+
+    /// Removes the vqueue from the list of active vqueues
+    ///
+    /// A dormant vqueue is not necessarily `empty`. It's a vqueue _might_ have items (or not)
+    /// in parked or completed states, or it might have waiting items in its inbox but the
+    /// vqueue is paused and would not be visible to the scheduler.
+    fn mark_vqueue_as_dormant(&mut self, qid: &restate_types::vqueues::VQueueId) {
+        let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
+        ActiveKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key_buffer.as_mut());
+        self.raw_single_delete_cf(KeyKind::VQueueActive, key_buffer);
+    }
+}
+
 impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta) {
         let key_buffer = MetaKey::from(qid).to_bytes();
@@ -182,7 +220,9 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     fn update_vqueue(
         &mut self,
         qid: &VQueueId,
+        meta: &mut VQueueMeta,
         update: &restate_storage_api::vqueue_table::metadata::Update,
+        _entry_metadata: Option<&EntryMetadata>,
     ) {
         let key_buffer = MetaKey::from(qid).to_bytes();
         self.raw_merge_cf(
@@ -190,6 +230,29 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             key_buffer,
             update.encode_contiguous().into_vec(),
         );
+
+        // Mutate the VQueue metadata
+        let was_active_before = meta.is_active();
+        // mutate in-place
+        meta.apply_update(update);
+        let is_active_now = meta.is_active();
+
+        // Update active queue index
+        match (was_active_before, is_active_now) {
+            (false, true) => {
+                self.mark_vqueue_as_active(qid);
+            }
+            (true, false) => {
+                self.mark_vqueue_as_dormant(qid);
+            }
+            (_, _) => {}
+        }
+    }
+
+    fn delete_vqueue(&mut self, qid: &VQueueId) {
+        // Cannot use single delete: the meta key is written once with put and
+        // updated many times with merge afterwards.
+        self.raw_delete_cf(KeyKind::VQueueMeta, MetaKey::from(qid).to_bytes());
     }
 
     fn put_vqueue_inbox(
@@ -232,22 +295,6 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             KeyKind::VQueueInboxStage,
             inbox::encode_stage_key(stage, qid, key),
         );
-    }
-
-    fn mark_vqueue_as_active(&mut self, qid: &VQueueId) {
-        let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
-        ActiveKeyRef::builder()
-            .qid(qid)
-            .serialize_to(&mut key_buffer.as_mut());
-        self.raw_put_cf(KeyKind::VQueueActive, key_buffer, []);
-    }
-
-    fn mark_vqueue_as_dormant(&mut self, qid: &restate_types::vqueues::VQueueId) {
-        let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
-        ActiveKeyRef::builder()
-            .qid(qid)
-            .serialize_to(&mut key_buffer.as_mut());
-        self.raw_single_delete_cf(KeyKind::VQueueActive, key_buffer);
     }
 
     fn put_vqueue_entry_status(

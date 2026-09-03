@@ -88,7 +88,7 @@ pub struct RocksDbStorage {
 impl RocksDbStorage {
     pub async fn create() -> Result<Self, BuildError> {
         let rocksdb = build_rocksdb().await?;
-        let (first_index, last_index) = Self::find_indices(rocksdb.inner().as_raw_db());
+        let (first_index, last_index) = Self::find_indices(rocksdb.inner().as_raw_db())?;
 
         Ok(Self {
             rocksdb,
@@ -388,7 +388,7 @@ impl RocksDbStorage {
     // Utils
     // ------------------------------
 
-    fn find_indices(db: &DB) -> (u64, u64) {
+    fn find_indices(db: &DB) -> Result<(u64, u64), BuildError> {
         block_in_place(|| {
             let data_cf = db.cf_handle(DATA_CF).expect("DATA_CF exists");
             let metadata_cf = db.cf_handle(METADATA_CF).expect("METADATA_CF exists");
@@ -407,13 +407,15 @@ impl RocksDbStorage {
                 let first_index = LogEntryKey::from_slice(key_bytes).index();
 
                 iterator.seek_to_last();
+                iterator.status().map_err(RocksError::from)?;
 
                 assert!(iterator.valid(), "iterator should be valid");
                 let key_bytes = iterator.key().expect("key should be present");
                 let last_index = LogEntryKey::from_slice(key_bytes).index();
 
-                (first_index, last_index)
+                Ok((first_index, last_index))
             } else {
+                iterator.status().map_err(RocksError::from)?;
                 let snapshot_bytes = db
                     .get_pinned_cf(&metadata_cf, SNAPSHOT_KEY)
                     .expect("snapshot key should be readable");
@@ -423,10 +425,10 @@ impl RocksDbStorage {
                     let last_index = snapshot.get_metadata().get_index();
                     let first_index = snapshot.get_metadata().get_index() + 1;
 
-                    (first_index, last_index)
+                    Ok((first_index, last_index))
                 } else {
                     // the first valid raft index starts at 1, so 0 means there are no replicated raft entries
-                    (FIRST_RAFT_INDEX, 0)
+                    Ok((FIRST_RAFT_INDEX, 0))
                 }
             }
         })

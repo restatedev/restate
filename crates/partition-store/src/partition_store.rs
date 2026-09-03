@@ -1249,7 +1249,13 @@ pub(crate) trait StorageAccess {
         F: FnOnce(Option<(&[u8], &[u8])>) -> Result<R>,
     {
         let iterator = self.iterator_from(scan)?;
-        f(iterator.item())
+        let item = iterator.item();
+        if item.is_none() {
+            iterator
+                .status()
+                .map_err(|err| StorageError::Generic(err.into()))?;
+        }
+        f(item)
     }
 
     #[inline]

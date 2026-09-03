@@ -26,8 +26,8 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
-    InvocationClient, InvocationClientError, InvocationOutput, KillInvocationResponse,
-    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    GetInvocationStatusResponse, InvocationClient, InvocationClientError, InvocationOutput,
+    KillInvocationResponse, PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
     RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
@@ -427,6 +427,7 @@ where
             }
         })
     }
+
     async fn get_invocation_output(
         &self,
         request_id: PartitionProcessorRpcRequestId,
@@ -458,6 +459,32 @@ where
             }
         })
     }
+
+    async fn get_invocation_status(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+    ) -> Result<GetInvocationStatusResponse, InvocationClientError> {
+        let response = self
+            .resolve_partition_id_and_send(
+                request_id,
+                PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id },
+            )
+            .await?;
+
+        Ok(match response {
+            PartitionProcessorRpcResponse::NotFound => GetInvocationStatusResponse::NotFound,
+            PartitionProcessorRpcResponse::Status(output) => {
+                GetInvocationStatusResponse::Status(output)
+            }
+            _ => {
+                panic!(
+                    "Expecting either PartitionProcessorRpcResponse::Status or PartitionProcessorRpcResponse::NotFound"
+                )
+            }
+        })
+    }
+
     async fn append_invocation_response(
         &self,
         request_id: PartitionProcessorRpcRequestId,

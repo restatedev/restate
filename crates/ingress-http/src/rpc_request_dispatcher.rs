@@ -12,8 +12,8 @@ use super::{RequestDispatcher, RequestDispatcherError};
 
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::client::{
-    AttachInvocationResponse, GetInvocationOutputResponse, InvocationClient, InvocationClientError,
-    InvocationOutput, SubmittedInvocationNotification,
+    AttachInvocationResponse, GetInvocationOutputResponse, GetInvocationStatusResponse,
+    InvocationClient, InvocationClientError, InvocationOutput, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -136,6 +136,19 @@ where
                 .get_invocation_output(request_id, invocation_query.clone())
         })
         .instrument(debug_span!("get invocation output", %request_id, invocation_id = %invocation_query.to_invocation_id()))
+        .await
+    }
+
+    async fn get_invocation_status(
+        &self,
+        invocation_id: InvocationId,
+    ) -> Result<GetInvocationStatusResponse, RequestDispatcherError> {
+        let request_id = PartitionProcessorRpcRequestId::default();
+        self.execute_rpc(true, || {
+            self.invocation_client
+                .get_invocation_status(request_id, invocation_id)
+        })
+        .instrument(debug_span!("get invocation status", %request_id, %invocation_id))
         .await
     }
 

@@ -310,6 +310,12 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
         store.storage_version(),
         StorageVersion::ScopedStateAndPromise
     );
+    assert!(
+        !store
+            .needs_jc_orphan_cleanup()
+            .await
+            .expect("fresh stores are marked cleanup-complete")
+    );
 
     let service_id = ServiceId::new(None, "svc", "k");
     {

@@ -18,6 +18,7 @@
 
 mod cleaner;
 pub mod invoker_storage_reader;
+mod jc_orphan_cleanup;
 mod leadership;
 pub mod node;
 mod processor;
@@ -401,6 +402,21 @@ where
                     "Shutting partition processor during data migration down because of error: {err}"
                 );
                 return Err(err.into());
+            }
+        }
+
+        let jc_orphan_cleanup_enabled = self
+            .node_ctx
+            .config
+            .live_load()
+            .common
+            .experimental
+            .is_jc_orphan_cleanup_enabled();
+        if jc_orphan_cleanup_enabled {
+            match jc_orphan_cleanup::run(&mut self.partition_store, cancel.clone()).await {
+                Ok(()) => {}
+                Err(jc_orphan_cleanup::Error::Cancelled) => return Ok(()),
+                Err(jc_orphan_cleanup::Error::Storage(err)) => return Err(err.into()),
             }
         }
 

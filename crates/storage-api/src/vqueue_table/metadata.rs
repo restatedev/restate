@@ -362,6 +362,12 @@ impl VQueueMeta {
         self.len() == 0
     }
 
+    /// A vqueue is obsolete when it holds no entries in any stage, including
+    /// `Finished`. Obsolete vqueue metadata records can be purged from storage.
+    pub fn is_obsolete(&self) -> bool {
+        self.is_empty() && self.stats.num_finished == 0
+    }
+
     pub fn total_waiting(&self) -> u64 {
         self.stats.num_inbox
     }

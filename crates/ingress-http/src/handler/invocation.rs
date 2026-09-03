@@ -11,18 +11,39 @@
 use bytes::Bytes;
 use http::{Method, Request, Response};
 use http_body_util::{BodyExt, Full};
+use serde::Serialize;
 use tracing::warn;
-
-use restate_types::errors::GenericError;
-use restate_types::identifiers::IdempotencyId;
-use restate_types::invocation::InvocationQuery;
-use restate_types::invocation::client::{AttachInvocationResponse, GetInvocationOutputResponse};
-use restate_types::schema::invocation_target::InvocationTargetResolver;
 
 use super::HandlerError;
 use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
 use super::{Handler, InvocationTargetRequest};
 use crate::RequestDispatcher;
+use crate::handler::responses::X_RESTATE_ID;
+use restate_types::errors::{GenericError, InvocationError};
+use restate_types::identifiers::{IdempotencyId, InvocationId};
+use restate_types::invocation::client::{
+    AttachInvocationResponse, GetInvocationOutputResponse, GetInvocationStatusResponse,
+};
+use restate_types::invocation::{InvocationQuery, client};
+use restate_types::schema::invocation_target::InvocationTargetResolver;
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InvocationStage {
+    /// Means the invocation has been created but not yet started.
+    Created,
+    /// The invocation started and has not yet completed.
+    Started,
+    /// The invocation completed, with either success or failure.
+    Completed,
+}
+
+#[derive(Debug, Serialize)]
+pub struct InvocationStatusResponse {
+    stage: InvocationStage,
+    /// Filled if `stage = 'completed'` and the invocation failed
+    error: Option<InvocationError>,
+}
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
@@ -49,6 +70,13 @@ where
                 self.handle_invocation_get_output(
                     req,
                     Self::convert_to_invocation_query(invocation_target_type)?,
+                )
+                .await
+            }
+            InvocationRequestType::Status(invocation_target_type) => {
+                self.handle_invocation_get_status(
+                    req,
+                    Self::convert_to_invocation_query(invocation_target_type)?.to_invocation_id(),
                 )
                 .await
             }
@@ -109,6 +137,20 @@ where
         self.get_invocation_output_query(invocation_query).await
     }
 
+    pub(crate) async fn handle_invocation_get_status<B: http_body::Body>(
+        self,
+        req: Request<B>,
+        invocation_id: InvocationId,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: Into<GenericError>,
+    {
+        if req.method() != Method::GET {
+            return Err(HandlerError::MethodNotAllowed);
+        }
+        self.get_invocation_status(invocation_id).await
+    }
+
     pub(crate) async fn handle_attach_by_target<B: http_body::Body>(
         self,
         req: Request<B>,
@@ -129,6 +171,17 @@ where
     {
         let invocation_query = Self::parse_invocation_target_body(req).await?;
         self.get_invocation_output_query(invocation_query).await
+    }
+    pub(crate) async fn handle_status_by_target<B: http_body::Body>(
+        self,
+        req: Request<B>,
+    ) -> Result<Response<Full<Bytes>>, HandlerError>
+    where
+        <B as http_body::Body>::Error: Into<GenericError>,
+    {
+        let invocation_query = Self::parse_invocation_target_body(req).await?;
+        self.get_invocation_status(invocation_query.to_invocation_id())
+            .await
     }
 
     async fn parse_invocation_target_body<B: http_body::Body>(
@@ -220,5 +273,48 @@ where
                 )
                 .ok_or(HandlerError::NotFound)
         })
+    }
+
+    async fn get_invocation_status(
+        self,
+        invocation_id: InvocationId,
+    ) -> Result<Response<Full<Bytes>>, HandlerError> {
+        let response = match self.dispatcher.get_invocation_status(invocation_id).await {
+            Ok(GetInvocationStatusResponse::Status(out)) => out,
+            Ok(GetInvocationStatusResponse::NotFound) => {
+                return Err(HandlerError::InvocationNotFound);
+            }
+            Err(e) => {
+                warn!(
+                    restate.invocation.id = ?invocation_id,
+                    "Failed to read status: {}",
+                    e,
+                );
+                return Err(HandlerError::GenericReadDispatcherError(e));
+            }
+        };
+
+        let stage = match response.state {
+            client::InvocationState::Scheduled | client::InvocationState::Inboxed => {
+                InvocationStage::Created
+            }
+            client::InvocationState::Invoked
+            | client::InvocationState::Suspended
+            | client::InvocationState::Paused => InvocationStage::Started,
+            client::InvocationState::Killed
+            | client::InvocationState::Failed
+            | client::InvocationState::Succeeded => InvocationStage::Completed,
+        };
+
+        let body = serde_json::to_vec(&InvocationStatusResponse {
+            stage,
+            error: response.error,
+        })
+        .unwrap();
+
+        Ok(Response::builder()
+            .header(X_RESTATE_ID, invocation_id.to_string())
+            .body(Full::new(body.into()))
+            .unwrap())
     }
 }

@@ -143,8 +143,6 @@ pub struct CommonOptionCliOverride {
     /// NOTE 1: This config entry only impacts the initial number of partitions, the
     /// value of this entry is ignored for bootstrapped nodes/clusters.
     ///
-    /// NOTE 2: This will be renamed to `default-num-partitions` by default as of v1.3+
-    ///
     /// Default: 24
     #[clap(long, global = true, alias = "bootstrap-num-partitions")]
     pub default_num_partitions: Option<NonZeroU64>,

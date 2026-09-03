@@ -24,8 +24,8 @@ use bytes::Bytes;
 
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::{
-    AttachInvocationResponse, GetInvocationOutputResponse, InvocationOutput,
-    SubmittedInvocationNotification,
+    AttachInvocationResponse, GetInvocationOutputResponse, GetInvocationStatusResponse,
+    InvocationOutput, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
@@ -90,6 +90,12 @@ pub trait RequestDispatcher {
         &self,
         invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send;
+
+    /// Get invocation status, without blocking when it's still running.
+    fn get_invocation_status(
+        &self,
+        invocation_id: InvocationId,
+    ) -> impl Future<Output = Result<GetInvocationStatusResponse, RequestDispatcherError>> + Send;
 
     /// Send invocation response (for awakeables).
     /// **NOTE:** This works only for targeting invocations using Journal Table V1/Service Protocol <= V3.
@@ -321,6 +327,14 @@ mod mocks {
         ) -> impl Future<Output = Result<GetInvocationOutputResponse, RequestDispatcherError>> + Send
         {
             MockRequestDispatcher::get_invocation_output(self, invocation_query)
+        }
+
+        fn get_invocation_status(
+            &self,
+            invocation_id: InvocationId,
+        ) -> impl Future<Output = Result<GetInvocationStatusResponse, RequestDispatcherError>> + Send
+        {
+            MockRequestDispatcher::get_invocation_status(self, invocation_id)
         }
 
         fn send_invocation_response(
