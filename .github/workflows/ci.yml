@@ -244,7 +244,24 @@ jobs:
       envVars: |
         RESTATE_experimental_enable_protocol_v7=true
       testArtifactOutput: sdk-typescript-protocol-v7-test-report
-  
+
+  sdk-typescript-bilrost-schema:
+    name: Run SDK-Typescript integration tests with Bilrost schema encoding
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      envVars: |
+        RESTATE_experimental_enable_schema_bilrost_encoding=true
+      testArtifactOutput: sdk-typescript-bilrost-schema-test-report
+
   sdk-rust:
     name: Run SDK-Rust integration tests
     permissions:
