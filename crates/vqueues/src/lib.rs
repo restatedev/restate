@@ -1605,3 +1605,118 @@ where
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use restate_core::TaskCenter;
+    use restate_partition_store::{PartitionStore, PartitionStoreManager};
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
+    use restate_types::vqueues::EntryKind;
+
+    use super::*;
+
+    async fn storage_test_environment() -> PartitionStore {
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
+
+        let manager = PartitionStoreManager::create(true)
+            .await
+            .expect("DB storage creation succeeds");
+        manager
+            .open(
+                &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+                None,
+            )
+            .await
+            .expect("DB storage creation succeeds")
+    }
+
+    #[restate_core::test]
+    async fn purge_meta_only_purges_obsolete_unpaused_vqueues() {
+        let mut store = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(16);
+
+        let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+        let empty_qid = VQueueId::custom(1, "empty");
+        let busy_qid = VQueueId::custom(2, "busy");
+        let paused_qid = VQueueId::custom(3, "paused");
+        let uncached_qid = VQueueId::custom(4, "uncached");
+        let new_meta = || VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+
+        let mut txn = store.transaction();
+
+        // Obsolete: created but never used.
+        VQueue::<VQueueEvent, _>::get_or_insert_with(&empty_qid, &mut txn, &mut cache, new_meta)
+            .await
+            .unwrap();
+
+        // Non-obsolete: holds an inbox entry.
+        let mut busy =
+            VQueue::<VQueueEvent, _>::get_or_insert_with(&busy_qid, &mut txn, &mut cache, new_meta)
+                .await
+                .unwrap();
+        busy.enqueue_new(
+            at,
+            1u64,
+            None,
+            EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]),
+            EntryMetadata::default(),
+        );
+
+        // Empty but paused: the pause flag must survive a purge attempt.
+        let mut paused = VQueue::<VQueueEvent, _>::get_or_insert_with(
+            &paused_qid,
+            &mut txn,
+            &mut cache,
+            new_meta,
+        )
+        .await
+        .unwrap();
+        paused.pause_queue(at);
+
+        // Obsolete and intentionally not loaded into the cache.
+        txn.create_vqueue(&uncached_qid, &new_meta());
+
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        let empty_handle = cache.view().handle_for(&empty_qid).unwrap();
+        let mut txn = store.transaction();
+        for (qid, expect_purged) in [
+            (&empty_qid, true),
+            (&busy_qid, false),
+            (&paused_qid, false),
+            (&uncached_qid, true),
+        ] {
+            let purged = cache.purge_meta_if_obsolete(&mut txn, qid).await.unwrap();
+            assert_eq!(purged, expect_purged, "{qid}");
+        }
+        assert!(cache.view().handle_for(&empty_qid).is_none());
+        assert!(cache.get(empty_handle).is_some());
+        assert!(cache.view().handle_for(&uncached_qid).is_none());
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        cache.try_compact();
+
+        // Purged: gone from both storage and cache; the others are retained.
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&empty_qid).await.unwrap().is_none());
+        assert!(cache.view().handle_for(&empty_qid).is_none());
+        assert!(txn.get_vqueue(&uncached_qid).await.unwrap().is_none());
+        assert!(txn.get_vqueue(&busy_qid).await.unwrap().is_some());
+        assert!(cache.view().handle_for(&busy_qid).is_some());
+        let paused_meta = txn
+            .get_vqueue(&paused_qid)
+            .await
+            .unwrap()
+            .expect("paused vqueue meta is retained");
+        assert!(paused_meta.queue_is_paused());
+    }
+}

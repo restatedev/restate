@@ -15,7 +15,7 @@ use tracing::{debug, trace};
 use restate_platform::hash::HashMap;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
+use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable, WriteVQueueTable};
 use restate_types::sharding::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
@@ -115,6 +115,9 @@ impl Slot {
 pub struct VQueuesMetaCache {
     queues: HashMap<VQueueId, VQueueHandle>,
     slab: SlotMap<VQueueHandle, Slot>,
+    /// Purged slots detached from `queues` but retained until the scheduler has
+    /// handled all events from the committed WAL batch.
+    pending_purges: Vec<VQueueHandle>,
     /// Soft cap; partition processor triggers `compact()` once `len()` reaches
     /// this number. The slab/hashmap will still grow past this if compaction
     /// frees nothing.
@@ -135,6 +138,43 @@ impl VQueuesMetaCache {
 
     pub fn get_mut(&mut self, key: VQueueHandle) -> Option<&mut Slot> {
         self.slab.get_mut(key)
+    }
+
+    /// Deletes an obsolete, unpaused vqueue without loading uncached metadata.
+    ///
+    /// Cached slots are detached from ID lookup immediately but retained until
+    /// [`Self::try_compact`] so pending scheduler events can still use their handles.
+    /// Detaching also allows a later operation in the same storage batch to recreate
+    /// the queue with a new cache handle.
+    pub async fn purge_meta_if_obsolete<S: ReadVQueueTable + WriteVQueueTable>(
+        &mut self,
+        storage: &mut S,
+        qid: &VQueueId,
+    ) -> Result<bool> {
+        let is_purgeable = |meta: &VQueueMeta| meta.is_obsolete() && !meta.queue_is_paused();
+
+        if let Some(handle) = self.queues.get(qid).copied() {
+            let slot = self.slab.get(handle).expect("cached vqueue has a slot");
+            if !is_purgeable(slot.meta()) {
+                return Ok(false);
+            }
+
+            debug!(qid = %slot.vqueue_id(), "Purging obsolete vqueue metadata");
+            storage.delete_vqueue(qid);
+            self.defer_purge(qid, handle);
+            return Ok(true);
+        }
+
+        let Some(meta) = storage.get_vqueue(qid).await? else {
+            return Ok(false);
+        };
+        if !is_purgeable(&meta) {
+            return Ok(false);
+        }
+
+        debug!(qid = %qid, "Purging obsolete vqueue metadata");
+        storage.delete_vqueue(qid);
+        Ok(true)
     }
 
     pub fn len(&self) -> usize {
@@ -168,27 +208,42 @@ impl VQueuesMetaCache {
         evicted
     }
 
-    /// Runs compaction if the cache exceeds its target capacity and the cache contains possibly
-    /// compactable entries. Returns the number of compacted entries.
+    fn defer_purge(&mut self, qid: &VQueueId, handle: VQueueHandle) {
+        let removed = self.queues.remove(qid);
+        debug_assert_eq!(removed, Some(handle));
+        self.pending_purges.push(handle);
+    }
+
+    /// Evicts pending purges, then runs compaction if the cache exceeds its target capacity and
+    /// possibly contains compactable entries. This must be called only after the scheduler has
+    /// handled all events emitted by the batch because those events refer to cache handles.
+    /// Returns the total number of evicted entries.
     pub fn try_compact(&mut self) -> usize {
+        let mut evicted = 0;
+        for handle in self.pending_purges.drain(..) {
+            evicted += usize::from(self.slab.remove(handle).is_some());
+        }
+
         if self.should_run_compaction {
             // disarm to prevent running compactions again until we are compactable again
             self.should_run_compaction = false;
 
-            let evicted = self.compact();
-            if evicted == 0 {
-                trace!(
-                    "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
-                    self.slab.len(),
-                    self.target_capacity,
-                );
-            } else {
-                trace!("vqueue cache compaction freed {evicted} entries");
+            if self.slab.len() > self.target_capacity {
+                let compacted = self.compact();
+                if compacted == 0 {
+                    trace!(
+                        "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
+                        self.slab.len(),
+                        self.target_capacity,
+                    );
+                } else {
+                    trace!("vqueue cache compaction freed {compacted} entries");
+                }
+                evicted += compacted;
             }
-            evicted
-        } else {
-            0
         }
+
+        evicted
     }
 
     #[cfg(any(test, feature = "test-util"))]
@@ -196,6 +251,7 @@ impl VQueuesMetaCache {
         Self {
             slab: SlotMap::with_capacity_and_key(target_capacity),
             queues: HashMap::with_capacity(target_capacity),
+            pending_purges: Vec::new(),
             target_capacity,
             should_run_compaction: false,
         }
@@ -237,6 +293,7 @@ impl VQueuesMetaCache {
         Ok(Self {
             slab,
             queues,
+            pending_purges: Vec::new(),
             target_capacity,
             should_run_compaction: false,
         })
@@ -415,6 +472,30 @@ mod tests {
                 .handle_for(&VQueueId::custom(99, "fresh"))
                 .is_some()
         );
+    }
+
+    #[test]
+    fn pending_purges_can_disarm_capacity_compaction() {
+        let now = ts(1_744_000_000_000);
+        let mut cache = VQueuesMetaCache::new_empty(2);
+
+        let purged_qid = VQueueId::custom(1, "purged");
+        let purged = cache.insert(purged_qid.clone(), empty_meta(now));
+        let retained = cache.insert(VQueueId::custom(2, "retained"), empty_meta(now));
+        let mut active_meta = empty_meta(now);
+        enqueue_to_inbox(&mut active_meta, now);
+        let active = cache.insert(VQueueId::custom(3, "active"), active_meta);
+        assert!(cache.should_run_compaction);
+
+        cache.defer_purge(&purged_qid, purged);
+        assert_eq!(cache.try_compact(), 1);
+
+        assert!(!cache.should_run_compaction);
+        assert_eq!(cache.len(), 2);
+        assert!(cache.get(purged).is_none());
+        assert!(cache.view().handle_for(&purged_qid).is_none());
+        assert!(cache.get(retained).is_some());
+        assert!(cache.get(active).is_some());
     }
 
     #[test]

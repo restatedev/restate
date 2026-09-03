@@ -117,6 +117,13 @@ pub trait WriteVQueueTable {
         entry_metadata: Option<&EntryMetadata>,
     );
 
+    /// Deletes a vqueue's metadata record.
+    ///
+    /// Must only be used on obsolete vqueues (see
+    /// [`super::metadata::VQueueMeta::is_obsolete`]); the metadata merge
+    /// operator cannot apply updates to a deleted vqueue.
+    fn delete_vqueue(&mut self, qid: &VQueueId);
+
     /// Places an entry onto an inbox stage
     fn put_vqueue_inbox(
         &mut self,

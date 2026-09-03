@@ -470,7 +470,7 @@ mod tests {
     use restate_storage_api::vqueue_table::scheduler::SchedulerAction;
     use restate_storage_api::vqueue_table::stats::WaitStats;
     use restate_storage_api::vqueue_table::{
-        EntryKey, EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage,
+        EntryKey, EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage, Status,
     };
     use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
@@ -825,6 +825,64 @@ mod tests {
         assert_eq!(decision.num_run(), 1);
         assert_eq!(decision.num_queues(), 1);
         assert_eq!(decision.total_items(), 1);
+    }
+
+    #[restate_core::test]
+    async fn purged_meta_is_retained_while_same_batch_recreation_uses_a_new_handle() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(2_050);
+
+        let mut txn = rocksdb.transaction();
+        let key = enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+        let handle = cache.view().handle_for(&qid).unwrap();
+        assert!(scheduler.q.get(handle).is_some());
+
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        let header = read_header(&txn, &qid, key.entry_id()).await;
+        {
+            let mut vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            vqueue.run_then_finish(
+                UniqueTimestamp::try_from(1_200u64).unwrap(),
+                &header,
+                WaitStats::default(),
+                Status::Succeeded,
+            );
+        }
+
+        assert!(cache.purge_meta_if_obsolete(&mut txn, &qid).await.unwrap());
+        let old_handle = handle;
+        assert!(cache.view().handle_for(&qid).is_none());
+        enqueue_entry(&mut txn, &mut cache, &qid, 2, 0, Some(&mut events)).await;
+        let new_handle = cache.view().handle_for(&qid).unwrap();
+        assert_ne!(old_handle, new_handle);
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        assert!(cache.get(old_handle).is_some());
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        assert!(scheduler.q.get(old_handle).is_none());
+        assert!(scheduler.q.get(new_handle).is_some());
+
+        assert_eq!(cache.try_compact(), 1);
+        assert!(cache.get(old_handle).is_none());
+        assert_eq!(cache.view().handle_for(&qid), Some(new_handle));
+        let txn = rocksdb.transaction();
+        assert_eq!(
+            txn.get_vqueue(&qid).await.unwrap().unwrap().total_waiting(),
+            1
+        );
     }
 
     #[restate_core::test]
