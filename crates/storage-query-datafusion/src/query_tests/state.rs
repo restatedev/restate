@@ -8,10 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use serde_json::json;
-
 use super::data::FixtureFactory;
-use super::fixture::QueryFixture;
+use super::fixture::{QueryExpectation, QueryFixture};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_state_distinct_service_key_and_scope() {
@@ -58,15 +56,20 @@ async fn query_state_distinct_service_key_and_scope() {
         .await;
 
     fixture
-        .assert_query_unordered(
-            r#"SELECT DISTINCT service_key, scope
-               FROM state
-               WHERE "service_name" = 'TestService'
-               LIMIT 2"#,
-            vec![
-                json!({"service_key": "key-1", "scope": "scope-a"}),
-                json!({"service_key": "key-2", "scope": "scope-b"}),
+        .assert_queries(&[QueryExpectation {
+            name: "distinct scoped service instances",
+            sql: r#"SELECT DISTINCT service_key, scope
+                    FROM state
+                    WHERE "service_name" = 'TestService'
+                    LIMIT 2"#,
+            expected: &[
+                "+-------------+---------+",
+                "| service_key | scope   |",
+                "+-------------+---------+",
+                "| key-1       | scope-a |",
+                "| key-2       | scope-b |",
+                "+-------------+---------+",
             ],
-        )
+        }])
         .await;
 }

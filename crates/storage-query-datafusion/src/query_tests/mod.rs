@@ -8,11 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-macro_rules! json_row {
-    ($($key:literal: $value:tt),+ $(,)?) => {{
-        let mut row = serde_json::Map::new();
-        $(row.insert($key.to_owned(), serde_json::json!($value));)+
-        serde_json::Value::Object(row)
+macro_rules! expected_row {
+    ($($key:literal: $value:expr),+ $(,)?) => {{
+        vec![$(($key, serde_json::json!($value))),+]
     }};
 }
 
