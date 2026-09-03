@@ -11,18 +11,20 @@
 use std::collections::HashMap;
 
 use anyhow::anyhow;
+use bytes::{Bytes, BytesMut};
 use futures::Stream;
 use futures_util::stream;
-use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
+use rocksdb::{DBAccess, DBRawIteratorWithThreadMode, WriteBatch};
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool};
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use restate_rocksdb::{IoMode, Priority, RocksDbReadPerfGuard};
 use restate_storage_api::journal_table_v2::{
     JournalEntryIndex, NotificationEntryIndex, ReadJournalTable, ScanJournalTable,
     ScanJournalTableRange, StoredEntry, WriteJournalTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{BudgetedReadError, Result, StorageError};
+use restate_types::config::Configuration;
 use restate_types::identifiers::{
     EntryIndex, InvocationId, InvocationUuid, JournalEntryId, PartitionKey, WithPartitionKey,
 };
@@ -31,9 +33,13 @@ use restate_types::journal_v2::{CompletionId, EntryMetadata, NotificationId};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::TableKind::Journal;
+use crate::fsm_table::append_jc_orphan_cleanup_done_to_wb;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::owned_iter::OwnedIterator;
-use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err};
+use crate::{
+    PartitionDb, PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan, break_on_err,
+    convert_to_upper_bound,
+};
 
 define_table_key!(
     Journal,
@@ -324,113 +330,234 @@ fn delete_journal<S: StorageAccess>(
     Ok(())
 }
 
-/// Scans for and removes orphaned `JournalCompletionIdToCommandIndex` (`jc`) entries.
+/// How many entries of an invocation the orphan scan steps over before it seeks past the rest.
+pub(crate) const INVOCATION_ENTRIES_BEFORE_SEEK: usize = 16;
+
+/// Scans a bounded number of invocations for orphaned
+/// `JournalCompletionIdToCommandIndex` (`jc`) entries.
 ///
 /// A `jc` entry is orphaned if no corresponding `JournalKey` (`j2`) entries exist for that
 /// invocation, meaning the journal has already been deleted. These orphans were caused by a
 /// bug in `delete_journal` that used the wrong scan prefix when cleaning up `jc` entries.
 ///
-/// Only the keys for a single invocation are held in memory at any time to avoid unbounded
-/// memory usage on large stores.
-///
-/// The `is_cancelled` predicate is checked when moving to a new invocation. If it returns
-/// `true`, the scan stops early and the returned `cancelled` flag is set to `true`.
-pub fn cleanup_orphaned_completion_id_index_entries(
+/// Only a single invocation is inspected at a time, so memory usage is independent of the store
+/// size. `is_cancelled` is checked once per invocation to bound how long the scan keeps running
+/// after the cleanup has been stopped.
+pub fn scan_orphaned_completion_id_index_entries(
     storage: &mut PartitionStore,
+    resume_after: Option<InvocationId>,
+    invocation_limit: usize,
     is_cancelled: impl Fn() -> bool,
-) -> Result<OrphanCleanupResult> {
-    let _x = RocksDbReadPerfGuard::new("cleanup-orphaned-jc-entries");
+) -> Result<OrphanCleanupScanChunk> {
+    assert!(invocation_limit > 0);
+    let _x = RocksDbReadPerfGuard::new("scan-orphaned-jc-entries");
 
     let scan_store = storage.clone();
-    let partition_key_range = scan_store.partition_key_range();
     let scan = TableScan::ScanPartitionKeyRange::<JournalCompletionIdToCommandIndexKeyBuilder>(
-        partition_key_range,
+        scan_store.partition_key_range(),
     );
+    // todo makes an unnecessary seek if resume_after is Some
     let mut iter = scan_store.iterator_from(scan)?;
 
-    cleanup_orphaned_completion_id_index_entries_inner(
-        storage,
-        || match iter.item() {
-            Some((mut key_bytes, _)) => {
-                let jc_key =
-                    JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key_bytes)?;
-                iter.next();
-                Ok(Some(jc_key))
-            }
-            None => {
+    // reused for the prefix comparisons and seeks below
+    let mut key_buf = BytesMut::new();
+    if let Some(resume_after) = resume_after {
+        write_completion_id_index_upper_bound(&mut key_buf, resume_after);
+        iter.seek(&key_buf);
+    }
+
+    let mut candidates = Vec::new();
+    let mut scanned_invocations = 0;
+    let mut next = ScanCursor::Complete;
+
+    while scanned_invocations < invocation_limit {
+        if is_cancelled() {
+            next = ScanCursor::Cancelled;
+            break;
+        }
+
+        let Some((mut key_bytes, _)) = iter.item() else {
+            iter.status()
+                .map_err(|err| StorageError::Generic(err.into()))?;
+            break;
+        };
+
+        let jc_key = JournalCompletionIdToCommandIndexKey::deserialize_from(&mut key_bytes)?;
+        let invocation_id = InvocationId::from_parts(jc_key.partition_key, jc_key.invocation_uuid);
+        if !has_journal_entry_zero(storage, jc_key.partition_key, jc_key.invocation_uuid)? {
+            candidates.push(invocation_id);
+        }
+        scanned_invocations += 1;
+        next = ScanCursor::ResumeAfter(invocation_id);
+
+        // Skip the remaining entries of this invocation. This iterator uses total order seek, so
+        // a seek has to reposition in every memtable and level without the help of the prefix
+        // bloom filters, which is a lot more work than advancing within the current block. Step
+        // over short invocations and only pay for the seek if there are many entries left.
+        write_completion_id_index_prefix(&mut key_buf, invocation_id);
+        let mut steps = 0;
+        loop {
+            iter.next();
+            let Some((key_bytes, _)) = iter.item() else {
                 iter.status()
                     .map_err(|err| StorageError::Generic(err.into()))?;
-                Ok(None)
+                break;
+            };
+            if !key_bytes.starts_with(&key_buf) {
+                break;
             }
-        },
-        is_cancelled,
-        has_journal_entry_zero,
-        |storage, key| storage.delete_key(key),
-    )
-}
-
-fn cleanup_orphaned_completion_id_index_entries_inner<S>(
-    storage: &mut S,
-    mut next_entry: impl FnMut() -> Result<Option<JournalCompletionIdToCommandIndexKey>>,
-    is_cancelled: impl Fn() -> bool,
-    mut has_journal: impl FnMut(&mut S, PartitionKey, InvocationUuid) -> Result<bool>,
-    mut delete_entry: impl FnMut(&mut S, &JournalCompletionIdToCommandIndexKey) -> Result<()>,
-) -> Result<OrphanCleanupResult> {
-    let mut scanned_entries: usize = 0;
-    let mut scanned_invocations: usize = 0;
-    let mut deleted_entries: usize = 0;
-    let mut affected_invocations: usize = 0;
-    let mut cancelled = false;
-
-    let mut current_invocation: Option<(PartitionKey, InvocationUuid, bool)> = None;
-
-    while let Some(jc_key) = next_entry()? {
-        let is_orphan = match &current_invocation {
-            Some((pk, uuid, orphan))
-                if *pk == jc_key.partition_key && *uuid == jc_key.invocation_uuid =>
-            {
-                // Same invocation as before -- reuse the cached result.
-                *orphan
+            steps += 1;
+            if steps == INVOCATION_ENTRIES_BEFORE_SEEK {
+                write_completion_id_index_upper_bound(&mut key_buf, invocation_id);
+                iter.seek(&key_buf);
+                break;
             }
-            _ => {
-                // Check cancellation at invocation boundaries.
-                if is_cancelled() {
-                    cancelled = true;
-                    break;
-                }
-                // New invocation -- check if its journal still exists.
-                let orphan = !has_journal(storage, jc_key.partition_key, jc_key.invocation_uuid)?;
-                scanned_invocations += 1;
-                if orphan {
-                    affected_invocations += 1;
-                }
-                current_invocation = Some((jc_key.partition_key, jc_key.invocation_uuid, orphan));
-                orphan
-            }
-        };
-        scanned_entries += 1;
-
-        if is_orphan {
-            delete_entry(storage, &jc_key)?;
-            deleted_entries += 1;
         }
     }
 
-    Ok(OrphanCleanupResult {
-        scanned_entries,
+    Ok(OrphanCleanupScanChunk {
+        candidates,
         scanned_invocations,
-        deleted_entries,
-        affected_invocations,
-        cancelled,
+        next,
     })
 }
 
-pub struct OrphanCleanupResult {
-    pub scanned_entries: usize,
+pub struct OrphanCleanupScanChunk {
+    /// Invocations whose journal is gone but which still have `jc` entries.
+    pub candidates: Vec<InvocationId>,
     pub scanned_invocations: usize,
-    pub deleted_entries: usize,
-    pub affected_invocations: usize,
-    pub cancelled: bool,
+    /// Where the next chunk has to continue.
+    pub next: ScanCursor,
+}
+
+/// Position at which the scan stopped.
+pub enum ScanCursor {
+    /// Pass this back as `resume_after` to continue with the next chunk.
+    ResumeAfter(InvocationId),
+    /// The whole index has been scanned.
+    Complete,
+    /// The scan stopped early because it was cancelled.
+    Cancelled,
+}
+
+pub struct OrphanCleanupApplyResult {
+    pub deleted_invocations: usize,
+    pub recreated_invocations: usize,
+}
+
+/// Deletes the `jc` entries of the given candidates.
+///
+/// Journal ownership is rechecked for every candidate, so invocations whose journal was recreated
+/// between the scan and now are skipped instead of losing their index entries. Must be called
+/// from the partition processor which owns the store, so that no journal can be written
+/// concurrently to this recheck.
+pub async fn apply_orphaned_completion_id_index_cleanup(
+    storage: &mut PartitionStore,
+    candidates: &[InvocationId],
+) -> Result<OrphanCleanupApplyResult> {
+    let partition_db = storage.partition_db().clone();
+    let cf_handle = partition_db.cf_handle().clone();
+    let mut wb = WriteBatch::default();
+    let mut deleted_invocations = 0;
+    let mut recreated_invocations = 0;
+
+    for invocation_id in candidates {
+        if has_journal_entry_zero(
+            storage,
+            invocation_id.partition_key(),
+            invocation_id.invocation_uuid(),
+        )? {
+            recreated_invocations += 1;
+            continue;
+        }
+
+        let (start, end) = completion_id_index_invocation_range(*invocation_id);
+        wb.delete_range_cf(&cf_handle, start, end);
+        deleted_invocations += 1;
+    }
+
+    if !wb.is_empty() {
+        commit_orphan_cleanup_write_batch(&partition_db, wb).await?;
+    }
+
+    Ok(OrphanCleanupApplyResult {
+        deleted_invocations,
+        recreated_invocations,
+    })
+}
+
+/// Persists that the one-time cleanup of orphaned `jc` entries has completed.
+///
+/// This deliberately goes through the same write batch path as
+/// [`apply_orphaned_completion_id_index_cleanup`] instead of a plain put. Both writes disable the
+/// WAL and every batch is awaited before the next one is issued, so RocksDB's FIFO memtable flush
+/// order guarantees that this marker can only become durable after all preceding range deletes
+/// are. A WAL-enabled put could be replayed after a crash which lost the deletes, and the cleanup
+/// would never run again.
+pub async fn mark_orphaned_completion_id_index_cleanup_done(
+    storage: &PartitionStore,
+) -> Result<()> {
+    let partition_db = storage.partition_db();
+    let mut wb = WriteBatch::default();
+    append_jc_orphan_cleanup_done_to_wb(partition_db.cf_handle(), &mut wb, storage.partition_id())?;
+    commit_orphan_cleanup_write_batch(partition_db, wb).await
+}
+
+async fn commit_orphan_cleanup_write_batch(
+    partition_db: &PartitionDb,
+    wb: WriteBatch,
+) -> Result<()> {
+    // Written from the partition processor's main loop, so it must not block on IO. Handled the
+    // same way as `PartitionStoreTransaction::commit`: try to write inline and move the write to
+    // the background storage pool if it would stall. The partition processor waits for the write
+    // either way, hence the high priority; the cleanup is throttled by how many invocations it
+    // hands over per tick, not by the pool it runs on.
+    let io_mode = if Configuration::pinned()
+        .worker
+        .storage
+        .always_commit_in_background
+    {
+        IoMode::AlwaysBackground
+    } else {
+        IoMode::Default
+    };
+    let mut opts = rocksdb::WriteOptions::default();
+    // We disable WAL since bifrost is our durable distributed log.
+    opts.disable_wal(true);
+    partition_db
+        .rocksdb()
+        .write_batch("jc-orphan-cleanup", Priority::High, io_mode, opts, wb)
+        .await
+        .map_err(|error| StorageError::Generic(error.into()))?;
+    Ok(())
+}
+
+/// Writes the key prefix shared by all `jc` entries of the given invocation into `buf`.
+fn write_completion_id_index_prefix(buf: &mut BytesMut, invocation_id: InvocationId) {
+    // fully qualified because `EncodeTableKey` provides the same methods for complete keys
+    use crate::keys::EncodeTableKeyPrefix as Prefix;
+
+    let prefix = JournalCompletionIdToCommandIndexKey::builder()
+        .partition_key(invocation_id.partition_key())
+        .invocation_uuid(invocation_id.invocation_uuid());
+    buf.clear();
+    buf.reserve(Prefix::serialized_length(&prefix));
+    Prefix::serialize_to(&prefix, buf);
+}
+
+/// Key range covering all `jc` entries of the given invocation.
+fn completion_id_index_invocation_range(invocation_id: InvocationId) -> (Bytes, Bytes) {
+    let mut start = BytesMut::new();
+    write_completion_id_index_prefix(&mut start, invocation_id);
+    let mut end = start.clone();
+    assert!(convert_to_upper_bound(&mut end));
+    (start.freeze(), end.freeze())
+}
+
+/// Writes the first key sorting after all `jc` entries of the given invocation into `buf`.
+fn write_completion_id_index_upper_bound(buf: &mut BytesMut, invocation_id: InvocationId) {
+    write_completion_id_index_prefix(buf, invocation_id);
+    assert!(convert_to_upper_bound(buf));
 }
 
 /// Returns true if the ownership sentinel `j2[0]` exists for the given invocation.
@@ -821,41 +948,17 @@ impl WriteJournalTable for PartitionStoreTransaction<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::collections::VecDeque;
-
     use bytes::Bytes;
 
-    use restate_storage_api::StorageError;
-    use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
+    use restate_types::identifiers::{InvocationId, InvocationUuid};
 
-    use super::{
-        JournalCompletionIdToCommandIndexKey, cleanup_orphaned_completion_id_index_entries_inner,
-        write_journal_entry_key,
-    };
+    use super::{completion_id_index_invocation_range, write_journal_entry_key};
     use crate::keys::EncodeTableKeyPrefix;
 
     fn journal_entry_key(invocation_id: &InvocationId, journal_index: u32) -> Bytes {
         write_journal_entry_key(invocation_id, journal_index)
             .serialize()
             .freeze()
-    }
-
-    fn completion_index_key(
-        invocation_id: &InvocationId,
-        completion_id: u32,
-    ) -> JournalCompletionIdToCommandIndexKey {
-        JournalCompletionIdToCommandIndexKey {
-            partition_key: invocation_id.partition_key(),
-            invocation_uuid: invocation_id.invocation_uuid(),
-            completion_id,
-        }
-    }
-
-    #[derive(Default)]
-    struct CleanupTestStorage {
-        lookups: Vec<(u64, InvocationUuid)>,
-        deleted: Vec<JournalCompletionIdToCommandIndexKey>,
     }
 
     #[test]
@@ -890,126 +993,20 @@ mod tests {
     }
 
     #[test]
-    fn orphan_cleanup_preserves_live_entries_and_deletes_orphans() {
-        let live_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(1));
-        let orphan_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(2));
-        let live_entries = [
-            completion_index_key(&live_invocation, 0),
-            completion_index_key(&live_invocation, 1),
-        ];
-        let orphan_entries = [
-            completion_index_key(&orphan_invocation, 0),
-            completion_index_key(&orphan_invocation, 1),
-        ];
-        let mut entries = VecDeque::from([
-            live_entries[0].clone(),
-            live_entries[1].clone(),
-            orphan_entries[0].clone(),
-            orphan_entries[1].clone(),
-        ]);
-        let mut storage = CleanupTestStorage::default();
+    fn completion_index_invocation_ranges_do_not_overlap() {
+        let first = InvocationId::from_parts(1, InvocationUuid::from_u128(1));
+        let second = InvocationId::from_parts(1, InvocationUuid::from_u128(2));
+        let last_in_partition = InvocationId::from_parts(1, InvocationUuid::from_u128(u128::MAX));
+        let first_in_next_partition = InvocationId::from_parts(2, InvocationUuid::from_u128(1));
+        let (first_start, first_end) = completion_id_index_invocation_range(first);
+        let (second_start, second_end) = completion_id_index_invocation_range(second);
+        let (_, last_in_partition_end) = completion_id_index_invocation_range(last_in_partition);
+        let (first_in_next_partition_start, _) =
+            completion_id_index_invocation_range(first_in_next_partition);
 
-        let result = cleanup_orphaned_completion_id_index_entries_inner(
-            &mut storage,
-            || Ok(entries.pop_front()),
-            || false,
-            |storage, partition_key, invocation_uuid| {
-                storage.lookups.push((partition_key, invocation_uuid));
-                Ok(invocation_uuid == live_invocation.invocation_uuid())
-            },
-            |storage, key| {
-                storage.deleted.push(key.clone());
-                Ok(())
-            },
-        )
-        .expect("cleanup succeeds");
-
-        assert_eq!(result.scanned_entries, 4);
-        assert_eq!(result.scanned_invocations, 2);
-        assert_eq!(result.deleted_entries, 2);
-        assert_eq!(result.affected_invocations, 1);
-        assert!(!result.cancelled);
-        assert_eq!(
-            storage.lookups,
-            vec![
-                (
-                    live_invocation.partition_key(),
-                    live_invocation.invocation_uuid()
-                ),
-                (
-                    orphan_invocation.partition_key(),
-                    orphan_invocation.invocation_uuid()
-                ),
-            ]
-        );
-        assert_eq!(storage.deleted, orphan_entries);
-    }
-
-    #[test]
-    fn orphan_cleanup_fails_closed_and_reports_cancellation() {
-        let first_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(1));
-        let second_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(2));
-
-        let mut point_read_entries = VecDeque::from([completion_index_key(&first_invocation, 0)]);
-        let mut storage = CleanupTestStorage::default();
-        let point_read_result = cleanup_orphaned_completion_id_index_entries_inner(
-            &mut storage,
-            || Ok(point_read_entries.pop_front()),
-            || false,
-            |_, _, _| Err(StorageError::Generic(anyhow::anyhow!("point read failed"))),
-            |storage, key| {
-                storage.deleted.push(key.clone());
-                Ok(())
-            },
-        );
-        assert!(point_read_result.is_err());
-        assert!(storage.deleted.is_empty());
-
-        let mut scan_results = VecDeque::from([
-            Ok(Some(completion_index_key(&first_invocation, 0))),
-            Err(StorageError::Generic(anyhow::anyhow!("scan failed"))),
-        ]);
-        let mut storage = CleanupTestStorage::default();
-        let scan_result = cleanup_orphaned_completion_id_index_entries_inner(
-            &mut storage,
-            || scan_results.pop_front().unwrap_or(Ok(None)),
-            || false,
-            |_, _, _| Ok(true),
-            |storage, key| {
-                storage.deleted.push(key.clone());
-                Ok(())
-            },
-        );
-        assert!(scan_result.is_err());
-        assert!(storage.deleted.is_empty());
-
-        let mut cancellation_entries = VecDeque::from([
-            completion_index_key(&first_invocation, 0),
-            completion_index_key(&first_invocation, 1),
-            completion_index_key(&second_invocation, 0),
-        ]);
-        let cancellation_checks = Cell::new(0);
-        let mut storage = CleanupTestStorage::default();
-        let cancellation_result = cleanup_orphaned_completion_id_index_entries_inner(
-            &mut storage,
-            || Ok(cancellation_entries.pop_front()),
-            || {
-                let checks = cancellation_checks.get();
-                cancellation_checks.set(checks + 1);
-                checks == 1
-            },
-            |_, _, _| Ok(false),
-            |storage, key| {
-                storage.deleted.push(key.clone());
-                Ok(())
-            },
-        )
-        .expect("cancellation returns the partial cleanup result");
-
-        assert_eq!(cancellation_result.scanned_entries, 2);
-        assert_eq!(cancellation_result.scanned_invocations, 1);
-        assert_eq!(cancellation_result.deleted_entries, 2);
-        assert_eq!(cancellation_result.affected_invocations, 1);
-        assert!(cancellation_result.cancelled);
+        assert!(first_start < first_end);
+        assert!(first_end <= second_start);
+        assert!(second_start < second_end);
+        assert!(last_in_partition_end < first_in_next_partition_start);
     }
 }

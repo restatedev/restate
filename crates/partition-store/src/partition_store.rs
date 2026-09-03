@@ -648,11 +648,6 @@ impl PartitionStore {
             .map(|done| !done)
     }
 
-    /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
-    pub async fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
-        put_jc_orphan_cleanup_done(self, self.partition_id()).await
-    }
-
     pub async fn verify_and_run_migrations(
         &mut self,
         cancel: CancellationToken,

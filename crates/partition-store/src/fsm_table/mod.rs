@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
+use bytes::BytesMut;
+use rocksdb::{BoundColumnFamily, WriteBatch};
+
 use restate_limiter::RuleBook;
 use restate_storage_api::fsm_table::{
     CachedEpochMetadata, PartitionDurability, ReadFsmTable, SequenceNumber, WriteFsmTable,
@@ -186,18 +191,27 @@ pub(crate) async fn put_storage_version<S: StorageAccess>(
 
 /// Append a `STORAGE_VERSION = version` put to `wb`.
 pub(crate) fn append_storage_version_to_wb(
-    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
-    wb: &mut rocksdb::WriteBatch,
+    cf_handle: &Arc<BoundColumnFamily<'_>>,
+    wb: &mut WriteBatch,
     partition_id: PartitionId,
     version: StorageVersion,
 ) -> Result<()> {
-    use bytes::BytesMut;
-    use restate_types::storage::StorageCodec;
+    append_fsm_variable_to_wb(
+        cf_handle,
+        wb,
+        partition_id,
+        fsm_variable::STORAGE_VERSION,
+        SequenceNumber::from(version as u64),
+    )
+}
 
-    let key = create_key(partition_id, fsm_variable::STORAGE_VERSION);
-    let key_buffer = key.to_bytes();
-
-    let value = SequenceNumber::from(version as u64);
+fn append_fsm_variable_to_wb(
+    cf_handle: &Arc<BoundColumnFamily<'_>>,
+    wb: &mut WriteBatch,
+    partition_id: PartitionId,
+    state_id: u64,
+    value: SequenceNumber,
+) -> Result<()> {
     let mut value_buffer = BytesMut::new();
     StorageCodec::encode(
         &ProtobufStorageWrapper::<<SequenceNumber as PartitionStoreProtobufValue>::ProtobufType>(
@@ -205,9 +219,13 @@ pub(crate) fn append_storage_version_to_wb(
         ),
         &mut value_buffer,
     )
-    .map_err(|e| restate_storage_api::StorageError::Generic(e.into()))?;
+    .map_err(|e| StorageError::Generic(e.into()))?;
 
-    wb.put_cf(cf_handle, key_buffer, &value_buffer);
+    wb.put_cf(
+        cf_handle,
+        create_key(partition_id, state_id).to_bytes(),
+        &value_buffer,
+    );
     Ok(())
 }
 
@@ -228,6 +246,21 @@ pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
         partition_id,
         fsm_variable::JC_ORPHAN_CLEANUP_DONE,
         &SequenceNumber::from(1u64),
+    )
+}
+
+/// Append a `JC_ORPHAN_CLEANUP_DONE` put to `wb`.
+pub(crate) fn append_jc_orphan_cleanup_done_to_wb(
+    cf_handle: &Arc<BoundColumnFamily<'_>>,
+    wb: &mut WriteBatch,
+    partition_id: PartitionId,
+) -> Result<()> {
+    append_fsm_variable_to_wb(
+        cf_handle,
+        wb,
+        partition_id,
+        fsm_variable::JC_ORPHAN_CLEANUP_DONE,
+        SequenceNumber::from(1u64),
     )
 }
 

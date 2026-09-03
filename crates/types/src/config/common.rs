@@ -844,14 +844,6 @@ experimental! {
     /// Since v1.7.8
     preflight_invocation_termination_retention,
 
-    /// # Enables one-time orphaned journal completion-id index cleanup
-    ///
-    /// When enabled, partition startup waits for the cleanup to complete before processing
-    /// records. Successful completion is persisted per partition; cancellation or failure leaves
-    /// the cleanup pending for the next startup.
-    ///
-    /// Since v1.7.9
-    jc_orphan_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

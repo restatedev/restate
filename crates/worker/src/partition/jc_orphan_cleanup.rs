@@ -8,136 +8,244 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
+use std::fmt::Display;
 use std::time::Instant;
 
 use anyhow::Context;
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use restate_core::{TaskCenter, TaskHandle, TaskKind, cancellation_token};
 use restate_partition_store::{
-    OrphanCleanupResult, PartitionStore, cleanup_orphaned_completion_id_index_entries,
+    PartitionStore, ScanCursor, apply_orphaned_completion_id_index_cleanup,
+    mark_orphaned_completion_id_index_cleanup_done, scan_orphaned_completion_id_index_entries,
 };
-use restate_storage_api::StorageError;
+use restate_types::identifiers::{InvocationId, PartitionId};
 
-#[derive(Debug, thiserror::Error)]
-pub(super) enum Error {
-    #[error("orphaned jc cleanup was cancelled")]
-    Cancelled,
-    #[error(transparent)]
-    Storage(#[from] StorageError),
+/// Number of invocations inspected by a single blocking scan.
+const SCAN_INVOCATIONS_PER_CHUNK: usize = 512;
+/// Number of invocations cleaned up per partition processor tick.
+const PROCESSOR_INVOCATIONS_PER_BATCH: usize = 32;
+
+enum CleanupEvent {
+    /// Invocations whose journal is gone but which still have completion-id index entries.
+    Candidates(Vec<InvocationId>),
+    /// The scanner reached the end of the index, the cleanup can be marked as done.
+    ScanCompleted { scanned_invocations: usize },
 }
 
-pub(super) async fn run(
-    storage: &mut PartitionStore,
-    cancel: CancellationToken,
-) -> Result<(), Error> {
-    run_with(storage, cancel, |mut storage, cancel| async move {
-        tokio::task::spawn_blocking(move || {
-            cleanup_orphaned_completion_id_index_entries(&mut storage, || cancel.is_cancelled())
-        })
-        .await
-        .context("orphaned jc cleanup blocking task failed")
-        .map_err(StorageError::Generic)?
-    })
-    .await
+/// Handle to a running cleanup of orphaned journal completion-id index entries.
+///
+/// The index is scanned in a background task which reports orphan candidates in small batches.
+/// Deleting them is driven by the partition processor via [`Handle::on_tick`] so that the cleanup
+/// cannot monopolize the store.
+pub(super) struct Handle {
+    partition_id: PartitionId,
+    started: Instant,
+    scanner: TaskHandle<()>,
+    rx: mpsc::Receiver<CleanupEvent>,
+    deleted_invocations: usize,
+    recreated_invocations: usize,
+    active: bool,
 }
 
-async fn run_with<F, Fut>(
-    storage: &mut PartitionStore,
-    cancel: CancellationToken,
-    cleanup: F,
-) -> Result<(), Error>
-where
-    F: FnOnce(PartitionStore, CancellationToken) -> Fut,
-    Fut: Future<Output = Result<OrphanCleanupResult, StorageError>>,
-{
-    if !storage.needs_jc_orphan_cleanup().await? {
-        return Ok(());
+impl Handle {
+    /// Returns `false` once the cleanup reached a terminal state and [`Handle::on_tick`] no longer
+    /// needs to be called.
+    pub(super) fn is_active(&self) -> bool {
+        self.active
     }
 
+    /// Applies at most one batch of pending deletions.
+    pub(super) async fn on_tick(&mut self, storage: &mut PartitionStore) {
+        let event = match self.rx.try_recv() {
+            Ok(event) => event,
+            Err(mpsc::error::TryRecvError::Empty) => return,
+            // the scanner stopped before reaching the end of the index; the cleanup is retried on
+            // the next startup
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                self.active = false;
+                return;
+            }
+        };
+
+        match event {
+            CleanupEvent::Candidates(candidates) => {
+                match apply_orphaned_completion_id_index_cleanup(storage, &candidates).await {
+                    Ok(applied) => {
+                        self.deleted_invocations += applied.deleted_invocations;
+                        self.recreated_invocations += applied.recreated_invocations;
+                    }
+                    Err(err) => self.fail(
+                        &err,
+                        "Failed to apply orphaned journal completion-id index cleanup",
+                    ),
+                }
+            }
+            CleanupEvent::ScanCompleted {
+                scanned_invocations,
+            } => match mark_orphaned_completion_id_index_cleanup_done(storage).await {
+                Ok(()) => {
+                    self.active = false;
+                    info!(
+                        partition_id = %self.partition_id,
+                        scanned_invocations,
+                        deleted_invocations = self.deleted_invocations,
+                        recreated_invocations = self.recreated_invocations,
+                        elapsed = ?self.started.elapsed(),
+                        "Completed cleanup of orphaned journal completion-id index entries"
+                    );
+                }
+                Err(err) => self.fail(
+                    &err,
+                    "Failed to mark orphaned journal completion-id index cleanup as complete",
+                ),
+            },
+        }
+    }
+
+    /// Stops the background scan. The cleanup is retried on the next startup unless it completed.
+    pub(super) async fn stop(mut self) {
+        self.active = false;
+        self.scanner.cancel();
+        let _ = self.scanner.await;
+    }
+
+    fn fail(&mut self, error: &impl Display, message: &'static str) {
+        self.active = false;
+        // let the scanner stop producing candidates that nobody applies anymore
+        self.rx.close();
+        warn!(
+            partition_id = %self.partition_id,
+            deleted_invocations = self.deleted_invocations,
+            recreated_invocations = self.recreated_invocations,
+            elapsed = ?self.started.elapsed(),
+            %error,
+            "{message}"
+        );
+    }
+}
+
+/// Starts the one-time cleanup of orphaned journal completion-id index entries, unless this
+/// partition has already been cleaned up.
+pub(super) async fn start(storage: &mut PartitionStore) -> Option<Handle> {
     let partition_id = storage.partition_id();
-    info!(
-        %partition_id,
-        "Starting orphaned journal completion-id index cleanup"
-    );
-    let start = Instant::now();
-    let outcome = match cleanup(storage.clone(), cancel).await {
-        Ok(outcome) => outcome,
+
+    match storage.needs_jc_orphan_cleanup().await {
+        Ok(true) => {}
+        Ok(false) => return None,
         Err(err) => {
             warn!(
                 %partition_id,
-                elapsed = ?start.elapsed(),
-                "Failed to clean up orphaned journal completion-id index entries: {err}"
+                %err,
+                "Failed to determine whether orphaned journal completion-id index entries need to \
+                 be cleaned up"
             );
-            return Err(err.into());
+            return None;
         }
-    };
-
-    if outcome.cancelled {
-        info!(
-            %partition_id,
-            scanned_entries = outcome.scanned_entries,
-            scanned_invocations = outcome.scanned_invocations,
-            deleted_entries = outcome.deleted_entries,
-            affected_invocations = outcome.affected_invocations,
-            elapsed = ?start.elapsed(),
-            "Orphaned journal completion-id index cleanup cancelled; \
-             will retry on next opted-in startup"
-        );
-        return Err(Error::Cancelled);
     }
 
-    if let Err(err) = storage.mark_jc_orphan_cleanup_done().await {
-        warn!(
-            %partition_id,
-            scanned_entries = outcome.scanned_entries,
-            scanned_invocations = outcome.scanned_invocations,
-            deleted_entries = outcome.deleted_entries,
-            affected_invocations = outcome.affected_invocations,
-            elapsed = ?start.elapsed(),
-            "Failed to mark orphaned journal completion-id index cleanup as complete: {err}"
-        );
-        return Err(err.into());
-    }
+    // keeps the scanner at most one batch ahead of the partition processor
+    let (tx, rx) = mpsc::channel(1);
+    let scanner_storage = storage.clone();
+    let scanner =
+        TaskCenter::spawn_unmanaged_child(TaskKind::Cleaner, "jc-orphan-cleanup", async move {
+            let cancel = cancellation_token();
+            if let Some(Err(err)) = cancel
+                .run_until_cancelled(run_scanner(scanner_storage, tx, &cancel))
+                .await
+            {
+                warn!(
+                    %partition_id,
+                    %err,
+                    "Failed to scan for orphaned journal completion-id index entries"
+                );
+            }
+        })
+        .ok()?;
 
     info!(
         %partition_id,
-        scanned_entries = outcome.scanned_entries,
-        scanned_invocations = outcome.scanned_invocations,
-        deleted_entries = outcome.deleted_entries,
-        affected_invocations = outcome.affected_invocations,
-        elapsed = ?start.elapsed(),
-        "Completed orphaned journal completion-id index cleanup"
+        "Starting cleanup of orphaned journal completion-id index entries"
     );
-    Ok(())
+
+    Some(Handle {
+        partition_id,
+        started: Instant::now(),
+        scanner,
+        rx,
+        deleted_invocations: 0,
+        recreated_invocations: 0,
+        active: true,
+    })
+}
+
+async fn run_scanner(
+    mut storage: PartitionStore,
+    tx: mpsc::Sender<CleanupEvent>,
+    cancel: &CancellationToken,
+) -> anyhow::Result<()> {
+    let mut resume_after = None;
+    let mut scanned_invocations = 0;
+
+    loop {
+        let scan_cancel = cancel.clone();
+        // The scan is blocking and the closure must be `'static`, hence the store is moved into
+        // the blocking task and handed back.
+        let (returned_storage, chunk) = tokio::task::spawn_blocking(move || {
+            let chunk = scan_orphaned_completion_id_index_entries(
+                &mut storage,
+                resume_after,
+                SCAN_INVOCATIONS_PER_CHUNK,
+                || scan_cancel.is_cancelled(),
+            );
+            (storage, chunk)
+        })
+        .await
+        .context("orphaned jc cleanup scan task failed")?;
+        storage = returned_storage;
+        let chunk = chunk?;
+        scanned_invocations += chunk.scanned_invocations;
+
+        for candidates in chunk.candidates.chunks(PROCESSOR_INVOCATIONS_PER_BATCH) {
+            if tx
+                .send(CleanupEvent::Candidates(candidates.to_vec()))
+                .await
+                .is_err()
+            {
+                // the partition processor stopped applying candidates
+                return Ok(());
+            }
+        }
+
+        match chunk.next {
+            ScanCursor::ResumeAfter(invocation_id) => resume_after = Some(invocation_id),
+            ScanCursor::Cancelled => return Ok(()),
+            ScanCursor::Complete => {
+                let _ = tx
+                    .send(CleanupEvent::ScanCompleted {
+                        scanned_invocations,
+                    })
+                    .await;
+                return Ok(());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::assert_matches;
-
     use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::StorageError;
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
 
     use super::*;
 
-    fn cleanup_result(cancelled: bool) -> OrphanCleanupResult {
-        OrphanCleanupResult {
-            scanned_entries: 4,
-            scanned_invocations: 2,
-            deleted_entries: 2,
-            affected_invocations: 1,
-            cancelled,
-        }
-    }
-
-    #[restate_core::test]
-    async fn cleanup_startup_policy_and_marker_lifecycle() {
+    #[test_log::test(restate_core::test(flavor = "multi_thread"))]
+    async fn empty_cleanup_marks_partition_jc_cleanup_complete() {
         let rocksdb_manager = RocksDbManager::init();
         TaskCenter::current().set_on_shutdown(Box::pin(async {
             rocksdb_manager.shutdown().await;
@@ -155,33 +263,15 @@ mod tests {
             .expect("partition store opens");
         assert!(storage.needs_jc_orphan_cleanup().await.unwrap());
 
-        assert_matches!(
-            run_with(&mut storage, CancellationToken::new(), |_, _| async {
-                Ok(cleanup_result(true))
-            })
-            .await,
-            Err(Error::Cancelled)
-        );
-        assert!(storage.needs_jc_orphan_cleanup().await.unwrap());
+        let mut cleanup = start(&mut storage).await.expect("cleanup is needed");
+        while cleanup.is_active() {
+            cleanup.on_tick(&mut storage).await;
+            tokio::task::yield_now().await;
+        }
+        cleanup.stop().await;
 
-        let failed = run_with(&mut storage, CancellationToken::new(), |_, _| async {
-            Err(StorageError::OperationalError)
-        })
-        .await;
-        assert_matches!(failed, Err(Error::Storage(StorageError::OperationalError)));
-        assert!(storage.needs_jc_orphan_cleanup().await.unwrap());
-
-        run_with(&mut storage, CancellationToken::new(), |_, _| async {
-            Ok(cleanup_result(false))
-        })
-        .await
-        .expect("successful cleanup allows startup");
         assert!(!storage.needs_jc_orphan_cleanup().await.unwrap());
-
-        run_with(&mut storage, CancellationToken::new(), |_, _| async {
-            panic!("completed cleanup must not run again")
-        })
-        .await
-        .expect("completed cleanup allows startup");
+        // a second start is a no-op now that the partition is marked as cleaned up
+        assert!(start(&mut storage).await.is_none());
     }
 }

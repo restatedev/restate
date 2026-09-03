@@ -22,7 +22,7 @@ use restate_storage_api::journal_table_v2::{
     NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
 };
 use restate_test_util::let_assert;
-use restate_types::identifiers::{InvocationId, InvocationUuid};
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
 use restate_types::journal_v2::{
@@ -31,6 +31,13 @@ use restate_types::journal_v2::{
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
+
+use crate::journal_table_v2::{INVOCATION_ENTRIES_BEFORE_SEEK, JournalKey};
+use crate::keys::{EncodeTableKeyPrefix, KeyKind};
+use crate::{
+    ScanCursor, apply_orphaned_completion_id_index_cleanup,
+    scan_orphaned_completion_id_index_entries,
+};
 
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
@@ -322,5 +329,130 @@ async fn call_journal() {
     );
 
     txn.commit().await.expect("should not fail");
+    RocksDbManager::get().shutdown().await;
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn orphan_cleanup_is_resumable_and_rechecks_recreated_invocations() {
+    let mut storage = storage_test_environment().await;
+    let live_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(10));
+    let orphan_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(20));
+    let deleted_invocation = InvocationId::from_parts(1, InvocationUuid::from_u128(30));
+
+    // the live invocation has more index entries than the scan steps over, so it has to seek past
+    // the rest, while the other two are stepped over
+    let wide_completion_ids: Vec<CompletionId> =
+        (0..INVOCATION_ENTRIES_BEFORE_SEEK as CompletionId + 4).collect();
+    for invocation_id in [live_invocation, orphan_invocation, deleted_invocation] {
+        let completion_ids = if invocation_id == live_invocation {
+            wide_completion_ids.as_slice()
+        } else {
+            &[1]
+        };
+        let mut txn = storage.transaction();
+        txn.put_journal_entry(
+            &invocation_id,
+            0,
+            &StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+                mock_sleep_command(1).encode::<ServiceProtocolV4Codec>(),
+            ),
+            completion_ids,
+        )
+        .unwrap();
+        txn.commit().await.unwrap();
+    }
+
+    let mut txn = storage.transaction();
+    for invocation_id in [orphan_invocation, deleted_invocation] {
+        let orphan_journal_key = JournalKey {
+            partition_key: invocation_id.partition_key(),
+            invocation_uuid: invocation_id.invocation_uuid(),
+            journal_index: 0,
+        };
+        txn.raw_delete_cf(KeyKind::JournalV2, orphan_journal_key.serialize().freeze());
+    }
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    let (mut storage, first_chunk) = tokio::task::spawn_blocking(move || {
+        let chunk = scan_orphaned_completion_id_index_entries(&mut storage, None, 1, || false);
+        (storage, chunk)
+    })
+    .await
+    .unwrap();
+    let first_chunk = first_chunk.unwrap();
+    assert_eq!(first_chunk.scanned_invocations, 1);
+    assert!(first_chunk.candidates.is_empty());
+    let_assert!(ScanCursor::ResumeAfter(resume_after) = first_chunk.next);
+    assert_eq!(resume_after, live_invocation);
+
+    let (mut storage, second_chunk) = tokio::task::spawn_blocking(move || {
+        let chunk =
+            scan_orphaned_completion_id_index_entries(&mut storage, Some(resume_after), 2, || {
+                false
+            });
+        (storage, chunk)
+    })
+    .await
+    .unwrap();
+    let second_chunk = second_chunk.unwrap();
+    assert_eq!(
+        second_chunk.candidates,
+        vec![orphan_invocation, deleted_invocation]
+    );
+    let_assert!(ScanCursor::ResumeAfter(resume_after) = second_chunk.next);
+    assert_eq!(resume_after, deleted_invocation);
+
+    // the index is exhausted, so the next chunk reports completion
+    let (mut storage, third_chunk) = tokio::task::spawn_blocking(move || {
+        let chunk =
+            scan_orphaned_completion_id_index_entries(&mut storage, Some(resume_after), 2, || {
+                false
+            });
+        (storage, chunk)
+    })
+    .await
+    .unwrap();
+    let third_chunk = third_chunk.unwrap();
+    assert_eq!(third_chunk.scanned_invocations, 0);
+    assert!(third_chunk.candidates.is_empty());
+    let_assert!(ScanCursor::Complete = third_chunk.next);
+
+    let mut txn = storage.transaction();
+    txn.put_journal_entry(
+        &orphan_invocation,
+        0,
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            mock_sleep_command(1).encode::<ServiceProtocolV4Codec>(),
+        ),
+        &[1],
+    )
+    .unwrap();
+    txn.commit().await.unwrap();
+    drop(txn);
+
+    let result = apply_orphaned_completion_id_index_cleanup(&mut storage, &second_chunk.candidates)
+        .await
+        .unwrap();
+    assert_eq!(result.deleted_invocations, 1);
+    assert_eq!(result.recreated_invocations, 1);
+
+    let mut txn = storage.transaction();
+    assert!(
+        txn.get_command_by_completion_id(orphan_invocation, 1)
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        txn.get_command_by_completion_id(deleted_invocation, 1)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    drop(txn);
+
     RocksDbManager::get().shutdown().await;
 }

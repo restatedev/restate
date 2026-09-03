@@ -405,29 +405,20 @@ where
             }
         }
 
-        let jc_orphan_cleanup_enabled = self
-            .node_ctx
-            .config
-            .live_load()
-            .common
-            .experimental
-            .is_jc_orphan_cleanup_enabled();
-        if jc_orphan_cleanup_enabled {
-            match jc_orphan_cleanup::run(&mut self.partition_store, cancel.clone()).await {
-                Ok(()) => {}
-                Err(jc_orphan_cleanup::Error::Cancelled) => return Ok(()),
-                Err(jc_orphan_cleanup::Error::Storage(err)) => return Err(err.into()),
-            }
-        }
+        let mut jc_orphan_cleanup = jc_orphan_cleanup::start(&mut self.partition_store).await;
 
         // Note: Boxing because it's a rather large future (>35KiB)
-        let res = match cancel.run_until_cancelled(Box::pin(self.run_inner())).await {
-            Some(res) => res,
-            None => {
+        let res = cancel
+            .run_until_cancelled(Box::pin(self.run_inner(&mut jc_orphan_cleanup)))
+            .await
+            .unwrap_or_else(|| {
                 debug!("Shutting partition processor down because it was cancelled.");
                 Ok(())
-            }
-        };
+            });
+
+        if let Some(cleanup) = jc_orphan_cleanup {
+            cleanup.stop().await;
+        }
 
         // clean up pending rpcs and stop child tasks
         self.leadership_state.step_down().await;
@@ -484,7 +475,10 @@ where
         })
     }
 
-    async fn run_inner(&mut self) -> Result<(), ProcessorError> {
+    async fn run_inner(
+        &mut self,
+        jc_orphan_cleanup: &mut Option<jc_orphan_cleanup::Handle>,
+    ) -> Result<(), ProcessorError> {
         let last_applied_lsn_watch = self.ctx.subscribe_to_last_applied_lsn();
 
         let log_id = self.ctx.log_id();
@@ -593,6 +587,13 @@ where
             tokio::time::interval(Duration::from_millis(500).add_jitter(0.5));
         status_update_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
 
+        let cleanup_interval = Duration::from_millis(100);
+        let mut jc_orphan_cleanup_timer = tokio::time::interval_at(
+            Instant::now() + cleanup_interval.add_jitter(0.5),
+            cleanup_interval,
+        );
+        jc_orphan_cleanup_timer.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
         let mut action_collector = ActionCollector::default();
 
         let mut watch_leader_changes = self
@@ -647,6 +648,15 @@ where
                     );
                     // Update the status to ensure changes are observable
                     self.refresh_status(&mut durable_lsn_watch)?;
+                }
+                _ = jc_orphan_cleanup_timer.tick(), if jc_orphan_cleanup.as_ref().is_some_and(|cleanup| cleanup.is_active()) => {
+                    let _guard = SlowPartitionProcessorArmTracker::new(
+                        partition_id,
+                        "jc_orphan_cleanup",
+                    );
+                    if let Some(cleanup) = jc_orphan_cleanup.as_mut() {
+                        cleanup.on_tick(&mut self.partition_store).await;
+                    }
                 }
                 // Awaiting the first record is the only stream `.await` and is cancellation-safe:
                 // if this branch is dropped before a record is ready, nothing has been consumed.
