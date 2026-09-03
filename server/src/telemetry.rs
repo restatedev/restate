@@ -39,7 +39,10 @@ impl Telemetry {
         if config.common.disable_telemetry {
             Self::Disabled
         } else {
-            let client = HttpClient::from_options(&config.worker.invoker.service_client.http);
+            let client = HttpClient::from_options(
+                &config.worker.invoker.service_client.http,
+                tokio::runtime::Handle::current(),
+            );
             let session_id = ulid::Ulid::new().to_string();
 
             Self::Enabled(Box::new(TelemetryEnabled {
