@@ -10,86 +10,29 @@
 
 use datafusion::assert_batches_sorted_eq;
 use futures::TryStreamExt;
-use serde_json::Value;
 
 use restate_partition_store::PartitionStoreTransaction;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::WriteInvocationStatusTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::vqueue_table::WriteVQueueTable;
 use restate_worker_api::invoker::InvocationStatusReport;
 
 use crate::mocks::{MockQueryEngine, MockSchemas, MockStatusHandle};
 
-use super::data::{InvocationFixture, StateFixture};
+use super::data::{InvocationFixture, StateFixture, VQueueFixture};
 
 pub(super) struct QueryFixture {
     engine: MockQueryEngine,
     invocation_state: MockStatusHandle,
 }
 
-pub(super) struct QueryExpectation<'a, S> {
+pub(super) struct QueryExpectation<'a> {
     pub(super) name: &'a str,
     pub(super) sql: &'a str,
-    pub(super) expected: &'a [S],
-}
-
-pub(super) type ExpectedRow = Vec<(&'static str, Value)>;
-
-pub(super) fn format_expected_table(rows: &[ExpectedRow]) -> Vec<String> {
-    let first = rows.first().expect("expected at least one row");
-    let columns = first.iter().map(|(name, _)| *name).collect::<Vec<_>>();
-    let values = rows
-        .iter()
-        .map(|row| {
-            assert_eq!(
-                row.iter().map(|(name, _)| *name).collect::<Vec<_>>(),
-                columns,
-                "expected rows must have the same columns",
-            );
-            row.iter()
-                .map(|(_, value)| match value {
-                    Value::Null => String::new(),
-                    Value::String(value) => value.clone(),
-                    value => value.to_string(),
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
-    let widths = columns
-        .iter()
-        .enumerate()
-        .map(|(column, name)| {
-            values
-                .iter()
-                .map(|row| row[column].len())
-                .fold(name.len(), usize::max)
-        })
-        .collect::<Vec<_>>();
-
-    let border = widths.iter().fold(String::from("+"), |mut line, width| {
-        line.push_str(&"-".repeat(width + 2));
-        line.push('+');
-        line
-    });
-    let format_row = |row: &[&str]| {
-        row.iter()
-            .zip(&widths)
-            .fold(String::from("|"), |mut line, (value, width)| {
-                line.push_str(&format!(" {value:<width$} |"));
-                line
-            })
-    };
-
-    let mut table = Vec::with_capacity(values.len() + 4);
-    table.push(border.clone());
-    table.push(format_row(&columns));
-    table.push(border.clone());
-    table.extend(values.iter().map(|row| {
-        let row = row.iter().map(String::as_str).collect::<Vec<_>>();
-        format_row(&row)
-    }));
-    table.push(border);
-    table
+    pub(super) expected: &'a [&'a str],
 }
 
 impl QueryFixture {
@@ -115,12 +58,11 @@ impl QueryFixture {
         tx.commit().await.unwrap();
     }
 
-    pub(super) async fn assert_queries<S: AsRef<str>>(&self, queries: &[QueryExpectation<'_, S>]) {
+    pub(super) async fn assert_queries(&self, queries: &[QueryExpectation<'_>]) {
         for query in queries {
             eprintln!("running query fixture: {}", query.name);
             let batches = self.execute(query.sql).await;
-            let expected = query.expected.iter().map(AsRef::as_ref).collect::<Vec<_>>();
-            assert_batches_sorted_eq!(&expected, &batches);
+            assert_batches_sorted_eq!(query.expected, &batches);
         }
     }
 
@@ -157,6 +99,30 @@ impl<'a, 'store> QueryFixtureWriter<'a, 'store> {
     pub(super) fn sys_invocation_state(&mut self) -> SysInvocationStateTableFixture<'_> {
         SysInvocationStateTableFixture {
             invocation_state: self.invocation_state,
+        }
+    }
+
+    pub(super) fn sys_vqueue_meta(&mut self) -> SysVQueueMetaTableFixture<'_, 'store> {
+        SysVQueueMetaTableFixture {
+            transaction: &mut *self.transaction,
+        }
+    }
+
+    pub(super) fn sys_vqueues(&mut self) -> SysVQueuesTableFixture<'_, 'store> {
+        SysVQueuesTableFixture {
+            transaction: &mut *self.transaction,
+        }
+    }
+
+    pub(super) fn sys_journal(&mut self) -> SysJournalTableFixture<'_, 'store> {
+        SysJournalTableFixture {
+            transaction: &mut *self.transaction,
+        }
+    }
+
+    pub(super) fn sys_journal_events(&mut self) -> SysJournalEventsTableFixture<'_, 'store> {
+        SysJournalEventsTableFixture {
+            transaction: &mut *self.transaction,
         }
     }
 }
@@ -196,5 +162,73 @@ impl SysInvocationStateTableFixture<'_> {
             invocation.id,
             invocation.state.clone(),
         ));
+    }
+}
+
+pub(super) struct SysVQueueMetaTableFixture<'a, 'store> {
+    transaction: &'a mut PartitionStoreTransaction<'store>,
+}
+
+impl SysVQueueMetaTableFixture<'_, '_> {
+    pub(super) fn populate(&mut self, vqueue: &VQueueFixture) {
+        self.transaction
+            .create_vqueue(&vqueue.id, &vqueue.metadata());
+    }
+}
+
+pub(super) struct SysVQueuesTableFixture<'a, 'store> {
+    transaction: &'a mut PartitionStoreTransaction<'store>,
+}
+
+impl SysVQueuesTableFixture<'_, '_> {
+    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        let vqueue_id = invocation
+            .vqueue_id
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("invocation fixture has no vqueue"))?;
+        let entry = invocation
+            .vqueue_entry
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("invocation fixture has no vqueue entry"))?;
+
+        self.transaction
+            .put_vqueue_inbox(vqueue_id, entry.stage, &entry.key, &entry.value);
+        self.transaction.put_vqueue_entry_status(
+            vqueue_id,
+            entry.stage,
+            &entry.key,
+            &entry.value.metadata,
+            entry.value.stats.clone(),
+            entry.value.status,
+        );
+        Ok(())
+    }
+}
+
+pub(super) struct SysJournalTableFixture<'a, 'store> {
+    transaction: &'a mut PartitionStoreTransaction<'store>,
+}
+
+impl SysJournalTableFixture<'_, '_> {
+    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        for entry in &invocation.journal_entries {
+            self.transaction
+                .put_journal_entry(&invocation.id, entry.index, &entry.entry)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct SysJournalEventsTableFixture<'a, 'store> {
+    transaction: &'a mut PartitionStoreTransaction<'store>,
+}
+
+impl SysJournalEventsTableFixture<'_, '_> {
+    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        for (lsn, event) in invocation.journal_events.iter().enumerate() {
+            self.transaction
+                .put_journal_event(&invocation.id, event.clone(), lsn as u64)?;
+        }
+        Ok(())
     }
 }

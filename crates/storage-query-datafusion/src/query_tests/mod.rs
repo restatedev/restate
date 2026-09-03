@@ -8,13 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-macro_rules! expected_row {
-    ($($key:literal: $value:expr),+ $(,)?) => {{
-        vec![$(($key, serde_json::json!($value))),+]
-    }};
-}
-
 mod data;
 mod fixture;
+mod invocation_status;
+mod journal;
 mod state;
 mod sys_invocation;
+mod vqueue;

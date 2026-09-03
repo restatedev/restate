@@ -12,7 +12,7 @@ use super::data::FixtureFactory;
 use super::fixture::{QueryExpectation, QueryFixture};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn query_state_distinct_service_key_and_scope() {
+async fn query_state_ui_shapes() {
     let factory = FixtureFactory::default();
     let states = [
         factory.create_state(
@@ -56,20 +56,43 @@ async fn query_state_distinct_service_key_and_scope() {
         .await;
 
     fixture
-        .assert_queries(&[QueryExpectation {
-            name: "distinct scoped service instances",
-            sql: r#"SELECT DISTINCT service_key, scope
-                    FROM state
-                    WHERE "service_name" = 'TestService'
-                    LIMIT 2"#,
-            expected: &[
-                "+-------------+---------+",
-                "| service_key | scope   |",
-                "+-------------+---------+",
-                "| key-1       | scope-a |",
-                "| key-2       | scope-b |",
-                "+-------------+---------+",
-            ],
-        }])
+        .assert_queries(&[
+            QueryExpectation {
+                name: "distinct scoped service instances",
+                sql: r#"SELECT DISTINCT service_key, scope
+                        FROM state
+                        WHERE "service_name" = 'TestService'
+                        LIMIT 2"#,
+                expected: &[
+                    "+-------------+---------+",
+                    "| service_key | scope   |",
+                    "+-------------+---------+",
+                    "| key-1       | scope-a |",
+                    "| key-2       | scope-b |",
+                    "+-------------+---------+",
+                ],
+            },
+            QueryExpectation {
+                name: "state entries page",
+                sql: r#"SELECT
+                           key,
+                           value_length,
+                           CASE WHEN value_length <= 65536 THEN value END AS value
+                       FROM state
+                       WHERE service_name = 'TestService'
+                         AND service_key = 'key-1'
+                         AND scope = 'scope-a'
+                       ORDER BY key
+                       LIMIT 2"#,
+                expected: &[
+                    "+---------+--------------+----------------+",
+                    "| key     | value_length | value          |",
+                    "+---------+--------------+----------------+",
+                    "| state-1 | 7            | 76616c75652d31 |",
+                    "| state-2 | 7            | 76616c75652d32 |",
+                    "+---------+--------------+----------------+",
+                ],
+            },
+        ])
         .await;
 }

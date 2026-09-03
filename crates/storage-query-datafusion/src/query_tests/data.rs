@@ -8,28 +8,52 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
 use bytestring::ByteString;
+use prost::Message;
 
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::invocation_status_table::{
-    InFlightInvocationMetadata, InvocationStatus, JournalMetadata, StatusTimestamps,
+    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, JournalMetadata,
+    JournalRetentionPolicy, StatusTimestamps,
+};
+use restate_storage_api::journal_events::EventView;
+use restate_storage_api::journal_table::JournalEntry;
+use restate_storage_api::vqueue_table::metadata::{
+    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
+};
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{
+    EntryId, EntryKey, EntryMetadata, EntryValue, Stage, Status,
 };
 use restate_types::LimitKey;
+use restate_types::LockName;
 use restate_types::Scope;
+use restate_types::ServiceName;
+use restate_types::clock::UniqueTimestamp;
 use restate_types::deployment::PinnedDeployment;
+use restate_types::errors::InvocationError;
 use restate_types::identifiers::{
     DeploymentId, InvocationId, InvocationUuid, ServiceId, WithPartitionKey,
 };
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationSpanContext, ServiceType, Source, VirtualObjectHandlerType,
+    InvocationTarget, ResponseResult, ServiceInvocationSpanContext, Source,
+    VirtualObjectHandlerType,
 };
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::{Entry, InputEntry};
+use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
+use restate_types::service_protocol;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
+
+const VQUEUE_BASE_TIMESTAMP_MILLIS: u64 = 1_744_000_000_000;
 
 pub(super) struct FixtureFactory {
     next_invocation: u128,
@@ -66,13 +90,32 @@ impl FixtureFactory {
     }
 
     pub(super) fn create_vqueue(&mut self) -> VQueueFixture {
-        let scope = Scope::try_from_static("scope-a").unwrap();
+        self.create_vqueue_with(VQueueOptions::default())
+    }
+
+    pub(super) fn create_vqueue_with(&mut self, options: VQueueOptions) -> VQueueFixture {
+        let scope = Scope::try_from_static(options.scope).unwrap();
         let id = VQueueId::custom(
             scope.partition_key(),
             format!("query-fixture-{}", self.next_vqueue),
         );
+        let link = match options.service_key {
+            Some(service_key) => VQueueLink::Lock(LockName::new(
+                ServiceName::new(options.service_name),
+                ReString::new(service_key),
+            )),
+            None => VQueueLink::Service(ServiceName::new(options.service_name)),
+        };
+        let created_at = unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 10_000 + self.next_vqueue);
         self.next_vqueue += 1;
-        VQueueFixture { id, scope }
+        VQueueFixture {
+            id,
+            scope,
+            limit_key: options.limit_key.parse().unwrap(),
+            link,
+            created_at,
+            entry_stages: Arc::new(Mutex::new(Vec::new())),
+        }
     }
 
     pub(super) fn create_invocation(
@@ -121,7 +164,97 @@ impl FixtureFactory {
                 last_attempt_server: Some("restate-sdk-rust/0.1.0".to_owned()),
                 ..InvocationStatusReportInner::default()
             },
+            InvocationFixtureStatus::BackingOff => InvocationStatusReportInner {
+                in_flight: false,
+                start_count: 1,
+                last_start_at: UNIX_EPOCH + Duration::from_secs(5),
+                last_attempt_deployment_id: Some(deployment_id),
+                last_attempt_protocol_version: Some(ServiceProtocolVersion::V5),
+                last_attempt_server: Some("restate-sdk-rust/0.1.0".to_owned()),
+                ..InvocationStatusReportInner::default()
+            },
+            InvocationFixtureStatus::CompletedSuccess
+            | InvocationFixtureStatus::CompletedFailure => InvocationStatusReportInner::default(),
         };
+
+        let vqueue_entry = options.vqueue.map(|vqueue| {
+            vqueue.record_entry(options.entry_stage);
+            let entry_id = EntryId::from(&id);
+            let run_at =
+                MillisSinceEpoch::from(VQUEUE_BASE_TIMESTAMP_MILLIS + 20_000 + sequence as u64);
+            let created_at =
+                unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 15_000 + sequence as u64);
+            let mut stats = EntryStatistics::new(created_at, run_at.into());
+            stats.transitioned_at =
+                unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 16_000 + sequence as u64);
+            if !matches!(options.entry_status, Status::New | Status::Scheduled) {
+                stats.num_attempts = 1;
+                stats.first_attempt_at = Some(unique_timestamp(
+                    VQUEUE_BASE_TIMESTAMP_MILLIS + 15_500 + sequence as u64,
+                ));
+                stats.latest_attempt_at = stats.first_attempt_at;
+            }
+            if options.entry_status == Status::BackingOff {
+                stats.num_errors = 1;
+            }
+
+            VQueueEntryFixture {
+                key: EntryKey::new(options.has_lock, run_at, sequence as u64, entry_id),
+                value: EntryValue {
+                    status: options.entry_status,
+                    metadata: EntryMetadata {
+                        deployment: Some(deployment_id.to_string().into()),
+                        ..EntryMetadata::default()
+                    },
+                    stats,
+                },
+                stage: options.entry_stage,
+            }
+        });
+
+        let journal_entries = vec![
+            JournalEntryFixture {
+                index: 0,
+                entry: JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(
+                    Entry::Input(InputEntry {
+                        headers: vec![],
+                        value: Bytes::from_static(b"fixture-input"),
+                    }),
+                )),
+            },
+            JournalEntryFixture {
+                index: 1,
+                entry: JournalEntry::Entry(EnrichedRawEntry::new(
+                    EnrichedEntryHeader::Run {},
+                    service_protocol::RunEntryMessage {
+                        name: format!("fixture-step-{sequence}"),
+                        result: None,
+                    }
+                    .encode_to_vec()
+                    .into(),
+                )),
+            },
+        ];
+        let journal_events = vec![
+            EventView::new(
+                MillisSinceEpoch::from(30_000 + sequence as u64),
+                0,
+                Event::TransientError(TransientErrorEvent {
+                    error_code: 500u16.into(),
+                    error_message: format!("fixture failure {sequence}"),
+                    error_stacktrace: None,
+                    restate_doc_error_code: None,
+                    related_command_index: Some(1),
+                    related_command_name: Some(format!("fixture-step-{sequence}")),
+                    related_command_type: None,
+                }),
+            ),
+            EventView::new(
+                MillisSinceEpoch::from(31_000 + sequence as u64),
+                1,
+                Event::Paused(PausedEvent { last_failure: None }),
+            ),
+        ];
 
         InvocationFixture {
             id,
@@ -135,14 +268,25 @@ impl FixtureFactory {
             timestamps,
             completion_retention: Duration::from_secs(30),
             journal_retention: Duration::from_secs(10),
-            journal: JournalMetadata::new(7, 4, ServiceInvocationSpanContext::empty()),
+            journal: JournalMetadata::new(
+                journal_entries.len() as u32,
+                journal_entries.len() as u32,
+                ServiceInvocationSpanContext::empty(),
+            ),
             pinned_deployment: Some(PinnedDeployment::new(
                 deployment_id,
                 ServiceProtocolVersion::V5,
             )),
             state,
+            vqueue_entry,
+            journal_entries,
+            journal_events,
         }
     }
+}
+
+fn unique_timestamp(millis: u64) -> UniqueTimestamp {
+    UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::from(millis)).unwrap()
 }
 
 pub(super) struct StateFixture {
@@ -155,11 +299,71 @@ pub(super) struct StateFixture {
 pub(super) struct VQueueFixture {
     pub(super) id: VQueueId,
     scope: Scope,
+    limit_key: LimitKey<ReString>,
+    link: VQueueLink,
+    created_at: UniqueTimestamp,
+    entry_stages: Arc<Mutex<Vec<Stage>>>,
+}
+
+impl VQueueFixture {
+    fn record_entry(&self, stage: Stage) {
+        self.entry_stages.lock().unwrap().push(stage);
+    }
+
+    pub(super) fn metadata(&self) -> VQueueMeta {
+        let mut metadata = VQueueMeta::new(
+            self.created_at,
+            Some(self.scope.clone()),
+            self.limit_key.clone(),
+            self.link.clone(),
+        );
+
+        for (index, stage) in self.entry_stages.lock().unwrap().iter().enumerate() {
+            let timestamp =
+                unique_timestamp(self.created_at.to_unix_millis().as_u64() + index as u64);
+            metadata.apply_update(&Update::new(
+                timestamp,
+                Action::Move {
+                    prev_stage: None,
+                    next_stage: *stage,
+                    metrics: MoveMetrics {
+                        last_transition_at: timestamp,
+                        has_started: false,
+                        first_runnable_at: timestamp.to_unix_millis(),
+                        scheduler_wait_stats: None,
+                    },
+                },
+            ));
+        }
+
+        metadata
+    }
+}
+
+pub(super) struct VQueueOptions {
+    pub(super) scope: &'static str,
+    pub(super) service_name: &'static str,
+    pub(super) service_key: Option<&'static str>,
+    pub(super) limit_key: &'static str,
+}
+
+impl Default for VQueueOptions {
+    fn default() -> Self {
+        Self {
+            scope: "scope-a",
+            service_name: "TestService",
+            service_key: Some("key-1"),
+            limit_key: "tenant/eu",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
 pub(super) enum InvocationFixtureStatus {
     Running,
+    BackingOff,
+    CompletedSuccess,
+    CompletedFailure,
 }
 
 pub(super) struct InvocationOptions<'a> {
@@ -168,6 +372,9 @@ pub(super) struct InvocationOptions<'a> {
     pub(super) service_key: &'a str,
     pub(super) handler_name: &'a str,
     pub(super) status: InvocationFixtureStatus,
+    pub(super) entry_stage: Stage,
+    pub(super) entry_status: Status,
+    pub(super) has_lock: bool,
 }
 
 impl Default for InvocationOptions<'_> {
@@ -178,8 +385,22 @@ impl Default for InvocationOptions<'_> {
             service_key: "key-1",
             handler_name: "run",
             status: InvocationFixtureStatus::Running,
+            entry_stage: Stage::Inbox,
+            entry_status: Status::New,
+            has_lock: true,
         }
     }
+}
+
+pub(super) struct VQueueEntryFixture {
+    pub(super) key: EntryKey,
+    pub(super) value: EntryValue,
+    pub(super) stage: Stage,
+}
+
+pub(super) struct JournalEntryFixture {
+    pub(super) index: u32,
+    pub(super) entry: JournalEntry,
 }
 
 pub(super) struct InvocationFixture {
@@ -197,128 +418,48 @@ pub(super) struct InvocationFixture {
     pub(super) journal: JournalMetadata,
     pub(super) pinned_deployment: Option<PinnedDeployment>,
     pub(super) state: InvocationStatusReportInner,
+    pub(super) vqueue_entry: Option<VQueueEntryFixture>,
+    pub(super) journal_entries: Vec<JournalEntryFixture>,
+    pub(super) journal_events: Vec<EventView>,
 }
 
 impl InvocationFixture {
     pub(super) fn invocation_status(&self) -> InvocationStatus {
+        let metadata = InFlightInvocationMetadata {
+            invocation_target: self.target.clone(),
+            vqueue_id: self.vqueue_id.clone(),
+            limit_key: self.limit_key.clone(),
+            source: self.source.clone(),
+            execution_time: self.execution_time,
+            idempotency_key: self.idempotency_key.clone(),
+            timestamps: self.timestamps.clone(),
+            completion_retention_duration: self.completion_retention,
+            journal_retention_duration: self.journal_retention,
+            journal_metadata: self.journal.clone(),
+            pinned_deployment: self.pinned_deployment.clone(),
+            ..InFlightInvocationMetadata::mock()
+        };
+
         match self.status {
-            InvocationFixtureStatus::Running => {
-                InvocationStatus::Invoked(InFlightInvocationMetadata {
-                    invocation_target: self.target.clone(),
-                    vqueue_id: self.vqueue_id.clone(),
-                    limit_key: self.limit_key.clone(),
-                    source: self.source.clone(),
-                    execution_time: self.execution_time,
-                    idempotency_key: self.idempotency_key.clone(),
-                    timestamps: self.timestamps.clone(),
-                    completion_retention_duration: self.completion_retention,
-                    journal_retention_duration: self.journal_retention,
-                    journal_metadata: self.journal.clone(),
-                    pinned_deployment: self.pinned_deployment.clone(),
-                    ..InFlightInvocationMetadata::mock()
-                })
+            InvocationFixtureStatus::Running | InvocationFixtureStatus::BackingOff => {
+                InvocationStatus::Invoked(metadata)
             }
-        }
-    }
-
-    pub(super) fn source(&self) -> InvocationSource {
-        match &self.source {
-            Source::Ingress(_) => InvocationSource::new("ingress"),
-            Source::Subscription(id) => InvocationSource {
-                invoked_by: "subscription",
-                subscription_id: Some(id.to_string()),
-                ..InvocationSource::default()
-            },
-            Source::Service(id, target) => InvocationSource {
-                invoked_by: "service",
-                id: Some(id.to_string()),
-                target: Some(target.to_string()),
-                ..InvocationSource::default()
-            },
-            Source::RestartAsNew(id) => InvocationSource {
-                invoked_by: "restart_as_new",
-                restarted_from: Some(id.to_string()),
-                ..InvocationSource::default()
-            },
-            Source::Internal => InvocationSource::new("restate"),
-        }
-    }
-
-    pub(super) fn target_service_ty(&self) -> &'static str {
-        match self.target.service_ty() {
-            ServiceType::Service => "service",
-            ServiceType::VirtualObject => "virtual_object",
-            ServiceType::Workflow => "workflow",
-        }
-    }
-
-    pub(super) fn last_failure(&self) -> Option<String> {
-        self.state
-            .last_retry_attempt_failure
-            .as_ref()
-            .map(|failure| failure.err.to_string())
-    }
-
-    pub(super) fn last_failure_error_code(&self) -> Option<&'static str> {
-        self.state
-            .last_retry_attempt_failure
-            .as_ref()
-            .and_then(|failure| failure.doc_error_code)
-            .map(|code| code.code())
-    }
-
-    pub(super) fn status_name(&self) -> &'static str {
-        match self.status {
-            InvocationFixtureStatus::Running => "running",
-        }
-    }
-
-    pub(super) fn completion_result(&self) -> Option<&'static str> {
-        match self.status {
-            InvocationFixtureStatus::Running => None,
-        }
-    }
-
-    pub(super) fn completion_failure(&self) -> Option<String> {
-        match self.status {
-            InvocationFixtureStatus::Running => None,
-        }
-    }
-
-    pub(super) fn last_awaiting_on_future_json(&self) -> Option<String> {
-        self.state
-            .last_awaiting_on_unresolved_future
-            .as_ref()
-            .map(|future| serde_json::to_string(future).unwrap())
-    }
-
-    pub(super) fn suspended_waiting(&self) -> Option<SuspendedWaiting> {
-        match self.status {
-            InvocationFixtureStatus::Running => None,
-        }
-    }
-}
-
-pub(super) struct SuspendedWaiting {
-    pub(super) completions: Vec<u32>,
-    pub(super) signals: Vec<u32>,
-    pub(super) future_json: String,
-}
-
-#[derive(Default)]
-pub(super) struct InvocationSource {
-    pub(super) invoked_by: &'static str,
-    pub(super) id: Option<String>,
-    pub(super) subscription_id: Option<String>,
-    pub(super) target: Option<String>,
-    pub(super) restarted_from: Option<String>,
-}
-
-impl InvocationSource {
-    fn new(invoked_by: &'static str) -> Self {
-        Self {
-            invoked_by,
-            ..Self::default()
+            InvocationFixtureStatus::CompletedSuccess => InvocationStatus::Completed(
+                CompletedInvocation::from_in_flight_invocation_metadata(
+                    metadata,
+                    JournalRetentionPolicy::Retain,
+                    ResponseResult::Success(Bytes::from_static(b"fixture result")),
+                    MillisSinceEpoch::from(7_000),
+                ),
+            ),
+            InvocationFixtureStatus::CompletedFailure => InvocationStatus::Completed(
+                CompletedInvocation::from_in_flight_invocation_metadata(
+                    metadata,
+                    JournalRetentionPolicy::Retain,
+                    ResponseResult::Failure(InvocationError::internal("fixture failure")),
+                    MillisSinceEpoch::from(7_000),
+                ),
+            ),
         }
     }
 }
