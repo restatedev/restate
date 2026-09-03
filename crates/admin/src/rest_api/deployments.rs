@@ -24,7 +24,7 @@ use restate_errors::warn_it;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
-use restate_types::schema::deployment::{Deployment, DeploymentType, HttpType, LambdaType};
+use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
     Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
@@ -374,11 +374,11 @@ where
                 .schema_registry
                 .get_deployment(deployment_id)
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
-            if let DeploymentType::Http(HttpType {
+            if let DeploymentType::Http {
                 address: existing_uri,
                 auth: Some(_existing_auth),
                 ..
-            }) = &existing_deployment.ty
+            } = &existing_deployment.ty
             {
                 let patch_headers: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
@@ -491,12 +491,12 @@ fn to_deployment_response(
         DeploymentType::Unknown => {
             todo!("handle unknown deployment type");
         }
-        DeploymentType::Http(HttpType {
+        DeploymentType::Http {
             http_version,
             protocol_type,
             address,
             auth,
-        }) => DeploymentResponse::Http {
+        } => DeploymentResponse::Http {
             id,
             uri: address,
             protocol_type,
@@ -514,11 +514,11 @@ fn to_deployment_response(
             info,
             auth: auth.map(Into::into),
         },
-        DeploymentType::Lambda(LambdaType {
+        DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        }) => DeploymentResponse::Lambda {
+        } => DeploymentResponse::Lambda {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -556,12 +556,12 @@ fn to_detailed_deployment_response(
         DeploymentType::Unknown => {
             todo!("handle unknown deployment type")
         }
-        DeploymentType::Http(HttpType {
+        DeploymentType::Http {
             http_version,
             protocol_type,
             address,
             auth,
-        }) => DetailedDeploymentResponse::Http {
+        } => DetailedDeploymentResponse::Http {
             id,
             uri: address,
             protocol_type,
@@ -576,11 +576,11 @@ fn to_detailed_deployment_response(
             info,
             auth: auth.map(Into::into),
         },
-        DeploymentType::Lambda(LambdaType {
+        DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        }) => DetailedDeploymentResponse::Lambda {
+        } => DetailedDeploymentResponse::Lambda {
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),

@@ -40,9 +40,7 @@ use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::retries::{RetryIter, RetryPolicy};
-use crate::schema::deployment::{
-    DeploymentResolver, DeploymentType, HttpType, LambdaType, ProtocolType,
-};
+use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
@@ -334,10 +332,10 @@ impl Deployment {
     ) -> bool {
         match (&self.ty, other_addess) {
             (
-                DeploymentType::Http(HttpType {
+                DeploymentType::Http {
                     address: this_address,
                     ..
-                }),
+                },
                 DeploymentAddress::Http(HttpDeploymentAddress {
                     uri: other_address,
                     auth: _,
@@ -350,7 +348,7 @@ impl Deployment {
                 other_additional_headers,
             ),
             (
-                DeploymentType::Lambda(LambdaType { arn: this_arn, .. }),
+                DeploymentType::Lambda { arn: this_arn, .. },
                 DeploymentAddress::Lambda(LambdaDeploymentAddress { arn: other_arn, .. }),
             ) => deployment::Deployment::semantic_eq_lambda(this_arn, other_arn),
             _ => false,

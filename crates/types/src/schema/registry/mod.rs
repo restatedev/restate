@@ -28,9 +28,7 @@ use crate::deployment::{
 };
 use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
-use crate::schema::deployment::{
-    Deployment, DeploymentResolver, DeploymentType, HttpType, LambdaType,
-};
+use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{
@@ -420,8 +418,8 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
         };
 
         let existing_http_auth = match &existing_deployment.ty {
-            DeploymentType::Http(HttpType { auth, .. }) => auth.clone(),
-            DeploymentType::Lambda(_) | DeploymentType::Unknown => None,
+            DeploymentType::Http { auth, .. } => auth.clone(),
+            DeploymentType::Lambda { .. } | DeploymentType::Unknown => None,
         };
 
         // Merge with update changes requested
@@ -454,11 +452,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         uri: None,
                         use_http_11,
                     }),
-                    DeploymentType::Http(HttpType {
+                    DeploymentType::Http {
                         address,
                         http_version,
                         ..
-                    }),
+                    },
                 ) => (
                     DeploymentAddress::Http(
                         HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
@@ -470,11 +468,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                         arn: None,
                         assume_role_arn: update_assume_role_arn,
                     }),
-                    DeploymentType::Lambda(LambdaType {
+                    DeploymentType::Lambda {
                         arn,
                         assume_role_arn,
                         ..
-                    }),
+                    },
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
                         arn,
@@ -498,11 +496,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 }
                 (
                     None,
-                    DeploymentType::Http(HttpType {
+                    DeploymentType::Http {
                         address,
                         http_version,
                         ..
-                    }),
+                    },
                 ) => (
                     DeploymentAddress::Http(
                         HttpDeploymentAddress::new(address).with_auth(existing_http_auth.clone()),
@@ -511,11 +509,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 ),
                 (
                     None,
-                    DeploymentType::Lambda(LambdaType {
+                    DeploymentType::Lambda {
                         arn,
                         assume_role_arn,
                         ..
-                    }),
+                    },
                 ) => (
                     DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
                         arn,

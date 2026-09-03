@@ -23,9 +23,7 @@ use super::Handler;
 use crate::identifiers::ServiceRevision;
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
-use crate::schema::invocation_target::{
-    InputValidationRule, JsonValue, OutputContentType, OutputContentTypeRule,
-};
+use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ServiceOpenAPI {
@@ -437,10 +435,10 @@ fn infer_handler_request_body(
         .find(|rule| matches!(rule, InputValidationRule::JsonValue { .. }))
     {
         match r {
-            InputValidationRule::JsonValue(JsonValue {
+            InputValidationRule::JsonValue {
                 content_type,
                 schema,
-            }) => {
+            } => {
                 let mut schema = Schema::new(schema.clone().unwrap_or(Value::Bool(true)));
                 if schema.0 == Value::Bool(true) {
                     // Even though the boolean schema true is valid Json Schema,
@@ -487,17 +485,15 @@ fn infer_handler_response(
         &handler_schemas.output_rules.content_type_rule,
     ) {
         (_, OutputContentTypeRule::None) => Response::builder().description("Empty").build(),
-        (None, OutputContentTypeRule::Set(OutputContentType { content_type, .. })) => {
-            Response::builder()
-                .content(
-                    content_type
-                        .to_str()
-                        .expect("content_type should have been checked before during registration"),
-                    Content::builder().build(),
-                )
-                .build()
-        }
-        (Some(schema), OutputContentTypeRule::Set(OutputContentType { content_type, .. })) => {
+        (None, OutputContentTypeRule::Set { content_type, .. }) => Response::builder()
+            .content(
+                content_type
+                    .to_str()
+                    .expect("content_type should have been checked before during registration"),
+                Content::builder().build(),
+            )
+            .build(),
+        (Some(schema), OutputContentTypeRule::Set { content_type, .. }) => {
             let schema = Schema::new(schema.clone());
             schemas_collector.push((response_schema_name(operation_id), schema));
 

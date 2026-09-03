@@ -55,9 +55,7 @@ use restate_types::journal_v2::{
     RunResult, SleepCommand, UnresolvedFuture,
 };
 use restate_types::limit_key::LimitKey;
-use restate_types::schema::deployment::{
-    Deployment, DeploymentType, HttpType, LambdaType, ProtocolType,
-};
+use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
@@ -475,17 +473,17 @@ where
             DeploymentType::Unknown => {
                 todo!("handle unknown deployment type");
             }
-            DeploymentType::Lambda(LambdaType {
+            DeploymentType::Lambda {
                 arn,
                 assume_role_arn,
                 compression,
-            }) => Endpoint::Lambda(arn, assume_role_arn, compression),
-            DeploymentType::Http(HttpType {
+            } => Endpoint::Lambda(arn, assume_role_arn, compression),
+            DeploymentType::Http {
                 address,
                 http_version,
                 auth,
                 ..
-            }) => Endpoint::Http(address, Some(http_version), auth),
+            } => Endpoint::Http(address, Some(http_version), auth),
         };
 
         headers.extend(deployment_metadata.additional_headers);

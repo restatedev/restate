@@ -327,10 +327,10 @@ pub async fn register_http_with_gcp_auth_persists_audience_verbatim() {
         .await
         .unwrap();
 
-    let DeploymentType::Http(HttpType {
+    let DeploymentType::Http {
         auth: Some(HttpAuth::GoogleIdToken(persisted)),
         ..
-    }) = deployment.ty
+    } = deployment.ty
     else {
         panic!("expected persisted GoogleIdToken auth");
     };

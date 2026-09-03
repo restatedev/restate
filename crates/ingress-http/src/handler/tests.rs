@@ -49,7 +49,7 @@ use restate_types::invocation::{
 use restate_types::live::Live;
 use restate_types::net::address::SocketAddress;
 use restate_types::schema::invocation_target::{
-    InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata, OutputContentType,
+    InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
 
@@ -1027,10 +1027,10 @@ async fn invalid_input() {
             InvocationTargetMetadata {
                 input_rules: InputRules {
                     input_validation_rules: vec![InputValidationRule::ContentType {
-                        content_type: InputContentType::MimeTypeAndSubtype((
+                        content_type: InputContentType::MimeTypeAndSubtype(
                             "application".into(),
                             "json".into(),
-                        )),
+                        ),
                     }],
                 },
                 ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
@@ -1101,12 +1101,11 @@ async fn set_custom_content_type_on_response() {
         "greet",
         InvocationTargetMetadata {
             output_rules: OutputRules {
-                content_type_rule: OutputContentTypeRule::Set(OutputContentType {
+                content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_static("application/cbor"),
                     set_content_type_if_empty: false,
-                    #[allow(deprecated)]
                     has_json_schema: false,
-                }),
+                },
                 json_schema: None,
             },
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
@@ -1150,12 +1149,11 @@ async fn set_custom_content_type_on_empty_response() {
         "greet",
         InvocationTargetMetadata {
             output_rules: OutputRules {
-                content_type_rule: OutputContentTypeRule::Set(OutputContentType {
+                content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_static("application/protobuf"),
                     set_content_type_if_empty: true,
-                    #[allow(deprecated)]
                     has_json_schema: false,
-                }),
+                },
                 json_schema: None,
             },
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)

@@ -58,43 +58,34 @@ pub struct Sink {
     pub event_invocation_target_template: EventInvocationTargetTemplate,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
-pub struct ServiceTemplate {
-    #[bilrost(tag(1))]
-    pub name: String,
-    #[bilrost(tag(2))]
-    pub handler: String,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
-pub struct VirtualObjectTemplate {
-    #[bilrost(tag(1))]
-    pub name: String,
-    #[bilrost(tag(2))]
-    pub handler: String,
-    #[bilrost(tag(3))]
-    pub handler_ty: VirtualObjectHandlerType,
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
-pub struct WorkflowTemplate {
-    #[bilrost(tag(1))]
-    pub name: String,
-    #[bilrost(tag(2))]
-    pub handler: String,
-    #[bilrost(tag(3))]
-    pub handler_ty: WorkflowHandlerType,
-}
-
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum EventInvocationTargetTemplate {
     Unknown,
-    #[bilrost(tag(1))]
-    Service(ServiceTemplate),
-    #[bilrost(tag(2))]
-    VirtualObject(VirtualObjectTemplate),
-    #[bilrost(tag(3))]
-    Workflow(WorkflowTemplate),
+    #[bilrost(tag(1), message)]
+    Service {
+        #[bilrost(tag(1))]
+        name: String,
+        #[bilrost(tag(2))]
+        handler: String,
+    },
+    #[bilrost(tag(2), message)]
+    VirtualObject {
+        #[bilrost(tag(1))]
+        name: String,
+        #[bilrost(tag(2))]
+        handler: String,
+        #[bilrost(tag(3))]
+        handler_ty: VirtualObjectHandlerType,
+    },
+    #[bilrost(tag(3), message)]
+    Workflow {
+        #[bilrost(tag(1))]
+        name: String,
+        #[bilrost(tag(2))]
+        handler: String,
+        #[bilrost(tag(3))]
+        handler_ty: WorkflowHandlerType,
+    },
 }
 
 impl fmt::Display for Sink {
@@ -103,13 +94,9 @@ impl fmt::Display for Sink {
             EventInvocationTargetTemplate::Unknown => {
                 write!(f, "unknown")
             }
-            EventInvocationTargetTemplate::Service(ServiceTemplate { name, handler, .. })
-            | EventInvocationTargetTemplate::VirtualObject(VirtualObjectTemplate {
-                name,
-                handler,
-                ..
-            })
-            | EventInvocationTargetTemplate::Workflow(WorkflowTemplate { name, handler, .. }) => {
+            EventInvocationTargetTemplate::Service { name, handler, .. }
+            | EventInvocationTargetTemplate::VirtualObject { name, handler, .. }
+            | EventInvocationTargetTemplate::Workflow { name, handler, .. } => {
                 write!(f, "service://{name}/{handler}")
             }
         }
@@ -250,35 +237,33 @@ mod serde_hacks {
                     handler,
                     ty: EventReceiverServiceType::Service,
                 } => Self {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Service(
-                        ServiceTemplate { name, handler },
-                    ),
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
+                        name,
+                        handler,
+                    },
                 },
                 Sink::DeprecatedService {
                     name,
                     handler,
                     ty: EventReceiverServiceType::VirtualObject,
                 } => Self {
-                    event_invocation_target_template: EventInvocationTargetTemplate::VirtualObject(
-                        VirtualObjectTemplate {
+                    event_invocation_target_template:
+                        EventInvocationTargetTemplate::VirtualObject {
                             name,
                             handler,
                             handler_ty: VirtualObjectHandlerType::Exclusive,
                         },
-                    ),
                 },
                 Sink::DeprecatedService {
                     name,
                     handler,
                     ty: EventReceiverServiceType::Workflow,
                 } => Self {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Workflow(
-                        WorkflowTemplate {
-                            name,
-                            handler,
-                            handler_ty: WorkflowHandlerType::Workflow,
-                        },
-                    ),
+                    event_invocation_target_template: EventInvocationTargetTemplate::Workflow {
+                        name,
+                        handler,
+                        handler_ty: WorkflowHandlerType::Workflow,
+                    },
                 },
                 Sink::Invocation {
                     event_invocation_target_template,
@@ -316,12 +301,10 @@ pub mod mocks {
                     topic: "my-topic".to_string(),
                 },
                 sink: Sink {
-                    event_invocation_target_template: EventInvocationTargetTemplate::Service(
-                        ServiceTemplate {
-                            name: "MySvc".to_string(),
-                            handler: "MyMethod".to_string(),
-                        },
-                    ),
+                    event_invocation_target_template: EventInvocationTargetTemplate::Service {
+                        name: "MySvc".to_string(),
+                        handler: "MyMethod".to_string(),
+                    },
                 },
                 metadata: Default::default(),
             }
@@ -333,9 +316,7 @@ pub mod mocks {
 mod test {
     use serde::{Deserialize, Serialize};
 
-    use crate::{
-        invocation::VirtualObjectHandlerType, schema::subscriptions::VirtualObjectTemplate,
-    };
+    use crate::invocation::VirtualObjectHandlerType;
 
     #[test]
     fn serde_compatibility() {
@@ -358,13 +339,11 @@ mod test {
             },
             sink: super::serde_hacks::Sink::Invocation {
                 event_invocation_target_template:
-                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject(
-                        VirtualObjectTemplate {
-                            name: "object".into(),
-                            handler: "handler".into(),
-                            handler_ty: VirtualObjectHandlerType::Exclusive,
-                        },
-                    ),
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject {
+                        name: "object".into(),
+                        handler: "handler".into(),
+                        handler_ty: VirtualObjectHandlerType::Exclusive,
+                    },
             },
         };
 
@@ -375,13 +354,11 @@ mod test {
             },
             sink: super::Sink {
                 event_invocation_target_template:
-                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject(
-                        VirtualObjectTemplate {
-                            name: "object".into(),
-                            handler: "handler".into(),
-                            handler_ty: VirtualObjectHandlerType::Exclusive,
-                        },
-                    ),
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject {
+                        name: "object".into(),
+                        handler: "handler".into(),
+                        handler_ty: VirtualObjectHandlerType::Exclusive,
+                    },
             },
         };
 

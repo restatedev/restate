@@ -22,10 +22,10 @@ pub(crate) fn append_deployment_row(
 
     match deployment.ty {
         DeploymentType::Unknown => row.ty("unknown"),
-        DeploymentType::Http(_) => {
+        DeploymentType::Http { .. } => {
             row.ty("http");
         }
-        DeploymentType::Lambda(_) => {
+        DeploymentType::Lambda { .. } => {
             row.ty("lambda");
         }
     }
