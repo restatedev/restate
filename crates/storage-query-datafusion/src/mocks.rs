@@ -18,6 +18,7 @@ use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use datafusion::physical_plan::{collect, display::DisplayableExecutionPlan};
 
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
@@ -264,6 +265,32 @@ impl MockQueryEngine {
         sql: impl AsRef<str> + Send,
     ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
         self.2.execute(sql.as_ref()).await
+    }
+
+    pub async fn explain_analyze_tree(
+        &self,
+        sql: impl AsRef<str> + Send,
+    ) -> Result<String, crate::context::QueryError> {
+        let session = self.2.as_ref();
+        let state = session.state();
+        let statement =
+            state.sql_to_statement(sql.as_ref(), &datafusion::config::Dialect::PostgreSQL)?;
+        let logical_plan = state.statement_to_plan(statement).await?;
+        let dataframe = session.execute_logical_plan(logical_plan).await?;
+        let task_context = Arc::new(dataframe.task_ctx());
+        let physical_plan = dataframe.create_physical_plan().await?;
+
+        collect(Arc::clone(&physical_plan), task_context).await?;
+
+        // DataFusion 54 rejects `EXPLAIN ANALYZE` combined with `FORMAT TREE`.
+        // Execute the physical plan to populate metrics, then render that plan as a tree.
+        let analyzed_plan = DisplayableExecutionPlan::with_metrics(physical_plan.as_ref())
+            .set_tree_maximum_render_width(0);
+        Ok(format!(
+            "{}\n\nMetrics:\n{}",
+            analyzed_plan.tree_render(),
+            analyzed_plan.indent(false),
+        ))
     }
 }
 

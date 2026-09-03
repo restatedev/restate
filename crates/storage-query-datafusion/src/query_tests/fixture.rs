@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use datafusion::assert_batches_sorted_eq;
+use datafusion::common::test_util::{batches_to_sort_string, batches_to_string};
 use futures::TryStreamExt;
 
 use restate_partition_store::PartitionStoreTransaction;
@@ -61,21 +61,65 @@ impl QueryFixture {
     pub(super) async fn assert_queries(&self, queries: &[QueryExpectation<'_>]) {
         for query in queries {
             eprintln!("running query fixture: {}", query.name);
-            let batches = self.execute(query.sql).await;
-            assert_batches_sorted_eq!(query.expected, &batches);
+            let batches = match self.try_execute(query.sql).await {
+                Ok(batches) => batches,
+                Err(error) => {
+                    let report = self
+                        .failure_report(query, format!("query execution failed:\n{error:#}"))
+                        .await;
+                    panic!("{report}");
+                }
+            };
+            let expected = sorted_expected_table(query.expected);
+            let actual = batches_to_sort_string(&batches);
+
+            if expected != actual {
+                let report = self
+                    .failure_report(query, format!("expected:\n{expected}\n\nactual:\n{actual}"))
+                    .await;
+                panic!("{report}");
+            }
         }
     }
 
-    async fn execute(&self, sql: &str) -> Vec<datafusion::arrow::record_batch::RecordBatch> {
+    async fn failure_report(&self, query: &QueryExpectation<'_>, mismatch: String) -> String {
+        let explain = match self.try_execute(&format!("EXPLAIN {}", query.sql)).await {
+            Ok(batches) => batches_to_string(&batches),
+            Err(error) => format!("failed to explain query: {error:#}"),
+        };
+        let explain_analyze = self
+            .engine
+            .explain_analyze_tree(query.sql)
+            .await
+            .unwrap_or_else(|error| format!("failed to analyze query: {error:#}"));
+
+        format!(
+            "\nquery fixture `{}` failed\n\nQUERY\n{}\n\nMISMATCH\n{}\n\nEXPLAIN\n{}\n\nEXPLAIN ANALYZE FORMAT TREE\n{}\n",
+            query.name, query.sql, mismatch, explain, explain_analyze,
+        )
+    }
+
+    async fn try_execute(
+        &self,
+        sql: &str,
+    ) -> Result<Vec<datafusion::arrow::record_batch::RecordBatch>, crate::context::QueryError> {
         self.engine
             .execute(sql)
-            .await
-            .unwrap()
+            .await?
             .stream
             .try_collect()
             .await
-            .unwrap()
+            .map_err(Into::into)
     }
+}
+
+fn sorted_expected_table(expected: &[&str]) -> String {
+    let mut expected = expected.to_vec();
+    let num_lines = expected.len();
+    if num_lines > 3 {
+        expected[2..num_lines - 1].sort_unstable();
+    }
+    expected.join("\n")
 }
 
 pub(super) struct QueryFixtureWriter<'a, 'store> {
@@ -230,5 +274,35 @@ impl SysJournalEventsTableFixture<'_, '_> {
                 .put_journal_event(&invocation.id, event.clone(), lsn as u64)?;
         }
         Ok(())
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failure_report_includes_query_mismatch_and_plans() {
+    let fixture = QueryFixture::create().await;
+    let query = QueryExpectation {
+        name: "diagnostic fixture",
+        sql: "SELECT 1 AS value",
+        expected: &[],
+    };
+
+    let report = fixture
+        .failure_report(&query, "expected value 2, actual value 1".to_owned())
+        .await;
+
+    for section in [
+        "QUERY\nSELECT 1 AS value",
+        "MISMATCH\nexpected value 2, actual value 1",
+        "EXPLAIN\n",
+        "logical_plan",
+        "physical_plan",
+        "EXPLAIN ANALYZE FORMAT TREE\n",
+        "Metrics:\n",
+        "metrics=[output_rows=1",
+    ] {
+        assert!(
+            report.contains(section),
+            "missing {section:?} in:\n{report}"
+        );
     }
 }
