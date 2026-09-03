@@ -783,22 +783,26 @@ impl StorageAccess for PartitionStore {
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
         let table = self.table_handle(table);
+        let mut opts = rocksdb::WriteOptions::default();
+        opts.disable_wal(true);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .put_cf(table, key, value)
+            .put_cf_opt(table, key, value, &opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         let table = self.table_handle(table);
+        let mut opts = rocksdb::WriteOptions::default();
+        opts.disable_wal(true);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .delete_cf(table, key)
+            .delete_cf_opt(table, key, &opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
