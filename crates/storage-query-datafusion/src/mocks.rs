@@ -11,7 +11,8 @@
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::ops::RangeBounds;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
@@ -28,7 +29,7 @@ use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
-use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
+use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision, WithPartitionKey};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
@@ -49,20 +50,31 @@ use crate::remote_query_scanner_manager::{
 };
 
 #[derive(Debug, Clone, Default)]
-pub struct MockStatusHandle(Vec<InvocationStatusReport>);
+pub struct MockStatusHandle(Arc<RwLock<Vec<InvocationStatusReport>>>);
 
 impl MockStatusHandle {
-    pub fn with(mut self, invocation_status_report: InvocationStatusReport) -> Self {
-        self.0.push(invocation_status_report);
+    pub fn with(self, invocation_status_report: InvocationStatusReport) -> Self {
+        self.push(invocation_status_report);
         self
+    }
+
+    pub(crate) fn push(&self, invocation_status_report: InvocationStatusReport) {
+        self.0.write().unwrap().push(invocation_status_report);
     }
 }
 
 impl StatusHandle for MockStatusHandle {
     type Iterator = std::vec::IntoIter<InvocationStatusReport>;
 
-    async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
-        self.0.clone().into_iter()
+    async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
+        self.0
+            .read()
+            .unwrap()
+            .iter()
+            .filter(|status| keys.contains(&status.invocation_id().partition_key()))
+            .cloned()
+            .collect::<Vec<_>>()
+            .into_iter()
     }
 }
 
