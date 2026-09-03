@@ -45,6 +45,7 @@ use restate_worker_api::invoker::invocation_reader::{
 };
 use restate_worker_api::invoker::{EntryEnricher, JournalMetadata};
 
+use crate::Notification;
 use crate::error::{InvocationErrorRelatedEntry, InvokerError, SdkInvocationError};
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
@@ -52,7 +53,6 @@ use crate::invocation_task::{
     invocation_id_to_header_value, leased_frame, new_invoker_body,
     service_protocol_version_to_header_value,
 };
-use crate::{Notification, shortcircuit};
 
 ///  Provides the value of the invocation id
 const INVOCATION_ID_HEADER_NAME: HeaderName = HeaderName::from_static("x-restate-invocation-id");
@@ -158,14 +158,14 @@ where
         let service_invocation_span_context = journal_metadata.span_context;
 
         // Prepare the request
-        let (mut http_stream_tx, request) = shortcircuit!(Self::prepare_request(
+        let (mut http_stream_tx, request) = Self::prepare_request(
             path,
             deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             &service_invocation_span_context,
             self.invocation_task.invocation_target.key(),
-        ));
+        );
 
         // Initialize the response stream state
         let mut http_stream_rx = std::pin::pin!(ResponseStream::new(
@@ -272,7 +272,7 @@ where
         invocation_id: &InvocationId,
         parent_span_context: &ServiceInvocationSpanContext,
         service_key: Option<&ByteString>,
-    ) -> Result<(InvokerBodySender, Request<InvokerBodyType>), InvokerError> {
+    ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
         // channel capacity.
@@ -320,13 +320,12 @@ where
             }
         }
 
-        let mut request_parts = Parts::from_deployment(deployment, Method::Post, path, headers)
-            .map_err(|err| InvokerError::UnknownDeploymentType(err.0))?;
+        let mut request_parts = Parts::from_deployment(deployment, Method::Post, path, headers);
         if let Some(service_key) = service_key {
             request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
         }
 
-        Ok((http_stream_tx, Request::new(request_parts, request_body)))
+        (http_stream_tx, Request::new(request_parts, request_body))
     }
 
     // --- Loops

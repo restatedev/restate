@@ -19,7 +19,7 @@ use http_body::Body;
 use http_body_util::BodyExt;
 
 use restate_service_client::{Method, Parts, Request, ServiceClient, ServiceClientError};
-use restate_types::schema::deployment::{Deployment, UnknownDeploymentTypeError};
+use restate_types::schema::deployment::Deployment;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 const APPLICATION_OCTET_STREAM: HeaderValue = HeaderValue::from_static("application/octet-stream");
@@ -39,8 +39,6 @@ pub enum SerdesError {
     Client(#[from] ServiceClientError),
     #[error("invalid uri when building the serdes request: {0}")]
     InvalidUri(#[from] InvalidUri),
-    #[error(transparent)]
-    InvalidDeployment(#[from] UnknownDeploymentTypeError),
 }
 
 #[derive(Clone)]
@@ -86,7 +84,7 @@ impl SerdesClient {
         let (parts, response_body) = self
             .client
             .call(Request::new(
-                Parts::from_deployment(deployment, Method::Post, path, headers)?,
+                Parts::from_deployment(deployment, Method::Post, path, headers),
                 body,
             ))
             .await?
@@ -136,7 +134,7 @@ impl SerdesClient {
         let (parts, response_body) = self
             .client
             .call(Request::new(
-                Parts::from_deployment(deployment, Method::Post, path, headers)?,
+                Parts::from_deployment(deployment, Method::Post, path, headers),
                 body,
             ))
             .await?

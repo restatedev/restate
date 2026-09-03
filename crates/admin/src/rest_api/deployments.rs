@@ -24,13 +24,12 @@ use restate_errors::warn_it;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
-use restate_types::schema::deployment::{Deployment, DeploymentType, UnknownDeploymentTypeError};
+use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
     AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
     Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
 };
 use restate_types::schema::service::ServiceMetadata;
-use tracing::warn;
 
 use super::error::*;
 use crate::rest_api::ErrorDescriptionResponse;
@@ -217,7 +216,7 @@ where
         .get_deployment_and_services(deployment_id)
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-    Ok(to_detailed_deployment_response(deployment, services)?.into())
+    Ok(to_detailed_deployment_response(deployment, services).into())
 }
 
 /// List deployments
@@ -242,7 +241,7 @@ where
         .schema_registry
         .list_deployments()
         .into_iter()
-        .filter_map(|(deployment, services)| to_deployment_response(deployment, services))
+        .map(|(deployment, services)| to_deployment_response(deployment, services))
         .collect();
 
     ListDeploymentsResponse { deployments }.into()
@@ -360,7 +359,7 @@ where
                     .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-                return Ok(to_detailed_deployment_response(deployment, services)?.into());
+                return Ok(to_detailed_deployment_response(deployment, services).into());
             }
 
             if let Some(uri) = &uri {
@@ -414,7 +413,7 @@ where
                     .get_deployment_and_services(deployment_id)
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
-                return Ok(to_detailed_deployment_response(deployment, services)?.into());
+                return Ok(to_detailed_deployment_response(deployment, services).into());
             }
 
             (
@@ -451,7 +450,7 @@ where
         .await
         .inspect_err(|e| warn_it!(e))?;
 
-    Ok(Json(to_detailed_deployment_response(deployment, services)?))
+    Ok(Json(to_detailed_deployment_response(deployment, services)))
 }
 
 fn to_register_response(
@@ -487,11 +486,10 @@ fn to_deployment_response(
         ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
-) -> Option<DeploymentResponse> {
-    let response = match ty {
+) -> DeploymentResponse {
+    match ty {
         DeploymentType::Unknown => {
-            warn!(deployment_id=%id, "deployment has an unknown type");
-            return None;
+            todo!("handle unknown deployment type");
         }
         DeploymentType::Http {
             http_version,
@@ -537,8 +535,7 @@ fn to_deployment_response(
                 .collect(),
             info,
         },
-    };
-    Some(response)
+    }
 }
 
 fn to_detailed_deployment_response(
@@ -554,9 +551,11 @@ fn to_detailed_deployment_response(
         ..
     }: Deployment,
     services: Vec<ServiceMetadata>,
-) -> Result<DetailedDeploymentResponse, UnknownDeploymentTypeError> {
-    let response = match ty {
-        DeploymentType::Unknown => return Err(UnknownDeploymentTypeError(id)),
+) -> DetailedDeploymentResponse {
+    match ty {
+        DeploymentType::Unknown => {
+            todo!("handle unknown deployment type")
+        }
         DeploymentType::Http {
             http_version,
             protocol_type,
@@ -595,9 +594,7 @@ fn to_detailed_deployment_response(
             services,
             info,
         },
-    };
-
-    Ok(response)
+    }
 }
 
 #[inline]

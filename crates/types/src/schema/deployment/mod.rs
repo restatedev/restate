@@ -73,6 +73,10 @@ pub struct Deployment {
 }
 
 impl Deployment {
+    pub fn as_address(&self) -> DeploymentAddress {
+        self.ty.as_address()
+    }
+
     // address_display returns a Displayable identifier for the endpoint; for http endpoints this is a URI,
     // and for Lambda deployments its the ARN
     pub fn address_display(&self) -> impl Display + '_ {
@@ -200,7 +204,6 @@ impl DeploymentType {
         Wrapper(self)
     }
 
-    #[cfg(test)]
     pub fn as_address(&self) -> DeploymentAddress {
         match self {
             DeploymentType::Http { address, auth, .. } => {
@@ -215,7 +218,7 @@ impl DeploymentType {
             } => LambdaDeploymentAddress::new(arn.clone(), assume_role_arn.clone().map(Into::into))
                 .into(),
             DeploymentType::Unknown => {
-                panic!("handle unknown deployment type")
+                todo!("handle unknown deployment type")
             }
         }
     }
@@ -394,11 +397,6 @@ mod serde_hacks {
         }
     }
 }
-
-#[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("deployment {0} has unknown type")]
-/// Error that can be returned if deployment type is unknown
-pub struct UnknownDeploymentTypeError(pub DeploymentId);
 
 #[cfg(test)]
 mod serde_tests {

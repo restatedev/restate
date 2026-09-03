@@ -194,14 +194,14 @@ where
         let deployment_id = deployment.id;
         let deployment_type_str = deployment.ty.as_static_str();
         // Prepare the request
-        let (http_stream_tx, request) = shortcircuit!(Self::prepare_request(
+        let (http_stream_tx, request) = Self::prepare_request(
             path,
             deployment,
             self.service_protocol_version,
             &self.invocation_task.invocation_id,
             attempt_span.span_context(),
             self.invocation_task.invocation_target.key(),
-        ));
+        );
 
         // Initialize the response stream state
         let http_stream_rx = ResponseStream::new(self.invocation_task.client.call(request));
@@ -421,7 +421,7 @@ where
         invocation_id: &InvocationId,
         parent_span_context: &SpanContext,
         service_key: Option<&ByteString>,
-    ) -> Result<(InvokerBodySender, Request<InvokerBodyType>), InvokerError> {
+    ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
         // channel capacity.
@@ -471,7 +471,7 @@ where
 
         let address = match deployment_metadata.ty {
             DeploymentType::Unknown => {
-                return Err(InvokerError::UnknownDeploymentType(deployment_metadata.id));
+                todo!("handle unknown deployment type");
             }
             DeploymentType::Lambda {
                 arn,
@@ -493,7 +493,7 @@ where
             request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
         }
 
-        Ok((http_stream_tx, Request::new(request_parts, req_body)))
+        (http_stream_tx, Request::new(request_parts, req_body))
     }
 
     // --- Loops

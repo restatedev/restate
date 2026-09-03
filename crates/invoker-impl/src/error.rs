@@ -193,9 +193,6 @@ pub(crate) enum InvokerError {
     #[error("maximum awaited future depth limit of {limit} has been reached.")]
     #[code(restate_errors::RT0025)]
     MaxFutureDepthReached { limit: usize },
-    #[error("deployment {0} has unknown type")]
-    #[code(unknown)]
-    UnknownDeploymentType(DeploymentId),
 }
 
 /// Describes a memory budget exhaustion that occurred during invocation
