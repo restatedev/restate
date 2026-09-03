@@ -129,6 +129,8 @@ impl Versioned for Schema {
 }
 
 mod storage {
+    use std::sync::OnceLock;
+
     use bytes::{BufMut, BytesMut};
 
     use restate_platform::storage::{
@@ -138,13 +140,21 @@ mod storage {
     use super::Schema;
     use crate::{config::Configuration, schema::metadata::ActiveServiceRevision, storage};
 
+    // It's unsafe to change the encoding during runtime because the StorageCodec might read
+    // a different default_codec that what schema use if the config changes between the two
+    // calls. Hence we keep this value here on first read.
+    static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
+
     impl StorageEncode for Schema {
         fn default_codec(&self) -> StorageCodecKind {
-            if Configuration::pinned()
-                .common
-                .experimental
-                .is_schema_bilrost_encoding_enabled()
-            {
+            let bilrost_encoding = ENABLED_SCHEMA_BILROST_ENCODING.get_or_init(|| {
+                Configuration::pinned()
+                    .common
+                    .experimental
+                    .is_schema_bilrost_encoding_enabled()
+            });
+
+            if *bilrost_encoding {
                 StorageCodecKind::ZstdBilrostDefault
             } else {
                 StorageCodecKind::FlexbuffersSerde
@@ -653,45 +663,63 @@ impl ServiceRevision {
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct Handler {
+    #[bilrost(tag = 1)]
     name: String,
+    #[bilrost(tag = 2)]
     target_ty: InvocationTargetType,
+    #[bilrost(tag = 3)]
     input_rules: InputRules,
+    #[bilrost(tag = 4)]
     output_rules: OutputRules,
     /// Override of public for this handler. If unspecified, the `public` from `service` is used instead.
+    #[bilrost(tag = 5)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public: Option<bool>,
+    #[bilrost(tag = 6)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     idempotency_retention: Option<Duration>,
+    #[bilrost(tag = 7)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workflow_completion_retention: Option<Duration>,
+    #[bilrost(tag = 8)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     journal_retention: Option<Duration>,
+    #[bilrost(tag = 9)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inactivity_timeout: Option<Duration>,
+    #[bilrost(tag = 10)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     abort_timeout: Option<Duration>,
+    #[bilrost(tag = 11)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     documentation: Option<String>,
+    #[bilrost(tag = 12)]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+    #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
+    #[bilrost(tag = 14)]
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_initial_interval: Option<Duration>,
+    #[bilrost(tag = 15)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_exponentiation_factor: Option<f32>,
+    #[bilrost(tag = 16)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_max_attempts: Option<NonZeroUsize>,
+    #[bilrost(tag = 17)]
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_max_interval: Option<Duration>,
+    #[bilrost(tag = 18)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
 }
