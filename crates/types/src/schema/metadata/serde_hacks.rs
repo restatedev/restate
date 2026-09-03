@@ -22,7 +22,6 @@ pub struct Schema {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     deployments_v2: Option<Vec<Deployment>>,
 
-    // --- Same in old and new schema data structure
     /// This gets bumped on each update.
     version: Version,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
