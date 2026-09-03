@@ -17,11 +17,13 @@ use datafusion::arrow::array::{
     UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
-use futures::StreamExt;
+use datafusion::assert_batches_sorted_eq;
+use futures::{StreamExt, TryStreamExt};
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
 
 use restate_limiter::{Level, LimitKey};
+use restate_partition_store::PartitionStoreTransaction;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
@@ -973,4 +975,76 @@ async fn query_state_with_service_key_filter() {
         null_scope_service_key,
         row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
     );
+}
+
+struct QueryFixture {
+    populate: fn(&mut PartitionStoreTransaction<'_>) -> anyhow::Result<()>,
+    queries: &'static [QueryExpectation],
+}
+
+struct QueryExpectation {
+    name: &'static str,
+    sql: &'static str,
+    expected: &'static [&'static str],
+}
+
+fn populate_distinct_state_query(tx: &mut PartitionStoreTransaction<'_>) -> anyhow::Result<()> {
+    let scope_a = Scope::try_from_static("scope-a")?;
+    let scope_b = Scope::try_from_static("scope-b")?;
+    let service_1 = ServiceId::new(Some(scope_a), "TestService", "key-1");
+    let service_2 = ServiceId::new(Some(scope_b.clone()), "TestService", "key-2");
+    let other_service = ServiceId::new(Some(scope_b), "OtherService", "ignored-key");
+
+    // Two state entries for the same service make DISTINCT observable.
+    tx.put_user_state(&service_1, &Bytes::from_static(b"state-1"), b"value-1")?;
+    tx.put_user_state(&service_1, &Bytes::from_static(b"state-2"), b"value-2")?;
+    tx.put_user_state(&service_2, &Bytes::from_static(b"state-1"), b"value-3")?;
+    tx.put_user_state(&other_service, &Bytes::from_static(b"state-1"), b"value-4")?;
+
+    Ok(())
+}
+
+// Add queries that share a snapshot to `queries`; use another fixture for different data.
+const QUERY_FIXTURES: &[QueryFixture] = &[QueryFixture {
+    populate: populate_distinct_state_query,
+    queries: &[QueryExpectation {
+        name: "distinct scoped service instances",
+        sql: r#"SELECT DISTINCT service_key, scope
+                FROM state
+                WHERE "service_name" = 'TestService'
+                LIMIT 2"#,
+        expected: &[
+            "+-------------+---------+",
+            "| service_key | scope   |",
+            "+-------------+---------+",
+            "| key-1       | scope-a |",
+            "| key-2       | scope-b |",
+            "+-------------+---------+",
+        ],
+    }],
+}];
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_fixtures() {
+    for fixture in QUERY_FIXTURES {
+        let mut engine = MockQueryEngine::create().await;
+        let mut tx = engine.partition_store().transaction();
+        (fixture.populate)(&mut tx).unwrap();
+        tx.commit().await.unwrap();
+        drop(tx);
+
+        for query in fixture.queries {
+            eprintln!("running query fixture: {}", query.name);
+            let batches = engine
+                .execute(query.sql)
+                .await
+                .unwrap()
+                .stream
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+
+            assert_batches_sorted_eq!(query.expected, &batches);
+        }
+    }
 }
