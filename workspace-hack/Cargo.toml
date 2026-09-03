@@ -164,7 +164,6 @@ axum = { version = "0.8", default-features = false, features = ["http1", "http2"
 bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
-cc = { version = "1", default-features = false, features = ["parallel"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
