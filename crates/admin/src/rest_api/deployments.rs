@@ -242,11 +242,7 @@ where
         .schema_registry
         .list_deployments()
         .into_iter()
-        .filter_map(|(deployment, services)| {
-            to_deployment_response(deployment, services)
-                .inspect_err(|err| warn!(deployment_id=%err.0, "Invalid deployment: {err}"))
-                .ok()
-        })
+        .filter_map(|(deployment, services)| to_deployment_response(deployment, services))
         .collect();
 
     ListDeploymentsResponse { deployments }.into()
@@ -491,10 +487,11 @@ fn to_deployment_response(
         ..
     }: Deployment,
     services: Vec<(String, ServiceRevision)>,
-) -> Result<DeploymentResponse, UnknownDeploymentTypeError> {
+) -> Option<DeploymentResponse> {
     let response = match ty {
         DeploymentType::Unknown => {
-            return Err(UnknownDeploymentTypeError(id));
+            warn!(deployment_id=%id, "deployment has an unknown type");
+            return None;
         }
         DeploymentType::Http {
             http_version,
@@ -541,7 +538,7 @@ fn to_deployment_response(
             info,
         },
     };
-    Ok(response)
+    Some(response)
 }
 
 fn to_detailed_deployment_response(
