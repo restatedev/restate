@@ -730,7 +730,7 @@ pub enum ExitStatus {
     Failure((InvocationErrorCode, Option<Cow<'static, str>>)),
 }
 
-#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionStatus {
     Success,
     Failure(InvocationErrorCode),
