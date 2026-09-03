@@ -13,7 +13,8 @@ Restate now enables HTTP/2 keep-alive pings for AWS Lambda invocations. The exis
 
 Lambda invocations share long-lived HTTP/2 connections. Restate now detects a silently dropped
 connection within the keep-alive interval plus its timeout instead of waiting for the kernel's TCP
-retransmission timeout, which can take around 15 minutes.
+retransmission timeout, which can take around 15 minutes. Idle connections are pinged too, so one
+that dies while pooled is discarded before the next invocation would stall on it.
 
 ### Impact on Users
 

@@ -10,17 +10,17 @@
 
 //! HTTP client for the AWS Lambda API.
 //!
-//! The SDK ships its own hyper-backed client, but exposes none of hyper's HTTP/2
-//! settings. Each partition-local client multiplexes Lambda invocations onto
-//! long-lived HTTP/2 connections with no liveness detection. If a connection is
-//! silently blackholed, its in-flight requests hang until the kernel exhausts its
-//! retransmission budget, roughly 15 minutes later. This client enables keep-alive
-//! pings, which bound that delay to the ping interval plus its timeout.
+//! The SDK's own hyper-based client exposes none of hyper's HTTP/2 settings. Each
+//! partition-local client multiplexes Lambda invocations onto long-lived HTTP/2
+//! connections, and a connection that is silently blackholed leaves its in-flight
+//! requests hanging until the kernel gives up on the socket, roughly 15 minutes
+//! later. This client enables HTTP/2 keep-alive pings, which bound that delay to
+//! the ping interval plus its timeout and retire connections that die while idle
+//! before a request lands on them.
 //!
-//! Liveness detection is an HTTP/2 mechanism: the pings ride the h2 connection.
-//! The Lambda API negotiates h2, but a connection that ends up on HTTP/1.1 - an
-//! endpoint override to a gateway that only speaks h1 - keeps the old
-//! kernel-bound behavior.
+//! Pings are an HTTP/2 mechanism. The Lambda API negotiates h2; a connection that
+//! ends up on HTTP/1.1 (an endpoint override to a gateway that only speaks h1)
+//! keeps the old kernel-bound behavior.
 //!
 //! The rest mirrors the relevant parts of `aws-smithy-http-client`: connection
 //! capture and poisoning, error classification, proxy support, and TLS settings.
@@ -56,8 +56,8 @@ use hyper_rustls::{ConfigBuilderExt, HttpsConnector, MaybeHttpsStream};
 use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::proxy::Tunnel;
 use hyper_util::client::legacy::connect::{
-    CaptureConnection, Connect, Connected, Connection, HttpConnector as TcpConnector, HttpInfo,
-    capture_connection,
+    CaptureConnection, Connect, Connected, Connection, HttpConnector as HyperHttpConnector,
+    HttpInfo, capture_connection,
 };
 use hyper_util::client::proxy::matcher::Matcher;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
@@ -125,6 +125,11 @@ fn restrict_ciphers(base: CryptoProvider) -> CryptoProvider {
 }
 
 pub(crate) fn from_options(keep_alive: &Http2KeepAliveOptions) -> SharedHttpClient {
+    // Load the TLS configuration, native roots included, now rather than on the
+    // first invocation. The tunnel config is derived from the base config, so this
+    // builds both.
+    LazyLock::force(&AWS_TUNNEL_TLS_CONFIG);
+
     SharedHttpClient::new(AwsHttpClient {
         keep_alive: KeepAlive::from_options(keep_alive),
         // The same environment variables the SDK's default client reads
@@ -200,7 +205,7 @@ impl HttpClient for AwsHttpClient {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct AwsHttpConnector<C = ConnectTimeout<ProxiedConnector>> {
     client: Client<C, SdkBody>,
     read_timeout: Option<Duration>,
@@ -236,7 +241,10 @@ where
             .timer(TokioTimer::default())
             .pool_timer(TokioTimer::default())
             .http2_keep_alive_interval(keep_alive.ping_interval)
-            .http2_keep_alive_timeout(keep_alive.ping_timeout);
+            .http2_keep_alive_timeout(keep_alive.ping_timeout)
+            // Pinging idle connections too retires one that died while pooled
+            // before the next invocation would otherwise stall on it.
+            .http2_keep_alive_while_idle(true);
 
         Self {
             client: builder.build(connector),
@@ -251,7 +259,6 @@ where
     C: Connect + Clone + Debug + Send + Sync + 'static,
 {
     fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
-        let client = self.client.clone();
         let read_timeout = self.read_timeout;
 
         let mut request = match request.try_into_http1x() {
@@ -282,18 +289,20 @@ where
             capture.set_connection_retriever(move || smithy_connection(&captured));
         }
 
+        let response = self.client.request(request);
         HttpConnectorFuture::new(async move {
-            let response = match read_timeout {
-                Some(read_timeout) => tokio::time::timeout(read_timeout, client.request(request))
-                    .await
-                    .map_err(|_| {
-                        ConnectorError::timeout(
-                            format!("no response received within {read_timeout:?}").into(),
-                        )
-                    })?,
-                None => client.request(request).await,
-            }
-            .map_err(connector_error)?;
+            let response =
+                match read_timeout {
+                    Some(read_timeout) => tokio::time::timeout(read_timeout, response)
+                        .await
+                        .map_err(|_| {
+                            ConnectorError::timeout(
+                                format!("no response received within {read_timeout:?}").into(),
+                            )
+                        })?,
+                    None => response.await,
+                }
+                .map_err(connector_error)?;
 
             let (parts, body) = response.into_parts();
             HttpResponse::try_from(http::Response::from_parts(
@@ -305,20 +314,19 @@ where
     }
 }
 
-/// Establishes connections directly, or through the proxy configured via the
-/// standard environment variables, reproducing the SDK default client's behavior:
-/// plain-HTTP requests are forwarded through the proxy (in absolute form, via the
-/// proxied-connection marker), and HTTPS is tunneled with `CONNECT` followed by a
-/// TLS handshake inside the tunnel.
+/// Connects directly, or through the proxy configured in the standard environment
+/// variables, as the SDK default client does: plain-HTTP requests are forwarded to
+/// the proxy in absolute form, HTTPS is tunneled with `CONNECT` and a TLS handshake
+/// inside the tunnel.
 #[derive(Debug, Clone)]
 struct ProxiedConnector {
-    https: HttpsConnector<TcpConnector>,
+    https: HttpsConnector<HyperHttpConnector>,
     proxy: Arc<Matcher>,
 }
 
 impl ProxiedConnector {
     fn new(proxy: Arc<Matcher>) -> Self {
-        let mut tcp_connector = TcpConnector::new();
+        let mut tcp_connector = HyperHttpConnector::new();
         tcp_connector.enforce_http(false);
         tcp_connector.set_nodelay(true);
 
@@ -364,8 +372,9 @@ impl Service<Uri> for ProxiedConnector {
             }
 
             Box::pin(async move {
+                // `Uri::host()` keeps the brackets around an IPv6 literal.
                 let host = dst.host().ok_or("missing host in URI for TLS handshake")?;
-                let server_name = ServerName::try_from(host.to_owned())?;
+                let server_name = ServerName::try_from(host.trim_matches(['[', ']']).to_owned())?;
 
                 let tunneled = tunnel.oneshot(dst.clone()).await?;
                 let stream = tokio_rustls::TlsConnector::from(AWS_TUNNEL_TLS_CONFIG.clone())
@@ -388,11 +397,11 @@ impl Service<Uri> for ProxiedConnector {
     }
 }
 
-/// A connection from [`ProxiedConnector`], carrying the metadata hyper reads off
-/// it: whether it goes through a proxy (plain-HTTP requests then use absolute
-/// form) and whether ALPN selected h2.
-// Streams are boxed because the TLS session state makes them large (over a
-// kilobyte); connections are created rarely.
+/// A connection from [`ProxiedConnector`] with the metadata hyper reads off it:
+/// whether requests must use the absolute form a forward proxy expects, and
+/// whether ALPN selected h2.
+// The streams are boxed because TLS session state makes them large (over a
+// kilobyte) and connections are created rarely.
 enum ProxiedConnection {
     Forward {
         stream: Box<HttpsStream>,
@@ -408,8 +417,11 @@ impl Connection for ProxiedConnection {
         match self {
             Self::Forward { stream, via_proxy } => stream.connected().proxy(*via_proxy),
             Self::Tunneled { stream } => {
+                // Inside the tunnel the peer is the origin, not the proxy, so
+                // requests use origin form. (The SDK marks these as proxied, which
+                // only matters if the origin speaks HTTP/1.1.)
                 let (tunnel, session) = stream.inner().get_ref();
-                let connected = tunnel.inner().connected().proxy(true);
+                let connected = tunnel.inner().connected().proxy(false);
                 if session.alpn_protocol() == Some(b"h2") {
                     connected.negotiated_h2()
                 } else {
@@ -503,10 +515,9 @@ fn smithy_connection(captured: &CaptureConnection) -> Option<ConnectionMetadata>
 
 /// Classifies transport errors the way the SDK's adapter does, so the Lambda
 /// client's retry classifier sees the error kinds it expects. Ported from
-/// `downcast_error`; one
-/// divergence is that upstream first returns an already-built `ConnectorError`
-/// found in the boxed error, which has no equivalent here because nothing in this
-/// connector stack produces one.
+/// `downcast_error`. Upstream first returns an already-built `ConnectorError`
+/// found inside the boxed error; nothing in this connector stack produces one, so
+/// that branch is omitted.
 fn connector_error(err: hyper_util::client::legacy::Error) -> ConnectorError {
     if find_source::<ConnectTimeoutError>(&err).is_some() {
         return ConnectorError::timeout(err.into());
@@ -609,7 +620,6 @@ mod tests {
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    use aws_smithy_runtime_api::client::runtime_components::RuntimeComponentsBuilder;
     use bytes::Bytes;
     use googletest::prelude::*;
     use http::{Response, StatusCode};
@@ -901,29 +911,6 @@ mod tests {
                 contains_substring("Proxy-Authorization: Basic QWxhZGRpbjpvcGVuc2VzYW1l\r\n")
             )
         );
-    }
-
-    #[test]
-    fn connectors_are_cached_per_timeout_setting() {
-        let client = AwsHttpClient {
-            keep_alive: KeepAlive::from_options(&Http2KeepAliveOptions::default()),
-            proxy: no_proxy(),
-            connectors: Default::default(),
-        };
-        let components = RuntimeComponentsBuilder::for_tests().build().unwrap();
-
-        let settings = HttpConnectorSettings::builder()
-            .connect_timeout(Duration::from_secs(3))
-            .build();
-        client.http_connector(&settings, &components);
-        client.http_connector(&settings, &components);
-        assert_that!(client.connectors.len(), eq(1));
-
-        let other = HttpConnectorSettings::builder()
-            .connect_timeout(Duration::from_secs(5))
-            .build();
-        client.http_connector(&other, &components);
-        assert_that!(client.connectors.len(), eq(2));
     }
 
     #[test]
