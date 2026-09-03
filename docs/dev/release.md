@@ -22,6 +22,8 @@ We follow [SemVer](https://semver.org/):
 
 Runtime and SDKs follow independent artifact versioning. Restate server and SDK compatibility is defined by the intersection of supported service protocol versions.
 
+For exceptional customer builds that cannot wait for the next patch release, follow the [hotfix image runbook](hotfix.md).
+
 ## Pre-release
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:

@@ -192,6 +192,7 @@ This avoids artifact transfer but only works for commits that push images to the
 A **reusable workflow** called by this repo and many others in the restatedev org. Any repo with a `docker/Dockerfile` can use it.
 
 **Inputs:**
+- `hotfixTag` (manual dispatch only): Build a `vX.Y.Z+hotfix.N` source tag using the hotfix tagging rules
 - `uploadImageAsTarball`: Save image as artifact for downstream jobs
 - `platforms`: Target platforms (default: `linux/arm64,linux/amd64`)
 - `parca`: Split debug symbols and upload to Polar Signals
