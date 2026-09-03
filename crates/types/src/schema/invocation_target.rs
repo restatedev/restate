@@ -15,9 +15,9 @@ use std::{cmp, fmt};
 use bytes::Bytes;
 use bytestring::ByteString;
 use itertools::Itertools;
-use restate_encoding::RestateEncoding;
 use serde::{Deserialize, Serialize};
 
+use restate_encoding::RestateEncoding;
 use restate_util_bytecount::ByteCount;
 
 use crate::identifiers::DeploymentId;

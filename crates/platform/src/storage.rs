@@ -152,6 +152,7 @@ impl TryFrom<u8> for StorageCodecKind {
             5 => Ok(Self::Json),
             6 => Ok(Self::Bilrost),
             7 => Ok(Self::Custom),
+            8 => Ok(Self::ZstdBilrostDefault),
             value => Err(StorageDecodeError::ReadingCodec(format_restring!(
                 "unknown discriminant '{value}'"
             ))),

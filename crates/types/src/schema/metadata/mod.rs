@@ -189,20 +189,18 @@ mod storage {
         {
             match kind {
                 StorageCodecKind::FlexbuffersSerde => storage::decode::decode_serde(buf, kind),
-                StorageCodecKind::Bilrost => {
-                    let mut schema = storage::decode::decode_bilrost::<Schema, _>(buf)?;
-                    // rebuild active service index.
-                    schema.active_service_revisions =
-                        ActiveServiceRevision::create_index(schema.deployments.values());
-                    Ok(schema)
-                }
                 StorageCodecKind::ZstdBilrostDefault => {
                     // Unfortunately bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer first
                     // before decode payload as bilrost.
                     let uncompressed = zstd::decode_all(buf.reader())
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
-                    storage::decode::decode_bilrost(uncompressed.as_ref())
+                    let mut schema =
+                        storage::decode::decode_bilrost::<Schema, _>(uncompressed.as_ref())?;
+                    // rebuild active service index.
+                    schema.active_service_revisions =
+                        ActiveServiceRevision::create_index(schema.deployments.values());
+                    Ok(schema)
                 }
                 _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
             }
