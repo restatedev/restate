@@ -88,7 +88,7 @@ pub enum StorageCodecKind {
     /// it is up to your implementation to decide how (or if) to use them, and how the final
     /// byte representation is constructed.
     Custom = 7,
-    /// Zst compressed bilrost (no length-prefixed) using default compression.
+    /// Zstd compressed bilrost (no length-prefixed) using default compression.
     ZstdBilrostDefault = 8,
 }
 

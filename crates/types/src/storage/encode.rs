@@ -82,7 +82,7 @@ pub fn encode_bilrost_writer<T: bilrost::Message, W: Write>(
     value: &T,
     writer: &mut W,
 ) -> Result<(), StorageEncodeError> {
-    let reverse_buffer = value.encode_contiguous();
+    let reverse_buffer = value.encode_fast();
     std::io::copy(&mut reverse_buffer.reader(), writer)
         .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
 

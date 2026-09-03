@@ -139,7 +139,7 @@ impl Versioned for Schema {
 mod storage {
     use std::sync::OnceLock;
 
-    use bytes::{BufMut, BytesMut};
+    use bytes::{BufMut, Bytes, BytesMut};
 
     use restate_platform::storage::{
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
@@ -211,8 +211,8 @@ mod storage {
                     let uncompressed = zstd::decode_all(buf.reader())
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
-                    let mut schema =
-                        storage::decode::decode_bilrost::<Schema, _>(uncompressed.as_ref())?;
+                    let uncompressed = Bytes::from(uncompressed);
+                    let mut schema = storage::decode::decode_bilrost::<Schema, _>(uncompressed)?;
 
                     schema
                         .verify()

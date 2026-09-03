@@ -867,7 +867,7 @@ experimental! {
 
     /// # Use bilrost encoding for schemas
     ///
-    /// When enabled, schema metadata object will use bilrost
+    /// When enabled, will use zstd compressed bilrost encoding
     /// encoding instead of the default flexbuffers
     ///
     /// This will be default from v1.9.0
