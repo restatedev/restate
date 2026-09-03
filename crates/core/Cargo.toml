@@ -20,6 +20,9 @@ test-util = [
   "restate-types/test-util",
   "tokio/test-util"
 ]
+# Tokio task dumping. Not enabled by any of our binaries because dumping re-polls in-flight futures
+# which can panic (and abort the process) on current_thread runtimes.
+# See https://github.com/restatedev/restate/issues/5235
 taskdump = []
 
 [dependencies]
@@ -93,6 +96,8 @@ tracing-subscriber = { workspace = true }
 tracing-test = { workspace = true }
 
 [target.'cfg(all(target_os = "linux", any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))'.dependencies]
+# tokio/taskdump hard-errors on unsupported targets, hence it cannot be pulled in by our `taskdump`
+# feature directly
 tokio = { workspace = true, features = ["taskdump"] }
 
 [lints]
