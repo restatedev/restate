@@ -35,22 +35,26 @@ impl Proxiable<HeaderTag> for HeaderName {
     }
 }
 
+// Creating a HeaderName with empty string to implement EmptyState and ForOverwrite
+// will panic because empty string is not a valid header name. Hence this.
+const HEADER_EMPTY_MARKER: &str = "x-restate-empty-placeholder";
+
 impl ForOverwrite<RestateEncoding, HeaderName> for () {
     fn for_overwrite() -> HeaderName
     where
         HeaderValue: Sized,
     {
-        HeaderName::from_static("")
+        HeaderName::from_static(HEADER_EMPTY_MARKER)
     }
 }
 
 impl EmptyState<RestateEncoding, HeaderName> for () {
     fn clear(val: &mut HeaderName) {
-        *val = HeaderName::from_static("")
+        *val = <Self as ForOverwrite<RestateEncoding, HeaderName>>::for_overwrite()
     }
 
     fn is_empty(val: &HeaderName) -> bool {
-        val.as_str().is_empty()
+        val.as_str() == HEADER_EMPTY_MARKER
     }
 }
 
