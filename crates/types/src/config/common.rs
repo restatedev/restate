@@ -787,13 +787,6 @@ experimental! {
     /// where v7 is not supported < v1.7
     protocol_v7,
 
-    /// # Enables unique random seeds
-    ///
-    /// When enabled, invocations get a unique random seed assigned.
-    ///
-    /// Since v1.7.0
-    unique_random_seeds,
-
     /// # Migrate the unscoped state and promise tables into their scoped variants
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
