@@ -758,7 +758,7 @@ impl ResponseResultRef {
             Self::Killed => ExitStatus::Killed,
             Self::Success(_) => ExitStatus::Success,
             Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
-            Self::Completed(status) => status.clone().into(),
+            Self::Completed(status) => ExitStatus::from(*status),
         }
     }
 }
