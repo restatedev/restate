@@ -17,16 +17,15 @@ use anyhow::{Context, ensure};
 use bytes::Bytes;
 use datafusion::common::test_util::{batches_to_sort_string, batches_to_string};
 use futures::TryStreamExt;
-use prost::Message;
 
 use restate_partition_store::PartitionStoreTransaction;
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     JournalMetadata, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
-use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::lock_table::{AcquiredBy, LockState, WriteLockTable};
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::metadata::{
@@ -46,12 +45,11 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::{Entry, InputEntry};
 use restate_types::journal_events::Event;
+use restate_types::journal_v2::{CompletionId, Encoder, Entry, InputCommand, RunCommand};
 use restate_types::partition_table::{FindPartition, PartitionTable};
-use restate_types::service_protocol;
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
 use restate_types::{LockName, Scope, ServiceName, Version};
@@ -125,6 +123,14 @@ impl QueryTest {
     }
 
     pub(super) async fn assert_query(&self, query: QueryExpectation<'_>) {
+        self.assert_query_with_order(query, false).await;
+    }
+
+    pub(super) async fn assert_query_ordered(&self, query: QueryExpectation<'_>) {
+        self.assert_query_with_order(query, true).await;
+    }
+
+    async fn assert_query_with_order(&self, query: QueryExpectation<'_>, ordered: bool) {
         eprintln!("running query test: {}", query.name);
         self.engine.clear_remote_scans();
         let batches = match self.try_execute(query.sql).await {
@@ -136,8 +142,12 @@ impl QueryTest {
                 panic!("{report}");
             }
         };
-        let expected = sorted_expected_table(query.expected);
-        let actual = batches_to_sort_string(&batches);
+        let expected = expected_table(query.expected, ordered);
+        let actual = if ordered {
+            batches_to_string(&batches)
+        } else {
+            batches_to_sort_string(&batches)
+        };
         let remote_scans = self.engine.remote_scans();
 
         if expected != actual {
@@ -197,15 +207,15 @@ impl QueryTest {
     }
 }
 
-fn sorted_expected_table<'a>(expected: &'a [&'a str]) -> String {
+fn expected_table<'a>(expected: &'a [&'a str], ordered: bool) -> String {
     if is_vertical_expected_table(expected) {
-        return transpose_expected_table(expected)
+        return transpose_expected_table(expected, ordered)
             .unwrap_or_else(|error| panic!("invalid vertical expected table: {error:#}"));
     }
 
     let mut expected = expected.to_vec();
     let num_lines = expected.len();
-    if num_lines > 3 {
+    if !ordered && num_lines > 3 {
         expected[2..num_lines - 1].sort_unstable();
     }
     expected.join("\n")
@@ -221,7 +231,7 @@ fn is_vertical_expected_table(expected: &[&str]) -> bool {
         == Some("column")
 }
 
-fn transpose_expected_table<'a>(expected: &'a [&'a str]) -> anyhow::Result<String> {
+fn transpose_expected_table<'a>(expected: &'a [&'a str], ordered: bool) -> anyhow::Result<String> {
     let table = TextTable::parse(expected)?;
     ensure!(
         table.columns.first() == Some(&"column"),
@@ -247,10 +257,10 @@ fn transpose_expected_table<'a>(expected: &'a [&'a str]) -> anyhow::Result<Strin
         })
         .collect::<Vec<_>>();
 
-    Ok(format_sorted_table(&columns, &rows))
+    Ok(format_table(&columns, &rows, ordered))
 }
 
-fn format_sorted_table(columns: &[&str], rows: &[Vec<&str>]) -> String {
+fn format_table(columns: &[&str], rows: &[Vec<&str>], ordered: bool) -> String {
     let widths = columns
         .iter()
         .enumerate()
@@ -280,7 +290,9 @@ fn format_sorted_table(columns: &[&str], rows: &[Vec<&str>]) -> String {
             })
     };
     let mut rendered_rows = rows.iter().map(|row| render_row(row)).collect::<Vec<_>>();
-    rendered_rows.sort_unstable();
+    if !ordered {
+        rendered_rows.sort_unstable();
+    }
 
     let mut lines = Vec::with_capacity(rendered_rows.len() + 4);
     lines.push(separator.clone());
@@ -834,6 +846,7 @@ impl SysInvocationStatusTableFixture<'_, '_> {
             "id",
             "status",
             "completion_result",
+            "created_at",
             "target_service_name",
             "target_service_key",
             "target_handler_name",
@@ -856,6 +869,14 @@ impl SysInvocationStatusTableFixture<'_, '_> {
                 });
             invocation.id = row.invocation_id()?;
             invocation.target = invocation_target(&row)?;
+            invocation.timestamps = StatusTimestamps::new(
+                MillisSinceEpoch::from(row.parse::<u64>("created_at")?),
+                invocation.timestamps.modification_time(),
+                invocation.timestamps.inboxed_transition_time(),
+                invocation.timestamps.scheduled_transition_time(),
+                invocation.timestamps.running_transition_time(),
+                invocation.timestamps.completed_transition_time(),
+            );
             self.transactions
                 .validate_declared_partition(partition_id, &invocation.id)?;
             self.populate(&invocation)?;
@@ -1264,9 +1285,12 @@ impl SysJournalTableFixture<'_, '_> {
             "partition_key",
             "id",
             "index",
+            "version",
+            "appended_at",
             "entry_type",
             "name",
             "value",
+            "completion_id",
         ])?;
 
         for row in table.rows() {
@@ -1274,19 +1298,29 @@ impl SysJournalTableFixture<'_, '_> {
             let invocation_id = row.invocation_id()?;
             self.transactions
                 .validate_declared_partition(partition_id, &invocation_id)?;
-            let entry = match row.required("entry_type")? {
+            ensure!(
+                row.parse::<u8>("version")? == 2,
+                "text table row on line {} has unsupported journal version; expected `2`",
+                row.line_number
+            );
+            let (entry, related_completion_ids): (Entry, Vec<CompletionId>) = match row
+                .required("entry_type")?
+            {
                 "Input" => {
                     ensure!(
-                        row.get("name").is_none(),
-                        "text table row on line {} cannot set `name` for an Input entry",
+                        row.get("completion_id").is_none(),
+                        "text table row on line {} cannot set `completion_id` for an Input entry",
                         row.line_number
                     );
-                    JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
-                        InputEntry {
+                    (
+                        InputCommand {
                             headers: Vec::new(),
-                            value: Bytes::copy_from_slice(row.required("value")?.as_bytes()),
-                        },
-                    )))
+                            payload: Bytes::copy_from_slice(row.required("value")?.as_bytes()),
+                            name: row.required("name")?.into(),
+                        }
+                        .into(),
+                        Vec::new(),
+                    )
                 }
                 "Run" => {
                     ensure!(
@@ -1294,24 +1328,33 @@ impl SysJournalTableFixture<'_, '_> {
                         "text table row on line {} cannot set `value` for a Run entry",
                         row.line_number
                     );
-                    JournalEntry::Entry(EnrichedRawEntry::new(
-                        EnrichedEntryHeader::Run {},
-                        service_protocol::RunEntryMessage {
-                            name: row.required("name")?.to_owned(),
-                            result: None,
+                    let completion_id = row.parse("completion_id")?;
+                    (
+                        RunCommand {
+                            completion_id,
+                            name: row.required("name")?.into(),
                         }
-                        .encode_to_vec()
                         .into(),
-                    ))
+                        vec![completion_id],
+                    )
                 }
                 value => anyhow::bail!(
                     "text table row on line {} has unsupported `entry_type` value {value:?}",
                     row.line_number
                 ),
             };
+            let entry = StoredRawEntry::new(
+                StoredRawEntryHeader::new(MillisSinceEpoch::from(row.parse::<u64>("appended_at")?)),
+                ServiceProtocolV4Codec::encode_entry(entry),
+            );
             self.transactions
                 .for_key(&invocation_id)?
-                .put_journal_entry(&invocation_id, row.parse("index")?, &entry)?;
+                .put_journal_entry(
+                    &invocation_id,
+                    row.parse("index")?,
+                    &entry,
+                    &related_completion_ids,
+                )?;
         }
         Ok(())
     }
@@ -1410,24 +1453,36 @@ impl SysLocksTableFixture<'_, '_> {
 }
 
 #[test]
-fn vertical_expected_table_is_transposed_and_sorted() {
-    let actual = sorted_expected_table(&[
+fn vertical_expected_table_respects_order_mode() {
+    let expected = &[
         "+--------+---------+-----------+",
         "| column | row 1   | row 2     |",
         "+--------+---------+-----------+",
         "| id     | b       | a         |",
         "| status | running | completed |",
         "+--------+---------+-----------+",
-    ]);
+    ];
 
     assert_eq!(
-        actual,
+        expected_table(expected, false),
         [
             "+----+-----------+",
             "| id | status    |",
             "+----+-----------+",
             "| a  | completed |",
             "| b  | running   |",
+            "+----+-----------+",
+        ]
+        .join("\n")
+    );
+    assert_eq!(
+        expected_table(expected, true),
+        [
+            "+----+-----------+",
+            "| id | status    |",
+            "+----+-----------+",
+            "| b  | running   |",
+            "| a  | completed |",
             "+----+-----------+",
         ]
         .join("\n")

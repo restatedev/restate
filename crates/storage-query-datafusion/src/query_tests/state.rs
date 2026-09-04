@@ -45,7 +45,7 @@ async fn query_state_ui_shapes() {
     })
     .await;
 
-    test.assert_query(QueryExpectation {
+    test.assert_query_ordered(QueryExpectation {
         name: "state entries page",
         sql: r#"SELECT
                        key,

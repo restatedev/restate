@@ -22,9 +22,12 @@ async fn query_journal_ui_shapes() {
             "| partition_key | 6564637988134260717                      | 6564637988134260717                      |",
             "| id            | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   |",
             "| index         | 0                                        | 1                                        |",
+            "| version       | 2                                        | 2                                        |",
+            "| appended_at   | 20000                                    | 21000                                    |",
             "| entry_type    | Input                                    | Run                                      |",
-            "| name          |                                          | fixture-step-1                           |",
+            "| name          | input                                    | fixture-step-1                           |",
             "| value         | fixture-input                            |                                          |",
+            "| completion_id |                                          | 1                                        |",
             "+---------------+------------------------------------------+------------------------------------------+",
         ])?;
         tables.sys_journal_events().populate_table(&[
@@ -44,7 +47,7 @@ async fn query_journal_ui_shapes() {
     })
     .await;
 
-    test.assert_query(QueryExpectation {
+    test.assert_query_ordered(QueryExpectation {
         name: "journal entries for an invocation",
         sql: r#"SELECT
                        id,
@@ -64,28 +67,28 @@ async fn query_journal_ui_shapes() {
                    WHERE id = 'inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw'
                    ORDER BY index"#,
         expected: &[
-            "+-----------------+------------------------------------------+------------------------------------------+",
-            "| column          | row 1                                    | row 2                                    |",
-            "+-----------------+------------------------------------------+------------------------------------------+",
-            "| id              | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   |",
-            "| index           | 0                                        | 1                                        |",
-            "| appended_at     |                                          |                                          |",
-            "| entry_type      | Input                                    | Run                                      |",
-            "| name            |                                          | fixture-step-1                           |",
-            "| raw_length      |                                          |                                          |",
-            "| entry_lite_json |                                          |                                          |",
-            "| version         | 1                                        | 1                                        |",
-            "| completed       |                                          |                                          |",
-            "| sleep_wakeup_at |                                          |                                          |",
-            "| invoked_id      |                                          |                                          |",
-            "| invoked_target  |                                          |                                          |",
-            "| promise_name    |                                          |                                          |",
-            "+-----------------+------------------------------------------+------------------------------------------+",
+            "+-----------------+----------------------------------------+-----------------------------------------------------------------+",
+            "| column          | row 1                                  | row 2                                                           |",
+            "+-----------------+----------------------------------------+-----------------------------------------------------------------+",
+            "| id              | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw                          |",
+            "| index           | 0                                      | 1                                                               |",
+            "| appended_at     | 1970-01-01T00:00:20Z                   | 1970-01-01T00:00:21Z                                            |",
+            "| entry_type      | Command: Input                         | Command: Run                                                    |",
+            "| name            | input                                  | fixture-step-1                                                  |",
+            "| raw_length      | 24                                     | 18                                                              |",
+            "| entry_lite_json | {\"Command\":{\"Input\":{}}}               | {\"Command\":{\"Run\":{\"completion_id\":1,\"name\":\"fixture-step-1\"}}} |",
+            "| version         | 2                                      | 2                                                               |",
+            "| completed       |                                        |                                                                 |",
+            "| sleep_wakeup_at |                                        |                                                                 |",
+            "| invoked_id      |                                        |                                                                 |",
+            "| invoked_target  |                                        |                                                                 |",
+            "| promise_name    |                                        |                                                                 |",
+            "+-----------------+----------------------------------------+-----------------------------------------------------------------+",
         ],
     })
     .await;
 
-    test.assert_query(QueryExpectation {
+    test.assert_query_ordered(QueryExpectation {
         name: "journal events for an invocation",
         sql: r#"SELECT
                        after_journal_entry_index,
@@ -136,11 +139,11 @@ async fn query_journal_ui_shapes() {
                    WHERE id = 'inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw'
                      AND index = 1"#,
         expected: &[
-            "+------------+------------+----------------------------------+",
-            "| entry_type | entry_json | raw                              |",
-            "+------------+------------+----------------------------------+",
-            "| Run        |            | 620e666978747572652d737465702d31 |",
-            "+------------+------------+----------------------------------+",
+            "+--------------+-----------------------------------------------------------------+--------------------------------------+",
+            "| entry_type   | entry_json                                                      | raw                                  |",
+            "+--------------+-----------------------------------------------------------------+--------------------------------------+",
+            "| Command: Run | {\"Command\":{\"Run\":{\"completion_id\":1,\"name\":\"fixture-step-1\"}}} | 5801620e666978747572652d737465702d31 |",
+            "+--------------+-----------------------------------------------------------------+--------------------------------------+",
         ],
     })
     .await;

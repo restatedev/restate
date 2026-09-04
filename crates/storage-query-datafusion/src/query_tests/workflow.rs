@@ -15,20 +15,20 @@ async fn query_workflow_ui_shapes() {
     let mut test = QueryTest::create_remote().await;
     test.populate(|tables| {
         tables.sys_invocation_status().populate_table(&[
-            "+--------------+----------------------+----------------------------------------+---------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
-            "| partition_id | partition_key        | id                                     | status  | completion_result | target_service_name | target_service_key | target_handler_name | target_service_ty | scope   |",
-            "+--------------+----------------------+----------------------------------------+---------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
-            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | invoked |                   | TestWorkflow        | workflow-1         | run                 | workflow          | scope-a |",
-            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | invoked |                   | TestWorkflow        | workflow-1         | signal              | workflow          | scope-a |",
-            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4 | invoked |                   | TestWorkflow        | workflow-2         | run                 | workflow          | scope-j |",
-            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy | invoked |                   | TestWorkflow        | workflow-3         | run                 | workflow          | scope-b |",
-            "+--------------+----------------------+----------------------------------------+---------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "+--------------+----------------------+----------------------------------------+---------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "| partition_id | partition_key        | id                                     | status  | completion_result | created_at | target_service_name | target_service_key | target_handler_name | target_service_ty | scope   |",
+            "+--------------+----------------------+----------------------------------------+---------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | invoked |                   | 1000       | TestWorkflow        | workflow-1         | run                 | workflow          | scope-a |",
+            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | invoked |                   | 2000       | TestWorkflow        | workflow-1         | signal              | workflow          | scope-a |",
+            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4 | invoked |                   | 3000       | TestWorkflow        | workflow-2         | run                 | workflow          | scope-j |",
+            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy | invoked |                   | 4000       | TestWorkflow        | workflow-3         | run                 | workflow          | scope-b |",
+            "+--------------+----------------------+----------------------------------------+---------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
         ])?;
         Ok(())
     })
     .await;
 
-    test.assert_query(QueryExpectation {
+    test.assert_query_ordered(QueryExpectation {
         name: "workflow runs page",
         sql: r#"SELECT id
                    FROM sys_invocation_status
@@ -42,9 +42,9 @@ async fn query_workflow_ui_shapes() {
             "+----------------------------------------+",
             "| id                                     |",
             "+----------------------------------------+",
-            "| inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw |",
             "| inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy |",
             "| inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4 |",
+            "| inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw |",
             "+----------------------------------------+",
         ],
     })

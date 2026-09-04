@@ -24,7 +24,8 @@
 //! 1. Create [`QueryTest`](harness::QueryTest) with `QueryTest::create_remote()`.
 //! 2. Call `test.populate(...)` and populate one or more storage tables using inline text tables.
 //! 3. Call `test.assert_query(...)` separately for every SQL query so the query, its expected
-//!    result, and any failure are easy to identify.
+//!    result, and any failure are easy to identify. Use `test.assert_query_ordered(...)` when the
+//!    query's `ORDER BY` is part of the behavior under test.
 //!
 //! ```ignore
 //! #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -93,8 +94,10 @@
 //! pruned to one partition is correct. To test fan-out, populate rows in partitions 0, 1, and 2 and
 //! use a query whose predicates do not prune any of them.
 //!
-//! Result comparison is row-order independent. On failure the report includes the query, expected
-//! and actual tables, `EXPLAIN`, and `EXPLAIN ANALYZE FORMAT TREE` output.
+//! `assert_query` compares rows without considering their order, which avoids coupling unordered
+//! distributed queries to scanner arrival order. `assert_query_ordered` compares the exact row
+//! sequence. On failure both methods include the query, expected and actual tables, `EXPLAIN`, and
+//! `EXPLAIN ANALYZE FORMAT TREE` output.
 //!
 //! Run all tests in this module with:
 //!

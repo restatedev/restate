@@ -224,7 +224,7 @@ async fn query_vqueue_ui_shapes() {
     })
     .await;
 
-    test.assert_query(QueryExpectation {
+    test.assert_query_ordered(QueryExpectation {
         name: "scoped virtual-object inbox entries",
         sql: r#"SELECT
                        v.id AS vqueue_id,
@@ -248,7 +248,10 @@ async fn query_vqueue_ui_shapes() {
                      LIMIT 1
                    )
                      AND v.stage = 'inbox'
-                   ORDER BY v.run_at ASC NULLS LAST
+                   ORDER BY
+                     v.run_at ASC NULLS LAST,
+                     v.sequence_number ASC,
+                     v.entry_id ASC
                    LIMIT 2"#,
         expected: &[
             "+-----------------+------------------------------------------+------------------------------------------+",

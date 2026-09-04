@@ -15,16 +15,16 @@ async fn query_invocation_status_ui_shapes() {
     let mut test = QueryTest::create_remote().await;
     test.populate(|tables| {
         tables.sys_invocation_status().populate_table(&[
-            "+--------------+----------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
-            "| partition_id | partition_key        | id                                     | status    | completion_result | target_service_name | target_service_key | target_handler_name | target_service_ty | scope   |",
-            "+--------------+----------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
-            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | invoked   |                   | TestService         | key-1              | run                 | virtual_object    | scope-a |",
-            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | invoked   |                   | TestService         | key-2              | run                 | virtual_object    | scope-a |",
-            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4 | completed | success           | TestService         | key-3              | run                 | virtual_object    | scope-j |",
-            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v0bjX91PRpoIe9UR0aYIrF6 | invoked   |                   | OtherService        | ignored-key        | run                 | virtual_object    | scope-j |",
-            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy | invoked   |                   | TestService         | key-5              | run                 | virtual_object    | scope-b |",
-            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy09qXCwwSQagbNB2POtVHIA | completed | failure           | TestService         | key-4              | run                 | virtual_object    | scope-b |",
-            "+--------------+----------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "+--------------+----------------------+----------------------------------------+-----------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "| partition_id | partition_key        | id                                     | status    | completion_result | created_at | target_service_name | target_service_key | target_handler_name | target_service_ty | scope   |",
+            "+--------------+----------------------+----------------------------------------+-----------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | invoked   |                   | 1000       | TestService         | key-1              | run                 | virtual_object    | scope-a |",
+            "| 0            | 3169317165037139997  | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | invoked   |                   | 2000       | TestService         | key-2              | run                 | virtual_object    | scope-a |",
+            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4 | completed | success           | 3000       | TestService         | key-3              | run                 | virtual_object    | scope-j |",
+            "| 1            | 6564637988134260717  | inv_1klS9KSVEL8v0bjX91PRpoIe9UR0aYIrF6 | invoked   |                   | 4000       | OtherService        | ignored-key        | run                 | virtual_object    | scope-j |",
+            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy | invoked   |                   | 5000       | TestService         | key-5              | run                 | virtual_object    | scope-b |",
+            "| 2            | 16740507687615160162 | inv_18rEacLHS3jy09qXCwwSQagbNB2POtVHIA | completed | failure           | 6000       | TestService         | key-4              | run                 | virtual_object    | scope-b |",
+            "+--------------+----------------------+----------------------------------------+-----------+-------------------+------------+---------------------+--------------------+---------------------+-------------------+---------+",
         ])?;
         tables.sys_invocation_state().populate_table(&[
             "+--------------+----------------------+----------------------------------------+-----------+",
