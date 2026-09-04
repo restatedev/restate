@@ -7,6 +7,8 @@ members = ["cargo:."]
 cargo-dist-version = "0.30.3"
 # CI backends to support
 ci = "github"
+# Releases are started explicitly so non-release SemVer tags can use separate workflows.
+dispatch-releases = true
 # Whether to enable GitHub Attestations
 github-attestations = false
 # The installers to generate for each app

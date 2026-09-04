@@ -208,7 +208,7 @@ A **reusable workflow** called by this repo and many others in the restatedev or
 
 ### Release Workflow (`release.yml`)
 
-Triggered by pushing a version tag (e.g., `v1.0.0`). Orchestrated by [cargo-dist](https://opensource.axo.dev/cargo-dist/), which is configured in `dist-workspace.toml`.
+Started manually with a version tag input (e.g., `v1.0.0`). The selected branch determines the release commit, and a successful run creates the tag and publishes the release. The workflow is orchestrated by [cargo-dist](https://opensource.axo.dev/cargo-dist/), which is configured in `dist-workspace.toml`.
 `release.yml` is generated with `dist generate`.
 
 **Phases:**

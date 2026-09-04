@@ -42,8 +42,8 @@ Check that the e2e tests are passing:
   - [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml)
 1. Make sure that [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
 1. [Publish the unreleased release notes](/release-notes/README.md#release-process).
-1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
-1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
+1. Open the [Release workflow](https://github.com/restatedev/restate/actions/workflows/release.yml), select the branch containing the release commit, enter `vX.Y.Z`, and run the workflow. Do not create the tag manually; the workflow creates it and publishes the release.
+1. Verify that the workflow published the GitHub release, Docker images, binaries, npm packages, Homebrew formula, and Helm chart.
 1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version with a `-dev` suffix after the release. The `-dev` suffix is helpful for distinguishing between versions that are under development and those that are released.
 1. Upload the Grafana dashboards to the marketplace.
   - Log into the grafana.com account.
