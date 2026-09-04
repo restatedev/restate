@@ -14,10 +14,11 @@ use tracing::warn;
 
 use restate_core::network::TransportConnect;
 use restate_types::identifiers::PartitionKey;
+use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::vqueues::VQueueId;
-use restate_wal_protocol::{Command, Envelope, vqueues};
+use restate_wal_protocol::v2::{self, Command, Envelope};
+use restate_wal_protocol::vqueues;
 
-use super::create_envelope_header;
 use super::error::*;
 use crate::state::AdminServiceState;
 
@@ -48,12 +49,9 @@ where
         .parse::<VQueueId>()
         .map_err(|err| MetaApiError::InvalidField("vqueue_id", err.to_string()))?;
     let partition_key = vqueue_id.partition_key();
-    let command = Command::VQueuesPause(
-        vqueues::VQueuesPauseCommand {
-            vqueues: vec![vqueue_id],
-        }
-        .bilrost_encode_to_bytes(),
-    );
+    let command = vqueues::VQueuesPauseCommand {
+        vqueues: vec![vqueue_id],
+    };
 
     ingest_vqueue_command(&mut state, partition_key, command).await
 }
@@ -85,12 +83,9 @@ where
         .parse::<VQueueId>()
         .map_err(|err| MetaApiError::InvalidField("vqueue_id", err.to_string()))?;
     let partition_key = vqueue_id.partition_key();
-    let command = Command::VQueuesResume(
-        vqueues::VQueuesResumeCommand {
-            vqueues: vec![vqueue_id],
-        }
-        .bilrost_encode_to_bytes(),
-    );
+    let command = vqueues::VQueuesResumeCommand {
+        vqueues: vec![vqueue_id],
+    };
 
     ingest_vqueue_command(&mut state, partition_key, command).await
 }
@@ -98,16 +93,19 @@ where
 async fn ingest_vqueue_command<Metadata, Discovery, Telemetry, Invocations, Transport>(
     state: &mut AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>,
     partition_key: PartitionKey,
-    command: Command,
+    command: impl Command,
 ) -> Result<StatusCode, MetaApiError>
 where
     Transport: TransportConnect,
 {
-    let envelope = Envelope::new(create_envelope_header(partition_key), command);
+    let envelope = Envelope::new(v2::Dedup::None, command);
 
     let result = state
         .ingestion_client
-        .ingest(partition_key, envelope)
+        .ingest(
+            partition_key,
+            BodyWithKeys::new(envelope.into_raw(), Keys::Single(partition_key)),
+        )
         .await
         .map_err(|err| {
             warn!("Could not ingest virtual queue management command: {err}");
