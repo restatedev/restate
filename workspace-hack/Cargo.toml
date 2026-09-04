@@ -54,6 +54,7 @@ digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["m
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "zeroize"] }
 either = { version = "1", features = ["use_std"] }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
+event-listener = { version = "5" }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -83,13 +84,13 @@ libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
+moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 petgraph = { version = "0.8" }
-portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
@@ -188,6 +189,7 @@ digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["a
 displaydoc = { version = "0.2" }
 either = { version = "1", features = ["use_std"] }
 enum-map = { version = "2", default-features = false, features = ["serde"] }
+event-listener = { version = "5" }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -217,13 +219,13 @@ libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
+moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
 petgraph = { version = "0.8" }
-portable-atomic = { version = "1" }
 pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
@@ -292,7 +294,6 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
@@ -311,7 +312,6 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 mio = { version = "1", features = ["net", "os-ext"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
@@ -331,7 +331,6 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -351,7 +350,6 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-miniz_oxide = { version = "0.8", default-features = false, features = ["simd", "with-alloc"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }

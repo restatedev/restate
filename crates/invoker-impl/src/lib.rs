@@ -37,6 +37,7 @@ use tokio_util::time::delay_queue::Key as RetryTimerKey;
 use tracing::instrument;
 use tracing::{debug, trace, warn};
 
+use restate_core::TaskCenterFutureExt;
 use restate_core::cancellation_token;
 use restate_errors::warn_it;
 use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
@@ -134,6 +135,23 @@ trait InvocationTaskRunner<SR> {
     ) -> AbortHandle;
 }
 
+/// `JoinSet` does not propagate TaskCenter task-locals; preserve the spawner's context for
+/// invocation code that needs it, including GCP credential construction.
+fn spawn_invocation_task<F>(
+    task_pool: &mut JoinSet<()>,
+    name: &'static str,
+    future: F,
+) -> AbortHandle
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    task_pool
+        .build_task()
+        .name(name)
+        .spawn(future.in_current_tc())
+        .expect("to spawn invocation task")
+}
+
 struct DefaultInvocationTaskRunner<EE, Schemas> {
     client: ServiceClient,
     entry_enricher: EE,
@@ -163,34 +181,32 @@ where
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
     ) -> AbortHandle {
-        task_pool
-            .build_task()
-            .name("invocation-task")
-            .spawn(
-                InvocationTask::new(
-                    self.client.clone(),
-                    invocation_id,
-                    fencing_token,
-                    invocation_target,
-                    opts.inactivity_timeout.into(),
-                    opts.abort_timeout.into(),
-                    opts.eager_state_size_limit(),
-                    opts.message_size_warning.as_non_zero_usize(),
-                    opts.message_size_limit(),
-                    retry_count_since_last_stored_entry,
-                    self.entry_enricher.clone(),
-                    self.schemas.clone(),
-                    invoker_tx,
-                    invoker_rx,
-                    self.action_token_bucket.clone(),
-                    limit_key,
-                    idempotency_key,
-                    self.allow_protocol_v7,
-                    opts.max_awaited_future_depth,
-                )
-                .run(storage_reader, budget),
+        spawn_invocation_task(
+            task_pool,
+            "invocation-task",
+            InvocationTask::new(
+                self.client.clone(),
+                invocation_id,
+                fencing_token,
+                invocation_target,
+                opts.inactivity_timeout.into(),
+                opts.abort_timeout.into(),
+                opts.eager_state_size_limit(),
+                opts.message_size_warning.as_non_zero_usize(),
+                opts.message_size_limit(),
+                retry_count_since_last_stored_entry,
+                self.entry_enricher.clone(),
+                self.schemas.clone(),
+                invoker_tx,
+                invoker_rx,
+                self.action_token_bucket.clone(),
+                limit_key,
+                idempotency_key,
+                self.allow_protocol_v7,
+                opts.max_awaited_future_depth,
             )
-            .expect("to spawn invocation task")
+            .run(storage_reader, budget),
+        )
     }
 }
 
@@ -2121,17 +2137,17 @@ mod tests {
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
         ) -> AbortHandle {
-            task_pool
-                .build_task()
-                .name("invocation-task-fn")
-                .spawn((*self)(
+            spawn_invocation_task(
+                task_pool,
+                "invocation-task-fn",
+                (*self)(
                     invocation_id,
                     invocation_target,
                     storage_reader,
                     invoker_tx,
                     invoker_rx,
-                ))
-                .expect("to spawn invocation task")
+                ),
+            )
         }
     }
 
@@ -2253,6 +2269,23 @@ mod tests {
                 self.1.unwrap_or(OnMaxAttempts::Kill),
             )
         }
+    }
+
+    #[test(restate_core::test)]
+    async fn spawn_invocation_task_carries_task_center_context() {
+        let mut task_pool: JoinSet<()> = JoinSet::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        spawn_invocation_task(&mut task_pool, "test-invocation-task", async move {
+            let _ = TaskCenter::current();
+            let _ = tx.send(());
+        });
+
+        rx.await.expect("task ran with TaskCenter context");
+        task_pool
+            .join_next()
+            .await
+            .expect("task completes")
+            .expect("task doesn't panic");
     }
 
     #[test(restate_core::test)]
