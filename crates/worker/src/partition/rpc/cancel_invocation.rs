@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use super::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationTermination,
     TerminationFlavor,
 };
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -29,16 +29,15 @@ impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TS
             invocation_id,
         }: Request,
     ) -> Decision {
-        Decision::Propose(RpcProposal {
-            partition_key: invocation_id.partition_key(),
-            cmd: Command::TerminateInvocation(InvocationTermination {
+        Decision::Propose(RpcProposal::new(
+            commands::TerminateInvocationCommand::from(InvocationTermination {
                 invocation_id,
                 flavor: TerminationFlavor::Cancel,
                 response_sink: Some(InvocationMutationResponseSink::Ingress(
                     IngressInvocationResponseSink { request_id },
                 )),
             }),
-            reply_on: ReplyOn::Apply { request_id },
-        })
+            ReplyOn::Apply { request_id },
+        ))
     }
 }
