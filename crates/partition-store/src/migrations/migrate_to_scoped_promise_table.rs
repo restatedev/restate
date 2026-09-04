@@ -112,8 +112,8 @@ pub fn migrate_to_scoped_promise_table(
 /// Appends a `delete_range_cf` for the legacy unscoped promise range to `wb`.
 ///
 /// The caller is responsible for committing `wb`. Bundling the range delete
-/// with the schema-version bump in a single [`WriteBatch`] keeps the two
-/// changes atomic with respect to RocksDB's memtable / SST flush.
+/// with the feature marker in a single [`WriteBatch`] keeps the cutover atomic
+/// with respect to RocksDB's memtable / SST flush.
 pub fn append_delete_promise_data(ctx: &MigrationContext<'_>, wb: &mut WriteBatch) {
     let mut start_key_buf = [0u8; KEY_PREFIX_LEN];
     EncodeTableKeyPrefix::serialize_to(

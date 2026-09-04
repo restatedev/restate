@@ -794,18 +794,31 @@ experimental! {
     /// Since v1.7.0
     unique_random_seeds,
 
-    /// # Migrate the unscoped state and promise tables into their scoped variants
+    /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
-    /// state and promise tables into their scoped variants (with `scope = None`)
-    /// on open, and route all subsequent state/promise reads and writes through
+    /// promise table into its scoped variant (with `scope = None`)
+    /// on open, and route all subsequent promise reads and writes through
     /// the scoped tables.
     ///
     /// Once enabled, you **cannot** roll back to a Restate-server version that
     /// did not yet recognize the resulting on-disk schema version.
     ///
-    /// Since v1.7.0
-    migrate_scoped_tables,
+    /// Since v1.7.9
+    scoped_promise_table_migration,
+
+    /// # Migrate the unscoped state table into its scoped variant
+    ///
+    /// When enabled, partition stores migrate every entry of the legacy unscoped
+    /// state table into its scoped variant (with `scope = None`)
+    /// on open, and route all subsequent promise reads and writes through
+    /// the scoped tables.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version that
+    /// did not yet recognize the resulting on-disk schema version.
+    ///
+    /// Since v1.7.9
+    scoped_state_table_migration,
 
     /// # Allow scope on Virtual Object targets
     ///
