@@ -64,7 +64,7 @@ use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::scheduler::{self};
-use restate_vqueues::{ResourceManager, SchedulerService, VQueuesMeta};
+use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
@@ -723,6 +723,11 @@ where
                 );
                 SchedulerService::new_disabled()
             } else {
+                let refill_mode = if config.common.experimental.is_vqueues_async_refill_enabled() {
+                    RefillMode::Async
+                } else {
+                    RefillMode::Blocking
+                };
                 SchedulerService::create(
                     ResourceManager::create(
                         partition_store.partition_db().clone(),
@@ -734,6 +739,7 @@ where
                     .await?,
                     partition_store.partition_db().clone(),
                     processor.vqueues_mut(),
+                    refill_mode,
                 )
                 .await?
             };

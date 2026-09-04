@@ -43,6 +43,18 @@ mod vqueue_state;
 // Re-exports
 pub use resource_manager::ResourceManager;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefillMode {
+    Async,
+    Blocking,
+}
+
+impl RefillMode {
+    const fn allow_blocking_io(self) -> bool {
+        matches!(self, Self::Blocking)
+    }
+}
+
 type UnconfirmedAssignments = hashbrown::HashMap<EntryKey, (PermitBuilder, EntryMetadata)>;
 
 fn status_from_detailed_eligibility(value: DetailedEligibility) -> SchedulingStatus {
@@ -135,6 +147,7 @@ impl<S: VQueueStore> SchedulerService<S> {
         resource_manager: ResourceManager,
         storage: S,
         vqueues_cache: &VQueuesMetaCache,
+        refill_mode: RefillMode,
     ) -> Result<Self, StorageError>
     where
         S: ScanVQueueTable,
@@ -154,6 +167,7 @@ impl<S: VQueueStore> SchedulerService<S> {
             resource_manager,
             storage,
             vqueues_cache.view(),
+            refill_mode,
         )));
         Ok(Self { state })
     }
