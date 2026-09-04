@@ -12,6 +12,8 @@ mod data;
 mod harness;
 mod invocation_status;
 mod journal;
+mod locks;
 mod state;
 mod sys_invocation;
 mod vqueue;
+mod workflow;

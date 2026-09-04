@@ -13,18 +13,21 @@ use std::fmt::Display;
 use std::str::FromStr;
 use std::time::{Duration, UNIX_EPOCH};
 
-use anyhow::ensure;
+use anyhow::{Context, ensure};
 use bytes::Bytes;
 use datafusion::common::test_util::{batches_to_sort_string, batches_to_string};
 use futures::TryStreamExt;
+use prost::Message;
 
 use restate_partition_store::PartitionStoreTransaction;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     JournalMetadata, StatusTimestamps, WriteInvocationStatusTable,
 };
-use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::journal_table::WriteJournalTable;
+use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
+use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::lock_table::{AcquiredBy, LockState, WriteLockTable};
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::metadata::{
     Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
@@ -43,7 +46,11 @@ use restate_types::invocation::{
     InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::{Entry, InputEntry};
+use restate_types::journal_events::Event;
 use restate_types::partition_table::{FindPartition, PartitionTable};
+use restate_types::service_protocol;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
@@ -87,18 +94,6 @@ impl QueryTest {
         populate: impl FnOnce(&mut QueryTestTables<'_, '_>) -> anyhow::Result<()> + Send,
     ) {
         self.populate_partition(None, populate).await;
-    }
-
-    pub(super) fn partition(&mut self, partition_id: u16) -> QueryTestPartition<'_> {
-        let partition_id = PartitionId::new_unchecked(partition_id);
-        assert!(
-            self.engine.partition_table().contains(&partition_id),
-            "query test has no partition {partition_id}"
-        );
-        QueryTestPartition {
-            test: self,
-            partition_id,
-        }
     }
 
     async fn populate_partition(
@@ -199,22 +194,6 @@ impl QueryTest {
             .try_collect()
             .await
             .map_err(Into::into)
-    }
-}
-
-pub(super) struct QueryTestPartition<'test> {
-    test: &'test mut QueryTest,
-    partition_id: PartitionId,
-}
-
-impl QueryTestPartition<'_> {
-    pub(super) async fn populate(
-        self,
-        populate: impl FnOnce(&mut QueryTestTables<'_, '_>) -> anyhow::Result<()> + Send,
-    ) {
-        self.test
-            .populate_partition(Some(self.partition_id), populate)
-            .await;
     }
 }
 
@@ -777,6 +756,12 @@ impl<'a, 'store> QueryTestTables<'a, 'store> {
             transactions: &mut *self.transactions,
         }
     }
+
+    pub(super) fn sys_locks(&mut self) -> SysLocksTableFixture<'_, 'store> {
+        SysLocksTableFixture {
+            transactions: &mut *self.transactions,
+        }
+    }
 }
 
 pub(super) struct StateTableFixture<'a, 'store> {
@@ -868,7 +853,6 @@ impl SysInvocationStatusTableFixture<'_, '_> {
                         row.required("status")?,
                         row.get("completion_result"),
                     ))?,
-                    ..InvocationOptions::default()
                 });
             invocation.id = row.invocation_id()?;
             invocation.target = invocation_target(&row)?;
@@ -989,8 +973,6 @@ impl SysInvocationStatusTableFixture<'_, '_> {
                     ServiceInvocationSpanContext::empty(),
                 ),
                 pinned_deployment,
-                journal_entries: Vec::new(),
-                journal_events: Vec::new(),
             };
             self.transactions
                 .validate_declared_partition(partition_id, &invocation.id)?;
@@ -1275,10 +1257,61 @@ pub(super) struct SysJournalTableFixture<'a, 'store> {
 }
 
 impl SysJournalTableFixture<'_, '_> {
-    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
-        let transaction = self.transactions.for_key(&invocation.id)?;
-        for entry in &invocation.journal_entries {
-            transaction.put_journal_entry(&invocation.id, entry.index, &entry.entry)?;
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "index",
+            "entry_type",
+            "name",
+            "value",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let invocation_id = row.invocation_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &invocation_id)?;
+            let entry = match row.required("entry_type")? {
+                "Input" => {
+                    ensure!(
+                        row.get("name").is_none(),
+                        "text table row on line {} cannot set `name` for an Input entry",
+                        row.line_number
+                    );
+                    JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(Entry::Input(
+                        InputEntry {
+                            headers: Vec::new(),
+                            value: Bytes::copy_from_slice(row.required("value")?.as_bytes()),
+                        },
+                    )))
+                }
+                "Run" => {
+                    ensure!(
+                        row.get("value").is_none(),
+                        "text table row on line {} cannot set `value` for a Run entry",
+                        row.line_number
+                    );
+                    JournalEntry::Entry(EnrichedRawEntry::new(
+                        EnrichedEntryHeader::Run {},
+                        service_protocol::RunEntryMessage {
+                            name: row.required("name")?.to_owned(),
+                            result: None,
+                        }
+                        .encode_to_vec()
+                        .into(),
+                    ))
+                }
+                value => anyhow::bail!(
+                    "text table row on line {} has unsupported `entry_type` value {value:?}",
+                    row.line_number
+                ),
+            };
+            self.transactions
+                .for_key(&invocation_id)?
+                .put_journal_entry(&invocation_id, row.parse("index")?, &entry)?;
         }
         Ok(())
     }
@@ -1289,10 +1322,88 @@ pub(super) struct SysJournalEventsTableFixture<'a, 'store> {
 }
 
 impl SysJournalEventsTableFixture<'_, '_> {
-    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
-        let transaction = self.transactions.for_key(&invocation.id)?;
-        for (lsn, event) in invocation.journal_events.iter().enumerate() {
-            transaction.put_journal_event(&invocation.id, event.clone(), lsn as u64)?;
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "after_journal_entry_index",
+            "appended_at",
+            "event_type",
+            "event_json",
+        ])?;
+
+        for (lsn, row) in table.rows().enumerate() {
+            let partition_id = row.partition_id()?;
+            let invocation_id = row.invocation_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &invocation_id)?;
+            let event: Event =
+                serde_json::from_str(row.required("event_json")?).with_context(|| {
+                    format!(
+                        "text table row on line {} has invalid `event_json`",
+                        row.line_number
+                    )
+                })?;
+            let event = EventView::new(
+                MillisSinceEpoch::from(row.parse::<u64>("appended_at")?),
+                row.parse("after_journal_entry_index")?,
+                event,
+            );
+            ensure!(
+                event.event.ty().to_string() == row.required("event_type")?,
+                "text table row on line {} declares event_type {:?}, but event_json contains {:?}",
+                row.line_number,
+                row.required("event_type")?,
+                event.event.ty().to_string()
+            );
+            self.transactions
+                .for_key(&invocation_id)?
+                .put_journal_event(&invocation_id, event, lsn as u64)?;
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct SysLocksTableFixture<'a, 'store> {
+    transactions: &'a mut PartitionTransactions<'store>,
+}
+
+impl SysLocksTableFixture<'_, '_> {
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "scope",
+            "lock_name",
+            "acquired_at",
+            "acquired_by",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let partition_key: u64 = row.parse("partition_key")?;
+            let scope = Scope::try_new(row.required("scope")?)?;
+            ensure!(
+                scope.partition_key() == partition_key,
+                "text table row on line {} has partition_key {partition_key}, but scope {scope} belongs to partition key {}",
+                row.line_number,
+                scope.partition_key()
+            );
+            self.transactions
+                .validate_declared_partition(partition_id, &scope)?;
+
+            let state = LockState {
+                acquired_at: unique_timestamp(&row, "acquired_at")?,
+                acquired_by: AcquiredBy::InvocationId(row.parse("acquired_by")?),
+            };
+            self.transactions.for_key(&scope)?.acquire_lock(
+                &Some(scope),
+                &LockName::parse(row.required("lock_name")?)?,
+                &state,
+            );
         }
         Ok(())
     }

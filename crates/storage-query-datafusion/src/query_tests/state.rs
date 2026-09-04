@@ -67,4 +67,44 @@ async fn query_state_ui_shapes() {
         ],
     })
     .await;
+
+    test.assert_query(QueryExpectation {
+        name: "state preview across selected objects",
+        sql: r#"SELECT service_key, scope, key, value_length, value
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key IN ('key-1', 'key-2')
+                     AND scope IN ('scope-a', 'scope-j')
+                     AND value_length <= 2048
+                   LIMIT 3"#,
+        expected: &[
+            "+-------------+---------+---------+--------------+----------------+",
+            "| service_key | scope   | key     | value_length | value          |",
+            "+-------------+---------+---------+--------------+----------------+",
+            "| key-1       | scope-a | state-1 | 7            | 76616c75652d31 |",
+            "| key-1       | scope-a | state-2 | 7            | 76616c75652d32 |",
+            "| key-2       | scope-j | state-1 | 7            | 76616c75652d33 |",
+            "+-------------+---------+---------+--------------+----------------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "state object size",
+        sql: r#"SELECT
+                       COUNT(*) AS num_keys,
+                       COALESCE(SUM(value_length), 0) AS total_size
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key = 'key-1'
+                     AND scope = 'scope-a'"#,
+        expected: &[
+            "+----------+------------+",
+            "| num_keys | total_size |",
+            "+----------+------------+",
+            "| 2        | 14         |",
+            "+----------+------------+",
+        ],
+    })
+    .await;
 }

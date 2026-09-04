@@ -12,15 +12,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use prost::Message;
 
-use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, JournalMetadata,
     JournalRetentionPolicy, StatusTimestamps,
 };
-use restate_storage_api::journal_events::EventView;
-use restate_storage_api::journal_table::JournalEntry;
 use restate_types::LimitKey;
 use restate_types::Scope;
 use restate_types::deployment::PinnedDeployment;
@@ -30,10 +26,6 @@ use restate_types::invocation::{
     InvocationTarget, ResponseResult, ServiceInvocationSpanContext, Source,
     VirtualObjectHandlerType,
 };
-use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
-use restate_types::journal::{Entry, InputEntry};
-use restate_types::journal_events::{Event, PausedEvent, TransientErrorEvent};
-use restate_types::service_protocol;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
@@ -43,43 +35,13 @@ const TEXT_TABLE_INVOCATION_SEQUENCE_START: u128 = 1 << 64;
 
 pub(super) struct FixtureFactory {
     next_invocation: u128,
-    next_vqueue: u64,
-}
-
-impl Default for FixtureFactory {
-    fn default() -> Self {
-        Self {
-            next_invocation: 1,
-            next_vqueue: 1,
-        }
-    }
 }
 
 impl FixtureFactory {
     pub(super) fn for_text_tables() -> Self {
         Self {
             next_invocation: TEXT_TABLE_INVOCATION_SEQUENCE_START,
-            next_vqueue: 1,
         }
-    }
-
-    pub(super) fn invocations<'factory, 'fixture, const N: usize>(
-        &'factory mut self,
-    ) -> InvocationFixturesBuilder<'factory, 'fixture, N> {
-        InvocationFixturesBuilder {
-            factory: self,
-            options: InvocationOptions::default(),
-        }
-    }
-
-    pub(super) fn create_vqueue(&mut self, scope: &'static str) -> VQueueFixture {
-        let scope = Scope::try_from_static(scope).unwrap();
-        let id = VQueueId::custom(
-            scope.partition_key(),
-            format!("query-fixture-{}", self.next_vqueue),
-        );
-        self.next_vqueue += 1;
-        VQueueFixture { id, scope }
     }
 
     pub(super) fn create_invocation(
@@ -89,16 +51,11 @@ impl FixtureFactory {
         let sequence = self.next_invocation;
         self.next_invocation += 1;
 
-        let scope = options
-            .vqueue
-            .map(|vqueue| vqueue.scope.clone())
-            .unwrap_or_else(|| Scope::try_from_static("scope-a").unwrap());
+        let scope = Scope::try_from_static("scope-a").unwrap();
         let partition_key = scope.partition_key();
         let id = InvocationId::from_parts(partition_key, InvocationUuid::from_u128(sequence));
         let caller_id = InvocationId::from_parts(0, InvocationUuid::from_u128(10_000 + sequence));
         let deployment_id = DeploymentId::from_parts(1_000, 1);
-        let vqueue_id = options.vqueue.map(|vqueue| vqueue.id.clone());
-
         let target = InvocationTarget::scoped_virtual_object(
             options.service_name,
             options.service_key,
@@ -118,55 +75,11 @@ impl FixtureFactory {
             Some(MillisSinceEpoch::from(5_000)),
             None,
         );
-        let journal_entries = vec![
-            JournalEntryFixture {
-                index: 0,
-                entry: JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(
-                    Entry::Input(InputEntry {
-                        headers: vec![],
-                        value: Bytes::from_static(b"fixture-input"),
-                    }),
-                )),
-            },
-            JournalEntryFixture {
-                index: 1,
-                entry: JournalEntry::Entry(EnrichedRawEntry::new(
-                    EnrichedEntryHeader::Run {},
-                    service_protocol::RunEntryMessage {
-                        name: format!("fixture-step-{sequence}"),
-                        result: None,
-                    }
-                    .encode_to_vec()
-                    .into(),
-                )),
-            },
-        ];
-        let journal_events = vec![
-            EventView::new(
-                MillisSinceEpoch::from(30_000 + sequence as u64),
-                0,
-                Event::TransientError(TransientErrorEvent {
-                    error_code: 500u16.into(),
-                    error_message: format!("fixture failure {sequence}"),
-                    error_stacktrace: None,
-                    restate_doc_error_code: None,
-                    related_command_index: Some(1),
-                    related_command_name: Some(format!("fixture-step-{sequence}")),
-                    related_command_type: None,
-                }),
-            ),
-            EventView::new(
-                MillisSinceEpoch::from(31_000 + sequence as u64),
-                1,
-                Event::Paused(PausedEvent { last_failure: None }),
-            ),
-        ];
-
         InvocationFixture {
             id,
             status: options.status,
             target,
-            vqueue_id,
+            vqueue_id: None,
             limit_key: "tenant/eu".parse::<LimitKey<ReString>>().unwrap(),
             source,
             execution_time: Some(MillisSinceEpoch::from(4_000)),
@@ -174,25 +87,13 @@ impl FixtureFactory {
             timestamps,
             completion_retention: Duration::from_secs(30),
             journal_retention: Duration::from_secs(10),
-            journal: JournalMetadata::new(
-                journal_entries.len() as u32,
-                journal_entries.len() as u32,
-                ServiceInvocationSpanContext::empty(),
-            ),
+            journal: JournalMetadata::new(2, 2, ServiceInvocationSpanContext::empty()),
             pinned_deployment: Some(PinnedDeployment::new(
                 deployment_id,
                 ServiceProtocolVersion::V5,
             )),
-            journal_entries,
-            journal_events,
         }
     }
-}
-
-#[derive(Clone)]
-pub(super) struct VQueueFixture {
-    pub(super) id: VQueueId,
-    scope: Scope,
 }
 
 #[derive(Clone, Copy)]
@@ -219,46 +120,10 @@ impl TryFrom<(&str, Option<&str>)> for InvocationFixtureStatus {
 
 #[derive(Clone, Copy)]
 pub(super) struct InvocationOptions<'a> {
-    pub(super) vqueue: Option<&'a VQueueFixture>,
     pub(super) service_name: &'a str,
     pub(super) service_key: &'a str,
     pub(super) handler_name: &'a str,
     pub(super) status: InvocationFixtureStatus,
-}
-
-pub(super) struct InvocationFixturesBuilder<'factory, 'fixture, const N: usize> {
-    factory: &'factory mut FixtureFactory,
-    options: InvocationOptions<'fixture>,
-}
-
-impl<'fixture, const N: usize> InvocationFixturesBuilder<'_, 'fixture, N> {
-    pub(super) fn with_vqueue(mut self, vqueue: &'fixture VQueueFixture) -> Self {
-        self.options.vqueue = Some(vqueue);
-        self
-    }
-
-    pub(super) fn create(self) -> [InvocationFixture; N] {
-        let factory = self.factory;
-        let options = self.options;
-        std::array::from_fn(|_| factory.create_invocation(options))
-    }
-}
-
-impl Default for InvocationOptions<'_> {
-    fn default() -> Self {
-        Self {
-            vqueue: None,
-            service_name: "TestService",
-            service_key: "key-1",
-            handler_name: "run",
-            status: InvocationFixtureStatus::Running,
-        }
-    }
-}
-
-pub(super) struct JournalEntryFixture {
-    pub(super) index: u32,
-    pub(super) entry: JournalEntry,
 }
 
 pub(super) struct InvocationFixture {
@@ -275,8 +140,6 @@ pub(super) struct InvocationFixture {
     pub(super) journal_retention: Duration,
     pub(super) journal: JournalMetadata,
     pub(super) pinned_deployment: Option<PinnedDeployment>,
-    pub(super) journal_entries: Vec<JournalEntryFixture>,
-    pub(super) journal_events: Vec<EventView>,
 }
 
 impl InvocationFixture {
