@@ -14,8 +14,9 @@ use bytes::Bytes;
 use bytestring::ByteString;
 
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, JournalMetadata,
-    JournalRetentionPolicy, StatusTimestamps,
+    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, InvocationStatus,
+    JournalMetadata, JournalRetentionPolicy, PreFlightInvocationMetadata, ScheduledInvocation,
+    StatusTimestamps,
 };
 use restate_types::LimitKey;
 use restate_types::Scope;
@@ -26,6 +27,7 @@ use restate_types::invocation::{
     InvocationTarget, ResponseResult, ServiceInvocationSpanContext, Source,
     VirtualObjectHandlerType,
 };
+use restate_types::journal_v2::{NotificationId, UnresolvedFuture};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
@@ -98,7 +100,11 @@ impl FixtureFactory {
 
 #[derive(Clone, Copy)]
 pub(super) enum InvocationFixtureStatus {
+    Scheduled,
+    Inboxed,
     Running,
+    Suspended,
+    Paused,
     CompletedSuccess,
     CompletedFailure,
 }
@@ -108,7 +114,11 @@ impl TryFrom<(&str, Option<&str>)> for InvocationFixtureStatus {
 
     fn try_from((status, completion_result): (&str, Option<&str>)) -> Result<Self, Self::Error> {
         match (status, completion_result) {
+            ("scheduled", None) => Ok(Self::Scheduled),
+            ("inboxed", None) => Ok(Self::Inboxed),
             ("invoked", None) => Ok(Self::Running),
+            ("suspended", None) => Ok(Self::Suspended),
+            ("paused", None) => Ok(Self::Paused),
             ("completed", Some("success")) => Ok(Self::CompletedSuccess),
             ("completed", Some("failure")) => Ok(Self::CompletedFailure),
             _ => anyhow::bail!(
@@ -143,6 +153,21 @@ pub(super) struct InvocationFixture {
 }
 
 impl InvocationFixture {
+    fn pre_flight_metadata(&self) -> PreFlightInvocationMetadata {
+        PreFlightInvocationMetadata {
+            invocation_target: self.target.clone(),
+            vqueue_id: self.vqueue_id.clone(),
+            limit_key: self.limit_key.clone(),
+            source: self.source.clone(),
+            execution_time: self.execution_time,
+            idempotency_key: self.idempotency_key.clone(),
+            timestamps: self.timestamps.clone(),
+            completion_retention_duration: self.completion_retention,
+            journal_retention_duration: self.journal_retention,
+            ..PreFlightInvocationMetadata::mock()
+        }
+    }
+
     pub(super) fn invocation_status(&self) -> InvocationStatus {
         let metadata = InFlightInvocationMetadata {
             invocation_target: self.target.clone(),
@@ -160,7 +185,21 @@ impl InvocationFixture {
         };
 
         match self.status {
+            InvocationFixtureStatus::Scheduled => {
+                InvocationStatus::Scheduled(ScheduledInvocation {
+                    metadata: self.pre_flight_metadata(),
+                })
+            }
+            InvocationFixtureStatus::Inboxed => InvocationStatus::Inboxed(InboxedInvocation {
+                inbox_sequence_number: 1,
+                metadata: self.pre_flight_metadata(),
+            }),
             InvocationFixtureStatus::Running => InvocationStatus::Invoked(metadata),
+            InvocationFixtureStatus::Suspended => InvocationStatus::Suspended {
+                metadata,
+                awaiting_on: UnresolvedFuture::Single(NotificationId::for_completion(1)),
+            },
+            InvocationFixtureStatus::Paused => InvocationStatus::Paused(metadata),
             InvocationFixtureStatus::CompletedSuccess => InvocationStatus::Completed(
                 CompletedInvocation::from_in_flight_invocation_metadata(
                     metadata,

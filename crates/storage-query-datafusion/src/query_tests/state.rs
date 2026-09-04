@@ -107,4 +107,65 @@ async fn query_state_ui_shapes() {
         ],
     })
     .await;
+
+    test.assert_query_ordered(QueryExpectation {
+        name: "state entries page starts strictly after its cursor",
+        sql: r#"SELECT
+                       key,
+                       value_length,
+                       CASE WHEN value_length <= 65536 THEN value END AS value
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key = 'key-1'
+                     AND scope = 'scope-a'
+                     AND key > 'state-1'
+                   ORDER BY key
+                   LIMIT 2"#,
+        expected: &[
+            "+---------+--------------+----------------+",
+            "| key     | value_length | value          |",
+            "+---------+--------------+----------------+",
+            "| state-2 | 7            | 76616c75652d32 |",
+            "+---------+--------------+----------------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "state entries page is empty for a different scope",
+        sql: r#"SELECT key, value_length,
+                          CASE WHEN value_length <= 65536 THEN value END AS value
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key = 'key-1'
+                     AND scope = 'scope-b'
+                   ORDER BY key
+                   LIMIT 2"#,
+        expected: &[
+            "+-----+--------------+-------+",
+            "| key | value_length | value |",
+            "+-----+--------------+-------+",
+            "+-----+--------------+-------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "state object size coalesces an empty object to zero",
+        sql: r#"SELECT
+                       COUNT(*) AS num_keys,
+                       COALESCE(SUM(value_length), 0) AS total_size
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key = 'missing-key'
+                     AND scope = 'scope-a'"#,
+        expected: &[
+            "+----------+------------+",
+            "| num_keys | total_size |",
+            "+----------+------------+",
+            "| 0        | 0          |",
+            "+----------+------------+",
+        ],
+    })
+    .await;
 }

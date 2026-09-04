@@ -15,47 +15,59 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::{Context, ensure};
 use bytes::Bytes;
+use bytestring::ByteString;
 use datafusion::common::test_util::{batches_to_sort_string, batches_to_string};
 use futures::TryStreamExt;
+use prost::Message;
 
 use restate_partition_store::PartitionStoreTransaction;
+use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
     JournalMetadata, StatusTimestamps, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::{EventView, WriteJournalEventsTable};
-use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable as WriteJournalTableV1};
+use restate_storage_api::journal_table_v2::WriteJournalTable as WriteJournalTableV2;
 use restate_storage_api::lock_table::{AcquiredBy, LockState, WriteLockTable};
+use restate_storage_api::promise_table::{Promise, PromiseResult, PromiseState, WritePromiseTable};
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::metadata::{
     Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
 };
-use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
 };
 use restate_types::LimitKey;
-use restate_types::clock::UniqueTimestamp;
+use restate_types::clock::{RoughTimestamp, UniqueTimestamp};
 use restate_types::deployment::PinnedDeployment;
+use restate_types::errors::{InvocationError, InvocationErrorCode};
 use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionId, ServiceId, WithPartitionKey,
+    DeploymentId, InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
+    SubscriptionId, WithPartitionKey,
 };
 use restate_types::invocation::{
-    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+    InvocationTarget, ServiceInvocationSpanContext, ServiceType, Source, VirtualObjectHandlerType,
     WorkflowHandlerType,
 };
+use restate_types::journal::enriched::{EnrichedEntryHeader, EnrichedRawEntry};
+use restate_types::journal::{Entry as EntryV1, InputEntry};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::{CompletionId, Encoder, Entry, InputCommand, RunCommand};
 use restate_types::partition_table::{FindPartition, PartitionTable};
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::schema::deployment::Deployment;
+use restate_types::schema::service::ServiceMetadata;
+use restate_types::service_protocol::{self, ServiceProtocolVersion};
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
 use restate_types::{LockName, Scope, ServiceName, Version};
 use restate_util_string::{ReString, RestateString};
-use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport};
+use restate_worker_api::{BlockedResource, SchedulingStatus, VQueueSchedulerStatus};
 
 use crate::mocks::{MockRemoteQueryEngine, MockSchemas, MockStatusHandle};
 
@@ -64,6 +76,7 @@ use super::data::{FixtureFactory, InvocationFixture, InvocationFixtureStatus, In
 pub(super) struct QueryTest {
     engine: MockRemoteQueryEngine,
     invocation_state: MockStatusHandle,
+    schemas: MockSchemas,
     text_table_factory: FixtureFactory,
 }
 
@@ -76,13 +89,12 @@ pub(super) struct QueryExpectation<'a> {
 impl QueryTest {
     pub(super) async fn create_remote() -> Self {
         let invocation_state = MockStatusHandle::default();
+        let schemas = MockSchemas::default();
         Self {
-            engine: MockRemoteQueryEngine::create_with(
-                invocation_state.clone(),
-                MockSchemas::default(),
-            )
-            .await,
+            engine: MockRemoteQueryEngine::create_with(invocation_state.clone(), schemas.clone())
+                .await,
             invocation_state,
+            schemas,
             text_table_factory: FixtureFactory::for_text_tables(),
         }
     }
@@ -114,6 +126,7 @@ impl QueryTest {
         populate(&mut QueryTestTables {
             transactions: &mut transactions,
             invocation_state: &self.invocation_state,
+            schemas: &self.schemas,
             text_table_factory: &mut self.text_table_factory,
         })
         .unwrap();
@@ -150,7 +163,9 @@ impl QueryTest {
         };
         let remote_scans = self.engine.remote_scans();
 
-        if expected != actual {
+        let empty_result_without_schema =
+            actual == "++\n++" && is_empty_expected_table(query.expected);
+        if expected != actual && !empty_result_without_schema {
             let report = self
                 .failure_report(
                     &query,
@@ -229,6 +244,16 @@ fn is_vertical_expected_table(expected: &[&str]) -> bool {
         .filter(|line| line.starts_with('|') && line.ends_with('|'))
         .and_then(|line| parse_text_table_line(line).into_iter().next())
         == Some("column")
+}
+
+fn is_empty_expected_table(expected: &[&str]) -> bool {
+    !is_vertical_expected_table(expected)
+        && expected
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| line.starts_with('|') && line.ends_with('|'))
+            .count()
+            == 1
 }
 
 fn transpose_expected_table<'a>(expected: &'a [&'a str], ordered: bool) -> anyhow::Result<String> {
@@ -664,11 +689,53 @@ fn invocation_source(row: &TextTableRow<'_, '_>) -> anyhow::Result<Source> {
                 InvocationTarget::service(service_name, handler_name),
             ))
         }
+        "ingress" => {
+            ensure_source_columns_are_empty(row)?;
+            Ok(Source::Ingress(PartitionProcessorRpcRequestId::default()))
+        }
+        "restate" => {
+            ensure_source_columns_are_empty(row)?;
+            Ok(Source::Internal)
+        }
+        "subscription" => {
+            ensure!(
+                row.get("invoked_by_id").is_none()
+                    && row.get("invoked_by_target").is_none()
+                    && row.get("restarted_from").is_none(),
+                "text table row on line {} sets fields that do not belong to a subscription source",
+                row.line_number
+            );
+            Ok(Source::Subscription(
+                row.parse::<SubscriptionId>("invoked_by_subscription_id")?,
+            ))
+        }
+        "restart_as_new" => {
+            ensure!(
+                row.get("invoked_by_id").is_none()
+                    && row.get("invoked_by_target").is_none()
+                    && row.get("invoked_by_subscription_id").is_none(),
+                "text table row on line {} sets fields that do not belong to a restart-as-new source",
+                row.line_number
+            );
+            Ok(Source::RestartAsNew(row.parse("restarted_from")?))
+        }
         value => anyhow::bail!(
             "text table row on line {} has unsupported `invoked_by` value {value:?}",
             row.line_number
         ),
     }
+}
+
+fn ensure_source_columns_are_empty(row: &TextTableRow<'_, '_>) -> anyhow::Result<()> {
+    ensure!(
+        row.get("invoked_by_id").is_none()
+            && row.get("invoked_by_target").is_none()
+            && row.get("invoked_by_subscription_id").is_none()
+            && row.get("restarted_from").is_none(),
+        "text table row on line {} sets source-specific fields for a source that has none",
+        row.line_number
+    );
+    Ok(())
 }
 
 struct PartitionTransactions<'store> {
@@ -721,12 +788,19 @@ impl<'store> PartitionTransactions<'store> {
 pub(super) struct QueryTestTables<'a, 'store> {
     transactions: &'a mut PartitionTransactions<'store>,
     invocation_state: &'a MockStatusHandle,
+    schemas: &'a MockSchemas,
     text_table_factory: &'a mut FixtureFactory,
 }
 
 impl<'a, 'store> QueryTestTables<'a, 'store> {
     pub(super) fn state(&mut self) -> StateTableFixture<'_, 'store> {
         StateTableFixture {
+            transactions: &mut *self.transactions,
+        }
+    }
+
+    pub(super) fn sys_promise(&mut self) -> SysPromiseTableFixture<'_, 'store> {
+        SysPromiseTableFixture {
             transactions: &mut *self.transactions,
         }
     }
@@ -774,10 +848,95 @@ impl<'a, 'store> QueryTestTables<'a, 'store> {
             transactions: &mut *self.transactions,
         }
     }
+
+    pub(super) fn sys_scheduler(&mut self) -> SysSchedulerTableFixture<'_, 'store> {
+        SysSchedulerTableFixture {
+            invocation_state: self.invocation_state,
+            transactions: &*self.transactions,
+        }
+    }
+
+    pub(super) fn sys_deployment(&mut self) -> SysDeploymentTableFixture<'_> {
+        SysDeploymentTableFixture {
+            schemas: self.schemas,
+        }
+    }
+
+    pub(super) fn sys_service(&mut self) -> SysServiceTableFixture<'_> {
+        SysServiceTableFixture {
+            schemas: self.schemas,
+        }
+    }
 }
 
 pub(super) struct StateTableFixture<'a, 'store> {
     transactions: &'a mut PartitionTransactions<'store>,
+}
+
+pub(super) struct SysPromiseTableFixture<'a, 'store> {
+    transactions: &'a mut PartitionTransactions<'store>,
+}
+
+impl SysPromiseTableFixture<'_, '_> {
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "scope",
+            "service_name",
+            "service_key",
+            "key",
+            "completed",
+            "completion_success_value",
+            "completion_failure",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let partition_key: u64 = row.parse("partition_key")?;
+            let service_id = ServiceId::new(
+                row.get("scope").map(Scope::try_new).transpose()?,
+                row.required("service_name")?,
+                row.required("service_key")?,
+            );
+            ensure!(
+                service_id.partition_key() == partition_key,
+                "text table row on line {} has partition_key {partition_key}, but its promise identity belongs to partition key {}",
+                row.line_number,
+                service_id.partition_key()
+            );
+            self.transactions
+                .validate_declared_partition(partition_id, &service_id)?;
+
+            let success = row.get("completion_success_value");
+            let failure = row.get("completion_failure");
+            let state = match (row.parse::<bool>("completed")?, success, failure) {
+                (false, None, None) => PromiseState::NotCompleted(Vec::new()),
+                (true, Some(value), None) => PromiseState::Completed(PromiseResult::Success(
+                    Bytes::copy_from_slice(value.as_bytes()),
+                )),
+                (true, None, Some(value)) => {
+                    let error = parse_invocation_error(value)?;
+                    PromiseState::Completed(PromiseResult::Failure(
+                        error.code(),
+                        ByteString::from(error.message()),
+                        Vec::new(),
+                    ))
+                }
+                _ => anyhow::bail!(
+                    "text table row on line {} must leave both completion columns empty when incomplete, or set exactly one when completed",
+                    row.line_number
+                ),
+            };
+            self.transactions.for_key(&service_id)?.put_promise(
+                &service_id,
+                &ByteString::from(row.required("key")?),
+                &Promise { state },
+            )?;
+        }
+        Ok(())
+    }
 }
 
 impl StateTableFixture<'_, '_> {
@@ -1038,10 +1197,8 @@ impl SysInvocationStateTableFixture<'_, '_> {
                 .validate_declared_partition(partition_id, &invocation_id)?;
             if full {
                 ensure!(
-                    row.get("last_failure").is_none()
-                        && row.get("last_failure_error_code").is_none()
-                        && row.get("last_awaiting_on_future_json").is_none(),
-                    "text table row on line {} uses failure or future fields, which this fixture does not support",
+                    row.get("last_failure_error_code").is_none(),
+                    "text table row on line {} uses `last_failure_error_code`, which requires a static documentation-code fixture",
                     row.line_number
                 );
             }
@@ -1056,6 +1213,27 @@ impl SysInvocationStateTableFixture<'_, '_> {
                         next_retry_at: row
                             .parse_optional::<u64>("next_retry_at")?
                             .map(|millis| UNIX_EPOCH + Duration::from_millis(millis)),
+                        last_retry_attempt_failure: row
+                            .get("last_failure")
+                            .map(parse_invocation_error)
+                            .transpose()?
+                            .map(|err| InvocationErrorReport {
+                                err,
+                                doc_error_code: None,
+                                related_entry_index: None,
+                                related_entry_name: None,
+                                related_entry_type: None,
+                            }),
+                        last_awaiting_on_unresolved_future: row
+                            .get("last_awaiting_on_future_json")
+                            .map(serde_json::from_str)
+                            .transpose()
+                            .with_context(|| {
+                                format!(
+                                    "text table row on line {} has invalid `last_awaiting_on_future_json`",
+                                    row.line_number
+                                )
+                            })?,
                         last_attempt_deployment_id: row
                             .get("last_attempt_deployment_id")
                             .map(str::parse::<DeploymentId>)
@@ -1073,6 +1251,26 @@ impl SysInvocationStateTableFixture<'_, '_> {
         }
         Ok(())
     }
+}
+
+fn parse_invocation_error(value: &str) -> anyhow::Result<InvocationError> {
+    let (code, message) = value
+        .strip_prefix('[')
+        .and_then(|value| value.split_once("] "))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "invalid invocation failure {value:?}; expected `[numeric-code] message`"
+            )
+        })?;
+    let code = code
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .parse::<u16>()?;
+    Ok(InvocationError::new(
+        InvocationErrorCode::new(code),
+        message,
+    ))
 }
 
 pub(super) struct SysVQueueMetaTableFixture<'a, 'store> {
@@ -1298,63 +1496,118 @@ impl SysJournalTableFixture<'_, '_> {
             let invocation_id = row.invocation_id()?;
             self.transactions
                 .validate_declared_partition(partition_id, &invocation_id)?;
-            ensure!(
-                row.parse::<u8>("version")? == 2,
-                "text table row on line {} has unsupported journal version; expected `2`",
-                row.line_number
-            );
-            let (entry, related_completion_ids): (Entry, Vec<CompletionId>) = match row
-                .required("entry_type")?
-            {
-                "Input" => {
-                    ensure!(
-                        row.get("completion_id").is_none(),
-                        "text table row on line {} cannot set `completion_id` for an Input entry",
-                        row.line_number
-                    );
-                    (
-                        InputCommand {
-                            headers: Vec::new(),
-                            payload: Bytes::copy_from_slice(row.required("value")?.as_bytes()),
-                            name: row.required("name")?.into(),
+            match row.parse::<u8>("version")? {
+                1 => {
+                    let entry = match row.required("entry_type")? {
+                        "Input" => {
+                            ensure!(
+                                row.get("name").is_none()
+                                    && row.get("completion_id").is_none()
+                                    && row.get("appended_at").is_none(),
+                                "text table row on line {} cannot set `name`, `completion_id`, or `appended_at` for a V1 Input entry",
+                                row.line_number
+                            );
+                            JournalEntry::Entry(ProtobufRawEntryCodec::serialize_enriched(
+                                EntryV1::Input(InputEntry {
+                                    headers: Vec::new(),
+                                    value: Bytes::copy_from_slice(
+                                        row.required("value")?.as_bytes(),
+                                    ),
+                                }),
+                            ))
                         }
-                        .into(),
-                        Vec::new(),
-                    )
-                }
-                "Run" => {
-                    ensure!(
-                        row.get("value").is_none(),
-                        "text table row on line {} cannot set `value` for a Run entry",
-                        row.line_number
-                    );
-                    let completion_id = row.parse("completion_id")?;
-                    (
-                        RunCommand {
-                            completion_id,
-                            name: row.required("name")?.into(),
+                        "Run" => {
+                            ensure!(
+                                row.get("value").is_none()
+                                    && row.get("completion_id").is_none()
+                                    && row.get("appended_at").is_none(),
+                                "text table row on line {} cannot set `value`, `completion_id`, or `appended_at` for a V1 Run entry",
+                                row.line_number
+                            );
+                            JournalEntry::Entry(EnrichedRawEntry::new(
+                                EnrichedEntryHeader::Run {},
+                                service_protocol::RunEntryMessage {
+                                    name: row.required("name")?.to_owned(),
+                                    result: None,
+                                }
+                                .encode_to_vec()
+                                .into(),
+                            ))
                         }
-                        .into(),
-                        vec![completion_id],
-                    )
+                        value => anyhow::bail!(
+                            "text table row on line {} has unsupported V1 `entry_type` value {value:?}",
+                            row.line_number
+                        ),
+                    };
+                    WriteJournalTableV1::put_journal_entry(
+                        self.transactions.for_key(&invocation_id)?,
+                        &invocation_id,
+                        row.parse("index")?,
+                        &entry,
+                    )?;
                 }
-                value => anyhow::bail!(
-                    "text table row on line {} has unsupported `entry_type` value {value:?}",
+                2 => {
+                    let (entry, related_completion_ids): (Entry, Vec<CompletionId>) = match row
+                        .required("entry_type")?
+                    {
+                        "Input" => {
+                            ensure!(
+                                row.get("completion_id").is_none(),
+                                "text table row on line {} cannot set `completion_id` for an Input entry",
+                                row.line_number
+                            );
+                            (
+                                InputCommand {
+                                    headers: Vec::new(),
+                                    payload: Bytes::copy_from_slice(
+                                        row.required("value")?.as_bytes(),
+                                    ),
+                                    name: row.required("name")?.into(),
+                                }
+                                .into(),
+                                Vec::new(),
+                            )
+                        }
+                        "Run" => {
+                            ensure!(
+                                row.get("value").is_none(),
+                                "text table row on line {} cannot set `value` for a Run entry",
+                                row.line_number
+                            );
+                            let completion_id = row.parse("completion_id")?;
+                            (
+                                RunCommand {
+                                    completion_id,
+                                    name: row.required("name")?.into(),
+                                }
+                                .into(),
+                                vec![completion_id],
+                            )
+                        }
+                        value => anyhow::bail!(
+                            "text table row on line {} has unsupported V2 `entry_type` value {value:?}",
+                            row.line_number
+                        ),
+                    };
+                    let entry = StoredRawEntry::new(
+                        StoredRawEntryHeader::new(MillisSinceEpoch::from(
+                            row.parse::<u64>("appended_at")?,
+                        )),
+                        ServiceProtocolV4Codec::encode_entry(entry),
+                    );
+                    WriteJournalTableV2::put_journal_entry(
+                        self.transactions.for_key(&invocation_id)?,
+                        &invocation_id,
+                        row.parse("index")?,
+                        &entry,
+                        &related_completion_ids,
+                    )?;
+                }
+                version => anyhow::bail!(
+                    "text table row on line {} has unsupported journal version {version}; expected `1` or `2`",
                     row.line_number
                 ),
-            };
-            let entry = StoredRawEntry::new(
-                StoredRawEntryHeader::new(MillisSinceEpoch::from(row.parse::<u64>("appended_at")?)),
-                ServiceProtocolV4Codec::encode_entry(entry),
-            );
-            self.transactions
-                .for_key(&invocation_id)?
-                .put_journal_entry(
-                    &invocation_id,
-                    row.parse("index")?,
-                    &entry,
-                    &related_completion_ids,
-                )?;
+            }
         }
         Ok(())
     }
@@ -1452,6 +1705,177 @@ impl SysLocksTableFixture<'_, '_> {
     }
 }
 
+pub(super) struct SysSchedulerTableFixture<'a, 'store> {
+    invocation_state: &'a MockStatusHandle,
+    transactions: &'a PartitionTransactions<'store>,
+}
+
+pub(super) struct SysDeploymentTableFixture<'a> {
+    schemas: &'a MockSchemas,
+}
+
+impl SysDeploymentTableFixture<'_> {
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&["id", "endpoint", "created_at"])?;
+
+        for row in table.rows() {
+            let mut deployment = Deployment::mock_with_uri(row.required("endpoint")?);
+            deployment.id = row.parse("id")?;
+            deployment.created_at = required_millis(&row, "created_at")?;
+            self.schemas.add_deployment(deployment);
+        }
+        Ok(())
+    }
+}
+
+pub(super) struct SysServiceTableFixture<'a> {
+    schemas: &'a MockSchemas,
+}
+
+impl SysServiceTableFixture<'_> {
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&["name", "ty", "deployment_id"])?;
+
+        for row in table.rows() {
+            let mut service = ServiceMetadata::mock_service(row.required("name")?, ["run"]);
+            service.ty = match row.required("ty")? {
+                "service" => ServiceType::Service,
+                "virtual_object" => ServiceType::VirtualObject,
+                "workflow" => ServiceType::Workflow,
+                value => anyhow::bail!(
+                    "text table row on line {} has unsupported service type {value:?}",
+                    row.line_number
+                ),
+            };
+            service.deployment_id = row.parse("deployment_id")?;
+            self.schemas.add_service(service);
+        }
+        Ok(())
+    }
+}
+
+impl SysSchedulerTableFixture<'_, '_> {
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse_fixture(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "num_inbox",
+            "status",
+            "head_entry_id",
+            "scheduled_at",
+            "blocked_on",
+            "blocked_on_json",
+            "invoker_concurrency_block_duration",
+            "throttling_rules_block_duration",
+            "invoker_throttling_block_duration",
+            "invoker_memory_block_duration",
+            "concurrency_rules_block_duration",
+            "lock_block_duration",
+            "deployment_concurrency_block_duration",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let vqueue_id = row.vqueue_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &vqueue_id)?;
+
+            let head_entry_id = row
+                .get("head_entry_id")
+                .map(str::parse::<VQueueEntryId>)
+                .transpose()?;
+            if let Some(head_entry_id) = &head_entry_id {
+                ensure!(
+                    head_entry_id.partition_key() == vqueue_id.partition_key(),
+                    "text table row on line {} has head_entry_id {head_entry_id}, which belongs to partition key {}, but vqueue {vqueue_id} belongs to partition key {}",
+                    row.line_number,
+                    head_entry_id.partition_key(),
+                    vqueue_id.partition_key()
+                );
+            }
+
+            let status = match row.required("status")? {
+                "dormant" => SchedulingStatus::Dormant,
+                "empty" => SchedulingStatus::Empty,
+                "ready" => SchedulingStatus::Ready,
+                "scheduled" => SchedulingStatus::Scheduled {
+                    at: RoughTimestamp::from_unix_millis_clamped(required_millis(
+                        &row,
+                        "scheduled_at",
+                    )?),
+                },
+                "blocked" => {
+                    let blocked_on = match row.required("blocked_on")? {
+                        "invoker-concurrency" => BlockedResource::InvokerConcurrency,
+                        "invoker-throttling" => BlockedResource::InvokerThrottling {
+                            estimated_retry_at: None,
+                        },
+                        "invoker-memory" => BlockedResource::InvokerMemory,
+                        "deployment-concurrency" => BlockedResource::DeploymentConcurrency,
+                        value => anyhow::bail!(
+                            "text table row on line {} has unsupported `blocked_on` value {value:?}",
+                            row.line_number
+                        ),
+                    };
+                    ensure!(
+                        serde_json::to_string(&blocked_on)? == row.required("blocked_on_json")?,
+                        "text table row on line {} has a `blocked_on_json` value that does not match `blocked_on`",
+                        row.line_number
+                    );
+                    SchedulingStatus::BlockedOn(blocked_on)
+                }
+                value => anyhow::bail!(
+                    "text table row on line {} has unsupported scheduler status {value:?}",
+                    row.line_number
+                ),
+            };
+            if !matches!(status, SchedulingStatus::Scheduled { .. }) {
+                ensure!(
+                    row.get("scheduled_at").is_none(),
+                    "text table row on line {} can only set `scheduled_at` for a scheduled row",
+                    row.line_number
+                );
+            }
+            if !matches!(status, SchedulingStatus::BlockedOn(_)) {
+                ensure!(
+                    row.get("blocked_on").is_none() && row.get("blocked_on_json").is_none(),
+                    "text table row on line {} can only set blocked-on columns for a blocked row",
+                    row.line_number
+                );
+            }
+
+            self.invocation_state.push_scheduler_status((
+                vqueue_id,
+                VQueueSchedulerStatus {
+                    wait_stats: WaitStats {
+                        blocked_on_invoker_concurrency_ms: row
+                            .parse("invoker_concurrency_block_duration")?,
+                        blocked_on_throttling_rules_ms: row
+                            .parse("throttling_rules_block_duration")?,
+                        blocked_on_invoker_throttling_ms: row
+                            .parse("invoker_throttling_block_duration")?,
+                        blocked_on_invoker_memory_ms: row.parse("invoker_memory_block_duration")?,
+                        blocked_on_concurrency_rules_ms: row
+                            .parse("concurrency_rules_block_duration")?,
+                        blocked_on_lock_ms: row.parse("lock_block_duration")?,
+                        blocked_on_deployment_concurrency_ms: row
+                            .parse("deployment_concurrency_block_duration")?,
+                    },
+                    waiting_inbox: row.parse("num_inbox")?,
+                    status,
+                    head_entry_id: head_entry_id.map(Into::into),
+                    ..VQueueSchedulerStatus::default()
+                },
+            ));
+        }
+        Ok(())
+    }
+}
+
 #[test]
 fn vertical_expected_table_respects_order_mode() {
     let expected = &[
@@ -1487,6 +1911,23 @@ fn vertical_expected_table_respects_order_mode() {
         ]
         .join("\n")
     );
+}
+
+#[test]
+fn header_only_expected_table_represents_an_empty_result() {
+    assert!(is_empty_expected_table(&[
+        "+----+--------+",
+        "| id | status |",
+        "+----+--------+",
+        "+----+--------+",
+    ]));
+    assert!(!is_empty_expected_table(&[
+        "+----+--------+",
+        "| id | status |",
+        "+----+--------+",
+        "| 1  | ready  |",
+        "+----+--------+",
+    ]));
 }
 
 #[test]

@@ -61,7 +61,10 @@ use crate::remote_query_scanner_manager::{
 use crate::remote_query_scanner_server::RemoteQueryScannerServer;
 
 #[derive(Debug, Clone, Default)]
-pub struct MockStatusHandle(Arc<RwLock<Vec<InvocationStatusReport>>>);
+pub struct MockStatusHandle {
+    invocation_statuses: Arc<RwLock<Vec<InvocationStatusReport>>>,
+    scheduler_statuses: Arc<RwLock<Vec<SchedulerStatusEntry>>>,
+}
 
 impl MockStatusHandle {
     pub fn with(self, invocation_status_report: InvocationStatusReport) -> Self {
@@ -70,7 +73,17 @@ impl MockStatusHandle {
     }
 
     pub(crate) fn push(&self, invocation_status_report: InvocationStatusReport) {
-        self.0.write().unwrap().push(invocation_status_report);
+        self.invocation_statuses
+            .write()
+            .unwrap()
+            .push(invocation_status_report);
+    }
+
+    pub(crate) fn push_scheduler_status(&self, scheduler_status: SchedulerStatusEntry) {
+        self.scheduler_statuses
+            .write()
+            .unwrap()
+            .push(scheduler_status);
     }
 }
 
@@ -78,7 +91,7 @@ impl StatusHandle for MockStatusHandle {
     type Iterator = std::vec::IntoIter<InvocationStatusReport>;
 
     async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
-        self.0
+        self.invocation_statuses
             .read()
             .unwrap()
             .iter()
@@ -90,14 +103,30 @@ impl StatusHandle for MockStatusHandle {
 }
 
 #[derive(Default, Clone, Debug)]
-pub(crate) struct MockSchemas(
-    pub(crate) MockServiceMetadataResolver,
-    pub(crate) MockDeploymentMetadataRegistry,
-);
+pub(crate) struct MockSchemas {
+    services: Arc<RwLock<MockServiceMetadataResolver>>,
+    deployments: Arc<RwLock<MockDeploymentMetadataRegistry>>,
+}
+
+impl MockSchemas {
+    pub(crate) fn add_service(&self, service: ServiceMetadata) {
+        self.services.write().unwrap().add(service);
+    }
+
+    pub(crate) fn add_deployment(&self, deployment: Deployment) {
+        self.deployments
+            .write()
+            .unwrap()
+            .mock_deployment(deployment);
+    }
+}
 
 impl ServiceMetadataResolver for MockSchemas {
     fn resolve_latest_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
-        self.0.resolve_latest_service(service_name)
+        self.services
+            .read()
+            .unwrap()
+            .resolve_latest_service(service_name)
     }
 
     fn resolve_latest_service_openapi(
@@ -109,26 +138,35 @@ impl ServiceMetadataResolver for MockSchemas {
     }
 
     fn list_services(&self) -> Vec<ServiceMetadata> {
-        self.0.list_services()
+        self.services.read().unwrap().list_services()
     }
 
     fn list_service_names(&self) -> Vec<String> {
-        self.0.list_service_names()
+        self.services.read().unwrap().list_service_names()
     }
 }
 
 impl PartitionLeaderStatusHandle for MockStatusHandle {
     type SchedulerStatus = SchedulerStatusEntry;
-    type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
+    type SchedulerStatusIterator = std::vec::IntoIter<Self::SchedulerStatus>;
 
     type UserLimitCounter = UserLimitCounterEntry;
     type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
 
     fn read_scheduler_status(
         &self,
-        _keys: KeyRange,
+        keys: KeyRange,
     ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
-        std::future::ready(std::iter::empty())
+        std::future::ready(
+            self.scheduler_statuses
+                .read()
+                .unwrap()
+                .iter()
+                .filter(|(vqueue_id, _)| keys.contains(&vqueue_id.partition_key()))
+                .cloned()
+                .collect::<Vec<_>>()
+                .into_iter(),
+        )
     }
 
     fn read_user_limit_counters(
@@ -144,7 +182,10 @@ impl DeploymentResolver for MockSchemas {
         &self,
         service_name: impl AsRef<str>,
     ) -> Option<Deployment> {
-        self.1.resolve_latest_deployment_for_service(service_name)
+        self.deployments
+            .read()
+            .unwrap()
+            .resolve_latest_deployment_for_service(service_name)
     }
 
     fn find_deployment(
@@ -152,23 +193,31 @@ impl DeploymentResolver for MockSchemas {
         deployment_address: &DeploymentAddress,
         additional_headers: &Headers,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        self.1
+        self.deployments
+            .read()
+            .unwrap()
             .find_deployment(deployment_address, additional_headers)
     }
 
     fn get_deployment(&self, deployment_id: &DeploymentId) -> Option<Deployment> {
-        self.1.get_deployment(deployment_id)
+        self.deployments
+            .read()
+            .unwrap()
+            .get_deployment(deployment_id)
     }
 
     fn get_deployment_and_services(
         &self,
         deployment_id: &DeploymentId,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        self.1.get_deployment_and_services(deployment_id)
+        self.deployments
+            .read()
+            .unwrap()
+            .get_deployment_and_services(deployment_id)
     }
 
     fn get_deployments(&self) -> Vec<(Deployment, Vec<(String, ServiceRevision)>)> {
-        self.1.get_deployments()
+        self.deployments.read().unwrap().get_deployments()
     }
 }
 

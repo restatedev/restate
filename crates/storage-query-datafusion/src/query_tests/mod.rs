@@ -107,6 +107,7 @@
 //! ```
 
 mod data;
+mod deployments;
 mod harness;
 mod invocation_status;
 mod journal;

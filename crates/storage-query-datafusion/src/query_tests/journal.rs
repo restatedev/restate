@@ -15,20 +15,20 @@ async fn query_journal_ui_shapes() {
     let mut test = QueryTest::create_remote().await;
     test.populate(|tables| {
         tables.sys_journal().populate_table(&[
-            "+---------------+------------------------------------------+------------------------------------------+",
-            "| column        | row 1                                    | row 2                                    |",
-            "+---------------+------------------------------------------+------------------------------------------+",
-            "| partition_id  | 1                                        | 1                                        |",
-            "| partition_key | 6564637988134260717                      | 6564637988134260717                      |",
-            "| id            | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   |",
-            "| index         | 0                                        | 1                                        |",
-            "| version       | 2                                        | 2                                        |",
-            "| appended_at   | 20000                                    | 21000                                    |",
-            "| entry_type    | Input                                    | Run                                      |",
-            "| name          | input                                    | fixture-step-1                           |",
-            "| value         | fixture-input                            |                                          |",
-            "| completion_id |                                          | 1                                        |",
-            "+---------------+------------------------------------------+------------------------------------------+",
+            "+---------------+------------------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| column        | V2 input                                 | V2 run                                   | V1 input                                 | V1 run                                   |",
+            "+---------------+------------------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| partition_id  | 1                                        | 1                                        | 0                                        | 0                                        |",
+            "| partition_key | 6564637988134260717                      | 6564637988134260717                      | 3169317165037139997                      | 3169317165037139997                      |",
+            "| id            | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA   | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA   |",
+            "| index         | 0                                        | 1                                        | 0                                        | 1                                        |",
+            "| version       | 2                                        | 2                                        | 1                                        | 1                                        |",
+            "| appended_at   | 20000                                    | 21000                                    |                                          |                                          |",
+            "| entry_type    | Input                                    | Run                                      | Input                                    | Run                                      |",
+            "| name          | input                                    | fixture-step-1                           |                                          | legacy-step                              |",
+            "| value         | fixture-input                            |                                          | legacy-input                             |                                          |",
+            "| completion_id |                                          | 1                                        |                                          |                                          |",
+            "+---------------+------------------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
         ])?;
         tables.sys_journal_events().populate_table(&[
             "+---------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------+--------------------------+--------------------------------------------------------------------------------------------------------------------------------------------------+",
@@ -144,6 +144,62 @@ async fn query_journal_ui_shapes() {
             "+--------------+-----------------------------------------------------------------+--------------------------------------+",
             "| Command: Run | {\"Command\":{\"Run\":{\"completion_id\":1,\"name\":\"fixture-step-1\"}}} | 5801620e666978747572652d737465702d31 |",
             "+--------------+-----------------------------------------------------------------+--------------------------------------+",
+        ],
+    })
+    .await;
+
+    test.assert_query_ordered(QueryExpectation {
+        name: "legacy journal entries preserve the V1 nullable column contract",
+        sql: r#"SELECT
+                       id,
+                       index,
+                       appended_at,
+                       entry_type,
+                       name,
+                       raw_length,
+                       entry_lite_json,
+                       version,
+                       completed,
+                       sleep_wakeup_at,
+                       invoked_id,
+                       invoked_target,
+                       promise_name
+                   FROM sys_journal
+                   WHERE id = 'inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA'
+                   ORDER BY index"#,
+        expected: &[
+            "+-----------------+------------------------------------------+------------------------------------------+",
+            "| column          | row 1                                    | row 2                                    |",
+            "+-----------------+------------------------------------------+------------------------------------------+",
+            "| id              | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA   | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA   |",
+            "| index           | 0                                        | 1                                        |",
+            "| appended_at     |                                          |                                          |",
+            "| entry_type      | Input                                    | Run                                      |",
+            "| name            |                                          | legacy-step                              |",
+            "| raw_length      |                                          |                                          |",
+            "| entry_lite_json |                                          |                                          |",
+            "| version         | 1                                        | 1                                        |",
+            "| completed       |                                          |                                          |",
+            "| sleep_wakeup_at |                                          |                                          |",
+            "| invoked_id      |                                          |                                          |",
+            "| invoked_target  |                                          |                                          |",
+            "| promise_name    |                                          |                                          |",
+            "+-----------------+------------------------------------------+------------------------------------------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "journal events page is empty for an invocation without events",
+        sql: r#"SELECT after_journal_entry_index, appended_at, event_type, event_json
+                   FROM sys_journal_events
+                   WHERE id = 'inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA'
+                   ORDER BY appended_at"#,
+        expected: &[
+            "+---------------------------+-------------+------------+------------+",
+            "| after_journal_entry_index | appended_at | event_type | event_json |",
+            "+---------------------------+-------------+------------+------------+",
+            "+---------------------------+-------------+------------+------------+",
         ],
     })
     .await;
