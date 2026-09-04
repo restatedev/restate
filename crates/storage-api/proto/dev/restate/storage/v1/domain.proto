@@ -710,6 +710,13 @@ message OutboxMessage {
     }
   }
 
+  message Opaque{
+    uint64 partition_key = 1;
+    uint32 kind = 2;
+    uint32 codec = 3;
+    bytes message = 4;
+  }
+
   oneof outbox_message {
     OutboxServiceInvocation service_invocation_case = 1;
     OutboxServiceInvocationResponse service_invocation_response = 2;
@@ -717,6 +724,7 @@ message OutboxMessage {
     OutboxCancel cancel = 5;
     AttachInvocationRequest attach_invocation_request = 6;
     NotifySignal notify_signal = 7;
+    Opaque opaque = 8;
   }
 }
 
