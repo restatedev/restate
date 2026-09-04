@@ -14,23 +14,35 @@ use super::harness::{QueryExpectation, QueryTest};
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation_by_id_list() {
     let mut factory = FixtureFactory::default();
-    let vqueue = factory.create_vqueue();
-    let invocations = factory
-        .invocations::<3>()
-        .with_vqueue(&vqueue)
+    let vqueue_0 = factory.create_vqueue("scope-a");
+    let vqueue_1 = factory.create_vqueue("scope-j");
+    let vqueue_2 = factory.create_vqueue("scope-b");
+    let [invocation_1] = factory
+        .invocations::<1>()
+        .with_vqueue(&vqueue_0)
         .with_status(InvocationFixtureStatus::Running)
         .create();
-    let [invocation_1, _, invocation_3] = &invocations;
+    let [invocation_2] = factory
+        .invocations::<1>()
+        .with_vqueue(&vqueue_1)
+        .with_status(InvocationFixtureStatus::Running)
+        .create();
+    let [invocation_3] = factory
+        .invocations::<1>()
+        .with_vqueue(&vqueue_2)
+        .with_status(InvocationFixtureStatus::Running)
+        .create();
 
-    let mut test = QueryTest::create().await;
-    test.populate(|tables| {
-        for invocation in &invocations {
-            tables.sys_invocation_status().populate(invocation)?;
-            tables.sys_invocation_state().populate(invocation);
-        }
-        Ok(())
-    })
-    .await;
+    let mut test = QueryTest::create_remote().await;
+    for (partition, invocation) in [(0, &invocation_1), (1, &invocation_2), (2, &invocation_3)] {
+        test.partition(partition)
+            .populate(|tables| {
+                tables.sys_invocation_status().populate(invocation)?;
+                tables.sys_invocation_state().populate(invocation)?;
+                Ok(())
+            })
+            .await;
+    }
 
     test
         .assert_query(QueryExpectation {
@@ -87,7 +99,7 @@ async fn query_sys_invocation_by_id_list() {
                 "+-----------------------------------+------------------------------------------+------------------------------------------+",
                 "| column                            | row 1                                    | row 2                                    |",
                 "+-----------------------------------+------------------------------------------+------------------------------------------+",
-                "| id                                | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   | inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy   |",
+                "| id                                | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy   |",
                 "| target                            | TestService/key-1/run                    | TestService/key-1/run                    |",
                 "| target_service_name               | TestService                              | TestService                              |",
                 "| target_service_key                | key-1                                    | key-1                                    |",
@@ -126,8 +138,8 @@ async fn query_sys_invocation_by_id_list() {
                 "| suspended_waiting_for_completions |                                          |                                          |",
                 "| suspended_waiting_for_signals     |                                          |                                          |",
                 "| suspended_waiting_future_json     |                                          |                                          |",
-                "| scope                             | scope-a                                  | scope-a                                  |",
-                "| vqueue_id                         | vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR    | vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR    |",
+                "| scope                             | scope-a                                  | scope-b                                  |",
+                "| vqueue_id                         | vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR    | vq_18rEacLHS3jy26a53iN5aIaYj240f03U9L     |",
                 "| limit_key                         | tenant/eu                                | tenant/eu                                |",
                 "+-----------------------------------+------------------------------------------+------------------------------------------+",
             ],

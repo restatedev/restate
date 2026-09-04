@@ -12,17 +12,17 @@ use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_state_ui_shapes() {
-    let mut test = QueryTest::create().await;
+    let mut test = QueryTest::create_remote().await;
     test.populate(|tables| {
         tables.state().populate_table(&[
-            "+---------+--------------+-------------+---------+---------+",
-            "| scope   | service_name | service_key | key     | value   |",
-            "+---------+--------------+-------------+---------+---------+",
-            "| scope-a | TestService  | key-1       | state-1 | value-1 |",
-            "| scope-a | TestService  | key-1       | state-2 | value-2 |",
-            "| scope-b | TestService  | key-2       | state-1 | value-3 |",
-            "| scope-b | OtherService | ignored-key | state-1 | value-4 |",
-            "+---------+--------------+-------------+---------+---------+",
+            "+--------------+----------------------+---------+--------------+-------------+---------+---------+",
+            "| partition_id | partition_key        | scope   | service_name | service_key | key     | value   |",
+            "+--------------+----------------------+---------+--------------+-------------+---------+---------+",
+            "| 0            | 3169317165037139997  | scope-a | TestService  | key-1       | state-1 | value-1 |",
+            "| 0            | 3169317165037139997  | scope-a | TestService  | key-1       | state-2 | value-2 |",
+            "| 1            | 6564637988134260717  | scope-j | TestService  | key-2       | state-1 | value-3 |",
+            "| 2            | 16740507687615160162 | scope-b | OtherService | ignored-key | state-1 | value-4 |",
+            "+--------------+----------------------+---------+--------------+-------------+---------+---------+",
         ])?;
         Ok(())
     })
@@ -39,7 +39,7 @@ async fn query_state_ui_shapes() {
             "| service_key | scope   |",
             "+-------------+---------+",
             "| key-1       | scope-a |",
-            "| key-2       | scope-b |",
+            "| key-2       | scope-j |",
             "+-------------+---------+",
         ],
     })

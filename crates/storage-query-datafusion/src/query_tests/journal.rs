@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::data::{FixtureFactory, InvocationOptions};
+use super::data::FixtureFactory;
 use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_journal_ui_shapes() {
     let mut factory = FixtureFactory::default();
-    let invocation = factory.create_invocation(InvocationOptions::default());
+    let vqueue = factory.create_vqueue("scope-j");
+    let [invocation] = factory.invocations::<1>().with_vqueue(&vqueue).create();
 
-    let mut test = QueryTest::create().await;
-    test.populate(|tables| {
-        tables.sys_journal().populate(&invocation)?;
-        tables.sys_journal_events().populate(&invocation)?;
-        Ok(())
-    })
-    .await;
+    let mut test = QueryTest::create_remote().await;
+    test.partition(1)
+        .populate(|tables| {
+            tables.sys_journal().populate(&invocation)?;
+            tables.sys_journal_events().populate(&invocation)?;
+            Ok(())
+        })
+        .await;
 
     test
         .assert_query(QueryExpectation {
@@ -51,7 +53,7 @@ async fn query_journal_ui_shapes() {
                 "+-----------------+------------------------------------------+------------------------------------------+",
                 "| column          | row 1                                    | row 2                                    |",
                 "+-----------------+------------------------------------------+------------------------------------------+",
-                "| id              | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   |",
+                "| id              | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v01SZwviYzes2mjOamuMJWw   |",
                 "| index           | 0                                        | 1                                        |",
                 "| appended_at     |                                          |                                          |",
                 "| entry_type      | Input                                    | Run                                      |",

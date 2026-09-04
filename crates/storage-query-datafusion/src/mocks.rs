@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
 use std::fmt::Debug;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -23,10 +24,12 @@ use datafusion::physical_plan::{collect, display::DisplayableExecutionPlan};
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
+use restate_core::network::MockConnector;
+use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_types::NodeId;
+use restate_types::cluster_state::NodeState;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
@@ -34,12 +37,14 @@ use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision, Wit
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
 use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
-use restate_types::partition_table::Partition;
+use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
+use restate_types::partition_table::{Partition, PartitionTable};
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
+use restate_types::{GenerationalNodeId, NodeId, RestateVersion, Version};
 use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
@@ -49,6 +54,7 @@ use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
     PartitionLocation, PartitionLocator, RemoteScannerManager,
 };
+use crate::remote_query_scanner_server::RemoteQueryScannerServer;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockStatusHandle(Arc<RwLock<Vec<InvocationStatusReport>>>);
@@ -266,12 +272,279 @@ impl MockQueryEngine {
     ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
         self.2.execute(sql.as_ref()).await
     }
+}
 
-    pub async fn explain_analyze_tree(
+const QUERY_COORDINATOR_NODE_ID: GenerationalNodeId = GenerationalNodeId::new(1, 1);
+const REMOTE_QUERY_PARTITIONS: u16 = 3;
+
+#[derive(Clone, Debug)]
+struct FixedPartitionSelector(Arc<Vec<(PartitionId, Partition)>>);
+
+impl FixedPartitionSelector {
+    fn new(partitions: impl IntoIterator<Item = (PartitionId, Partition)>) -> Self {
+        Self(Arc::new(partitions.into_iter().collect()))
+    }
+}
+
+#[async_trait]
+impl SelectPartitions for FixedPartitionSelector {
+    async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
+        Ok(self.0.as_ref().clone())
+    }
+}
+
+#[derive(Debug)]
+struct RemotePartitionLocator {
+    owners: Arc<BTreeMap<PartitionId, GenerationalNodeId>>,
+}
+
+impl PartitionLocator for RemotePartitionLocator {
+    fn get_partition_target_node(
+        &self,
+        partition_id: PartitionId,
+    ) -> anyhow::Result<PartitionLocation> {
+        let node_id = self
+            .owners
+            .get(&partition_id)
+            .copied()
+            .ok_or_else(|| anyhow::anyhow!("partition {partition_id} has no test owner"))?;
+        Ok(PartitionLocation::Remote {
+            node_id: NodeId::from(node_id),
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RemoteScan {
+    pub(crate) node_id: NodeId,
+    pub(crate) partition_id: PartitionId,
+    pub(crate) table: String,
+}
+
+#[derive(Debug)]
+struct RecordingRemoteScannerService {
+    inner: Arc<dyn RemoteScannerService>,
+    scans: Arc<RwLock<Vec<RemoteScan>>>,
+}
+
+#[async_trait]
+impl RemoteScannerService for RecordingRemoteScannerService {
+    async fn open(
+        &self,
+        peer: NodeId,
+        request: RemoteQueryScannerOpen,
+    ) -> Result<RemoteScanner, DataFusionError> {
+        self.scans.write().unwrap().push(RemoteScan {
+            node_id: peer,
+            partition_id: request.partition_id,
+            table: request.table.clone(),
+        });
+        self.inner.open(peer, request).await
+    }
+}
+
+#[derive(Clone)]
+struct RemoteNodeScanner {
+    node_id: GenerationalNodeId,
+    query_context: QueryContext,
+    scanner_manager: RemoteScannerManager,
+}
+
+pub(crate) struct MockRemoteQueryEngine {
+    partition_stores: BTreeMap<PartitionId, PartitionStore>,
+    partition_table: PartitionTable,
+    partition_owners: Arc<BTreeMap<PartitionId, GenerationalNodeId>>,
+    query_context: QueryContext,
+    remote_scans: Arc<RwLock<Vec<RemoteScan>>>,
+}
+
+impl MockRemoteQueryEngine {
+    pub(crate) async fn create_with(
+        status: impl PartitionLeaderStatusHandle<
+            SchedulerStatus = SchedulerStatusEntry,
+            UserLimitCounter = UserLimitCounterEntry,
+        >,
+        schemas: impl DeploymentResolver
+        + ServiceMetadataResolver
+        + Send
+        + Sync
+        + Debug
+        + Clone
+        + 'static,
+    ) -> Self {
+        RocksDbManager::init();
+
+        let partition_table =
+            PartitionTable::with_equally_sized_partitions(Version::MIN, REMOTE_QUERY_PARTITIONS);
+        let partitions = partition_table
+            .iter()
+            .map(|(partition_id, partition)| (*partition_id, partition.clone()))
+            .collect::<Vec<_>>();
+        let owners = Arc::new(
+            partitions
+                .iter()
+                .enumerate()
+                .map(|(index, (partition_id, _))| {
+                    (
+                        *partition_id,
+                        GenerationalNodeId::new(
+                            u32::try_from(index).expect("test node index to fit in u32") + 2,
+                            1,
+                        ),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>(),
+        );
+
+        let mut partition_stores = BTreeMap::new();
+        let mut remote_nodes = Vec::with_capacity(partitions.len());
+        for (partition_id, partition) in &partitions {
+            let manager = PartitionStoreManager::create(true)
+                .await
+                .expect("DB creation succeeds");
+            let partition_store = manager.open(partition, None).await.unwrap();
+            partition_stores.insert(*partition_id, partition_store);
+
+            let scanner_manager = RemoteScannerManager::local_only(
+                restate_core::MetadataBuilder::default().to_metadata(),
+            );
+            let query_context = QueryContext::with_user_tables(
+                &QueryEngineOptions::default(),
+                FixedPartitionSelector::new([(*partition_id, partition.clone())]),
+                manager,
+                Some(status.clone()),
+                Live::from_value(schemas.clone()),
+                scanner_manager.clone(),
+                MetadataStoreClient::new_in_memory(),
+                None,
+            )
+            .await
+            .unwrap();
+            remote_nodes.push(RemoteNodeScanner {
+                node_id: owners[partition_id],
+                query_context,
+                scanner_manager,
+            });
+        }
+
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for node_id in std::iter::once(QUERY_COORDINATOR_NODE_ID).chain(owners.values().copied()) {
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("query-test-{node_id}"))
+                    .current_generation(node_id)
+                    .address(AdvertisedAddress::default())
+                    .roles(Role::Admin | Role::Worker)
+                    .binary_version(RestateVersion::current())
+                    .build(),
+            );
+        }
+
+        let remote_nodes = Arc::new(remote_nodes);
+        let (connector, _connections) = MockConnector::new({
+            let remote_nodes = Arc::clone(&remote_nodes);
+            move |node_id, router_builder| {
+                let remote_node = remote_nodes
+                    .iter()
+                    .find(|remote_node| remote_node.node_id == node_id)
+                    .unwrap_or_else(|| panic!("no query-test scanner server for {node_id}"));
+                let server = RemoteQueryScannerServer::new(
+                    remote_node.query_context.clone(),
+                    remote_node.scanner_manager.clone(),
+                    router_builder,
+                );
+                TaskCenter::spawn_unmanaged(
+                    TaskKind::DfScanner,
+                    format!("query-test-scanner-server-{node_id}"),
+                    server.start(),
+                )
+                .expect("remote scanner server to start");
+            }
+        });
+        let core_env = TestCoreEnvBuilder::with_transport_connector(connector)
+            .set_my_node_id(QUERY_COORDINATOR_NODE_ID)
+            .set_nodes_config(nodes_config)
+            .set_partition_table(partition_table.clone())
+            .build()
+            .await;
+        TaskCenter::current()
+            .cluster_state_updater()
+            .upsert_node_state(QUERY_COORDINATOR_NODE_ID, NodeState::Alive);
+
+        let remote_scans = Arc::new(RwLock::new(Vec::new()));
+        let remote_scanner = Arc::new(RecordingRemoteScannerService {
+            inner: crate::remote_query_scanner_client::create_remote_scanner_service(
+                core_env.networking.clone(),
+            ),
+            scans: Arc::clone(&remote_scans),
+        });
+        let scanner_manager = RemoteScannerManager::new(
+            remote_scanner,
+            Arc::new(RemotePartitionLocator {
+                owners: Arc::clone(&owners),
+            }),
+            core_env.metadata.clone(),
+        );
+        let coordinator_manager = PartitionStoreManager::create(true)
+            .await
+            .expect("DB creation succeeds");
+        let query_context = QueryContext::with_user_tables(
+            &QueryEngineOptions::default(),
+            FixedPartitionSelector::new(partitions),
+            coordinator_manager,
+            Some(status),
+            Live::from_value(schemas),
+            scanner_manager,
+            core_env.metadata_store_client,
+            None,
+        )
+        .await
+        .unwrap();
+
+        Self {
+            partition_stores,
+            partition_table,
+            partition_owners: owners,
+            query_context,
+            remote_scans,
+        }
+    }
+
+    pub(crate) fn partition_table(&self) -> &PartitionTable {
+        &self.partition_table
+    }
+
+    pub(crate) fn partition_stores_mut(&mut self) -> &mut BTreeMap<PartitionId, PartitionStore> {
+        &mut self.partition_stores
+    }
+
+    pub(crate) fn clear_remote_scans(&self) {
+        self.remote_scans.write().unwrap().clear();
+    }
+
+    pub(crate) fn remote_scans(&self) -> Vec<RemoteScan> {
+        self.remote_scans.read().unwrap().clone()
+    }
+
+    pub(crate) fn remote_owner(&self, partition_id: PartitionId) -> Option<NodeId> {
+        self.partition_owners
+            .get(&partition_id)
+            .copied()
+            .map(NodeId::from)
+    }
+
+    pub(crate) async fn execute(
+        &self,
+        sql: impl AsRef<str> + Send,
+    ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
+        self.query_context.execute(sql.as_ref()).await
+    }
+
+    pub(crate) async fn explain_analyze_tree(
         &self,
         sql: impl AsRef<str> + Send,
     ) -> Result<String, crate::context::QueryError> {
-        let session = self.2.as_ref();
+        let session = self.query_context.as_ref();
         let state = session.state();
         let statement =
             state.sql_to_statement(sql.as_ref(), &datafusion::config::Dialect::PostgreSQL)?;
@@ -282,8 +555,6 @@ impl MockQueryEngine {
 
         collect(Arc::clone(&physical_plan), task_context).await?;
 
-        // DataFusion 54 rejects `EXPLAIN ANALYZE` combined with `FORMAT TREE`.
-        // Execute the physical plan to populate metrics, then render that plan as a tree.
         let analyzed_plan = DisplayableExecutionPlan::with_metrics(physical_plan.as_ref())
             .set_tree_maximum_render_width(0);
         Ok(format!(

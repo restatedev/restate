@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, UNIX_EPOCH};
 
 use bytes::Bytes;
@@ -22,18 +21,8 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::EventView;
 use restate_storage_api::journal_table::JournalEntry;
-use restate_storage_api::vqueue_table::metadata::{
-    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
-};
-use restate_storage_api::vqueue_table::stats::EntryStatistics;
-use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryMetadata, EntryValue, Stage, Status,
-};
 use restate_types::LimitKey;
-use restate_types::LockName;
 use restate_types::Scope;
-use restate_types::ServiceName;
-use restate_types::clock::UniqueTimestamp;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{DeploymentId, InvocationId, InvocationUuid, WithPartitionKey};
@@ -51,7 +40,6 @@ use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 
-const VQUEUE_BASE_TIMESTAMP_MILLIS: u64 = 1_744_000_000_000;
 const TEXT_TABLE_INVOCATION_SEQUENCE_START: u128 = 1 << 64;
 
 pub(super) struct FixtureFactory {
@@ -85,33 +73,14 @@ impl FixtureFactory {
         }
     }
 
-    pub(super) fn create_vqueue(&mut self) -> VQueueFixture {
-        self.create_vqueue_with(VQueueOptions::default())
-    }
-
-    pub(super) fn create_vqueue_with(&mut self, options: VQueueOptions) -> VQueueFixture {
-        let scope = Scope::try_from_static(options.scope).unwrap();
+    pub(super) fn create_vqueue(&mut self, scope: &'static str) -> VQueueFixture {
+        let scope = Scope::try_from_static(scope).unwrap();
         let id = VQueueId::custom(
             scope.partition_key(),
             format!("query-fixture-{}", self.next_vqueue),
         );
-        let link = match options.service_key {
-            Some(service_key) => VQueueLink::Lock(LockName::new(
-                ServiceName::new(options.service_name),
-                ReString::new(service_key),
-            )),
-            None => VQueueLink::Service(ServiceName::new(options.service_name)),
-        };
-        let created_at = unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 10_000 + self.next_vqueue);
         self.next_vqueue += 1;
-        VQueueFixture {
-            id,
-            scope,
-            limit_key: options.limit_key.parse().unwrap(),
-            link,
-            created_at,
-            entry_stages: Arc::new(Mutex::new(Vec::new())),
-        }
+        VQueueFixture { id, scope }
     }
 
     pub(super) fn create_invocation(
@@ -163,41 +132,6 @@ impl FixtureFactory {
             InvocationFixtureStatus::CompletedSuccess
             | InvocationFixtureStatus::CompletedFailure => InvocationStatusReportInner::default(),
         };
-
-        let vqueue_entry = options.vqueue.map(|vqueue| {
-            vqueue.record_entry(options.entry_stage);
-            let entry_id = EntryId::from(&id);
-            let run_at =
-                MillisSinceEpoch::from(VQUEUE_BASE_TIMESTAMP_MILLIS + 20_000 + sequence as u64);
-            let created_at =
-                unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 15_000 + sequence as u64);
-            let mut stats = EntryStatistics::new(created_at, run_at.into());
-            stats.transitioned_at =
-                unique_timestamp(VQUEUE_BASE_TIMESTAMP_MILLIS + 16_000 + sequence as u64);
-            if !matches!(options.entry_status, Status::New | Status::Scheduled) {
-                stats.num_attempts = 1;
-                stats.first_attempt_at = Some(unique_timestamp(
-                    VQUEUE_BASE_TIMESTAMP_MILLIS + 15_500 + sequence as u64,
-                ));
-                stats.latest_attempt_at = stats.first_attempt_at;
-            }
-            if options.entry_status == Status::BackingOff {
-                stats.num_errors = 1;
-            }
-
-            VQueueEntryFixture {
-                key: EntryKey::new(options.has_lock, run_at, sequence as u64, entry_id),
-                value: EntryValue {
-                    status: options.entry_status,
-                    metadata: EntryMetadata {
-                        deployment: Some(deployment_id.to_string().into()),
-                        ..EntryMetadata::default()
-                    },
-                    stats,
-                },
-                stage: options.entry_stage,
-            }
-        });
 
         let journal_entries = vec![
             JournalEntryFixture {
@@ -265,78 +199,16 @@ impl FixtureFactory {
                 ServiceProtocolVersion::V5,
             )),
             state,
-            vqueue_entry,
             journal_entries,
             journal_events,
         }
     }
 }
 
-fn unique_timestamp(millis: u64) -> UniqueTimestamp {
-    UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::from(millis)).unwrap()
-}
-
 #[derive(Clone)]
 pub(super) struct VQueueFixture {
     pub(super) id: VQueueId,
     scope: Scope,
-    limit_key: LimitKey<ReString>,
-    link: VQueueLink,
-    created_at: UniqueTimestamp,
-    entry_stages: Arc<Mutex<Vec<Stage>>>,
-}
-
-impl VQueueFixture {
-    fn record_entry(&self, stage: Stage) {
-        self.entry_stages.lock().unwrap().push(stage);
-    }
-
-    pub(super) fn metadata(&self) -> VQueueMeta {
-        let mut metadata = VQueueMeta::new(
-            self.created_at,
-            Some(self.scope.clone()),
-            self.limit_key.clone(),
-            self.link.clone(),
-        );
-
-        for (index, stage) in self.entry_stages.lock().unwrap().iter().enumerate() {
-            let timestamp =
-                unique_timestamp(self.created_at.to_unix_millis().as_u64() + index as u64);
-            metadata.apply_update(&Update::new(
-                timestamp,
-                Action::Move {
-                    prev_stage: None,
-                    next_stage: *stage,
-                    metrics: MoveMetrics {
-                        last_transition_at: timestamp,
-                        has_started: false,
-                        first_runnable_at: timestamp.to_unix_millis(),
-                        scheduler_wait_stats: None,
-                    },
-                },
-            ));
-        }
-
-        metadata
-    }
-}
-
-pub(super) struct VQueueOptions {
-    pub(super) scope: &'static str,
-    pub(super) service_name: &'static str,
-    pub(super) service_key: Option<&'static str>,
-    pub(super) limit_key: &'static str,
-}
-
-impl Default for VQueueOptions {
-    fn default() -> Self {
-        Self {
-            scope: "scope-a",
-            service_name: "TestService",
-            service_key: Some("key-1"),
-            limit_key: "tenant/eu",
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -368,9 +240,6 @@ pub(super) struct InvocationOptions<'a> {
     pub(super) service_key: &'a str,
     pub(super) handler_name: &'a str,
     pub(super) status: InvocationFixtureStatus,
-    pub(super) entry_stage: Stage,
-    pub(super) entry_status: Status,
-    pub(super) has_lock: bool,
 }
 
 pub(super) struct InvocationFixturesBuilder<'factory, 'fixture, const N: usize> {
@@ -404,17 +273,8 @@ impl Default for InvocationOptions<'_> {
             service_key: "key-1",
             handler_name: "run",
             status: InvocationFixtureStatus::Running,
-            entry_stage: Stage::Inbox,
-            entry_status: Status::New,
-            has_lock: true,
         }
     }
-}
-
-pub(super) struct VQueueEntryFixture {
-    pub(super) key: EntryKey,
-    pub(super) value: EntryValue,
-    pub(super) stage: Stage,
 }
 
 pub(super) struct JournalEntryFixture {
@@ -437,7 +297,6 @@ pub(super) struct InvocationFixture {
     pub(super) journal: JournalMetadata,
     pub(super) pinned_deployment: Option<PinnedDeployment>,
     pub(super) state: InvocationStatusReportInner,
-    pub(super) vqueue_entry: Option<VQueueEntryFixture>,
     pub(super) journal_entries: Vec<JournalEntryFixture>,
     pub(super) journal_events: Vec<EventView>,
 }

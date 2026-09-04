@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
 
@@ -23,22 +23,30 @@ use restate_storage_api::invocation_status_table::WriteInvocationStatusTable;
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::state_table::WriteStateTable;
-use restate_storage_api::vqueue_table::WriteVQueueTable;
-use restate_types::Scope;
-use restate_types::identifiers::{InvocationId, ServiceId, WithPartitionKey};
+use restate_storage_api::vqueue_table::metadata::{
+    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
+};
+use restate_storage_api::vqueue_table::stats::EntryStatistics;
+use restate_storage_api::vqueue_table::{
+    EntryKey, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
+};
+use restate_types::clock::UniqueTimestamp;
+use restate_types::identifiers::{InvocationId, PartitionId, ServiceId, WithPartitionKey};
 use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
-use restate_util_string::RestateString;
+use restate_types::partition_table::{FindPartition, PartitionTable};
+use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
+use restate_types::{LockName, Scope, ServiceName, Version};
+use restate_util_string::{ReString, RestateString};
 use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 
-use crate::mocks::{MockQueryEngine, MockSchemas, MockStatusHandle};
+use crate::mocks::{MockRemoteQueryEngine, MockSchemas, MockStatusHandle};
 
-use super::data::{
-    FixtureFactory, InvocationFixture, InvocationFixtureStatus, InvocationOptions, VQueueFixture,
-};
+use super::data::{FixtureFactory, InvocationFixture, InvocationFixtureStatus, InvocationOptions};
 
 pub(super) struct QueryTest {
-    engine: MockQueryEngine,
+    engine: MockRemoteQueryEngine,
     invocation_state: MockStatusHandle,
     text_table_factory: FixtureFactory,
 }
@@ -50,11 +58,14 @@ pub(super) struct QueryExpectation<'a> {
 }
 
 impl QueryTest {
-    pub(super) async fn create() -> Self {
+    pub(super) async fn create_remote() -> Self {
         let invocation_state = MockStatusHandle::default();
         Self {
-            engine: MockQueryEngine::create_with(invocation_state.clone(), MockSchemas::default())
-                .await,
+            engine: MockRemoteQueryEngine::create_with(
+                invocation_state.clone(),
+                MockSchemas::default(),
+            )
+            .await,
             invocation_state,
             text_table_factory: FixtureFactory::for_text_tables(),
         }
@@ -64,18 +75,52 @@ impl QueryTest {
         &mut self,
         populate: impl FnOnce(&mut QueryTestTables<'_, '_>) -> anyhow::Result<()> + Send,
     ) {
-        let mut tx = self.engine.partition_store().transaction();
+        self.populate_partition(None, populate).await;
+    }
+
+    pub(super) fn partition(&mut self, partition_id: u16) -> QueryTestPartition<'_> {
+        let partition_id = PartitionId::new_unchecked(partition_id);
+        assert!(
+            self.engine.partition_table().contains(&partition_id),
+            "query test has no partition {partition_id}"
+        );
+        QueryTestPartition {
+            test: self,
+            partition_id,
+        }
+    }
+
+    async fn populate_partition(
+        &mut self,
+        expected_partition: Option<PartitionId>,
+        populate: impl FnOnce(&mut QueryTestTables<'_, '_>) -> anyhow::Result<()> + Send,
+    ) {
+        let partition_table = self.engine.partition_table().clone();
+        let transactions = self
+            .engine
+            .partition_stores_mut()
+            .iter_mut()
+            .map(|(partition_id, store)| (*partition_id, store.transaction()))
+            .collect::<BTreeMap<_, _>>();
+        let mut transactions = PartitionTransactions {
+            partition_table,
+            expected_partition,
+            transactions,
+        };
         populate(&mut QueryTestTables {
-            transaction: &mut tx,
+            transactions: &mut transactions,
             invocation_state: &self.invocation_state,
             text_table_factory: &mut self.text_table_factory,
         })
         .unwrap();
-        tx.commit().await.unwrap();
+        for transaction in transactions.transactions.values_mut() {
+            transaction.commit().await.unwrap();
+        }
     }
 
     pub(super) async fn assert_query(&self, query: QueryExpectation<'_>) {
         eprintln!("running query test: {}", query.name);
+        self.engine.clear_remote_scans();
         let batches = match self.try_execute(query.sql).await {
             Ok(batches) => batches,
             Err(error) => {
@@ -87,12 +132,28 @@ impl QueryTest {
         };
         let expected = sorted_expected_table(query.expected);
         let actual = batches_to_sort_string(&batches);
+        let remote_scans = self.engine.remote_scans();
 
         if expected != actual {
             let report = self
                 .failure_report(
                     &query,
                     format!("expected:\n{expected}\n\nactual:\n{actual}"),
+                )
+                .await;
+            panic!("{report}");
+        }
+        let unexpected_remote_scans = remote_scans
+            .iter()
+            .filter(|scan| self.engine.remote_owner(scan.partition_id) != Some(scan.node_id))
+            .collect::<Vec<_>>();
+        if remote_scans.is_empty() || !unexpected_remote_scans.is_empty() {
+            let report = self
+                .failure_report(
+                    &query,
+                    format!(
+                        "query did not use the configured remote partition owners\nremote scans: {remote_scans:?}\nunexpected scans: {unexpected_remote_scans:?}"
+                    ),
                 )
                 .await;
             panic!("{report}");
@@ -127,6 +188,22 @@ impl QueryTest {
             .try_collect()
             .await
             .map_err(Into::into)
+    }
+}
+
+pub(super) struct QueryTestPartition<'test> {
+    test: &'test mut QueryTest,
+    partition_id: PartitionId,
+}
+
+impl QueryTestPartition<'_> {
+    pub(super) async fn populate(
+        self,
+        populate: impl FnOnce(&mut QueryTestTables<'_, '_>) -> anyhow::Result<()> + Send,
+    ) {
+        self.test
+            .populate_partition(Some(self.partition_id), populate)
+            .await;
     }
 }
 
@@ -338,6 +415,23 @@ impl<'input> TextTableRow<'_, 'input> {
         })
     }
 
+    fn parse_optional<T>(&self, column: &str) -> anyhow::Result<Option<T>>
+    where
+        T: FromStr,
+        T::Err: Display,
+    {
+        self.get(column)
+            .map(|value| {
+                value.parse().map_err(|error| {
+                    anyhow::anyhow!(
+                        "text table row on line {} has invalid `{column}` value {value:?}: {error}",
+                        self.line_number
+                    )
+                })
+            })
+            .transpose()
+    }
+
     fn invocation_id(&self) -> anyhow::Result<InvocationId> {
         let partition_key: u64 = self.parse("partition_key")?;
         let invocation_id: InvocationId = self.parse("id")?;
@@ -348,6 +442,80 @@ impl<'input> TextTableRow<'_, 'input> {
             invocation_id.partition_key()
         );
         Ok(invocation_id)
+    }
+
+    fn partition_id(&self) -> anyhow::Result<PartitionId> {
+        Ok(PartitionId::new_unchecked(self.parse("partition_id")?))
+    }
+
+    fn vqueue_id(&self) -> anyhow::Result<VQueueId> {
+        let partition_key: u64 = self.parse("partition_key")?;
+        let vqueue_id: VQueueId = self.parse("id")?;
+        ensure!(
+            vqueue_id.partition_key() == partition_key,
+            "text table row on line {} has partition_key {partition_key}, but vqueue {vqueue_id} belongs to partition key {}",
+            self.line_number,
+            vqueue_id.partition_key()
+        );
+        Ok(vqueue_id)
+    }
+}
+
+fn unique_timestamp(row: &TextTableRow<'_, '_>, column: &str) -> anyhow::Result<UniqueTimestamp> {
+    let millis = MillisSinceEpoch::from(row.parse::<u64>(column)?);
+    UniqueTimestamp::try_from_unix_millis(millis).map_err(|error| {
+        anyhow::anyhow!(
+            "text table row on line {} has invalid `{column}` timestamp {millis}: {error}",
+            row.line_number
+        )
+    })
+}
+
+fn optional_unique_timestamp(
+    row: &TextTableRow<'_, '_>,
+    column: &str,
+) -> anyhow::Result<Option<UniqueTimestamp>> {
+    row.parse_optional::<u64>(column)?
+        .map(|millis| {
+            UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::from(millis)).map_err(|error| {
+                anyhow::anyhow!(
+                    "text table row on line {} has invalid `{column}` timestamp {millis}: {error}",
+                    row.line_number
+                )
+            })
+        })
+        .transpose()
+}
+
+fn vqueue_stage(row: &TextTableRow<'_, '_>) -> anyhow::Result<Stage> {
+    match row.required("stage")? {
+        "inbox" => Ok(Stage::Inbox),
+        "running" => Ok(Stage::Running),
+        "suspended" => Ok(Stage::Suspended),
+        "paused" => Ok(Stage::Paused),
+        "finished" => Ok(Stage::Finished),
+        value => anyhow::bail!(
+            "text table row on line {} has invalid `stage` value {value:?}",
+            row.line_number
+        ),
+    }
+}
+
+fn vqueue_status(row: &TextTableRow<'_, '_>) -> anyhow::Result<Status> {
+    match row.required("status")? {
+        "new" => Ok(Status::New),
+        "scheduled" => Ok(Status::Scheduled),
+        "started" => Ok(Status::Started),
+        "backing-off" => Ok(Status::BackingOff),
+        "yielded" => Ok(Status::Yielded),
+        "killed" => Ok(Status::Killed),
+        "cancelled" => Ok(Status::Cancelled),
+        "failed" => Ok(Status::Failed),
+        "succeeded" => Ok(Status::Succeeded),
+        value => anyhow::bail!(
+            "text table row on line {} has invalid `status` value {value:?}",
+            row.line_number
+        ),
     }
 }
 
@@ -412,8 +580,55 @@ fn invocation_target(row: &TextTableRow<'_, '_>) -> anyhow::Result<InvocationTar
     }
 }
 
+struct PartitionTransactions<'store> {
+    partition_table: PartitionTable,
+    expected_partition: Option<PartitionId>,
+    transactions: BTreeMap<PartitionId, PartitionStoreTransaction<'store>>,
+}
+
+impl<'store> PartitionTransactions<'store> {
+    fn for_key(
+        &mut self,
+        key: &impl WithPartitionKey,
+    ) -> anyhow::Result<&mut PartitionStoreTransaction<'store>> {
+        let partition_id = self.validate_key(key)?;
+        self.transactions.get_mut(&partition_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "partition {partition_id} for partition key {} has no test store",
+                key.partition_key()
+            )
+        })
+    }
+
+    fn validate_key(&self, key: &impl WithPartitionKey) -> anyhow::Result<PartitionId> {
+        let partition_key = key.partition_key();
+        let partition_id = self.partition_table.find_partition_id(partition_key)?;
+        if let Some(expected_partition) = self.expected_partition {
+            ensure!(
+                partition_id == expected_partition,
+                "fixture with partition key {partition_key} belongs to partition {partition_id}, but this population block targets partition {expected_partition}"
+            );
+        }
+        Ok(partition_id)
+    }
+
+    fn validate_declared_partition(
+        &self,
+        declared_partition: PartitionId,
+        key: &impl WithPartitionKey,
+    ) -> anyhow::Result<()> {
+        let actual_partition = self.validate_key(key)?;
+        ensure!(
+            actual_partition == declared_partition,
+            "fixture declares partition {declared_partition}, but partition key {} belongs to partition {actual_partition}",
+            key.partition_key()
+        );
+        Ok(())
+    }
+}
+
 pub(super) struct QueryTestTables<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
     invocation_state: &'a MockStatusHandle,
     text_table_factory: &'a mut FixtureFactory,
 }
@@ -421,65 +636,84 @@ pub(super) struct QueryTestTables<'a, 'store> {
 impl<'a, 'store> QueryTestTables<'a, 'store> {
     pub(super) fn state(&mut self) -> StateTableFixture<'_, 'store> {
         StateTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
         }
     }
 
     pub(super) fn sys_invocation_status(&mut self) -> SysInvocationStatusTableFixture<'_, 'store> {
         SysInvocationStatusTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
             text_table_factory: &mut *self.text_table_factory,
         }
     }
 
-    pub(super) fn sys_invocation_state(&mut self) -> SysInvocationStateTableFixture<'_> {
+    pub(super) fn sys_invocation_state(&mut self) -> SysInvocationStateTableFixture<'_, 'store> {
         SysInvocationStateTableFixture {
             invocation_state: self.invocation_state,
+            transactions: &*self.transactions,
         }
     }
 
     pub(super) fn sys_vqueue_meta(&mut self) -> SysVQueueMetaTableFixture<'_, 'store> {
         SysVQueueMetaTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
         }
     }
 
     pub(super) fn sys_vqueues(&mut self) -> SysVQueuesTableFixture<'_, 'store> {
         SysVQueuesTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
         }
     }
 
     pub(super) fn sys_journal(&mut self) -> SysJournalTableFixture<'_, 'store> {
         SysJournalTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
         }
     }
 
     pub(super) fn sys_journal_events(&mut self) -> SysJournalEventsTableFixture<'_, 'store> {
         SysJournalEventsTableFixture {
-            transaction: &mut *self.transaction,
+            transactions: &mut *self.transactions,
         }
     }
 }
 
 pub(super) struct StateTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
 }
 
 impl StateTableFixture<'_, '_> {
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
         let table = TextTable::parse(lines)?;
-        table.ensure_exact_columns(&["scope", "service_name", "service_key", "key", "value"])?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "scope",
+            "service_name",
+            "service_key",
+            "key",
+            "value",
+        ])?;
 
         for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let partition_key: u64 = row.parse("partition_key")?;
             let service_id = ServiceId::new(
                 row.get("scope").map(Scope::try_new).transpose()?,
                 row.required("service_name")?,
                 row.required("service_key")?,
             );
+            ensure!(
+                service_id.partition_key() == partition_key,
+                "text table row on line {} has partition_key {partition_key}, but its state identity belongs to partition key {}",
+                row.line_number,
+                service_id.partition_key()
+            );
+            self.transactions
+                .validate_declared_partition(partition_id, &service_id)?;
             let key = Bytes::copy_from_slice(row.required("key")?.as_bytes());
-            self.transaction.put_user_state(
+            self.transactions.for_key(&service_id)?.put_user_state(
                 &service_id,
                 &key,
                 row.required("value")?.as_bytes(),
@@ -490,14 +724,15 @@ impl StateTableFixture<'_, '_> {
 }
 
 pub(super) struct SysInvocationStatusTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
     text_table_factory: &'a mut FixtureFactory,
 }
 
 impl SysInvocationStatusTableFixture<'_, '_> {
     pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
         let status = invocation.invocation_status();
-        self.transaction
+        self.transactions
+            .for_key(&invocation.id)?
             .put_invocation_status(&invocation.id, &status)?;
         Ok(())
     }
@@ -505,6 +740,7 @@ impl SysInvocationStatusTableFixture<'_, '_> {
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
         let table = TextTable::parse(lines)?;
         table.ensure_exact_columns(&[
+            "partition_id",
             "partition_key",
             "id",
             "status",
@@ -517,6 +753,7 @@ impl SysInvocationStatusTableFixture<'_, '_> {
         ])?;
 
         for row in table.rows() {
+            let partition_id = row.partition_id()?;
             let mut invocation = self
                 .text_table_factory
                 .create_invocation(InvocationOptions {
@@ -531,31 +768,40 @@ impl SysInvocationStatusTableFixture<'_, '_> {
                 });
             invocation.id = row.invocation_id()?;
             invocation.target = invocation_target(&row)?;
+            self.transactions
+                .validate_declared_partition(partition_id, &invocation.id)?;
             self.populate(&invocation)?;
         }
         Ok(())
     }
 }
 
-pub(super) struct SysInvocationStateTableFixture<'a> {
+pub(super) struct SysInvocationStateTableFixture<'a, 'store> {
     invocation_state: &'a MockStatusHandle,
+    transactions: &'a PartitionTransactions<'store>,
 }
 
-impl SysInvocationStateTableFixture<'_> {
-    pub(super) fn populate(&mut self, invocation: &InvocationFixture) {
+impl SysInvocationStateTableFixture<'_, '_> {
+    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        self.transactions.validate_key(&invocation.id)?;
         self.invocation_state.push(InvocationStatusReport::new(
             invocation.id,
             invocation.state.clone(),
         ));
+        Ok(())
     }
 
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
         let table = TextTable::parse(lines)?;
-        table.ensure_exact_columns(&["partition_key", "id", "in_flight"])?;
+        table.ensure_exact_columns(&["partition_id", "partition_key", "id", "in_flight"])?;
 
         for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let invocation_id = row.invocation_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &invocation_id)?;
             self.invocation_state.push(InvocationStatusReport::new(
-                row.invocation_id()?,
+                invocation_id,
                 InvocationStatusReportInner {
                     in_flight: row.parse("in_flight")?,
                     ..InvocationStatusReportInner::default()
@@ -567,68 +813,226 @@ impl SysInvocationStateTableFixture<'_> {
 }
 
 pub(super) struct SysVQueueMetaTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
 }
 
 impl SysVQueueMetaTableFixture<'_, '_> {
-    pub(super) fn populate(&mut self, vqueue: &VQueueFixture) {
-        self.transaction
-            .create_vqueue(&vqueue.id, &vqueue.metadata());
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "queue_is_paused",
+            "service_name",
+            "scope",
+            "limit_key",
+            "lock_name",
+            "created_at",
+            "num_inbox",
+            "num_running",
+            "num_suspended",
+            "num_paused",
+            "num_finished",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let vqueue_id = row.vqueue_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &vqueue_id)?;
+
+            let scope = row.get("scope").map(Scope::try_new).transpose()?;
+            if let Some(scope) = &scope {
+                ensure!(
+                    scope.partition_key() == vqueue_id.partition_key(),
+                    "text table row on line {} has scope {scope}, which belongs to partition key {}, but vqueue {vqueue_id} belongs to partition key {}",
+                    row.line_number,
+                    scope.partition_key(),
+                    vqueue_id.partition_key()
+                );
+            }
+
+            let service_name = row.required("service_name")?;
+            let link = match row.get("lock_name") {
+                Some(value) => {
+                    let lock_name = LockName::parse(value)?;
+                    ensure!(
+                        lock_name.service_name().as_str() == service_name,
+                        "text table row on line {} has service_name {service_name:?}, but lock_name belongs to service {:?}",
+                        row.line_number,
+                        lock_name.service_name().as_str()
+                    );
+                    VQueueLink::Lock(lock_name)
+                }
+                None => VQueueLink::Service(ServiceName::new(service_name)),
+            };
+            let created_at = unique_timestamp(&row, "created_at")?;
+            let mut metadata =
+                VQueueMeta::new(created_at, scope, row.required("limit_key")?.parse()?, link);
+
+            for (stage, count) in [
+                (Stage::Inbox, row.parse("num_inbox")?),
+                (Stage::Running, row.parse("num_running")?),
+                (Stage::Suspended, row.parse("num_suspended")?),
+                (Stage::Paused, row.parse("num_paused")?),
+                (Stage::Finished, row.parse("num_finished")?),
+            ] {
+                for _ in 0..count {
+                    metadata.apply_update(&Update::new(
+                        created_at,
+                        Action::Move {
+                            prev_stage: None,
+                            next_stage: stage,
+                            metrics: MoveMetrics {
+                                last_transition_at: created_at,
+                                has_started: false,
+                                first_runnable_at: created_at.to_unix_millis(),
+                                scheduler_wait_stats: None,
+                            },
+                        },
+                    ));
+                }
+            }
+            if row.parse("queue_is_paused")? {
+                metadata.apply_update(&Update::new(created_at, Action::PauseVQueue {}));
+            }
+
+            self.transactions
+                .for_key(&vqueue_id)?
+                .create_vqueue(&vqueue_id, &metadata);
+        }
+        Ok(())
     }
 }
 
 pub(super) struct SysVQueuesTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
 }
 
 impl SysVQueuesTableFixture<'_, '_> {
-    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
-        let vqueue_id = invocation
-            .vqueue_id
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("invocation fixture has no vqueue"))?;
-        let entry = invocation
-            .vqueue_entry
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("invocation fixture has no vqueue entry"))?;
+    pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
+        let table = TextTable::parse(lines)?;
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "stage",
+            "status",
+            "has_lock",
+            "run_at",
+            "sequence_number",
+            "entry_id",
+            "entry_kind",
+            "created_at",
+            "transitioned_at",
+            "num_attempts",
+            "num_errors",
+            "num_pauses",
+            "num_suspensions",
+            "num_yields",
+            "first_attempt_at",
+            "latest_attempt_at",
+            "first_runnable_at",
+            "deployment",
+        ])?;
 
-        self.transaction
-            .put_vqueue_inbox(vqueue_id, entry.stage, &entry.key, &entry.value);
-        self.transaction.put_vqueue_entry_status(
-            vqueue_id,
-            entry.stage,
-            &entry.key,
-            &entry.value.metadata,
-            entry.value.stats.clone(),
-            entry.value.status,
-        );
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let vqueue_id = row.vqueue_id()?;
+            self.transactions
+                .validate_declared_partition(partition_id, &vqueue_id)?;
+
+            let displayed_entry_id: VQueueEntryId = row.parse("entry_id")?;
+            ensure!(
+                displayed_entry_id.partition_key() == vqueue_id.partition_key(),
+                "text table row on line {} has entry_id {displayed_entry_id}, which belongs to partition key {}, but vqueue {vqueue_id} belongs to partition key {}",
+                row.line_number,
+                displayed_entry_id.partition_key(),
+                vqueue_id.partition_key()
+            );
+            let entry_kind = match displayed_entry_id.kind() {
+                EntryKind::Invocation => "invocation",
+                EntryKind::StateMutation => "state-mutation",
+                EntryKind::Unknown => unreachable!("parsed entry IDs have a known kind"),
+            };
+            ensure!(
+                row.required("entry_kind")? == entry_kind,
+                "text table row on line {} declares entry_kind {:?}, but entry_id {displayed_entry_id} has kind {entry_kind:?}",
+                row.line_number,
+                row.required("entry_kind")?
+            );
+
+            let entry_id: EntryId = displayed_entry_id.into();
+            let run_at = MillisSinceEpoch::from(row.parse::<u64>("run_at")?);
+            let entry_key = EntryKey::new(
+                row.parse::<bool>("has_lock")?,
+                run_at,
+                row.parse::<u64>("sequence_number")?,
+                entry_id,
+            );
+            let mut stats =
+                EntryStatistics::new(unique_timestamp(&row, "created_at")?, run_at.into());
+            stats.transitioned_at = unique_timestamp(&row, "transitioned_at")?;
+            stats.num_attempts = row.parse("num_attempts")?;
+            stats.num_errors = row.parse("num_errors")?;
+            stats.num_paused = row.parse("num_pauses")?;
+            stats.num_suspensions = row.parse("num_suspensions")?;
+            stats.num_yields = row.parse("num_yields")?;
+            stats.first_attempt_at = optional_unique_timestamp(&row, "first_attempt_at")?;
+            stats.latest_attempt_at = optional_unique_timestamp(&row, "latest_attempt_at")?;
+            stats.first_runnable_at =
+                MillisSinceEpoch::from(row.parse::<u64>("first_runnable_at")?);
+            let metadata = EntryMetadata {
+                deployment: row.get("deployment").map(ReString::new),
+                ..EntryMetadata::default()
+            };
+            let stage = vqueue_stage(&row)?;
+            let status = vqueue_status(&row)?;
+            let value = EntryValue {
+                status,
+                metadata,
+                stats,
+            };
+
+            let transaction = self.transactions.for_key(&vqueue_id)?;
+            transaction.put_vqueue_inbox(&vqueue_id, stage, &entry_key, &value);
+            transaction.put_vqueue_entry_status(
+                &vqueue_id,
+                stage,
+                &entry_key,
+                &value.metadata,
+                value.stats,
+                status,
+            );
+        }
         Ok(())
     }
 }
 
 pub(super) struct SysJournalTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
 }
 
 impl SysJournalTableFixture<'_, '_> {
     pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        let transaction = self.transactions.for_key(&invocation.id)?;
         for entry in &invocation.journal_entries {
-            self.transaction
-                .put_journal_entry(&invocation.id, entry.index, &entry.entry)?;
+            transaction.put_journal_entry(&invocation.id, entry.index, &entry.entry)?;
         }
         Ok(())
     }
 }
 
 pub(super) struct SysJournalEventsTableFixture<'a, 'store> {
-    transaction: &'a mut PartitionStoreTransaction<'store>,
+    transactions: &'a mut PartitionTransactions<'store>,
 }
 
 impl SysJournalEventsTableFixture<'_, '_> {
     pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
+        let transaction = self.transactions.for_key(&invocation.id)?;
         for (lsn, event) in invocation.journal_events.iter().enumerate() {
-            self.transaction
-                .put_journal_event(&invocation.id, event.clone(), lsn as u64)?;
+            transaction.put_journal_event(&invocation.id, event.clone(), lsn as u64)?;
         }
         Ok(())
     }
@@ -659,9 +1063,48 @@ fn vertical_expected_table_is_transposed_and_sorted() {
     );
 }
 
+#[test]
+fn partition_population_rejects_data_for_another_partition() {
+    let transactions = PartitionTransactions {
+        partition_table: PartitionTable::with_equally_sized_partitions(Version::MIN, 3),
+        expected_partition: Some(PartitionId::new_unchecked(1)),
+        transactions: BTreeMap::new(),
+    };
+
+    let error = transactions
+        .validate_key(&Scope::try_from_static("scope-a").unwrap())
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "fixture with partition key 3169317165037139997 belongs to partition 0, but this population block targets partition 1"
+    );
+}
+
+#[test]
+fn text_table_partition_must_match_partition_key() {
+    let transactions = PartitionTransactions {
+        partition_table: PartitionTable::with_equally_sized_partitions(Version::MIN, 3),
+        expected_partition: None,
+        transactions: BTreeMap::new(),
+    };
+
+    let error = transactions
+        .validate_declared_partition(
+            PartitionId::new_unchecked(1),
+            &Scope::try_from_static("scope-a").unwrap(),
+        )
+        .unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        "fixture declares partition 1, but partition key 3169317165037139997 belongs to partition 0"
+    );
+}
+
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failure_report_includes_query_mismatch_and_plans() {
-    let test = QueryTest::create().await;
+    let test = QueryTest::create_remote().await;
     let query = QueryExpectation {
         name: "diagnostic query",
         sql: "SELECT 1 AS value",
