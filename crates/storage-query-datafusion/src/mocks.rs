@@ -14,17 +14,21 @@ use std::future::Future;
 use std::marker::PhantomData;
 use std::ops::RangeBounds;
 use std::sync::{Arc, RwLock};
+use std::task::Poll;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::{collect, display::DisplayableExecutionPlan};
+use futures::{Stream, future::poll_fn};
 
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
+use tokio::sync::watch;
 
-use restate_core::network::MockConnector;
+use restate_core::network::protobuf::network::Message;
+use restate_core::network::{ConnectError, Destination, MockConnector, Swimlane, TransportConnect};
 use restate_core::{TaskCenter, TaskKind, TestCoreEnvBuilder};
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -350,6 +354,46 @@ struct RemoteNodeScanner {
     scanner_manager: RemoteScannerManager,
 }
 
+#[derive(Clone)]
+struct ReadyConnector<T> {
+    inner: T,
+    server_ready: Arc<BTreeMap<GenerationalNodeId, watch::Receiver<bool>>>,
+}
+
+impl<T: TransportConnect> TransportConnect for ReadyConnector<T> {
+    fn connect(
+        &self,
+        destination: &Destination,
+        swimlane: Swimlane,
+        output_stream: impl Stream<Item = Message> + Send + Unpin + 'static,
+    ) -> impl Future<
+        Output = Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError>,
+    > + Send {
+        let mut server_ready = match destination {
+            Destination::Node(node_id) => self
+                .server_ready
+                .get(node_id)
+                .unwrap_or_else(|| panic!("no query-test scanner readiness signal for {node_id}"))
+                .clone(),
+            destination => panic!("query-test connector does not support {destination:?}"),
+        };
+        async move {
+            let output_stream = self
+                .inner
+                .connect(destination, swimlane, output_stream)
+                .await?;
+            if !*server_ready.borrow() {
+                server_ready.changed().await.map_err(|_| {
+                    ConnectError::Transport(
+                        "query-test scanner server stopped before accepting requests".to_owned(),
+                    )
+                })?;
+            }
+            Ok(output_stream)
+        }
+    }
+}
+
 pub(crate) struct MockRemoteQueryEngine {
     partition_stores: BTreeMap<PartitionId, PartitionStore>,
     partition_table: PartitionTable,
@@ -440,9 +484,20 @@ impl MockRemoteQueryEngine {
             );
         }
 
+        let (server_ready_tx, server_ready_rx) = owners
+            .values()
+            .copied()
+            .map(|node_id| {
+                let (tx, rx) = watch::channel(false);
+                ((node_id, tx), (node_id, rx))
+            })
+            .unzip::<_, _, BTreeMap<_, _>, BTreeMap<_, _>>();
+        let server_ready_tx = Arc::new(server_ready_tx);
+        let server_ready_rx = Arc::new(server_ready_rx);
         let remote_nodes = Arc::new(remote_nodes);
         let (connector, _connections) = MockConnector::new({
             let remote_nodes = Arc::clone(&remote_nodes);
+            let server_ready = Arc::clone(&server_ready_tx);
             move |node_id, router_builder| {
                 let remote_node = remote_nodes
                     .iter()
@@ -453,20 +508,36 @@ impl MockRemoteQueryEngine {
                     remote_node.scanner_manager.clone(),
                     router_builder,
                 );
+                let server_ready = server_ready[&node_id].clone();
                 TaskCenter::spawn_unmanaged(
                     TaskKind::DfScanner,
                     format!("query-test-scanner-server-{node_id}"),
-                    server.start(),
+                    async move {
+                        let mut run = Box::pin(server.run());
+                        let completed = poll_fn(|cx| match run.as_mut().poll(cx) {
+                            Poll::Ready(result) => Poll::Ready(Some(result)),
+                            Poll::Pending => Poll::Ready(None),
+                        })
+                        .await;
+                        server_ready.send_replace(true);
+                        match completed {
+                            Some(result) => result,
+                            None => run.await,
+                        }
+                    },
                 )
                 .expect("remote scanner server to start");
             }
         });
-        let core_env = TestCoreEnvBuilder::with_transport_connector(connector)
-            .set_my_node_id(QUERY_COORDINATOR_NODE_ID)
-            .set_nodes_config(nodes_config)
-            .set_partition_table(partition_table.clone())
-            .build()
-            .await;
+        let core_env = TestCoreEnvBuilder::with_transport_connector(ReadyConnector {
+            inner: connector,
+            server_ready: server_ready_rx,
+        })
+        .set_my_node_id(QUERY_COORDINATOR_NODE_ID)
+        .set_nodes_config(nodes_config)
+        .set_partition_table(partition_table.clone())
+        .build()
+        .await;
         TaskCenter::current()
             .cluster_state_updater()
             .upsert_node_state(QUERY_COORDINATOR_NODE_ID, NodeState::Alive);
