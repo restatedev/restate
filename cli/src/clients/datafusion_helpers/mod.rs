@@ -15,8 +15,8 @@ use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
 use restate_types::journal_v2::Entry;
 use restate_types::{identifiers::AwakeableIdentifier, invocation::ServiceType};
-use serde::Deserialize;
-use serde_with::{DeserializeAs, serde_as};
+use serde::{Deserialize, Serialize};
+use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
 mod v2;
 
@@ -36,7 +36,16 @@ pub struct SimpleInvocation {
 }
 
 #[derive(
-    ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default, serde_with::DeserializeFromStr,
+    ValueEnum,
+    Copy,
+    Clone,
+    Eq,
+    Hash,
+    PartialEq,
+    Debug,
+    Default,
+    serde_with::DeserializeFromStr,
+    serde_with::SerializeDisplay,
 )]
 pub enum InvocationState {
     #[default]
@@ -86,7 +95,7 @@ impl Display for InvocationState {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invocation {
     pub id: String,
     pub target: String,
@@ -149,6 +158,15 @@ impl<'de> DeserializeAs<'de, ServiceType> for DatafusionServiceType {
         D: serde::Deserializer<'de>,
     {
         Ok(DatafusionServiceType::deserialize(deserializer)?.into())
+    }
+}
+
+impl SerializeAs<ServiceType> for DatafusionServiceType {
+    fn serialize_as<S>(source: &ServiceType, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        source.serialize(serializer)
     }
 }
 
