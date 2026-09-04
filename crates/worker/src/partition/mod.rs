@@ -53,7 +53,7 @@ use restate_core::network::{
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{
-    MigrationError, PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
+    PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
 use restate_platform::memory::EstimatedMemorySize;
 use restate_storage_api::deduplication_table::{
@@ -82,6 +82,7 @@ use restate_types::storage::{
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{GenerationalNodeId, SemanticRestateVersion, Version};
+use restate_util_string::ReString;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
@@ -286,12 +287,13 @@ pub enum ProcessorError {
     },
     #[error(
         "partition is blocked; requires an upgrade to restate-server version \
-        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}"
+        {required_min_version} or higher; reason='{barrier_reason}'; feature changes={feature_changes:?}; storage features={storage_features:?}"
     )]
     VersionBarrier {
         required_min_version: SemanticRestateVersion,
         barrier_reason: String,
         feature_changes: Vec<u16>,
+        storage_features: Vec<ReString>,
     },
     #[error(transparent)]
     Storage(#[from] StorageError),
@@ -372,37 +374,6 @@ where
         debug!("Starting the partition processor.");
 
         let cancel = cancellation_token();
-        // Run migrations first.
-        //
-        // Important to note: This only runs the migration for the given partition store. In a setup,
-        // where not every node runs every partition, it can happen that partition data remains
-        // untouched when going from one version to the next.
-        // todo https://github.com/restatedev/restate/issues/4175.
-        //
-        // This will fail with StorageError::MigrationCancelled if the current task was cancelled
-        // during the migration phase.
-        match self
-            .partition_store
-            .verify_and_run_migrations(cancel.clone(), self.node_ctx.config.live_load())
-            .await
-        {
-            Ok(()) => {}
-            Err(MigrationError::MigrationCancelled) => {
-                debug!(
-                    "Shutting partition processor during data migration because it was cancelled."
-                );
-                return Ok(());
-            }
-            Err(MigrationError::MigrationBarrier(reason)) => {
-                return Err(ProcessorError::MigrationBarrier { reason });
-            }
-            Err(MigrationError::StorageError(err)) => {
-                warn!(
-                    "Shutting partition processor during data migration down because of error: {err}"
-                );
-                return Err(err.into());
-            }
-        }
 
         // Note: Boxing because it's a rather large future (>35KiB)
         let res = match cancel.run_until_cancelled(Box::pin(self.run_inner())).await {
@@ -588,6 +559,14 @@ where
         let mut cloned_partition_store = self.partition_store.clone();
         let mut txn = cloned_partition_store.transaction();
         let partition_id = self.ctx.partition_id().into();
+
+        // Migrations and local storage features have been enabled prior to this point.
+        // let's set it once into the partition processor watch.
+        self.status_watch_tx.send_modify(|old| {
+            self.ctx.merge_with_status(old);
+            old.enabled_storage_features = self.partition_store.get_storage_features_names();
+            old.updated_at = MillisSinceEpoch::now();
+        });
 
         loop {
             let config = self.node_ctx.config.live_load();
@@ -831,7 +810,6 @@ where
         self.status_watch_tx.send_modify(|old| {
             self.ctx.merge_with_status(old);
             old.durable_lsn = Some(durable_lsn);
-            old.storage_version = Some(self.partition_store.storage_version());
             old.effective_mode = self.leadership_state.detailed_effective_mode().into();
             old.detailed_effective_mode = self.leadership_state.detailed_effective_mode();
             old.updated_at = MillisSinceEpoch::now();
