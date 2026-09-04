@@ -191,7 +191,7 @@ impl Envelope<Raw> {
     ///
     /// It's the caller's responsibility to ensure that the bytes payload is the correct
     /// encoded value for this command kind and this codec.
-    pub(crate) fn from_bytes_unchecked(
+    pub fn from_bytes_unchecked(
         kind: CommandKind,
         codec: StorageCodecKind,
         dedup: Dedup,
@@ -343,7 +343,7 @@ pub enum CommandKind {
     TruncateOutbox = 9,
     /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
     ///
-    // Drop in v1.9 it's not used at the moment and is only here
+    // Drop in v1.9.0 it's not used at the moment and is only here
     // for backward compatibility with V1.
     ProxyThrough = 10,
     /// Attach to an existing invocation

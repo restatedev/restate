@@ -13,6 +13,6 @@ use restate_types::sharding::WithPartitionKey;
 pub trait OutboxMessage: super::Command + WithPartitionKey {
     /// Helper function that is only here to facilitate migration to opaque outbox message
     ///
-    /// Drop in v1.9
+    /// todo: Drop in v1.9.0
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage;
 }

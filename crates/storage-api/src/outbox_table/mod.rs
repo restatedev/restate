@@ -56,7 +56,7 @@ pub enum OutboxMessage {
     /// Contains opaque outbox message.
     /// This will eventually replace the other message types in this enum
     ///
-    /// Since v1.8
+    /// Since v1.8.0
     Opaque(OpaqueMessage),
 }
 
