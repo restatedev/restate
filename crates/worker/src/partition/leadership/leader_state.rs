@@ -214,7 +214,7 @@ impl LeaderState {
             reciprocal,
             invocation_id,
             cmd.keys(),
-            ErasedCommand::new(cmd.inner()),
+            cmd.inner(),
         );
     }
 
@@ -539,8 +539,9 @@ impl LeaderEventHandlerState<'_> {
         >,
         invocation_id: InvocationId,
         keys: Keys,
-        cmd: ErasedCommand,
+        cmd: impl Into<ErasedCommand>,
     ) {
+        let cmd = cmd.into();
         debug_assert!(keys == Keys::Single(invocation_id.partition_key()));
         debug_assert!(cmd.kind() == CommandKind::PauseInvocation);
 
