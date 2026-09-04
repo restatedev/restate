@@ -307,6 +307,27 @@ impl PartitionStore {
         self.db.table_cf_handle(table_kind)
     }
 
+    /// Writes local state that cannot be reconstructed from Bifrost through RocksDB's WAL.
+    pub(crate) fn put_kv_raw_with_wal<K: EncodeTableKey, V: AsRef<[u8]>>(
+        &mut self,
+        key: K,
+        value: V,
+    ) -> Result<()> {
+        let key_buffer = self.cleared_key_buffer_mut(key.serialized_length());
+        key.serialize_to(key_buffer);
+        let key_buffer = key_buffer.split();
+
+        let table = self.table_handle(K::TABLE);
+        let mut opts = rocksdb::WriteOptions::default();
+        opts.disable_wal(false);
+        self.db
+            .rocksdb()
+            .inner()
+            .as_raw_db()
+            .put_cf_opt(table, key_buffer, value, &opts)
+            .map_err(|error| StorageError::Generic(error.into()))
+    }
+
     #[allow(clippy::type_complexity)]
     fn iterator_step_map<O: Send + 'static>(
         tx: mpsc::Sender<Result<O>>,
@@ -637,7 +658,7 @@ impl PartitionStore {
     }
 
     pub async fn seal(&mut self, seal: &PartitionSeal) -> Result<()> {
-        seal_partition(self, self.partition_id(), seal).await
+        seal_partition(self, seal).await
     }
 
     /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
@@ -783,22 +804,26 @@ impl StorageAccess for PartitionStore {
         value: impl AsRef<[u8]>,
     ) -> Result<()> {
         let table = self.table_handle(table);
+        let mut opts = rocksdb::WriteOptions::default();
+        opts.disable_wal(true);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .put_cf(table, key, value)
+            .put_cf_opt(table, key, value, &opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 
     #[inline]
     fn delete_cf(&mut self, table: TableKind, key: impl AsRef<[u8]>) -> Result<()> {
         let table = self.table_handle(table);
+        let mut opts = rocksdb::WriteOptions::default();
+        opts.disable_wal(true);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .delete_cf(table, key)
+            .delete_cf_opt(table, key, &opts)
             .map_err(|error| StorageError::Generic(error.into()))
     }
 }
@@ -1322,15 +1347,18 @@ pub(crate) trait StorageAccess {
 
 #[cfg(test)]
 mod tests {
-    use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind};
-    use crate::partition_store::StorageAccess;
-    use crate::{PartitionStoreManager, TableKind};
     use bytes::{Buf, BufMut};
+
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
     use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::logs::Lsn;
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
+
+    use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind};
+    use crate::partition_store::StorageAccess;
+    use crate::{PartitionSeal, PartitionStoreManager, TableKind};
 
     impl EncodeTableKey for String {
         const TABLE: TableKind = TableKind::State;
@@ -1420,6 +1448,38 @@ mod tests {
         let value_b = read_txn.get_kv_raw(key_b.clone(), decode_u32)?;
 
         assert_eq!(value_a, value_b);
+
+        rocksdb.shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn seal_is_written_to_wal() -> googletest::Result<()> {
+        let rocksdb = RocksDbManager::init();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+        let mut partition_store = partition_store_manager
+            .open(
+                &Partition::new(
+                    PartitionId::MIN,
+                    KeyRange::new(PartitionKey::MIN, PartitionKey::MAX),
+                ),
+                None,
+            )
+            .await?;
+        let db = partition_store.partition_db().rocksdb().clone();
+        let sequence_number = db.inner().as_raw_db().latest_sequence_number();
+
+        partition_store
+            .seal(&PartitionSeal::AheadOfLog {
+                partition_applied_lsn: Lsn::from(2),
+                log_tail_lsn: Lsn::from(1),
+            })
+            .await?;
+
+        let mut updates = db.inner().as_raw_db().get_updates_since(sequence_number)?;
+        let (_, batch) = updates.next().transpose()?.expect("seal WAL entry");
+        assert_eq!(batch.len(), 1);
+        assert!(updates.next().is_none());
 
         rocksdb.shutdown().await;
         Ok(())
