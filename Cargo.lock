@@ -9225,6 +9225,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_more",
+ "enum-map",
  "futures",
  "googletest",
  "itertools 0.14.0",
