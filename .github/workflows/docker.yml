@@ -37,6 +37,11 @@ on:
         required: false
         default: "release"
         type: string
+      runnerSize:
+        description: "runner size: auto, 16x, or 32x"
+        required: false
+        default: "auto"
+        type: string
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false
@@ -80,6 +85,15 @@ on:
         required: false
         default: "release"
         type: string
+      runnerSize:
+        description: "runner size"
+        required: false
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - 16x
+          - 32x
       pushToDockerHub:
         description: "push image to DockerHub"
         required: false
@@ -99,7 +113,7 @@ env:
 
 jobs:
   build-and-push-image:
-    runs-on: ${{ inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
+    runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ inputs.parca && 140 || 70 }}
 
     steps:
