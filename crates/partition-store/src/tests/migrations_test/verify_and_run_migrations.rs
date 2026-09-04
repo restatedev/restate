@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
-use restate_storage_api::fsm_table::WriteFsmTable;
+use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -25,24 +25,53 @@ use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_types::config::{Configuration, set_current_config};
 use restate_types::identifiers::{PartitionId, PartitionKey, ServiceId};
 use restate_types::logs::Lsn;
-use restate_types::partitions::Partition;
+use restate_types::partitions::{Partition, StorageVersion};
 use restate_types::sharding::KeyRange;
+use restate_types::{RESTATE_VERSION_1_7_9, SemanticRestateVersion};
 
 use crate::PartitionStoreManager;
-use crate::fsm_table::put_storage_version;
+use crate::fsm_table::{
+    delete_storage_features, get_min_restate_version_from_partition_db,
+    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
+    put_storage_features_json, put_storage_version,
+};
 use crate::keys::DecodeTableKey;
+use crate::migrations::MigrationError;
 use crate::promise_table::{PromiseKey, ScopedPromiseKey};
 use crate::scan::{PhysicalScan, TableScan};
 use crate::state_table::{ScopedStateKey, StateKey};
-use restate_types::partitions::StorageVersion;
 
 fn with_migrate_scoped_tables(enabled: bool) {
+    with_scoped_table_migrations(enabled, enabled);
+}
+
+fn with_scoped_table_migrations(state: bool, promise: bool) {
     let mut config = Configuration::default();
     config
         .common
         .experimental
-        .set_migrate_scoped_tables(enabled);
+        .set_scoped_state_table_migration(state);
+    config
+        .common
+        .experimental
+        .set_scoped_promise_table_migration(promise);
     set_current_config(config);
+}
+
+fn storage_version(store: &crate::PartitionStore) -> StorageVersion {
+    get_storage_version_from_partition_db(store.partition_db()).expect("read storage version")
+}
+
+fn min_restate_version(store: &crate::PartitionStore) -> SemanticRestateVersion {
+    get_min_restate_version_from_partition_db(store.partition_db()).expect(
+        "read min restate
+    version",
+    )
+}
+
+fn scoped_tables_migrated(store: &crate::PartitionStore) -> bool {
+    let features = store.storage_features();
+    features.is_migrated_to_scoped_state_table && features.is_migrated_to_scoped_promise_table
 }
 
 async fn seed_unscoped_data(
@@ -201,7 +230,13 @@ async fn flag_off_keeps_partition_at_v1_5() {
         .await
         .expect("verify with flag off");
 
-    assert_eq!(store.storage_version(), StorageVersion::V1_5);
+    assert_eq!(storage_version(&store), StorageVersion::V1_5);
+    assert!(!scoped_tables_migrated(&store));
+    assert!(
+        get_storage_features_from_partition_db(store.partition_db())
+            .expect("read storage features")
+            .is_some()
+    );
     assert_eq!(count_legacy_state(&store), legacy_state_before);
     assert_eq!(count_legacy_promise(&store), legacy_promise_before);
     assert_eq!(count_scoped_state(&store), 0);
@@ -211,8 +246,8 @@ async fn flag_off_keeps_partition_at_v1_5() {
 }
 
 #[restate_core::test]
-async fn flag_on_migrates_and_bumps_version() {
-    with_migrate_scoped_tables(true);
+async fn scoped_tables_migrate_independently_and_bump_version() {
+    with_migrate_scoped_tables(false);
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true)
         .await
@@ -225,8 +260,6 @@ async fn flag_on_migrates_and_bumps_version() {
         .await
         .expect("open");
 
-    // Switch the flag back off so that seeding via WriteStateTable hits the legacy table.
-    with_migrate_scoped_tables(false);
     let (state_entries, service_ids) = seed_unscoped_data(&mut store).await;
     let partition_id = store.partition_id();
     put_storage_version(&mut store, partition_id, StorageVersion::V1_5 as u16)
@@ -236,17 +269,62 @@ async fn flag_on_migrates_and_bumps_version() {
     assert_eq!(count_legacy_state(&store), state_entries.len());
     assert_eq!(count_legacy_promise(&store), service_ids.len());
 
-    // Now turn the flag back on and run migrations.
-    with_migrate_scoped_tables(true);
-    let cancel = CancellationToken::new();
+    // Migrate state independently and persist a valid intermediate layout.
+    with_scoped_table_migrations(true, false);
+    let config = Configuration::pinned().clone();
     store
-        .verify_and_run_migrations(cancel, &Configuration::pinned())
+        .verify_and_run_migrations(CancellationToken::new(), &config)
         .await
-        .expect("verify with flag on");
+        .expect("migrate state table");
+
+    assert_eq!(storage_version(&store), StorageVersion::V1_5);
+    assert_eq!(min_restate_version(&store), *RESTATE_VERSION_1_7_9);
+    let features = store.storage_features();
+    assert!(features.is_migrated_to_scoped_state_table);
+    assert!(!features.is_migrated_to_scoped_promise_table);
+    assert_eq!(count_legacy_state(&store), 0);
+    assert_eq!(count_scoped_state(&store), state_entries.len());
+    assert_eq!(count_legacy_promise(&store), service_ids.len());
+    assert_eq!(count_scoped_promise(&store), 0);
+
+    // Reopen with both options disabled to prove the intermediate marker is authoritative.
+    let mut store = crate::PartitionStore::from(store.into_inner());
+    with_migrate_scoped_tables(false);
+    let config = Configuration::pinned().clone();
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .expect("verify intermediate layout");
+    assert!(store.storage_features().is_migrated_to_scoped_state_table);
+    let (service_id, state_key) = &state_entries[0];
+    assert_eq!(
+        store.get_user_state(service_id, state_key).await.unwrap(),
+        Some(Bytes::from_static(b"v1"))
+    );
+    assert!(
+        store
+            .get_promise(&service_ids[0], &ByteString::from_static("p"))
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // Enabling the second feature immediately advances the compatibility version.
+    with_scoped_table_migrations(false, true);
+    let config = Configuration::pinned().clone();
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .expect("migrate promise table");
 
     assert_eq!(
-        store.storage_version(),
+        storage_version(&store),
         StorageVersion::ScopedStateAndPromise
+    );
+    assert!(scoped_tables_migrated(&store));
+    assert_eq!(
+        store.get_min_restate_version().await.unwrap(),
+        (*RESTATE_VERSION_1_7_9).clone()
     );
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_legacy_promise(&store), 0);
@@ -276,11 +354,128 @@ async fn flag_on_migrates_and_bumps_version() {
         .await
         .expect("second verify");
     assert_eq!(
-        store.storage_version(),
+        storage_version(&store),
         StorageVersion::ScopedStateAndPromise
     );
+    assert!(scoped_tables_migrated(&store));
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_scoped_state(&store), state_entries.len());
+
+    // A store migrated before key 12 existed derives the feature from the mirrored StorageVersion
+    // and persists the new JSON ledger without requiring the experimental option again.
+    let partition_id = store.partition_id();
+    delete_storage_features(&mut store, partition_id)
+        .await
+        .expect("remove storage features");
+    let mut store = crate::PartitionStore::from(store.into_inner());
+    with_migrate_scoped_tables(false);
+    let config = Configuration::pinned().clone();
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .expect("bootstrap storage features from StorageVersion");
+    assert!(scoped_tables_migrated(&store));
+    assert!(
+        get_storage_features_from_partition_db(store.partition_db())
+            .expect("read bootstrapped storage features")
+            .is_some()
+    );
+
+    RocksDbManager::get().shutdown().await;
+}
+
+#[restate_core::test]
+async fn does_not_automatically_migrate_at_1_8() {
+    with_migrate_scoped_tables(false);
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true)
+        .await
+        .expect("manager create");
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+            None,
+        )
+        .await
+        .expect("open");
+
+    let (state_entries, service_ids) = seed_unscoped_data(&mut store).await;
+    let partition_id = store.partition_id();
+    put_storage_version(&mut store, partition_id, StorageVersion::V1_5 as u16)
+        .await
+        .expect("seed V1_5");
+
+    let config = Configuration::pinned().clone();
+    store
+        .verify_and_run_migrations_at_version(
+            &SemanticRestateVersion::parse("1.8.0-dev").unwrap(),
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .expect("verify without automatic migration");
+
+    assert_eq!(storage_version(&store), StorageVersion::V1_5);
+    assert!(!scoped_tables_migrated(&store));
+    assert_eq!(count_legacy_state(&store), state_entries.len());
+    assert_eq!(count_legacy_promise(&store), service_ids.len());
+    assert_eq!(count_scoped_state(&store), 0);
+    assert_eq!(count_scoped_promise(&store), 0);
+
+    RocksDbManager::get().shutdown().await;
+}
+
+#[restate_core::test]
+async fn future_unknown_features_report_the_names_raising_the_barrier() {
+    with_migrate_scoped_tables(false);
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true)
+        .await
+        .expect("manager create");
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(0, PartitionKey::MAX - 1)),
+            None,
+        )
+        .await
+        .expect("open");
+    let partition_id = store.partition_id();
+
+    put_storage_features_json(
+        &mut store,
+        partition_id,
+        br#"{
+            "features": {
+                "future-a": { "min_required_version": "2.0.0" },
+                "future-b": { "min_required_version": "2.0.0" },
+                "older-feature": { "min_required_version": "1.9.0" }
+            }
+        }"#,
+    )
+    .await
+    .expect("seed future storage features");
+
+    let config = Configuration::pinned().clone();
+    let error = store
+        .verify_and_run_migrations_at_version(
+            &SemanticRestateVersion::new(1, 9, 0),
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .unwrap_err();
+
+    match error {
+        MigrationError::StorageFeatureVersionBarrier {
+            required_min_version,
+            storage_features,
+        } => {
+            assert_eq!(required_min_version, SemanticRestateVersion::new(2, 0, 0));
+            assert_eq!(storage_features, ["future-a", "future-b"]);
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+    assert_eq!(storage_version(&store), StorageVersion::None);
 
     RocksDbManager::get().shutdown().await;
 }
@@ -307,14 +502,8 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
         .await
         .expect("verify fresh");
     assert_eq!(
-        store.storage_version(),
+        storage_version(&store),
         StorageVersion::ScopedStateAndPromise
-    );
-    assert!(
-        !store
-            .needs_jc_orphan_cleanup()
-            .await
-            .expect("fresh stores are marked cleanup-complete")
     );
 
     let service_id = ServiceId::new(None, "svc", "k");

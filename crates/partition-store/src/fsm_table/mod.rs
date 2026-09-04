@@ -24,6 +24,7 @@ use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageDecode};
 
 use crate::TableKind::PartitionStateMachine;
+use crate::features::PersistedEnabledFeatures;
 use crate::keys::{EncodeTableKey, KeyKind, define_table_key};
 use crate::{
     PaddedPartitionId, PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
@@ -112,6 +113,15 @@ pub(crate) mod fsm_variable {
     ///
     /// *Since v1.7.3*
     pub(crate) const SEAL_MARKER: u64 = 11;
+
+    /// A local set of storage features (not replicated) written to mark which
+    /// storage features are fully enabled. For instance, a feature for a secondary
+    /// index will be enabled _after_ the index gets persisted consistently with the data.
+    ///
+    /// Persisted as plain JSON.
+    ///
+    /// *Since v1.7.9*
+    pub(crate) const STORAGE_FEATURES: u64 = 12;
 }
 
 fn get<T: PartitionStoreProtobufValue, S: StorageAccess>(
@@ -171,6 +181,54 @@ pub(crate) fn get_storage_version_from_partition_db(db: &PartitionDb) -> Result<
     })
 }
 
+pub(crate) fn get_storage_features_from_partition_db(
+    db: &PartitionDb,
+) -> Result<Option<PersistedEnabledFeatures>> {
+    let cf = db.cf_handle();
+    let key = create_key(db.partition().id(), fsm_variable::STORAGE_FEATURES);
+    db.rocksdb()
+        .inner()
+        .as_raw_db()
+        .get_pinned_cf(cf, key.to_bytes())
+        .map_err(|err| StorageError::Generic(err.into()))?
+        .map(|value| {
+            serde_json::from_slice(&value).map_err(|err| StorageError::Conversion(err.into()))
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+pub(crate) async fn put_storage_features_json<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    value: &[u8],
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::STORAGE_FEATURES,
+    };
+    storage.put_kv_raw(key, value)?;
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) async fn delete_storage_features<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+) -> Result<()> {
+    storage.delete_key(&PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::STORAGE_FEATURES,
+    })
+}
+
+pub(crate) fn get_min_restate_version_from_partition_db(
+    db: &PartitionDb,
+) -> Result<SemanticRestateVersion> {
+    get_proto_from_partition_db(db, fsm_variable::RESTATE_VERSION_BARRIER)
+        .map(|version| version.unwrap_or_default())
+}
+
 pub(crate) async fn put_storage_version<S: StorageAccess>(
     storage: &mut S,
     partition_id: PartitionId,
@@ -184,30 +242,81 @@ pub(crate) async fn put_storage_version<S: StorageAccess>(
     )
 }
 
-/// Append a `STORAGE_VERSION = version` put to `wb`.
 pub(crate) fn append_storage_version_to_wb(
     cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
     wb: &mut rocksdb::WriteBatch,
     partition_id: PartitionId,
     version: StorageVersion,
 ) -> Result<()> {
-    use bytes::BytesMut;
-    use restate_types::storage::StorageCodec;
-
     let key = create_key(partition_id, fsm_variable::STORAGE_VERSION);
-    let key_buffer = key.to_bytes();
-
-    let value = SequenceNumber::from(version as u64);
-    let mut value_buffer = BytesMut::new();
+    let mut value = bytes::BytesMut::new();
     StorageCodec::encode(
         &ProtobufStorageWrapper::<<SequenceNumber as PartitionStoreProtobufValue>::ProtobufType>(
-            value.into(),
+            SequenceNumber::from(version as u64).into(),
         ),
-        &mut value_buffer,
+        &mut value,
     )
-    .map_err(|e| restate_storage_api::StorageError::Generic(e.into()))?;
+    .map_err(|err| StorageError::Generic(err.into()))?;
+    wb.put_cf(cf_handle, key.to_bytes(), value);
+    Ok(())
+}
 
-    wb.put_cf(cf_handle, key_buffer, &value_buffer);
+pub(crate) fn put_storage_features<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    features: &PersistedEnabledFeatures,
+) -> Result<()> {
+    let key = PartitionStateMachineKey {
+        partition_id: partition_id.into(),
+        state_id: fsm_variable::STORAGE_FEATURES,
+    };
+    let value = serde_json::to_vec(features).map_err(|err| StorageError::Conversion(err.into()))?;
+    storage.put_kv_raw(key, value)?;
+    Ok(())
+}
+
+pub(crate) fn append_storage_features_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    features: &PersistedEnabledFeatures,
+) -> Result<()> {
+    let key = create_key(partition_id, fsm_variable::STORAGE_FEATURES);
+    let value = serde_json::to_vec(features).map_err(|err| StorageError::Conversion(err.into()))?;
+    wb.put_cf(cf_handle, key.to_bytes(), value);
+    Ok(())
+}
+
+pub(crate) async fn put_min_restate_version<S: StorageAccess>(
+    storage: &mut S,
+    partition_id: PartitionId,
+    version: &SemanticRestateVersion,
+) -> Result<()> {
+    put(
+        storage,
+        partition_id,
+        fsm_variable::RESTATE_VERSION_BARRIER,
+        version,
+    )
+}
+
+pub(crate) fn append_min_restate_version_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
+    partition_id: PartitionId,
+    version: SemanticRestateVersion,
+) -> Result<()> {
+    let key = create_key(partition_id, fsm_variable::RESTATE_VERSION_BARRIER);
+
+    let mut value = bytes::BytesMut::new();
+    StorageCodec::encode(
+        &ProtobufStorageWrapper::<
+            <SemanticRestateVersion as PartitionStoreProtobufValue>::ProtobufType,
+        >(version.into()),
+        &mut value,
+    )
+    .map_err(|err| StorageError::Generic(err.into()))?;
+    wb.put_cf(cf_handle, key.to_bytes(), value);
     Ok(())
 }
 
