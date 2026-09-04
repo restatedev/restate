@@ -11,7 +11,7 @@
 use restate_storage_api::vqueue_table::{Stage, Status};
 
 use super::data::{FixtureFactory, InvocationOptions, VQueueOptions};
-use super::fixture::{QueryExpectation, QueryFixture};
+use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_vqueue_ui_shapes() {
@@ -79,24 +79,21 @@ async fn query_vqueue_ui_shapes() {
     ];
     let vqueues = [&vqueue_1, &vqueue_2, &other_vqueue, &inactive_vqueue];
 
-    let mut fixture = QueryFixture::create().await;
-    fixture
-        .populate(|tables| {
-            for vqueue in vqueues {
-                tables.sys_vqueue_meta().populate(vqueue);
-            }
-            for invocation in invocations {
-                tables.sys_vqueues().populate(invocation)?;
-            }
-            Ok(())
-        })
-        .await;
+    let mut test = QueryTest::create().await;
+    test.populate(|tables| {
+        for vqueue in vqueues {
+            tables.sys_vqueue_meta().populate(vqueue);
+        }
+        for invocation in invocations {
+            tables.sys_vqueues().populate(invocation)?;
+        }
+        Ok(())
+    })
+    .await;
 
-    fixture
-        .assert_queries(&[
-            QueryExpectation {
-                name: "inbox statuses for selected services",
-                sql: r#"SELECT
+    test.assert_query(QueryExpectation {
+        name: "inbox statuses for selected services",
+        sql: r#"SELECT
                            v.status,
                            COUNT(1) AS count
                        FROM sys_vqueues v
@@ -110,18 +107,20 @@ async fn query_vqueue_ui_shapes() {
                          AND v.stage = 'inbox'
                          AND v.entry_kind = 'invocation'
                        GROUP BY v.status"#,
-                expected: &[
-                    "+-------------+-------+",
-                    "| status      | count |",
-                    "+-------------+-------+",
-                    "| backing-off | 1     |",
-                    "| new         | 1     |",
-                    "+-------------+-------+",
-                ],
-            },
-            QueryExpectation {
-                name: "active virtual-object identities from vqueue metadata",
-                sql: r#"SELECT DISTINCT
+        expected: &[
+            "+-------------+-------+",
+            "| status      | count |",
+            "+-------------+-------+",
+            "| backing-off | 1     |",
+            "| new         | 1     |",
+            "+-------------+-------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "active virtual-object identities from vqueue metadata",
+        sql: r#"SELECT DISTINCT
                            CAST(partition_key AS VARCHAR) AS partition_key,
                            lock_name,
                            scope
@@ -136,18 +135,20 @@ async fn query_vqueue_ui_shapes() {
                          )
                          AND scope = 'scope-a'
                        LIMIT 2"#,
-                expected: &[
-                    "+---------------------+-------------------+---------+",
-                    "| partition_key       | lock_name         | scope   |",
-                    "+---------------------+-------------------+---------+",
-                    "| 3169317165037139997 | TestService/key-1 | scope-a |",
-                    "| 3169317165037139997 | TestService/key-2 | scope-a |",
-                    "+---------------------+-------------------+---------+",
-                ],
-            },
-            QueryExpectation {
-                name: "vqueue metadata summary",
-                sql: r#"SELECT
+        expected: &[
+            "+---------------------+-------------------+---------+",
+            "| partition_key       | lock_name         | scope   |",
+            "+---------------------+-------------------+---------+",
+            "| 3169317165037139997 | TestService/key-1 | scope-a |",
+            "| 3169317165037139997 | TestService/key-2 | scope-a |",
+            "+---------------------+-------------------+---------+",
+        ],
+    })
+    .await;
+
+    test.assert_query(QueryExpectation {
+        name: "vqueue metadata summary",
+        sql: r#"SELECT
                            vm.service_name,
                            SUM(vm.num_inbox) AS inbox,
                            SUM(vm.num_running) AS running,
@@ -159,19 +160,22 @@ async fn query_vqueue_ui_shapes() {
                           OR vm.num_suspended > 0
                           OR vm.num_paused > 0
                        GROUP BY vm.service_name"#,
-                expected: &[
-                    "+--------------+-------+---------+-----------+--------+",
-                    "| service_name | inbox | running | suspended | paused |",
-                    "+--------------+-------+---------+-----------+--------+",
-                    "| OtherService | 1     | 0       | 0         | 0      |",
-                    "| TestService  | 2     | 1       | 0         | 0      |",
-                    "+--------------+-------+---------+-----------+--------+",
-                ],
-            },
-            QueryExpectation {
-                name: "finished entries for a vqueue stage",
-                sql: &format!(
-                    r#"SELECT
+        expected: &[
+            "+--------------+-------+---------+-----------+--------+",
+            "| service_name | inbox | running | suspended | paused |",
+            "+--------------+-------+---------+-----------+--------+",
+            "| OtherService | 1     | 0       | 0         | 0      |",
+            "| TestService  | 2     | 1       | 0         | 0      |",
+            "+--------------+-------+---------+-----------+--------+",
+        ],
+    })
+    .await;
+
+    test
+        .assert_query(QueryExpectation {
+            name: "finished entries for a vqueue stage",
+            sql: &format!(
+                r#"SELECT
                            id AS vqueue_id,
                            entry_id AS id,
                            entry_kind AS kind,
@@ -194,16 +198,15 @@ async fn query_vqueue_ui_shapes() {
                        WHERE id = '{}'
                          AND stage = 'finished'
                        LIMIT 1"#,
-                    vqueue_1.id
-                ),
-                expected: &[
-                    "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
-                    "| vqueue_id                             | id                                     | kind       | stage    | status    | has_lock | sequence_number | created_at               | transitioned_at          | first_runnable_at    | first_attempt_at         | latest_attempt_at        | num_attempts | num_errors | num_pauses | num_suspensions | num_yields | deployment                 |",
-                    "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
-                    "| vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR | inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy | invocation | finished | succeeded | true     | 3               | 2025-04-07T04:26:55.003Z | 2025-04-07T04:26:56.003Z | 2025-04-07T04:27:00Z | 2025-04-07T04:26:55.503Z | 2025-04-07T04:26:55.503Z | 1            | 0          | 0          | 0               | 0          | dp_101SZwviYzes2mkYBx6TUys |",
-                    "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
-                ],
-            },
-        ])
+                vqueue_1.id
+            ),
+            expected: &[
+                "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
+                "| vqueue_id                             | id                                     | kind       | stage    | status    | has_lock | sequence_number | created_at               | transitioned_at          | first_runnable_at    | first_attempt_at         | latest_attempt_at        | num_attempts | num_errors | num_pauses | num_suspensions | num_yields | deployment                 |",
+                "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
+                "| vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR | inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy | invocation | finished | succeeded | true     | 3               | 2025-04-07T04:26:55.003Z | 2025-04-07T04:26:56.003Z | 2025-04-07T04:27:00Z | 2025-04-07T04:26:55.503Z | 2025-04-07T04:26:55.503Z | 1            | 0          | 0          | 0               | 0          | dp_101SZwviYzes2mkYBx6TUys |",
+                "+---------------------------------------+----------------------------------------+------------+----------+-----------+----------+-----------------+--------------------------+--------------------------+----------------------+--------------------------+--------------------------+--------------+------------+------------+-----------------+------------+----------------------------+",
+            ],
+        })
         .await;
 }

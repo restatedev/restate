@@ -36,9 +36,7 @@ use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::{
-    DeploymentId, InvocationId, InvocationUuid, ServiceId, WithPartitionKey,
-};
+use restate_types::identifiers::{DeploymentId, InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::{
     InvocationTarget, ResponseResult, ServiceInvocationSpanContext, Source,
     VirtualObjectHandlerType,
@@ -54,6 +52,7 @@ use restate_util_string::{ReString, RestateString};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 
 const VQUEUE_BASE_TIMESTAMP_MILLIS: u64 = 1_744_000_000_000;
+const TEXT_TABLE_INVOCATION_SEQUENCE_START: u128 = 1 << 64;
 
 pub(super) struct FixtureFactory {
     next_invocation: u128,
@@ -70,22 +69,19 @@ impl Default for FixtureFactory {
 }
 
 impl FixtureFactory {
-    pub(super) fn create_state(
-        &self,
-        scope: Option<&'static str>,
-        service_name: &'static str,
-        service_key: &'static str,
-        state_key: &'static [u8],
-        state_value: &'static [u8],
-    ) -> StateFixture {
-        StateFixture {
-            service_id: ServiceId::new(
-                scope.map(|scope| Scope::try_from_static(scope).unwrap()),
-                service_name,
-                service_key,
-            ),
-            state_key: Bytes::from_static(state_key),
-            state_value: Bytes::from_static(state_value),
+    pub(super) fn for_text_tables() -> Self {
+        Self {
+            next_invocation: TEXT_TABLE_INVOCATION_SEQUENCE_START,
+            next_vqueue: 1,
+        }
+    }
+
+    pub(super) fn invocations<'factory, 'fixture, const N: usize>(
+        &'factory mut self,
+    ) -> InvocationFixturesBuilder<'factory, 'fixture, N> {
+        InvocationFixturesBuilder {
+            factory: self,
+            options: InvocationOptions::default(),
         }
     }
 
@@ -157,15 +153,6 @@ impl FixtureFactory {
         let state = match options.status {
             InvocationFixtureStatus::Running => InvocationStatusReportInner {
                 in_flight: true,
-                start_count: 1,
-                last_start_at: UNIX_EPOCH + Duration::from_secs(5),
-                last_attempt_deployment_id: Some(deployment_id),
-                last_attempt_protocol_version: Some(ServiceProtocolVersion::V5),
-                last_attempt_server: Some("restate-sdk-rust/0.1.0".to_owned()),
-                ..InvocationStatusReportInner::default()
-            },
-            InvocationFixtureStatus::BackingOff => InvocationStatusReportInner {
-                in_flight: false,
                 start_count: 1,
                 last_start_at: UNIX_EPOCH + Duration::from_secs(5),
                 last_attempt_deployment_id: Some(deployment_id),
@@ -289,12 +276,6 @@ fn unique_timestamp(millis: u64) -> UniqueTimestamp {
     UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::from(millis)).unwrap()
 }
 
-pub(super) struct StateFixture {
-    pub(super) service_id: ServiceId,
-    pub(super) state_key: Bytes,
-    pub(super) state_value: Bytes,
-}
-
 #[derive(Clone)]
 pub(super) struct VQueueFixture {
     pub(super) id: VQueueId,
@@ -361,11 +342,26 @@ impl Default for VQueueOptions {
 #[derive(Clone, Copy)]
 pub(super) enum InvocationFixtureStatus {
     Running,
-    BackingOff,
     CompletedSuccess,
     CompletedFailure,
 }
 
+impl TryFrom<(&str, Option<&str>)> for InvocationFixtureStatus {
+    type Error = anyhow::Error;
+
+    fn try_from((status, completion_result): (&str, Option<&str>)) -> Result<Self, Self::Error> {
+        match (status, completion_result) {
+            ("invoked", None) => Ok(Self::Running),
+            ("completed", Some("success")) => Ok(Self::CompletedSuccess),
+            ("completed", Some("failure")) => Ok(Self::CompletedFailure),
+            _ => anyhow::bail!(
+                "unsupported invocation status values: status={status:?}, completion_result={completion_result:?}"
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub(super) struct InvocationOptions<'a> {
     pub(super) vqueue: Option<&'a VQueueFixture>,
     pub(super) service_name: &'a str,
@@ -375,6 +371,29 @@ pub(super) struct InvocationOptions<'a> {
     pub(super) entry_stage: Stage,
     pub(super) entry_status: Status,
     pub(super) has_lock: bool,
+}
+
+pub(super) struct InvocationFixturesBuilder<'factory, 'fixture, const N: usize> {
+    factory: &'factory mut FixtureFactory,
+    options: InvocationOptions<'fixture>,
+}
+
+impl<'fixture, const N: usize> InvocationFixturesBuilder<'_, 'fixture, N> {
+    pub(super) fn with_vqueue(mut self, vqueue: &'fixture VQueueFixture) -> Self {
+        self.options.vqueue = Some(vqueue);
+        self
+    }
+
+    pub(super) fn with_status(mut self, status: InvocationFixtureStatus) -> Self {
+        self.options.status = status;
+        self
+    }
+
+    pub(super) fn create(self) -> [InvocationFixture; N] {
+        let factory = self.factory;
+        let options = self.options;
+        std::array::from_fn(|_| factory.create_invocation(options))
+    }
 }
 
 impl Default for InvocationOptions<'_> {
@@ -441,9 +460,7 @@ impl InvocationFixture {
         };
 
         match self.status {
-            InvocationFixtureStatus::Running | InvocationFixtureStatus::BackingOff => {
-                InvocationStatus::Invoked(metadata)
-            }
+            InvocationFixtureStatus::Running => InvocationStatus::Invoked(metadata),
             InvocationFixtureStatus::CompletedSuccess => InvocationStatus::Completed(
                 CompletedInvocation::from_in_flight_invocation_metadata(
                     metadata,

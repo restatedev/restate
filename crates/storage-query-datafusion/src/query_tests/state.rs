@@ -8,91 +8,63 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::data::FixtureFactory;
-use super::fixture::{QueryExpectation, QueryFixture};
+use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_state_ui_shapes() {
-    let factory = FixtureFactory::default();
-    let states = [
-        factory.create_state(
-            Some("scope-a"),
-            "TestService",
-            "key-1",
-            b"state-1",
-            b"value-1",
-        ),
-        factory.create_state(
-            Some("scope-a"),
-            "TestService",
-            "key-1",
-            b"state-2",
-            b"value-2",
-        ),
-        factory.create_state(
-            Some("scope-b"),
-            "TestService",
-            "key-2",
-            b"state-1",
-            b"value-3",
-        ),
-        factory.create_state(
-            Some("scope-b"),
-            "OtherService",
-            "ignored-key",
-            b"state-1",
-            b"value-4",
-        ),
-    ];
+    let mut test = QueryTest::create().await;
+    test.populate(|tables| {
+        tables.state().populate_table(&[
+            "+---------+--------------+-------------+---------+---------+",
+            "| scope   | service_name | service_key | key     | value   |",
+            "+---------+--------------+-------------+---------+---------+",
+            "| scope-a | TestService  | key-1       | state-1 | value-1 |",
+            "| scope-a | TestService  | key-1       | state-2 | value-2 |",
+            "| scope-b | TestService  | key-2       | state-1 | value-3 |",
+            "| scope-b | OtherService | ignored-key | state-1 | value-4 |",
+            "+---------+--------------+-------------+---------+---------+",
+        ])?;
+        Ok(())
+    })
+    .await;
 
-    let mut fixture = QueryFixture::create().await;
-    fixture
-        .populate(|tables| {
-            for state in &states {
-                tables.state().populate(state)?;
-            }
-            Ok(())
-        })
-        .await;
+    test.assert_query(QueryExpectation {
+        name: "distinct scoped service instances",
+        sql: r#"SELECT DISTINCT service_key, scope
+                    FROM state
+                    WHERE "service_name" = 'TestService'
+                    LIMIT 2"#,
+        expected: &[
+            "+-------------+---------+",
+            "| service_key | scope   |",
+            "+-------------+---------+",
+            "| key-1       | scope-a |",
+            "| key-2       | scope-b |",
+            "+-------------+---------+",
+        ],
+    })
+    .await;
 
-    fixture
-        .assert_queries(&[
-            QueryExpectation {
-                name: "distinct scoped service instances",
-                sql: r#"SELECT DISTINCT service_key, scope
-                        FROM state
-                        WHERE "service_name" = 'TestService'
-                        LIMIT 2"#,
-                expected: &[
-                    "+-------------+---------+",
-                    "| service_key | scope   |",
-                    "+-------------+---------+",
-                    "| key-1       | scope-a |",
-                    "| key-2       | scope-b |",
-                    "+-------------+---------+",
-                ],
-            },
-            QueryExpectation {
-                name: "state entries page",
-                sql: r#"SELECT
-                           key,
-                           value_length,
-                           CASE WHEN value_length <= 65536 THEN value END AS value
-                       FROM state
-                       WHERE service_name = 'TestService'
-                         AND service_key = 'key-1'
-                         AND scope = 'scope-a'
-                       ORDER BY key
-                       LIMIT 2"#,
-                expected: &[
-                    "+---------+--------------+----------------+",
-                    "| key     | value_length | value          |",
-                    "+---------+--------------+----------------+",
-                    "| state-1 | 7            | 76616c75652d31 |",
-                    "| state-2 | 7            | 76616c75652d32 |",
-                    "+---------+--------------+----------------+",
-                ],
-            },
-        ])
-        .await;
+    test.assert_query(QueryExpectation {
+        name: "state entries page",
+        sql: r#"SELECT
+                       key,
+                       value_length,
+                       CASE WHEN value_length <= 65536 THEN value END AS value
+                   FROM state
+                   WHERE service_name = 'TestService'
+                     AND service_key = 'key-1'
+                     AND scope = 'scope-a'
+                   ORDER BY key
+                   LIMIT 2"#,
+        expected: &[
+            "+---------+--------------+----------------+",
+            "| key     | value_length | value          |",
+            "+---------+--------------+----------------+",
+            "| state-1 | 7            | 76616c75652d31 |",
+            "| state-2 | 7            | 76616c75652d32 |",
+            "+---------+--------------+----------------+",
+        ],
+    })
+    .await;
 }

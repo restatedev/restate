@@ -8,59 +8,44 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::data::{FixtureFactory, InvocationFixtureStatus, InvocationOptions};
-use super::fixture::{QueryExpectation, QueryFixture};
+use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_invocation_status_ui_shapes() {
-    let mut factory = FixtureFactory::default();
-    let invocations = [
-        factory.create_invocation(InvocationOptions {
-            service_key: "key-1",
-            ..InvocationOptions::default()
-        }),
-        factory.create_invocation(InvocationOptions {
-            service_key: "key-1",
-            ..InvocationOptions::default()
-        }),
-        factory.create_invocation(InvocationOptions {
-            service_key: "key-2",
-            status: InvocationFixtureStatus::BackingOff,
-            ..InvocationOptions::default()
-        }),
-        factory.create_invocation(InvocationOptions {
-            service_key: "key-3",
-            status: InvocationFixtureStatus::CompletedSuccess,
-            ..InvocationOptions::default()
-        }),
-        factory.create_invocation(InvocationOptions {
-            service_key: "key-4",
-            status: InvocationFixtureStatus::CompletedFailure,
-            ..InvocationOptions::default()
-        }),
-        factory.create_invocation(InvocationOptions {
-            service_name: "OtherService",
-            service_key: "ignored-key",
-            ..InvocationOptions::default()
-        }),
-    ];
-
-    let mut fixture = QueryFixture::create().await;
-    fixture
+    let mut test = QueryTest::create().await;
+    test
         .populate(|tables| {
-            for invocation in &invocations {
-                tables.sys_invocation_status().populate(invocation)?;
-                tables.sys_invocation_state().populate(invocation);
-            }
+            tables.sys_invocation_status().populate_table(&[
+                "+---------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
+                "| partition_key       | id                                     | status    | completion_result | target_service_name | target_service_key | target_handler_name | target_service_ty | scope   |",
+                "+---------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
+                "| 3169317165037139997 | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | invoked   |                   | TestService         | key-1              | run                 | virtual_object    | scope-a |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | invoked   |                   | TestService         | key-1              | run                 | virtual_object    | scope-a |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy | invoked   |                   | TestService         | key-2              | run                 | virtual_object    | scope-a |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd07xY61dUgVO9rheFrZ8XM4 | completed | success           | TestService         | key-3              | run                 | virtual_object    | scope-a |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA | completed | failure           | TestService         | key-4              | run                 | virtual_object    | scope-a |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd0bjX91PRpoIe9UR0aYIrF6 | invoked   |                   | OtherService        | ignored-key        | run                 | virtual_object    | scope-a |",
+                "+---------------------+----------------------------------------+-----------+-------------------+---------------------+--------------------+---------------------+-------------------+---------+",
+            ])?;
+            tables.sys_invocation_state().populate_table(&[
+                "+---------------------+----------------------------------------+-----------+",
+                "| partition_key       | id                                     | in_flight |",
+                "+---------------------+----------------------------------------+-----------+",
+                "| 3169317165037139997 | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw | true      |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 | true      |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy | false     |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd07xY61dUgVO9rheFrZ8XM4 | false     |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd09qXCwwSQagbNB2POtVHIA | false     |",
+                "| 3169317165037139997 | inv_12vxF4s3wljd0bjX91PRpoIe9UR0aYIrF6 | true      |",
+                "+---------------------+----------------------------------------+-----------+",
+            ])?;
             Ok(())
         })
         .await;
 
-    fixture
-        .assert_queries(&[
-            QueryExpectation {
-                name: "active virtual-object identities from invocation status",
-                sql: r#"SELECT DISTINCT
+    test.assert_query(QueryExpectation {
+        name: "active virtual-object identities from invocation status",
+        sql: r#"SELECT DISTINCT
                            CAST(partition_key AS VARCHAR) AS partition_key,
                            target_service_key AS object_key,
                            scope
@@ -71,18 +56,21 @@ async fn query_invocation_status_ui_shapes() {
                          AND status <> 'completed'
                          AND scope = 'scope-a'
                        LIMIT 2"#,
-                expected: &[
-                    "+---------------------+------------+---------+",
-                    "| partition_key       | object_key | scope   |",
-                    "+---------------------+------------+---------+",
-                    "| 3169317165037139997 | key-1      | scope-a |",
-                    "| 3169317165037139997 | key-2      | scope-a |",
-                    "+---------------------+------------+---------+",
-                ],
-            },
-            QueryExpectation {
-                name: "invocation summary from status and live state",
-                sql: r#"SELECT
+        expected: &[
+            "+---------------------+------------+---------+",
+            "| partition_key       | object_key | scope   |",
+            "+---------------------+------------+---------+",
+            "| 3169317165037139997 | key-1      | scope-a |",
+            "| 3169317165037139997 | key-2      | scope-a |",
+            "+---------------------+------------+---------+",
+        ],
+    })
+    .await;
+
+    test
+        .assert_query(QueryExpectation {
+            name: "invocation summary from status and live state",
+            sql: r#"SELECT
                            ss.target_service_name AS service_name,
                            CASE
                              WHEN ss.status = 'inboxed' THEN 'pending'
@@ -106,34 +94,35 @@ async fn query_invocation_status_ui_shapes() {
                              WHEN ss.status = 'completed' THEN 'failed'
                              ELSE ss.status
                            END"#,
-                expected: &[
-                    "+--------------+---------------------------+-------+",
-                    "| service_name | bucket                    | count |",
-                    "+--------------+---------------------------+-------+",
-                    "| TestService  | failed                    | 1     |",
-                    "| TestService  | ready-yielded-backing-off | 1     |",
-                    "| TestService  | running                   | 2     |",
-                    "| TestService  | succeeded                 | 1     |",
-                    "+--------------+---------------------------+-------+",
-                ],
-            },
-            QueryExpectation {
-                name: "active invocation candidates from status",
-                sql: r#"SELECT ss.id AS id
+            expected: &[
+                "+--------------+---------------------------+-------+",
+                "| service_name | bucket                    | count |",
+                "+--------------+---------------------------+-------+",
+                "| TestService  | failed                    | 1     |",
+                "| TestService  | ready-yielded-backing-off | 1     |",
+                "| TestService  | running                   | 2     |",
+                "| TestService  | succeeded                 | 1     |",
+                "+--------------+---------------------------+-------+",
+            ],
+        })
+        .await;
+
+    test.assert_query(QueryExpectation {
+        name: "active invocation candidates from status",
+        sql: r#"SELECT ss.id AS id
                        FROM sys_invocation_status ss
                        WHERE ss.status != 'completed'
                          AND ss.target_service_name IN ('TestService')
                        LIMIT 3"#,
-                expected: &[
-                    "+----------------------------------------+",
-                    "| id                                     |",
-                    "+----------------------------------------+",
-                    "| inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw |",
-                    "| inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 |",
-                    "| inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy |",
-                    "+----------------------------------------+",
-                ],
-            },
-        ])
-        .await;
+        expected: &[
+            "+----------------------------------------+",
+            "| id                                     |",
+            "+----------------------------------------+",
+            "| inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw |",
+            "| inv_12vxF4s3wljd03LZ30BX8sU4IDCkIZztT2 |",
+            "| inv_12vxF4s3wljd05EYzvUVHHm74Xqv5umdPy |",
+            "+----------------------------------------+",
+        ],
+    })
+    .await;
 }

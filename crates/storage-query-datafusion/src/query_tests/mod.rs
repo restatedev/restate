@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod data;
-mod fixture;
+mod harness;
 mod invocation_status;
 mod journal;
 mod state;
