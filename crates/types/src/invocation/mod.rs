@@ -839,18 +839,16 @@ impl ServiceInvocationSpanContext {
         }
     }
 
-    /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
-    /// when the invocation completes.
+    /// Create a [`SpanContext`] for this invocation.
+    ///
+    /// Valid unsampled contexts are retained for propagation without enabling recording.
     ///
     /// This function is **deterministic**.
     pub fn start(
         invocation_id: &InvocationId,
         related_span: SpanRelation,
     ) -> ServiceInvocationSpanContext {
-        if !related_span.is_sampled() {
-            // don't waste any time or storage space on unsampled traces
-            // sampling based on parent is default otel behaviour; we do the same for the
-            // non-parent background invoke relationship
+        if !related_span.is_valid() {
             return ServiceInvocationSpanContext::empty();
         }
 
@@ -1052,11 +1050,11 @@ impl SpanRelation {
         Self::Linked(ctx.into())
     }
 
-    fn is_sampled(&self) -> bool {
+    fn is_valid(&self) -> bool {
         match self {
             SpanRelation::None => false,
-            SpanRelation::Parent(span_context) => span_context.is_sampled(),
-            SpanRelation::Linked(span_context) => span_context.is_sampled(),
+            SpanRelation::Parent(span_context) => span_context.is_valid(),
+            SpanRelation::Linked(span_context) => span_context.is_valid(),
         }
     }
 }
@@ -1237,10 +1235,6 @@ impl SpanContextDef {
 
     pub fn into_trace_state(self) -> TraceStateDef {
         self.trace_state
-    }
-
-    fn is_sampled(&self) -> bool {
-        self.trace_flags().is_sampled()
     }
 }
 
@@ -1979,9 +1973,54 @@ mod tests {
 
         use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
 
+        use crate::identifiers::InvocationId;
         use crate::invocation::{
-            ServiceInvocationSpanContext, SpanContextDef, SpanRelationCause, TraceStateDef,
+            ServiceInvocationSpanContext, SpanContextDef, SpanRelation, SpanRelationCause,
+            TraceStateDef,
         };
+
+        #[test]
+        fn unsampled_span_context_is_propagated() {
+            let source_trace_id = TraceId::from_bytes([1; 16]);
+            let source_span_context = SpanContextDef::new(
+                source_trace_id,
+                SpanId::from_bytes([2; 8]),
+                TraceFlags::NOT_SAMPLED,
+                true,
+                TraceStateDef::default(),
+            );
+            let invocation_id = InvocationId::mock_random();
+
+            let child_span_context = ServiceInvocationSpanContext::start(
+                &invocation_id,
+                SpanRelation::Parent(source_span_context.clone()),
+            );
+
+            assert!(child_span_context.span_context().is_valid());
+            assert_eq!(
+                child_span_context.span_context().trace_id(),
+                source_trace_id
+            );
+            assert_eq!(
+                child_span_context.span_context().trace_flags(),
+                TraceFlags::NOT_SAMPLED
+            );
+
+            let linked_span_context = ServiceInvocationSpanContext::start(
+                &invocation_id,
+                SpanRelation::Linked(source_span_context),
+            );
+
+            assert!(linked_span_context.span_context().is_valid());
+            assert_eq!(
+                linked_span_context.span_context().trace_id(),
+                invocation_id.invocation_uuid().into()
+            );
+            assert_eq!(
+                linked_span_context.span_context().trace_flags(),
+                TraceFlags::NOT_SAMPLED
+            );
+        }
 
         #[test]
         fn roundtrip_invocation_span_context() {
