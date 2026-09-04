@@ -30,12 +30,12 @@ use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;
 
 use crate::TableKind::State;
+use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
 };
-use restate_types::partitions::StorageVersion;
 
 define_table_key!(
     State,
@@ -128,23 +128,20 @@ impl<DB: DBAccess> Iterator for StateEntryIter<'_, DB> {
     }
 }
 
-/// Returns `true` if the call should use the scoped state table — either because
-/// the partition store has migrated past
-/// [`StorageVersion::ScopedStateAndPromise`] (so scope = None entries also live
-/// in the scoped table) or because the [`ServiceId`] carries an explicit scope.
+/// Returns `true` if the call should use the scoped state table exclusively
 #[inline]
-fn use_scoped_state(storage_version: StorageVersion, service_id: &ServiceId) -> bool {
-    storage_version.is_scope_migrated() || service_id.scope.is_some()
+fn use_scoped_state(storage_features: StorageFeatures, service_id: &ServiceId) -> bool {
+    storage_features.is_migrated_to_scoped_state_table || service_id.scope.is_some()
 }
 
 fn put_user_state<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
     state_key: &Bytes,
     state_value: impl AsRef<[u8]>,
 ) -> Result<()> {
-    if use_scoped_state(storage_version, service_id) {
+    if use_scoped_state(storage_features, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -168,11 +165,11 @@ fn put_user_state<S: StorageAccess>(
 
 fn delete_user_state<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
     state_key: &Bytes,
 ) -> Result<()> {
-    if use_scoped_state(storage_version, service_id) {
+    if use_scoped_state(storage_features, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -196,10 +193,10 @@ fn delete_user_state<S: StorageAccess>(
 
 fn delete_all_user_state<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
 ) -> Result<()> {
-    if use_scoped_state(storage_version, service_id) {
+    if use_scoped_state(storage_features, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -242,12 +239,12 @@ fn delete_all_user_state<S: StorageAccess>(
 
 fn get_user_state<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
     state_key: &Bytes,
 ) -> Result<Option<Bytes>> {
     let _x = RocksDbReadPerfGuard::new("get-user-state");
-    if use_scoped_state(storage_version, service_id) {
+    if use_scoped_state(storage_features, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -271,12 +268,12 @@ fn get_user_state<S: StorageAccess>(
 
 fn get_all_user_states_for_service<'a, S: StorageAccess>(
     storage: &'a S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
 ) -> Result<StateEntryIter<'a, S::DBAccess<'a>>> {
     let _x = RocksDbReadPerfGuard::new("get-all-user-state-iter-setup");
 
-    if use_scoped_state(storage_version, service_id) {
+    if use_scoped_state(storage_features, service_id) {
         //todo(tillrohrmann) remove once ServiceId carries the right types
         let service_name = ServiceName::new(service_id.service_name.as_ref());
         let service_key = ReString::new(&service_id.key);
@@ -308,7 +305,7 @@ impl ReadStateTable for PartitionStore {
         state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, self.storage_version(), service_id, state_key)
+        get_user_state(self, self.storage_features(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -318,7 +315,7 @@ impl ReadStateTable for PartitionStore {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self,
-            self.storage_version(),
+            self.storage_features(),
             service_id,
         )?))
     }
@@ -334,7 +331,7 @@ impl ReadStateTable for PartitionStore {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_features(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -354,7 +351,7 @@ impl ScanStateTable for PartitionStore {
 
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
-        let unscoped = if self.storage_version().is_scope_migrated() {
+        let unscoped = if self.storage_features().is_migrated_to_scoped_state_table {
             None
         } else {
             let f_unscoped = Arc::clone(&f);
@@ -412,7 +409,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         state_key: &Bytes,
     ) -> Result<Option<Bytes>> {
         self.assert_partition_key(service_id)?;
-        get_user_state(self, self.storage_version(), service_id, state_key)
+        get_user_state(self, self.storage_features(), service_id, state_key)
     }
 
     fn get_all_user_states_for_service<'a>(
@@ -422,7 +419,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(service_id)?;
         Ok(stream::iter(get_all_user_states_for_service(
             self,
-            self.storage_version(),
+            self.storage_features(),
             service_id,
         )?))
     }
@@ -438,7 +435,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let iter = get_all_user_states_for_service(self, self.storage_version(), service_id)?;
+        let iter = get_all_user_states_for_service(self, self.storage_features(), service_id)?;
         Ok(budgeted_state_stream(iter, budget))
     }
 }
@@ -453,7 +450,7 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
         self.assert_partition_key(service_id)?;
         put_user_state(
             self,
-            self.storage_version(),
+            self.storage_features(),
             service_id,
             state_key,
             state_value,
@@ -462,12 +459,12 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
 
     fn delete_user_state(&mut self, service_id: &ServiceId, state_key: &Bytes) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_user_state(self, self.storage_version(), service_id, state_key)
+        delete_user_state(self, self.storage_features(), service_id, state_key)
     }
 
     fn delete_all_user_state(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_all_user_state(self, self.storage_version(), service_id)
+        delete_all_user_state(self, self.storage_features(), service_id)
     }
 }
 
