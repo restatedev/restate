@@ -568,6 +568,15 @@ impl ErasedCommand {
     }
 }
 
+impl<C> From<C> for ErasedCommand
+where
+    C: Command,
+{
+    fn from(value: C) -> Self {
+        Self::new(value)
+    }
+}
+
 #[cfg(test)]
 mod test {
 
