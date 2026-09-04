@@ -21,6 +21,8 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
+#[cfg(test)]
+use restate_wal_protocol::v2::{Command, CommandWithKeys};
 use tokio::time::Instant;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
@@ -35,8 +37,8 @@ use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
+use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
-use restate_types::invocation::{FencingToken, PurgeInvocationRequest};
 use restate_types::logs::BodyWithKeys;
 use restate_types::logs::Keys;
 use restate_types::net::ingest::{IngestRecord, ResponseStatus};
@@ -50,7 +52,6 @@ use restate_vqueues::VQueueEvent;
 use restate_vqueues::context::HasVQueues;
 use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueuesMeta};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{CommandKind, ErasedCommand, commands};
@@ -193,12 +194,12 @@ impl LeaderState {
     }
 
     #[cfg(test)]
-    pub(crate) fn propose_pause_and_fence(
+    pub(crate) fn propose_pause_and_fence<C: Command>(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
         reciprocal: RpcReciprocal,
         invocation_id: InvocationId,
-        cmd: Command,
+        cmd: impl CommandWithKeys<C>,
     ) {
         let mut state = LeaderEventHandlerState {
             partition_key_range: self.partition_key_range,
@@ -207,7 +208,14 @@ impl LeaderState {
             awaiting_rpc_self_propose: &mut self.awaiting_rpc_self_propose,
             fencing_tokens: &mut self.fencing_tokens,
         };
-        state.propose_pause_and_fence(request_id, reciprocal, invocation_id, cmd);
+
+        state.propose_pause_and_fence(
+            request_id,
+            reciprocal,
+            invocation_id,
+            cmd.keys(),
+            ErasedCommand::new(cmd.inner()),
+        );
     }
 
     pub fn read_scheduler_status(
