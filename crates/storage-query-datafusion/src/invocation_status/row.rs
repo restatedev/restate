@@ -345,6 +345,9 @@ fn fill_invoked_by(
                 row.fmt_restarted_from(restart_as_new.invocation_id()?)
             }
         }
+        Source::Ingestion(_) => {
+            row.invoked_by("ingress_ingestion");
+        }
     }
 
     Ok(())

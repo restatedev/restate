@@ -275,7 +275,7 @@ mod state_machine {
     use tokio_util::sync::ReusableBoxFuture;
 
     use restate_core::network::TransportConnect;
-    use restate_ingestion_client::{IngestFuture, IngestionClient, RecordCommit};
+    use restate_ingestion_client::{IngestFuture, Ingestion, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::{identifiers::WithPartitionKey, message::MessageIndex};
     use restate_wal_protocol::Envelope;

@@ -143,6 +143,7 @@ pub mod v1 {
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
+        use crate::protobuf_types::v1::source::IngestionSource;
         use crate::protobuf_types::v1::{
             Future, NotificationEntryIndex, NotificationResultVariant,
         };
@@ -1529,6 +1530,7 @@ pub mod v1 {
                         )
                     }
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
+                    source::Source::Ingestion(_) => restate_types::invocation::Source::Ingestion,
                 };
 
                 Ok(source)
@@ -1561,6 +1563,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
+                    }
                 };
 
                 Source {
@@ -1595,6 +1600,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
+                    }
                 };
 
                 Source {
