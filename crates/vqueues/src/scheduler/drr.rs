@@ -40,6 +40,7 @@ use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
 
 use super::Decisions;
+use super::RefillMode;
 use super::ReservedResources;
 use super::ResourceManager;
 use super::VQueueSchedulerStatus;
@@ -61,6 +62,8 @@ pub struct DRRScheduler<S: VQueueStore> {
     /// Limits the number of items included in a single decision across all queues
     max_items_per_decision: NonZeroU16,
 
+    refill_mode: RefillMode,
+
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
@@ -72,6 +75,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         resource_manager: ResourceManager,
         storage: S,
         vqueues: VQueuesMeta<'_>,
+        refill_mode: RefillMode,
     ) -> Self {
         let mut total_running = 0;
         let mut total_waiting = 0;
@@ -102,6 +106,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
+            refill_mode,
         }
     }
 
@@ -144,9 +149,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 break;
             }
 
-            let Some(handle) = this
-                .eligible
-                .next_eligible(cx, metas, this.storage, this.q)?
+            let Some(handle) =
+                this.eligible
+                    .next_eligible(cx, metas, this.storage, this.q, *this.refill_mode)?
             else {
                 break;
             };
@@ -712,6 +717,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         )
     }
 
@@ -730,6 +736,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         )
     }
 
@@ -1075,6 +1082,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1215,6 +1223,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1296,6 +1305,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1344,6 +1354,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) {
@@ -1373,6 +1384,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1449,6 +1461,7 @@ mod tests {
                 .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let h_qid1 = cache.view().handle_for(&qid1).unwrap();

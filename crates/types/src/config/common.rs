@@ -843,6 +843,14 @@ experimental! {
     ///
     /// Since v1.7.8
     preflight_invocation_termination_retention,
+
+    /// # Asynchronous VQueue refills
+    ///
+    /// Moves VQueue storage refills to Tokio's blocking thread pool when the required data is not
+    /// already cached by RocksDB.
+    ///
+    /// Since v1.7.9
+    vqueues_async_refill,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
