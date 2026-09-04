@@ -1,6 +1,6 @@
 # Reusable workflow. Consumed by this repo AND by external repos (e.g.
 # restate-operator) via `uses: restatedev/restate/.github/workflows/docker.yml@...`.
-# Keep it generic: don't hardcode the caller's package/crate names, paths, or image —
+# Keep it generic: don't hardcode the caller's package/crate names, paths, or image -
 # expose them as inputs that default to the restate-server values.
 name: Build Docker image
 
@@ -55,6 +55,11 @@ on:
 
   workflow_dispatch:
     inputs:
+      hotfixTag:
+        description: "hotfix source tag (for example v1.2.3+hotfix.1)"
+        required: false
+        default: ""
+        type: string
       uploadImageAsTarball:
         description: "uploads the Docker image additionally as a tarball with the provided name"
         required: false
@@ -105,230 +110,37 @@ on:
         default: "restate-server"
         type: string
 
-env:
-  REPOSITORY_OWNER: ${{ github.repository_owner }}
-  GHCR_REGISTRY: "ghcr.io"
-  GHCR_REGISTRY_USERNAME: ${{ github.actor }}
-  GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
 jobs:
   build-and-push-image:
-    runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
-    timeout-minutes: ${{ inputs.parca && 140 || 70 }}
+    if: ${{ inputs.hotfixTag == '' }}
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      uploadImageAsTarball: ${{ inputs.uploadImageAsTarball }}
+      platforms: ${{ inputs.platforms }}
+      parca: ${{ inputs.parca }}
+      buildIndividually: ${{ inputs.buildIndividually }}
+      features: ${{ inputs.features }}
+      profile: ${{ inputs.profile }}
+      runnerSize: ${{ inputs.runnerSize }}
+      pushToDockerHub: ${{ inputs.pushToDockerHub }}
+      cargoPackage: ${{ inputs.cargoPackage }}
+    secrets: inherit
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install cargo-hakari
-        if: ${{ hashFiles('.config/hakari.toml') != '' }}
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-hakari
-
-      - name: Disable hakari
-        if: ${{ hashFiles('.config/hakari.toml') != '' }}
-        run: cargo hakari disable
-
-      # this is needed to be able to load and push a multiplatform image in one step
-      - name: Set up Docker containerd snapshotter
-        uses: depot/use-containerd-snapshotter-action@v1
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
-          driver-opts: |
-            network=host
-
-      - name: Cache sccache
-        id: cache
-        uses: WarpBuilds/cache@v1
-        with:
-          path: sccache-cache
-          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
-
-      - name: Inject sccache-cache into Docker
-        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
-        with:
-          cache-map: |
-            {
-              "sccache-cache": "/var/cache/sccache"
-            }
-          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
-
-      - name: Log into GitHub container registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.GHCR_REGISTRY }}
-          username: ${{ env.GHCR_REGISTRY_USERNAME }}
-          password: ${{ env.GHCR_REGISTRY_TOKEN }}
-
-      - name: Log into DockerHub
-        if: ${{ inputs.pushToDockerHub }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
-      - name: Extract image name
-        # Set repository name as image name
-        run: |
-          echo "IMAGE_NAME=${GITHUB_REPOSITORY#$GITHUB_REPOSITORY_OWNER/}" >> $GITHUB_ENV
-
-      - name: Extract base image from Dockerfile
-        id: base-image
-        run: |
-          BASE_IMAGE=$(grep 'FROM.*AS runtime' docker/Dockerfile | head -1 | awk '{print $2}')
-          echo "name=${BASE_IMAGE}" >> $GITHUB_OUTPUT
-          echo "Base image: ${BASE_IMAGE}"
-
-          # Get the base image digest for the amd64 platform
-          BASE_DIGEST=$(docker buildx imagetools inspect "${BASE_IMAGE}" --raw | \
-            jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' 2>/dev/null | head -1 || true)
-          echo "digest=${BASE_DIGEST}" >> $GITHUB_OUTPUT
-          echo "Base image digest: ${BASE_DIGEST}"
-
-      - name: Check if this is the latest version
-        id: is-latest
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # Only set 'latest' tag for semver tags that are the latest (or newer) version
-          if [[ ! "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "is_latest=false" >> $GITHUB_OUTPUT
-            echo "Not a semver tag - will not update latest tag"
-            exit 0
-          fi
-
-          CURRENT_VERSION="${GITHUB_REF#refs/tags/v}"
-
-          # Get all release tags and find the highest version (excluding prereleases)
-          LATEST_VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
-            '[.[] | .ref | select(startswith("refs/tags/v")) | ltrimstr("refs/tags/v") | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty')
-
-          echo "Current version: ${CURRENT_VERSION}"
-          echo "Latest version overall: ${LATEST_VERSION}"
-
-          # Compare versions - current should be >= latest to update the latest tag
-          if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]] || [[ "$(printf '%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)" == "$CURRENT_VERSION" ]]; then
-            echo "is_latest=true" >> $GITHUB_OUTPUT
-            echo "This is the latest version - will update latest tag"
-          else
-            echo "is_latest=false" >> $GITHUB_OUTPUT
-            echo "This is not the latest version - will not update latest tag"
-          fi
-
-      - name: Compute image tag prefix
-        id: prefix
-        env:
-          CARGO_PROFILE: ${{ inputs.profile }}
-        run: |
-          # Keep non-release-profile images from clobbering the regular tags.
-          # NB parca must not contribute a prefix; release builds use it and need plain tags.
-          PREFIX=""
-          if [[ "$CARGO_PROFILE" != "release" ]]; then PREFIX="${CARGO_PROFILE}-"; fi
-          echo "value=${PREFIX}" >> "$GITHUB_OUTPUT"
-          echo "Tag prefix: '${PREFIX}'"
-
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
-            ${{ inputs.pushToDockerHub && format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
-
-          flavor: |
-            latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
-            ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
-          tags: |
-            type=ref,event=branch
-            type=semver,pattern={{version}}
-            type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD'}}
-            type=semver,pattern={{major}}.{{minor}}
-          labels: |
-            org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}
-            org.opencontainers.image.base.digest=${{ steps.base-image.outputs.digest }}
-
-      - name: Set OCI image version
-        id: image-version
-        run: |
-          # Cargo.toml is the single source of truth for the version, so the label
-          # agrees with what the binary reports: RestateVersion::current() uses
-          # CARGO_PKG_VERSION.
-          IMAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | \
-            jq -er --arg pkg "${{ inputs.cargoPackage }}" \
-              '.packages[] | select(.name == $pkg) | .version')
-
-          echo "version=${IMAGE_VERSION}" >> $GITHUB_OUTPUT
-          echo "OCI image version: ${IMAGE_VERSION}"
-
-      - name: Build${{(inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: "docker/Dockerfile"
-          # push if we aren't uploading as a tarball, or if this is main'
-          tags: ${{ steps.meta.outputs.tags }}
-          # push if we aren't uploading as a tarball, or if this is main
-          outputs: |
-            ${{ (inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
-            ${{ inputs.uploadImageAsTarball != '' && 'type=oci,dest=restate.tar' || '' }}
-          labels: |
-            ${{ steps.meta.outputs.labels }}
-            org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
-          # also annotate the multi-platform index so the version is readable
-          # without pulling a per-platform manifest
-          annotations: |
-            index:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
-            manifest:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
-          # on main, always push both platforms, otherwise use platform input
-          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
-          network: host
-          build-args: |
-            CARGO_PROFILE=${{ inputs.profile }}
-            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
-            UPLOAD_DEBUGINFO=${{ inputs.parca }}
-            RESTATE_FEATURES=${{ inputs.features || '' }}
-          secrets: |
-            parca=${{ secrets.PARCA_TOKEN }}
-          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
-          # don't cache parca builds, they're too big
-          cache-to: ${{ !inputs.parca && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
-
-      - name: Upload docker image tar as artifact
-        if: ${{ inputs.uploadImageAsTarball != '' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ inputs.uploadImageAsTarball }}
-          path: restate.tar
-          retention-days: 1
-          if-no-files-found: error
-
-      - name: Extract debug symbols
-        if: ${{ inputs.parca }}
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: "docker/Dockerfile"
-          target: debug-symbols
-          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
-          network: host
-          outputs: type=local,dest=./debug-symbols
-          build-args: |
-            CARGO_PROFILE=${{ inputs.profile }}
-            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
-            UPLOAD_DEBUGINFO=true
-            RESTATE_FEATURES=${{ inputs.features || '' }}
-          secrets: |
-            parca=${{ secrets.PARCA_TOKEN }}
-
-      - name: Upload debug symbols
-        if: ${{ inputs.parca }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-symbols
-          path: ./debug-symbols/**/restate-server.debug
-          if-no-files-found: ignore
+  build-and-push-hotfix:
+    if: ${{ inputs.hotfixTag != '' }}
+    concurrency:
+      group: docker-hotfix-${{ inputs.hotfixTag }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/docker-build.yml
+    with:
+      hotfixTag: ${{ inputs.hotfixTag }}
+      uploadImageAsTarball: ${{ inputs.uploadImageAsTarball }}
+      platforms: ${{ inputs.platforms }}
+      parca: ${{ inputs.parca }}
+      buildIndividually: ${{ inputs.buildIndividually }}
+      features: ${{ inputs.features }}
+      profile: ${{ inputs.profile }}
+      runnerSize: ${{ inputs.runnerSize }}
+      pushToDockerHub: ${{ inputs.pushToDockerHub }}
+      cargoPackage: ${{ inputs.cargoPackage }}
+    secrets: inherit

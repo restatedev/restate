@@ -1,0 +1,362 @@
+# Internal implementation for docker.yml.
+name: Build Docker image
+
+on:
+  workflow_call:
+    inputs:
+      hotfixTag:
+        description: "hotfix source tag"
+        required: false
+        default: ""
+        type: string
+      uploadImageAsTarball:
+        description: "uploads the Docker image additionally as a tarball with the provided name"
+        required: false
+        default: ""
+        type: string
+      platforms:
+        description: "platforms for docker build step"
+        required: false
+        default: ""
+        type: string
+      parca:
+        description: "split out debug symbols and upload to polar signals"
+        required: false
+        default: false
+        type: boolean
+      buildIndividually:
+        description: "build separate binaries individually to avoid feature unification"
+        required: false
+        default: false
+        type: boolean
+      features:
+        description: "features to enable in the build"
+        required: false
+        default: ""
+        type: string
+      profile:
+        description: "cargo profile to build with (must exist in Cargo.toml)"
+        required: false
+        default: "release"
+        type: string
+      runnerSize:
+        description: "runner size: auto, 16x, or 32x"
+        required: false
+        default: "auto"
+        type: string
+      pushToDockerHub:
+        description: "push image to DockerHub"
+        required: false
+        default: false
+        type: boolean
+      cargoPackage:
+        description: "workspace package whose version is used to label the image"
+        required: false
+        default: "restate-server"
+        type: string
+
+env:
+  REPOSITORY_OWNER: ${{ github.repository_owner }}
+  GHCR_REGISTRY: "ghcr.io"
+  GHCR_REGISTRY_USERNAME: ${{ github.actor }}
+  GHCR_REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build-and-push-image:
+    runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
+    timeout-minutes: ${{ inputs.parca && 140 || 70 }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.hotfixTag && format('refs/tags/{0}', inputs.hotfixTag) || github.sha }}
+
+      - name: Install cargo-hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hakari
+
+      - name: Disable hakari
+        if: ${{ hashFiles('.config/hakari.toml') != '' }}
+        run: cargo hakari disable
+
+      # this is needed to be able to load and push a multiplatform image in one step
+      - name: Set up Docker containerd snapshotter
+        uses: depot/use-containerd-snapshotter-action@v1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # https://docs.warpbuild.com/cache/docker-layer-caching#step-1-set-up-docker-buildx-action
+          driver-opts: |
+            network=host
+
+      - name: Cache sccache
+        id: cache
+        uses: WarpBuilds/cache@v1
+        with:
+          path: sccache-cache
+          key: ${{ runner.os }}-sccache-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Inject sccache-cache into Docker
+        uses: reproducible-containers/buildkit-cache-dance@v3.1.2
+        with:
+          cache-map: |
+            {
+              "sccache-cache": "/var/cache/sccache"
+            }
+          skip-extraction: ${{ steps.cache.outputs.cache-hit }}
+
+      - name: Log into GitHub container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.GHCR_REGISTRY }}
+          username: ${{ env.GHCR_REGISTRY_USERNAME }}
+          password: ${{ env.GHCR_REGISTRY_TOKEN }}
+
+      - name: Log into DockerHub
+        if: ${{ inputs.pushToDockerHub && !inputs.hotfixTag }}
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Extract image name
+        # Set repository name as image name
+        run: |
+          echo "IMAGE_NAME=${GITHUB_REPOSITORY#$GITHUB_REPOSITORY_OWNER/}" >> $GITHUB_ENV
+
+      - name: Extract base image from Dockerfile
+        id: base-image
+        run: |
+          BASE_IMAGE=$(grep 'FROM.*AS runtime' docker/Dockerfile | head -1 | awk '{print $2}')
+          echo "name=${BASE_IMAGE}" >> $GITHUB_OUTPUT
+          echo "Base image: ${BASE_IMAGE}"
+
+          # Get the base image digest for the amd64 platform
+          BASE_DIGEST=$(docker buildx imagetools inspect "${BASE_IMAGE}" --raw | \
+            jq -r '.manifests[] | select(.platform.architecture == "amd64") | .digest' 2>/dev/null | head -1 || true)
+          echo "digest=${BASE_DIGEST}" >> $GITHUB_OUTPUT
+          echo "Base image digest: ${BASE_DIGEST}"
+
+      - name: Check if this is the latest version
+        id: is-latest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Only set 'latest' tag for semver tags that are the latest (or newer) version
+          if [[ ! "${{ github.ref }}" =~ ^refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "is_latest=false" >> $GITHUB_OUTPUT
+            echo "Not a semver tag - will not update latest tag"
+            exit 0
+          fi
+
+          CURRENT_VERSION="${GITHUB_REF#refs/tags/v}"
+
+          # Get all release tags and find the highest version (excluding prereleases)
+          LATEST_VERSION=$(gh api "repos/${{ github.repository }}/git/refs/tags" --jq \
+            '[.[] | .ref | select(startswith("refs/tags/v")) | ltrimstr("refs/tags/v") | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))] | sort_by(split(".") | map(tonumber)) | last // empty')
+
+          echo "Current version: ${CURRENT_VERSION}"
+          echo "Latest version overall: ${LATEST_VERSION}"
+
+          # Compare versions - current should be >= latest to update the latest tag
+          if [[ "$CURRENT_VERSION" == "$LATEST_VERSION" ]] || [[ "$(printf '%s\n' "$CURRENT_VERSION" "$LATEST_VERSION" | sort -V | tail -1)" == "$CURRENT_VERSION" ]]; then
+            echo "is_latest=true" >> $GITHUB_OUTPUT
+            echo "This is the latest version - will update latest tag"
+          else
+            echo "is_latest=false" >> $GITHUB_OUTPUT
+            echo "This is not the latest version - will not update latest tag"
+          fi
+
+      - name: Compute image tag prefix
+        id: prefix
+        env:
+          CARGO_PROFILE: ${{ inputs.profile }}
+        run: |
+          # Keep non-release-profile images from clobbering the regular tags.
+          # NB parca must not contribute a prefix; release builds use it and need plain tags.
+          PREFIX=""
+          if [[ "$CARGO_PROFILE" != "release" ]]; then PREFIX="${CARGO_PROFILE}-"; fi
+          echo "value=${PREFIX}" >> "$GITHUB_OUTPUT"
+          echo "Tag prefix: '${PREFIX}'"
+
+      - name: Set OCI image version
+        id: image-version
+        env:
+          CARGO_PACKAGE: ${{ inputs.cargoPackage }}
+          CARGO_PROFILE: ${{ inputs.profile }}
+          HOTFIX_TAG: ${{ inputs.hotfixTag }}
+        run: |
+          # Cargo.toml is the single source of truth for the version, so the label
+          # agrees with what the binary reports: RestateVersion::current() uses
+          # CARGO_PKG_VERSION.
+          IMAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | \
+            jq -er --arg pkg "$CARGO_PACKAGE" \
+            '.packages[] | select(.name == $pkg) | .version')
+          SOURCE_REVISION=$(git rev-parse HEAD)
+
+          echo "version=${IMAGE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "revision=${SOURCE_REVISION}" >> "$GITHUB_OUTPUT"
+          echo "OCI image version: ${IMAGE_VERSION}"
+
+          if [[ -z "$HOTFIX_TAG" ]]; then
+            echo "hotfix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ ! "$IMAGE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\+hotfix\.[1-9][0-9]*$ ]]; then
+            echo "Hotfix versions must match X.Y.Z+hotfix.N" >&2
+            exit 1
+          fi
+          if [[ "$HOTFIX_TAG" != "v${IMAGE_VERSION}" ]]; then
+            echo "Hotfix tag ${HOTFIX_TAG} does not match Cargo version ${IMAGE_VERSION}" >&2
+            exit 1
+          fi
+          if [[ "$CARGO_PROFILE" != "release" ]]; then
+            echo "Hotfix images must use the release Cargo profile" >&2
+            exit 1
+          fi
+          if ! grep -qF "version: \"${IMAGE_VERSION}\"" charts/restate-helm/Chart.yaml; then
+            echo "Helm chart version does not match Cargo version ${IMAGE_VERSION}" >&2
+            exit 1
+          fi
+
+          echo "hotfix=true" >> "$GITHUB_OUTPUT"
+          echo "docker-tag=${IMAGE_VERSION/+/-}" >> "$GITHUB_OUTPUT"
+
+      - name: Check hotfix image tag
+        if: ${{ steps.image-version.outputs.hotfix == 'true' }}
+        env:
+          HOTFIX_TAG: ${{ steps.image-version.outputs.docker-tag }}
+        run: |
+          REGISTRY_TOKEN=$(curl --fail --silent --show-error \
+            --user "${GHCR_REGISTRY_USERNAME}:${GHCR_REGISTRY_TOKEN}" \
+            "https://${GHCR_REGISTRY}/token?service=${GHCR_REGISTRY}&scope=repository:${REPOSITORY_OWNER}/${IMAGE_NAME}:pull" | \
+            jq -er '.token')
+          STATUS=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: Bearer ${REGISTRY_TOKEN}" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json' \
+            "https://${GHCR_REGISTRY}/v2/${REPOSITORY_OWNER}/${IMAGE_NAME}/manifests/${HOTFIX_TAG}")
+
+          case "$STATUS" in
+            404) ;;
+            200)
+              echo "Hotfix image already exists: ${GHCR_REGISTRY}/${REPOSITORY_OWNER}/${IMAGE_NAME}:${HOTFIX_TAG}" >&2
+              exit 1
+              ;;
+            *)
+              echo "Unable to check hotfix image tag: registry returned HTTP ${STATUS}" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}
+            ${{ inputs.pushToDockerHub && !inputs.hotfixTag && format('docker.io/{0}/{1}', env.REPOSITORY_OWNER, env.IMAGE_NAME) || '' }}
+
+          flavor: |
+            latest=${{ (steps.is-latest.outputs.is_latest == 'true') && 'true' || 'false' }}
+            ${{ steps.prefix.outputs.value != '' && format('prefix={0},onlatest=true', steps.prefix.outputs.value) || '' }}
+          tags: |
+            type=ref,event=branch,enable=${{ steps.image-version.outputs.hotfix != 'true' }}
+            type=semver,pattern={{version}},enable=${{ steps.image-version.outputs.hotfix != 'true' }}
+            type=semver,pattern={{version}},suffix=-{{date 'YYYYMMDD'}},enable=${{ steps.image-version.outputs.hotfix != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.image-version.outputs.hotfix != 'true' }}
+            type=raw,value=${{ steps.image-version.outputs.docker-tag }},enable=${{ steps.image-version.outputs.hotfix == 'true' }}
+          labels: |
+            org.opencontainers.image.base.name=${{ steps.base-image.outputs.name }}
+            org.opencontainers.image.base.digest=${{ steps.base-image.outputs.digest }}
+            org.opencontainers.image.revision=${{ steps.image-version.outputs.revision }}
+
+      - name: Build${{(inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && ' and push ' || ' '}}Docker image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: "docker/Dockerfile"
+          # push if we aren't uploading as a tarball, or if this is main'
+          tags: ${{ steps.meta.outputs.tags }}
+          # push if we aren't uploading as a tarball, or if this is main
+          outputs: |
+            ${{ (inputs.uploadImageAsTarball == '' || github.ref == 'refs/heads/main') && 'type=registry' || '' }}
+            ${{ inputs.uploadImageAsTarball != '' && 'type=oci,dest=restate.tar' || '' }}
+          labels: |
+            ${{ steps.meta.outputs.labels }}
+            org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
+          # also annotate the multi-platform index so the version is readable
+          # without pulling a per-platform manifest
+          annotations: |
+            index:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
+            manifest:org.opencontainers.image.version=${{ steps.image-version.outputs.version }}
+            index:org.opencontainers.image.revision=${{ steps.image-version.outputs.revision }}
+            manifest:org.opencontainers.image.revision=${{ steps.image-version.outputs.revision }}
+          # on main, always push both platforms, otherwise use platform input
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          network: host
+          build-args: |
+            CARGO_PROFILE=${{ inputs.profile }}
+            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
+            UPLOAD_DEBUGINFO=${{ inputs.parca }}
+            RESTATE_FEATURES=${{ inputs.features || '' }}
+          secrets: |
+            parca=${{ secrets.PARCA_TOKEN }}
+          cache-from: type=gha,url=http://127.0.0.1:49160/,version=1
+          # don't cache parca builds, they're too big
+          cache-to: ${{ !inputs.parca && 'type=gha,url=http://127.0.0.1:49160/,mode=max,version=1' || '' }}
+
+      - name: Summarize hotfix image
+        if: ${{ steps.image-version.outputs.hotfix == 'true' }}
+        env:
+          IMAGE: ${{ env.GHCR_REGISTRY }}/${{ env.REPOSITORY_OWNER }}/${{ env.IMAGE_NAME }}:${{ steps.image-version.outputs.docker-tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REVISION: ${{ steps.image-version.outputs.revision }}
+        run: |
+          {
+            echo "### Hotfix image"
+            echo
+            echo "- Image: \`${IMAGE}\`"
+            echo "- Digest: \`${DIGEST}\`"
+            echo "- Source revision: \`${REVISION}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload docker image tar as artifact
+        if: ${{ inputs.uploadImageAsTarball != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.uploadImageAsTarball }}
+          path: restate.tar
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Extract debug symbols
+        if: ${{ inputs.parca }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: "docker/Dockerfile"
+          target: debug-symbols
+          platforms: ${{ github.ref == 'refs/heads/main' && 'linux/arm64,linux/amd64' || (inputs.platforms || 'linux/arm64,linux/amd64') }}
+          network: host
+          outputs: type=local,dest=./debug-symbols
+          build-args: |
+            CARGO_PROFILE=${{ inputs.profile }}
+            BUILD_INDIVIDUALLY=${{ inputs.buildIndividually }}
+            UPLOAD_DEBUGINFO=true
+            RESTATE_FEATURES=${{ inputs.features || '' }}
+          secrets: |
+            parca=${{ secrets.PARCA_TOKEN }}
+
+      - name: Upload debug symbols
+        if: ${{ inputs.parca }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-symbols
+          path: ./debug-symbols/**/restate-server.debug
+          if-no-files-found: ignore
