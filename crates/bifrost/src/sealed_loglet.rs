@@ -39,6 +39,10 @@ impl SealedLoglet {
 struct SealedLogletReadStream;
 
 impl LogletReadStream for SealedLogletReadStream {
+    fn notify_readable_tail(&self, _tail: LogletOffset) -> bool {
+        false
+    }
+
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> LogletOffset {
         LogletOffset::OLDEST
@@ -74,7 +78,6 @@ impl Loglet for SealedLoglet {
         self: Arc<Self>,
         _filter: KeyFilter,
         _from: LogletOffset,
-        _to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
         Ok(Box::pin(SealedLogletReadStream))
     }
