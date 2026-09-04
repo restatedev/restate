@@ -8,47 +8,80 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::data::{FixtureFactory, InvocationFixtureStatus};
 use super::harness::{QueryExpectation, QueryTest};
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn query_sys_invocation_by_id_list() {
-    let mut factory = FixtureFactory::default();
-    let vqueue_0 = factory.create_vqueue("scope-a");
-    let vqueue_1 = factory.create_vqueue("scope-j");
-    let vqueue_2 = factory.create_vqueue("scope-b");
-    let [invocation_1] = factory
-        .invocations::<1>()
-        .with_vqueue(&vqueue_0)
-        .with_status(InvocationFixtureStatus::Running)
-        .create();
-    let [invocation_2] = factory
-        .invocations::<1>()
-        .with_vqueue(&vqueue_1)
-        .with_status(InvocationFixtureStatus::Running)
-        .create();
-    let [invocation_3] = factory
-        .invocations::<1>()
-        .with_vqueue(&vqueue_2)
-        .with_status(InvocationFixtureStatus::Running)
-        .create();
-
     let mut test = QueryTest::create_remote().await;
-    for (partition, invocation) in [(0, &invocation_1), (1, &invocation_2), (2, &invocation_3)] {
-        test.partition(partition)
-            .populate(|tables| {
-                tables.sys_invocation_status().populate(invocation)?;
-                tables.sys_invocation_state().populate(invocation)?;
-                Ok(())
-            })
-            .await;
-    }
+    test.populate(|tables| {
+        tables.sys_invocation_status().populate_table(&[
+            "+-----------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| column                            | invocation 1                             | invocation 2                             | invocation 3                             |",
+            "+-----------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| partition_id                      | 0                                        | 1                                        | 2                                        |",
+            "| partition_key                     | 3169317165037139997                      | 6564637988134260717                      | 16740507687615160162                     |",
+            "| id                                | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4   | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy   |",
+            "| vqueue_id                         | vq_12vxF4s3wljd5JP76hKfp3btXyT36rz5xR    |                                          | vq_18rEacLHS3jy26a53iN5aIaYj240f03U9L     |",
+            "| status                            | invoked                                  | invoked                                  | invoked                                  |",
+            "| completion_result                 |                                          |                                          |                                          |",
+            "| completion_failure                |                                          |                                          |                                          |",
+            "| target                            | TestService/key-1/run                    | TestService/key-1/run                    | TestService/key-1/run                    |",
+            "| target_service_name               | TestService                              | TestService                              | TestService                              |",
+            "| target_service_key                | key-1                                    | key-1                                    | key-1                                    |",
+            "| target_handler_name               | run                                      | run                                      | run                                      |",
+            "| target_service_ty                 | virtual_object                           | virtual_object                           | virtual_object                           |",
+            "| scope                             | scope-a                                  | scope-j                                  | scope-b                                  |",
+            "| limit_key                         | tenant/eu                                | tenant/eu                                | tenant/eu                                |",
+            "| idempotency_key                   | request-1                                | request-1                                | request-1                                |",
+            "| invoked_by                        | service                                  | service                                  | service                                  |",
+            "| invoked_by_id                     | inv_1000000000000wmGWo1cYRpBzxaa9vzlLi   | inv_1000000000000wmGWo1cYRpBzxaa9vzlLi   | inv_1000000000000A8FZoDa7kjGiaMuSv8PEk   |",
+            "| invoked_by_subscription_id        |                                          |                                          |                                          |",
+            "| invoked_by_target                 | CallerService/call                       | CallerService/call                       | CallerService/call                       |",
+            "| restarted_from                    |                                          |                                          |                                          |",
+            "| pinned_deployment_id              | dp_101SZwviYzes2mkYBx6TUys               | dp_101SZwviYzes2mkYBx6TUys               | dp_101SZwviYzes2mkYBx6TUys               |",
+            "| pinned_service_protocol_version   | 5                                        | 5                                        | 5                                        |",
+            "| journal_size                      | 2                                        | 2                                        | 2                                        |",
+            "| journal_commands_size             | 2                                        | 2                                        | 2                                        |",
+            "| created_at                        | 1000                                     | 1000                                     | 1000                                     |",
+            "| modified_at                       | 6000                                     | 6000                                     | 6000                                     |",
+            "| inboxed_at                        | 2000                                     | 2000                                     | 2000                                     |",
+            "| scheduled_at                      | 3000                                     | 3000                                     | 3000                                     |",
+            "| scheduled_start_at                | 4000                                     | 4000                                     | 4000                                     |",
+            "| running_at                        | 5000                                     | 5000                                     | 5000                                     |",
+            "| completed_at                      |                                          |                                          |                                          |",
+            "| completion_retention              | 30000                                    | 30000                                    | 30000                                    |",
+            "| journal_retention                 | 10000                                    | 10000                                    | 10000                                    |",
+            "| suspended_waiting_for_completions |                                          |                                          |                                          |",
+            "| suspended_waiting_for_signals     |                                          |                                          |                                          |",
+            "| suspended_waiting_future_json     |                                          |                                          |                                          |",
+            "+-----------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+        ])?;
+        tables.sys_invocation_state().populate_table(&[
+            "+--------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| column                         | invocation 1                             | invocation 2                             | invocation 3                             |",
+            "+--------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+            "| partition_id                   | 0                                        | 1                                        | 2                                        |",
+            "| partition_key                  | 3169317165037139997                      | 6564637988134260717                      | 16740507687615160162                     |",
+            "| id                             | inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw   | inv_1klS9KSVEL8v07xY61dUgVO9rheFrZ8XM4   | inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy   |",
+            "| in_flight                      | true                                     | true                                     | true                                     |",
+            "| retry_count                    | 1                                        | 1                                        | 1                                        |",
+            "| last_start_at                  | 5000                                     | 5000                                     | 5000                                     |",
+            "| next_retry_at                  |                                          |                                          |                                          |",
+            "| last_attempt_deployment_id     | dp_101SZwviYzes2mkYBx6TUys               | dp_101SZwviYzes2mkYBx6TUys               | dp_101SZwviYzes2mkYBx6TUys               |",
+            "| last_attempt_server            | restate-sdk-rust/0.1.0                   | restate-sdk-rust/0.1.0                   | restate-sdk-rust/0.1.0                   |",
+            "| last_failure                   |                                          |                                          |                                          |",
+            "| last_failure_error_code        |                                          |                                          |                                          |",
+            "| last_awaiting_on_future_json   |                                          |                                          |                                          |",
+            "+--------------------------------+------------------------------------------+------------------------------------------+------------------------------------------+",
+        ])?;
+        Ok(())
+    })
+    .await;
 
     test
         .assert_query(QueryExpectation {
             name: "sys_invocation rows selected by invocation id",
-            sql: &format!(
-                r#"SELECT
+            sql: r#"SELECT
                        id,
                        target,
                        target_service_name,
@@ -92,9 +125,10 @@ async fn query_sys_invocation_by_id_list() {
                        vqueue_id,
                        limit_key
                      FROM sys_invocation i
-                     WHERE i.id IN ('{}', '{}')"#,
-                invocation_1.id, invocation_3.id,
-            ),
+                     WHERE i.id IN (
+                         'inv_12vxF4s3wljd01SZwviYzes2mjOamuMJWw',
+                         'inv_18rEacLHS3jy05EYzvUVHHm74Xqv5umdPy'
+                     )"#,
             expected: &[
                 "+-----------------------------------+------------------------------------------+------------------------------------------+",
                 "| column                            | row 1                                    | row 2                                    |",

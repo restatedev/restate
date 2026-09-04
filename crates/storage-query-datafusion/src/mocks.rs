@@ -281,6 +281,10 @@ impl MockQueryEngine {
 const QUERY_COORDINATOR_NODE_ID: GenerationalNodeId = GenerationalNodeId::new(1, 1);
 const REMOTE_QUERY_PARTITIONS: u16 = 3;
 
+fn remote_query_partition_table() -> PartitionTable {
+    PartitionTable::with_equally_sized_partitions(Version::MIN, REMOTE_QUERY_PARTITIONS)
+}
+
 #[derive(Clone, Debug)]
 struct FixedPartitionSelector(Arc<Vec<(PartitionId, Partition)>>);
 
@@ -418,8 +422,7 @@ impl MockRemoteQueryEngine {
     ) -> Self {
         RocksDbManager::init();
 
-        let partition_table =
-            PartitionTable::with_equally_sized_partitions(Version::MIN, REMOTE_QUERY_PARTITIONS);
+        let partition_table = remote_query_partition_table();
         let partitions = partition_table
             .iter()
             .map(|(partition_id, partition)| (*partition_id, partition.clone()))

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use bytes::Bytes;
 use bytestring::ByteString;
@@ -38,7 +38,6 @@ use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString};
-use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
 
 const TEXT_TABLE_INVOCATION_SEQUENCE_START: u128 = 1 << 64;
 
@@ -119,20 +118,6 @@ impl FixtureFactory {
             Some(MillisSinceEpoch::from(5_000)),
             None,
         );
-        let state = match options.status {
-            InvocationFixtureStatus::Running => InvocationStatusReportInner {
-                in_flight: true,
-                start_count: 1,
-                last_start_at: UNIX_EPOCH + Duration::from_secs(5),
-                last_attempt_deployment_id: Some(deployment_id),
-                last_attempt_protocol_version: Some(ServiceProtocolVersion::V5),
-                last_attempt_server: Some("restate-sdk-rust/0.1.0".to_owned()),
-                ..InvocationStatusReportInner::default()
-            },
-            InvocationFixtureStatus::CompletedSuccess
-            | InvocationFixtureStatus::CompletedFailure => InvocationStatusReportInner::default(),
-        };
-
         let journal_entries = vec![
             JournalEntryFixture {
                 index: 0,
@@ -198,7 +183,6 @@ impl FixtureFactory {
                 deployment_id,
                 ServiceProtocolVersion::V5,
             )),
-            state,
             journal_entries,
             journal_events,
         }
@@ -253,11 +237,6 @@ impl<'fixture, const N: usize> InvocationFixturesBuilder<'_, 'fixture, N> {
         self
     }
 
-    pub(super) fn with_status(mut self, status: InvocationFixtureStatus) -> Self {
-        self.options.status = status;
-        self
-    }
-
     pub(super) fn create(self) -> [InvocationFixture; N] {
         let factory = self.factory;
         let options = self.options;
@@ -296,7 +275,6 @@ pub(super) struct InvocationFixture {
     pub(super) journal_retention: Duration,
     pub(super) journal: JournalMetadata,
     pub(super) pinned_deployment: Option<PinnedDeployment>,
-    pub(super) state: InvocationStatusReportInner,
     pub(super) journal_entries: Vec<JournalEntryFixture>,
     pub(super) journal_events: Vec<EventView>,
 }

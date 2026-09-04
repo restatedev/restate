@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::str::FromStr;
+use std::time::{Duration, UNIX_EPOCH};
 
 use anyhow::ensure;
 use bytes::Bytes;
@@ -19,7 +20,9 @@ use futures::TryStreamExt;
 
 use restate_partition_store::PartitionStoreTransaction;
 use restate_storage_api::Transaction;
-use restate_storage_api::invocation_status_table::WriteInvocationStatusTable;
+use restate_storage_api::invocation_status_table::{
+    JournalMetadata, StatusTimestamps, WriteInvocationStatusTable,
+};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::state_table::WriteStateTable;
@@ -30,10 +33,18 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
 };
+use restate_types::LimitKey;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{InvocationId, PartitionId, ServiceId, WithPartitionKey};
-use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType, WorkflowHandlerType};
+use restate_types::deployment::PinnedDeployment;
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionId, ServiceId, WithPartitionKey,
+};
+use restate_types::invocation::{
+    InvocationTarget, ServiceInvocationSpanContext, Source, VirtualObjectHandlerType,
+    WorkflowHandlerType,
+};
 use restate_types::partition_table::{FindPartition, PartitionTable};
+use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
 use restate_types::{LockName, Scope, ServiceName, Version};
@@ -355,6 +366,50 @@ impl<'input> TextTable<'input> {
         })
     }
 
+    fn parse_fixture(lines: &'input [&'input str]) -> anyhow::Result<Self> {
+        let table = Self::parse(lines)?;
+        if table.columns.first() == Some(&"column") {
+            table.transpose()
+        } else {
+            Ok(table)
+        }
+    }
+
+    fn transpose(self) -> anyhow::Result<Self> {
+        ensure!(
+            self.columns.len() > 1,
+            "vertical text table must contain at least one data row"
+        );
+        let columns = self
+            .rows
+            .iter()
+            .map(|(_, values)| values[0])
+            .collect::<Vec<_>>();
+        let mut seen = HashSet::new();
+        for column in &columns {
+            ensure!(
+                !column.is_empty(),
+                "vertical text table has an empty column name"
+            );
+            ensure!(
+                seen.insert(*column),
+                "vertical text table has duplicate column `{column}`"
+            );
+        }
+        let rows = (1..self.columns.len())
+            .map(|column_index| {
+                (
+                    column_index + 1,
+                    self.rows
+                        .iter()
+                        .map(|(_, values)| values[column_index])
+                        .collect(),
+                )
+            })
+            .collect();
+        Ok(Self { columns, rows })
+    }
+
     fn ensure_exact_columns(&self, expected: &[&str]) -> anyhow::Result<()> {
         ensure!(
             self.columns == expected,
@@ -487,6 +542,19 @@ fn optional_unique_timestamp(
         .transpose()
 }
 
+fn required_millis(row: &TextTableRow<'_, '_>, column: &str) -> anyhow::Result<MillisSinceEpoch> {
+    Ok(MillisSinceEpoch::from(row.parse::<u64>(column)?))
+}
+
+fn optional_millis(
+    row: &TextTableRow<'_, '_>,
+    column: &str,
+) -> anyhow::Result<Option<MillisSinceEpoch>> {
+    Ok(row
+        .parse_optional::<u64>(column)?
+        .map(MillisSinceEpoch::from))
+}
+
 fn vqueue_stage(row: &TextTableRow<'_, '_>) -> anyhow::Result<Stage> {
     match row.required("stage")? {
         "inbox" => Ok(Stage::Inbox),
@@ -575,6 +643,38 @@ fn invocation_target(row: &TextTableRow<'_, '_>) -> anyhow::Result<InvocationTar
         }
         value => anyhow::bail!(
             "text table row on line {} has invalid `target_service_ty` value {value:?}",
+            row.line_number
+        ),
+    }
+}
+
+fn invocation_source(row: &TextTableRow<'_, '_>) -> anyhow::Result<Source> {
+    match row.required("invoked_by")? {
+        "service" => {
+            ensure!(
+                row.get("invoked_by_subscription_id").is_none()
+                    && row.get("restarted_from").is_none(),
+                "text table row on line {} sets fields that do not belong to a service source",
+                row.line_number
+            );
+            let target = row.required("invoked_by_target")?;
+            let mut target_parts = target.split('/');
+            let service_name = target_parts.next().unwrap_or_default();
+            let handler_name = target_parts.next().unwrap_or_default();
+            ensure!(
+                !service_name.is_empty()
+                    && !handler_name.is_empty()
+                    && target_parts.next().is_none(),
+                "text table row on line {} has invalid service source target {target:?}",
+                row.line_number
+            );
+            Ok(Source::Service(
+                row.parse("invoked_by_id")?,
+                InvocationTarget::service(service_name, handler_name),
+            ))
+        }
+        value => anyhow::bail!(
+            "text table row on line {} has unsupported `invoked_by` value {value:?}",
             row.line_number
         ),
     }
@@ -685,7 +785,7 @@ pub(super) struct StateTableFixture<'a, 'store> {
 
 impl StateTableFixture<'_, '_> {
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
-        let table = TextTable::parse(lines)?;
+        let table = TextTable::parse_fixture(lines)?;
         table.ensure_exact_columns(&[
             "partition_id",
             "partition_key",
@@ -738,7 +838,11 @@ impl SysInvocationStatusTableFixture<'_, '_> {
     }
 
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
-        let table = TextTable::parse(lines)?;
+        let table = TextTable::parse_fixture(lines)?;
+        if table.columns.contains(&"target") {
+            return self.populate_full_table(table);
+        }
+
         table.ensure_exact_columns(&[
             "partition_id",
             "partition_key",
@@ -774,6 +878,126 @@ impl SysInvocationStatusTableFixture<'_, '_> {
         }
         Ok(())
     }
+
+    fn populate_full_table(&mut self, table: TextTable<'_>) -> anyhow::Result<()> {
+        table.ensure_exact_columns(&[
+            "partition_id",
+            "partition_key",
+            "id",
+            "vqueue_id",
+            "status",
+            "completion_result",
+            "completion_failure",
+            "target",
+            "target_service_name",
+            "target_service_key",
+            "target_handler_name",
+            "target_service_ty",
+            "scope",
+            "limit_key",
+            "idempotency_key",
+            "invoked_by",
+            "invoked_by_id",
+            "invoked_by_subscription_id",
+            "invoked_by_target",
+            "restarted_from",
+            "pinned_deployment_id",
+            "pinned_service_protocol_version",
+            "journal_size",
+            "journal_commands_size",
+            "created_at",
+            "modified_at",
+            "inboxed_at",
+            "scheduled_at",
+            "scheduled_start_at",
+            "running_at",
+            "completed_at",
+            "completion_retention",
+            "journal_retention",
+            "suspended_waiting_for_completions",
+            "suspended_waiting_for_signals",
+            "suspended_waiting_future_json",
+        ])?;
+
+        for row in table.rows() {
+            let partition_id = row.partition_id()?;
+            let id = row.invocation_id()?;
+            let status = InvocationFixtureStatus::try_from((
+                row.required("status")?,
+                row.get("completion_result"),
+            ))?;
+            ensure!(
+                !matches!(status, InvocationFixtureStatus::Running)
+                    || row.get("completion_failure").is_none(),
+                "text table row on line {} cannot set `completion_failure` for an invoked invocation",
+                row.line_number
+            );
+            ensure!(
+                row.get("suspended_waiting_for_completions").is_none()
+                    && row.get("suspended_waiting_for_signals").is_none()
+                    && row.get("suspended_waiting_future_json").is_none(),
+                "text table row on line {} uses suspended fields, which this fixture does not support",
+                row.line_number
+            );
+
+            let target = invocation_target(&row)?;
+            ensure!(
+                row.required("target")? == target.to_string(),
+                "text table row on line {} has target {:?}, but its target columns produce {target}",
+                row.line_number,
+                row.required("target")?
+            );
+            let pinned_deployment = match (
+                row.get("pinned_deployment_id"),
+                row.parse_optional::<i32>("pinned_service_protocol_version")?,
+            ) {
+                (Some(deployment_id), Some(protocol_version)) => Some(PinnedDeployment::new(
+                    deployment_id.parse::<DeploymentId>()?,
+                    ServiceProtocolVersion::try_from(protocol_version)?,
+                )),
+                (None, None) => None,
+                _ => anyhow::bail!(
+                    "text table row on line {} must set both pinned deployment columns or neither",
+                    row.line_number
+                ),
+            };
+            let invocation = InvocationFixture {
+                id,
+                status,
+                target,
+                vqueue_id: row
+                    .get("vqueue_id")
+                    .map(str::parse::<VQueueId>)
+                    .transpose()?,
+                limit_key: row.required("limit_key")?.parse::<LimitKey<ReString>>()?,
+                source: invocation_source(&row)?,
+                execution_time: optional_millis(&row, "scheduled_start_at")?,
+                idempotency_key: row.get("idempotency_key").map(Into::into),
+                timestamps: StatusTimestamps::new(
+                    required_millis(&row, "created_at")?,
+                    required_millis(&row, "modified_at")?,
+                    optional_millis(&row, "inboxed_at")?,
+                    optional_millis(&row, "scheduled_at")?,
+                    optional_millis(&row, "running_at")?,
+                    optional_millis(&row, "completed_at")?,
+                ),
+                completion_retention: Duration::from_millis(row.parse("completion_retention")?),
+                journal_retention: Duration::from_millis(row.parse("journal_retention")?),
+                journal: JournalMetadata::new(
+                    row.parse("journal_size")?,
+                    row.parse("journal_commands_size")?,
+                    ServiceInvocationSpanContext::empty(),
+                ),
+                pinned_deployment,
+                journal_entries: Vec::new(),
+                journal_events: Vec::new(),
+            };
+            self.transactions
+                .validate_declared_partition(partition_id, &invocation.id)?;
+            self.populate(&invocation)?;
+        }
+        Ok(())
+    }
 }
 
 pub(super) struct SysInvocationStateTableFixture<'a, 'store> {
@@ -782,29 +1006,65 @@ pub(super) struct SysInvocationStateTableFixture<'a, 'store> {
 }
 
 impl SysInvocationStateTableFixture<'_, '_> {
-    pub(super) fn populate(&mut self, invocation: &InvocationFixture) -> anyhow::Result<()> {
-        self.transactions.validate_key(&invocation.id)?;
-        self.invocation_state.push(InvocationStatusReport::new(
-            invocation.id,
-            invocation.state.clone(),
-        ));
-        Ok(())
-    }
-
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
-        let table = TextTable::parse(lines)?;
-        table.ensure_exact_columns(&["partition_id", "partition_key", "id", "in_flight"])?;
+        let table = TextTable::parse_fixture(lines)?;
+        let full = table.columns.contains(&"retry_count");
+        if full {
+            table.ensure_exact_columns(&[
+                "partition_id",
+                "partition_key",
+                "id",
+                "in_flight",
+                "retry_count",
+                "last_start_at",
+                "next_retry_at",
+                "last_attempt_deployment_id",
+                "last_attempt_server",
+                "last_failure",
+                "last_failure_error_code",
+                "last_awaiting_on_future_json",
+            ])?;
+        } else {
+            table.ensure_exact_columns(&["partition_id", "partition_key", "id", "in_flight"])?;
+        }
 
         for row in table.rows() {
             let partition_id = row.partition_id()?;
             let invocation_id = row.invocation_id()?;
             self.transactions
                 .validate_declared_partition(partition_id, &invocation_id)?;
+            if full {
+                ensure!(
+                    row.get("last_failure").is_none()
+                        && row.get("last_failure_error_code").is_none()
+                        && row.get("last_awaiting_on_future_json").is_none(),
+                    "text table row on line {} uses failure or future fields, which this fixture does not support",
+                    row.line_number
+                );
+            }
             self.invocation_state.push(InvocationStatusReport::new(
                 invocation_id,
-                InvocationStatusReportInner {
-                    in_flight: row.parse("in_flight")?,
-                    ..InvocationStatusReportInner::default()
+                if full {
+                    InvocationStatusReportInner {
+                        in_flight: row.parse("in_flight")?,
+                        start_count: row.parse("retry_count")?,
+                        last_start_at: UNIX_EPOCH
+                            + Duration::from_millis(row.parse("last_start_at")?),
+                        next_retry_at: row
+                            .parse_optional::<u64>("next_retry_at")?
+                            .map(|millis| UNIX_EPOCH + Duration::from_millis(millis)),
+                        last_attempt_deployment_id: row
+                            .get("last_attempt_deployment_id")
+                            .map(str::parse::<DeploymentId>)
+                            .transpose()?,
+                        last_attempt_server: row.get("last_attempt_server").map(str::to_owned),
+                        ..InvocationStatusReportInner::default()
+                    }
+                } else {
+                    InvocationStatusReportInner {
+                        in_flight: row.parse("in_flight")?,
+                        ..InvocationStatusReportInner::default()
+                    }
                 },
             ));
         }
@@ -818,7 +1078,7 @@ pub(super) struct SysVQueueMetaTableFixture<'a, 'store> {
 
 impl SysVQueueMetaTableFixture<'_, '_> {
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
-        let table = TextTable::parse(lines)?;
+        let table = TextTable::parse_fixture(lines)?;
         table.ensure_exact_columns(&[
             "partition_id",
             "partition_key",
@@ -912,7 +1172,7 @@ pub(super) struct SysVQueuesTableFixture<'a, 'store> {
 
 impl SysVQueuesTableFixture<'_, '_> {
     pub(super) fn populate_table(&mut self, lines: &[&str]) -> anyhow::Result<()> {
-        let table = TextTable::parse(lines)?;
+        let table = TextTable::parse_fixture(lines)?;
         table.ensure_exact_columns(&[
             "partition_id",
             "partition_key",
