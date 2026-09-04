@@ -188,7 +188,7 @@ impl Envelope<Raw> {
     ///
     /// It's the caller's responsibility to ensure that the bytes payload is the correct
     /// encoded value for this command kind and this codec.
-    pub fn from_bytes_unchecked(
+    pub(crate) fn from_bytes_unchecked(
         kind: CommandKind,
         codec: StorageCodecKind,
         dedup: Dedup,
@@ -205,6 +205,12 @@ impl Envelope<Raw> {
         }
     }
 
+    /// Constructs a raw envelope from a type-erased command.
+    ///
+    /// The command kind is taken from the [`ErasedCommand`] and the codec from the
+    /// command's own `default_codec`, so the resulting header is always consistent with
+    /// the payload. The payload is kept in its typed form and is only encoded when the
+    /// envelope is serialized.
     pub fn from_erased_command(dedup: Dedup, erased: ErasedCommand) -> Self {
         let ErasedCommand { kind, command } = erased;
 
@@ -527,6 +533,14 @@ where
     }
 }
 
+/// A [`Command`] with its concrete type erased, tagged with its [`CommandKind`].
+///
+/// This allows commands of different types to be stored and passed around in a single
+/// (cheaply cloneable) value, for instance when queueing proposals that are turned into
+/// envelopes later via [`Envelope::from_erased_command`].
+///
+/// The original type is recoverable with [`ErasedCommand::downcast_arc`], and
+/// [`ErasedCommand::kind`] allows dispatching on the command kind without downcasting.
 #[derive(derive_more::Debug, Clone)]
 pub struct ErasedCommand {
     kind: CommandKind,
@@ -535,6 +549,7 @@ pub struct ErasedCommand {
 }
 
 impl ErasedCommand {
+    /// Erases the type of `cmd`, remembering its [`Command::KIND`].
     pub fn new<C: Command>(cmd: C) -> Self {
         Self {
             kind: C::KIND,
@@ -542,10 +557,12 @@ impl ErasedCommand {
         }
     }
 
+    /// Recovers the original command, or `None` if `C` is not the erased type.
     pub fn downcast_arc<C: Command>(self) -> Option<Arc<C>> {
         self.command.downcast_arc::<C>().ok()
     }
 
+    /// The kind of the erased command.
     pub fn kind(&self) -> CommandKind {
         self.kind
     }
