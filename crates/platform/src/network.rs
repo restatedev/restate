@@ -11,6 +11,8 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use restate_util_string::ReString;
+
 use crate::hash::HashMap;
 
 /// A marker trait for types that can be serialized and sent over the network.
@@ -53,6 +55,7 @@ impl_net_serde!(
     i64,
     i128,
     String,
+    ReString,
     bytes::Bytes,
     std::time::Duration
 );
