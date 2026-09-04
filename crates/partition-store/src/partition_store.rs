@@ -27,13 +27,15 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, trace};
+use tracing::instrument;
+use tracing::trace;
 
 use restate_core::ShutdownError;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
+use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
@@ -42,19 +44,23 @@ use restate_types::sharding::KeyRange;
 use restate_types::storage::StorageCodec;
 use restate_types::storage::StorageDecode;
 use restate_types::storage::StorageEncode;
+use restate_util_string::ReString;
 
 use restate_types::partitions::StorageVersion;
+use tracing::warn;
 
+use crate::features::{LoadedStorageFeatures, StorageFeatures};
 use crate::fsm_table::get_partition_seal;
+use crate::fsm_table::put_storage_features;
 use crate::fsm_table::put_storage_version;
 use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
-    get_locally_durable_lsn, get_storage_version_from_partition_db, is_jc_orphan_cleanup_done,
-    put_jc_orphan_cleanup_done,
+    get_locally_durable_lsn, get_min_restate_version_from_partition_db,
+    get_storage_features_from_partition_db, get_storage_version_from_partition_db,
+    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
-use crate::migrations::run_migrations_up_to;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
@@ -217,7 +223,7 @@ impl TableKind {
 
 pub struct PartitionStore {
     db: PartitionDb,
-    storage_version: OnceLock<StorageVersion>,
+    storage_features: OnceLock<StorageFeatures>,
     key_buffer: BytesMut,
     value_buffer: BytesMut,
 }
@@ -237,7 +243,7 @@ impl Clone for PartitionStore {
     fn clone(&self) -> Self {
         PartitionStore {
             db: self.db.clone(),
-            storage_version: self.storage_version.clone(),
+            storage_features: self.storage_features.clone(),
             key_buffer: BytesMut::default(),
             value_buffer: BytesMut::default(),
         }
@@ -254,27 +260,46 @@ impl PartitionStore {
     pub(crate) fn new(db: PartitionDb) -> Self {
         Self {
             db,
-            storage_version: OnceLock::new(),
+            storage_features: OnceLock::new(),
             key_buffer: BytesMut::new(),
             value_buffer: BytesMut::new(),
         }
     }
 
-    /// Returns the on-disk storage version, reading it from RocksDB on the first
+    /// Returns the on-disk storage features, reading it from RocksDB on the first
     /// call and memoizing it. Clones of PartitionStore will copy the memoized value.
-    #[inline]
-    pub fn storage_version(&self) -> StorageVersion {
-        *self.storage_version.get_or_init(|| {
-            get_storage_version_from_partition_db(self.partition_db())
-                .expect("storage version must exist")
+    pub(crate) fn storage_features(&self) -> StorageFeatures {
+        *self.storage_features.get_or_init(|| {
+            // NOTE: Using `default` is definitely the wrong value, but it prevents the server
+            // from crashing when data-fusion tries to access the partition-store prior
+            // or during the migration phase.
+            //
+            // This is a shortcut until better isolation and ownership model is implemented.
+            let storage_version =
+                get_storage_version_from_partition_db(self.partition_db()).unwrap_or_default();
+            let persisted =
+                get_storage_features_from_partition_db(self.partition_db()).unwrap_or_default();
+            let loaded = LoadedStorageFeatures::load(
+                persisted,
+                storage_version,
+                SemanticRestateVersion::current(),
+            )
+            .inspect_err(|err| {
+                warn!(
+                    partition_id = %self.partition_id(),
+                    "Failed to verify feature/version compatibility of partition-store: {}",
+                    err
+                )
+            })
+            .unwrap_or_default();
+            *loaded.enabled()
         })
     }
 
-    /// Overwrites the memoized storage version. Requires exclusive access to PartitionStore.
-    fn set_storage_version(&mut self, version: StorageVersion) {
-        // Clear first: the lock is empty afterwards, so `set` cannot fail.
-        self.storage_version.take();
-        let _ = self.storage_version.set(version);
+    /// Overwrites the memoized storage features after their finalization batch commits.
+    fn set_storage_features(&mut self, features: StorageFeatures) {
+        self.storage_features.take();
+        let _ = self.storage_features.set(features);
     }
 
     pub fn partition_db(&self) -> &PartitionDb {
@@ -573,9 +598,9 @@ impl PartitionStore {
         };
 
         // 99.9% of the time, this will return an already loaded value.
-        // If PartitionStore.storage_version() was never called before,
+        // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
-        let storage_version = self.storage_version();
+        let storage_features = self.storage_features();
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -584,7 +609,7 @@ impl PartitionStore {
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
-            storage_version,
+            storage_features,
             snapshot,
         }
     }
@@ -674,57 +699,130 @@ impl PartitionStore {
         put_jc_orphan_cleanup_done(self, self.partition_id()).await
     }
 
+    #[instrument(level = "info", skip_all, fields(partition_id = %self.partition().id()))]
     pub async fn verify_and_run_migrations(
         &mut self,
         cancel: CancellationToken,
         config: &Configuration,
     ) -> Result<(), MigrationError> {
-        // The target schema version is gated by the operator opt-in. Without
-        // the flag we leave the partition at `V1_5` so a downgrade to a
-        // pre-`ScopedStateAndPromise` binary stays possible. With the flag
-        // enabled we migrate the unscoped state and promise tables into their
-        // scoped variants and bump to `ScopedStateAndPromise`.
-        let target = if config
-            .common
-            .experimental
-            .is_migrate_scoped_tables_enabled()
-        {
-            StorageVersion::ScopedStateAndPromise
-        } else {
-            StorageVersion::V1_5
+        self.verify_and_run_migrations_at_version(SemanticRestateVersion::current(), cancel, config)
+            .await
+    }
+
+    pub(crate) async fn verify_and_run_migrations_at_version(
+        &mut self,
+        current_restate_version: &SemanticRestateVersion,
+        cancel: CancellationToken,
+        config: &Configuration,
+    ) -> Result<(), MigrationError> {
+        // Migration decisions use authoritative on-disk metadata rather than either memoized
+        // value. A transaction created before initialization may have populated a stale cache.
+        let mut storage_version = get_storage_version_from_partition_db(self.partition_db())?;
+        let persisted_features = get_storage_features_from_partition_db(self.partition_db())?;
+        let current_min_restate_version =
+            get_min_restate_version_from_partition_db(self.partition_db())?;
+
+        let mut storage_features = match LoadedStorageFeatures::load(
+            persisted_features,
+            storage_version,
+            current_restate_version,
+        ) {
+            Ok(features) => features,
+            Err(barrier) => {
+                return Err(MigrationError::StorageFeatureVersionBarrier {
+                    required_min_version: barrier.required_min_version,
+                    storage_features: barrier.features,
+                });
+            }
         };
 
-        // We assume the partition store to be empty if it does not contain any applied lsn. The
-        // reason is that we always commit changes to the partition store via a transaction which
-        // also updates the applied lsn field.
-        let is_empty = self.get_applied_lsn().await?.is_none();
-        if is_empty {
-            put_storage_version(self, self.partition().id(), target as u16).await?;
+        // There is another reason (other than storage features) why the min version is set high.
+        if !current_restate_version.is_equal_or_newer_than(&current_min_restate_version) {
+            return Err(MigrationError::VersionBarrier {
+                required_min_version: current_min_restate_version,
+            });
+        }
+
+        // A store without an applied LSN is empty because normal state changes and the applied LSN
+        // are committed in the same partition-store transaction.
+        let is_store_empty = self.get_applied_lsn().await?.is_none();
+        if !is_store_empty && matches!(storage_version, StorageVersion::None) {
+            // Version 1.6+ does not support upgrading from pre-1.5 because the invocation-status V1
+            // migration was removed in 1.6.
+            return Err(MigrationError::MigrationBarrier(
+                "Cannot upgrade from version <1.5 directly to 1.6 or later. \
+             Please upgrade to version 1.5 first, which will migrate your data, \
+             and then upgrade to 1.6+"
+                    .to_owned(),
+            ));
+        }
+
+        // Changes might be empty, but storage_features can still be dirty due to the automatic
+        // convergence that happens based on storage-version or if the store is empty.
+        let features_to_enable =
+            storage_features.automatic_changes(config, current_restate_version, is_store_empty);
+
+        // Do we need to perform migrations or data movement for these features?
+        for feature in features_to_enable {
+            // Enable each feature independently
+            feature
+                .enable(
+                    self,
+                    current_restate_version,
+                    is_store_empty,
+                    &cancel,
+                    config,
+                    &mut storage_features,
+                )
+                .await?;
+            self.set_storage_features(*storage_features.enabled());
+            if storage_features.enabled().is_migrated_to_scoped_state_table
+                && storage_features
+                    .enabled()
+                    .is_migrated_to_scoped_promise_table
+            {
+                storage_version = StorageVersion::ScopedStateAndPromise;
+            }
+        }
+
+        if storage_features.is_dirty() {
+            put_storage_features(self, self.partition().id(), storage_features.ledger())?;
+            storage_features.mark_persisted();
+        }
+        self.set_storage_features(*storage_features.enabled());
+
+        // Keep StorageVersion aligned for older binaries that used it as the sole signal for these
+        // migrations. The combined variant is accurate only when both features are enabled; a
+        // migration that completes the pair writes it atomically in its finalization batch above.
+        // This fallback also converges stores initialized from older or incomplete metadata.
+        let target_storage_version = if storage_features.enabled().is_migrated_to_scoped_state_table
+            && storage_features
+                .enabled()
+                .is_migrated_to_scoped_promise_table
+        {
+            StorageVersion::ScopedStateAndPromise
+        } else if is_store_empty && matches!(storage_version, StorageVersion::None) {
+            StorageVersion::V1_5
+        } else {
+            storage_version
+        };
+        if target_storage_version != storage_version {
+            put_storage_version(self, self.partition().id(), target_storage_version as u16).await?;
+        }
+
+        if is_store_empty {
             // A fresh partition store cannot have orphaned jc index entries, so mark the
             // cleanup as already done to avoid a needless scan on first startup.
             put_jc_orphan_cleanup_done(self, self.partition().id()).await?;
-            self.set_storage_version(target);
             return Ok(());
         }
 
-        // Read the authoritative on-disk version rather than the memoized
-        // `storage_version()`: the cache may hold a stale value (e.g. `None`
-        // memoized by a transaction created before the version was stamped),
-        // and migration decisions must be based on what's actually persisted.
-        let mut storage_version = get_storage_version_from_partition_db(self.partition_db())?;
-        if storage_version < target {
-            // We need to run some migrations!
-            if !is_empty {
-                info!(
-                    "Running storage migration from {:?} to {:?}",
-                    storage_version, target
-                );
-            }
-            storage_version =
-                run_migrations_up_to(storage_version, target, self, cancel, config).await?;
-        }
-        self.set_storage_version(storage_version);
+        debug_assert_eq!(self.storage_features(), *storage_features.enabled());
         Ok(())
+    }
+
+    pub fn get_storage_features_names(&self) -> Vec<ReString> {
+        self.storage_features().into_names()
     }
 }
 
@@ -863,7 +961,7 @@ pub struct PartitionStoreTransaction<'a> {
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
 }
 
@@ -940,8 +1038,8 @@ impl PartitionStoreTransaction<'_> {
     }
 
     #[inline]
-    pub(crate) fn storage_version(&self) -> StorageVersion {
-        self.storage_version
+    pub(crate) fn storage_features(&self) -> StorageFeatures {
+        self.storage_features
     }
 
     #[inline]
