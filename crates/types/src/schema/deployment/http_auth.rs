@@ -39,6 +39,9 @@ pub enum HttpAuth {
 /// Persisted Google OIDC ID-token authentication. `audience` is always present in the persisted
 /// shape: callers building this value must supply a concrete audience, derived from the deployment
 /// URI when the operator did not provide one explicitly.
+///
+/// The AWS identity that signs federated subject tokens is operator configuration and is not part
+/// of this deployment-controlled record.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct GoogleIdTokenAuth {
     /// Service account email to impersonate via `iamcredentials:generateIdToken`. None means use
@@ -47,14 +50,63 @@ pub struct GoogleIdTokenAuth {
     impersonate_service_account: Option<ByteString>,
     /// Explicit OIDC `aud` claim. Required at the type level on the persisted record.
     audience: ByteString,
+    /// Full resource name of a GCP workload identity federation provider, e.g.
+    /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
+    /// When set, use AWS-to-GCP federation instead of ambient Application Default Credentials.
+    /// Requires `impersonate_service_account`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workload_identity_provider: Option<ByteString>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum GoogleIdTokenAuthError {
+    #[error(
+        "workload_identity_provider requires impersonate_service_account to be set; the \
+         external-account credential the federation chain produces cannot mint an ID token \
+         ambiently"
+    )]
+    ProviderRequiresImpersonation,
+    #[error(
+        "workload_identity_provider '{provider}' is not a canonical GCP workload identity \
+         provider resource name (expected \
+         //iam.googleapis.com/projects/<project-number>/locations/<location>/workloadIdentityPools/<pool>/providers/<provider>): \
+         {reason}"
+    )]
+    InvalidProviderResourceName {
+        provider: ByteString,
+        reason: &'static str,
+    },
+}
+
+impl GoogleIdTokenAuthError {
+    /// The `auth.*` field path this error applies to, for surfacing as a REST `InvalidField`.
+    pub fn field(&self) -> &'static str {
+        "auth.workload_identity_provider"
+    }
 }
 
 impl GoogleIdTokenAuth {
-    pub fn new(audience: ByteString, impersonate_service_account: Option<ByteString>) -> Self {
-        Self {
+    pub fn new(
+        audience: ByteString,
+        impersonate_service_account: Option<ByteString>,
+        workload_identity_provider: Option<ByteString>,
+    ) -> Result<Self, GoogleIdTokenAuthError> {
+        if let Some(provider) = &workload_identity_provider {
+            if impersonate_service_account.is_none() {
+                return Err(GoogleIdTokenAuthError::ProviderRequiresImpersonation);
+            }
+            if let Err(reason) = validate_provider_resource_name(provider) {
+                return Err(GoogleIdTokenAuthError::InvalidProviderResourceName {
+                    provider: provider.clone(),
+                    reason,
+                });
+            }
+        }
+        Ok(Self {
             impersonate_service_account,
             audience,
-        }
+            workload_identity_provider,
+        })
     }
 
     pub fn audience(&self) -> &ByteString {
@@ -65,9 +117,64 @@ impl GoogleIdTokenAuth {
         self.impersonate_service_account.as_ref()
     }
 
-    pub fn into_parts(self) -> (ByteString, Option<ByteString>) {
-        (self.audience, self.impersonate_service_account)
+    pub fn workload_identity_provider(&self) -> Option<&ByteString> {
+        self.workload_identity_provider.as_ref()
     }
+
+    pub fn into_parts(self) -> (ByteString, Option<ByteString>, Option<ByteString>) {
+        (
+            self.audience,
+            self.impersonate_service_account,
+            self.workload_identity_provider,
+        )
+    }
+}
+
+/// Validates that `resource` has the shape
+/// `//iam.googleapis.com/projects/<project-number>/locations/global/workloadIdentityPools/<pool>/providers/<provider>`,
+/// matching Google's workload identity pool/provider creation constraints: global location;
+/// 4-32 lowercase alphanumeric-or-hyphen IDs; and no reserved `gcp-` prefix. Strict validation
+/// prevents an unusable provider name from becoming part of persisted state and cache keys.
+fn validate_provider_resource_name(resource: &str) -> Result<(), &'static str> {
+    let is_valid_id = |s: &str| {
+        (4..=32).contains(&s.len())
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !s.starts_with("gcp-")
+    };
+
+    let Some(rest) = resource.strip_prefix("//iam.googleapis.com/projects/") else {
+        return Err("must start with //iam.googleapis.com/projects/<project-number>");
+    };
+    let segments: Vec<&str> = rest.split('/').collect();
+    let [
+        project,
+        "locations",
+        location,
+        "workloadIdentityPools",
+        pool,
+        "providers",
+        provider,
+    ] = segments.as_slice()
+    else {
+        return Err(
+            "expected .../projects/<number>/locations/<location>/workloadIdentityPools/<pool>/providers/<provider>",
+        );
+    };
+    if project.is_empty() || !project.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("project must be a numeric project number");
+    }
+    if *location != "global" {
+        return Err(
+            "location must be 'global': Google does not support regional workload identity pools",
+        );
+    }
+    if !is_valid_id(pool) || !is_valid_id(provider) {
+        return Err(
+            "workload identity pool and provider ids must be 4-32 characters of lowercase letters, digits, and hyphens, and must not use the reserved 'gcp-' prefix",
+        );
+    }
+    Ok(())
 }
 
 /// Derive the OIDC audience from a deployment URI:
@@ -160,5 +267,100 @@ mod tests {
         // A path-only URI has no scheme or authority; derivation must fail so the REST boundary
         // can refuse to persist an incomplete record.
         assert!(derive_audience(&parse("/discover")).is_none());
+    }
+
+    const PROVIDER: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws-federation";
+
+    #[test]
+    fn new_enforces_provider_requires_impersonation() {
+        let cases: [(Option<&str>, Option<&str>, bool); 3] = [
+            (
+                Some("sa@proj.iam.gserviceaccount.com"),
+                Some(PROVIDER),
+                true,
+            ),
+            (None, Some(PROVIDER), false),
+            (Some("sa@proj.iam.gserviceaccount.com"), None, true),
+        ];
+        for (impersonate, provider, should_succeed) in cases {
+            let result = GoogleIdTokenAuth::new(
+                ByteString::from_static("https://svc.example.com"),
+                impersonate.map(ByteString::from),
+                provider.map(ByteString::from),
+            );
+            assert_eq!(
+                result.is_ok(),
+                should_succeed,
+                "impersonate={impersonate:?} provider={provider:?}: {result:?}"
+            );
+            if !should_succeed {
+                assert_eq!(
+                    result.unwrap_err(),
+                    GoogleIdTokenAuthError::ProviderRequiresImpersonation
+                );
+            }
+        }
+    }
+
+    fn provider_auth(provider: &str) -> Result<GoogleIdTokenAuth, GoogleIdTokenAuthError> {
+        GoogleIdTokenAuth::new(
+            ByteString::from_static("https://svc.example.com"),
+            Some(ByteString::from_static("sa@proj.iam.gserviceaccount.com")),
+            Some(ByteString::from(provider.to_owned())),
+        )
+    }
+
+    #[test]
+    fn accepts_canonical_provider_resource_names() {
+        for provider in [
+            PROVIDER,
+            "//iam.googleapis.com/projects/999999999999/locations/global/workloadIdentityPools/my-pool/providers/my-provider",
+            // Exactly 4 characters: the minimum valid id length.
+            "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/aaaa/providers/bbbb",
+            // Exactly 32 characters: the maximum valid id length.
+            &format!(
+                "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/{}/providers/{}",
+                "a".repeat(32),
+                "b".repeat(32),
+            ),
+        ] {
+            provider_auth(provider)
+                .unwrap_or_else(|e| panic!("expected '{provider}' to be accepted, got {e}"));
+        }
+    }
+
+    #[test]
+    fn rejects_non_canonical_provider_resource_names() {
+        for provider in [
+            "",
+            "not-a-resource-name",
+            "iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/abc/locations/global/workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects//locations/global/workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations//workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools//providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/",
+            "//iam.googleapis.com/projects/123/regions/global/workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/pools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/endpoints/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws-federation/extra",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/has space/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/100%provider",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/caf\u{e9}-provider",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool?/providers/aws-federation",
+            "//iam.googleapis.com/projects/1/locations/eu/workloadIdentityPools/pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/abc",
+            &format!(
+                "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/{}",
+                "a".repeat(33),
+            ),
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/Pool/providers/aws-federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool_x/providers/aws_federation",
+            "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/gcp-reserved/providers/aws-federation",
+        ] {
+            let err = provider_auth(provider)
+                .expect_err(&format!("expected '{provider}' to be rejected"));
+            assert_eq!(err.field(), "auth.workload_identity_provider");
+        }
     }
 }

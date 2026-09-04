@@ -24,7 +24,7 @@ use hyper::body::Body;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Response, Uri};
 
-use restate_types::config::ServiceClientOptions;
+use restate_types::config::{GcpFederationOptions, ServiceClientOptions};
 use restate_types::deployment::HttpAuth;
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::{Deployment, DeploymentType, EndpointLambdaCompression};
@@ -45,6 +45,15 @@ mod request_identity;
 #[cfg(any(test, feature = "test_util"))]
 pub mod test_util;
 mod utils;
+
+/// Captures the operator's GCP federation configuration for this process.
+///
+/// Must be called once during node startup, before any service client is constructed.
+pub fn initialize_gcp_federation_config(
+    config: Option<GcpFederationOptions>,
+) -> Result<(), String> {
+    gcp::initialize_federation_config(config)
+}
 
 /// Header slot we always use for the Restate-minted Google ID token on HTTP deployments with GCP
 /// auth enabled. Cloud Run validates this header in precedence over `Authorization` and strips it
@@ -160,7 +169,10 @@ impl ServiceClient {
                         // The persisted record carries a concrete audience; the wire-to-persisted
                         // conversion at register/re-register time derives one from the URI when the
                         // operator left it unset. No fallback is needed here.
-                        let spec = gcp::IdTokenSpec::from_deployment_auth(auth);
+                        // Persisted records deserialize without constructor validation, so retain
+                        // a fail-closed guard at this boundary.
+                        let spec = gcp::IdTokenSpec::from_deployment_auth(auth)
+                            .map_err(|error| ServiceClientError::GcpAuth(uri.clone(), error))?;
                         let token = gcp::mint(&spec)
                             .await
                             .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
@@ -171,7 +183,9 @@ impl ServiceClient {
                                     uri.clone(),
                                     gcp::GcpAuthError::Mint {
                                         audience: spec.audience().to_owned(),
-                                        impersonate: spec.impersonate_context().to_owned(),
+                                        service_account: spec
+                                            .service_account_context()
+                                            .to_owned(),
                                         message: format!(
                                             "minted token cannot be used as an HTTP header value: {e}"
                                         ),
@@ -231,8 +245,8 @@ impl ServiceClientError {
             ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
             ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
             // GCP token-mint errors:
-            // - Application Default Credentials (`Adc`) load failure is treated as transient (e.g.
-            //   metadata-server briefly unreachable).
+            // - `CredentialSource` initialization failure is treated as transient (e.g. the
+            //   metadata server, AWS STS, or Google STS is briefly unreachable).
             // - `Timeout` from the per-attempt deadline is transient by definition.
             // - `Build` (constructing the credentials builder) is most likely bad configuration.
             // - `Mint` (the actual `id_token().await` call) is blanket-retryable: the underlying
@@ -246,7 +260,7 @@ impl ServiceClientError {
             // - `AmbientUnsupported` is a misconfiguration (the ambient ADC source cannot mint
             //   ID tokens directly); retrying cannot help.
             ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
-                gcp::GcpAuthError::Adc { .. }
+                gcp::GcpAuthError::CredentialSource { .. }
                 | gcp::GcpAuthError::Timeout { .. }
                 | gcp::GcpAuthError::Mint { .. } => true,
                 gcp::GcpAuthError::Build { .. } | gcp::GcpAuthError::AmbientUnsupported { .. } => {
@@ -393,9 +407,9 @@ mod tests {
     fn gcp_auth_retryability_splits_by_inner_variant() {
         let cases: &[(gcp::GcpAuthError, bool)] = &[
             (
-                gcp::GcpAuthError::Adc {
+                gcp::GcpAuthError::CredentialSource {
                     audience: "https://svc.example.com".into(),
-                    impersonate: "(ambient)".into(),
+                    service_account: "(ambient)".into(),
                     message: "metadata server unreachable".into(),
                 },
                 true,
@@ -403,7 +417,7 @@ mod tests {
             (
                 gcp::GcpAuthError::Timeout {
                     audience: "https://svc.example.com".into(),
-                    impersonate: "(ambient)".into(),
+                    service_account: "(ambient)".into(),
                     duration: Duration::from_secs(10),
                 },
                 true,
@@ -424,7 +438,7 @@ mod tests {
             (
                 gcp::GcpAuthError::Mint {
                     audience: "https://svc.example.com".into(),
-                    impersonate: "sa@p.iam.gserviceaccount.com".into(),
+                    service_account: "sa@p.iam.gserviceaccount.com".into(),
                     message: "permission denied".into(),
                 },
                 // Mint is blanket-retryable: the SDK error type mixes
@@ -452,13 +466,13 @@ mod tests {
     impl CloneForTest for gcp::GcpAuthError {
         fn clone_for_test(&self) -> Self {
             match self {
-                gcp::GcpAuthError::Adc {
+                gcp::GcpAuthError::CredentialSource {
                     audience,
-                    impersonate,
+                    service_account,
                     message,
-                } => gcp::GcpAuthError::Adc {
+                } => gcp::GcpAuthError::CredentialSource {
                     audience: audience.clone(),
-                    impersonate: impersonate.clone(),
+                    service_account: service_account.clone(),
                     message: message.clone(),
                 },
                 gcp::GcpAuthError::Build { audience, message } => gcp::GcpAuthError::Build {
@@ -472,20 +486,20 @@ mod tests {
                 }
                 gcp::GcpAuthError::Mint {
                     audience,
-                    impersonate,
+                    service_account,
                     message,
                 } => gcp::GcpAuthError::Mint {
                     audience: audience.clone(),
-                    impersonate: impersonate.clone(),
+                    service_account: service_account.clone(),
                     message: message.clone(),
                 },
                 gcp::GcpAuthError::Timeout {
                     audience,
-                    impersonate,
+                    service_account,
                     duration,
                 } => gcp::GcpAuthError::Timeout {
                     audience: audience.clone(),
-                    impersonate: impersonate.clone(),
+                    service_account: service_account.clone(),
                     duration: *duration,
                 },
             }

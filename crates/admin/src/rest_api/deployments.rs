@@ -105,14 +105,26 @@ where
         } => {
             validate_uri(&uri)?;
             let persisted_auth = if let Some(wire_auth) = auth {
+                // V5 prevents clients from mistaking an ignored provider field for ADC auth.
+                if version != AdminApiVersion::Unknown
+                    && version < AdminApiVersion::V5
+                    && matches!(
+                        &wire_auth,
+                        HttpAuth::GoogleIdToken(auth) if auth.workload_identity_provider.is_some()
+                    )
+                {
+                    return Err(MetaApiError::InvalidField(
+                        "auth.workload_identity_provider",
+                        "workload identity federation requires Admin API v5".to_owned(),
+                    ));
+                }
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
-                Some(
-                    wire_auth
-                        .into_persisted(&uri)
-                        .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?,
-                )
+                let persisted = wire_auth
+                    .into_persisted(&uri)
+                    .map_err(|e| MetaApiError::InvalidField(e.field(), e.to_string()))?;
+                Some(persisted)
             } else {
                 None
             };
@@ -366,17 +378,20 @@ where
                 validate_uri(uri)?;
             }
 
-            // Validate the auth invariants against the post-merge (uri, additional_headers). PATCH
-            // preserves the persisted auth (see schema::registry::update_deployment); a PATCH that
-            // changes the URI to http:// or adds an X-Serverless-Authorization header must be
-            // rejected just like the equivalent register call would be.
+            // Validate the (uri, additional_headers) auth invariant against the post-merge
+            // values. PATCH preserves the persisted `auth` unchanged (see
+            // schema::registry::update_deployment) -- and `GoogleIdTokenAuth::new` guarantees any
+            // persisted auth already satisfies its own invariants, so only the uri/headers
+            // interaction needs re-checking here: a PATCH that changes the URI to http:// or adds
+            // an X-Serverless-Authorization header must be rejected just like the equivalent
+            // register call would be.
             let existing_deployment = state
                 .schema_registry
                 .get_deployment(deployment_id)
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
             if let DeploymentType::Http {
                 address: existing_uri,
-                auth: Some(_existing_auth),
+                auth: Some(_),
                 ..
             } = &existing_deployment.ty
             {
