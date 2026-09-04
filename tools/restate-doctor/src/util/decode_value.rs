@@ -59,6 +59,8 @@ mod fsm_variable {
     pub const STATE_MACHINE_FEATURES: u64 = 10;
     /// *Since v1.7.3*
     pub const SEAL_MARKER: u64 = 11;
+    /// *Since v1.7.9*
+    pub const STORAGE_FEATURES: u64 = 12;
 }
 
 /// Result of decoding a value, including codec metadata
@@ -397,6 +399,9 @@ fn decode_fsm_value(key: &[u8], value: &[u8]) -> DecodedValue {
     if state_id == fsm_variable::SEAL_MARKER {
         return decode_fsm_seal_marker(value);
     }
+    if state_id == fsm_variable::STORAGE_FEATURES {
+        return decode_fsm_storage_features(value);
+    }
 
     // Read codec byte
     let codec_byte = value[0];
@@ -481,6 +486,17 @@ fn decode_fsm_seal_marker(value: &[u8]) -> DecodedValue {
             ),
             Err(_) => DecodedValue::error(None, payload_size, format!("{err}")),
         },
+    }
+}
+
+/// Decode local storage features without interpreting their names.
+fn decode_fsm_storage_features(value: &[u8]) -> DecodedValue {
+    let payload_size = value.len();
+    match serde_json::from_slice::<serde_json::Value>(value) {
+        Ok(features) => {
+            DecodedValue::decoded(None, payload_size, format!("StorageFeatures({features})"))
+        }
+        Err(err) => DecodedValue::error(None, payload_size, format!("{err}")),
     }
 }
 
@@ -670,6 +686,18 @@ mod tests {
         assert!(
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("<unrecognized>")),
             "unknown seal variant should fall back to raw json, got: {decoded}"
+        );
+
+        // Storage features: plain json with names that this binary need not recognize.
+        let decoded = decode_value(
+            KeyKind::Fsm,
+            &fsm_key(fsm_variable::STORAGE_FEATURES),
+            br#"{"features":{"future-feature":{"min_required_version":"2.0.0"}}}"#,
+        );
+        assert_eq!(decoded.codec, None);
+        assert!(
+            matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("future-feature")),
+            "storage features should preserve unknown names, got: {decoded}"
         );
     }
 }
