@@ -726,6 +726,12 @@ pub enum ResponseResult {
     Failure(InvocationError),
 }
 
+impl ResponseResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+}
+
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         match value {

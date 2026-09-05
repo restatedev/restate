@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
+use std::time::Duration;
 
-use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
+use rstest::*;
+
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, SequenceNumberInboxEntry};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, JournalMetadata, StatusTimestamps,
+    CompletedInvocation, JournalMetadata, ResponseResultRef, StatusTimestamps,
 };
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::{
@@ -21,8 +22,9 @@ use restate_types::invocation::{
     SubmitNotificationSink,
 };
 use restate_worker_api::invoker::Effect;
-use rstest::*;
-use std::time::Duration;
+
+use super::*;
+use crate::partition::state_machine::tests::matchers::actions::invocation_response_to_partition_processor;
 
 #[restate_core::test]
 async fn start_and_complete_idempotent_invocation() {
@@ -94,7 +96,7 @@ async fn start_and_complete_idempotent_invocation() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes))
+            response_result: eq(ResponseResultRef::Success(response_bytes))
         })))
     );
     test_env.shutdown().await;
@@ -123,7 +125,7 @@ async fn complete_already_completed_invocation() {
             execution_time: None,
             idempotency_key: Some(idempotency_key.clone()),
             timestamps: StatusTimestamps::mock(),
-            response_result: ResponseResult::Success(response_bytes.clone()),
+            response_result: ResponseResultRef::Success(response_bytes.clone()),
             completion_retention_duration: Default::default(),
             journal_retention_duration: Default::default(),
             journal_metadata: JournalMetadata::empty(),

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
 use std::ops::{ControlFlow, RangeInclusive};
@@ -18,6 +19,7 @@ use bytestring::ByteString;
 use futures::Stream;
 
 use restate_types::deployment::PinnedDeployment;
+use restate_types::errors::{InvocationError, InvocationErrorCode};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     Header, InvocationInput, InvocationTarget, ResponseResult, ServiceInvocation,
@@ -717,6 +719,77 @@ impl InFlightInvocationMetadata {
     }
 }
 
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum ExitStatus {
+    Success,
+    Killed,
+    // Failure from embedded failures will
+    // also hold an error message.
+    // todo(azmy): drop the message once we no longer support
+    // embedded Failure result
+    Failure((InvocationErrorCode, Option<Cow<'static, str>>)),
+}
+
+#[derive(derive_more::Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionStatus {
+    Success,
+    Failure(InvocationErrorCode),
+}
+
+#[derive(derive_more::Debug, Clone, PartialEq, Eq)]
+pub enum ResponseResultRef {
+    Killed,
+    Completed(CompletionStatus),
+    // Embedded success/failure status
+    // Only for backward compatibility
+    // with older invocation status
+    // (write_result_reference feature disabled)
+    // todo: Should eventually drop once there
+    // are no old invocation status.
+    #[debug("Success(<data>)")]
+    Success(Bytes),
+    #[debug("Failure({_0})")]
+    Failure(InvocationError),
+}
+
+impl ResponseResultRef {
+    pub fn result(&self) -> ExitStatus {
+        match self {
+            Self::Killed => ExitStatus::Killed,
+            Self::Success(_) => ExitStatus::Success,
+            Self::Failure(err) => ExitStatus::Failure((err.code, Some(err.message.clone()))),
+            Self::Completed(status) => ExitStatus::from(*status),
+        }
+    }
+}
+
+impl From<ResponseResult> for ResponseResultRef {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(bytes) => Self::Success(bytes),
+            ResponseResult::Failure(failure) => Self::Failure(failure),
+        }
+    }
+}
+
+impl From<ResponseResult> for CompletionStatus {
+    fn from(value: ResponseResult) -> Self {
+        match value {
+            ResponseResult::Success(_) => Self::Success,
+            ResponseResult::Failure(failure) => Self::Failure(failure.code),
+        }
+    }
+}
+
+impl From<CompletionStatus> for ExitStatus {
+    fn from(value: CompletionStatus) -> Self {
+        match value {
+            CompletionStatus::Success => Self::Success,
+            CompletionStatus::Failure(code) => Self::Failure((code, None)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompletedInvocation {
     pub vqueue_id: Option<VQueueId>,
@@ -733,7 +806,7 @@ pub struct CompletedInvocation {
     pub execution_time: Option<MillisSinceEpoch>,
     pub idempotency_key: Option<ByteString>,
     pub timestamps: StatusTimestamps,
-    pub response_result: ResponseResult,
+    pub response_result: ResponseResultRef,
 
     pub completion_retention_duration: Duration,
     pub journal_retention_duration: Duration,
@@ -759,7 +832,7 @@ impl CompletedInvocation {
     pub fn from_pre_flight_invocation_metadata(
         mut metadata: PreFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         metadata
@@ -790,7 +863,7 @@ impl CompletedInvocation {
             execution_time: metadata.execution_time,
             idempotency_key: metadata.idempotency_key,
             timestamps: metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: metadata.completion_retention_duration,
             journal_retention_duration: metadata.journal_retention_duration,
             journal_metadata,
@@ -802,7 +875,7 @@ impl CompletedInvocation {
     pub fn from_in_flight_invocation_metadata(
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
         journal_retention_policy: JournalRetentionPolicy,
-        response_result: ResponseResult,
+        response_result: impl Into<ResponseResultRef>,
         timestamp: MillisSinceEpoch,
     ) -> Self {
         in_flight_invocation_metadata
@@ -819,7 +892,7 @@ impl CompletedInvocation {
             execution_time: in_flight_invocation_metadata.execution_time,
             idempotency_key: in_flight_invocation_metadata.idempotency_key,
             timestamps: in_flight_invocation_metadata.timestamps,
-            response_result,
+            response_result: response_result.into(),
             completion_retention_duration: in_flight_invocation_metadata
                 .completion_retention_duration,
             journal_retention_duration: in_flight_invocation_metadata.journal_retention_duration,
@@ -920,8 +993,7 @@ mod test_util {
     use super::*;
     use restate_sharding::PartitionKey;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-
-    use restate_types::invocation::VirtualObjectHandlerType;
+    use restate_types::invocation::{ResponseResult, VirtualObjectHandlerType};
 
     impl StatusTimestamps {
         pub fn mock() -> Self {
@@ -1057,7 +1129,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),
@@ -1085,7 +1157,7 @@ mod test_util {
                 execution_time: None,
                 idempotency_key: None,
                 timestamps,
-                response_result: ResponseResult::Success(Bytes::from_static(b"123")),
+                response_result: ResponseResult::Success(Bytes::from_static(b"123")).into(),
                 completion_retention_duration: Duration::from_secs(60 * 60),
                 journal_retention_duration: Duration::ZERO,
                 journal_metadata: JournalMetadata::empty(),

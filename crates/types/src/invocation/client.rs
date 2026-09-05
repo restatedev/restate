@@ -62,6 +62,7 @@ pub struct InvocationOutput {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum InvocationOutputResponse {
+    Gone,
     Success(InvocationTarget, Bytes),
     Failure(InvocationError),
 }

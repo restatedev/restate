@@ -28,6 +28,11 @@ use std::sync::Arc;
 use codederror::CodedError;
 use restate_core::network::Swimlane;
 use restate_ingestion_client::SessionOptions;
+use restate_storage_api::StorageError;
+use restate_storage_api::invocation_status_table::ResponseResultRef;
+use restate_storage_api::output_table::ReadOutputTable;
+use restate_types::identifiers::InvocationId;
+use restate_types::invocation::ResponseResult;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_wal_protocol::Envelope;
 use tracing::info;
@@ -268,5 +273,32 @@ where
         }
 
         Ok(())
+    }
+}
+
+pub(crate) trait ReadOutputTableExt {
+    fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: &InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, StorageError>>;
+}
+
+impl<T> ReadOutputTableExt for T
+where
+    T: ReadOutputTable,
+{
+    async fn resolve_response_result_ref(
+        &mut self,
+        invocation_id: &InvocationId,
+        result_ref: &ResponseResultRef,
+    ) -> Result<Option<ResponseResult>, StorageError> {
+        match result_ref {
+            ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            ResponseResultRef::Killed | ResponseResultRef::Completed(_) => {
+                self.get_output(invocation_id).await
+            }
+        }
     }
 }
