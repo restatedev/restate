@@ -16,6 +16,7 @@ use std::time::{Duration, UNIX_EPOCH};
 use anyhow::{Context, ensure};
 use bytes::Bytes;
 use bytestring::ByteString;
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::test_util::{batches_to_sort_string, batches_to_string};
 use futures::TryStreamExt;
 use prost::Message;
@@ -144,6 +145,16 @@ impl QueryTest {
     }
 
     async fn assert_query_with_order(&self, query: QueryExpectation<'_>, ordered: bool) {
+        self.check_query_with_order(query, ordered)
+            .await
+            .unwrap_or_else(|report| panic!("{report}"));
+    }
+
+    async fn check_query_with_order(
+        &self,
+        query: QueryExpectation<'_>,
+        ordered: bool,
+    ) -> Result<(), String> {
         eprintln!("running query test: {}", query.name);
         self.engine.clear_remote_scans();
         let batches = match self.try_execute(query.sql).await {
@@ -152,7 +163,7 @@ impl QueryTest {
                 let report = self
                     .failure_report(&query, format!("query execution failed:\n{error:#}"))
                     .await;
-                panic!("{report}");
+                return Err(report);
             }
         };
         let expected = expected_table(query.expected, ordered);
@@ -163,16 +174,14 @@ impl QueryTest {
         };
         let remote_scans = self.engine.remote_scans();
 
-        let empty_result_without_schema =
-            actual == "++\n++" && is_empty_expected_table(query.expected);
-        if expected != actual && !empty_result_without_schema {
+        if expected != actual {
             let report = self
                 .failure_report(
                     &query,
                     format!("expected:\n{expected}\n\nactual:\n{actual}"),
                 )
                 .await;
-            panic!("{report}");
+            return Err(report);
         }
         let unexpected_remote_scans = remote_scans
             .iter()
@@ -187,8 +196,9 @@ impl QueryTest {
                     ),
                 )
                 .await;
-            panic!("{report}");
+            return Err(report);
         }
+        Ok(())
     }
 
     async fn failure_report(&self, query: &QueryExpectation<'_>, mismatch: String) -> String {
@@ -208,17 +218,15 @@ impl QueryTest {
         )
     }
 
-    async fn try_execute(
-        &self,
-        sql: &str,
-    ) -> Result<Vec<datafusion::arrow::record_batch::RecordBatch>, crate::context::QueryError> {
-        self.engine
-            .execute(sql)
-            .await?
-            .stream
-            .try_collect()
-            .await
-            .map_err(Into::into)
+    async fn try_execute(&self, sql: &str) -> Result<Vec<RecordBatch>, crate::context::QueryError> {
+        let stream = self.engine.execute(sql).await?.stream;
+        let schema = stream.schema();
+        let mut batches: Vec<RecordBatch> = stream.try_collect().await?;
+        // An empty stream still has a schema; keep its columns in the table assertion.
+        if batches.is_empty() {
+            batches.push(RecordBatch::new_empty(schema));
+        }
+        Ok(batches)
     }
 }
 
@@ -244,16 +252,6 @@ fn is_vertical_expected_table(expected: &[&str]) -> bool {
         .filter(|line| line.starts_with('|') && line.ends_with('|'))
         .and_then(|line| parse_text_table_line(line).into_iter().next())
         == Some("column")
-}
-
-fn is_empty_expected_table(expected: &[&str]) -> bool {
-    !is_vertical_expected_table(expected)
-        && expected
-            .iter()
-            .map(|line| line.trim())
-            .filter(|line| line.starts_with('|') && line.ends_with('|'))
-            .count()
-            == 1
 }
 
 fn transpose_expected_table<'a>(expected: &'a [&'a str], ordered: bool) -> anyhow::Result<String> {
@@ -1913,21 +1911,66 @@ fn vertical_expected_table_respects_order_mode() {
     );
 }
 
-#[test]
-fn header_only_expected_table_represents_an_empty_result() {
-    assert!(is_empty_expected_table(&[
-        "+----+--------+",
-        "| id | status |",
-        "+----+--------+",
-        "+----+--------+",
-    ]));
-    assert!(!is_empty_expected_table(&[
-        "+----+--------+",
-        "| id | status |",
-        "+----+--------+",
-        "| 1  | ready  |",
-        "+----+--------+",
-    ]));
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn empty_query_results_check_column_names_count_and_order() {
+    let test = QueryTest::create_remote().await;
+
+    for ordered in [false, true] {
+        test.assert_query_with_order(
+            QueryExpectation {
+                name: "empty state preserves projected columns",
+                sql: "SELECT key, value FROM state ORDER BY key",
+                expected: &[
+                    "+-----+-------+",
+                    "| key | value |",
+                    "+-----+-------+",
+                    "+-----+-------+",
+                ],
+            },
+            ordered,
+        )
+        .await;
+
+        for expected in [
+            // Renamed, missing, extra, and reordered columns must all fail.
+            &[
+                "+------+-------+",
+                "| name | value |",
+                "+------+-------+",
+                "+------+-------+",
+            ][..],
+            &["+-----+", "| key |", "+-----+", "+-----+"],
+            &[
+                "+-----+-------+-------+",
+                "| key | value | scope |",
+                "+-----+-------+-------+",
+                "+-----+-------+-------+",
+            ],
+            &[
+                "+-------+-----+",
+                "| value | key |",
+                "+-------+-----+",
+                "+-------+-----+",
+            ],
+        ] {
+            let report = test
+                .check_query_with_order(
+                    QueryExpectation {
+                        name: "empty state rejects incorrect columns",
+                        sql: "SELECT key, value FROM state ORDER BY key",
+                        expected,
+                    },
+                    ordered,
+                )
+                .await
+                .expect_err("an empty result must not accept an incorrect header");
+            assert!(report.contains("MISMATCH\nexpected:"), "{report}");
+            assert!(
+                report.contains("actual:\n+-----+-------+\n| key | value |"),
+                "{report}"
+            );
+        }
+    }
 }
 
 #[test]

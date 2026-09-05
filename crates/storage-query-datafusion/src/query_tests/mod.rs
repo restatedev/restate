@@ -96,8 +96,9 @@
 //!
 //! `assert_query` compares rows without considering their order, which avoids coupling unordered
 //! distributed queries to scanner arrival order. `assert_query_ordered` compares the exact row
-//! sequence. On failure both methods include the query, expected and actual tables, `EXPLAIN`, and
-//! `EXPLAIN ANALYZE FORMAT TREE` output.
+//! sequence. Empty results retain the stream schema, so header-only expectations still check
+//! column names, count, and order. On failure both methods include the query, expected and actual
+//! tables, `EXPLAIN`, and `EXPLAIN ANALYZE FORMAT TREE` output.
 //!
 //! Run all tests in this module with:
 //!
