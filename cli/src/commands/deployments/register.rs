@@ -194,6 +194,15 @@ fn parse_deployment(
             parts.path_and_query = Some(http::uri::PathAndQuery::from_str("/")?);
         }
         uri = Uri::from_parts(parts)?;
+
+        let host = uri.host().ok_or("invalid URL(missing host)")?;
+        let port_without_host = uri.port().is_none()
+            && !host.is_empty()
+            && host.bytes().all(|byte| byte.is_ascii_digit());
+        if host.is_empty() || port_without_host {
+            return Err("invalid URL(missing host)".into());
+        }
+
         DeploymentEndpoint::Uri(uri)
     };
     Ok(deployment)
@@ -826,4 +835,21 @@ fn infer_deployment_metadata_from_environment(metadata: &mut HashMap<String, Str
         "GITHUB_RUN_ID" => GITHUB_ACTIONS_RUN_ID,
         "GITHUB_SHA" => GIT_COMMIT,
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deployment_uri_requires_host() {
+        let error = parse_deployment("9080").unwrap_err();
+        assert_eq!(error.to_string(), "invalid URL(missing host)");
+
+        let deployment = parse_deployment("localhost:9080").unwrap();
+        let DeploymentEndpoint::Uri(uri) = deployment else {
+            panic!("expected an HTTP deployment URI");
+        };
+        assert_eq!(uri, Uri::from_static("http://localhost:9080/"));
+    }
 }
