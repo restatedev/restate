@@ -124,6 +124,15 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
             futures::stream::empty(),
         )))
     }
+
+    async fn read_state_keys_budgeted<'a>(
+        &'a mut self,
+        _service_id: &'a ServiceId,
+        _keys: &'a [Bytes],
+        _budget: &'a mut LocalMemoryPool,
+    ) -> Result<Vec<(Bytes, Bytes, LocalMemoryLease)>, Self::Error> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Default)]

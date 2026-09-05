@@ -55,6 +55,8 @@ const SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v3+json";
 const SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE: &str =
     "application/vnd.restate.endpointmanifest.v4+json";
+const SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE: &str =
+    "application/vnd.restate.endpointmanifest.v5+json";
 static SUPPORTED_SERVICE_DISCOVERY_PROTOCOL_VERSIONS: LazyLock<HeaderValue> = LazyLock::new(|| {
     let supported_versions = ServiceDiscoveryProtocolVersion::iter()
         .skip_while(|version| version < &MIN_SERVICE_DISCOVERY_PROTOCOL_VERSION)
@@ -78,6 +80,7 @@ fn service_discovery_protocol_to_content_type(
         ServiceDiscoveryProtocolVersion::V2 => SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V3 => SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE,
         ServiceDiscoveryProtocolVersion::V4 => SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE,
+        ServiceDiscoveryProtocolVersion::V5 => SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE,
     }
 }
 
@@ -89,6 +92,7 @@ fn parse_service_discovery_protocol_version_from_content_type(
         SERVICE_DISCOVERY_PROTOCOL_V2_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V2),
         SERVICE_DISCOVERY_PROTOCOL_V3_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V3),
         SERVICE_DISCOVERY_PROTOCOL_V4_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V4),
+        SERVICE_DISCOVERY_PROTOCOL_V5_HEADER_VALUE => Some(ServiceDiscoveryProtocolVersion::V5),
         _ => None,
     }
 }
@@ -258,7 +262,8 @@ impl DiscoveryClient for ServiceDiscovery {
             ServiceDiscoveryProtocolVersion::V1
             | ServiceDiscoveryProtocolVersion::V2
             | ServiceDiscoveryProtocolVersion::V3
-            | ServiceDiscoveryProtocolVersion::V4 => {
+            | ServiceDiscoveryProtocolVersion::V4
+            | ServiceDiscoveryProtocolVersion::V5 => {
                 serde_json::from_slice(&body).map_err(|e| DiscoveryError::Decode(e, body))?
             }
         };

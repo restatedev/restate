@@ -335,4 +335,26 @@ where
             InvokerStorageReaderError::from,
         ))))
     }
+
+    async fn read_state_keys_budgeted<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        keys: &'a [Bytes],
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<Vec<(Bytes, Bytes, LocalMemoryLease)>, Self::Error> {
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(value) = self.txn.get_user_state(service_id, key).await? {
+                let lease = budget
+                    .reserve(key.len() + value.len(), 0)
+                    .await
+                    .map_err(|oom| InvokerStorageReaderError::OutOfMemory {
+                        needed: oom.needed,
+                        kind: oom.kind,
+                    })?;
+                entries.push((key.clone(), value, lease));
+            }
+        }
+        Ok(entries)
+    }
 }

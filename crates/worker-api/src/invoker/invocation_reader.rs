@@ -201,6 +201,18 @@ pub trait InvocationReaderTransaction {
         service_id: &ServiceId,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
+
+    /// Budget-gated point reads of a specific set of state keys for the given service id.
+    ///
+    /// Reads only the requested `keys` (exact match); keys with no stored value are omitted.
+    /// Each returned value acquires a [`LocalMemoryLease`] from `budget`. Used to preload the
+    /// "always eager" whitelist under a lazy default without scanning the whole state.
+    fn read_state_keys_budgeted<'a>(
+        &'a mut self,
+        service_id: &'a ServiceId,
+        keys: &'a [Bytes],
+        budget: &'a mut LocalMemoryPool,
+    ) -> impl Future<Output = Result<Vec<(Bytes, Bytes, LocalMemoryLease)>, Self::Error>> + Send + 'a;
 }
 
 /// Container for the state returned by [`InvocationReaderTransaction::read_state`].

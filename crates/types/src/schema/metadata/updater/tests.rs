@@ -16,7 +16,8 @@ use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetResolver,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, EagerStateConfig,
+    InvocationTargetResolver,
 };
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
@@ -48,6 +49,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         journal_retention: None,
         workflow_completion_retention: None,
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -71,6 +73,7 @@ fn greeter_workflow_greet_handler() -> endpoint_manifest::Handler {
         journal_retention: None,
         workflow_completion_retention: None,
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -93,6 +96,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -125,6 +129,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            always_eager_state_keys: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -133,6 +138,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -154,6 +160,7 @@ fn greeter_workflow() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -186,6 +193,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            always_eager_state_keys: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -194,6 +202,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -1045,6 +1054,7 @@ fn update_latest_deployment_add_handler() {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            always_eager_state_keys: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -1119,6 +1129,7 @@ fn update_draining_deployment_add_handler() {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            always_eager_state_keys: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -2160,7 +2171,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
-                eager_state_size_limit: None,
+                eager_state: EagerStateConfig::Eager,
             })
         )
     }
@@ -2185,7 +2196,26 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
-                eager_state_size_limit: None,
+                eager_state: EagerStateConfig::Eager,
+            })
+        )
+    }
+
+    #[test]
+    fn per_key_state_config_handler_overrides_service() {
+        let mut svc = greeter_virtual_object();
+        svc.enable_lazy_state = Some(true);
+        svc.always_eager_state_keys = vec!["service-key".to_owned()];
+        svc.handlers[0].always_eager_state_keys = vec!["handler-key".to_owned()];
+
+        let resolved = init_discover_and_resolve_timeouts(svc, GREETER_SERVICE_NAME, "greet");
+
+        // The handler-level always-eager list fully replaces the service-level one, under the
+        // resolved lazy default.
+        assert_that!(
+            resolved.eager_state,
+            eq(EagerStateConfig::Lazy {
+                always_eager_keys: vec![ByteString::from_static("handler-key")],
             })
         )
     }

@@ -17,8 +17,6 @@ use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use restate_util_bytecount::ByteCount;
-
 use crate::identifiers::DeploymentId;
 use crate::invocation::{
     InvocationRetention, InvocationTargetType, ServiceType, WorkflowHandlerType,
@@ -122,14 +120,32 @@ impl InvocationTargetMetadata {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
-    /// Per-handler/service override for the eager state size limit.
-    /// `Some(ByteCount::ZERO)` means no eager state (equivalent to lazy state).
-    /// `None` means no per-handler override (use server default).
-    pub eager_state_size_limit: Option<ByteCount>,
+    /// Per-key eager/lazy state policy for this invocation.
+    pub eager_state: EagerStateConfig,
+}
+
+/// Resolved eager/lazy state policy for an invocation.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum EagerStateConfig {
+    /// Preload all state eagerly (up to the invoker's eager state size limit).
+    Eager,
+    /// Lazy by default: preload only these exact state keys (best-effort, capped by the invoker's
+    /// eager state size limit); everything else is served on demand.
+    Lazy { always_eager_keys: Vec<ByteString> },
+}
+
+impl EagerStateConfig {
+    /// Whether any state might be preloaded (always for `Eager`; only a non-empty whitelist for `Lazy`).
+    pub fn reads_any_eager_state(&self) -> bool {
+        match self {
+            Self::Eager => true,
+            Self::Lazy { always_eager_keys } => !always_eager_keys.is_empty(),
+        }
+    }
 }
 
 // --- Input rules
@@ -565,7 +581,11 @@ pub mod test_util {
         ) -> Option<InvocationAttemptOptions> {
             self.0.get(service_name.as_ref()).and_then(|c| {
                 c.1.get(handler_name.as_ref())
-                    .map(|_| InvocationAttemptOptions::default())
+                    .map(|_| InvocationAttemptOptions {
+                        abort_timeout: None,
+                        inactivity_timeout: None,
+                        eager_state: EagerStateConfig::Eager,
+                    })
             })
         }
 

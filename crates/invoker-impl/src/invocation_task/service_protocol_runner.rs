@@ -30,8 +30,7 @@ use restate_service_protocol::message::{
 };
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_types::errors::InvocationError;
-use restate_types::identifiers::ServiceId;
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::ServiceInvocationSpanContext;
 use restate_types::journal::raw::RawEntryCodec;
 use restate_types::journal::{Completion, CompletionResult, EntryType};
@@ -107,9 +106,9 @@ where
     /// Run the service protocol interaction.
     ///
     /// # Arguments
-    /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
-    ///   state for this service upfront. If `None`, lazy state is used (either because this
-    ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    /// * `keyed_service_id` - If `Some`, all state is preloaded eagerly for this service upfront.
+    ///   If `None`, lazy state is used. Service protocol <= v3 does not support the per-key eager
+    ///   whitelist, so it is either fully eager or fully lazy.
     pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
