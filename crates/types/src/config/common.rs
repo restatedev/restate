@@ -863,7 +863,6 @@ experimental! {
     /// already cached by RocksDB.
     ///
     /// Since v1.7.9
-
     vqueues_async_refill,
 
     /// # Write invocation response result using reference
