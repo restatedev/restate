@@ -65,6 +65,8 @@ pub(crate) mod mocks;
 
 pub mod empty_invoker_status_handle;
 mod filter;
+#[cfg(test)]
+mod query_tests;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
 #[cfg(test)]
