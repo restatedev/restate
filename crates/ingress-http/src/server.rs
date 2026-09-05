@@ -187,17 +187,11 @@ where
                     ),
             )
             .layer(NormalizePathLayer::trim_trailing_slash())
-            .layer(RequestBodyLimitLayer::new(request_size_limit))
             .layer(CorsLayer::very_permissive())
+            .layer(RequestBodyLimitLayer::new(request_size_limit))
             .layer(layers::load_shed::LoadShedLayer::new(concurrency_limit))
             .layer(layers::tracing_context_extractor::HttpTraceContextExtractorLayer)
             .service(Handler::new(schemas, dispatcher));
-
-        // todo(azmy): `CorsLayer` should sit above `RequestBodyLimitLayer` so CORS is applied
-        // as early as possible. This is currently blocked because `CorsLayer` requires the
-        // response body to implement `Default`, which `RequestBodyLimitLayer`'s body does not.
-        // Tracked upstream in https://github.com/tower-rs/tower-http/pull/679  once merged,
-        // move `CorsLayer` above `RequestBodyLimitLayer`.
 
         let shutdown = cancellation_token();
 
@@ -472,6 +466,7 @@ mod tests {
         bootstrap_test(
             Listeners::new_unix_listener(socket_path.clone()).unwrap(),
             mock_dispatcher,
+            10 * 1024 * 1024,
         )
         .await;
 
@@ -504,9 +499,50 @@ mod tests {
         restate_test_util::assert_eq!(response_value.greeting, "Igal");
     }
 
+    #[restate_core::test]
+    #[traced_test]
+    async fn oversized_request_includes_cors_headers() {
+        const REQUEST_SIZE_LIMIT: usize = 1024;
+        const REQUEST_ORIGIN: &str = "https://example.com";
+
+        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_path = socket_dir.path().join("ingress.sock");
+        bootstrap_test(
+            Listeners::new_unix_listener(socket_path.clone()).unwrap(),
+            MockRequestDispatcher::default(),
+            REQUEST_SIZE_LIMIT,
+        )
+        .await;
+
+        let client = Client::builder(TokioExecutor::new())
+            .http2_only(true)
+            .build::<_, Full<Bytes>>(UnixSocketConnector::new(socket_path));
+        let body = Bytes::from(vec![b'a'; REQUEST_SIZE_LIMIT * 2]);
+        let response = client
+            .request(
+                http::Request::post("http://localhost/greeter.Greeter/greet")
+                    .header(http::header::ORIGIN, REQUEST_ORIGIN)
+                    .header(http::header::CONTENT_TYPE, "application/json")
+                    .header(http::header::CONTENT_LENGTH, body.len())
+                    .body(Full::new(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), http::StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            response
+                .headers()
+                .get(http::header::ACCESS_CONTROL_ALLOW_ORIGIN),
+            Some(&http::HeaderValue::from_static(REQUEST_ORIGIN))
+        );
+    }
+
     async fn bootstrap_test(
         listeners: Listeners<HttpIngressPort>,
         mock_request_dispatcher: MockRequestDispatcher,
+        request_size_limit: usize,
     ) {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
         let health = Health::default();
@@ -515,7 +551,7 @@ mod tests {
         let ingress = HyperServerIngress::new(
             listeners,
             Semaphore::MAX_PERMITS,
-            10 * 1024 * 1024, // 10MB
+            request_size_limit,
             None,
             Live::from_value(mock_schemas()),
             Arc::new(mock_request_dispatcher),

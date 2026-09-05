@@ -129,7 +129,7 @@ toml_edit = { version = "0.22", features = ["serde"] }
 toml_parser = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
-tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "follow-redirect", "limit", "map-response-body", "normalize-path", "trace"] }
+tower-http-ca01ad9e24f5d932 = { package = "tower-http", version = "0.7", default-features = false, features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "limit", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
@@ -266,7 +266,7 @@ toml_edit = { version = "0.22", features = ["serde"] }
 toml_parser = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
-tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "follow-redirect", "limit", "map-response-body", "normalize-path", "trace"] }
+tower-http-ca01ad9e24f5d932 = { package = "tower-http", version = "0.7", default-features = false, features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "limit", "normalize-path", "trace"] }
 tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_level_debug"] }
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
@@ -302,6 +302,7 @@ signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", features = ["follow-redirect", "map-response-body", "trace"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -321,6 +322,7 @@ signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", features = ["follow-redirect", "map-response-body", "trace"] }
 
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -341,6 +343,7 @@ signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", features = ["follow-redirect", "map-response-body", "trace"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
@@ -361,6 +364,7 @@ signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs"] }
+tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", features = ["follow-redirect", "map-response-body", "trace"] }
 
 ### END HAKARI SECTION
 
