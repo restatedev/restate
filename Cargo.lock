@@ -1203,9 +1203,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1014.3"
+version = "0.1015.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4d053824c41aee6de278bf47aa60f3a25ea88d811686de55f8203be5bc997854"
+checksum = "e695464f6609257c7f526cfb349af9f9f3382ba303575fec0aa5c8aa6dc8f172"
 dependencies = [
  "autocfg",
  "bilrost-derive",
@@ -1216,12 +1216,12 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1014.3"
+version = "0.1015.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cae3f73ea583180bd3ddfcf8b1bcec75a4eb9f20f8afdd872562b860eae56bd4"
+checksum = "012c3b56920a8d65ab7967e173184dd95f33f36b6b9a6cde3350d358134bf0d8"
 dependencies = [
  "eyre",
- "itertools 0.14.0",
+ "itertools 0.15.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -4780,6 +4780,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.15.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b4baf93f58d4425749ca49a51c50ebab072c5df6994d08fed93541c331481dc"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7930,10 +7939,12 @@ version = "1.8.0-dev"
 dependencies = [
  "bilrost",
  "bytes",
+ "http 1.5.0",
  "rand 0.10.2",
  "restate-encoding-derive",
  "restate-platform",
  "restate-workspace-hack",
+ "serde_json",
 ]
 
 [[package]]
@@ -9072,6 +9083,7 @@ dependencies = [
  "ulid",
  "utoipa",
  "xxhash-rust",
+ "zstd",
 ]
 
 [[package]]
@@ -9333,7 +9345,6 @@ dependencies = [
  "block-buffer 0.12.1",
  "bytes",
  "bytestring",
- "cc",
  "chrono",
  "clap",
  "clap_builder",
@@ -9376,7 +9387,6 @@ dependencies = [
  "idna",
  "indexmap 2.14.0",
  "ipnet",
- "itertools 0.14.0",
  "jemalloc_pprof",
  "lexical-parse-float",
  "lexical-parse-integer",

@@ -11,6 +11,7 @@
 pub mod http_auth;
 
 pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+use restate_encoding::RestateEncoding;
 
 use std::collections::HashMap;
 use std::fmt;
@@ -32,15 +33,25 @@ use http::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-#[derive(Debug, Copy, Clone, Eq, PartialEq, Serialize, Deserialize, derive_more::Display)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    derive_more::Display,
+    bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ProtocolType {
     /// Request/Response
     #[display("Request/Response")]
-    RequestResponse,
+    RequestResponse = 0,
     /// Bidirectional Stream
     #[display("Bidirectional Stream")]
-    BidiStream,
+    BidiStream = 1,
 }
 
 #[derive(Debug, Clone)]
@@ -129,10 +140,10 @@ impl Deployment {
 }
 
 /// Lambda compression
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum EndpointLambdaCompression {
-    Zstd,
+    Zstd = 0,
 }
 
 impl EndpointLambdaCompression {
@@ -146,22 +157,31 @@ impl EndpointLambdaCompression {
 // TODO this type is serde because it represents how data is stored in the schema registry
 //  re-evaluate whether we should use another ad-hoc data structure for storage representation after schema v2 migration.
 #[serde_as]
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, bilrost::Oneof)]
 #[serde(from = "serde_hacks::DeploymentType")]
 pub enum DeploymentType {
+    #[bilrost(tag = 2, message)]
     Http {
         #[serde(with = "serde_with::As::<serde_with::DisplayFromStr>")]
+        #[bilrost(tag = 1, encoding(RestateEncoding))]
         address: Uri,
+        #[bilrost(tag = 2)]
         protocol_type: ProtocolType,
         #[serde(with = "serde_with::As::<restate_serde_util::VersionSerde>")]
+        #[bilrost(tag = 3, encoding(RestateEncoding))]
         http_version: http::Version,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[bilrost(oneof(4))]
         auth: Option<HttpAuth>,
     },
+    #[bilrost(tag = 3, message)]
     Lambda {
+        #[bilrost(tag = 1)]
         arn: LambdaARN,
+        #[bilrost(tag = 2)]
         assume_role_arn: Option<ByteString>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[bilrost(tag = 3)]
         compression: Option<EndpointLambdaCompression>,
     },
 }

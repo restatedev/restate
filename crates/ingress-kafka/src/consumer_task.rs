@@ -458,7 +458,7 @@ where
     async fn legacy_dedup_offset(&self) -> Option<u64> {
         if !matches!(
             self.builder.subscription().sink(),
-            Sink::Invocation {
+            Sink {
                 event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
             }
         ) {
