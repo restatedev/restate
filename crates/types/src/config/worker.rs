@@ -61,7 +61,10 @@ pub struct WorkerOptions {
     ///
     /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or workflows,
     /// Restate periodically scans among the completed invocations to check whether they need to be removed or not.
-    /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
+    /// This interval sets the expected full sweep cycle of the cleaner. Internally, the cleaner divides this interval
+    /// into smaller sweeps each scanning a subset of the database.
+    ///
+    /// Default: 1 hour.
     cleanup_interval: NonZeroFriendlyDuration,
 
     pub storage: StorageOptions,
