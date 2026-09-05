@@ -135,16 +135,6 @@ impl InvokerConcurrencyQuota {
             }
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn available_slots(&self) -> usize {
-        match &self.inner {
-            InvokerConcurrencyQuotaInner::Unlimited => usize::MAX,
-            InvokerConcurrencyQuotaInner::Limited { slots, .. } => {
-                slots.available_slots.load(Ordering::Relaxed)
-            }
-        }
-    }
 }
 
 /// An acquired concurrency slot.
