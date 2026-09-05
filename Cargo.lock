@@ -8556,6 +8556,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
+ "restate-util-random",
  "restate-util-string",
  "restate-util-time",
  "restate-workspace-hack",

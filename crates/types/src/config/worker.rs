@@ -39,7 +39,9 @@ const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
-const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 5000;
+// Max successive merges are disabled by default to reduce the CPU during
+// writes/flushes.
+const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 0;
 
 /// # Worker options
 #[serde_as]
