@@ -853,7 +853,6 @@ experimental! {
     /// already cached by RocksDB.
     ///
     /// Since v1.7.9
-
     vqueues_async_refill,
 
     /// # Use bilrost encoding for schemas
