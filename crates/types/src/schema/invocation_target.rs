@@ -17,6 +17,7 @@ use bytestring::ByteString;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
+use restate_encoding::RestateEncoding;
 use restate_util_bytecount::ByteCount;
 
 use crate::identifiers::DeploymentId;
@@ -65,14 +66,16 @@ pub trait InvocationTargetResolver {
     ) -> (RetryIter<'static>, OnMaxAttempts);
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Eq, PartialEq, Copy, Default, Serialize, Deserialize, bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum OnMaxAttempts {
     /// Pause the invocation when max attempts are reached.
     #[default]
-    Pause,
+    Pause = 0,
     /// Kill the invocation when max attempts are reached.
-    Kill,
+    Kill = 1,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -148,9 +151,10 @@ pub enum InputValidationError {
     ContentTypeNotMatching(String, InputContentType),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
 pub struct InputRules {
     /// Input validation will try each of these rules. Validation passes if at least one rule matches.
+    #[bilrost(tag = 1)]
     pub input_validation_rules: Vec<InputValidationRule>,
 }
 
@@ -232,23 +236,27 @@ impl fmt::Display for InputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message, bilrost::Oneof)]
 pub enum InputValidationRule {
     // Input and content-type must be empty
     NoBodyAndContentType,
 
+    #[bilrost(tag = 1)]
     // Validates only the content-type, not the content
     ContentType {
         // Can use wildcards
         content_type: InputContentType,
     },
 
+    #[bilrost(tag = 2, message)]
     // Validates the input as json value
     JsonValue {
         // Can use wildcards
+        #[bilrost(tag = 1)]
         content_type: InputContentType,
         // Right now we don't use this schema for anything except printing,
         // so no need to use a more specialized type (we validate the schema is valid inside the schema registry updater)
+        #[bilrost(tag = 2, encoding(RestateEncoding))]
         schema: Option<serde_json::Value>,
     },
 }
@@ -307,14 +315,18 @@ impl InputValidationRule {
 }
 
 /// Describes a content type in the same format of the [`Accept` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, bilrost::Message, bilrost::Oneof,
+)]
 pub enum InputContentType {
     /// `*/*`
     #[default]
     Any,
     /// `<MIME_type>/*`
+    #[bilrost(tag = 1)]
     MimeType(ByteString),
     /// `<MIME_type>/<MIME_subtype>`
+    #[bilrost(tag = 2, message)]
     MimeTypeAndSubtype(ByteString, ByteString),
 }
 
@@ -410,10 +422,12 @@ impl FromStr for InputContentType {
 
 // --- Output rules
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
 pub struct OutputRules {
+    #[bilrost(tag = 1)]
     pub content_type_rule: OutputContentTypeRule,
     // Json schema, if present
+    #[bilrost(tag = 2, encoding(RestateEncoding))]
     pub json_schema: Option<serde_json::Value>,
 }
 
@@ -446,19 +460,23 @@ impl fmt::Display for OutputRules {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Message, bilrost::Oneof)]
 pub enum OutputContentTypeRule {
     None,
+    #[bilrost(tag = 1, message)]
     Set {
         #[serde(with = "serde_with::As::<restate_serde_util::HeaderValueSerde>")]
+        #[bilrost(tag = 1, encoding(RestateEncoding))]
         content_type: http::HeaderValue,
         // If true, sets the content-type even if the output is empty.
         // Otherwise, don't set the content-type.
+        #[bilrost(tag = 2)]
         set_content_type_if_empty: bool,
         // If true, this should be a JSON Value.
         // We don't need this field anymore, but we can't remove because we break back-compat
         #[deprecated]
         #[serde(default)] // TODO(slinkydeveloper) remove in 1.6
+        #[bilrost(tag = 3)]
         has_json_schema: bool,
     },
 }

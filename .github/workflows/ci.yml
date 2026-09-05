@@ -244,7 +244,24 @@ jobs:
       envVars: |
         RESTATE_experimental_enable_protocol_v7=true
       testArtifactOutput: sdk-typescript-protocol-v7-test-report
-  
+
+  sdk-typescript-bilrost-schema:
+    name: Run SDK-Typescript integration tests with Bilrost schema encoding
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    secrets: inherit
+    needs: docker
+    uses: restatedev/sdk-typescript/.github/workflows/integration.yaml@main
+    with:
+      restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
+      envVars: |
+        RESTATE_experimental_enable_schema_bilrost_encoding=true
+      testArtifactOutput: sdk-typescript-bilrost-schema-test-report
+
   sdk-rust:
     name: Run SDK-Rust integration tests
     permissions:
@@ -300,6 +317,56 @@ jobs:
         with:
           testArtifactOutput: e2e-test-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
+
+  e2e-bilrost-schema:
+    name: Run E2E tests with bilrost schema
+    runs-on: warp-ubuntu-latest-x64-4x
+    # we don't expect all tests to pass, that's why we continue on error
+    continue-on-error: true
+    permissions:
+      contents: read
+      issues: read
+      checks: write
+      pull-requests: write
+      actions: read
+    needs: docker
+    steps:
+      - name: Set up Docker containerd snapshotter
+        uses: docker/setup-docker-action@v4
+        with:
+          version: "v28.5.2"
+          set-host: true
+          daemon-config: |
+            {
+              "features": {
+                "containerd-snapshotter": true
+              }
+            }
+
+      ### Download the Restate container image, if needed
+      - name: Download restate snapshot from in-progress workflow
+        uses: actions/download-artifact@v4
+        with:
+          name: restate.tar
+      - name: Install restate snapshot
+        run: |
+          output=$(docker load --input restate.tar | head -n 1)
+          docker tag "${output#*: }" "localhost/restatedev/restate-commit-download:latest"
+          docker image ls -a
+
+      ### Run e2e tests with bilrost schema enabled.
+      - name: Run E2E tests
+        uses: restatedev/e2e/e2e-tests@main
+        with:
+          testArtifactOutput: e2e-test-bilrost-schema-report
+          restateContainerImage: localhost/restatedev/restate-commit-download:latest
+          envVars: |
+            RESTATE_experimental_enable_schema_bilrost_encoding=true
+          exclusions: |
+            exclusions:
+              "versionCompat":
+                - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
+                - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
   e2e-vqueues:
     name: Run E2E tests with vqueues

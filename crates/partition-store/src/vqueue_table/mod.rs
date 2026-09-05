@@ -224,17 +224,44 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         update: &restate_storage_api::vqueue_table::metadata::Update,
         _entry_metadata: Option<&EntryMetadata>,
     ) {
+        // Vqueues that was touched more than 1 hour ago will always be fully written.
+        const HOUR_MS: u64 = const { 60 * 60 * 1000 };
+        // 1% Probability to perform a full write rather than a merge. (1 in a 100)
+        const DEFAULT_SAMPLE_RATE: u64 = const { u64::MAX / 100 };
+
         let key_buffer = MetaKey::from(qid).to_bytes();
-        self.raw_merge_cf(
-            KeyKind::VQueueMeta,
-            key_buffer,
-            update.encode_contiguous().into_vec(),
-        );
 
         // Mutate the VQueue metadata
         let was_active_before = meta.is_active();
-        // mutate in-place
-        meta.apply_update(update);
+
+        // The issue here is that rarely modified vqueues will not get full writes.
+        // We check if the vqueue was last modified long time ago
+        // and perform a full write for it. To determine that we find the
+        // `max(last_*_at)` from timestamps and compare it with `update.ts`.
+        if restate_util_random::pseudo_random() < DEFAULT_SAMPLE_RATE
+            || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS
+        {
+            // mutate in-place
+            meta.apply_update(update);
+            // full write
+            let value_buf = {
+                let value_buf = self.cleared_value_buffer_mut(meta.encoded_len());
+                // unwrap is safe because we know the buffer is big enough.
+                meta.encode(value_buf).unwrap();
+                value_buf.split()
+            };
+            self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+        } else {
+            // Mutate the cache in-place
+            meta.apply_update(update);
+
+            self.raw_merge_cf(
+                KeyKind::VQueueMeta,
+                key_buffer,
+                update.encode_contiguous().into_vec(),
+            );
+        }
+
         let is_active_now = meta.is_active();
 
         // Update active queue index

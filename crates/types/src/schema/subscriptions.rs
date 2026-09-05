@@ -18,69 +18,85 @@ use crate::identifiers::SubscriptionId;
 use crate::invocation::{VirtualObjectHandlerType, WorkflowHandlerType};
 use crate::schema::Redaction;
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Why this is not an enum anymore?
+//
+// it's because the entire subscription mechanism will be deprecated
+// once we merge the Ingestion API. This is only here now for
+// backward compatibility and should not be extended.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub enum Source {
-    Kafka { cluster: String, topic: String },
+#[serde(from = "serde_hacks::Source", into = "serde_hacks::Source")]
+pub struct KafkaSource {
+    #[bilrost(tag(1))]
+    pub cluster: String,
+    #[bilrost(tag(2))]
+    pub topic: String,
 }
 
-impl fmt::Display for Source {
+impl fmt::Display for KafkaSource {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Source::Kafka { cluster, topic, .. } => {
-                write!(f, "kafka://{cluster}/{topic}")
-            }
-        }
+        let Self { cluster, topic } = self;
+        write!(f, "kafka://{cluster}/{topic}")
     }
 }
 
-impl PartialEq<&str> for Source {
+impl PartialEq<&str> for KafkaSource {
     fn eq(&self, other: &&str) -> bool {
         self.to_string().as_str() == *other
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+// Why this is not an enum anymore?
+//
+// it's because the entire subscription mechanism will be deprecated
+// once we merge the Ingestion API. This is only here now for
+// backward compatibility and should not be extended.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 #[serde(from = "serde_hacks::Sink", into = "serde_hacks::Sink")]
-pub enum Sink {
-    Invocation {
-        event_invocation_target_template: EventInvocationTargetTemplate,
-    },
+pub struct Sink {
+    #[bilrost(tag(1))]
+    pub event_invocation_target_template: EventInvocationTargetTemplate,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum EventInvocationTargetTemplate {
+    Unknown,
+    #[bilrost(tag(1), message)]
     Service {
+        #[bilrost(tag(1))]
         name: String,
+        #[bilrost(tag(2))]
         handler: String,
     },
+    #[bilrost(tag(2), message)]
     VirtualObject {
+        #[bilrost(tag(1))]
         name: String,
+        #[bilrost(tag(2))]
         handler: String,
+        #[bilrost(tag(3))]
         handler_ty: VirtualObjectHandlerType,
     },
+    #[bilrost(tag(3), message)]
     Workflow {
+        #[bilrost(tag(1))]
         name: String,
+        #[bilrost(tag(2))]
         handler: String,
+        #[bilrost(tag(3))]
         handler_ty: WorkflowHandlerType,
     },
 }
 
 impl fmt::Display for Sink {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::Service { name, handler, .. },
+        match &self.event_invocation_target_template {
+            EventInvocationTargetTemplate::Unknown => {
+                write!(f, "unknown")
             }
-            | Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::VirtualObject { name, handler, .. },
-            }
-            | Sink::Invocation {
-                event_invocation_target_template:
-                    EventInvocationTargetTemplate::Workflow { name, handler, .. },
-            } => {
+            EventInvocationTargetTemplate::Service { name, handler, .. }
+            | EventInvocationTargetTemplate::VirtualObject { name, handler, .. }
+            | EventInvocationTargetTemplate::Workflow { name, handler, .. } => {
                 write!(f, "service://{name}/{handler}")
             }
         }
@@ -93,18 +109,22 @@ impl PartialEq<&str> for Sink {
     }
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, bilrost::Message)]
 pub struct Subscription {
+    #[bilrost(tag(1))]
     id: SubscriptionId,
-    source: Source,
+    #[bilrost(tag(2))]
+    source: KafkaSource,
+    #[bilrost(tag(3))]
     sink: Sink,
+    #[bilrost(tag(4))]
     metadata: HashMap<String, String>,
 }
 
 impl Subscription {
     pub fn new(
         id: SubscriptionId,
-        source: Source,
+        source: KafkaSource,
         sink: Sink,
         metadata: HashMap<String, String>,
     ) -> Self {
@@ -120,7 +140,7 @@ impl Subscription {
         self.id
     }
 
-    pub fn source(&self) -> &Source {
+    pub fn source(&self) -> &KafkaSource {
         &self.source
     }
 
@@ -164,6 +184,26 @@ pub trait SubscriptionResolver {
 mod serde_hacks {
     use super::*;
 
+    #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
+    #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+    pub enum Source {
+        Kafka { cluster: String, topic: String },
+    }
+
+    impl From<KafkaSource> for Source {
+        fn from(value: KafkaSource) -> Self {
+            let KafkaSource { cluster, topic } = value;
+            Self::Kafka { cluster, topic }
+        }
+    }
+
+    impl From<Source> for KafkaSource {
+        fn from(value: Source) -> Self {
+            let Source::Kafka { cluster, topic } = value;
+            Self { cluster, topic }
+        }
+    }
+
     /// Specialized version of [super::service::ServiceType]
     #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
     #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -196,7 +236,7 @@ mod serde_hacks {
                     name,
                     handler,
                     ty: EventReceiverServiceType::Service,
-                } => Self::Invocation {
+                } => Self {
                     event_invocation_target_template: EventInvocationTargetTemplate::Service {
                         name,
                         handler,
@@ -206,7 +246,7 @@ mod serde_hacks {
                     name,
                     handler,
                     ty: EventReceiverServiceType::VirtualObject,
-                } => Self::Invocation {
+                } => Self {
                     event_invocation_target_template:
                         EventInvocationTargetTemplate::VirtualObject {
                             name,
@@ -218,7 +258,7 @@ mod serde_hacks {
                     name,
                     handler,
                     ty: EventReceiverServiceType::Workflow,
-                } => Self::Invocation {
+                } => Self {
                     event_invocation_target_template: EventInvocationTargetTemplate::Workflow {
                         name,
                         handler,
@@ -228,7 +268,7 @@ mod serde_hacks {
                 Sink::Invocation {
                     event_invocation_target_template,
                     ..
-                } => Self::Invocation {
+                } => Self {
                     event_invocation_target_template,
                 },
             }
@@ -237,12 +277,8 @@ mod serde_hacks {
 
     impl From<super::Sink> for Sink {
         fn from(value: super::Sink) -> Self {
-            match value {
-                super::Sink::Invocation {
-                    event_invocation_target_template,
-                } => Self::Invocation {
-                    event_invocation_target_template,
-                },
+            Self::Invocation {
+                event_invocation_target_template: value.event_invocation_target_template,
             }
         }
     }
@@ -260,11 +296,11 @@ pub mod mocks {
                 .expect("stable valid subscription id");
             Subscription {
                 id,
-                source: Source::Kafka {
+                source: KafkaSource {
                     cluster: "my-cluster".to_string(),
                     topic: "my-topic".to_string(),
                 },
-                sink: Sink::Invocation {
+                sink: Sink {
                     event_invocation_target_template: EventInvocationTargetTemplate::Service {
                         name: "MySvc".to_string(),
                         handler: "MyMethod".to_string(),
@@ -273,5 +309,66 @@ pub mod mocks {
                 metadata: Default::default(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use serde::{Deserialize, Serialize};
+
+    use crate::invocation::VirtualObjectHandlerType;
+
+    #[test]
+    fn serde_compatibility() {
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct OldContainer {
+            source: super::serde_hacks::Source,
+            sink: super::serde_hacks::Sink,
+        }
+
+        #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+        struct NewContainer {
+            source: super::KafkaSource,
+            sink: super::Sink,
+        }
+
+        let old = OldContainer {
+            source: super::serde_hacks::Source::Kafka {
+                cluster: "my-cluster".into(),
+                topic: "my-topic".into(),
+            },
+            sink: super::serde_hacks::Sink::Invocation {
+                event_invocation_target_template:
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject {
+                        name: "object".into(),
+                        handler: "handler".into(),
+                        handler_ty: VirtualObjectHandlerType::Exclusive,
+                    },
+            },
+        };
+
+        let new = NewContainer {
+            source: super::KafkaSource {
+                cluster: "my-cluster".into(),
+                topic: "my-topic".into(),
+            },
+            sink: super::Sink {
+                event_invocation_target_template:
+                    crate::schema::subscriptions::EventInvocationTargetTemplate::VirtualObject {
+                        name: "object".into(),
+                        handler: "handler".into(),
+                        handler_ty: VirtualObjectHandlerType::Exclusive,
+                    },
+            },
+        };
+
+        let buffer = flexbuffers::to_vec(&new).unwrap();
+        let loaded: OldContainer = flexbuffers::from_slice(&buffer).unwrap();
+        assert_eq!(loaded, old);
+
+        let buffer = flexbuffers::to_vec(&old).unwrap();
+        let loaded: NewContainer = flexbuffers::from_slice(&buffer).unwrap();
+
+        assert_eq!(loaded, new);
     }
 }

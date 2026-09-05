@@ -34,7 +34,7 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
+bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
@@ -75,7 +75,6 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
@@ -165,11 +164,10 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1014", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
+bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
-cc = { version = "1", default-features = false, features = ["parallel"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
@@ -209,7 +207,6 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
