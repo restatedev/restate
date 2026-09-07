@@ -11,7 +11,6 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use restate_utoipa::openapi::extensions::Extensions;
@@ -21,16 +20,14 @@ use restate_utoipa::openapi::*;
 
 use super::Handler;
 use crate::identifiers::ServiceRevision;
-use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
+use crate::invocation::ServiceType;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
 use crate::schema::invocation_target::{InputValidationRule, OutputContentTypeRule};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 pub(super) struct ServiceOpenAPI {
     rpc_paths: Paths,
     send_paths: Paths,
-    attach_paths: Paths,
-    get_output_paths: Paths,
     extensions: Option<Extensions>,
     components: Components,
 }
@@ -51,24 +48,25 @@ impl ServiceOpenAPI {
         };
 
         let mut call_parameters: Vec<RefOr<Parameter>> = vec![];
-        let mut attach_get_output_parameters: Vec<RefOr<Parameter>> = vec![];
         if service_type.is_keyed() {
             call_parameters.push(parameters_ref(KEY_PARAMETER_REF_NAME).into());
-            attach_get_output_parameters.push(parameters_ref(KEY_PARAMETER_REF_NAME).into());
         }
         if service_type != ServiceType::Workflow {
             call_parameters.push(parameters_ref(IDEMPOTENCY_KEY_HEADER_PARAMETER_REF_NAME).into());
-            attach_get_output_parameters
-                .push(parameters_ref(IDEMPOTENCY_KEY_PATH_PARAMETER_REF_NAME).into());
         }
+
+        // Scoped call/send carry the scope key from the path plus an optional limit key.
+        let mut scoped_call_parameters: Vec<RefOr<Parameter>> =
+            vec![parameters_ref(SCOPE_PARAMETER_REF_NAME).into()];
+        scoped_call_parameters.extend(call_parameters.iter().cloned());
+        scoped_call_parameters.push(parameters_ref(LIMIT_KEY_HEADER_PARAMETER_REF_NAME).into());
 
         let mut rpc_paths = Paths::builder();
         let mut send_paths = Paths::builder();
-        let mut attach_paths = Paths::builder();
-        let mut get_output_paths = Paths::builder();
         for (handler_name, handler_schemas) in handlers {
             let operation_id = handler_name;
             let summary = Some(handler_name.clone());
+            let scoped_summary = Some(format!("{handler_name} (with scope)"));
 
             if !handler_schemas.public.unwrap_or(true) {
                 // We don't generate the OpenAPI route for that.
@@ -142,8 +140,7 @@ impl ServiceOpenAPI {
                         .parameters(Some(call_parameters.clone()))
                         .parameter(parameters_ref(DELAY_PARAMETER_REF_NAME))
                         .tag(SEND_TAG_NAME.to_string())
-                        .request_body(request_body)
-                        .response("200", responses_ref(SEND_RESPONSE_REF_NAME))
+                        .request_body(request_body.clone())
                         .response("202", responses_ref(SEND_RESPONSE_REF_NAME))
                         .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
                         .extensions(extensions.clone())
@@ -155,154 +152,60 @@ impl ServiceOpenAPI {
                 send_item,
             );
 
-            if service_type == ServiceType::Workflow {
-                // We add attach/get output only for workflow run
-                if handler_schemas.target_ty
-                    == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                {
-                    let attach_item = PathItem::builder()
-                        .operation(
-                            HttpMethod::Get,
-                            Operation::builder()
-                                .summary(summary.clone())
-                                .operation_id(Some(format!("{operation_id}Attach")))
-                                .deprecated(Some(Deprecated::True))
-                                .description(Some(
-                                    format!("Deprecated: use POST /restate/lookup with a workflow target to obtain an invocation id, then GET /restate/attach/{{invocationId}}. {}", handler_schemas
-                                        .documentation
-                                        .as_ref()
-                                        .cloned()
-                                        .unwrap_or_else(|| {
-                                            format!(
-                                                "Attach to the running instance of {service_name}/{handler_name} workflow and wait to finish"
-                                            )
-                                        })),
-                                ))
-                                .parameters(Some(attach_get_output_parameters.clone()))
-                                .tag(ATTACH_TAG_NAME.to_string())
-                                .response("200", response.clone())
-                                .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
-                                .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
-                                .extensions(extensions.clone())
-                                .build(),
-                        )
-                        .build();
-                    attach_paths = attach_paths.path(
-                        format!("/restate/workflow/{service_name}/{{key}}/attach"),
-                        attach_item,
-                    );
+            // Scoped variants: same call/send but under `/restate/scope/{scopeKey}/...`,
+            // carrying the concurrency scope and an optional limit key.
+            let scoped_call_item = PathItem::builder()
+                .operation(
+                    HttpMethod::Post,
+                    Operation::builder()
+                        .summary(scoped_summary.clone())
+                        .operation_id(Some(format!("{operation_id}Scoped")))
+                        .description(Some(handler_schemas.documentation.as_ref().cloned().unwrap_or_else(|| {
+                            format!(
+                                "Call {service_name} handler {handler_name} within the concurrency scope and wait for response"
+                            )
+                        })))
+                        .parameters(Some(scoped_call_parameters.clone()))
+                        .request_body(request_body.clone())
+                        .response("200", response.clone())
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .extensions(extensions.clone())
+                        .build(),
+                )
+                .build();
+            rpc_paths = rpc_paths.path(
+                format!("/restate/scope/{{scope}}/call/{service_path_segment}/{handler_name}"),
+                scoped_call_item,
+            );
 
-                    let output_item = PathItem::builder()
-                        .operation(
-                            HttpMethod::Get,
-                            Operation::builder()
-                                .summary(summary.clone())
-                                .operation_id(Some(format!("{operation_id}Output")))
-                                .deprecated(Some(Deprecated::True))
-                                .description(Some(
-                                    format!("Deprecated: use POST /restate/lookup with a workflow target to obtain an invocation id, then GET /restate/output/{{invocationId}}. {}", handler_schemas
-                                        .documentation
-                                        .as_ref()
-                                        .cloned()
-                                        .unwrap_or_else(|| {
-                                            format!(
-                                                "Get output of the {service_name}/{handler_name} workflow"
-                                            )
-                                        })),
-                                ))
-                                .parameters(Some(attach_get_output_parameters.clone()))
-                                .tag(GET_OUTPUT_TAG_NAME.to_string())
-                                .response("200", response)
-                                .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
-                                .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
-                                .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
-                                .extensions(extensions)
-                                .build(),
-                        )
-                        .build();
-                    get_output_paths = get_output_paths.path(
-                        format!("/restate/workflow/{service_name}/{{key}}/output"),
-                        output_item,
-                    );
-                }
-            } else {
-                // We add attach/get output for each individual handler with idempotency key
-                let attach_item = PathItem::builder()
-                    .operation(
-                        HttpMethod::Get,
-                        Operation::builder()
-                            .summary(summary.clone())
-                            .operation_id(Some(format!("{operation_id}Attach")))
-                            .deprecated(Some(Deprecated::True))
-                            .description(Some(
-                                format!("Deprecated: use POST /restate/lookup with idempotency information to obtain an invocation id, then GET /restate/attach/{{invocationId}}. {}", handler_schemas
-                                    .documentation
-                                    .as_ref()
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        format!(
-                                            "Attach to a running instance of {service_name}/{handler_name} using the idempotency key and wait to finish"
-                                        )
-                                    })),
-                            ))
-                            .parameters(Some(attach_get_output_parameters.clone()))
-                            .tag(ATTACH_TAG_NAME.to_string())
-                            .response("200", response.clone())
-                            .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
-                            .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
-                            .extensions(extensions.clone())
-                            .build(),
-                    )
-                    .build();
-                attach_paths = attach_paths.path(
-                    format!(
-                        "/restate/invocation/{service_path_segment}/{handler_name}/{{idempotencyKey}}/attach"
-                    ),
-                    attach_item,
-                );
-
-                let output_item = PathItem::builder()
-                    .operation(
-                        HttpMethod::Get,
-                        Operation::builder()
-                            .summary(summary.clone())
-                            .operation_id(Some(format!("{operation_id}Output")))
-                            .deprecated(Some(Deprecated::True))
-                            .description(Some(
-                                format!("Deprecated: use POST /restate/lookup with with idempotency information to obtain an invocation id, then GET /restate/output/{{invocationId}}. {}", handler_schemas
-                                    .documentation
-                                    .as_ref()
-                                    .cloned()
-                                    .unwrap_or_else(|| {
-                                        format!(
-                                            "Get output of a running instance of {service_name}/{handler_name} using idempotency key"
-                                        )
-                                    })),
-                            ))
-                            .parameters(Some(attach_get_output_parameters.clone()))
-                            .tag(GET_OUTPUT_TAG_NAME.to_string())
-                            .response("200", response)
-                            .response("404", responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME))
-                            .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
-                            .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
-                            .extensions(extensions)
-                            .build(),
-                    )
-                    .build();
-                get_output_paths = get_output_paths.path(
-                    format!(
-                        "/restate/invocation/{service_path_segment}/{handler_name}/{{idempotencyKey}}/output"
-                    ),
-                    output_item,
-                );
-            }
+            let scoped_send_item = PathItem::builder()
+                .operation(
+                    HttpMethod::Post,
+                    Operation::builder()
+                        .summary(scoped_summary.clone())
+                        .operation_id(Some(format!("{operation_id}SendScoped")))
+                        .description(Some(handler_schemas.documentation.as_ref().cloned().unwrap_or_else(|| {
+                            format!("Send request to {service_name} handler {handler_name} within the concurrency scope")
+                        })))
+                        .parameters(Some(scoped_call_parameters.clone()))
+                        .parameter(parameters_ref(DELAY_PARAMETER_REF_NAME))
+                        .tag(SEND_TAG_NAME.to_string())
+                        .request_body(request_body)
+                        .response("202", responses_ref(SEND_RESPONSE_REF_NAME))
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .extensions(extensions.clone())
+                        .build(),
+                )
+                .build();
+            send_paths = send_paths.path(
+                format!("/restate/scope/{{scope}}/send/{service_path_segment}/{handler_name}"),
+                scoped_send_item,
+            );
         }
 
         ServiceOpenAPI {
             rpc_paths: rpc_paths.build(),
             send_paths: send_paths.build(),
-            attach_paths: attach_paths.build(),
-            get_output_paths: get_output_paths.build(),
             extensions: if !service_metadata.is_empty() {
                 Some(
                     Extensions::builder()
@@ -345,8 +248,7 @@ impl ServiceOpenAPI {
 
         let mut paths = self.rpc_paths.clone();
         paths.merge(self.send_paths.clone());
-        paths.merge(self.attach_paths.clone());
-        paths.merge(self.get_output_paths.clone());
+        paths.merge(invocation_output_status_paths());
 
         let servers = match ingress_url.into_address().unwrap() {
             // we are not going to expose the unix-socket address via openapi
@@ -509,6 +411,196 @@ fn infer_handler_response(
     }
 }
 
+/// Global (not per-handler) endpoints to attach to, read the output of, or check the status of an
+/// invocation. Each verb has a `GET /restate/{verb}/{invocationId}` variant addressing the
+/// invocation by id, and a `POST /restate/{verb}` variant whose body (`RestateInvocationTarget`)
+/// selects the target by invocation id, workflow key, or idempotency target.
+fn invocation_output_status_paths() -> Paths {
+    Paths::builder()
+        .path(
+            "/restate/attach/{invocationId}",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Get,
+                    Operation::builder()
+                        .summary(Some("Attach to invocation by id".to_string()))
+                        .operation_id(Some("attachInvocation".to_string()))
+                        .description(Some(
+                            "Attach to a running invocation and wait for it to finish.".to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .parameter(parameters_ref(INVOCATION_ID_PARAMETER_REF_NAME))
+                        .response("200", invocation_output_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .path(
+            "/restate/attach",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Post,
+                    Operation::builder()
+                        .summary(Some("Attach to invocation by target".to_string()))
+                        .operation_id(Some("attachInvocationByTarget".to_string()))
+                        .description(Some(
+                            "Attach to a running invocation and wait for it to finish.".to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .request_body(Some(invocation_target_request_body()))
+                        .response("200", invocation_output_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .path(
+            "/restate/output/{invocationId}",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Get,
+                    Operation::builder()
+                        .summary(Some("Get invocation output by id".to_string()))
+                        .operation_id(Some("getInvocationOutput".to_string()))
+                        .description(Some(
+                            "Get the output of an invocation, if it has already completed."
+                                .to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .parameter(parameters_ref(INVOCATION_ID_PARAMETER_REF_NAME))
+                        .response("200", invocation_output_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .path(
+            "/restate/output",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Post,
+                    Operation::builder()
+                        .summary(Some("Get invocation output by target".to_string()))
+                        .operation_id(Some("getInvocationOutputByTarget".to_string()))
+                        .description(Some(
+                            "Get the output of an invocation, if it has already completed."
+                                .to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .request_body(Some(invocation_target_request_body()))
+                        .response("200", invocation_output_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("470", responses_ref(INVOCATION_NOT_READY_RESPONSE_REF_NAME))
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .path(
+            "/restate/status/{invocationId}",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Get,
+                    Operation::builder()
+                        .summary(Some("Get invocation status by id".to_string()))
+                        .operation_id(Some("getInvocationStatus".to_string()))
+                        .description(Some(
+                            "Get the lifecycle status of an invocation.".to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .parameter(parameters_ref(INVOCATION_ID_PARAMETER_REF_NAME))
+                        .response("200", invocation_status_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .path(
+            "/restate/status",
+            PathItem::builder()
+                .operation(
+                    HttpMethod::Post,
+                    Operation::builder()
+                        .summary(Some("Get invocation status by target".to_string()))
+                        .operation_id(Some("getInvocationStatusByTarget".to_string()))
+                        .description(Some(
+                            "Get the lifecycle status of an invocation.".to_string(),
+                        ))
+                        .tag(INVOCATION_OUTPUT_STATUS_TAG_NAME.to_string())
+                        .request_body(Some(invocation_target_request_body()))
+                        .response("200", invocation_status_response())
+                        .response(
+                            "404",
+                            responses_ref(INVOCATION_NOT_FOUND_ERROR_RESPONSE_REF_NAME),
+                        )
+                        .response("default", responses_ref(GENERIC_ERROR_RESPONSE_REF_NAME))
+                        .build(),
+                )
+                .build(),
+        )
+        .build()
+}
+
+fn invocation_target_request_body() -> RequestBody {
+    RequestBody::builder()
+        .required(Some(Required::True))
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .schema(Some(schemas_ref(INVOCATION_TARGET_SCHEMA_REF_NAME)))
+                .build(),
+        )
+        .build()
+}
+
+fn invocation_output_response() -> Response {
+    Response::builder()
+        .description(
+            "Invocation output. The content type and body mirror the invoked handler's response.",
+        )
+        .build()
+}
+
+fn invocation_status_response() -> Response {
+    Response::builder()
+        .description("Invocation status")
+        .content(
+            "application/json",
+            ContentBuilder::new()
+                .schema(Some(schemas_ref(INVOCATION_STATUS_SCHEMA_REF_NAME)))
+                .example(Some(json!({
+                    "stage": "completed",
+                    "error": {
+                        "code": 500,
+                        "message": "My user-thrown terminal error"
+                    }
+                })))
+                .build(),
+        )
+        .build()
+}
+
 fn restate_components() -> Components {
     Components::builder()
         .parameter(DELAY_PARAMETER_REF_NAME, delay_parameter())
@@ -517,9 +609,11 @@ fn restate_components() -> Components {
             IDEMPOTENCY_KEY_HEADER_PARAMETER_REF_NAME,
             idempotency_key_header_parameter(),
         )
+        .parameter(INVOCATION_ID_PARAMETER_REF_NAME, invocation_id_parameter())
+        .parameter(SCOPE_PARAMETER_REF_NAME, scope_parameter())
         .parameter(
-            IDEMPOTENCY_KEY_PATH_PARAMETER_REF_NAME,
-            idempotency_key_path_parameter(),
+            LIMIT_KEY_HEADER_PARAMETER_REF_NAME,
+            limit_key_header_parameter(),
         )
         .response(GENERIC_ERROR_RESPONSE_REF_NAME, generic_error_response())
         .response(
@@ -534,6 +628,14 @@ fn restate_components() -> Components {
         .schema(
             RESTATE_ERROR_SCHEMA_REF_NAME,
             Schema::new(restate_error_json_schema()),
+        )
+        .schema(
+            INVOCATION_TARGET_SCHEMA_REF_NAME,
+            Schema::new(invocation_target_json_schema()),
+        )
+        .schema(
+            INVOCATION_STATUS_SCHEMA_REF_NAME,
+            Schema::new(invocation_status_json_schema()),
         )
         .build()
 }
@@ -590,17 +692,39 @@ fn idempotency_key_header_parameter() -> Parameter {
         .build()
 }
 
-const IDEMPOTENCY_KEY_PATH_PARAMETER_REF_NAME: &str = "idempotencyKeyPath";
+const INVOCATION_ID_PARAMETER_REF_NAME: &str = "invocationId";
 
-fn idempotency_key_path_parameter() -> Parameter {
+fn invocation_id_parameter() -> Parameter {
     Parameter::builder()
-        .name("idempotencyKey")
+        .name("invocationId")
         .parameter_in(ParameterIn::Path)
-        .schema(Some(
-            string_json_schema()
-        ))
+        .schema(Some(string_json_schema()))
         .required(Required::True)
-        .description(Some("Idempotency key used to execute the original request, for more details checkout the [idempotency key documentation](https://docs.restate.dev/invoke/http#invoke-a-handler-idempotently)."))
+        .description(Some("Invocation identifier."))
+        .build()
+}
+
+const SCOPE_PARAMETER_REF_NAME: &str = "scope";
+
+fn scope_parameter() -> Parameter {
+    Parameter::builder()
+        .name("scope")
+        .parameter_in(ParameterIn::Path)
+        .schema(Some(string_json_schema()))
+        .required(Required::True)
+        .description(Some("Concurrency scope, for more details checkout the [flow control documentation](https://docs.restate.dev/services/flow-control)."))
+        .build()
+}
+
+const LIMIT_KEY_HEADER_PARAMETER_REF_NAME: &str = "limitKeyHeader";
+
+fn limit_key_header_parameter() -> Parameter {
+    Parameter::builder()
+        .name("x-restate-limit-key")
+        .parameter_in(ParameterIn::Header)
+        .schema(Some(string_json_schema()))
+        .required(Required::False)
+        .description(Some("Limit key applied within the concurrency scope, for more details checkout the [flow control documentation](https://docs.restate.dev/services/flow-control)."))
         .build()
 }
 
@@ -676,7 +800,7 @@ const SEND_RESPONSE_REF_NAME: &str = "Send";
 
 fn send_response() -> Response {
     Response::builder()
-        .description("Send response")
+        .description("The invocation was accepted for asynchronous execution. Inspect the `status` field to tell whether this call created a new invocation (`Accepted`) or matched one that had already been accepted, e.g. via the same idempotency key (`PreviouslyAccepted`).")
         .content(
             "application/json",
             ContentBuilder::new()
@@ -698,6 +822,7 @@ fn send_response_json_schema() -> Value {
             },
             "status": {
                 "type": "string",
+                "description": "'Accepted' if this call created a new invocation, 'PreviouslyAccepted' if it matched an invocation that had already been accepted (e.g. same idempotency key).",
                 "enum": ["Accepted", "PreviouslyAccepted"]
             },
             "executionTime": {
@@ -759,24 +884,120 @@ fn restate_error_json_schema() -> Value {
             }
         },
         "required": ["message", "source"],
-        "additionalProperties": false
+        "additionalProperties": false,
+        "examples": [
+            {
+                "code": 500,
+                "message": "My user-thrown terminal error",
+                "source": "invocation",
+                "stacktrace": "TerminalError: My user-thrown terminal error\n    at greet (greeter.ts:12:11)"
+            },
+            {
+                "message": "invocation not found",
+                "source": "ingress"
+            }
+        ]
     })
 }
 
-const REQUEST_RESPONSE_TAG_NAME: &str = "Request Response";
-const SEND_TAG_NAME: &str = "Send";
-const ATTACH_TAG_NAME: &str = "Attach";
-const GET_OUTPUT_TAG_NAME: &str = "Get Output";
+const INVOCATION_TARGET_SCHEMA_REF_NAME: &str = "RestateInvocationTarget";
+
+// Mirror of the ingress `InvocationTargetRequest` body used by the POST attach/output/status routes.
+fn invocation_target_json_schema() -> Value {
+    json!({
+        "title": "RestateInvocationTarget",
+        "description": "Identifies an invocation, either directly by its id, or indirectly via a workflow key or an idempotency target.",
+        "oneOf": [
+            {
+                "type": "object",
+                "title": "By invocation id",
+                "properties": {
+                    "target": { "type": "string", "enum": ["invocation"] },
+                    "invocationId": { "type": "string" }
+                },
+                "required": ["target", "invocationId"]
+            },
+            {
+                "type": "object",
+                "title": "By workflow key",
+                "properties": {
+                    "target": { "type": "string", "enum": ["workflow"] },
+                    "scope": { "type": "string" },
+                    "workflowName": { "type": "string" },
+                    "workflowKey": { "type": "string" }
+                },
+                "required": ["target", "workflowName", "workflowKey"]
+            },
+            {
+                "type": "object",
+                "title": "By idempotency target",
+                "properties": {
+                    "target": { "type": "string", "enum": ["idempotentInvocation"] },
+                    "scope": { "type": "string" },
+                    "service": { "type": "string" },
+                    "key": { "type": "string" },
+                    "handler": { "type": "string" },
+                    "idempotencyKey": { "type": "string" }
+                },
+                "required": ["target", "service", "handler", "idempotencyKey"]
+            }
+        ]
+    })
+}
+
+const INVOCATION_STATUS_SCHEMA_REF_NAME: &str = "RestateInvocationStatus";
+
+// Mirror of the ingress `InvocationStatusResponse` body returned by the attach/output/status routes.
+fn invocation_status_json_schema() -> Value {
+    json!({
+        "type": "object",
+        "title": "RestateInvocationStatus",
+        "description": "Status of an invocation.",
+        "properties": {
+            "stage": {
+                "type": "string",
+                "title": "Lifecycle stage",
+                "description": "'created' (accepted but not yet started), 'started' (running), or 'completed' (finished, with either success or failure).",
+                "enum": ["created", "started", "completed"]
+            },
+            "error": {
+                "type": "object",
+                "title": "Terminal error",
+                "description": "Present only when 'stage' is 'completed' and the invocation failed; omitted otherwise.",
+                "properties": {
+                    "code": { "type": "number", "title": "Error code" },
+                    "message": { "type": "string", "title": "Error message" },
+                    "stacktrace": { "type": "string", "title": "Stacktrace of the error" },
+                    "metadata": {
+                        "type": "object",
+                        "title": "Additional metadata map",
+                        "additionalProperties": { "type": "string" }
+                    }
+                },
+                "required": ["code", "message"]
+            }
+        },
+        "required": ["stage"],
+        "additionalProperties": false,
+        "examples": [
+            { "stage": "started" },
+            {
+                "stage": "completed",
+                "error": {
+                    "code": 500,
+                    "message": "My user-thrown terminal error",
+                    "stacktrace": "TerminalError: My user-thrown terminal error\n    at greet (greeter.ts:12:11)"
+                }
+            }
+        ]
+    })
+}
+
+const SEND_TAG_NAME: &str = "Send to handler";
+const INVOCATION_OUTPUT_STATUS_TAG_NAME: &str = "Invocations output and status";
 
 fn restate_tags() -> Vec<Tag> {
     vec![
-        Tag::builder()
-            .name(REQUEST_RESPONSE_TAG_NAME)
-            .description(Some("Request response to handler".to_string()))
-            .external_docs(Some(ExternalDocs::new(
-                "https://docs.restate.dev/invoke/http",
-            )))
-            .build(),
         Tag::builder()
             .name(SEND_TAG_NAME)
             .description(Some("Send to handler".to_string()))
@@ -785,15 +1006,10 @@ fn restate_tags() -> Vec<Tag> {
             )))
             .build(),
         Tag::builder()
-            .name(ATTACH_TAG_NAME)
-            .description(Some("Attach to invocation".to_string()))
-            .external_docs(Some(ExternalDocs::new(
-                "https://docs.restate.dev/invoke/http",
-            )))
-            .build(),
-        Tag::builder()
-            .name(GET_OUTPUT_TAG_NAME)
-            .description(Some("Get invocation output".to_string()))
+            .name(INVOCATION_OUTPUT_STATUS_TAG_NAME)
+            .description(Some(
+                "Attach to, read the output of, or check the status of an invocation".to_string(),
+            ))
             .external_docs(Some(ExternalDocs::new(
                 "https://docs.restate.dev/invoke/http",
             )))
