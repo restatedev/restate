@@ -2935,6 +2935,58 @@ mod kafka_cluster {
     }
 
     #[test]
+    fn add_subscription_same_source_and_sink_is_idempotent() {
+        let schema = Schema::default();
+
+        let ((first_id, second_id, third_id), schema) =
+            SchemaUpdater::update_and_return(schema, |updater| {
+                updater
+                    .add_deployment(add_deployment_request(vec![greeter_service()]))
+                    .unwrap();
+                updater
+                    .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+                    .unwrap();
+
+                let source = "kafka://my-cluster/my-topic".parse().unwrap();
+                let sink = format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap();
+
+                let first_id = updater
+                    .add_subscription(source.clone(), sink.clone(), None)
+                    .unwrap();
+                let mut retry_options = HashMap::new();
+                retry_options.insert("group.id".to_string(), "custom-group".to_string());
+                let second_id = updater
+                    .add_subscription(source, sink.clone(), Some(retry_options))
+                    .unwrap();
+                let third_id = updater
+                    .add_subscription(
+                        "kafka://my-cluster/other-topic".parse().unwrap(),
+                        sink,
+                        None,
+                    )
+                    .unwrap();
+                Ok::<_, SchemaError>((first_id, second_id, third_id))
+            })
+            .unwrap();
+
+        assert_eq!(first_id, second_id);
+        assert_ne!(first_id, third_id);
+
+        let subscriptions = schema.list_subscriptions(&[], Redaction::No);
+        assert_eq!(subscriptions.len(), 2);
+        let original = subscriptions
+            .iter()
+            .find(|subscription| subscription.id() == first_id)
+            .expect("original subscription");
+        assert_ne!(
+            original.metadata().get("group.id").map(String::as_str),
+            Some("custom-group")
+        );
+    }
+
+    #[test]
     fn subscription_with_nonexistent_kafka_cluster() {
         let mut updater = SchemaUpdater::default();
 

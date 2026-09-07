@@ -934,6 +934,14 @@ impl SchemaUpdater {
             }
         };
 
+        if let Some(existing) =
+            self.schema.subscriptions.values().find(|subscription| {
+                subscription.source() == &source && subscription.sink() == &sink
+            })
+        {
+            return Ok(existing.id());
+        }
+
         let mut metadata = metadata.unwrap_or_default();
         check_ignored_kafka_properties(&metadata);
 
