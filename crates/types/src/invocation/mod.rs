@@ -140,6 +140,11 @@ impl fmt::Display for WorkflowHandlerType {
     bilrost::Oneof,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+// NOTE: Do not add a variant to InvocationTargetType without skipping a
+// version first. This is a `bilrost::Oneof`, and a node running an older
+// version decodes an unrecognized tag as `Self::Service` instead of
+// failing, so it would silently treat the new target type as a plain
+// service.
 pub enum InvocationTargetType {
     Service,
     #[bilrost(tag = 1)]
