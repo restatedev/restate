@@ -49,21 +49,15 @@ impl ServiceProtocolVersion {
     /// Pick the version to use for running an invocation
     pub fn pick(
         deployment_supported_versions: &RangeInclusive<i32>,
-        enable_protocol_v7: bool,
     ) -> Option<ServiceProtocolVersion> {
-        let max_version = if enable_protocol_v7 {
-            ServiceProtocolVersion::V7
-        } else {
-            ServiceProtocolVersion::V6
-        };
-
-        if *deployment_supported_versions.start() <= i32::from(max_version)
+        if *deployment_supported_versions.start()
+            <= i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION)
             && *deployment_supported_versions.end()
                 >= i32::from(MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION)
         {
             ServiceProtocolVersion::try_from(std::cmp::min(
                 *deployment_supported_versions.end(),
-                i32::from(max_version),
+                i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION),
             ))
             .ok()
         } else {
