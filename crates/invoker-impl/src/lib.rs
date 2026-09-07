@@ -139,7 +139,6 @@ struct DefaultInvocationTaskRunner<EE, Schemas> {
     entry_enricher: EE,
     schemas: Live<Schemas>,
     action_token_bucket: Option<TokenBucket>,
-    allow_protocol_v7: bool,
 }
 
 impl<IR, EE, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<EE, Schemas>
@@ -185,7 +184,6 @@ where
                     self.action_token_bucket.clone(),
                     limit_key,
                     idempotency_key,
-                    self.allow_protocol_v7,
                     opts.max_awaited_future_depth,
                 )
                 .run(storage_reader, budget),
@@ -283,10 +281,6 @@ impl<StorageReader, TEntryEnricher, Schemas> Service<StorageReader, TEntryEnrich
                     entry_enricher,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
-                    allow_protocol_v7: Configuration::pinned()
-                        .common
-                        .experimental
-                        .is_protocol_v7_enabled(),
                 },
                 schemas,
                 invocation_tasks: Default::default(),

@@ -280,8 +280,6 @@ pub(super) struct InvocationTask<EE, DMR> {
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
-
-    allow_protocol_v7: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -361,7 +359,6 @@ where
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
-        allow_protocol_v7: bool,
         max_awaited_future_depth: usize,
     ) -> Self {
         Self {
@@ -380,7 +377,6 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             action_token_bucket,
-            allow_protocol_v7,
             limit_key,
             idempotency_key,
             max_awaited_future_depth,
@@ -512,16 +508,13 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(
-                        &deployment.supported_protocol_versions,
-                        self.allow_protocol_v7
-                    )
-                    .ok_or_else(|| {
-                        InvokerError::IncompatibleServiceEndpoint(
-                            deployment.id,
-                            deployment.supported_protocol_versions.clone(),
-                        )
-                    })
+                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions)
+                        .ok_or_else(|| {
+                            InvokerError::IncompatibleServiceEndpoint(
+                                deployment.id,
+                                deployment.supported_protocol_versions.clone(),
+                            )
+                        })
                 );
 
                 (

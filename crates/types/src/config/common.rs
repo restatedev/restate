@@ -777,16 +777,6 @@ experimental! {
     /// Since v1.7.0
     invoker_yield,
 
-    /// # Enables service protocol v7
-    ///
-    /// Introduced in Restate v1.7
-    ///
-    /// Set to `true` to enable the experimental service protocol v7
-    ///
-    /// Once enabled, you **cannot** rollback back to previous versions
-    /// where v7 is not supported < v1.7
-    protocol_v7,
-
     /// # Enables unique random seeds
     ///
     /// When enabled, invocations get a unique random seed assigned.
