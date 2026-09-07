@@ -65,7 +65,7 @@ mod os_env;
 pub mod ui;
 
 pub use context::CliContext;
-pub use opts::CommonOpts;
+pub use opts::{CommonOpts, OutputFormat};
 pub use os_env::OsEnv;
 
 // Re-export comfy-table for console c_* macros (used internally by macros)

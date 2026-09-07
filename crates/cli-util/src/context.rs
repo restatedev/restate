@@ -51,7 +51,9 @@ use dotenvy::dotenv;
 use tracing::{info, warn};
 use tracing_log::AsTrace;
 
-use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts};
+use crate::opts::{
+    CommonOpts, ConfirmMode, NetworkOpts, OutputFormat, TableStyle, TimeFormat, UiOpts,
+};
 use crate::os_env::OsEnv;
 
 static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
@@ -227,6 +229,11 @@ impl CliContext {
     /// - `Rfc2822`: "Mon, 15 Jan 2024 10:30:00 +0000"
     pub fn time_format(&self) -> TimeFormat {
         self.ui.time_format
+    }
+
+    /// Get the user's preferred output format for list and describe commands.
+    pub fn output_format(&self) -> OutputFormat {
+        self.ui.output
     }
 
     /// Whether colors and styling should be used in output.
