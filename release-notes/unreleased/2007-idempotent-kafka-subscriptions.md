@@ -4,8 +4,10 @@
 
 ### What Changed
 
-Creating a Kafka subscription with the same source topic and sink handler as an existing
-subscription now returns the existing subscription instead of inserting a second one.
+Creating a Kafka subscription with the same source topic, sink handler, and effective
+`group.id` as an existing subscription now returns the existing subscription instead of
+inserting a second one. When no `group.id` is set on the subscription or its Kafka cluster,
+matching is based on source and sink only.
 
 ### Why This Matters
 
@@ -14,10 +16,10 @@ used to create two independent consumers, so the same records were delivered (an
 
 ### Impact on Users
 
-- Repeated `POST /subscriptions` calls (or `restate subscriptions create`) with the same source
-  and sink are now idempotent and keep a single consumer.
-- Distinct source or sink URIs still create distinct subscriptions.
-- Options on a retry are ignored when a matching subscription already exists.
+- Repeated `POST /subscriptions` calls (or `restate subscriptions create`) with the same source,
+  sink, and effective `group.id` are now idempotent and keep a single consumer.
+- Distinct source, sink, or `group.id` values still create distinct subscriptions.
+- Other options on a retry are ignored when a matching subscription already exists.
 
 ### Migration Guidance
 

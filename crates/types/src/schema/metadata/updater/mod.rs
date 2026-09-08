@@ -934,50 +934,56 @@ impl SchemaUpdater {
             }
         };
 
+        let mut metadata = metadata.unwrap_or_default();
+        check_ignored_kafka_properties(&metadata);
+
+        // Validate and merge cluster properties for Kafka sources
+        let cluster_properties = self
+            .schema
+            .get_kafka_cluster(cluster, Redaction::No)
+            .ok_or_else(|| {
+                SchemaError::Subscription(SubscriptionError::Validation(GenericError::from(
+                    format!(
+                        "Kafka cluster '{}' not found. Available clusters: {:?}",
+                        cluster,
+                        self.schema
+                            .list_kafka_clusters(Redaction::No)
+                            .iter()
+                            .map(|kc| kc.name.to_string())
+                            .collect::<Vec<String>>()
+                    ),
+                )))
+            })?
+            .properties;
+
+        let idempotency_group_id = metadata
+            .get("group.id")
+            .or_else(|| cluster_properties.get("group.id"))
+            .cloned();
+
         if let Some(existing) =
             self.schema.subscriptions.values().find(|subscription| {
-                subscription.source() == &source && subscription.sink() == &sink
+                subscription.source() == &source
+                    && subscription.sink() == &sink
+                    && match &idempotency_group_id {
+                        Some(group_id) => subscription.metadata().get("group.id") == Some(group_id),
+                        None => true,
+                    }
             })
         {
             return Ok(existing.id());
         }
 
-        let mut metadata = metadata.unwrap_or_default();
-        check_ignored_kafka_properties(&metadata);
+        // Set group.id (subscription metadata > cluster properties > subscription id)
+        let group_id = idempotency_group_id
+            .clone()
+            .unwrap_or_else(|| id.to_string());
+        metadata.insert("group.id".into(), group_id);
 
-        // Validate and merge cluster properties for Kafka sources
+        // Set client.id if unset
+        if !(cluster_properties.contains_key("client.id") || metadata.contains_key("client.id"))
         {
-            let cluster_properties = self
-                .schema
-                .get_kafka_cluster(cluster, Redaction::No)
-                .ok_or_else(|| {
-                    SchemaError::Subscription(SubscriptionError::Validation(GenericError::from(
-                        format!(
-                            "Kafka cluster '{}' not found. Available clusters: {:?}",
-                            cluster,
-                            self.schema
-                                .list_kafka_clusters(Redaction::No)
-                                .iter()
-                                .map(|kc| kc.name.to_string())
-                                .collect::<Vec<String>>()
-                        ),
-                    )))
-                })?
-                .properties;
-
-            // Set group.id (subscription metadata > cluster properties > subscription id)
-            let group_id = metadata
-                .get("group.id")
-                .or_else(|| cluster_properties.get("group.id"))
-                .cloned()
-                .unwrap_or_else(|| id.to_string());
-            metadata.insert("group.id".into(), group_id);
-
-            // Set client.id if unset
-            if !(cluster_properties.contains_key("client.id") || metadata.contains_key("client.id"))
-            {
-                metadata.insert("client.id".to_string(), "restate".to_string());
-            }
+            metadata.insert("client.id".to_string(), "restate".to_string());
         }
 
         let subscription = Subscription::new(id, source, sink, metadata);
