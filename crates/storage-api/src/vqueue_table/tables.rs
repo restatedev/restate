@@ -100,13 +100,22 @@ mod bilrost_encoding {
     );
 }
 
+/// Whether updating a vqueue retained or purged its metadata.
+#[must_use]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VQueueDisposition {
+    Retained,
+    Purged,
+}
+
 pub trait WriteVQueueTable {
     /// Initializes a new vqueue
     fn create_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
 
     /// Update VQueueMeta with a set of differential updates.
     /// The `meta` **must** match the vqueue metadata on disk prior to the update,
-    /// then it gets updated in place.
+    /// then it gets updated in place. Obsolete metadata is deleted atomically
+    /// with the update and reported through the returned disposition.
     ///
     /// Pass `entry_metadata` if the update impacts a single entry.
     fn update_vqueue(
@@ -115,7 +124,7 @@ pub trait WriteVQueueTable {
         meta: &mut VQueueMeta,
         update: &super::metadata::Update,
         entry_metadata: Option<&EntryMetadata>,
-    );
+    ) -> VQueueDisposition;
 
     /// Deletes a vqueue's metadata record.
     ///
