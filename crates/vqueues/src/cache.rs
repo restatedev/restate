@@ -104,10 +104,6 @@ impl Slot {
     pub(super) fn split_mut(&mut self) -> (&VQueueId, &mut VQueueMeta) {
         (&self.qid, &mut self.meta)
     }
-
-    pub(super) fn meta_mut(&mut self) -> &mut VQueueMeta {
-        &mut self.meta
-    }
 }
 
 // Needs rewriting after the workload pattern becomes more clear.
@@ -151,24 +147,22 @@ impl VQueuesMetaCache {
         storage: &mut S,
         qid: &VQueueId,
     ) -> Result<bool> {
-        let is_purgeable = |meta: &VQueueMeta| meta.is_obsolete() && !meta.queue_is_paused();
-
         if let Some(handle) = self.queues.get(qid).copied() {
             let slot = self.slab.get(handle).expect("cached vqueue has a slot");
-            if !is_purgeable(slot.meta()) {
+            if !slot.meta().is_obsolete() {
                 return Ok(false);
             }
 
             debug!(qid = %slot.vqueue_id(), "Purging obsolete vqueue metadata");
             storage.delete_vqueue(qid);
-            self.defer_purge(qid, handle);
+            self.defer_purge(handle);
             return Ok(true);
         }
 
         let Some(meta) = storage.get_vqueue(qid).await? else {
             return Ok(false);
         };
-        if !is_purgeable(&meta) {
+        if !meta.is_obsolete() {
             return Ok(false);
         }
 
@@ -208,8 +202,9 @@ impl VQueuesMetaCache {
         evicted
     }
 
-    fn defer_purge(&mut self, qid: &VQueueId, handle: VQueueHandle) {
-        let removed = self.queues.remove(qid);
+    pub(super) fn defer_purge(&mut self, handle: VQueueHandle) {
+        let slot = self.slab.get(handle).expect("cached vqueue has a slot");
+        let removed = self.queues.remove(slot.vqueue_id());
         debug_assert_eq!(removed, Some(handle));
         self.pending_purges.push(handle);
     }
@@ -487,7 +482,7 @@ mod tests {
         let active = cache.insert(VQueueId::custom(3, "active"), active_meta);
         assert!(cache.should_run_compaction);
 
-        cache.defer_purge(&purged_qid, purged);
+        cache.defer_purge(purged);
         assert_eq!(cache.try_compact(), 1);
 
         assert!(!cache.should_run_compaction);

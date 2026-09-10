@@ -61,7 +61,7 @@ impl StorageFeature for super::MigratedToScopedPromiseTableFeature {
         features.is_migrated_to_scoped_promise_table = true;
     }
 
-    fn enable(
+    async fn enable(
         storage: &mut PartitionStore,
         cancel: &CancellationToken,
         config: &Configuration,

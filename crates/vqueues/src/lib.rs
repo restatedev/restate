@@ -40,7 +40,7 @@ use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, Stage, Status,
-    WriteVQueueTable, metadata,
+    VQueueDisposition, WriteVQueueTable, metadata,
 };
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
@@ -132,6 +132,20 @@ where
 
     pub fn meta(&self) -> &VQueueMeta {
         self.cache.get(self.handle).unwrap().meta()
+    }
+
+    fn update_vqueue(&mut self, update: &metadata::Update, entry_metadata: Option<&EntryMetadata>) {
+        let disposition = {
+            let slot = self.cache.get_mut(self.handle).unwrap();
+            let (vqueue_id, meta) = slot.split_mut();
+            self.storage
+                .update_vqueue(vqueue_id, meta, update, entry_metadata)
+        };
+
+        if matches!(disposition, VQueueDisposition::Purged) {
+            debug!(qid = %self.cache.get(self.handle).unwrap().vqueue_id(), "Purged obsolete vqueue metadata");
+            self.cache.defer_purge(self.handle);
+        }
     }
 
     /// Get access to the vqueue if it exists, otherwise this returns None.
@@ -263,8 +277,6 @@ where
         entry_id: impl Into<EntryId>,
         metadata: impl Into<EntryMetadata>,
     ) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
-
         let created_at_unix = created_at.to_unix_millis();
         let (run_at, status) = match run_at {
             // Future: ceil to the next whole second so we never fire early.
@@ -295,9 +307,9 @@ where
             },
         );
 
-        let (vqueue_id, q_meta) = meta.split_mut();
-        self.storage
-            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
+        self.update_vqueue(&update, Some(&metadata));
+
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -353,8 +365,7 @@ where
     ) -> EntryKey {
         let vqueue_id = header.vqueue_id();
         let partition_key = vqueue_id.partition_key();
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(header.stage(), Stage::Inbox));
 
         // Remove from inbox and move to ready
@@ -373,8 +384,9 @@ where
             },
         );
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
+
+        let meta = self.cache.get(self.handle).unwrap();
 
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
@@ -466,8 +478,7 @@ where
         updated_metadata: Option<EntryMetadata>,
     ) {
         let vqueue_id = header.vqueue_id();
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(header.stage(), Stage::Paused | Stage::Suspended));
 
         // Delete the old inbox entry
@@ -484,8 +495,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -686,8 +696,7 @@ where
         next_stage: Stage,
     ) {
         let vqueue_id = header.vqueue_id();
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(next_stage, Stage::Paused | Stage::Suspended));
 
         debug!(
@@ -712,8 +721,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
 
         let stats = match next_stage {
             Stage::Paused => Self::mark_pause(at, header.stats()),
@@ -764,8 +772,7 @@ where
         reason: YieldReason,
     ) {
         let vqueue_id = header.vqueue_id();
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
 
         // Remove from running and move to waiting
         self.storage
@@ -780,8 +787,7 @@ where
             },
         );
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -877,14 +883,14 @@ where
 
     /// The entry has completed execution and it needs to be removed from the vqueue.
     pub fn end(
-        &mut self,
+        mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
         new_status: Status,
         delete_after: Duration,
     ) {
         let vqueue_id = header.vqueue_id();
-        let meta = self.cache.get_mut(self.handle).unwrap();
+        let meta = self.cache.get(self.handle).unwrap();
         assert_eq!(vqueue_id, meta.vqueue_id());
 
         // Remove from the current stage
@@ -942,10 +948,10 @@ where
             new_status,
         );
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
+            let meta = self.cache.get(self.handle).unwrap();
             let mut event = VQueueEvent::new(self.handle);
             // Release the lock if this entry has been holding a lock already
             if header.has_lock()
@@ -982,15 +988,14 @@ where
     /// It's the caller's responsibility to ensure that the entry is in the `Finished` stage
     /// before calling this method.
     pub fn delete(
-        &mut self,
+        mut self,
         at: UniqueTimestamp,
         vqueue_id: &VQueueId,
         entry_id: &EntryId,
         entry_key: &EntryKey,
         entry_metadata: &EntryMetadata,
     ) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
 
         debug!(
             entry = %entry_id.display(vqueue_id.partition_key()),
@@ -1014,8 +1019,7 @@ where
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(entry_metadata));
+        self.update_vqueue(&update, Some(entry_metadata));
     }
 
     /// A specialized version of run designed for inline execution of an entry.
@@ -1024,15 +1028,14 @@ where
     /// the scheduler as if it was a regular invocation but takes a few shortcuts
     /// since there is no actual time spent that can be tracked.
     pub fn run_then_finish(
-        &mut self,
+        mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
         wait_stats: WaitStats,
         status: Status,
     ) {
         let vqueue_id = header.vqueue_id();
-        let meta = self.cache.get_mut(self.handle).unwrap();
-        assert_eq!(vqueue_id, meta.vqueue_id());
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(header.stage(), Stage::Inbox));
 
         // Remove from inbox and move to ready
@@ -1052,8 +1055,7 @@ where
             },
         );
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
         // Move to finish
@@ -1068,8 +1070,7 @@ where
 
         let stats = Self::mark_transition(at, &stats);
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
 
         // Move the entry to Finished stage
         // for future: Use this to set the deletion time.
@@ -1129,13 +1130,12 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key);
 
-        self.storage
-            .update_vqueue(vqueue_id, meta.meta_mut(), &update, Some(header.metadata()));
+        self.update_vqueue(&update, Some(header.metadata()));
     }
 
     /// Marks this vqueue as paused
     pub fn pause_queue(&mut self, at: UniqueTimestamp) {
-        let slot = self.cache.get_mut(self.handle).unwrap();
+        let slot = self.cache.get(self.handle).unwrap();
 
         if slot.meta().queue_is_paused() {
             // queue is already paused
@@ -1145,9 +1145,7 @@ where
         debug!(qid = %slot.vqueue_id(), "Pausing vqueue");
         let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
 
-        // Update vqueue meta in storage
-        let (vqueue_id, meta) = slot.split_mut();
-        self.storage.update_vqueue(vqueue_id, meta, &update, None);
+        self.update_vqueue(&update, None);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
@@ -1157,8 +1155,8 @@ where
     }
 
     /// Marks this vqueue as resumed
-    pub fn resume_queue(&mut self, at: UniqueTimestamp) {
-        let slot = self.cache.get_mut(self.handle).unwrap();
+    pub fn resume_queue(mut self, at: UniqueTimestamp) {
+        let slot = self.cache.get(self.handle).unwrap();
 
         if !slot.meta().queue_is_paused() {
             // queue is not paused
@@ -1167,11 +1165,9 @@ where
         debug!(qid = %slot.vqueue_id(), "Resuming vqueue");
         let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
 
-        // Update vqueue meta in storage
-        let (vqueue_id, meta) = slot.split_mut();
-        self.storage.update_vqueue(vqueue_id, meta, &update, None);
+        self.update_vqueue(&update, None);
 
-        if meta.is_active()
+        if self.meta().is_active()
             && let Some(collector) = self.action_collector.as_deref_mut()
         {
             let mut event = VQueueEvent::new(self.handle);
@@ -1278,7 +1274,7 @@ where
         invocation_id: &InvocationId,
         invoked: &InFlightInvocationMetadata,
     ) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We use a special value (0) for all running invocations under the following assumptions:
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
@@ -1352,9 +1348,9 @@ where
             },
         );
 
-        let (vqueue_id, q_meta) = meta.split_mut();
-        self.storage
-            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
+        self.update_vqueue(&update, Some(&metadata));
+
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -1382,8 +1378,6 @@ where
         invocation_id: &InvocationId,
         completed: &CompletedInvocation,
     ) {
-        let meta = self.cache.get_mut(self.handle).unwrap();
-
         // We use a special value (0) for invocations under the following assumptions:
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
@@ -1467,9 +1461,9 @@ where
             },
         );
 
-        let (vqueue_id, q_meta) = meta.split_mut();
-        self.storage
-            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
+        self.update_vqueue(&update, Some(&metadata));
+
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -1499,7 +1493,7 @@ where
         stage: Stage,
     ) {
         debug_assert_matches!(stage, Stage::Paused | Stage::Suspended);
-        let meta = self.cache.get_mut(self.handle).unwrap();
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We use a special value (0) for all running invocations under the following assumptions:
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
@@ -1581,9 +1575,9 @@ where
             },
         );
 
-        let (vqueue_id, q_meta) = meta.split_mut();
-        self.storage
-            .update_vqueue(vqueue_id, q_meta, &update, Some(&metadata));
+        self.update_vqueue(&update, Some(&metadata));
+
+        let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
@@ -1718,5 +1712,96 @@ mod tests {
             .unwrap()
             .expect("paused vqueue meta is retained");
         assert!(paused_meta.queue_is_paused());
+    }
+
+    #[restate_core::test]
+    async fn resuming_empty_vqueue_purges_metadata() {
+        let mut store = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(16);
+        let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+        let qid = VQueueId::custom(1, "paused");
+
+        let mut txn = store.transaction();
+        {
+            let mut vqueue =
+                VQueue::<VQueueEvent, _>::get_or_insert_with(&qid, &mut txn, &mut cache, || {
+                    VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None)
+                })
+                .await
+                .unwrap();
+            vqueue.pause_queue(at);
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        let handle = cache.view().handle_for(&qid).unwrap();
+        let mut txn = store.transaction();
+        {
+            let vqueue = VQueue::<VQueueEvent, _>::get(&qid, &mut txn, &mut cache, None)
+                .await
+                .unwrap()
+                .unwrap();
+            vqueue.resume_queue(at);
+        }
+
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
+        assert!(cache.view().handle_for(&qid).is_none());
+        assert!(cache.get(handle).is_some());
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        assert_eq!(cache.try_compact(), 1);
+        assert!(cache.get(handle).is_none());
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
+    }
+
+    #[restate_core::test]
+    async fn update_purges_only_after_removing_the_final_entry() {
+        let mut store = storage_test_environment().await;
+        let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+        let qid = VQueueId::custom(1, "finished");
+        let mut meta = VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+        let mut txn = store.transaction();
+        txn.create_vqueue(&qid, &meta);
+
+        let add_finished = metadata::Update::new(
+            at,
+            metadata::Action::Move {
+                prev_stage: None,
+                next_stage: Stage::Finished,
+                metrics: metadata::MoveMetrics {
+                    last_transition_at: at,
+                    has_started: false,
+                    first_runnable_at: at.to_unix_millis(),
+                    scheduler_wait_stats: None,
+                },
+            },
+        );
+        assert_eq!(
+            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            VQueueDisposition::Retained
+        );
+        assert_eq!(
+            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            VQueueDisposition::Retained
+        );
+
+        let remove_finished = metadata::Update::new(
+            at,
+            metadata::Action::RemoveEntry {
+                stage: Stage::Finished,
+            },
+        );
+        assert_eq!(
+            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            VQueueDisposition::Retained
+        );
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_some());
+        assert_eq!(
+            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            VQueueDisposition::Purged
+        );
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
     }
 }

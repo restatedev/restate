@@ -649,7 +649,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
                 let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
                 for qid in resume.vqueues.iter() {
-                    let Some(mut vqueue) = VQueue::get(
+                    let Some(vqueue) = VQueue::get(
                         qid,
                         self.storage,
                         self.processor.vqueues_mut(),

@@ -854,7 +854,7 @@ mod tests {
         let mut txn = rocksdb.transaction();
         let header = read_header(&txn, &qid, key.entry_id()).await;
         {
-            let mut vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+            let vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
                 .await
                 .unwrap()
                 .unwrap();
@@ -866,8 +866,9 @@ mod tests {
             );
         }
 
-        assert!(cache.purge_meta_if_obsolete(&mut txn, &qid).await.unwrap());
+        // The final entry removal purges the metadata and detaches the ID immediately.
         let old_handle = handle;
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
         assert!(cache.view().handle_for(&qid).is_none());
         enqueue_entry(&mut txn, &mut cache, &qid, 2, 0, Some(&mut events)).await;
         let new_handle = cache.view().handle_for(&qid).unwrap();
@@ -890,6 +891,14 @@ mod tests {
             txn.get_vqueue(&qid).await.unwrap().unwrap().total_waiting(),
             1
         );
+        drop(txn);
+
+        let fresh_cache =
+            VQueuesMetaCache::create(rocksdb.partition_db().clone(), TEST_VQUEUES_CAPACITY)
+                .await
+                .unwrap();
+        assert!(fresh_cache.view().handle_for(&qid).is_some());
+        assert_eq!(fresh_cache.view().num_active(), 1);
     }
 
     #[restate_core::test]
