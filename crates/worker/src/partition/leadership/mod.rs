@@ -65,7 +65,6 @@ use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::scheduler::{self};
 use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
-use restate_wal_protocol::Command;
 use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
