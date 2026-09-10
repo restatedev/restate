@@ -12,7 +12,6 @@ extern crate core;
 
 mod error;
 mod handle;
-mod invoker_integration;
 mod metric_definitions;
 #[cfg(feature = "expose-internals")]
 pub mod partition;
