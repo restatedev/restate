@@ -39,7 +39,6 @@ pub struct BifrostOptions {
     ///
     /// Default: Replicated
     pub default_provider: ProviderKind,
-    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
     /// Configuration of local loglet provider
     pub local: LocalLogletOptions,
     /// Configuration of replicated loglet provider
@@ -221,8 +220,9 @@ pub struct LocalLogletOptions {
     /// Maximum number of concurrent flush operations for the local-loglet database.
     ///
     /// If unset, defaults to 1 (local-loglet has a lightweight workload).
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_flushes: Option<NonZeroU32>,
 
     /// # Max background compactions
@@ -230,8 +230,9 @@ pub struct LocalLogletOptions {
     /// Maximum number of concurrent compaction operations for the local-loglet database.
     ///
     /// If unset, defaults to 1.
+    ///
+    /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_max_background_compactions: Option<NonZeroU32>,
 }
 
