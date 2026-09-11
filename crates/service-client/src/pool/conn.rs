@@ -124,12 +124,18 @@ impl ConnectionShared {
 
     /// Stop admission while the connection task finishes accepted streams.
     fn drain(&self) {
-        let _ = self.state.compare_exchange(
-            STATE_CONNECTED,
-            STATE_DRAINING,
-            Ordering::Relaxed,
-            Ordering::Relaxed,
-        );
+        if self
+            .state
+            .compare_exchange(
+                STATE_CONNECTED,
+                STATE_DRAINING,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.concurrency.wake_waiters();
+        }
     }
 
     /// Mark the connection as closed and wake any pending waiters.
@@ -1001,6 +1007,60 @@ mod test {
             .await
             .unwrap();
         resp.into_body()
+    }
+
+    #[tokio::test]
+    async fn draining_wakes_all_capacity_waiters_without_releasing_permits() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        use std::task::Context;
+
+        use futures::FutureExt;
+        use futures::task::{ArcWake, waker};
+
+        struct WakeFlag(AtomicBool);
+        impl ArcWake for WakeFlag {
+            fn wake_by_ref(flag: &Arc<Self>) {
+                flag.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let shared = super::ConnectionShared::new(
+            ConnectionConfigBuilder::default()
+                .streams_per_connection_limit(1)
+                .build()
+                .unwrap(),
+        );
+        shared
+            .state
+            .store(super::STATE_CONNECTED, Ordering::Release);
+        let active = shared.concurrency.acquire().await;
+        let mut waiters = Vec::new();
+        for _ in 0..8 {
+            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
+            let waker = waker(flag.clone());
+            let mut waiter = Box::pin(shared.concurrency.acquire());
+            assert!(
+                waiter
+                    .poll_unpin(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+            waiters.push((waiter, flag));
+        }
+
+        shared.drain();
+
+        assert_eq!(shared.state.load(Ordering::Acquire), super::STATE_DRAINING);
+        assert_eq!(shared.concurrency.acquired(), 1);
+        for (_, flag) in &waiters {
+            assert!(
+                flag.0.load(Ordering::SeqCst),
+                "capacity waiter was not woken"
+            );
+        }
+        drop(active);
     }
 
     #[tokio::test]

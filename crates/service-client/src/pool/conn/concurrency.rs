@@ -76,6 +76,11 @@ impl Concurrency {
         }
     }
 
+    /// Wake capacity waiters so they can recheck the owning connection's state.
+    pub(super) fn wake_waiters(&self) {
+        self.inner.capacity.notify_waiters();
+    }
+
     /// Returns the current concurrency limit.
     pub fn size(&self) -> usize {
         self.inner.size.load(Ordering::Relaxed)
