@@ -28,6 +28,7 @@ restate-util-random = { workspace = true }
 restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
+arc-swap = { workspace = true }
 anyhow = { workspace = true }
 bilrost = { workspace = true }
 bytes = { workspace = true }
