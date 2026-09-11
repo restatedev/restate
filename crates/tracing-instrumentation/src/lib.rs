@@ -19,7 +19,7 @@ use std::fmt::Display;
 use std::sync::OnceLock;
 
 use opentelemetry::global::{BoxedSpan, BoxedTracer};
-use opentelemetry::trace::{SpanContext, Status, TracerProvider};
+use opentelemetry::trace::{SpanContext, SpanKind, Status, TracerProvider};
 use opentelemetry::{
     Context, trace,
     trace::{Link, TraceContextExt, Tracer},
@@ -760,6 +760,7 @@ pub fn create_invocation_start_span(
 
     let builder = tracer
         .span_builder(format!("invocation-start {}", invocation_target.short()))
+        .with_kind(SpanKind::Consumer)
         .with_start_time(start_time)
         .with_trace_id(span_ctx.span_context().trace_id())
         .with_span_id(span_ctx.span_context().span_id())
