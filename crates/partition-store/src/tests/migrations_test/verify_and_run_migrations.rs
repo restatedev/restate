@@ -15,6 +15,7 @@ use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use tokio_util::sync::CancellationToken;
 
+use restate_limiter::LimitKey;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
@@ -22,12 +23,18 @@ use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
+use restate_storage_api::vqueue_table::metadata::{
+    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
+};
+use restate_storage_api::vqueue_table::{ReadVQueueTable, Stage, WriteVQueueTable};
+use restate_types::clock::UniqueTimestamp;
 use restate_types::config::{Configuration, set_current_config};
 use restate_types::identifiers::{PartitionId, PartitionKey, ServiceId};
 use restate_types::logs::Lsn;
 use restate_types::partitions::{Partition, StorageVersion};
 use restate_types::sharding::KeyRange;
-use restate_types::{RESTATE_VERSION_1_7_9, SemanticRestateVersion};
+use restate_types::vqueues::VQueueId;
+use restate_types::{RESTATE_VERSION_1_7_9, RESTATE_VERSION_1_7_10, SemanticRestateVersion};
 
 use crate::PartitionStoreManager;
 use crate::fsm_table::{
@@ -385,7 +392,7 @@ async fn scoped_tables_migrate_independently_and_bump_version() {
 }
 
 #[restate_core::test]
-async fn does_not_automatically_migrate_at_1_8() {
+async fn does_not_automatically_migrate_scoped_tables_at_1_8() {
     with_migrate_scoped_tables(false);
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true)
@@ -516,6 +523,142 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
 
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_scoped_state(&store), 1);
+
+    RocksDbManager::get().shutdown().await;
+}
+
+#[restate_core::test]
+async fn obsolete_vqueue_metadata_cleanup_is_version_gated_and_idempotent() {
+    with_migrate_scoped_tables(false);
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true)
+        .await
+        .expect("manager create");
+    let mut store = manager
+        .open(
+            &Partition::new(PartitionId::MIN, KeyRange::new(10, 20)),
+            None,
+        )
+        .await
+        .expect("open");
+
+    let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+    let below_range_qid = VQueueId::custom(9, "below-range");
+    let obsolete_qid = VQueueId::custom(10, "obsolete");
+    let paused_qid = VQueueId::custom(11, "paused");
+    let busy_qid = VQueueId::custom(12, "busy");
+    let finished_qid = VQueueId::custom(13, "finished");
+    let upper_bound_qid = VQueueId::custom(20, "upper-bound");
+    let above_range_qid = VQueueId::custom(21, "above-range");
+    let new_meta = || VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+
+    let mut paused_meta = new_meta();
+    paused_meta.apply_update(&Update::new(at, Action::PauseVQueue {}));
+
+    let move_to_stage = |stage| {
+        Update::new(
+            at,
+            Action::Move {
+                prev_stage: None,
+                next_stage: stage,
+                metrics: MoveMetrics {
+                    last_transition_at: at,
+                    has_started: false,
+                    first_runnable_at: at.to_unix_millis(),
+                    scheduler_wait_stats: None,
+                },
+            },
+        )
+    };
+    let mut busy_meta = new_meta();
+    busy_meta.apply_update(&move_to_stage(Stage::Inbox));
+    let mut finished_meta = new_meta();
+    finished_meta.apply_update(&move_to_stage(Stage::Finished));
+
+    {
+        let mut txn = store.transaction();
+        txn.create_vqueue(&below_range_qid, &new_meta());
+        txn.create_vqueue(&obsolete_qid, &new_meta());
+        txn.create_vqueue(&paused_qid, &paused_meta);
+        txn.create_vqueue(&busy_qid, &busy_meta);
+        txn.create_vqueue(&finished_qid, &finished_meta);
+        txn.create_vqueue(&upper_bound_qid, &new_meta());
+        txn.create_vqueue(&above_range_qid, &new_meta());
+        txn.put_applied_lsn(Lsn::from(1)).expect("lsn write");
+        txn.commit().await.expect("seed vqueue metadata");
+    }
+    let partition_id = store.partition_id();
+    put_storage_version(&mut store, partition_id, StorageVersion::V1_5 as u16)
+        .await
+        .expect("seed V1_5");
+
+    let mut config = Configuration::pinned().clone();
+    config.common.experimental.set_vqueue_obsolete_cleanup(true);
+    store
+        .verify_and_run_migrations_at_version(
+            &SemanticRestateVersion::new(1, 7, 9),
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .expect("1.7.9 must not enable cleanup");
+    assert!(!store.storage_features().is_vqueue_metadata_cleanup_v1);
+    {
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&obsolete_qid).await.unwrap().is_some());
+    }
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    assert!(matches!(
+        store
+            .verify_and_run_migrations_at_version(&RESTATE_VERSION_1_7_10, cancelled, &config)
+            .await,
+        Err(MigrationError::MigrationCancelled)
+    ));
+    assert!(!store.storage_features().is_vqueue_metadata_cleanup_v1);
+
+    store
+        .verify_and_run_migrations_at_version(
+            &RESTATE_VERSION_1_7_10,
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .expect("1.7.10 enables cleanup");
+
+    assert!(store.storage_features().is_vqueue_metadata_cleanup_v1);
+    assert_eq!(min_restate_version(&store), *RESTATE_VERSION_1_7_10);
+    {
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&obsolete_qid).await.unwrap().is_none());
+        assert!(txn.get_vqueue(&paused_qid).await.unwrap().is_some());
+        assert!(txn.get_vqueue(&busy_qid).await.unwrap().is_some());
+        assert!(txn.get_vqueue(&finished_qid).await.unwrap().is_some());
+        assert!(txn.get_vqueue(&upper_bound_qid).await.unwrap().is_none());
+        assert!(txn.get_vqueue(&below_range_qid).await.unwrap().is_some());
+        assert!(txn.get_vqueue(&above_range_qid).await.unwrap().is_some());
+    }
+
+    // The marker records one cleanup pass and avoids repeated startup scans.
+    let after_cleanup_qid = VQueueId::custom(14, "after-cleanup");
+    {
+        let mut txn = store.transaction();
+        txn.create_vqueue(&after_cleanup_qid, &new_meta());
+        txn.commit().await.expect("seed after cleanup");
+    }
+    store
+        .verify_and_run_migrations_at_version(
+            &RESTATE_VERSION_1_7_10,
+            CancellationToken::new(),
+            &config,
+        )
+        .await
+        .expect("completed cleanup is not repeated");
+    {
+        let txn = store.transaction();
+        assert!(txn.get_vqueue(&after_cleanup_qid).await.unwrap().is_some());
+    }
 
     RocksDbManager::get().shutdown().await;
 }

@@ -864,6 +864,16 @@ experimental! {
     ///
     /// Since v1.7.9
     vqueues_async_refill,
+
+    /// # Enable cleanup of obsolete VQueue metadata
+    ///
+    /// Enabling this is safe and is recommended if the cluster nodes run
+    /// restate >= v1.7.10.
+    ///
+    /// The cleanup is enabled unconditionally from v1.9.0.
+    ///
+    /// Since v1.7.10
+    vqueue_obsolete_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

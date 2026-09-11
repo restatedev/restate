@@ -627,6 +627,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_inner()?;
                 let at = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
                 for qid in pause.vqueues.iter() {
+                    // NOTE: Before shipping pausing vqueues feature, we must make sure we enable
+                    // vqueue meta cleanup StorageFeature.
                     let Some(mut vqueue) = VQueue::get(
                         qid,
                         self.storage,
