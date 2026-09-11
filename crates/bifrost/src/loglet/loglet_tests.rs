@@ -10,12 +10,11 @@
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use googletest::prelude::*;
 use tokio::sync::Barrier;
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::JoinSet;
 use tokio_stream::StreamExt;
 use tracing::info;
 
@@ -254,27 +253,8 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
     // We didn't perform any reads yet, read_pointer shouldn't have moved.
     assert_eq!(read_from_offset, reader.read_pointer());
 
-    // The reader is expected to wait/block until records appear at offset 6. It then reads 5 records (offsets [6-10]).
-    let read_counter = Arc::new(AtomicUsize::new(0));
-    let counter_clone = read_counter.clone();
-    let reader_bg_handle: JoinHandle<googletest::Result<()>> = tokio::spawn(async move {
-        for i in 6..=10 {
-            let record = reader.next().await.expect("to never terminate")?;
-            let expected_offset = Lsn::new(i);
-            counter_clone.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            assert_eq!(expected_offset, record.sequence_number());
-            assert!(reader.read_pointer() > expected_offset);
-            assert_that!(
-                record.decode_unchecked::<String>(),
-                eq(format!("record{expected_offset}"))
-            );
-        }
-        Ok(())
-    });
-
-    tokio::task::yield_now().await;
-    // Not finished, we still didn't append records
-    assert!(!reader_bg_handle.is_finished());
+    let next = std::pin::pin!(reader.next());
+    assert!(matches!(futures::poll!(next), std::task::Poll::Pending));
 
     // append 5 records to the log (offsets [1-5])
     for i in 1..=5 {
@@ -283,20 +263,29 @@ pub async fn single_loglet_readstream(loglet: Arc<dyn Loglet>) -> googletest::Re
         assert_eq!(Lsn::new(i), offset);
     }
 
-    // Written records are not enough for the reader to finish.
-    // Not finished, we still didn't append records
-    tokio::task::yield_now().await;
-    assert!(!reader_bg_handle.is_finished());
-    assert_eq!(0, read_counter.load(std::sync::atomic::Ordering::Relaxed));
+    reader.notify_readable_tail(Lsn::new(6));
+    let next = std::pin::pin!(reader.next());
+    assert!(matches!(futures::poll!(next), std::task::Poll::Pending));
 
     // write 5 more records.
     for i in 6..=10 {
         loglet.append(format!("record{i}").into()).await?;
     }
 
-    // reader has finished
-    reader_bg_handle.await??;
-    assert_eq!(5, read_counter.load(std::sync::atomic::Ordering::Relaxed));
+    reader.notify_readable_tail(Lsn::new(11));
+    for i in 6..=10 {
+        let record = reader.next().await.expect("to never terminate")?;
+        let expected_offset = Lsn::new(i);
+        assert_eq!(expected_offset, record.sequence_number());
+        assert!(reader.read_pointer() > expected_offset);
+        assert_that!(
+            record.decode_unchecked::<String>(),
+            eq(format!("record{expected_offset}"))
+        );
+    }
+    let next = std::pin::pin!(reader.next());
+    assert!(matches!(futures::poll!(next), std::task::Poll::Pending));
+    assert!(!reader.is_terminated());
 
     Ok(())
 }
@@ -345,6 +334,7 @@ pub async fn single_loglet_readstream_with_trims(
         .clone()
         .create_read_stream(KeyFilter::Any, Lsn::OLDEST)
         .await?;
+    read_stream.notify_readable_tail(Lsn::new(11));
 
     let record = read_stream.next().await.unwrap()?;
     assert_that!(record.sequence_number(), eq(Lsn::new(1)));
@@ -392,6 +382,7 @@ pub async fn single_loglet_readstream_with_trims(
     for i in 11..=20 {
         loglet.append(format!("record{i}").into()).await?;
     }
+    read_stream.notify_readable_tail(Lsn::new(21));
 
     // When reading record 8, it's acceptable to observe the record, or the trim gap. Both are
     // acceptable because replicated loglet read stream's read-ahead cannot be completely disabled.
@@ -614,7 +605,7 @@ pub async fn append_after_seal_concurrent(loglet: Arc<dyn Loglet>) -> googletest
 
     let reader = loglet
         .clone()
-        .create_read_stream_with_tail(KeyFilter::Any, Lsn::OLDEST, Some(tail.offset()))
+        .create_read_stream_with_tail(KeyFilter::Any, Lsn::OLDEST, tail.offset())
         .await?;
 
     let records: BTreeSet<Lsn> = reader
