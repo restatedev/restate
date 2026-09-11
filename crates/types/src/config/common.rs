@@ -867,6 +867,16 @@ experimental! {
     ///
     /// Since v1.8.0
     schema_bilrost_encoding,
+
+    /// # Enable cleanup of obsolete VQueue metadata
+    ///
+    /// Enabling this is safe and is recommended if the cluster nodes run
+    /// restate >= v1.7.10.
+    ///
+    /// The cleanup is enabled unconditionally from v1.9.0.
+    ///
+    /// Since v1.7.10
+    vqueue_obsolete_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
