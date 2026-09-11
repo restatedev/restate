@@ -134,6 +134,9 @@ fn vqueue_meta_merge_benchmark(c: &mut Criterion) {
     let existing_value = initial_vqueue_meta();
     let operands = update_operands();
     let operand_slices = operands.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let aggregated =
+        vqueue_meta_merge::partial_merge_slices(key.as_slice(), operand_slices.iter().copied())
+            .expect("vqueue metadata partial merge succeeds");
 
     let mut group = c.benchmark_group("vqueue_meta_merge");
     group.throughput(Throughput::Elements(MERGE_OPERANDS as u64));
@@ -146,6 +149,26 @@ fn vqueue_meta_merge_benchmark(c: &mut Criterion) {
                 operands,
             )
             .expect("vqueue metadata merge succeeds");
+            black_box(merged);
+        });
+    });
+    group.bench_function("partial_merge_10000_operands", |bencher| {
+        bencher.iter(|| {
+            let operands = black_box(operand_slices.as_slice()).iter().copied();
+            let merged =
+                vqueue_meta_merge::partial_merge_slices(black_box(key.as_slice()), operands)
+                    .expect("vqueue metadata partial merge succeeds");
+            black_box(merged);
+        });
+    });
+    group.bench_function("full_merge_1_aggregated_operand", |bencher| {
+        bencher.iter(|| {
+            let merged = vqueue_meta_merge::full_merge_slices(
+                black_box(key.as_slice()),
+                Some(black_box(existing_value.as_slice())),
+                [black_box(aggregated.as_slice())],
+            )
+            .expect("aggregated vqueue metadata merge succeeds");
             black_box(merged);
         });
     });

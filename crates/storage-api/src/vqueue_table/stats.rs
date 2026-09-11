@@ -18,7 +18,8 @@ use restate_clock::{RoughTimestamp, UniqueTimestamp};
 ///
 /// Encoding is fixed which mimics the simplicity and efficiency of a Vec<(StatKey, Value)>
 /// on the wire.
-#[derive(Debug, Clone, Copy, Default, bilrost::Message)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, bilrost::Message)]
+#[bilrost(distinguished)]
 pub struct WaitStats {
     /// Total milliseconds the item spent waiting on global invoker capacity
     #[bilrost(tag(1), encoding(fixed))]
