@@ -23,8 +23,6 @@ pub enum OpenError {
     SnapshotRepositoryRequired,
     #[error("a partition snapshot is required")]
     SnapshotRequired,
-    #[error("partition snapshot was found but unsuitable; it was taken before the log trim point")]
-    SnapshotUnsuitable,
     #[error("partition store for partition does not exist in local database")]
     NoLocalStore,
     #[error("open failed due to snapshot-related error: {0:#}")]
