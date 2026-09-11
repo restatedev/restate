@@ -276,7 +276,7 @@ tonic-reflection = { version = "0.14.2" }
 tonic-prost = "0.14.2"
 tonic-prost-build = { version = "0.14.2" }
 tower = "0.5.2"
-tower-http = { version = "0.6.8", default-features = false }
+tower-http = { version = "0.7.1", default-features = false }
 tracing = { version = "0.1" }
 tracing-opentelemetry = { version = "0.32.0" }
 tracing-subscriber = { version = "0.3", features = [
