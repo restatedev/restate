@@ -19,7 +19,8 @@ use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{
-    AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
+    AvailabilityNotified, IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool,
+    PinnableMemoryStream,
 };
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
@@ -111,11 +112,6 @@ impl<'a, DB: DBAccess> StateEntryIter<'a, DB> {
     /// Advances the iterator to the next entry.
     pub fn advance(&mut self) {
         self.iter.next();
-    }
-
-    /// Positions the iterator at the first entry whose raw key is `>= key`.
-    pub fn seek(&mut self, key: &[u8]) {
-        self.iter.seek(key);
     }
 }
 
@@ -352,21 +348,13 @@ impl ReadStateTable for PartitionStore {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let features = self.storage_features();
-        let iter = get_all_user_states_for_service(self, features, service_id)?;
-        let encoded_keys = keys
-            .iter()
-            .map(|state_key| encode_user_state_key(features, service_id, state_key))
-            .collect();
-        Ok(BudgetedStateStream::new(
-            PointReadItems {
-                iter,
-                encoded_keys,
-                idx: 0,
-                positioned: false,
-            },
-            budget,
-        ))
+        let preloaded =
+            preload_user_states(self, self.storage_features(), service_id, keys, budget)?;
+        // The entries are already leased, so the stream never waits on the budget:
+        // pin/unpin tracking is unnecessary.
+        Ok(IgnorePinnableMemoryStream::new(stream::iter(
+            preloaded.into_iter().map(Ok::<_, BudgetedReadError>),
+        )))
     }
 }
 
@@ -485,21 +473,13 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let features = self.storage_features();
-        let iter = get_all_user_states_for_service(self, features, service_id)?;
-        let encoded_keys = keys
-            .iter()
-            .map(|state_key| encode_user_state_key(features, service_id, state_key))
-            .collect();
-        Ok(BudgetedStateStream::new(
-            PointReadItems {
-                iter,
-                encoded_keys,
-                idx: 0,
-                positioned: false,
-            },
-            budget,
-        ))
+        let preloaded =
+            preload_user_states(self, self.storage_features(), service_id, keys, budget)?;
+        // The entries are already leased, so the stream never waits on the budget:
+        // pin/unpin tracking is unnecessary.
+        Ok(IgnorePinnableMemoryStream::new(stream::iter(
+            preloaded.into_iter().map(Ok::<_, BudgetedReadError>),
+        )))
     }
 }
 
@@ -731,62 +711,45 @@ impl<I: BudgetedStateItems> PinnableMemoryStream for BudgetedStateStream<'_, I> 
     }
 }
 
-/// A [`BudgetedStateItems`] source that reads a specific set of keys via the
-/// service iterator, seeking to each requested key instead of scanning.
+/// Point-reads the requested `keys` for `service_id`, preloading each present
+/// entry into an owned `(state_key, value)` pair together with a
+/// [`LocalMemoryLease`] covering its size. Absent keys are skipped.
 ///
-/// Reuses the same snapshot-consistent iterator as the full scan (so it sees
-/// the same view under repeatable reads), and stays `Send` (it holds only the
-/// iterator, not the store). All requested keys share the service prefix the
-/// iterator was opened on, so the intra-prefix seeks are valid. Keys with no
-/// stored value are skipped.
-struct PointReadItems<'a, DB: DBAccess> {
-    iter: StateEntryIter<'a, DB>,
-    /// Full encoded storage keys to look up, in the order requested.
-    encoded_keys: Vec<Bytes>,
-    idx: usize,
-    /// Whether the iterator is already positioned for `encoded_keys[idx]`.
-    positioned: bool,
-}
-
-impl<DB: DBAccess> BudgetedStateItems for PointReadItems<'_, DB> {
-    fn peek_size(&mut self) -> Option<Result<usize>> {
-        loop {
-            let target = self.encoded_keys.get(self.idx)?;
-            if !self.positioned {
-                self.iter.seek(target.as_ref());
-                self.positioned = true;
-            }
-            match self.iter.peek_item() {
-                Some(Ok((k, v))) if k == target.as_ref() => {
-                    return Some(Ok(k.len() + v.len()));
-                }
-                // Landed on a different key (or exhausted): this key is absent.
-                Some(Ok(_)) | None => {
-                    self.idx += 1;
-                    self.positioned = false;
-                }
-                Some(Err(e)) => {
-                    self.idx += 1;
-                    self.positioned = false;
-                    return Some(Err(e));
-                }
-            }
-        }
+/// Used to build the always-eager whitelist for lazy state: it issues one point
+/// lookup per key instead of opening a full service-prefix scan.
+///
+/// Budget: the lease for an entry is reserved from `budget` **before** the value
+/// is copied out of the store, so preloaded memory is fully accounted. Because
+/// this runs in a synchronous context it cannot wait for budget to free up: if a
+/// reservation fails, preloading stops and the remaining keys are simply served
+/// lazily on demand (this is a lazy default, so that path always exists).
+fn preload_user_states<S: StorageAccess>(
+    storage: &S,
+    storage_features: StorageFeatures,
+    service_id: &ServiceId,
+    keys: Vec<Bytes>,
+    budget: &mut LocalMemoryPool,
+) -> Result<Vec<(Bytes, Bytes, LocalMemoryLease)>> {
+    let _x = RocksDbReadPerfGuard::new("get-user-states-budgeted");
+    let mut preloaded = Vec::with_capacity(keys.len());
+    for state_key in keys {
+        let encoded = encode_user_state_key(storage_features, service_id, &state_key);
+        let Some(value) = storage.get(State, &encoded)? else {
+            continue;
+        };
+        let value = value.as_ref();
+        // Reserve before materializing the owned copy. On failure, stop: the rest
+        // is served lazily rather than allocated off-budget.
+        let Some(lease) = budget.try_reserve(state_key.len() + value.len()) else {
+            break;
+        };
+        preloaded.push((state_key, Bytes::copy_from_slice(value), lease));
     }
-
-    fn take_next(&mut self) -> Result<(Bytes, Bytes)> {
-        let (k, v) = self.iter.peek_item().expect("peeked before take")?;
-        let result = decode_user_state_key_value(k, v);
-        // The next `peek_size` seeks to the next requested key, so we don't
-        // advance the iterator here.
-        self.idx += 1;
-        self.positioned = false;
-        result
-    }
+    Ok(preloaded)
 }
 
 /// Serializes the full storage key for `state_key` exactly as it is stored, so
-/// it can be used as a seek target / equality check against raw iterator keys.
+/// it can be used as a point-lookup key against the state table.
 fn encode_user_state_key(
     storage_features: StorageFeatures,
     service_id: &ServiceId,

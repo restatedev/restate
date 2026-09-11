@@ -49,11 +49,15 @@ pub trait ReadStateTable {
 
     /// Budget-gated point reads of a specific set of state keys.
     ///
-    /// Reads only the requested `keys` (exact match); keys with no stored value
-    /// are omitted from the stream. Like [`get_all_user_states_budgeted`], each
-    /// entry acquires a [`LocalMemoryLease`] from `budget` **before** its value
-    /// is materialized, and the stream reads lazily on-demand under a shared
-    /// borrow — no full-service scan.
+    /// Point-reads the requested `keys` (exact match) up front, omitting keys
+    /// with no stored value, and returns them as an already-materialized stream
+    /// that owns its data (no borrow on the store, no full-service scan). Each
+    /// entry's [`LocalMemoryLease`] is reserved from `budget` **before** its
+    /// value is copied out, so preloaded memory is fully accounted.
+    ///
+    /// Unlike [`get_all_user_states_budgeted`], preloading runs synchronously and
+    /// cannot wait for budget: if a reservation fails, preloading stops and the
+    /// remaining keys are left to be served lazily on demand.
     ///
     /// [`get_all_user_states_budgeted`]: Self::get_all_user_states_budgeted
     fn get_user_states_budgeted<'a>(
