@@ -104,11 +104,6 @@ pub(crate) fn append_invocation_status_row<'a>(
                     invocation_status.created_using_restate_version()?,
                 );
             }
-            if row.is_scheduled_at_defined()
-                && let Some(execution_time) = invocation_status.inner.execution_time
-            {
-                row.scheduled_start_at(execution_time as i64)
-            }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
                     invocation_status
@@ -129,11 +124,6 @@ pub(crate) fn append_invocation_status_row<'a>(
                 row.created_using_restate_version(
                     invocation_status.created_using_restate_version()?,
                 );
-            }
-            if row.is_scheduled_at_defined()
-                && let Some(execution_time) = invocation_status.inner.execution_time
-            {
-                row.scheduled_start_at(execution_time as i64)
             }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
@@ -201,11 +191,6 @@ pub(crate) fn append_invocation_status_row<'a>(
                     invocation_status.created_using_restate_version()?,
                 );
             }
-            if row.is_scheduled_at_defined()
-                && let Some(execution_time) = invocation_status.inner.execution_time
-            {
-                row.scheduled_start_at(execution_time as i64)
-            }
             if row.is_completion_retention_defined() {
                 row.completion_retention(
                     invocation_status
@@ -262,11 +247,6 @@ fn fill_in_flight_invocation_metadata(
     }
     // journal_metadata and stats are filled by other functions
     fill_pinned_deployment(row, status)?;
-    if row.is_scheduled_start_at_defined()
-        && let Some(execution_time) = status.inner.execution_time
-    {
-        row.scheduled_start_at(execution_time as i64)
-    }
     if row.is_completion_retention_defined() {
         row.completion_retention(status.completion_retention_duration()?.as_millis() as i64);
     }
@@ -359,6 +339,9 @@ fn fill_timestamps(row: &mut SysInvocationStatusRowBuilder, status: &InvocationS
     }
     if let Some(scheduled_at) = status.inner.scheduled_transition_time {
         row.scheduled_at(scheduled_at as i64);
+    }
+    if let Some(scheduled_start_at) = status.inner.execution_time {
+        row.scheduled_start_at(scheduled_start_at as i64);
     }
     if let Some(running_at) = status.inner.running_transition_time {
         row.running_at(running_at as i64);
