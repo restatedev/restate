@@ -12,6 +12,7 @@ default = ["serve-web-ui"]
 options_schema = ["restate-service-client/options_schema", "restate-types/schemars"]
 serve-web-ui = ["restate-web-ui", "mime_guess"]
 metadata-api = []
+test-util = []
 restate-web-ui = ["dep:restate-web-ui"]
 all-metadata-providers = [
     "restate-metadata-providers/replicated",
