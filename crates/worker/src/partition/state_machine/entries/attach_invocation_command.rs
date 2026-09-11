@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_types::invocation::{AttachInvocationRequest, ServiceInvocationResponseSink};
 use restate_types::journal_v2::AttachInvocationCommand;
+use restate_wal_protocol::v2::commands;
 
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
@@ -28,14 +29,16 @@ where
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
-        ctx.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(AttachInvocationRequest {
-            invocation_query: self.entry.target.into(),
-            block_on_inflight: true,
-            response_sink: ServiceInvocationResponseSink::partition_processor(
-                self.invocation_id,
-                self.entry.completion_id,
-            ),
-        }))?;
+        ctx.do_enqueue_into_outbox(commands::AttachInvocationCommand::from(
+            AttachInvocationRequest {
+                invocation_query: self.entry.target.into(),
+                block_on_inflight: true,
+                response_sink: ServiceInvocationResponseSink::partition_processor(
+                    self.invocation_id,
+                    self.entry.completion_id,
+                ),
+            },
+        ))?;
 
         Ok(())
     }
