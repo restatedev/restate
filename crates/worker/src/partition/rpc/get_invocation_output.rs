@@ -11,7 +11,6 @@
 use super::*;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
@@ -20,7 +19,7 @@ use restate_types::invocation::{
 use restate_types::net::partition_processor::{
     GetInvocationOutputResponseMode, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::commands;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -86,15 +85,14 @@ where
                     return Decision::Reply(Ok(ready_result));
                 }
 
-                Decision::Propose(RpcProposal {
-                    partition_key: invocation_query.partition_key(),
-                    cmd: Command::AttachInvocation(AttachInvocationRequest {
+                Decision::Propose(RpcProposal::new(
+                    commands::AttachInvocationCommand::from(AttachInvocationRequest {
                         invocation_query,
                         block_on_inflight: true,
                         response_sink: ServiceInvocationResponseSink::Ingress { request_id },
                     }),
-                    reply_on: ReplyOn::Apply { request_id },
-                })
+                    ReplyOn::Apply { request_id },
+                ))
             }
             GetInvocationOutputResponseMode::ReplyIfNotReady => {
                 // Reading invocation output from a non-leader partition processor can return

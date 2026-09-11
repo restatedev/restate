@@ -21,6 +21,11 @@ use crate::{
     v2::{self, Envelope, commands::TruncateOutboxCommand},
 };
 
+// TODO: Keep for backward compatibility only. Do not extend
+// v1 Commands with new commands. New commands should be
+// added to v2 only.
+//
+// Drop in v1.9
 impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
     type Error = anyhow::Error;
 
@@ -121,17 +126,9 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             v1::Command::Timer(payload) => {
                 Envelope::new(dedup, commands::TimerCommand::from(payload)).into_raw()
             }
-            v1::Command::TruncateOutbox(payload) => Envelope::new(
-                dedup,
-                TruncateOutboxCommand {
-                    index: payload,
-                    // this actually should be a key-range but v1 unfortunately
-                    // only hold the "start" of the range.
-                    // will be fixed in v2
-                    partition_key_range: Keys::Single(partition_key),
-                },
-            )
-            .into_raw(),
+            v1::Command::TruncateOutbox(payload) => {
+                Envelope::new(dedup, TruncateOutboxCommand { index: payload }).into_raw()
+            }
             v1::Command::UpdatePartitionDurability(payload) => {
                 Envelope::new(dedup, payload).into_raw()
             }

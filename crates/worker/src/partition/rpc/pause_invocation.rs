@@ -11,6 +11,7 @@
 use super::*;
 use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::logs::BodyWithKeys;
 use restate_types::net::partition_processor::PauseInvocationRpcResponse;
 use restate_wal_protocol::invocation::PauseInvocationCommand;
 
@@ -63,20 +64,19 @@ where
             // replies via Action::ForwardPauseInvocationResponse. propose_pause_and_fence clears
             // the leader's in-memory fencing token (after appending the command) so that any
             // straggler effect from the attempt we are pausing is dropped at write time.
-            return Decision::Propose(RpcProposal {
-                partition_key: invocation_id.partition_key(),
-                cmd: Command::PauseInvocation(
+            return Decision::Propose(RpcProposal::new(
+                BodyWithKeys::new(
                     PauseInvocationCommand {
                         invocation_id,
                         request_id: Some(request_id),
-                    }
-                    .bilrost_encode_to_bytes(),
+                    },
+                    Keys::Single(invocation_id.partition_key()),
                 ),
-                reply_on: ReplyOn::ApplyAndFence {
+                ReplyOn::ApplyAndFence {
                     request_id,
                     invocation_id,
                 },
-            });
+            ));
         }
 
         // -- Legacy path for invoker-owned (non-VQueue) invocations: best-effort invoker poke.
@@ -105,7 +105,9 @@ mod tests {
     use std::assert_matches;
     use std::future::ready;
 
+    use assert2::let_assert;
     use restate_storage_api::invocation_status_table::InFlightInvocationMetadata;
+    use restate_wal_protocol::v2::commands;
     use test_log::test;
 
     use super::*;
@@ -225,22 +227,20 @@ mod tests {
         )
         .await;
 
-        let Decision::Propose(RpcProposal {
-            partition_key,
-            cmd: Command::PauseInvocation(bytes),
-            reply_on:
-                ReplyOn::ApplyAndFence {
-                    request_id: actual_request_id,
-                    invocation_id: actual_invocation_id,
-                },
-        }) = decision
-        else {
-            panic!("expected a fenced pause proposal");
-        };
-        assert_eq!(partition_key, invocation_id.partition_key());
+        let (keys, pause, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::PauseInvocationCommand>();
+
+        let_assert!(
+            ReplyOn::ApplyAndFence {
+                request_id: actual_request_id,
+                invocation_id: actual_invocation_id,
+            } = reply_on
+        );
+
+        assert!(matches!(keys, Keys::Single(pk) if pk == invocation_id.partition_key()));
+
         assert_eq!(actual_request_id, request_id);
         assert_eq!(actual_invocation_id, invocation_id);
-        let pause = PauseInvocationCommand::bilrost_decode(bytes).unwrap();
         assert_eq!(pause.invocation_id, invocation_id);
         assert_eq!(pause.request_id, Some(request_id));
     }
