@@ -93,8 +93,12 @@ WaitingConnection ─┘
 - **InFlight**: Request sent; waiting for response headers.
 
 Errors during `Driving` or `PreFlight/poll_ready` are connection-level (close
-the connection). Errors during `send_request()` or `InFlight` are stream-level
-(only the individual request fails).
+the connection), except graceful GOAWAY (`NO_ERROR`) during `PreFlight`.
+That retires the connection from admission without cancelling active streams,
+and the pool retries the unsent request on another connection. Callers that
+reserved capacity before draining began also return their unsent requests.
+Errors during `send_request()` or `InFlight` remain stream-level (only the
+individual request fails); the pool does not replay these requests.
 
 ## TLS
 
