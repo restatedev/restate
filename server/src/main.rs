@@ -206,12 +206,13 @@ fn main() {
             // Attempts to bind on all configured ports as early as possible so we can detect
             // if we can't bind to certain ports or if we can't open unix sockets before we
             // do any serious work.
-            if let Err(err) = address_book.bind_from_config(&Configuration::pinned()).await {
+            let config = Configuration::pinned().into_arc();
+            if let Err(err) = address_book.bind_from_config(&config).await {
                 eprintln!("Failed: {err}");
                 handle_error(err);
             }
 
-            print_address_book(&address_book, &Configuration::pinned());
+            print_address_book(&address_book, &config);
             // spawn checking latest release
             let _ = TaskCenter::spawn_unmanaged(
                 TaskKind::Background,
