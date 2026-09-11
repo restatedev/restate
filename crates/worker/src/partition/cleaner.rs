@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU16;
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
@@ -21,11 +22,45 @@ use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind, canc
 use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionId};
+use restate_types::sharding::{
+    KeyRange,
+    subsharding::{ShardIdx, ShardPlan},
+};
 use restate_util_time::DurationExt;
 
 const CLEANER_EFFECT_QUEUE_SIZE: usize = 10;
 
-#[derive(Debug, Clone)]
+// Divide the interval into 5mins slices. For example, a 1 hour cleanup interval then would sweep every
+// partition in 12 slices.
+const INTERVAL_SLICE_DURATION: Duration = Duration::from_mins(5);
+// For configurations with very large intervals, we clamp the number of slices to 1000 to avoid the churn
+// of small scans, and instead spread the 1000 slices over longer intervals.
+const MAX_NUM_SLICES: u16 = 1000;
+
+struct KeyRangeSlicer {
+    shard_plan: ShardPlan,
+    next_slice: ShardIdx,
+}
+
+impl KeyRangeSlicer {
+    fn new(key_range: KeyRange, num_slices: NonZeroU16) -> Self {
+        Self {
+            shard_plan: ShardPlan::new(key_range, num_slices),
+            next_slice: 0,
+        }
+    }
+
+    fn next(&mut self) -> KeyRange {
+        let range = *self
+            .shard_plan
+            .find_shard_unchecked(self.next_slice)
+            .key_range();
+        self.next_slice = (self.next_slice + 1) % self.shard_plan.shard_count();
+        range
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum CleanerEffect {
     PurgeInvocation(InvocationId),
     PurgeJournal(InvocationId),
@@ -46,9 +81,17 @@ impl CleanerHandle {
     }
 }
 
+/// The cleaner runs periodically and scans the invocation status table for expired invocations and journals.
+/// It then issues cleaner effects to to eventually purge those invocations from the storage.
+///
+/// The `cleanup_interval` knob controls the cycle for which the cleaner is expected to would have done a full
+/// sweep of the invocation status table. Internally, the cleaner divides the interval into smaller sweeps each
+/// scanning a subset of the partition key range. This is meant to avoid spikes of cleanup activities that might
+/// overwhelm the processor.
 pub(super) struct Cleaner<Storage> {
     partition_id: PartitionId,
     storage: Storage,
+    key_range: KeyRange,
     cleanup_interval: Duration,
 }
 
@@ -59,11 +102,13 @@ where
     pub(super) fn new(
         storage: Storage,
         partition_id: PartitionId,
+        key_range: KeyRange,
         cleanup_interval: Duration,
     ) -> Self {
         Self {
             partition_id,
             storage,
+            key_range,
             cleanup_interval,
         }
     }
@@ -90,15 +135,23 @@ where
         // for 20-40% of the interval (so, 12-24 minutes by default) before doing the first one
         let initial_wait = self.cleanup_interval.mul_f32(0.2).add_jitter(1.0);
 
+        let num_slices = self
+            .cleanup_interval
+            .as_secs()
+            .div_ceil(INTERVAL_SLICE_DURATION.as_secs())
+            .clamp(1, MAX_NUM_SLICES as u64) as u16;
+        let num_slices = NonZeroU16::new(num_slices).expect("clamped to at least one");
+        let slice_interval = self.cleanup_interval.div_f32(num_slices.get() as f32);
+        let mut key_range_slicer = KeyRangeSlicer::new(self.key_range, num_slices);
+
         // the first tick will fire after initial_wait
-        let mut interval =
-            tokio::time::interval_at(Instant::now() + initial_wait, self.cleanup_interval);
+        let mut interval = tokio::time::interval_at(Instant::now() + initial_wait, slice_interval);
         interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(e) = self.do_cleanup(&tx).await {
+                    if let Err(e) = self.do_cleanup(&tx, key_range_slicer.next()).await {
                         warn!(
                             partition_id=%self.partition_id,
                             "Error when trying to cleanup completed invocations: {e:?}"
@@ -116,7 +169,11 @@ where
         Ok(())
     }
 
-    pub(super) async fn do_cleanup(&self, tx: &Sender<CleanerEffect>) -> anyhow::Result<()> {
+    pub(super) async fn do_cleanup(
+        &self,
+        tx: &Sender<CleanerEffect>,
+        range_slice: KeyRange,
+    ) -> anyhow::Result<()> {
         debug!(partition_id=%self.partition_id, "Starting invocation cleanup");
         let start = tokio::time::Instant::now();
         let mut purged_invocation_count = 0;
@@ -126,7 +183,7 @@ where
 
         let effects_stream = self
             .storage
-            .filter_map_invocation_status_lazy(move |(invocation_id, invocation_status_v2_lazy)| {
+            .filter_map_invocation_status_ranged_lazy(range_slice, move |(invocation_id, invocation_status_v2_lazy)| {
                 let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
                     invocation_status_v2_lazy.inner.status()
                 else {
@@ -198,19 +255,22 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::ops::RangeBounds;
+
     use super::*;
 
     use futures::{Stream, stream};
-    use googletest::prelude::*;
     use prost::Message;
+    use test_log::test;
+
     use restate_storage_api::invocation_status_table::{
         InvokedInvocationStatusLite, ScanInvocationStatusTableRange,
     };
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey};
+    use restate_types::sharding::WithPartitionKey;
     use restate_types::time::MillisSinceEpoch;
-    use test_log::test;
 
     #[derive(Clone)]
     struct MockCompletedInvocation {
@@ -222,7 +282,25 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    struct MockInvocationStatusReader(Vec<MockCompletedInvocation>);
+    struct MockInvocationStatusReader {
+        invocations: Vec<MockCompletedInvocation>,
+        scanned_ranges_tx: mpsc::UnboundedSender<KeyRange>,
+    }
+
+    impl MockInvocationStatusReader {
+        fn new(
+            invocations: Vec<MockCompletedInvocation>,
+        ) -> (Self, mpsc::UnboundedReceiver<KeyRange>) {
+            let (scanned_ranges_tx, scanned_ranges_rx) = mpsc::unbounded_channel();
+            (
+                Self {
+                    invocations,
+                    scanned_ranges_tx,
+                },
+                scanned_ranges_rx,
+            )
+        }
+    }
 
     impl ScanInvocationStatusTable for MockInvocationStatusReader {
         fn for_each_invocation_status_lazy<
@@ -245,7 +323,7 @@ mod tests {
             Ok(std::future::pending())
         }
 
-        fn filter_map_invocation_status_lazy<
+        fn filter_map_invocation_status_ranged_lazy<
             O: Send + 'static,
             E: Into<anyhow::Error>,
             F: for<'a> FnMut(
@@ -256,11 +334,18 @@ mod tests {
                 + 'static,
         >(
             &self,
+            key_range: KeyRange,
             mut f: F,
         ) -> restate_storage_api::Result<impl Stream<Item = restate_storage_api::Result<O>> + Send>
         {
+            self.scanned_ranges_tx
+                .send(key_range)
+                .expect("scan observer must be open");
             Ok(
-                stream::iter(self.0.clone()).filter_map(move |expired_invocation| {
+                stream::iter(self.invocations.clone()).filter_map(move |expired_invocation| {
+                    if !key_range.contains(&expired_invocation.invocation_id.partition_key()) {
+                        return std::future::ready(None);
+                    }
                     let completion_retention_duration = protobuf_types::v1::Duration::from(
                         expired_invocation.completion_retention_duration,
                     )
@@ -306,13 +391,16 @@ mod tests {
         }
     }
 
-    // Start paused makes sure the timer is immediately fired
-    #[test(restate_core::test(start_paused = true))]
-    pub async fn cleanup_works() {
+    #[test(restate_core::test)]
+    pub async fn cleanup_works_across_slices() {
+        let key_range = KeyRange::FULL;
+
         let expired_invocation =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+            InvocationId::from_parts(key_range.start(), InvocationUuid::mock_random());
         let expired_journal =
-            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+            InvocationId::from_parts(key_range.midpoint(), InvocationUuid::mock_random());
+        let expired_invocation_2 =
+            InvocationId::from_parts(key_range.end(), InvocationUuid::mock_random());
         let not_expired_invocation_1 =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_2 =
@@ -320,9 +408,16 @@ mod tests {
 
         let now = MillisSinceEpoch::now().as_u64();
 
-        let mock_storage = MockInvocationStatusReader(vec![
+        let (mock_storage, _scanned_ranges_rx) = MockInvocationStatusReader::new(vec![
             MockCompletedInvocation {
                 invocation_id: expired_invocation,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
+            },
+            MockCompletedInvocation {
+                invocation_id: expired_invocation_2,
                 completed_transition_time: Some(now),
                 completion_retention_duration: Duration::ZERO,
                 journal_retention_duration: Duration::ZERO,
@@ -351,22 +446,65 @@ mod tests {
             },
         ]);
 
-        let mut handle = Cleaner::new(mock_storage, 0.into(), Duration::from_secs(1))
-            .start()
-            .unwrap();
+        let cleaner = Cleaner::new(mock_storage, 0.into(), key_range, Duration::from_mins(20));
+        let mut key_range_slicer = KeyRangeSlicer::new(key_range, NonZeroU16::new(4).unwrap());
+        let (tx, mut rx) = mpsc::channel(10);
 
-        // cleanup will run after around 200ms
-        tokio::time::advance(Duration::from_secs(1)).await;
+        // Full range is divided into 4 slices
+        for expectation in [
+            // First expired invocation has partition key 0, so first quarter
+            Some(CleanerEffect::PurgeInvocation(expired_invocation)),
+            // Nothing in the 2nd quarter
+            None,
+            // 2nd expired invocation has key of FULL::midpoint(), this is the first key in the 3rd quarter
+            Some(CleanerEffect::PurgeJournal(expired_journal)),
+            // 3rd expired invocation has key of FULL::end(), this is the last key in the 4th quarter
+            Some(CleanerEffect::PurgeInvocation(expired_invocation_2)),
+            // We cycle back when all ranges are exhausted
+            Some(CleanerEffect::PurgeInvocation(expired_invocation)),
+        ] {
+            cleaner
+                .do_cleanup(&tx, key_range_slicer.next())
+                .await
+                .unwrap();
 
-        let received: Vec<_> = handle.effects().ready_chunks(10).next().await.unwrap();
+            match expectation {
+                Some(expected) => assert_eq!(rx.recv().await, Some(expected)),
+                None => std::assert_matches!(rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
+            }
+        }
+    }
 
-        assert_that!(
-            received,
-            all!(
-                len(eq(2)),
-                contains(pat!(CleanerEffect::PurgeInvocation(eq(expired_invocation)))),
-                contains(pat!(CleanerEffect::PurgeJournal(eq(expired_journal))))
-            )
-        );
+    #[test(restate_core::test(start_paused = true))]
+    pub async fn cleanup_visits_all_keys() {
+        let key_range = KeyRange::FULL;
+
+        let (mock_storage, mut scanned_ranges_rx) = MockInvocationStatusReader::new(vec![]);
+
+        let cleaner = Cleaner::new(mock_storage, 0.into(), key_range, Duration::from_mins(20));
+        let handle = cleaner.start().unwrap();
+
+        // Slice interval is 5 mins, so with 20mins cleanup interval, we should visit all the keys
+        // in 4 iterations.
+        let mut called_with = Vec::with_capacity(4);
+        for _ in 0..4 {
+            called_with.push(
+                scanned_ranges_rx
+                    .recv()
+                    .await
+                    .expect("cleaner must scan all ranges"),
+            );
+        }
+
+        assert_eq!(called_with[0].start(), key_range.start());
+        assert_eq!(called_with[3].end(), key_range.end());
+
+        // Next iteration would wrap around to the beginning
+        let range = scanned_ranges_rx.recv().await.expect("not closed");
+        assert_eq!(range.start(), key_range.start());
+
+        if let Some(task) = handle.stop() {
+            task.await.expect("cleaner must stop cleanly");
+        }
     }
 }
