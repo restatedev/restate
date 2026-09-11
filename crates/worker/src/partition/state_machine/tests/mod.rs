@@ -62,6 +62,7 @@ use restate_types::journal::{CompleteAwakeableEntry, EntryResult, InvokeRequest}
 use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
+use restate_types::journal_v2::{EntryMetadata, OutputCommand, OutputResult};
 use restate_types::logs::{Keys, SequenceNumber};
 use restate_types::partitions::{Partition, PersistedFeatures};
 use restate_types::sharding::KeyRange;
@@ -650,10 +651,17 @@ async fn mutate_state() -> anyhow::Result<()> {
     // terminating the ongoing invocation should trigger popping from the inbox until the
     // next invocation is found
     test_env
-        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
-            invocation_id,
-            kind: InvokerEffectKind::End,
-        }))
+        .apply_multiple([
+            fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V4),
+            fixtures::invoker_entry_effect(
+                invocation_id,
+                OutputCommand {
+                    name: Default::default(),
+                    result: OutputResult::Success(Bytes::default()),
+                },
+            ),
+            fixtures::invoker_end_effect(invocation_id),
+        ])
         .await;
 
     let all_states: HashMap<_, _> = test_env
@@ -1094,10 +1102,17 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
 
     // Send the End Effect to terminate the first invocation
     let actions = test_env
-        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
-            invocation_id: first_invocation_id,
-            kind: InvokerEffectKind::End,
-        }))
+        .apply_multiple([
+            fixtures::pinned_deployment(first_invocation_id, ServiceProtocolVersion::V4),
+            fixtures::invoker_entry_effect(
+                first_invocation_id,
+                OutputCommand {
+                    name: Default::default(),
+                    result: OutputResult::Success(Bytes::new()),
+                },
+            ),
+            fixtures::invoker_end_effect(first_invocation_id),
+        ])
         .await;
     // At this point we expect the invoke for the second, and also the lock updated
     assert_that!(
@@ -1113,10 +1128,17 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     let _ = test_env
-        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
-            invocation_id: second_invocation_id,
-            kind: InvokerEffectKind::End,
-        }))
+        .apply_multiple([
+            fixtures::pinned_deployment(second_invocation_id, ServiceProtocolVersion::V4),
+            fixtures::invoker_entry_effect(
+                second_invocation_id,
+                OutputCommand {
+                    name: Default::default(),
+                    result: OutputResult::Success(Bytes::new()),
+                },
+            ),
+            fixtures::invoker_end_effect(second_invocation_id),
+        ])
         .await;
 
     // After the second was completed too, the inbox is empty and the service is unlocked

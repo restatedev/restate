@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::protobuf_types::v1::invocation_status_v2::CompletionStatus;
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_types::errors::ConversionError;
@@ -219,31 +220,66 @@ pub(crate) fn append_invocation_status_row<'a>(
                 );
             }
 
-            if row.is_completion_result_defined() || row.is_completion_failure_defined() {
+            if row.is_completion_result_defined()
+                || row.is_completion_failure_defined()
+                || row.is_completion_failure_code_defined()
+            {
                 use restate_storage_api::protobuf_types::v1::response_result::ResponseResult;
-                match invocation_status.response_result()? {
-                    ResponseResult::ResponseSuccess(_) => {
+
+                match invocation_status.completion_status()? {
+                    Some(CompletionStatus::Success) => {
                         row.completion_result("success");
                     }
-                    ResponseResult::ResponseFailure(
-                        restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
-                            failure_code,
-                            failure_message,
-                            ..
-                        },
-                    ) => {
+                    Some(CompletionStatus::Killed) => {
+                        row.completion_result("killed");
+                    }
+                    Some(CompletionStatus::Failure) => {
                         row.completion_result("failure");
+
                         if row.is_completion_failure_defined() {
-                            let message =
-                                str::from_utf8(failure_message.as_ref()).map_err(|_| {
-                                    ConversionError::invalid_data_static("failure_message")
-                                })?;
                             row.fmt_completion_failure(format_args!(
-                                "[{}] {}",
-                                failure_code, message,
+                                "[{}]",
+                                invocation_status.inner.failure_status_code()
                             ));
                         }
+
+                        if row.is_completion_failure_code_defined() {
+                            row.completion_failure_code(
+                                invocation_status.inner.failure_status_code(),
+                            );
+                        }
                     }
+                    // Fallback to full result parsing.
+                    // todo: can be removed once the response_result
+                    // is not longer embedded
+                    None => match invocation_status.response_result()? {
+                        ResponseResult::ResponseSuccess(_) => {
+                            row.completion_result("success");
+                        }
+                        ResponseResult::ResponseFailure(
+                            restate_storage_api::protobuf_types::v1::response_result::ResponseFailure {
+                                failure_code,
+                                failure_message,
+                                ..
+                            },
+                        ) => {
+                            row.completion_result("failure");
+                            if row.is_completion_failure_defined() {
+                                let message =
+                                    str::from_utf8(failure_message.as_ref()).map_err(|_| {
+                                        ConversionError::invalid_data_static("failure_message")
+                                    })?;
+                                row.fmt_completion_failure(format_args!(
+                                    "[{}] {}",
+                                    failure_code, message,
+                                ));
+                            }
+
+                            if row.is_completion_failure_code_defined() {
+                                row.completion_failure_code(failure_code);
+                            }
+                        }
+                    },
                 }
             }
         }

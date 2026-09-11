@@ -97,6 +97,7 @@ snapshot):
 - `sys_invocation_status`, `sys_invocation_state`, and the `sys_invocation` view
 - `sys_keyed_service_status`, `sys_locks`, `state`
 - `sys_journal`, `sys_journal_events`
+- `sys_invocation_output`
 - `sys_inbox`, `sys_promise`
 - `sys_vqueue_meta`, `sys_vqueues`
 

@@ -18,6 +18,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::output_table::WriteOutputTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::{
@@ -52,7 +53,8 @@ where
         + WriteStateTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
