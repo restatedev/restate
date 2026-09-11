@@ -93,8 +93,8 @@ const RATE_LIMITED_CODES: [StatusCode; 2] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, EE, Schemas> {
-    invocation_task: &'a mut InvocationTask<EE, Schemas>,
+pub struct ServiceProtocolRunner<'a, Schemas> {
+    invocation_task: &'a mut InvocationTask<Schemas>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -109,12 +109,12 @@ pub struct ServiceProtocolRunner<'a, EE, Schemas> {
     max_awaited_future_depth: usize,
 }
 
-impl<'a, EE, Schemas> ServiceProtocolRunner<'a, EE, Schemas>
+impl<'a, Schemas> ServiceProtocolRunner<'a, Schemas>
 where
     Schemas: InvocationTargetResolver,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<EE, Schemas>,
+        invocation_task: &'a mut InvocationTask<Schemas>,
         service_protocol_version: ServiceProtocolVersion,
         deployment_type: &DeploymentType,
         max_awaited_future_depth: usize,
@@ -276,9 +276,8 @@ where
             TerminalLoopState::Closed => {
                 attempt_span.set_status(Status::Ok);
             }
-            TerminalLoopState::Suspended(_)
-            | TerminalLoopState::SuspendedV2(_)
-            | TerminalLoopState::SuspendedV3(_) => {
+
+            TerminalLoopState::SuspendedV2(_) | TerminalLoopState::SuspendedV3(_) => {
                 attempt_span.add_event(
                     restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_SUSPENDED,
                     vec![],
@@ -1049,7 +1048,7 @@ where
                 // original bytes downstream to avoid a re-encode round trip.
                 let parsed = crate::shortcircuit!(
                     proto_lite::GetInvocationOutputCommandMessageLite::decode(cmd.as_ref())
-                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
+                        .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
                     shortcircuit!(Self::validate_target(target).map_err(|err| {
@@ -1072,7 +1071,7 @@ where
                 // See `Message::GetInvocationOutputCommand` above for why we decode-then-forward.
                 let parsed = shortcircuit!(
                     proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
-                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
+                        .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
                     shortcircuit!(Self::validate_target(target).map_err(|err| {
@@ -1435,7 +1434,7 @@ where
         let unresolved_future: UnresolvedFuture = shortcircuit!(
             awaiting_on
                 .try_into()
-                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+                .map_err(|e| InvokerError::Encoding(GenericError::from(e).into()))
         );
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn { unresolved_future });
@@ -1462,7 +1461,7 @@ where
         let future: UnresolvedFuture = shortcircuit!(
             awaiting_on
                 .try_into()
-                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+                .map_err(|e| InvokerError::Encoding(GenericError::from(e).into()))
         );
 
         // We currently don't support empty future set

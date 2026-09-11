@@ -777,16 +777,6 @@ experimental! {
     /// Since v1.7.0
     invoker_yield,
 
-    /// # Enables service protocol v7
-    ///
-    /// Introduced in Restate v1.7
-    ///
-    /// Set to `true` to enable the experimental service protocol v7
-    ///
-    /// Once enabled, you **cannot** rollback back to previous versions
-    /// where v7 is not supported < v1.7
-    protocol_v7,
-
     /// # Enables unique random seeds
     ///
     /// When enabled, invocations get a unique random seed assigned.
@@ -864,6 +854,19 @@ experimental! {
     ///
     /// Since v1.7.9
     vqueues_async_refill,
+
+    /// # Use bilrost encoding for schemas
+    ///
+    /// When enabled, will use zstd compressed bilrost encoding
+    /// encoding instead of the default flexbuffers
+    ///
+    /// This will be default from v1.9.0
+    ///
+    /// NOTE: Hot change of this config has no effect. A change
+    /// will only take effect on restart.
+    ///
+    /// Since v1.8.0
+    schema_bilrost_encoding,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

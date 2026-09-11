@@ -181,10 +181,7 @@ impl StorageEncode for CachedEpochMetadata {
 }
 
 impl StorageDecode for CachedEpochMetadata {
-    fn decode<B: bytes::Buf>(
-        buf: &mut B,
-        kind: StorageCodecKind,
-    ) -> Result<Self, StorageDecodeError>
+    fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized,
     {

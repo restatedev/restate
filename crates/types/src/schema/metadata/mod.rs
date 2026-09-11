@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
 use http::{HeaderName, HeaderValue};
+use restate_encoding::{Arced, RestateEncoding};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
@@ -53,7 +54,7 @@ use crate::schema::service::{
     HandlerRetryPolicyMetadata, ServiceMetadataResolver, ServiceRetryPolicyMetadata,
 };
 use crate::schema::subscriptions::{
-    ListSubscriptionFilter, Source, Subscription, SubscriptionResolver,
+    KafkaSource, ListSubscriptionFilter, Subscription, SubscriptionResolver,
 };
 use crate::schema::{Redaction, deployment, service};
 use crate::service_protocol::ServiceProtocolVersion;
@@ -63,21 +64,30 @@ use crate::{Version, Versioned, identifiers};
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
-#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 #[debug("Schema(version: {version})")]
 pub struct Schema {
     /// This gets bumped on each update.
+    #[bilrost(tag(1))]
     version: Version,
 
+    #[bilrost(tag(2))]
     deployments: HashMap<DeploymentId, Deployment>,
-    active_service_revisions: HashMap<String, ActiveServiceRevision>,
-    subscriptions: HashMap<SubscriptionId, Subscription>,
-    kafka_clusters: HashMap<String, KafkaCluster>,
 
-    // If legacy is true, it means the schema raw data is
-    // still using v1 schema model. Schema should be migrated.
-    legacy_v1: bool,
+    // Bilrost does not serialize `active_service_revisions`. Instead, it is
+    // reconstructed during decoding, mirroring the behavior of the Serde proxy
+    // type `serde_hacks::Schema`. This reconstruction is implemented by
+    // `StorageDecode`.
+    //
+    // Consequently, this value is valid only after decoding with `StorageCodec`
+    // through the `StorageDecode` trait.
+    #[bilrost(ignore)]
+    active_service_revisions: HashMap<String, ActiveServiceRevision>,
+    #[bilrost(tag(3))]
+    subscriptions: HashMap<SubscriptionId, Subscription>,
+    #[bilrost(tag(4))]
+    kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
 impl Default for Schema {
@@ -88,22 +98,25 @@ impl Default for Schema {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
-            legacy_v1: false,
         }
     }
 }
 
 impl Schema {
-    pub fn is_legacy_v1(&self) -> bool {
-        self.legacy_v1
-    }
-
     /// Force the schema version to the next version
     ///
     /// Note: this is currently only used by metadata migration
     /// to force update of the schema from v1.
     pub fn touch(&mut self) {
         self.version = self.version.next();
+    }
+
+    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
+        for deployment in self.deployments.values() {
+            deployment.verify()?
+        }
+
+        Ok(())
     }
 }
 
@@ -124,11 +137,97 @@ impl Versioned for Schema {
 }
 
 mod storage {
-    use crate::flexbuffers_storage_encode_decode;
+    use std::sync::OnceLock;
+
+    use bytes::{BufMut, Bytes, BytesMut};
+
+    use restate_platform::storage::{
+        StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+    };
 
     use super::Schema;
+    use crate::{config::Configuration, schema::metadata::ActiveServiceRevision, storage};
 
-    flexbuffers_storage_encode_decode!(Schema);
+    // It's unsafe to change the encoding during runtime because the StorageCodec might read
+    // a different default_codec that what schema use if the config changes between the two
+    // calls. Hence we keep this value here on first read.
+    static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
+
+    impl StorageEncode for Schema {
+        fn default_codec(&self) -> StorageCodecKind {
+            let bilrost_encoding = ENABLED_SCHEMA_BILROST_ENCODING.get_or_init(|| {
+                Configuration::pinned()
+                    .common
+                    .experimental
+                    .is_schema_bilrost_encoding_enabled()
+            });
+
+            if *bilrost_encoding {
+                StorageCodecKind::ZstdBilrostDefault
+            } else {
+                StorageCodecKind::FlexbuffersSerde
+            }
+        }
+
+        fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+            match self.default_codec() {
+                StorageCodecKind::FlexbuffersSerde => {
+                    storage::encode::encode_serde(self, buf, self.default_codec())
+                }
+                StorageCodecKind::ZstdBilrostDefault => {
+                    let mut compressor = zstd::Encoder::new(buf.writer(), 0)
+                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+                    storage::encode::encode_bilrost_writer(self, &mut compressor)?;
+
+                    compressor
+                        .finish()
+                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+                    Ok(())
+                }
+                _ => unreachable!("unsupported StorageCodecKind"),
+            }
+        }
+    }
+
+    impl StorageDecode for Schema {
+        fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+        where
+            Self: Sized,
+        {
+            match kind {
+                StorageCodecKind::FlexbuffersSerde => {
+                    let schema = storage::decode::decode_serde::<Schema, _>(buf, kind)?;
+
+                    // note: the rebuild of `active_service_revisions` is done in the serde_hacks deserializer
+                    schema
+                        .verify()
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                    Ok(schema)
+                }
+                StorageCodecKind::ZstdBilrostDefault => {
+                    // Unfortunately bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer first
+                    // before decode payload as bilrost.
+                    let uncompressed = zstd::decode_all(buf.reader())
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                    let uncompressed = Bytes::from(uncompressed);
+                    let mut schema = storage::decode::decode_bilrost::<Schema, _>(uncompressed)?;
+
+                    schema
+                        .verify()
+                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+                    // rebuild active service index.
+                    schema.active_service_revisions =
+                        ActiveServiceRevision::create_index(schema.deployments.values());
+                    Ok(schema)
+                }
+                _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+            }
+        }
+    }
 }
 
 // -- Data model
@@ -175,11 +274,12 @@ impl ActiveServiceRevision {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, bilrost::Message)]
 struct DeliveryOptions {
     #[serde(
         with = "serde_with::As::<serde_with::FromInto<restate_serde_util::SerdeableHeaderHashMap>>"
     )]
+    #[bilrost(tag = 1, encoding(map<RestateEncoding, RestateEncoding>))]
     pub additional_headers: HashMap<HeaderName, HeaderValue>,
 }
 
@@ -190,33 +290,47 @@ impl DeliveryOptions {
 }
 
 /// Since v1.7.0
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct DeploymentLimits {
     /// Maximum number of concurrent invocations per node for this deployment.
     /// A value of 0 means unlimited.
     #[serde(default)]
+    #[bilrost(tag = 1)]
     pub invocations: u64,
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct Deployment {
+    #[bilrost(tag = 1)]
     id: DeploymentId,
-    ty: DeploymentType,
+    // NOTE: ty is a required field never set it to None
+    // it's only Option to work around bilrost encoding limitation
+    // for enum types with no default empty variant
+    #[bilrost(oneof(2, 3))]
+    ty: Option<DeploymentType>,
+    #[bilrost(tag = 4)]
     delivery_options: DeliveryOptions,
+    #[bilrost(tag = 5)]
     supported_protocol_versions: RangeInclusive<i32>,
+
     /// Declared SDK during discovery
+    #[bilrost(tag = 6)]
     sdk_version: Option<String>,
+    #[bilrost(tag = 7)]
     created_at: MillisSinceEpoch,
 
     /// User provided metadata during registration
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[bilrost(tag = 8)]
     metadata: HashMap<String, String>,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
+    #[bilrost(tag = 9, encoding(map<general_packed, Arced>))]
     services: HashMap<String, Arc<ServiceRevision>>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
 }
 
@@ -229,10 +343,18 @@ impl MapAsVecItem for Deployment {
 }
 
 impl Deployment {
+    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
+        if self.ty.is_none() {
+            return Err(UnknownDeploymentType(self.id));
+        }
+
+        Ok(())
+    }
+
     fn to_deployment(&self) -> deployment::Deployment {
         deployment::Deployment {
             id: self.id,
-            ty: self.ty.clone(),
+            ty: self.ty.clone().expect("required field"),
             supported_protocol_versions: self.supported_protocol_versions.clone(),
             sdk_version: self.sdk_version.clone(),
             created_at: self.created_at,
@@ -247,7 +369,8 @@ impl Deployment {
         other_addess: &DeploymentAddress,
         other_additional_headers: &Headers,
     ) -> bool {
-        match (&self.ty, other_addess) {
+        let ty = self.ty.as_ref().expect("required field");
+        match (ty, other_addess) {
             (
                 DeploymentType::Http {
                     address: this_address,
@@ -273,28 +396,39 @@ impl Deployment {
     }
 }
 
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("invalid deployment has unknown deployment type")]
+pub struct UnknownDeploymentType(pub DeploymentId);
+
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct ServiceRevision {
     /// Fully qualified name of the service
+    #[bilrost(tag(1))]
     name: String,
 
     #[serde_as(as = "restate_serde_util::MapAsVec")]
+    #[bilrost(tag(2))]
     handlers: HashMap<String, Handler>,
 
+    #[bilrost(tag(3))]
     ty: ServiceType,
 
     /// Documentation of the service, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(4))]
     documentation: Option<String>,
     /// Additional service metadata, as propagated by the SDKs.
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    #[bilrost(tag(5))]
     metadata: HashMap<String, String>,
     /// Latest revision of the service.
+    #[bilrost(tag(6))]
     revision: identifiers::ServiceRevision,
 
     /// If true, the service can be invoked through the ingress.
     /// If false, the service can be invoked only from another Restate service.
+    #[bilrost(tag(7))]
     public: bool,
 
     /// The retention duration of idempotent requests for this service.
@@ -303,6 +437,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(8))]
     idempotency_retention: Option<Duration>,
 
     /// The retention duration of workflows. Only available on workflow services.
@@ -311,6 +446,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(9))]
     workflow_completion_retention: Option<Duration>,
 
     /// The journal retention. When set, this applies to all requests to all handlers of this service.
@@ -322,6 +458,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(10))]
     journal_retention: Option<Duration>,
 
     /// This timer guards against stalled service/handler invocations. Once it expires,
@@ -337,6 +474,7 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(11))]
     inactivity_timeout: Option<Duration>,
 
     /// This timer guards against stalled service/handler invocations that are supposed to
@@ -353,11 +491,13 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         default
     )]
+    #[bilrost(tag(12))]
     abort_timeout: Option<Duration>,
 
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
     #[serde(skip_serializing_if = "Option::is_none", default)]
+    #[bilrost(tag(13))]
     enable_lazy_state: Option<bool>,
 
     #[serde(
@@ -365,23 +505,33 @@ struct ServiceRevision {
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
+    #[bilrost(tag(14))]
     retry_policy_initial_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(15))]
     retry_policy_exponentiation_factor: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(16))]
     retry_policy_max_attempts: Option<NonZeroUsize>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
+    #[bilrost(tag(17))]
     retry_policy_max_interval: Option<Duration>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag(18))]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
 
     /// This is a cache for the computed value of ServiceOpenAPI
     #[serde(skip)]
+    #[bilrost(ignore(default_empty_openapi_cache()))]
     service_openapi_cache: Arc<ArcSwapOption<ServiceOpenAPI>>,
+}
+
+fn default_empty_openapi_cache() -> Arc<ArcSwapOption<ServiceOpenAPI>> {
+    Arc::new(ArcSwapOption::empty())
 }
 
 impl MapAsVecItem for ServiceRevision {
@@ -545,47 +695,65 @@ impl ServiceRevision {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 struct Handler {
+    #[bilrost(tag = 1)]
     name: String,
+    #[bilrost(tag = 2)]
     target_ty: InvocationTargetType,
+    #[bilrost(tag = 3)]
     input_rules: InputRules,
+    #[bilrost(tag = 4)]
     output_rules: OutputRules,
     /// Override of public for this handler. If unspecified, the `public` from `service` is used instead.
+    #[bilrost(tag = 5)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     public: Option<bool>,
+    #[bilrost(tag = 6)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     idempotency_retention: Option<Duration>,
+    #[bilrost(tag = 7)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     workflow_completion_retention: Option<Duration>,
+    #[bilrost(tag = 8)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     journal_retention: Option<Duration>,
+    #[bilrost(tag = 9)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     inactivity_timeout: Option<Duration>,
+    #[bilrost(tag = 10)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     abort_timeout: Option<Duration>,
+    #[bilrost(tag = 11)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     documentation: Option<String>,
+    #[bilrost(tag = 12)]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
+    #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
+    #[bilrost(tag = 14)]
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_initial_interval: Option<Duration>,
+    #[bilrost(tag = 15)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_exponentiation_factor: Option<f32>,
+    #[bilrost(tag = 16)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_max_attempts: Option<NonZeroUsize>,
+    #[bilrost(tag = 17)]
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
         with = "serde_with::As::<Option<FriendlyDuration>>"
     )]
     retry_policy_max_interval: Option<Duration>,
+    #[bilrost(tag = 18)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     retry_policy_on_max_attempts: Option<OnMaxAttempts>,
 }
@@ -698,7 +866,12 @@ impl DeploymentResolver for Schema {
                     dp.to_deployment(),
                     dp.services
                         .values()
-                        .map(|s| s.to_service_metadata(*dp_id, Some(dp.ty.protocol_type())))
+                        .map(|s| {
+                            s.to_service_metadata(
+                                *dp_id,
+                                dp.ty.as_ref().map(|ty| ty.protocol_type()),
+                            )
+                        })
                         .collect(),
                 )
             })
@@ -719,7 +892,12 @@ impl DeploymentResolver for Schema {
                 dp.to_deployment(),
                 dp.services
                     .values()
-                    .map(|s| s.to_service_metadata(*deployment_id, Some(dp.ty.protocol_type())))
+                    .map(|s| {
+                        s.to_service_metadata(
+                            *deployment_id,
+                            dp.ty.as_ref().map(|ty| ty.protocol_type()),
+                        )
+                    })
                     .collect(),
             )
         })
@@ -931,7 +1109,7 @@ impl ServiceMetadataResolver for Schema {
                 let protocol_type = self
                     .deployments
                     .get(&revision.deployment_id)
-                    .map(|dp| dp.ty.protocol_type());
+                    .and_then(|dp| dp.ty.as_ref().map(|ty| ty.protocol_type()));
 
                 revision.as_service_metadata(protocol_type)
             })
@@ -954,7 +1132,8 @@ impl ServiceMetadataResolver for Schema {
                 let protocol_type = self
                     .deployments
                     .get(&revision.deployment_id)
-                    .map(|dp| dp.ty.protocol_type());
+                    .and_then(|dp| dp.ty.as_ref().map(|ty| ty.protocol_type()));
+
                 revision.as_service_metadata(protocol_type)
             })
             .collect()
@@ -1038,7 +1217,7 @@ impl KafkaClusterResolver for Schema {
             .subscriptions
             .values()
             .filter(|sub| {
-                let Source::Kafka { cluster, .. } = sub.source();
+                let KafkaSource { cluster, .. } = sub.source();
                 cluster == cluster_name
             })
             .map(|sub| sub.clone().redact(redact_secrets))
@@ -1360,6 +1539,7 @@ mod test_util {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     use crate::config::{

@@ -29,7 +29,9 @@ use crate::schema::invocation_target::{
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
-use crate::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Source, Subscription};
+use crate::schema::subscriptions::{
+    EventInvocationTargetTemplate, KafkaSource, Sink, Subscription,
+};
 use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
@@ -375,7 +377,7 @@ impl SchemaUpdater {
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
-                            restate.deployment.address = %existing_deployment.ty.address_display(),
+                            restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
@@ -435,10 +437,10 @@ impl SchemaUpdater {
             deployment_id,
             Deployment {
                 id: deployment_id,
-                ty: Self::create_deployment_ty(
+                ty: Some(Self::create_deployment_ty(
                     deployment_address,
                     discovery_response.deployment_type_parameters,
-                ),
+                )),
                 delivery_options: DeliveryOptions::new(additional_headers),
                 supported_protocol_versions: discovery_response.supported_protocol_versions,
                 sdk_version: discovery_response.sdk_version,
@@ -674,10 +676,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update only these 3 fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     sdk_version: discovery_response.sdk_version,
 
@@ -715,7 +717,7 @@ impl SchemaUpdater {
                 if !proposed_services.contains_key(&service.name) {
                     warn!(
                         restate.deployment.id = %deployment_id,
-                        restate.deployment.address = %existing_deployment.ty.address_display(),
+                        restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                         "Going to remove service {} due to a forced deployment update",
                         service.name
                     );
@@ -781,10 +783,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update all these fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     supported_protocol_versions: discovery_response.supported_protocol_versions,
                     sdk_version: discovery_response.sdk_version,
@@ -856,7 +858,7 @@ impl SchemaUpdater {
                     })?
                     .as_str();
                 let topic_name = &source.path()[1..];
-                Source::Kafka {
+                KafkaSource {
                     cluster: cluster_name.to_string(),
                     topic: topic_name.to_string(),
                 }
@@ -867,7 +869,7 @@ impl SchemaUpdater {
                 ));
             }
         };
-        let Source::Kafka { cluster, .. } = &source;
+        let KafkaSource { cluster, .. } = &source;
 
         // Parse sink
         let sink = match sink.scheme_str() {
@@ -902,7 +904,7 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                Sink::Invocation {
+                Sink {
                     event_invocation_target_template: match handler_schemas.target_ty {
                         InvocationTargetType::Service => EventInvocationTargetTemplate::Service {
                             name: service_name.to_owned(),
@@ -1057,7 +1059,7 @@ impl SchemaUpdater {
             .subscriptions
             .values()
             .filter(|s| {
-                let Source::Kafka { cluster, .. } = s.source();
+                let KafkaSource { cluster, .. } = s.source();
                 cluster == kafka_cluster_name
             })
             .map(|s| s.id())
@@ -1379,7 +1381,7 @@ impl Handler {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_str(&ct)
-                        .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
+                        .map_err(|e| ServiceError::BadOutputContentType(ct.to_owned(), e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
                 },

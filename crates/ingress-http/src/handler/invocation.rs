@@ -42,6 +42,7 @@ pub enum InvocationStage {
 pub struct InvocationStatusResponse {
     stage: InvocationStage,
     /// Filled if `stage = 'completed'` and the invocation failed
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<InvocationError>,
 }
 

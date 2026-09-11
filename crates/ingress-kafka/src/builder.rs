@@ -226,11 +226,14 @@ impl InvocationBuilder {
         partition: i32,
         offset: i64,
     ) -> Result<Box<ServiceInvocation>, anyhow::Error> {
-        let Sink::Invocation {
+        let Sink {
             event_invocation_target_template,
         } = subscription.sink();
 
         let invocation_target = match event_invocation_target_template {
+            EventInvocationTargetTemplate::Unknown => {
+                bail!("invalid invocation target template");
+            }
             EventInvocationTargetTemplate::Service { name, handler } => {
                 InvocationTarget::service(name.clone(), handler.clone())
             }

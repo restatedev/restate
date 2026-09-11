@@ -96,7 +96,7 @@ macro_rules! flexbuffers_storage_encode_decode {
 
         impl $crate::storage::StorageDecode for $name {
             fn decode<B: ::bytes::Buf>(
-                buf: &mut B,
+                buf: B,
                 kind: $crate::storage::StorageCodecKind,
             ) -> Result<Self, $crate::storage::StorageDecodeError>
             where
@@ -132,7 +132,7 @@ macro_rules! bilrost_storage_encode_decode {
 
         impl $crate::storage::StorageDecode for $name {
             fn decode<B: ::bytes::Buf>(
-                buf: &mut B,
+                buf: B,
                 kind: $crate::storage::StorageCodecKind,
             ) -> Result<Self, $crate::storage::StorageDecodeError>
             where
