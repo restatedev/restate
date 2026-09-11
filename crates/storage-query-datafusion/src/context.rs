@@ -23,6 +23,8 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
 use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
+use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion::sql::TableReference;
@@ -47,7 +49,9 @@ use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use crate::empty_invoker_status_handle::EmptyInvokerStatusHandle;
 use crate::node_fan_out::NodeWarnings;
+use crate::partial_aggregation::PartialAggregationPushdown;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::scan_fragment::ScanFragmentPushdown;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
 
@@ -628,10 +632,13 @@ impl QueryContext {
         //
         // build the state
         //
+        let mut physical_optimizer = PhysicalOptimizer::new();
+        install_fragment_pushdown(&mut physical_optimizer.rules)?;
         let state = SessionStateBuilder::new()
             .with_config(session_config)
             .with_runtime_env(runtime)
             .with_default_features()
+            .with_physical_optimizer_rules(physical_optimizer.rules)
             .build();
 
         let mut ctx = SessionContext::new_with_state(state);
@@ -684,6 +691,25 @@ impl QueryContext {
     }
 }
 
+/// Places Restate's fragment rules around DataFusion's final filter-pushdown
+/// pass: partial aggregates must see residual filters, while standalone
+/// row-wise fragments must run after dynamic filters reach the scan.
+fn install_fragment_pushdown(
+    rules: &mut Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>>,
+) -> Result<(), DataFusionError> {
+    let post_filter_pushdown = rules
+        .iter()
+        .position(|rule| rule.name() == "FilterPushdown(Post)")
+        .ok_or_else(|| {
+            DataFusionError::Internal(
+                "post-optimization filter pushdown rule is not installed".to_owned(),
+            )
+        })?;
+    rules.insert(post_filter_pushdown, Arc::new(PartialAggregationPushdown));
+    rules.insert(post_filter_pushdown + 2, Arc::new(ScanFragmentPushdown));
+    Ok(())
+}
+
 impl AsRef<SessionContext> for QueryContext {
     fn as_ref(&self) -> &SessionContext {
         &self.datafusion_context
@@ -728,5 +754,29 @@ impl SelectPartitions for SelectPartitionsFromMetadata {
                 .map(|(a, b)| (*a, b.clone()))
                 .collect()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fragment_rules_run_around_the_final_filter_pass() {
+        let mut optimizer = PhysicalOptimizer::new();
+        install_fragment_pushdown(&mut optimizer.rules)
+            .expect("default optimizer has the post-filter rule");
+        let names = optimizer
+            .rules
+            .iter()
+            .map(|rule| rule.name())
+            .collect::<Vec<_>>();
+        let partial = names
+            .iter()
+            .position(|name| *name == "PartialAggregationPushdown")
+            .expect("partial aggregation rule");
+        assert_eq!(names[partial + 1], "FilterPushdown(Post)");
+        assert_eq!(names[partial + 2], "ScanFragmentPushdown");
+        assert_eq!(names[partial + 3], "SanityCheckPlan");
     }
 }

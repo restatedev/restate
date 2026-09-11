@@ -24,37 +24,34 @@ use parking_lot::Mutex;
 
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
-use restate_types::NodeId;
 use restate_types::identifiers::PartitionId;
 use restate_types::net::remote_query_scanner::{RemoteQueryScannerOpen, ScannerId};
 use restate_types::sharding::KeyRange;
+use restate_types::{GenerationalNodeId, NodeId};
 
-use crate::remote_query_scanner_client::{
-    RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
-};
-use crate::table_providers::{Scan, ScanPartition};
+use crate::remote_fragment::RemoteFragmentExecution;
+use crate::remote_query_scanner_client::{OpenedRemoteScanner, RemoteScannerService, remote_scan};
+use crate::table_providers::{DistributedPartitionScanner, Scan, ScanPartition};
 
-// A global scanner sequence generate shared across all RemoteScannerManager
-// instances to avoid scanner-id conflicts
+/// Process-wide scanner sequence shared by all managers so client-allocated
+/// scanner ids do not collide.
 static NEXT_SCANNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// LocalPartitionScannerRegistry is a mapping between a datafusion registered table name
-/// (i.e. sys_inbox, sys_status, etc.) to an implementation of a ScanPartition.
-/// This registry is populated when we register all the partitioned tables, and it is accessed
-/// by the RemoteQueryScannerServer.
+/// Node-local scanners keyed by their DataFusion table name. Registration and
+/// remote serving share the registry through cloned managers.
 #[derive(Clone, Debug, Default)]
 struct LocalPartitionScannerRegistry {
-    local_store_scanners: Arc<Mutex<BTreeMap<String, Arc<dyn ScanPartition>>>>,
+    scanners: Arc<Mutex<BTreeMap<String, Arc<dyn ScanPartition>>>>,
 }
 
 impl LocalPartitionScannerRegistry {
-    pub fn get(&self, table_name: &str) -> Option<Arc<dyn ScanPartition>> {
-        let guard = self.local_store_scanners.lock();
+    fn get(&self, table_name: &str) -> Option<Arc<dyn ScanPartition>> {
+        let guard = self.scanners.lock();
         guard.get(table_name).cloned()
     }
 
     fn register(&self, table_name: impl Into<String>, scanner: Arc<dyn ScanPartition>) {
-        let mut guard = self.local_store_scanners.lock();
+        let mut guard = self.scanners.lock();
         guard.insert(table_name.into(), scanner);
     }
 }
@@ -63,7 +60,7 @@ impl LocalPartitionScannerRegistry {
 pub struct RemoteScannerManager {
     remote_scanner: Arc<dyn RemoteScannerService>,
     partition_locator: Arc<dyn PartitionLocator>,
-    local_store_scanners: LocalPartitionScannerRegistry,
+    local_scanners: LocalPartitionScannerRegistry,
     metadata: Metadata,
 }
 
@@ -73,11 +70,14 @@ impl Debug for RemoteScannerManager {
     }
 }
 
+/// The owner selected for a partition by the current routing metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PartitionLocation {
     Local,
     Remote { node_id: NodeId },
 }
 
+/// Resolves partition ownership independently of DataFusion planning and execution.
 pub trait PartitionLocator: Send + Sync + 'static {
     fn get_partition_target_node(
         &self,
@@ -108,9 +108,7 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
     ) -> anyhow::Result<PartitionLocation> {
         let my_node_id = self.metadata.my_node_id();
         match self.partition_routing.get_node_by_partition(partition_id) {
-            None => {
-                bail!("node lookup for partition {} failed", partition_id)
-            }
+            None => bail!("node lookup for partition {partition_id} failed"),
             Some(node_id) if node_id == my_node_id => Ok(PartitionLocation::Local),
             Some(node_id) => Ok(PartitionLocation::Remote {
                 node_id: NodeId::from(node_id),
@@ -119,7 +117,7 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
     }
 }
 
-/// A locator that reports every partition as local. Used by [`RemoteScannerManager::local_only`].
+/// A locator for single-process tools whose partitions are always local.
 struct AlwaysLocalPartitionLocator;
 
 impl PartitionLocator for AlwaysLocalPartitionLocator {
@@ -131,8 +129,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
     }
 }
 
-/// A remote-scan service that is never invoked because [`AlwaysLocalPartitionLocator`] keeps all
-/// scans local. Used by [`RemoteScannerManager::local_only`].
+/// A remote-scan service that is never invoked in local-only mode.
 #[derive(Debug)]
 struct NoopRemoteScanner;
 
@@ -142,7 +139,7 @@ impl RemoteScannerService for NoopRemoteScanner {
         &self,
         _peer: NodeId,
         _req: RemoteQueryScannerOpen,
-    ) -> Result<RemoteScanner, DataFusionError> {
+    ) -> Result<OpenedRemoteScanner, DataFusionError> {
         Err(DataFusionError::External(
             anyhow!("remote scanner is not available in local-only mode").into(),
         ))
@@ -158,15 +155,14 @@ impl RemoteScannerManager {
         Self {
             remote_scanner,
             partition_locator,
-            local_store_scanners: LocalPartitionScannerRegistry::default(),
+            local_scanners: LocalPartitionScannerRegistry::default(),
             metadata,
         }
     }
 
     /// Builds a manager for a single-process tool that only ever scans local partitions
-    /// (e.g. an offline snapshot inspector). The remote-scan path is never exercised because
-    /// the locator always reports partitions as [`PartitionLocation::Local`]; the metadata only
-    /// needs to be valid enough for local scans.
+    /// (e.g. an offline snapshot inspector). The remote-scan path is never exercised; the
+    /// metadata only needs to be valid enough for local scans.
     pub fn local_only(metadata: Metadata) -> Self {
         Self::new(
             Arc::new(NoopRemoteScanner),
@@ -180,32 +176,27 @@ impl RemoteScannerManager {
     /// Combining this node's generational id with a process-local monotonic counter
     /// guarantees uniqueness across the cluster: the generation distinguishes restarts,
     /// and the counter distinguishes concurrent scans within one process lifetime.
-    pub fn allocate_scanner_id(&self) -> ScannerId {
+    pub(crate) fn allocate_scanner_id(&self) -> ScannerId {
         ScannerId(
             self.metadata.my_node_id(),
             NEXT_SCANNER_SEQ.fetch_add(1, Ordering::Relaxed),
         )
     }
 
-    /// Combines the local partition scanner for the given table, with an RPC based partition scanner
-    /// this is able to both scan partition hosted at the current node, and remote partitions hosted on
-    /// other nodes via RPC.
-    pub fn create_distributed_scanner(
+    /// Registers the node-local scanner used to serve RPCs and returns the
+    /// planning/execution adapter used by the table provider.
+    pub(crate) fn create_distributed_scanner(
         &self,
         table_name: impl Into<String>,
         local_scanner: impl Into<Option<Arc<dyn ScanPartition>>>,
-    ) -> impl ScanPartition + Clone {
+    ) -> impl DistributedPartitionScanner {
         let name = table_name.into();
 
         if let Some(local_scanner) = local_scanner.into() {
-            // make the local scanner available to serve a remote RPC.
-            // see usages of [[local_partition_scanner]]
-            // we use the table_name to associate a remote scanner with its local counterpart.
-            self.local_store_scanners
-                .register(name.clone(), local_scanner.clone());
+            self.local_scanners.register(name.clone(), local_scanner);
         }
 
-        RemotePartitionsScanner::new(self.clone(), name)
+        DistributedTableScanner::new(self.clone(), name)
     }
 
     /// Registers a node-level scanner that can serve remote scan RPCs for a
@@ -213,15 +204,15 @@ impl RemoteScannerManager {
     /// as a `ScanPartition` adapter so it integrates with the existing remote
     /// scanner server infrastructure.
     pub fn register_node_scanner(&self, table_name: impl Into<String>, scanner: Arc<dyn Scan>) {
-        self.local_store_scanners
+        self.local_scanners
             .register(table_name, Arc::new(ScanToScanPartitionAdapter(scanner)));
     }
 
-    pub fn local_partition_scanner(&self, table: &str) -> Option<Arc<dyn ScanPartition>> {
-        self.local_store_scanners.get(table)
+    pub(crate) fn local_partition_scanner(&self, table: &str) -> Option<Arc<dyn ScanPartition>> {
+        self.local_scanners.get(table)
     }
 
-    pub fn get_partition_target_node(
+    fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<PartitionLocation> {
@@ -229,22 +220,52 @@ impl RemoteScannerManager {
             .get_partition_target_node(partition_id)
     }
 
+    pub(crate) fn validate_partition_location(
+        &self,
+        partition_id: PartitionId,
+        planned_location: PartitionLocation,
+    ) -> anyhow::Result<()> {
+        let current_location = self.get_partition_target_node(partition_id)?;
+        if current_location != planned_location {
+            bail!(
+                "partition {partition_id} ownership changed after physical planning: planned {planned_location:?}, current {current_location:?}"
+            );
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_local_partition_owner(
+        &self,
+        partition_id: PartitionId,
+        expected_owner: GenerationalNodeId,
+    ) -> anyhow::Result<()> {
+        if self.metadata.my_node_id() != expected_owner {
+            bail!(
+                "remote scan for partition {partition_id} reached {}, but was planned for {expected_owner}",
+                self.metadata.my_node_id()
+            );
+        }
+        self.validate_partition_location(partition_id, PartitionLocation::Local)
+    }
+
     /// Returns a reference to the remote scanner service for use by node-fan-out tables.
-    pub fn remote_scanner_service(&self) -> Arc<dyn RemoteScannerService> {
+    pub(crate) fn remote_scanner_service(&self) -> Arc<dyn RemoteScannerService> {
         self.remote_scanner.clone()
     }
 }
 
-// ----- remote partition scanner -----
+// ----- distributed table scanner -----
 
-#[derive(Clone, Debug)]
-pub struct RemotePartitionsScanner {
+/// Table-specific bridge between planning-time routing and the two execution
+/// paths selected by `PartitionScanExec` and `RemoteNodeExec`.
+#[derive(Debug)]
+struct DistributedTableScanner {
     manager: RemoteScannerManager,
     table_name: String,
 }
 
-impl RemotePartitionsScanner {
-    pub fn new(manager: RemoteScannerManager, table: impl Into<String>) -> Self {
+impl DistributedTableScanner {
+    fn new(manager: RemoteScannerManager, table: impl Into<String>) -> Self {
         Self {
             manager,
             table_name: table.into(),
@@ -273,8 +294,12 @@ impl ScanPartition for ScanToScanPartitionAdapter {
     }
 }
 
-impl ScanPartition for RemotePartitionsScanner {
-    fn scan_partition(
+impl DistributedPartitionScanner for DistributedTableScanner {
+    fn partition_location(&self, partition_id: PartitionId) -> anyhow::Result<PartitionLocation> {
+        self.manager.get_partition_target_node(partition_id)
+    }
+
+    fn scan_local_partition(
         &self,
         partition_id: PartitionId,
         range: KeyRange,
@@ -284,36 +309,52 @@ impl ScanPartition for RemotePartitionsScanner {
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        match self.manager.get_partition_target_node(partition_id)? {
-            PartitionLocation::Local => {
-                let scanner = self.manager.local_partition_scanner(&self.table_name).ok_or_else(
-                    ||anyhow!("was expecting a local partition to be present on this node. It could be that this partition is being opened right now.")
-                )?;
-                Ok(scanner.scan_partition(
-                    partition_id,
-                    range,
-                    projection,
-                    predicate,
-                    batch_size,
-                    limit,
-                    elapsed_compute,
-                )?)
-            }
-            PartitionLocation::Remote { node_id } => {
-                let scanner_id = self.manager.allocate_scanner_id();
-                Ok(remote_scan_as_datafusion_stream(
-                    self.manager.remote_scanner.clone(),
-                    node_id,
-                    scanner_id,
-                    partition_id,
-                    range,
-                    self.table_name.clone(),
-                    projection,
-                    predicate,
-                    batch_size,
-                    limit,
-                ))
-            }
-        }
+        self.manager
+            .validate_partition_location(partition_id, PartitionLocation::Local)?;
+        self.manager
+            .local_partition_scanner(&self.table_name)
+            .ok_or_else(|| {
+                anyhow!(
+                    "local scanner for table {} is not registered",
+                    self.table_name
+                )
+            })?
+            .scan_partition(
+                partition_id,
+                range,
+                projection,
+                predicate,
+                batch_size,
+                limit,
+                elapsed_compute,
+            )
+    }
+
+    fn scan_remote_partition(
+        &self,
+        target_node: NodeId,
+        partition_id: PartitionId,
+        range: KeyRange,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        fragment: Option<RemoteFragmentExecution>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let scanner_id = self.manager.allocate_scanner_id();
+        Ok(remote_scan(
+            self.manager.remote_scanner.clone(),
+            target_node,
+            scanner_id,
+            partition_id,
+            range,
+            self.table_name.clone(),
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            target_node.as_generational(),
+            fragment,
+        ))
     }
 }
