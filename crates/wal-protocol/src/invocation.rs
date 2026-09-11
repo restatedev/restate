@@ -12,6 +12,8 @@ use bytes::{Buf, BufMut, Bytes};
 
 use restate_types::bilrost_storage_encode_decode;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::logs::{HasRecordKeys, Keys};
+use restate_types::sharding::WithPartitionKey;
 
 /// Pause an invocation, proposed to the log from the pause RPC.
 ///
@@ -24,6 +26,12 @@ pub struct PauseInvocationCommand {
     /// The ingress RPC request awaiting the pause response if required.
     #[bilrost(tag(2))]
     pub request_id: Option<PartitionProcessorRpcRequestId>,
+}
+
+impl HasRecordKeys for PauseInvocationCommand {
+    fn record_keys(&self) -> Keys {
+        Keys::Single(self.invocation_id.partition_key())
+    }
 }
 
 bilrost_storage_encode_decode!(PauseInvocationCommand);
