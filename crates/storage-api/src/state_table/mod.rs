@@ -46,6 +46,31 @@ pub trait ReadStateTable {
         > + Send
         + 'a,
     >;
+
+    /// Budget-gated point reads of a specific set of state keys.
+    ///
+    /// Point-reads the requested `keys` (exact match) up front, omitting keys
+    /// with no stored value, and returns them as an already-materialized stream
+    /// that owns its data (no borrow on the store, no full-service scan). Each
+    /// entry's [`LocalMemoryLease`] is reserved from `budget` **before** its
+    /// value is copied out, so preloaded memory is fully accounted.
+    ///
+    /// Unlike [`get_all_user_states_budgeted`], preloading runs synchronously and
+    /// cannot wait for budget: if a reservation fails, preloading stops and the
+    /// remaining keys are left to be served lazily on demand.
+    ///
+    /// [`get_all_user_states_budgeted`]: Self::get_all_user_states_budgeted
+    fn get_user_states_budgeted<'a>(
+        &'a self,
+        service_id: &ServiceId,
+        keys: Vec<Bytes>,
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
+        + 'a,
+    >;
 }
 
 pub trait ScanStateTable {

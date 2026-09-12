@@ -175,6 +175,7 @@ mod mocks {
                         inactivity_timeout: None,
                         abort_timeout: None,
                         enable_lazy_state: None,
+                        always_eager_state_keys: vec![],
                         public: true,
                         input_description: "any".to_string(),
                         output_description: "any".to_string(),
@@ -196,6 +197,7 @@ mod mocks {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
+                always_eager_state_keys: vec![],
                 retry_policy: Default::default(),
                 info: vec![],
             });
