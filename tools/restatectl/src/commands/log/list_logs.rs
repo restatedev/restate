@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 
-use anyhow::bail;
 use cling::prelude::*;
 
 use restate_cli_util::_comfy_table::{Cell, Table};
@@ -18,11 +17,12 @@ use restate_cli_util::c_println;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::output::Console;
 use restate_types::Versioned;
+use restate_types::health::MetadataServerStatus;
 use restate_types::logs::LogId;
 use restate_types::logs::metadata::Chain;
 
 use crate::commands::log::{deserialize_replicated_log_params, render_loglet_params};
-use crate::connection::ConnectionInfo;
+use crate::connection::{ConnectionInfo, ConnectionInfoError};
 use crate::util::write_default_provider;
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
@@ -47,16 +47,26 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
     let log_chains: BTreeMap<LogId, &Chain> = logs.iter().map(|(id, chain)| (*id, chain)).collect();
 
     if log_chains.is_empty() {
-        c_println!(
-            "No logs were found. Check if the cluster has been provisioned and partition processors have started on a worker node. `restatectl provision`."
-        );
-        c_println!();
-        c_println!("Use `restatectl provision` if you have not provisioned this cluster yet.");
+        c_println!("No logs were found.");
 
-        // short-circuits `restatectl status` to avoid trying to list partitions
-        bail!(
-            "The cluster appears to not be provisioned. You can do so with `restatectl provision`"
-        );
+        // A provisioned cluster with zero partitions legitimately has no logs.
+        match connection.get_nodes_configuration().await {
+            Ok(_) => {}
+            Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
+                if contacted_nodes.values().any(|ident| {
+                    ident.metadata_server_status() == MetadataServerStatus::AwaitingProvisioning
+                }) =>
+            {
+                c_println!();
+                c_println!(
+                    "Use `restatectl provision` if you have not provisioned this cluster yet."
+                );
+
+                // short-circuits `restatectl status` to avoid trying to list partitions
+                return Err(ConnectionInfoError::ClusterNotProvisioned.into());
+            }
+            Err(err) => return Err(err.into()),
+        }
     } else {
         for (log_id, chain) in log_chains {
             let params = deserialize_replicated_log_params(&chain.tail());
