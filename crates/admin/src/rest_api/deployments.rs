@@ -600,5 +600,37 @@ fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
             format!("The provided uri {uri} is not absolute, only absolute URIs can be used."),
         ));
     }
+
+    let looks_like_port_without_host = uri.port().is_none()
+        && uri
+            .host()
+            .is_some_and(|host| !host.is_empty() && host.bytes().all(|byte| byte.is_ascii_digit()));
+    if looks_like_port_without_host {
+        return Err(MetaApiError::InvalidField(
+            "uri",
+            format!("The provided uri {uri} looks like a port without a host."),
+        ));
+    }
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_uri_rejects_port_without_host() {
+        let error = validate_uri(&Uri::from_static("http://9080/")).unwrap_err();
+        let MetaApiError::InvalidField(field, reason) = error else {
+            panic!("expected an invalid field error");
+        };
+        assert_eq!(field, "uri");
+        assert_eq!(
+            reason,
+            "The provided uri http://9080/ looks like a port without a host."
+        );
+
+        assert!(validate_uri(&Uri::from_static("http://localhost:9080/")).is_ok());
+    }
 }
