@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{HashMap, VecDeque};
+use std::mem;
+use std::sync::Arc;
+
 use arc_swap::ArcSwapOption;
 use bytes::BytesMut;
 use metrics::gauge;
@@ -23,9 +27,6 @@ use raft_proto::eraftpb::{
 };
 use raft_proto::prelude::MessageType;
 use slog::o;
-use std::collections::{HashMap, VecDeque};
-use std::mem;
-use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 use tokio::time::{Interval, MissedTickBehavior};
@@ -217,6 +218,7 @@ impl Member {
         };
 
         member.validate_metadata_server_configuration();
+        member.warn_if_undersized();
 
         Ok(member)
     }
@@ -684,7 +686,7 @@ impl Member {
             return;
         }
 
-        if self.raw_node.raft.has_pending_conf() {
+        if self.has_pending_reconfiguration() {
             let _ = response_tx.send(Err(JoinClusterError::PendingReconfiguration));
             return;
         }
@@ -760,7 +762,7 @@ impl Member {
     }
 
     fn remove_member_conf_change(
-        &self,
+        configuration: &MetadataServerConfiguration,
         leaving_member_id: MemberId,
     ) -> (ConfChangeV2, MetadataServerConfiguration) {
         let mut conf_change_single = ConfChangeSingle::new();
@@ -770,7 +772,7 @@ impl Member {
         let mut conf_change = ConfChangeV2::new();
         conf_change.set_changes(vec![conf_change_single].into());
 
-        let mut next_configuration = self.configuration.clone();
+        let mut next_configuration = configuration.clone();
         next_configuration.version = next_configuration.version.next();
         assert!(
             next_configuration
@@ -781,6 +783,18 @@ impl Member {
         );
 
         (conf_change, next_configuration)
+    }
+
+    fn has_pending_reconfiguration(&self) -> bool {
+        self.raw_node.raft.has_pending_conf()
+            || !self
+                .raw_node
+                .raft
+                .prs()
+                .conf()
+                .to_conf_state()
+                .voters_outgoing
+                .is_empty()
     }
 
     async fn on_ready(&mut self, metadata_nodes_config: &NodesConfiguration) -> Result<(), Error> {
@@ -958,7 +972,7 @@ impl Member {
         metadata_nodes_config: &NodesConfiguration,
     ) -> Result<(), Error> {
         for entry in committed_entries {
-            if entry.data.is_empty() {
+            if entry.get_entry_type() == EntryType::EntryNormal && entry.data.is_empty() {
                 // new leader was elected
                 continue;
             }
@@ -1074,8 +1088,7 @@ impl Member {
             );
         }
 
-        self.answer_join_callbacks();
-        self.answer_remove_callbacks();
+        self.answer_reconfiguration_callbacks();
 
         Ok(())
     }
@@ -1163,6 +1176,7 @@ impl Member {
     fn update_configuration(&mut self, new_configuration: MetadataServerConfiguration) {
         let previous_configuration = mem::replace(&mut self.configuration, new_configuration);
         self.validate_metadata_server_configuration();
+        self.warn_if_undersized();
 
         let mut new_nodes_configuration = self.kv_storage.last_seen_nodes_configuration().clone();
         let previous_version = new_nodes_configuration.version();
@@ -1215,6 +1229,24 @@ impl Member {
         }
     }
 
+    fn answer_reconfiguration_callbacks(&mut self) {
+        // Only answer join/remove callbacks once the reconfiguration has completed.
+        if !self
+            .raw_node
+            .raft
+            .prs()
+            .conf()
+            .to_conf_state()
+            .voters_outgoing
+            .is_empty()
+        {
+            return;
+        }
+
+        self.answer_join_callbacks();
+        self.answer_remove_callbacks();
+    }
+
     fn answer_join_callbacks(&mut self) {
         let pending_join_requests: Vec<_> = self.pending_join_requests.drain().collect();
         for (member_id, response_tx) in pending_join_requests {
@@ -1258,9 +1290,7 @@ impl Member {
         for (member_id, response_tx) in pending_remove_requests {
             if self.is_member(member_id) {
                 let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
-                    RemoveNodeError::Internal(format!(
-                        "failed to remove node '{member_id}' from new configuration"
-                    )),
+                    RemoveNodeError::Rejected,
                 )));
             } else {
                 let _ = response_tx.send(Ok(()));
@@ -1365,7 +1395,7 @@ impl Member {
             return;
         }
 
-        if self.raw_node.raft.has_pending_conf() {
+        if self.has_pending_reconfiguration() {
             let _ = response_tx.send(Err(MetadataCommandError::RemoveNode(
                 RemoveNodeError::PendingReconfiguration,
             )));
@@ -1411,6 +1441,30 @@ impl Member {
         let nodes_config =
             Self::latest_nodes_configuration(&self.kv_storage, metadata_nodes_config);
 
+        if self.configuration.members.len() == 2
+            && leaving_member_id.node_id == self.my_member_id.node_id
+        {
+            let survivor = self
+                .configuration
+                .members
+                .keys()
+                .copied()
+                .find(|node_id| *node_id != leaving_member_id.node_id)
+                .expect("two-member configuration must contain a survivor");
+            let known_leader = nodes_config
+                .find_node_by_id(survivor)
+                .ok()
+                .map(|node_config| KnownLeader {
+                    node_id: survivor,
+                    address: node_config.address.clone(),
+                });
+
+            info!(%survivor, "Transferring metadata cluster leadership before removing the leader");
+            self.raw_node.transfer_leader(to_raft_id(survivor));
+            let _ = response_tx.send(Err(MetadataCommandError::NotLeader(known_leader)));
+            return;
+        }
+
         if nodes_config
             .find_node_by_id(leaving_member_id.node_id)
             .is_err()
@@ -1421,7 +1475,8 @@ impl Member {
             return;
         }
 
-        let (conf_change, new_configuration) = self.remove_member_conf_change(leaving_member_id);
+        let (conf_change, new_configuration) =
+            Self::remove_member_conf_change(&self.configuration, leaving_member_id);
 
         let next_configuration_bytes =
             grpc::MetadataServerConfiguration::from(new_configuration).encode_to_vec();
@@ -1493,6 +1548,15 @@ impl Member {
         self.configuration.members.contains_key(&node_id)
     }
 
+    fn warn_if_undersized(&self) {
+        if self.configuration.members.len() < 3 {
+            warn!(
+                members = self.configuration.members.len(),
+                "Metadata cluster has fewer than three members and is not suitable for production high availability"
+            );
+        }
+    }
+
     fn latest_nodes_configuration<'a>(
         kv_storage: &'a KvMemoryStorage,
         metadata_nodes_config: &'a NodesConfiguration,
@@ -1524,5 +1588,34 @@ impl Member {
                 node_id: leader,
                 address: node_config.address.clone(),
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn metadata_server_member_removal_uses_simple_configuration_change() {
+        let node_1 = MemberId::new(PlainNodeId::new(1), 1);
+        let node_2 = MemberId::new(PlainNodeId::new(2), 2);
+        let configuration = MetadataServerConfiguration {
+            version: Version::MIN,
+            members: HashMap::from([
+                (node_1.node_id, node_1.created_at_millis),
+                (node_2.node_id, node_2.created_at_millis),
+            ]),
+        };
+
+        let (conf_change, next_configuration) =
+            Member::remove_member_conf_change(&configuration, node_1);
+        assert_eq!(conf_change.changes.len(), 1);
+        assert_eq!(
+            conf_change.changes[0].change_type,
+            ConfChangeType::RemoveNode
+        );
+        assert_eq!(conf_change.changes[0].node_id, to_raft_id(node_1.node_id));
+        assert!(!next_configuration.contains(node_1.node_id));
+        assert!(next_configuration.contains(node_2.node_id));
     }
 }
