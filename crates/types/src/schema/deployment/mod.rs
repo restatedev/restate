@@ -87,6 +87,31 @@ impl Deployment {
         self.created_at
     }
 
+    /// Build a synthetic HTTP deployment pointing at a single endpoint (schemaless mode).
+    pub fn single_http_endpoint(
+        id: DeploymentId,
+        address: Uri,
+        protocol_type: ProtocolType,
+        http_version: http::Version,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+    ) -> Self {
+        Self {
+            id,
+            ty: DeploymentType::Http {
+                address,
+                protocol_type,
+                http_version,
+                auth: None,
+            },
+            additional_headers,
+            supported_protocol_versions: 1..=i32::MAX,
+            sdk_version: None,
+            created_at: MillisSinceEpoch::now(),
+            metadata: HashMap::default(),
+            info: Vec::new(),
+        }
+    }
+
     pub fn semantic_eq_with_address_and_headers(
         &self,
         other_addess: &DeploymentAddress,
