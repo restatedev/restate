@@ -64,10 +64,6 @@ pub(crate) enum HandlerError {
     LimitKeyWithoutScope,
     #[error("invalid limit-key: {0}")]
     InvalidLimitKey(String),
-    #[error("scoped invocations require vqueues to be enabled")]
-    ScopeRequiresVQueues,
-    #[error("scope is not supported for Virtual Object targets")]
-    ScopedVirtualObjectNotSupported,
     #[error("bad header {0}: {1:?}")]
     BadHeader(header::HeaderName, #[source] header::ToStrError),
     #[error("bad delay query parameter, must be a ISO8601 duration: {0}")]
@@ -196,9 +192,7 @@ impl HandlerError {
             | HandlerError::LimitKeyWithoutScope
             | HandlerError::InvalidLimitKey(_)
             | HandlerError::BadScopeValue(_)
-            | HandlerError::BadPath(_)
-            | HandlerError::ScopeRequiresVQueues
-            | HandlerError::ScopedVirtualObjectNotSupported => StatusCode::BAD_REQUEST,
+            | HandlerError::BadPath(_) => StatusCode::BAD_REQUEST,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             HandlerError::NotReady => StatusCode::from_u16(470).unwrap(),
             HandlerError::Body(inner) if inner.downcast_ref::<LengthLimitError>().is_some() => {

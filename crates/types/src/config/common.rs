@@ -767,16 +767,6 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
-    /// Current in heavy development, do not enable this feature unless you are a contributor
-    vqueues,
-
-    /// When enabled, invocations that exhaust their memory budget will yield back to
-    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
-    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
-    ///
-    /// Since v1.7.0
-    invoker_yield,
-
     /// # Enables unique random seeds
     ///
     /// When enabled, invocations get a unique random seed assigned.
@@ -810,14 +800,6 @@ experimental! {
     /// Since v1.7.9
     scoped_state_table_migration,
 
-    /// # Allow scope on Virtual Object targets
-    ///
-    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
-    /// `vqueues` to be enabled as well.
-    ///
-    /// Since v1.7.0
-    scoped_virtual_objects,
-
     /// # Enables Kafka header support for scoped invocations
     ///
     /// When enabled, Kafka subscriptions read `x-restate-scope` and
@@ -826,21 +808,6 @@ experimental! {
     ///
     /// Since v1.7.0
     kafka_scope,
-
-    /// # Skip completed invocations during the vqueues migration
-    ///
-    /// When enabled, the vqueues migration does not migrate completed
-    /// invocations into their vqueue's `Finished` stage. Completed invocations
-    /// keep their existing status and are still cleaned up by their
-    /// `CleanInvocationStatus` timer, but they will not appear in vqueue
-    /// introspection. This can significantly speed up the migration on stores
-    /// with a large completion-retention backlog. Requires `vqueues` to also be
-    /// enabled.
-    ///
-    /// By default, all invocations (including completed ones) are migrated.
-    ///
-    /// Since v1.7.5
-    vqueues_migration_skip_completed,
 
     /// Apply completion and journal retention when terminating a preflight invocation.
     ///

@@ -540,45 +540,13 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableJournalV2);
             }
 
-            // Opt this partition in to vqueues if the operator has flipped the experimental config
-            // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
-            // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
-            // not touch the local FSM mirror here.
-            if config.common.experimental.is_vqueues_enabled() {
-                // The vqueues flag is true, one of the following will happen:
-                //   1. We're already on vqueues, so nothing to do.
-                //   2. We're not yet on vqueues, so we'll migrate either fully or partially depending
-                //      on the vqueues_skip_completed flag.
-                //   3. We've previously partially migrated to vqueues, but now we want to fully migrate,
-                //      so we'll trigger a full migration.
-                match (
-                    config
-                        .common
-                        .experimental
-                        .is_vqueues_migration_skip_completed_enabled(),
-                    processor.fsm().features().is_vqueues_enabled(),
-                    processor.fsm().features().is_fully_migrated_to_vqueues(),
-                ) {
-                    (_, _, true) => {
-                        // Nothing to do here, we're fully migrated to vqueues.
-                    }
-
-                    (false, _, false) => {
-                        // skip_completed=False (full migration), and we're not yet fully migrated,
-                        // so we'll trigger a full migration.
-                        feature_changes.push(PartitionFeatureChange::EnableVqueues);
-                    }
-
-                    (true, true, false) => {
-                        // skip_completed=True (partial migration), and we're already partially migrated,
-                        // nothing to do here.
-                    }
-                    (true, false, false) => {
-                        // skip_completed=True (partial migration), and we're yet on vqueues, so we'll
-                        // trigger a partial migration.
-                        feature_changes.push(PartitionFeatureChange::EnableVqueuesSkipCompleted);
-                    }
-                }
+            // Since v1.8.0, vqueues are enabled by default. If this partition hasn't fully
+            // migrated yet (including partitions that previously did a partial migration via
+            // the removed skip-completed flag), propose the full migration. The FSM update
+            // itself happens via `OnVersionBarrierCommand` once this proposed barrier is
+            // applied; we do not touch the local FSM mirror here.
+            if !processor.fsm().features().is_fully_migrated_to_vqueues() {
+                feature_changes.push(PartitionFeatureChange::EnableVqueues);
             }
 
             // Persist a unique random seed on new invocations. Needs to be opted-in because
@@ -1191,9 +1159,9 @@ mod tests {
             )
             .await?;
 
-        // Since v1.7.0, winning the campaign first proposes a VersionBarrier to enable
-        // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
-        // is applied.
+        // Winning the campaign first proposes a VersionBarrier to enable the journal-v2
+        // default (since v1.7.0) and vqueues (since v1.8.0); the processor stays
+        // `BecomingLeader` until that barrier is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
@@ -1204,11 +1172,17 @@ mod tests {
                 .feature_changes
                 .contains(&PartitionFeatureChange::EnableJournalV2.id())
         );
+        assert!(
+            barrier
+                .feature_changes
+                .contains(&PartitionFeatureChange::EnableVqueues.id())
+        );
 
         // Simulate the barrier being applied to the FSM, then complete the transition
         // into a full leader (no further feature changes remain to be proposed).
         ctx.set_enabled_features_in_memory(PersistedFeatures {
             journal_v2: true,
+            vqueues: true,
             ..PersistedFeatures::default()
         });
         state
