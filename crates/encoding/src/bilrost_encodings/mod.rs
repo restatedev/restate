@@ -11,6 +11,8 @@
 //! Defines messages between replicated loglet instances
 
 mod arc_encodings;
+mod http;
+mod json_value;
 mod nonzero;
 mod range;
 

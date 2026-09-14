@@ -106,6 +106,7 @@ typed-builder = { workspace = true }
 ulid = { workspace = true }
 utoipa = { workspace = true, optional = true, features = ["time"] }
 xxhash-rust = { workspace = true, features = ["xxh3"] }
+zstd = { workspace = true }
 
 [target.'cfg(not(target_os = "windows"))'.dependencies]
 sha2 = { workspace = true, features = ["asm"] }

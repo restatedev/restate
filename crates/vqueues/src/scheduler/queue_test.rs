@@ -86,7 +86,7 @@ fn poll_once_expect_pending<S: VQueueStore>(
     qid: &VQueueId,
 ) {
     let mut cx = Context::from_waker(Waker::noop());
-    match queue.poll_advance_if_needed(&mut cx, storage, skip, qid, false, false) {
+    match queue.poll_advance_if_needed(&mut cx, storage, skip, qid, false, RefillMode::Async) {
         Poll::Pending => {}
         Poll::Ready(Ok(item)) => panic!("expected Pending, got Ready({item:?})"),
         Poll::Ready(Err(e)) => panic!("expected Pending, got error: {e:?}"),
@@ -103,7 +103,7 @@ async fn drive_until_ready<S: VQueueStore>(
 ) {
     let mut cx = Context::from_waker(Waker::noop());
     loop {
-        match queue.poll_advance_if_needed(&mut cx, storage, skip, qid, false, false) {
+        match queue.poll_advance_if_needed(&mut cx, storage, skip, qid, false, RefillMode::Async) {
             Poll::Ready(Ok(_)) => return,
             Poll::Ready(Err(e)) => panic!("queue error: {e:?}"),
             Poll::Pending => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
@@ -120,6 +120,24 @@ fn drain_cache<S: VQueueStore>(queue: &mut Queue<S>) -> Vec<EntryKey> {
         queue.try_advance().unwrap();
     }
     keys
+}
+
+#[test]
+fn blocking_refill_completes_inline() {
+    let entry = entry_at_seq(1);
+    let storage = GatedStore::new(vec![entry.clone()]);
+    storage.release_refill_thread();
+    let qid = test_qid(1);
+    let mut queue = Queue::new(0, &storage, &qid);
+    let skip = UnconfirmedAssignments::new();
+    let mut cx = Context::from_waker(Waker::noop());
+
+    let Poll::Ready(Ok(QueueItem::Inbox { key, .. })) =
+        queue.poll_advance_if_needed(&mut cx, &storage, &skip, &qid, false, RefillMode::Blocking)
+    else {
+        panic!("blocking refill should complete inline");
+    };
+    assert_eq!(*key, entry.0);
 }
 
 // ---------- fake VQueueStore ----------

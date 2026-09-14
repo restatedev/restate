@@ -25,7 +25,7 @@ use restate_types::schema::registry::MetadataService;
 /// Create subscription
 ///
 /// Creates a new subscription that connects an event source (e.g., a Kafka topic) to a Restate service handler.
-/// For more information, see the [subscription documentation](https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions).
+/// For more information, see the [subscription documentation](https://docs.restate.dev/services/invocation/kafka#managing-kafka-subscriptions).
 #[utoipa::path(
     post,
     path = "/subscriptions",

@@ -40,6 +40,7 @@ use crate::scheduler::eligible::EligibilityTracker;
 use crate::scheduler::vqueue_state::Pop;
 
 use super::Decisions;
+use super::RefillMode;
 use super::ReservedResources;
 use super::ResourceManager;
 use super::VQueueSchedulerStatus;
@@ -61,6 +62,8 @@ pub struct DRRScheduler<S: VQueueStore> {
     /// Limits the number of items included in a single decision across all queues
     max_items_per_decision: NonZeroU16,
 
+    refill_mode: RefillMode,
+
     // SAFETY NOTE: **must** Keep this at the end since it needs to outlive all readers.
     storage: S,
 }
@@ -72,6 +75,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
         resource_manager: ResourceManager,
         storage: S,
         vqueues: VQueuesMeta<'_>,
+        refill_mode: RefillMode,
     ) -> Self {
         let mut total_running = 0;
         let mut total_waiting = 0;
@@ -102,6 +106,7 @@ impl<S: VQueueStore> DRRScheduler<S> {
             storage,
             limit_qid_per_poll,
             max_items_per_decision,
+            refill_mode,
         }
     }
 
@@ -144,9 +149,9 @@ impl<S: VQueueStore> DRRScheduler<S> {
                 break;
             }
 
-            let Some(handle) = this
-                .eligible
-                .next_eligible(cx, metas, this.storage, this.q)?
+            let Some(handle) =
+                this.eligible
+                    .next_eligible(cx, metas, this.storage, this.q, *this.refill_mode)?
             else {
                 break;
             };
@@ -244,6 +249,17 @@ impl<S: VQueueStore> DRRScheduler<S> {
     pub fn on_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
         for update in &event.updates {
             match update {
+                EventDetails::VQueuePurged => {
+                    if !self.q.contains_key(event.queue) {
+                        continue;
+                    };
+
+                    let Some(slot) = metas.get(event.queue) else {
+                        panic!("vqueue meta must be in cache: {event:?}");
+                    };
+
+                    self.mark_vqueue_as_dormant(slot.vqueue_id(), event.queue);
+                }
                 EventDetails::LockReleased { scope, lock_name } => {
                     self.release_lock(scope, lock_name);
                 }
@@ -712,6 +728,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         )
     }
 
@@ -730,6 +747,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         )
     }
 
@@ -847,7 +865,7 @@ mod tests {
         let mut txn = rocksdb.transaction();
         let header = read_header(&txn, &qid, key.entry_id()).await;
         {
-            let mut vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+            let vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
                 .await
                 .unwrap()
                 .unwrap();
@@ -859,8 +877,9 @@ mod tests {
             );
         }
 
-        assert!(cache.purge_meta_if_obsolete(&mut txn, &qid).await.unwrap());
+        // The final entry removal purges the metadata and detaches the ID immediately.
         let old_handle = handle;
+        assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
         assert!(cache.view().handle_for(&qid).is_none());
         enqueue_entry(&mut txn, &mut cache, &qid, 2, 0, Some(&mut events)).await;
         let new_handle = cache.view().handle_for(&qid).unwrap();
@@ -883,6 +902,14 @@ mod tests {
             txn.get_vqueue(&qid).await.unwrap().unwrap().total_waiting(),
             1
         );
+        drop(txn);
+
+        let fresh_cache =
+            VQueuesMetaCache::create(rocksdb.partition_db().clone(), TEST_VQUEUES_CAPACITY)
+                .await
+                .unwrap();
+        assert!(fresh_cache.view().handle_for(&qid).is_some());
+        assert_eq!(fresh_cache.view().num_active(), 1);
     }
 
     #[restate_core::test]
@@ -1075,6 +1102,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1215,6 +1243,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1296,6 +1325,7 @@ mod tests {
             .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(_decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1344,6 +1374,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         if let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) {
@@ -1373,6 +1404,7 @@ mod tests {
             create_resource_manager(db, Concurrency::new_unlimited()).await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
@@ -1449,6 +1481,7 @@ mod tests {
                 .await,
             db.clone(),
             cache.view(),
+            RefillMode::Blocking,
         );
 
         let h_qid1 = cache.view().handle_for(&qid1).unwrap();

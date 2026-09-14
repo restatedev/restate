@@ -302,7 +302,8 @@ pub struct Http2KeepAliveOptions {
     /// # HTTP/2 Keep-alive interval
     ///
     /// Sets an interval for HTTP/2 PING frames should be sent to keep a
-    /// connection alive.
+    /// connection alive. This governs connections to HTTP deployments as well as
+    /// to the AWS Lambda API.
     ///
     /// `0` disables keep-alive pings entirely. Defaults to `40s`.
     ///
@@ -312,6 +313,7 @@ pub struct Http2KeepAliveOptions {
     /// # HTTP/2 Keep-Alive Timeout
     ///
     /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
+    /// This governs connections to HTTP deployments as well as to the AWS Lambda API.
     ///
     /// If the ping is not acknowledged within the timeout, the connection will
     /// be closed.
@@ -323,6 +325,9 @@ pub struct Http2KeepAliveOptions {
     ///
     /// Fractional jitter added to `http2-keep-alive-interval`, expressed as a fraction
     /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
+    ///
+    /// Applies only to connections to HTTP deployments; pings to the AWS Lambda
+    /// API use the exact interval.
     ///
     /// Default 0.2 (20% of http2-keep-alive-interval)
     pub http2_keep_alive_jitter: f32,

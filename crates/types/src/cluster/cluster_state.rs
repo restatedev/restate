@@ -14,10 +14,10 @@ use std::time::{Duration, Instant};
 use prost_dto::IntoProst;
 
 use restate_encoding::NetSerde;
+use restate_util_string::ReString;
 
 use crate::identifiers::{LeaderEpoch, PartitionId};
 use crate::logs::Lsn;
-use crate::partitions::StorageVersion;
 use crate::partitions::features::PersistedFeatures;
 pub use crate::protobuf::cluster::{BrokenReason, DetailedRunMode};
 use crate::time::MillisSinceEpoch;
@@ -161,7 +161,7 @@ pub enum ReplayStatus {
 
 #[derive(Debug, Clone, IntoProst, bilrost::Message, NetSerde)]
 #[prost(target = "crate::protobuf::cluster::PartitionProcessorStatus")]
-#[bilrost(reserved_tags(8))]
+#[bilrost(reserved_tags(8, 16))]
 pub struct PartitionProcessorStatus {
     #[prost(required)]
     #[bilrost(1)]
@@ -202,22 +202,20 @@ pub struct PartitionProcessorStatus {
     #[into_prost(map = "enabled_features_to_proto", map_by_ref)]
     #[bilrost(15)]
     pub enabled_features: PersistedFeatures,
-    /// Partition-store on-disk storage version (StorageVersion discriminant).
-    /// Set once on partition open by `verify_and_run_migrations`.
-    #[bilrost(16)]
-    #[into_prost(map = "storage_version_to_u32")]
-    pub storage_version: Option<StorageVersion>,
-
     /// Since v1.7.3 (if Unknown, use effective_mode)
     #[bilrost(17)]
     pub detailed_effective_mode: DetailedRunMode,
-
     /// Set when the node has parked this partition processor instead of retrying it.
     /// All other fields carry their defaults in that case.
     ///
     /// Since v1.7.3
     #[bilrost(18)]
     pub broken_reason: BrokenReason,
+    /// Partition-store on-disk storage features.
+    /// Set once on partition open by `verify_and_run_migrations`.
+    #[into_prost(map = "enabled_storage_features_to_proto")]
+    #[bilrost(19)]
+    pub enabled_storage_features: Vec<ReString>,
 }
 
 impl PartitionProcessorStatus {
@@ -255,12 +253,12 @@ impl From<DetailedRunMode> for RunMode {
     }
 }
 
-fn storage_version_to_u32(v: StorageVersion) -> u32 {
-    v as u32
-}
-
 fn enabled_features_to_proto(f: &PersistedFeatures) -> Vec<String> {
     f.enabled_names().map(String::from).collect()
+}
+
+fn enabled_storage_features_to_proto(i: ReString) -> String {
+    i.to_string()
 }
 
 impl Default for PartitionProcessorStatus {
@@ -281,8 +279,8 @@ impl Default for PartitionProcessorStatus {
             last_applied_rule_book_version: None,
             last_applied_schema_version: None,
             enabled_features: PersistedFeatures::default(),
-            storage_version: None,
             broken_reason: BrokenReason::NotBroken,
+            enabled_storage_features: Vec::new(),
         }
     }
 }

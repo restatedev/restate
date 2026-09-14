@@ -151,7 +151,7 @@ pub enum RegisterDeploymentRequest {
         /// If `true`, it allows registering new service revisions with
         /// schemas incompatible with previous service revisions, such as changing the service type.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/services/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         breaking: bool,
 
@@ -162,7 +162,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// When set to `true`, it implies `breaking = true`.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/services/versioning) for more information.
         #[cfg_attr(feature = "schema", schema(default = true))]
         force: Option<bool>,
 
@@ -213,7 +213,7 @@ pub enum RegisterDeploymentRequest {
         /// If `true`, it allows registering new service revisions with
         /// schemas incompatible with previous service revisions, such as changing the service type.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/services/versioning) for more information.
         #[serde(default = "restate_serde_util::default::bool::<false>")]
         breaking: bool,
 
@@ -224,7 +224,7 @@ pub enum RegisterDeploymentRequest {
         ///
         /// This implies `breaking = true`.
         ///
-        /// See the [versioning documentation](https://docs.restate.dev/operate/versioning) for more information.
+        /// See the [versioning documentation](https://docs.restate.dev/services/versioning) for more information.
         #[cfg_attr(feature = "schema", schema(default = true))]
         force: Option<bool>,
 

@@ -24,6 +24,7 @@ use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 use restate_worker_api::{ResourceKind, SchedulingStatus};
 
+use super::RefillMode;
 use super::clock::SchedulerClock;
 use super::vqueue_state::VQueueState;
 use crate::VQueuesMeta;
@@ -133,6 +134,7 @@ impl EligibilityTracker {
         metas: VQueuesMeta<'_>,
         storage: &S,
         vqueues: &mut SecondaryMap<VQueueHandle, VQueueState<S>>,
+        refill_mode: RefillMode,
     ) -> Result<Option<VQueueHandle>, StorageError> {
         let n = self.ready_ring.len();
         // avoid rescanning the ready ring multiple rounds
@@ -157,12 +159,18 @@ impl EligibilityTracker {
                 continue;
             };
 
-            let slot = metas.get(handle).unwrap();
+            let Some(slot) = metas.get(handle) else {
+                // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
+                // due to items being removed externally (killed, etc.)
+                self.remove(handle);
+                self.ready_ring.pop_front();
+                continue;
+            };
 
             match current_state {
                 State::NeedsPoll => {
                     // update the state based on eligibility.
-                    match qstate.poll_eligibility(cx, slot, storage) {
+                    match qstate.poll_eligibility(cx, slot, storage, refill_mode) {
                         Poll::Ready(Ok(Eligibility::Eligible)) => {
                             *current_state = State::Ready;
                             return Ok(Some(handle));

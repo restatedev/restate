@@ -39,7 +39,9 @@ const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
-const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 5000;
+// Max successive merges are disabled by default to reduce the CPU during
+// writes/flushes.
+const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 0;
 
 /// # Worker options
 #[serde_as]
@@ -1072,7 +1074,7 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
 /// Partition store object-store snapshotting settings. At a minimum, set `destination` to enable
 /// manual snapshotting via `restatectl`. Additionally, `snapshot-interval` and
 /// `snapshot-interval-num-records` can be used to configure automated periodic snapshots. For a
-/// complete example, see [Snapshots](https://docs.restate.dev/operate/snapshots).
+/// complete example, see [Snapshots](https://docs.restate.dev/server/snapshots).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]

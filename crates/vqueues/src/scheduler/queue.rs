@@ -27,7 +27,7 @@ use restate_storage_api::{StorageError, vqueue_table};
 use restate_types::vqueues::VQueueId;
 use restate_util_time::DurationExt;
 
-use super::UnconfirmedAssignments;
+use super::{RefillMode, UnconfirmedAssignments};
 
 /// The number of entries we are willing to keep in cache
 const INBOX_CACHE_CAPACITY: usize = 24;
@@ -509,7 +509,7 @@ impl<S: VQueueStore> Queue<S> {
         skip: &UnconfirmedAssignments,
         qid: &VQueueId,
         effectively_empty: bool,
-        allow_blocking_io: bool,
+        refill_mode: RefillMode,
     ) -> Poll<Result<QueueItem<'_>, StorageError>> {
         loop {
             let needs_advance = match self.stage {
@@ -536,7 +536,7 @@ impl<S: VQueueStore> Queue<S> {
                         break;
                     }
                     // A) try refill immediate refill if allowed
-                    match self.try_refill(storage, qid, skip, allow_blocking_io) {
+                    match self.try_refill(storage, qid, skip, refill_mode) {
                         Ok(_) => {}
                         Err(CursorError::WouldBlock) => {
                             // B) start an async refill task
@@ -641,10 +641,15 @@ impl<S: VQueueStore> Queue<S> {
         storage: &S,
         qid: &VQueueId,
         skip: &UnconfirmedAssignments,
-        allow_blocking_io: bool,
+        refill_mode: RefillMode,
     ) -> Result<(), CursorError> {
         let start = Instant::now();
-        let mut reader = storage.new_inbox_reader(qid, vqueue_table::Options { allow_blocking_io });
+        let mut reader = storage.new_inbox_reader(
+            qid,
+            vqueue_table::Options {
+                allow_blocking_io: refill_mode.allow_blocking_io(),
+            },
+        );
         let RefillState::Standby { refill_anchor } = &mut self.refill_state else {
             panic!("refill state must be standby");
         };

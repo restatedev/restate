@@ -2929,12 +2929,9 @@ mod kafka_cluster {
         assert_eq!(subscriptions.len(), 1);
 
         let subscription = &subscriptions[0];
-        match subscription.source() {
-            Source::Kafka { cluster, topic } => {
-                assert_eq!(cluster, "my-cluster");
-                assert_eq!(topic, "my-topic");
-            }
-        }
+        let KafkaSource { cluster, topic } = subscription.source();
+        assert_eq!(cluster, "my-cluster");
+        assert_eq!(topic, "my-topic");
     }
 
     #[test]
@@ -3165,12 +3162,10 @@ mod kafka_cluster {
         assert_eq!(subscriptions.len(), 1);
         assert_eq!(subscriptions[0].id(), subscription_id);
 
-        match subscriptions[0].source() {
-            Source::Kafka { cluster, topic } => {
-                assert_eq!(cluster, "config-cluster");
-                assert_eq!(topic, "my-topic");
-            }
-        }
+        let KafkaSource { cluster, topic } = subscriptions[0].source();
+
+        assert_eq!(cluster, "config-cluster");
+        assert_eq!(topic, "my-topic");
 
         // get_kafka_cluster_and_subscriptions should work with config cluster
         let (cluster, subs) = schema

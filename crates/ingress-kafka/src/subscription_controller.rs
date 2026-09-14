@@ -23,7 +23,7 @@ use restate_types::live::Live;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
 use restate_types::schema::kafka::KafkaCluster;
-use restate_types::schema::subscriptions::{Source, Subscription};
+use restate_types::schema::subscriptions::{KafkaSource, Subscription};
 
 use super::*;
 use crate::builder::EnvelopeBuilder;
@@ -102,7 +102,7 @@ where
         // enabling probing for the ca certificates if the user does not specify anything else
         client_config.set("https.ca.location", "probe");
 
-        let Source::Kafka { topic, .. } = subscription.source();
+        let KafkaSource { topic, .. } = subscription.source();
 
         // Subscription metadata takes precedence over cluster properties
         let cluster_properties = kafka_cluster.properties.clone();
@@ -160,7 +160,7 @@ where
             let subscription_id = subscription.id();
 
             // Find the KafkaCluster for this subscription
-            let Source::Kafka { cluster, .. } = subscription.source();
+            let KafkaSource { cluster, .. } = subscription.source();
             let Some(kafka_cluster) = cluster_map.get(cluster.as_str()).cloned() else {
                 error!(
                     "KafkaCluster '{}' not found for subscription {}. This might happen if you registered a subscription with a cluster name, but this cluster is not available anymore in the configuration. Configured Kafka clusters: {:?}",

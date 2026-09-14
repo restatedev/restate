@@ -84,6 +84,7 @@ impl ProcessorRawContext {
                 required_min_version: fsm_cache.min_restate_version().clone(),
                 barrier_reason: String::new(),
                 feature_changes: Vec::default(),
+                storage_features: Vec::default(),
             });
         }
 

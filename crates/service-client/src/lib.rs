@@ -36,6 +36,7 @@ pub use crate::lambda::AssumeRoleCacheMode;
 use crate::lambda::LambdaClient;
 use crate::request_identity::SignRequest;
 
+mod aws_http_client;
 mod gcp;
 mod http;
 mod lambda;
@@ -109,7 +110,11 @@ impl ServiceClient {
 
         Ok(Self::new(
             HttpClient::from_options(&options.http),
-            LambdaClient::from_options(&options.lambda, assume_role_cache_mode),
+            LambdaClient::from_options(
+                &options.lambda,
+                &options.http.http_keep_alive_options,
+                assume_role_cache_mode,
+            ),
             GcpTokenClient::new(gcp_cache_mode),
             request_identity_key,
             options

@@ -154,10 +154,7 @@ impl<C: Send + Sync + 'static> StorageEncode for Envelope<C> {
 pub struct Raw;
 
 impl StorageDecode for Envelope<Raw> {
-    fn decode<B: bytes::Buf>(
-        buf: &mut B,
-        kind: StorageCodecKind,
-    ) -> Result<Self, StorageDecodeError>
+    fn decode<B: bytes::Buf>(mut buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized,
     {
@@ -167,7 +164,7 @@ impl StorageDecode for Envelope<Raw> {
                 Self::try_from(envelope).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
             }
             StorageCodecKind::Custom => {
-                let header = Header::decode_length_delimited(&mut *buf)
+                let header = Header::decode_length_delimited(&mut buf)
                     .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
                 Ok(Self {

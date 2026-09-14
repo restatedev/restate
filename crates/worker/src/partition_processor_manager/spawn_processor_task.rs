@@ -12,12 +12,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::sync::watch;
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use restate_core::network::{ShardSender, TransportConnect};
 use restate_core::{RuntimeTaskHandle, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
-use restate_partition_store::PartitionStoreManager;
+use restate_partition_store::{MigrationError, PartitionStoreManager};
 use restate_platform::prelude::ReString;
 use restate_types::cluster::cluster_state::PartitionProcessorStatus;
 use restate_types::logs::Lsn;
@@ -76,7 +76,7 @@ where
         RuntimeTaskHandle<Result<(), ProcessorError>>,
     )> {
         let Self {
-            node_ctx,
+            mut node_ctx,
             task_name,
             partition,
             partition_store_manager,
@@ -87,8 +87,6 @@ where
         let (control_tx, control_rx) = watch::channel(TargetLeaderState::Follower);
         let (net_tx, net_rx) = ShardSender::new();
         let (watch_tx, watch_rx) = watch::channel(PartitionProcessorStatus::default());
-
-        let pp_builder = PartitionProcessorBuilder::new(control_rx, net_rx, watch_tx, node_ctx);
 
         let key_range = partition.key_range;
 
@@ -145,7 +143,57 @@ where
                         return Err(ProcessorError::from(seal));
                     }
 
+                    // Verify local feature compatibility before decoding the FSM and finish any
+                    // physical migration before its table-specific caches are constructed. Only
+                    // this local partition copy is migrated; inactive replicas can remain on an
+                    // older physical layout until they are started.
+                    let config = node_ctx.config.live_load().clone();
+                    match partition_store
+                        .verify_and_run_migrations(cancellation.clone(), &config)
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(MigrationError::MigrationCancelled) => {
+                            debug!(
+                                "Shutting partition processor during data migration because it was cancelled."
+                            );
+                            return Ok(());
+                        }
+                        Err(MigrationError::MigrationBarrier(reason)) => {
+                            return Err(ProcessorError::MigrationBarrier { reason });
+                        }
+                        Err(MigrationError::VersionBarrier {
+                            required_min_version,
+                        }) => {
+                            return Err(ProcessorError::VersionBarrier {
+                                required_min_version,
+                                barrier_reason: String::new(),
+                                feature_changes: Vec::new(),
+                                storage_features: Vec::new(),
+                            });
+                        }
+                        Err(MigrationError::StorageFeatureVersionBarrier {
+                            required_min_version,
+                            storage_features,
+                        }) => {
+                            return Err(ProcessorError::VersionBarrier {
+                                required_min_version,
+                                barrier_reason: "enabled storage features".to_owned(),
+                                feature_changes: Vec::new(),
+                                storage_features,
+                            });
+                        }
+                        Err(MigrationError::StorageError(err)) => {
+                            warn!(
+                                "Shutting partition processor during data migration down because of error: {err}"
+                            );
+                            return Err(err.into());
+                        }
+                    }
+
                     let db = partition_store.into_inner();
+                    let pp_builder =
+                        PartitionProcessorBuilder::new(control_rx, net_rx, watch_tx, node_ctx);
 
                     let run_result = async move {
                         let pp = pp_builder

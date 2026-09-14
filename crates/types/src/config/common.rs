@@ -777,16 +777,6 @@ experimental! {
     /// Since v1.7.0
     invoker_yield,
 
-    /// # Enables service protocol v7
-    ///
-    /// Introduced in Restate v1.7
-    ///
-    /// Set to `true` to enable the experimental service protocol v7
-    ///
-    /// Once enabled, you **cannot** rollback back to previous versions
-    /// where v7 is not supported < v1.7
-    protocol_v7,
-
     /// # Enables unique random seeds
     ///
     /// When enabled, invocations get a unique random seed assigned.
@@ -794,18 +784,31 @@ experimental! {
     /// Since v1.7.0
     unique_random_seeds,
 
-    /// # Migrate the unscoped state and promise tables into their scoped variants
+    /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
-    /// state and promise tables into their scoped variants (with `scope = None`)
-    /// on open, and route all subsequent state/promise reads and writes through
+    /// promise table into its scoped variant (with `scope = None`)
+    /// on open, and route all subsequent promise reads and writes through
     /// the scoped tables.
     ///
     /// Once enabled, you **cannot** roll back to a Restate-server version that
     /// did not yet recognize the resulting on-disk schema version.
     ///
-    /// Since v1.7.0
-    migrate_scoped_tables,
+    /// Since v1.7.9
+    scoped_promise_table_migration,
+
+    /// # Migrate the unscoped state table into its scoped variant
+    ///
+    /// When enabled, partition stores migrate every entry of the legacy unscoped
+    /// state table into its scoped variant (with `scope = None`)
+    /// on open, and route all subsequent promise reads and writes through
+    /// the scoped tables.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version that
+    /// did not yet recognize the resulting on-disk schema version.
+    ///
+    /// Since v1.7.9
+    scoped_state_table_migration,
 
     /// # Allow scope on Virtual Object targets
     ///
@@ -844,14 +847,36 @@ experimental! {
     /// Since v1.7.8
     preflight_invocation_termination_retention,
 
-    /// # Enables one-time orphaned journal completion-id index cleanup
+    /// # Asynchronous VQueue refills
     ///
-    /// When enabled, partition startup waits for the cleanup to complete before processing
-    /// records. Successful completion is persisted per partition; cancellation or failure leaves
-    /// the cleanup pending for the next startup.
+    /// Moves VQueue storage refills to Tokio's blocking thread pool when the required data is not
+    /// already cached by RocksDB.
     ///
     /// Since v1.7.9
-    jc_orphan_cleanup,
+    vqueues_async_refill,
+
+    /// # Use bilrost encoding for schemas
+    ///
+    /// When enabled, will use zstd compressed bilrost encoding
+    /// encoding instead of the default flexbuffers
+    ///
+    /// This will be default from v1.9.0
+    ///
+    /// NOTE: Hot change of this config has no effect. A change
+    /// will only take effect on restart.
+    ///
+    /// Since v1.8.0
+    schema_bilrost_encoding,
+
+    /// # Enable cleanup of obsolete VQueue metadata
+    ///
+    /// Enabling this is safe and is recommended if the cluster nodes run
+    /// restate >= v1.7.10.
+    ///
+    /// The cleanup is enabled unconditionally from v1.9.0.
+    ///
+    /// Since v1.7.10
+    vqueue_obsolete_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -1144,9 +1169,16 @@ pub struct MetadataClientOptions {
     pub connect_timeout: NonZeroFriendlyDuration,
 
     /// # Metadata Store Keep Alive Interval
+    ///
+    /// Interval at which keep-alive probes are sent on the connection to the
+    /// metadata store, to keep it alive and to detect a store that has become
+    /// unreachable.
     pub keep_alive_interval: NonZeroFriendlyDuration,
 
     /// # Metadata Store Keep Alive Timeout
+    ///
+    /// How long to wait for a keep-alive probe to be acknowledged by the
+    /// metadata store before treating the connection as dead and closing it.
     pub keep_alive_timeout: NonZeroFriendlyDuration,
 
     /// # Backoff policy used by the metadata client
@@ -1251,6 +1283,14 @@ pub enum MetadataClientKind {
         object_store: ObjectStoreOptions,
 
         /// # Error retry policy
+        ///
+        /// Retry policy for the object store requests the metadata client
+        /// makes, covering both reads of the current metadata version and the
+        /// conditional writes used to update it.
+        ///
+        /// Retries here absorb the transient errors and throttling responses
+        /// object stores return under load, so a short or non-retrying policy
+        /// can surface those as metadata operation failures.
         #[serde(default = "MetadataClientKind::default_object_store_retry_policy")]
         object_store_retry_policy: RetryPolicy,
     },

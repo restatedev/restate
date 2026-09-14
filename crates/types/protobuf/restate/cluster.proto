@@ -83,7 +83,7 @@ enum BrokenReason {
 }
 
 message PartitionProcessorStatus {
-  reserved 8;
+  reserved 8, 16;
   google.protobuf.Timestamp updated_at = 1;
   RunMode planned_mode = 2;
   RunMode effective_mode = 3;
@@ -102,12 +102,13 @@ message PartitionProcessorStatus {
   // processor. Carried as strings so that older clients can render feature
   // names they don't recognise.
   repeated string enabled_features = 15;
-  // Partition-store on-disk storage version (StorageVersion discriminant).
-  optional uint32 storage_version = 16;
   DetailedRunMode detailed_effective_mode = 17;
   // Set when this node has parked the partition processor instead of retrying
   // it. All other fields carry their defaults in that case.
   BrokenReason broken_reason = 18;
+
+  // Partition-store on-disk local storage features
+  repeated string enabled_storage_features = 19;
 }
 
 message ReplicationProperty { string replication_property = 1; }

@@ -18,7 +18,7 @@ define_table!(sys_invocation_state(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// [Invocation ID](/operate/invocation#invocation-identifier).
+    /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
     id: DataType::LargeUtf8,
 
     /// If true, the invocation is currently in-flight

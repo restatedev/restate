@@ -35,7 +35,7 @@ use crate::scheduler::queue::QueueItem;
 use super::clock::SchedulerClock;
 use super::queue::Queue;
 use super::resource_manager::{AcquireOutcome, PermitBuilder};
-use super::{ResourceManager, RunAction, UnconfirmedAssignments, YieldAction};
+use super::{RefillMode, ResourceManager, RunAction, UnconfirmedAssignments, YieldAction};
 
 const QUANTUM: i32 = 1;
 
@@ -327,6 +327,7 @@ impl<S: VQueueStore> VQueueState<S> {
         cx: &mut std::task::Context<'_>,
         slot: &cache::Slot,
         storage: &S,
+        refill_mode: RefillMode,
     ) -> Poll<Result<Eligibility, StorageError>> {
         ready!(self.queue.poll_advance_if_needed(
             cx,
@@ -334,7 +335,7 @@ impl<S: VQueueStore> VQueueState<S> {
             &self.unconfirmed_assignments,
             slot.vqueue_id(),
             self.num_waiting_inbox(slot.meta()) == 0,
-            false,
+            refill_mode,
         ))?;
 
         Poll::Ready(Ok(self.check_eligibility(slot.meta()).as_compact()))

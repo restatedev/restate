@@ -12,6 +12,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use std::sync::Arc;
 
+use crate::features::StorageFeatures;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::scan::TableScan;
 use crate::{
@@ -25,7 +26,6 @@ use restate_storage_api::promise_table::{
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
 use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
-use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;
@@ -63,23 +63,20 @@ fn create_key(service_id: &ServiceId, key: &ByteString) -> PromiseKey {
     }
 }
 
-/// Returns `true` if the call should use the scoped promise table — either
-/// because the partition store has migrated past
-/// [`StorageVersion::ScopedStateAndPromise`] (so scope = None entries also live
-/// in the scoped table) or because the [`ServiceId`] carries an explicit scope.
+/// Returns `true` if the call should use the scoped promise table for all queries.
 #[inline]
-fn use_scoped_promise(storage_version: StorageVersion, service_id: &ServiceId) -> bool {
-    storage_version.is_scope_migrated() || service_id.scope.is_some()
+fn use_scoped_promise(storage_features: StorageFeatures, service_id: &ServiceId) -> bool {
+    storage_features.is_migrated_to_scoped_promise_table || service_id.scope.is_some()
 }
 
 fn get_promise<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
     key: &ByteString,
 ) -> Result<Option<Promise>> {
     let _x = RocksDbReadPerfGuard::new("get-promise");
-    if use_scoped_promise(storage_version, service_id) {
+    if use_scoped_promise(storage_features, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -102,12 +99,12 @@ fn get_promise<S: StorageAccess>(
 
 fn put_promise<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
     key: &ByteString,
     metadata: &Promise,
 ) -> Result<()> {
-    if use_scoped_promise(storage_version, service_id) {
+    if use_scoped_promise(storage_features, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -131,10 +128,10 @@ fn put_promise<S: StorageAccess>(
 
 fn delete_all_promises<S: StorageAccess>(
     storage: &mut S,
-    storage_version: StorageVersion,
+    storage_features: StorageFeatures,
     service_id: &ServiceId,
 ) -> Result<()> {
-    if use_scoped_promise(storage_version, service_id) {
+    if use_scoped_promise(storage_features, service_id) {
         // todo(tillrohrmann) remove once ServiceId uses ServiceName and ReString internally
         let service_name = ServiceName::new(&service_id.service_name);
         let service_key = ReString::new(&service_id.key);
@@ -182,7 +179,7 @@ impl ReadPromiseTable for PartitionStore {
         key: &ByteString,
     ) -> Result<Option<Promise>> {
         self.assert_partition_key(service_id)?;
-        get_promise(self, self.storage_version(), service_id, key)
+        get_promise(self, self.storage_features(), service_id, key)
     }
 }
 
@@ -201,7 +198,7 @@ impl ScanPromiseTable for PartitionStore {
 
         // Only scan the legacy unscoped table while we may still hold data there.
         // After migration the range was deleted, so the scoped scan covers everything.
-        let unscoped = if self.storage_version().is_scope_migrated() {
+        let unscoped = if self.storage_features().is_migrated_to_scoped_promise_table {
             None
         } else {
             let f_unscoped = Arc::clone(&f);
@@ -278,7 +275,7 @@ impl ReadPromiseTable for PartitionStoreTransaction<'_> {
         key: &ByteString,
     ) -> Result<Option<Promise>> {
         self.assert_partition_key(service_id)?;
-        get_promise(self, self.storage_version(), service_id, key)
+        get_promise(self, self.storage_features(), service_id, key)
     }
 }
 
@@ -290,11 +287,11 @@ impl WritePromiseTable for PartitionStoreTransaction<'_> {
         promise: &Promise,
     ) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        put_promise(self, self.storage_version(), service_id, key, promise)
+        put_promise(self, self.storage_features(), service_id, key, promise)
     }
 
     fn delete_all_promises(&mut self, service_id: &ServiceId) -> Result<()> {
         self.assert_partition_key(service_id)?;
-        delete_all_promises(self, self.storage_version(), service_id)
+        delete_all_promises(self, self.storage_features(), service_id)
     }
 }

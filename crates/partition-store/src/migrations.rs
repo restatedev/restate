@@ -9,147 +9,45 @@
 // by the Apache License, Version 2.0.
 
 pub mod migrate_to_locks_table;
-mod migrate_to_scoped_promise_table;
-mod migrate_to_scoped_state_table;
+pub mod migrate_to_scoped_promise_table;
+pub mod migrate_to_scoped_state_table;
 
 use std::num::NonZeroU16;
 use std::sync::Arc;
 
-use anyhow::Context;
 use bytes::BytesMut;
-use rocksdb::WriteBatch;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::debug;
 
 use restate_clock::{AtomicStorage, HlcClock, WallClock};
-use restate_rocksdb::{IoMode, Priority};
 use restate_storage_api::StorageError;
+use restate_types::SemanticRestateVersion;
 use restate_types::config::Configuration;
-use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::sharding::subsharding::ShardPlan;
-use restate_util_time::DurationExt;
+use restate_util_string::ReString;
 
-use crate::fsm_table::append_storage_version_to_wb;
-use crate::{PartitionDb, PartitionStore, Result};
-
-use self::migrate_to_scoped_promise_table::{
-    append_delete_promise_data, migrate_to_scoped_promise_table,
-};
-use self::migrate_to_scoped_state_table::{
-    append_delete_state_data, migrate_to_scoped_state_table,
-};
+use crate::{PartitionDb, Result};
 
 /// Migration error
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
     #[error("migration barrier: {0}")]
     MigrationBarrier(String),
+    #[error("partition requires Restate version {required_min_version} or newer")]
+    VersionBarrier {
+        required_min_version: SemanticRestateVersion,
+    },
+    #[error(
+        "partition storage requires Restate version {required_min_version} or newer due to enabled storage features {storage_features:?}"
+    )]
+    StorageFeatureVersionBarrier {
+        required_min_version: SemanticRestateVersion,
+        storage_features: Vec<ReString>,
+    },
     #[error("migration was cancelled")]
     MigrationCancelled,
     #[error("error during migration: {0}")]
     StorageError(#[from] StorageError),
-}
-/// Runs the migrations needed to transition the [`StorageVersion`] from current to the target
-/// storage version. A failure can leave the storage version at any valid version between current
-/// and target.
-pub async fn run_migrations_up_to(
-    mut current: StorageVersion,
-    target: StorageVersion,
-    storage: &mut PartitionStore,
-    cancel: CancellationToken,
-    config: &Configuration,
-) -> Result<StorageVersion, MigrationError> {
-    while current < target {
-        if cancel.is_cancelled() {
-            return Err(MigrationError::MigrationCancelled);
-        }
-        current = do_migration(current, storage, cancel.clone(), config).await?;
-    }
-    Ok(current)
-}
-
-/// Runs the migration for the given storage version and returns the new
-/// storage version.
-///
-/// Each migration arm is responsible for atomically (with respect to crashes)
-/// persisting the storage-version bump together with any destructive cleanup
-/// (range deletes, etc.). See the `V1_5` arm for an example: copy passes run
-/// with WAL disabled, then a single final `WriteBatch` (also WAL off)
-/// commits the storage-version put together with the legacy `delete_range_cf`s.
-/// RocksDB's FIFO memtable flush order guarantees that the final batch can
-/// only become durable on SST after the copy writes are already on SST.
-async fn do_migration(
-    current: StorageVersion,
-    storage: &mut PartitionStore,
-    cancel: CancellationToken,
-    config: &Configuration,
-) -> Result<StorageVersion, MigrationError> {
-    let new_storage_version = match current {
-        StorageVersion::None => {
-            // Version 1.6+ does not support upgrading from pre-1.5
-            // The InvocationStatusV1 migration was removed in 1.6
-            return Err(MigrationError::MigrationBarrier(
-                "Cannot upgrade from version <1.5 directly to 1.6 or later. \
-                 Please upgrade to version 1.5 first, which will migrate your data, \
-                 and then upgrade to 1.6+"
-                    .to_owned(),
-            ));
-        }
-        StorageVersion::V1_5 => {
-            let start = Instant::now();
-            let key_range = storage.partition_key_range();
-            let partition_id = storage.partition_id();
-            let partition_db = storage.partition_db().clone();
-            let mut ctx = MigrationContext::new(config, &partition_db, key_range, cancel);
-            let new_storage_version = StorageVersion::ScopedStateAndPromise;
-
-            migrate_to_scoped_state_table(&mut ctx)?;
-            migrate_to_scoped_promise_table(&mut ctx)?;
-
-            // Atomic final step: delete legacy ranges + bump storage version
-            // in a single `WriteBatch`. WAL off so the FIFO memtable order
-            // pins the version bump behind the copy writes — see the
-            // doc-comment on `do_migration` for the durability argument.
-            let cf_handle = partition_db.cf_handle().clone();
-            let mut wb = WriteBatch::default();
-            append_delete_state_data(&ctx, &mut wb);
-            append_delete_promise_data(&ctx, &mut wb);
-            append_storage_version_to_wb(&cf_handle, &mut wb, partition_id, new_storage_version)?;
-
-            ctx.fail_if_cancelled()?;
-            let mut opts = rocksdb::WriteOptions::default();
-            opts.disable_wal(true);
-            partition_db
-                .rocksdb()
-                .write_batch(
-                    "scoped-state-promise-table-migration",
-                    Priority::High,
-                    IoMode::Default,
-                    opts,
-                    wb,
-                )
-                .await
-                .context("failed to commit scoped-state-and-promise final write batch")
-                .map_err(StorageError::Generic)?;
-            debug!(
-                %partition_id,
-                "Finalized scoped state/promise migration in {}", start.elapsed().friendly()
-            );
-
-            // todo: Add flush + compact_range(s) to the deleted data to reduce the space
-            // amplification expected after the state migration. Alternatively, one compaction
-            // after all migrations are done.
-            new_storage_version
-        }
-        StorageVersion::ScopedStateAndPromise => {
-            // Latest version, nothing further to do.
-            StorageVersion::ScopedStateAndPromise
-        }
-    };
-
-    Ok(new_storage_version)
 }
 
 #[allow(dead_code)]

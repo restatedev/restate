@@ -44,19 +44,19 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
     info(
         title = "Admin API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "This API exposes the admin operations of a Restate cluster, such as registering new service deployments, interacting with running invocations, register Kafka subscriptions, retrieve service metadata. For an overview, check out the [Operate documentation](https://docs.restate.dev/operate/). If you're looking for how to call your services, check out the [Ingress HTTP API](https://docs.restate.dev/invoke/http) instead.",
+        description = "This API exposes the admin operations of a Restate cluster, such as registering new service deployments, interacting with running invocations, register Kafka subscriptions, retrieve service metadata. For an overview, check out the [Server documentation](https://docs.restate.dev/server/overview). If you're looking for how to call your services, check out the [Ingress HTTP API](https://docs.restate.dev/invoke/http) instead.",
         license(
             name = "MIT",
             url = "https://opensource.org/license/mit"
         ),
     ),
-    external_docs(url = "https://docs.restate.dev/operate/", description = "Restate operations documentation"),
+    external_docs(url = "https://docs.restate.dev/server/overview", description = "Restate server documentation"),
     tags(
         (name = "deployment", description = "Service Deployment management"),
         (name = "invocation", description = "Invocation management",
-         external_docs(url = "https://docs.restate.dev/operate/invocation", description = "Invocations documentation")),
+         external_docs(url = "https://docs.restate.dev/services/invocation/http", description = "Invocations documentation")),
         (name = "subscription", description = "Subscription management",
-         external_docs(url = "https://docs.restate.dev/operate/invocation#managing-kafka-subscriptions", description = "Kafka subscriptions documentation")),
+         external_docs(url = "https://docs.restate.dev/services/invocation/kafka#managing-kafka-subscriptions", description = "Kafka subscriptions documentation")),
         (name = "kafka_cluster", description = "Kafka cluster management"),
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),

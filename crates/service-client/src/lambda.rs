@@ -11,7 +11,6 @@
 //! Some parts copied from https://github.com/awslabs/aws-sdk-rust/blob/0.55.x/sdk/aws-config/src/sts/assume_role.rs
 //! License Apache-2.0
 
-use crate::utils::ErrorExt;
 use arc_swap::ArcSwap;
 use assume_role::AssumeRoleProvider;
 use aws_config::BehaviorVersion;
@@ -28,7 +27,7 @@ use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Body;
-use restate_types::config::AwsLambdaOptions;
+use restate_types::config::{AwsLambdaOptions, Http2KeepAliveOptions};
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::deployment::EndpointLambdaCompression;
 use serde::ser::Error as _;
@@ -40,6 +39,9 @@ use std::error::Error;
 use std::fmt::Debug;
 use std::future::Future;
 use std::sync::Arc;
+
+use crate::aws_http_client;
+use crate::utils::ErrorExt;
 
 /// # AssumeRole Cache Mode
 ///
@@ -82,15 +84,21 @@ struct LambdaClientInner {
 }
 
 impl LambdaClient {
-    pub fn new(
-        profile_name: Option<String>,
-        assume_role_external_id: Option<String>,
-        request_compression_threshold: Option<usize>,
+    pub fn from_options(
+        options: &AwsLambdaOptions,
+        keep_alive: &Http2KeepAliveOptions,
         assume_role_cache_mode: AssumeRoleCacheMode,
     ) -> Self {
+        let assume_role_external_id = options.aws_assume_role_external_id.clone();
+        let request_compression_threshold = options
+            .request_compression_threshold
+            .map(|bc| bc.as_usize())
+            .unwrap_or_default();
+        let lambda_http_client = aws_http_client::from_options(keep_alive);
+
         // create client for a default region, region can be overridden per request
         let mut config = aws_config::defaults(BehaviorVersion::latest());
-        if let Some(profile_name) = profile_name {
+        if let Some(profile_name) = options.aws_profile.clone() {
             config = config.profile_name(profile_name);
         };
 
@@ -100,7 +108,11 @@ impl LambdaClient {
             let sts_conf = aws_sdk_sts::Config::from(&config);
             let sts_client = aws_sdk_sts::Client::from_conf(sts_conf);
 
-            let lambda_client_builder = aws_sdk_lambda::config::Builder::from(&config);
+            let lambda_client_builder = aws_sdk_lambda::config::Builder::from(&config)
+                // Only the Lambda transport gets our own HTTP client: the credential
+                // chain and STS keep the SDK's, which is tested against the endpoints
+                // they talk to.
+                .http_client(lambda_http_client);
 
             // Restate has its own retry mechanisms, and the built in retry policy in this library could just confuse things
             let lambda_client_builder =
@@ -120,27 +132,13 @@ impl LambdaClient {
                 lambda_client_builder,
                 role_to_lambda_clients,
                 assume_role_external_id,
-                request_compression_threshold: request_compression_threshold.unwrap_or_default(),
+                request_compression_threshold,
             })
         }
         .boxed()
         .shared();
 
         Self { inner }
-    }
-
-    pub fn from_options(
-        options: &AwsLambdaOptions,
-        assume_role_cache_mode: AssumeRoleCacheMode,
-    ) -> LambdaClient {
-        LambdaClient::new(
-            options.aws_profile.clone(),
-            options.aws_assume_role_external_id.clone(),
-            options
-                .request_compression_threshold
-                .map(|bc| bc.as_usize()),
-            assume_role_cache_mode,
-        )
     }
 
     #[allow(clippy::too_many_arguments)]

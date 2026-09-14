@@ -54,7 +54,7 @@ impl<T: prost::Message + 'static> StorageEncode for ProtobufStorageWrapper<T> {
 
 impl<T: prost::Message + Default> StorageDecode for ProtobufStorageWrapper<T> {
     fn decode<B: Buf>(
-        buf: &mut B,
+        buf: B,
         kind: restate_types::storage::StorageCodecKind,
     ) -> Result<Self, StorageDecodeError>
     where

@@ -86,6 +86,7 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                 required_min_version: barrier.version,
                 barrier_reason: barrier.human_reason.unwrap_or_default(),
                 feature_changes: barrier.feature_changes,
+                storage_features: Vec::new(),
             });
         }
 
@@ -397,8 +398,24 @@ mod tests {
             err(pat!(ProcessorError::VersionBarrier {
                 required_min_version: eq(unrealistic_future_version),
                 barrier_reason: eq("testing"),
+                storage_features: empty(),
             }))
         );
+    }
+
+    #[test]
+    fn version_barrier_error_displays_unknown_storage_features() {
+        let error = ProcessorError::VersionBarrier {
+            required_min_version: SemanticRestateVersion::new(2, 0, 0),
+            barrier_reason: "enabled storage features".to_owned(),
+            feature_changes: Vec::new(),
+            storage_features: vec!["future-a".into(), "future-b".into()],
+        };
+
+        let message = error.to_string();
+        assert!(message.contains("future-a"));
+        assert!(message.contains("future-b"));
+        assert!(message.contains("2.0.0"));
     }
 
     #[restate_core::test]

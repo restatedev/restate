@@ -22,8 +22,10 @@ ahash = { workspace = true }
 arc-swap = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
-aws-sdk-lambda = {version = "1.112.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
-aws-sdk-sts = {version = "1.95.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-smithy-runtime-api = { workspace = true }
+aws-smithy-types = { workspace = true }
+aws-sdk-lambda = {version = "1.141.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
+aws-sdk-sts = {version = "1.113.0", default-features = false, features = ["behavior-version-latest", "rt-tokio", "default-https-client"]}
 base64 = { workspace = true }
 bs58 = { workspace = true }
 bytes = { workspace = true }
@@ -39,7 +41,7 @@ http-body-util = { workspace = true }
 http-serde = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "client"] }
 hyper-rustls = { workspace = true }
-hyper-util = { workspace = true, features = ["client-legacy"] }
+hyper-util = { workspace = true, features = ["client-legacy", "client-proxy"] }
 jsonwebtoken = { workspace = true }
 parking_lot = { workspace = true }
 pem = { version = "3.0.6" }
