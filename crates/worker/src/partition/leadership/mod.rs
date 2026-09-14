@@ -21,6 +21,7 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use assert2::let_assert;
 use futures::{StreamExt, TryStreamExt};
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -93,9 +94,29 @@ use super::{processor::*, rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
-type RpcReciprocal =
-    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
 type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
+
+pub(super) enum RpcReciprocal {
+    Legacy(Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>),
+}
+
+impl RpcReciprocal {
+    fn fail(self, error: PartitionProcessorRpcError) {
+        match self {
+            RpcReciprocal::Legacy(reciprocal) => {
+                reciprocal.send(Err(error));
+            }
+        }
+    }
+
+    fn send_legacy(self, response: PartitionProcessorRpcResponse) {
+        let_assert!(
+            RpcReciprocal::Legacy(result_tx) = self,
+            "expected 'Put' callback"
+        );
+        result_tx.send(Ok(response));
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -1035,7 +1056,7 @@ impl RpcProcessingPermit {
     pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
         match self {
             RpcProcessingPermit::NonLeader { partition_id } => {
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
+                reciprocal.fail(PartitionProcessorRpcError::NotLeader(partition_id))
             }
             RpcProcessingPermit::Leader(permit) => {
                 permit.send(NetworkServiceEvent::RpcProposal {
@@ -1101,7 +1122,7 @@ mod tests {
     use restate_worker_api::invoker::capacity::InvokerCapacity;
     use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
-    use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition::leadership::{LeadershipState, RpcReciprocal, State};
     use crate::partition::processor::ProcessorRawContext;
     use crate::partition::types::InvokerEffect;
     use crate::partition::{LeadershipInfo, NodeContext};
@@ -1332,7 +1353,12 @@ mod tests {
             }
             .bilrost_encode_to_bytes(),
         );
-        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
+        leader_state.propose_pause_and_fence(
+            request_id,
+            RpcReciprocal::Legacy(reciprocal),
+            invocation_id,
+            pause_cmd,
+        );
         // The pause cleared the token, so attempt 1's token is no longer accepted.
         assert!(
             !leader_state

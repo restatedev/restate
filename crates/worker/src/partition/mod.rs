@@ -71,9 +71,8 @@ use restate_types::net::ingest::{
 };
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcResponse,
 };
-use restate_types::net::{RpcRequest, ingest};
+use restate_types::net::{RpcRequest, RpcResponse, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -91,7 +90,7 @@ use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::RpcProcessingPermit;
+use self::leadership::{RpcProcessingPermit, RpcReciprocal};
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -748,15 +747,20 @@ where
             .handle_leader_query(self.ctx.vqueues(), leader_query_cmd);
     }
 
-    async fn on_pp_rpc_request(
+    async fn on_pp_rpc_request<Request, Response>(
         &mut self,
-        response_tx: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        body: PartitionProcessorRpcRequest,
+        response_tx: Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>,
+        body: Request,
         schemas: &Schema,
         permit: RpcProcessingPermit,
-    ) {
+        wrap_response_tx: impl FnOnce(
+            Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>,
+        ) -> RpcReciprocal,
+    ) where
+        Request: RpcRequest<Response = Result<Response, PartitionProcessorRpcError>>,
+        Result<Response, PartitionProcessorRpcError>: RpcResponse,
+        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request, Response>,
+    {
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
             self.leadership_state.partition_id(),
@@ -766,7 +770,9 @@ where
         let decision = rpc::RpcHandler::handle(context, body).await;
 
         match decision {
-            rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
+            rpc::Decision::Propose(proposal) => {
+                permit.buffer_rpc_proposal(proposal, wrap_response_tx(response_tx));
+            }
             rpc::Decision::Reply(reply) => response_tx.send(reply),
             rpc::Decision::NotifyInvokerAndReply {
                 notification,
@@ -842,7 +848,7 @@ where
                         sent_at.elapsed().friendly()
                     );
                 }
-                self.on_pp_rpc_request(response_tx, body, schemas, permit)
+                self.on_pp_rpc_request(response_tx, body, schemas, permit, RpcReciprocal::Legacy)
                     .await;
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {

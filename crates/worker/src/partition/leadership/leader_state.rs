@@ -27,7 +27,6 @@ use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
-use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
@@ -432,9 +431,9 @@ impl LeaderState {
                 %request_id,
                 "Failing rpc because I lost leadership",
             );
-            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+            reciprocal.fail(PartitionProcessorRpcError::LostLeadership(
                 self.partition_id,
-            )))
+            ))
         }
         for fut in self.awaiting_rpc_self_propose.iter_mut() {
             fut.fail_with_lost_leadership(self.partition_id);
@@ -449,9 +448,9 @@ impl LeaderState {
         self.network_events_stream.close();
         while let Some(Some(event)) = self.network_events_stream.next().now_or_never() {
             match event {
-                NetworkServiceEvent::RpcProposal { reciprocal, .. } => reciprocal.send(Err(
+                NetworkServiceEvent::RpcProposal { reciprocal, .. } => reciprocal.fail(
                     PartitionProcessorRpcError::LostLeadership(self.partition_id),
-                )),
+                ),
                 NetworkServiceEvent::IngestRecords { reciprocal, .. } => reciprocal.send(
                     ResponseStatus::NotLeader {
                         of: self.partition_id,
@@ -497,9 +496,7 @@ impl LeaderEventHandlerState<'_> {
     fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        reciprocal: RpcReciprocal,
         partition_key: PartitionKey,
         cmd: Command,
     ) {
@@ -509,14 +506,12 @@ impl LeaderEventHandlerState<'_> {
                 // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
                 let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
-                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
-                    "retried".to_string(),
-                )));
+                old_reciprocal.fail(PartitionProcessorRpcError::Internal("retried".to_string()));
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
                 if let Err(e) = self.self_proposer.self_propose(partition_key, cmd) {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                    reciprocal.fail(PartitionProcessorRpcError::Internal(e.to_string()));
                 } else {
                     v.insert(reciprocal);
                 }
@@ -538,9 +533,7 @@ impl LeaderEventHandlerState<'_> {
     fn propose_pause_and_fence(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        reciprocal: RpcReciprocal,
         invocation_id: InvocationId,
         cmd: Command,
     ) {
@@ -551,16 +544,14 @@ impl LeaderEventHandlerState<'_> {
                 // attempt's token from here.
                 let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
-                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
-                    "retried".to_string(),
-                )));
+                old_reciprocal.fail(PartitionProcessorRpcError::Internal("retried".to_string()));
             }
             Entry::Vacant(v) => {
                 if let Err(e) = self
                     .self_proposer
                     .self_propose(invocation_id.partition_key(), cmd)
                 {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                    reciprocal.fail(PartitionProcessorRpcError::Internal(e.to_string()));
                 } else {
                     v.insert(reciprocal);
                     // Clear ONLY here -- after the append succeeded. See the method doc.
@@ -589,12 +580,13 @@ impl LeaderEventHandlerState<'_> {
             Ok(result) => {
                 self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
                     result.commit_token,
-                    |result: Result<(), PartitionProcessorRpcError>| {
-                        reciprocal.send(result.map(|_| success_response));
+                    |result: Result<(), PartitionProcessorRpcError>| match result {
+                        Ok(()) => reciprocal.send_legacy(success_response),
+                        Err(error) => reciprocal.fail(error),
                     },
                 ));
             }
-            Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+            Err(e) => reciprocal.fail(PartitionProcessorRpcError::Internal(e.to_string())),
         }
     }
 
@@ -915,14 +907,14 @@ impl LeaderState {
                 ..
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Output(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::Output(
                         InvocationOutput {
                             request_id,
                             invocation_id,
                             completion_expiry_time,
                             response,
                         },
-                    )));
+                    ));
                 } else {
                     debug!(%request_id, "Ignoring sending ingress response because there is no awaiting rpc");
                 }
@@ -934,13 +926,13 @@ impl LeaderState {
                 ..
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Submitted(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::Submitted(
                         SubmittedInvocationNotification {
                             request_id,
                             execution_time,
                             is_new_invocation,
                         },
-                    )));
+                    ));
                 }
             }
             Action::ForwardNotification {
@@ -957,9 +949,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::KillInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::KillInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::ForwardCancelResponse {
@@ -967,9 +959,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::CancelInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::CancelInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::ForwardPurgeInvocationResponse {
@@ -977,9 +969,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::PurgeInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::ForwardPurgeJournalResponse {
@@ -987,9 +979,8 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeJournal(
-                        response.into(),
-                    )));
+                    response_tx
+                        .send_legacy(PartitionProcessorRpcResponse::PurgeJournal(response.into()));
                 }
             }
             Action::ForwardResumeInvocationResponse {
@@ -997,9 +988,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::ResumeInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::ResumeInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::ForwardPauseInvocationResponse {
@@ -1007,9 +998,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PauseInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::PauseInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::ForwardRestartAsNewInvocationResponse {
@@ -1017,9 +1008,9 @@ impl LeaderState {
                 response,
             } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::RestartAsNewInvocation(
+                    response_tx.send_legacy(PartitionProcessorRpcResponse::RestartAsNewInvocation(
                         response.into(),
-                    )));
+                    ));
                 }
             }
             Action::VQEvent(inbox_event) => {
