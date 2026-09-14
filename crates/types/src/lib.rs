@@ -46,6 +46,7 @@ pub mod metadata;
 pub mod metadata_store;
 pub mod net;
 pub mod nodes_config;
+pub mod partition_processor;
 pub mod partition_table;
 pub mod partitions;
 pub mod protobuf;

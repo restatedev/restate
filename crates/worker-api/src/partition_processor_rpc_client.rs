@@ -26,8 +26,8 @@ use restate_types::identifiers::{
 };
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
-    GetInvocationStatusResponse, InvocationClient, InvocationClientError, InvocationOutput,
-    KillInvocationResponse, PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    GetInvocationStatusResponse, InvocationClient, InvocationOutput, KillInvocationResponse,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
     RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
@@ -38,6 +38,7 @@ use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionProcessorRpcError,
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
+use restate_types::partition_processor::client::PartitionProcessorClientError;
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
 use restate_types::time::MillisSinceEpoch;
 
@@ -48,7 +49,7 @@ use crate::metric_definitions::{
 };
 
 #[derive(Debug, thiserror::Error)]
-pub enum PartitionProcessorInvocationClientError {
+pub enum PartitionProcessorRpcClientError {
     #[error(transparent)]
     UnknownPartition(#[from] PartitionTableError),
     #[error("cannot find node for partition {0}")]
@@ -109,27 +110,27 @@ impl fmt::Display for RpcErrorKind {
     }
 }
 
-impl PartitionProcessorInvocationClientError {
+impl PartitionProcessorRpcClientError {
     /// Returns true when the operation can be retried assuming no state mutation could have occurred in the PartitionProcessor.
     pub fn is_safe_to_retry(&self) -> bool {
         match self {
-            PartitionProcessorInvocationClientError::UnknownPartition(_)
-            | PartitionProcessorInvocationClientError::UnknownNode(_) => {
+            PartitionProcessorRpcClientError::UnknownPartition(_)
+            | PartitionProcessorRpcClientError::UnknownNode(_) => {
                 // These are pre-flight error that we can distinguish,
                 // and for which we know for certain that no message was proposed yet to the log.
                 true
             }
-            PartitionProcessorInvocationClientError::Rpc(rpc) => rpc.is_safe_to_retry(),
+            PartitionProcessorRpcClientError::Rpc(rpc) => rpc.is_safe_to_retry(),
             _ => false,
         }
     }
 
     fn as_metric_label(&self) -> &'static str {
         match self {
-            PartitionProcessorInvocationClientError::UnknownPartition(_)
-            | PartitionProcessorInvocationClientError::UnknownNode(_) => STATUS_ROUTING_ERROR,
-            PartitionProcessorInvocationClientError::Shutdown(_) => STATUS_SHUTDOWN,
-            PartitionProcessorInvocationClientError::Rpc(err) => err.source.as_metric_label(),
+            PartitionProcessorRpcClientError::UnknownPartition(_)
+            | PartitionProcessorRpcClientError::UnknownNode(_) => STATUS_ROUTING_ERROR,
+            PartitionProcessorRpcClientError::Shutdown(_) => STATUS_SHUTDOWN,
+            PartitionProcessorRpcClientError::Rpc(err) => err.source.as_metric_label(),
         }
     }
 }
@@ -199,21 +200,21 @@ impl RpcError {
     }
 }
 
-impl From<PartitionProcessorInvocationClientError> for InvocationClientError {
-    fn from(value: PartitionProcessorInvocationClientError) -> Self {
+impl From<PartitionProcessorRpcClientError> for PartitionProcessorClientError {
+    fn from(value: PartitionProcessorRpcClientError) -> Self {
         let is_safe_to_retry = value.is_safe_to_retry();
         Self::new(value, is_safe_to_retry)
     }
 }
 
-pub struct PartitionProcessorInvocationClient<C> {
+pub struct PartitionProcessorRpcClient<C> {
     networking: Networking<C>,
     partition_table: Live<PartitionTable>,
     partition_routing: PartitionRouting,
     partition_id_labels: Arc<HashMap<PartitionId, Arc<str>>>,
 }
 
-impl<C: Clone> Clone for PartitionProcessorInvocationClient<C> {
+impl<C: Clone> Clone for PartitionProcessorRpcClient<C> {
     fn clone(&self) -> Self {
         Self {
             networking: self.networking.clone(),
@@ -224,7 +225,7 @@ impl<C: Clone> Clone for PartitionProcessorInvocationClient<C> {
     }
 }
 
-impl<C> PartitionProcessorInvocationClient<C> {
+impl<C> PartitionProcessorRpcClient<C> {
     pub fn new(
         networking: Networking<C>,
         partition_table: Live<PartitionTable>,
@@ -246,7 +247,7 @@ impl<C> PartitionProcessorInvocationClient<C> {
     }
 }
 
-impl<C> PartitionProcessorInvocationClient<C>
+impl<C> PartitionProcessorRpcClient<C>
 where
     C: TransportConnect,
 {
@@ -254,7 +255,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         inner_request: PartitionProcessorRpcRequestInner,
-    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorInvocationClientError> {
+    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
         let partition_id = self
             .partition_table
             .pinned()
@@ -293,13 +294,11 @@ where
         request_id: PartitionProcessorRpcRequestId,
         partition_id: PartitionId,
         inner_request: PartitionProcessorRpcRequestInner,
-    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorInvocationClientError> {
+    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
         let node_id = NodeId::from(
             self.partition_routing
                 .get_node_by_partition(partition_id)
-                .ok_or(PartitionProcessorInvocationClientError::UnknownNode(
-                    partition_id,
-                ))?,
+                .ok_or(PartitionProcessorRpcClientError::UnknownNode(partition_id))?,
         );
 
         // find connection for this node
@@ -343,7 +342,7 @@ where
     }
 }
 
-impl<C> InvocationClient for PartitionProcessorInvocationClient<C>
+impl<C> InvocationClient for PartitionProcessorRpcClient<C>
 where
     C: TransportConnect,
 {
@@ -352,7 +351,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_request: Arc<InvocationRequest>,
-    ) -> Result<SubmittedInvocationNotification, InvocationClientError> {
+    ) -> Result<SubmittedInvocationNotification, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -378,7 +377,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_request: Arc<InvocationRequest>,
-    ) -> Result<InvocationOutput, InvocationClientError> {
+    ) -> Result<InvocationOutput, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -403,7 +402,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<AttachInvocationResponse, InvocationClientError> {
+    ) -> Result<AttachInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -432,7 +431,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<GetInvocationOutputResponse, InvocationClientError> {
+    ) -> Result<GetInvocationOutputResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -464,7 +463,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<GetInvocationStatusResponse, InvocationClientError> {
+    ) -> Result<GetInvocationStatusResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -489,7 +488,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_response: InvocationResponse,
-    ) -> Result<(), InvocationClientError> {
+    ) -> Result<(), PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -508,7 +507,7 @@ where
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
         signal: Signal,
-    ) -> Result<(), InvocationClientError> {
+    ) -> Result<(), PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -527,7 +526,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<CancelInvocationResponse, InvocationClientError> {
+    ) -> Result<CancelInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -549,7 +548,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<KillInvocationResponse, InvocationClientError> {
+    ) -> Result<KillInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -571,7 +570,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<PurgeInvocationResponse, InvocationClientError> {
+    ) -> Result<PurgeInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -593,7 +592,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<PurgeInvocationResponse, InvocationClientError> {
+    ) -> Result<PurgeInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -617,7 +616,7 @@ where
         invocation_id: InvocationId,
         copy_prefix_up_to_index_included: EntryIndex,
         patch_deployment_id: PatchDeploymentId,
-    ) -> Result<RestartAsNewInvocationResponse, InvocationClientError> {
+    ) -> Result<RestartAsNewInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -644,7 +643,7 @@ where
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
         deployment_id: PatchDeploymentId,
-    ) -> Result<ResumeInvocationResponse, InvocationClientError> {
+    ) -> Result<ResumeInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
@@ -669,7 +668,7 @@ where
         &self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
-    ) -> Result<PauseInvocationResponse, InvocationClientError> {
+    ) -> Result<PauseInvocationResponse, PartitionProcessorClientError> {
         let response = self
             .resolve_partition_id_and_send(
                 request_id,
