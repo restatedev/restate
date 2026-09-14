@@ -1570,10 +1570,6 @@ fn resolve_call_request(
             )
         })?;
 
-    let experimental_config = &restate_types::config::Configuration::pinned()
-        .common
-        .experimental;
-
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
         return Err(CommandPreconditionError::DeploymentDeprecated(
             request.service_name.to_string(),
@@ -1608,9 +1604,6 @@ fn resolve_call_request(
         if let Some(scope) = request.scope
             && !scope.is_empty()
         {
-            if !experimental_config.is_vqueues_enabled() {
-                return Err(CommandPreconditionError::ScopeRequiresVQueues);
-            }
             Some(
                 Scope::try_new(&scope)
                     .map_err(|e| CommandPreconditionError::InvalidScope(scope, e))?,
@@ -1639,13 +1632,6 @@ fn resolve_call_request(
     // Validate invariant: limit_key requires scope
     if !limit_key.is_empty() && invocation_target.scope().is_none() {
         return Err(CommandPreconditionError::LimitKeyWithoutScope);
-    }
-
-    if invocation_target.scope().is_some()
-        && matches!(meta.target_ty, InvocationTargetType::VirtualObject(_))
-        && !experimental_config.is_scoped_virtual_objects_enabled()
-    {
-        return Err(CommandPreconditionError::ScopedVirtualObjectNotSupported);
     }
 
     let invocation_retention = meta.compute_retention(idempotency_key.is_some());
