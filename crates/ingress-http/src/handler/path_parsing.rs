@@ -316,28 +316,32 @@ where
 
     let service_name = path_parts.next().ok_or(HandlerError::BadRestateApiPath)?;
 
-    let service_type = schemas
-        .resolve_latest_service_type(service_name)
-        .ok_or_else(|| HandlerError::ServiceNotFound(service_name.to_owned()))?;
-
-    let target = if service_type.is_keyed() {
-        TargetType::Keyed {
-            key: urlencoding::decode(path_parts.next().ok_or(HandlerError::BadRestateApiPath)?)
-                .map_err(HandlerError::UrlDecodingError)?
-                .into_owned(),
-        }
-    } else {
-        TargetType::Unkeyed
+    // Keep vanilla behavior for registered services; for unregistered ones (schemaless demo mode)
+    // infer keyed-ness structurally: `[handler]` => unkeyed Service, `[key, handler]` => keyed VO.
+    let rest: Vec<&str> = path_parts.collect();
+    let keyed = match schemas.resolve_latest_service_type(service_name) {
+        Some(service_type) => service_type.is_keyed(),
+        None => rest.len() >= 2,
     };
 
-    let handler = path_parts
-        .next()
-        .ok_or(HandlerError::BadRestateApiPath)?
-        .to_owned();
-
-    if path_parts.next().is_some() {
-        return Err(HandlerError::BadRestateApiPath);
-    }
+    let (target, handler) = if keyed {
+        match rest.as_slice() {
+            [key, handler] => (
+                TargetType::Keyed {
+                    key: urlencoding::decode(key)
+                        .map_err(HandlerError::UrlDecodingError)?
+                        .into_owned(),
+                },
+                (*handler).to_owned(),
+            ),
+            _ => return Err(HandlerError::BadRestateApiPath),
+        }
+    } else {
+        match rest.as_slice() {
+            [handler] => (TargetType::Unkeyed, (*handler).to_owned()),
+            _ => return Err(HandlerError::BadRestateApiPath),
+        }
+    };
 
     Ok(RequestType::Service(ServiceRequestType {
         name: ServiceName::new(service_name),
