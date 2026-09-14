@@ -37,6 +37,5 @@ of one deprecated route per handler.
 - **Existing deployments**: the generated contract reflects the change after a re-fetch; no runtime
   behavior changes.
 - **New deployments**: the reorganized contract is present out of the box.
-- **Migration considerations**: none required. Scoped invocations still require the vqueues
-  experimental feature to be enabled at runtime (scoped Virtual Object targets additionally require
-  the corresponding experimental flag).
+- **Migration considerations**: none required. Scoped invocations (including scoped Virtual Object
+  targets) are accepted unconditionally since VQueues are enabled by default in v1.8.0.

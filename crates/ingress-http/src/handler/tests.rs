@@ -35,7 +35,6 @@ use crate::handler::error::X_RESTATE_ERROR_SOURCE;
 use crate::handler::responses::X_RESTATE_ID;
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
-use restate_types::config::{Configuration, set_current_config};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::client::{
@@ -1557,69 +1556,9 @@ async fn output_by_target_with_workflow() {
     assert_eq!(response_value.greeting, "done");
 }
 
-fn set_experimental_flags(vqueues: bool, scoped_virtual_objects: bool) {
-    let mut config = Configuration::default();
-    config.common.experimental.set_vqueues(vqueues);
-    config
-        .common
-        .experimental
-        .set_scoped_virtual_objects(scoped_virtual_objects);
-    set_current_config(config);
-}
-
 #[restate_core::test]
 #[traced_test]
-async fn scoped_virtual_object_rejected_when_flag_off() {
-    set_experimental_flags(true, false);
-
-    // Scoped VO call rejected
-    let response = handle(
-        hyper::Request::builder()
-            .uri("http://localhost/restate/scope/sc1/call/greeter.GreeterObject/my-key/greet")
-            .method(Method::POST)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from_static(b"{}")))
-            .unwrap(),
-        MockRequestDispatcher::default(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    // Scoped service call passes through (not gated)
-    let mut mock_dispatcher = MockRequestDispatcher::default();
-    mock_dispatcher
-        .expect_call()
-        .return_once(|invocation_request| {
-            assert!(invocation_request.header.target.scope().is_some());
-            ready(Ok(InvocationOutput {
-                request_id: Default::default(),
-                invocation_id: Some(invocation_request.invocation_id()),
-                completion_expiry_time: None,
-                response: InvocationOutputResponse::Success(
-                    invocation_request.header.target.clone(),
-                    Bytes::new(),
-                ),
-            }))
-            .boxed()
-        });
-    let response = handle(
-        hyper::Request::builder()
-            .uri("http://localhost/restate/scope/sc1/call/greeter.Greeter/greet")
-            .method(Method::POST)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from_static(b"{}")))
-            .unwrap(),
-        mock_dispatcher,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[restate_core::test]
-#[traced_test]
-async fn scoped_virtual_object_allowed_when_flag_on() {
-    set_experimental_flags(true, true);
-
+async fn scoped_virtual_object_allowed() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()
