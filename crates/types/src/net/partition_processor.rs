@@ -56,6 +56,21 @@ pub struct PartitionProcessorRpcRequest {
     pub inner: PartitionProcessorRpcRequestInner,
 }
 
+impl PartitionProcessorRpcRequest {
+    pub fn new(
+        request_id: PartitionProcessorRpcRequestId,
+        partition_id: PartitionId,
+        inner: PartitionProcessorRpcRequestInner,
+    ) -> Self {
+        Self {
+            request_id,
+            partition_id,
+            sent_at: Some(MillisSinceEpoch::now()),
+            inner,
+        }
+    }
+}
+
 impl WireEncode for PartitionProcessorRpcRequest {
     fn encode_to_bytes(
         &self,

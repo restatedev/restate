@@ -8,6 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::identifiers::{PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey};
+use crate::net::RpcRequest;
+use crate::net::partition_processor::{PartitionLeaderService, PartitionProcessorRpcError};
+
+/// Error returned by a [`PartitionProcessorClient`].
 #[derive(Debug, thiserror::Error)]
 #[error("{inner}")]
 pub struct PartitionProcessorClientError {
@@ -31,4 +36,50 @@ impl PartitionProcessorClientError {
     pub fn into_inner(self) -> anyhow::Error {
         self.inner
     }
+}
+
+/// Error lifting a wire response into a typed response.
+#[derive(Debug, thiserror::Error)]
+pub enum WireResponseError {
+    #[error(transparent)]
+    Processor(#[from] PartitionProcessorRpcError),
+    /// The partition processor replied with a variant the request never expects.
+    #[error("unexpected response from partition processor")]
+    UnexpectedResponse,
+}
+
+/// A typed request to a partition processor.
+///
+/// Routing is derived from [`WithPartitionKey::partition_key`]. The request decides how it is
+/// lowered onto the wire: legacy requests lower onto
+/// [`PartitionProcessorRpcRequest`](crate::net::partition_processor::PartitionProcessorRpcRequest),
+/// dedicated requests use their own [`RpcRequest`] type.
+pub trait PartitionProcessorRpc: WithPartitionKey + Send + 'static {
+    /// The typed response the caller receives.
+    type Response: Send;
+
+    /// The message sent over the network.
+    type Wire: RpcRequest<Service = PartitionLeaderService>;
+
+    /// Lower the request onto the wire message.
+    fn into_wire(
+        self,
+        request_id: PartitionProcessorRpcRequestId,
+        partition_id: PartitionId,
+    ) -> Self::Wire;
+
+    /// Lift the wire response into [`Self::Response`].
+    fn from_wire(
+        request_id: PartitionProcessorRpcRequestId,
+        response: <Self::Wire as RpcRequest>::Response,
+    ) -> Result<Self::Response, WireResponseError>;
+}
+
+/// Sends typed requests to the partition processor owning the request's partition key.
+pub trait PartitionProcessorClient: Send + Sync {
+    fn send<R: PartitionProcessorRpc>(
+        &self,
+        request_id: PartitionProcessorRpcRequestId,
+        request: R,
+    ) -> impl Future<Output = Result<R::Response, PartitionProcessorClientError>> + Send;
 }
