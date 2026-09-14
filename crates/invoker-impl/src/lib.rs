@@ -278,10 +278,7 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 last_retry_timer_compact: Instant::now(),
-                quota: quota::InvokerConcurrencyQuota::new(
-                    invoker_id,
-                    options.concurrent_invocations_limit(),
-                ),
+                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 invoker_id_label,
                 status_store: Default::default(),
                 invocation_state_machine_manager: InvocationStateMachineManager::new(
@@ -1237,42 +1234,29 @@ where
                     // Global pool exhausted — yielding may help because freeing
                     // the execution slot lets other invocations finish and return
                     // their memory.
-                    if ism.qid.is_some()
-                        || Configuration::pinned()
-                            .common
-                            .experimental
-                            .is_invoker_yield_enabled()
-                    {
-                        debug!(
-                            restate.invocation.target = %ism.invocation_target,
-                            needed = %oom.needed,
-                            "Invocation yielding due to global memory pool exhaustion while {}",
-                            oom.context,
-                        );
-                        ism.abort();
-                        self.status_store.on_end(&invocation_id);
-                        let _ = sender
-                            .send(fence(
-                                ism.fencing_token,
-                                Effect {
-                                    invocation_id,
-                                    kind: EffectKind::Yield {
-                                        reason: YieldReason::ExhaustedMemoryBudget {
-                                            needed_memory: oom.needed,
-                                        },
-                                        error_event: None,
-                                        resume_at: None,
+                    debug!(
+                        restate.invocation.target = %ism.invocation_target,
+                        needed = %oom.needed,
+                        "Invocation yielding due to global memory pool exhaustion while {}",
+                        oom.context,
+                    );
+                    ism.abort();
+                    self.status_store.on_end(&invocation_id);
+                    let _ = sender
+                        .send(fence(
+                            ism.fencing_token,
+                            Effect {
+                                invocation_id,
+                                kind: EffectKind::Yield {
+                                    reason: YieldReason::ExhaustedMemoryBudget {
+                                        needed_memory: oom.needed,
                                     },
+                                    error_event: None,
+                                    resume_at: None,
                                 },
-                            ))
-                            .await;
-                    } else {
-                        // Yield flag disabled: fall back to retry.
-                        budget.release_excess();
-                        ism.budget = Some(budget);
-                        self.handle_error_event(invocation_id, InvokerError::OutOfMemory(oom), ism)
-                            .await;
-                    }
+                            },
+                        ))
+                        .await;
                 }
             }
         } else {
@@ -1893,7 +1877,7 @@ mod tests {
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 last_retry_timer_compact: Instant::now(),
-                quota: InvokerConcurrencyQuota::new(0, concurrency_limit),
+                quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 invoker_id_label: Arc::from("0"),
                 status_store: Default::default(),
                 invocation_state_machine_manager: InvocationStateMachineManager::new(
@@ -3122,80 +3106,10 @@ mod tests {
         );
     }
 
-    /// When the yield flag is disabled (default), budget exhaustion falls back to the
-    /// retry path without bumping the retry count.
-    #[test(restate_core::test(start_paused = true))]
-    async fn yield_flag_disabled_falls_back_to_retry() {
-        let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(FriendlyDuration::ZERO)
-            .abort_timeout(FriendlyDuration::ZERO)
-            .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
-            .message_size_limit(None)
-            .build()
-            .unwrap();
-        let invocation_id = InvocationId::mock_random();
-
-        let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
-            (),
-            MockSchemas(
-                Some(RetryPolicy::fixed_delay(Duration::from_millis(100), None)),
-                None,
-            ),
-            None,
-            EmptyStorageReader,
-        );
-
-        let budget = service_inner.test_budget();
-        service_inner.handle_invoke(
-            &invoker_options,
-            invocation_id,
-            0,
-            InvocationTarget::mock_virtual_object(),
-            budget,
-        );
-
-        // Simulate yield from invocation task (flag disabled by default)
-        service_inner
-            .handle_invocation_task_should_yield(
-                invocation_id,
-                InvocationMemoryExhausted {
-                    needed: NonZeroByteCount::new(NonZeroUsize::new(32768).unwrap()),
-                    kind: OutOfMemoryKind::PoolExhausted,
-                    context: "test",
-                },
-                service_inner.test_budget(),
-            )
-            .await;
-
-        // Should NOT emit EffectKind::Yield — instead the error goes through retry
-        // The ISM should be in WaitingRetry state (error was handled as OutOfMemory)
-        assert!(service_inner.is_invocation_waiting_retry(&invocation_id));
-
-        // No Yield effect should be emitted, but a transient error event should be
-        let effect = effects_rx
-            .try_recv()
-            .expect("expected a transient error event");
-        assert_that!(
-            *effect.effect,
-            pat!(Effect {
-                invocation_id: eq(invocation_id),
-                kind: pat!(EffectKind::JournalEvent {
-                    event: predicate(|e: &RawEvent| e.ty() == EventType::TransientError)
-                })
-            })
-        );
-    }
-
-    /// When the yield flag is enabled, the invoker sends EffectKind::Yield and
+    /// On global memory pool exhaustion, the invoker sends EffectKind::Yield and
     /// releases the invocation slot.
     #[test(restate_core::test(start_paused = true))]
-    async fn yield_flag_enabled_sends_yield_effect() {
-        // Enable the experimental yield flag
-        let mut config = Configuration::default();
-        config.common.experimental.set_invoker_yield(true);
-        restate_types::config::set_current_config(config);
-
+    async fn pool_exhaustion_sends_yield_effect() {
         let invoker_options = InvokerOptionsBuilder::default()
             .inactivity_timeout(FriendlyDuration::ZERO)
             .abort_timeout(FriendlyDuration::ZERO)
