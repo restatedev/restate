@@ -200,7 +200,7 @@ pub trait InvocationReaderTransaction {
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        eager_state_config: EagerStateConfig,
+        eager_state_config: &EagerStateConfig,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error>;
 }

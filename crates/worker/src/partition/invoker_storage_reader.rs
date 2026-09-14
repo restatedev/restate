@@ -329,7 +329,7 @@ where
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        eager_state_config: EagerStateConfig,
+        eager_state_config: &EagerStateConfig,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         let (stream, partial) = match eager_state_config {
@@ -343,8 +343,8 @@ where
             // everything else on demand, so the result is partial.
             EagerStateConfig::Lazy { always_eager_keys } => {
                 let keys: Vec<Bytes> = always_eager_keys
-                    .into_iter()
-                    .map(|k| k.into_bytes())
+                    .iter()
+                    .map(|k| k.clone().into_bytes())
                     .collect();
                 let stream = self
                     .txn

@@ -511,36 +511,6 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
     }
 }
 
-/// Source of raw state entries for [`BudgetedStateStream`]. Lets the same
-/// budget-reserve/wait/pin loop drive both a full-service scan and a set of
-/// point reads.
-trait BudgetedStateItems {
-    /// Byte size (raw key + value) of the next entry without consuming it, or
-    /// `None` when exhausted. Must be idempotent for the same entry: the loop
-    /// may re-peek across a budget wait.
-    fn peek_size(&mut self) -> Option<Result<usize>>;
-
-    /// Materialize the peeked entry as owned `(key, value)` and advance. Only
-    /// called after a `peek_size` that returned `Some(Ok(_))`.
-    fn take_next(&mut self) -> Result<(Bytes, Bytes)>;
-}
-
-impl<DB: DBAccess> BudgetedStateItems for StateEntryIter<'_, DB> {
-    fn peek_size(&mut self) -> Option<Result<usize>> {
-        match self.peek_item()? {
-            Ok((k, v)) => Some(Ok(k.len() + v.len())),
-            Err(e) => Some(Err(e)),
-        }
-    }
-
-    fn take_next(&mut self) -> Result<(Bytes, Bytes)> {
-        let (k, v) = self.peek_item().expect("peeked before take")?;
-        let result = decode_user_state_key_value(k, v);
-        self.advance();
-        result
-    }
-}
-
 /// A budget-gated state stream that acquires a [`LocalMemoryLease`] from
 /// `budget` **before** decoding each entry.
 ///
@@ -555,8 +525,8 @@ impl<DB: DBAccess> BudgetedStateItems for StateEntryIter<'_, DB> {
 /// is stashed and the stream waits for an [`AvailabilityNotified`] signal,
 /// then retries.
 #[pin_project::pin_project]
-struct BudgetedStateStream<'a, I> {
-    items: I,
+struct BudgetedStateStream<'a, DB: DBAccess> {
+    iter: StateEntryIter<'a, DB>,
     budget: &'a mut LocalMemoryPool,
     /// Memory the caller has accumulated (merged) that won't be released
     /// until the caller's operation completes.
@@ -570,11 +540,11 @@ struct BudgetedStateStream<'a, I> {
     notified: Option<AvailabilityNotified>,
 }
 
-impl<'a, I> BudgetedStateStream<'a, I> {
-    fn new(items: I, budget: &'a mut LocalMemoryPool) -> Self {
+impl<'a, DB: DBAccess> BudgetedStateStream<'a, DB> {
+    fn new(iter: StateEntryIter<'a, DB>, budget: &'a mut LocalMemoryPool) -> Self {
         let lease = budget.empty_lease();
         Self {
-            items,
+            iter,
             budget,
             pinned: 0,
             lease,
@@ -594,28 +564,32 @@ enum TryProduce {
     NeedsBudget(usize),
 }
 
-impl<I: BudgetedStateItems> BudgetedStateStream<'_, I> {
-    /// Try to peek, reserve, materialize, and split a lease for the next entry.
+impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
+    /// Try to peek, reserve, decode, and split a lease for the next entry.
     ///
     /// On success the entry's lease is split from `lease`, which retains any
     /// leftover capacity for the next iteration (avoiding a round-trip to the
     /// global pool).
     fn try_produce_next(
-        items: &mut I,
+        iter: &mut StateEntryIter<'_, DB>,
         budget: &mut LocalMemoryPool,
         lease: &mut LocalMemoryLease,
     ) -> TryProduce {
-        let raw_size = match items.peek_size() {
-            Some(Ok(size)) => size,
+        let (k, v) = match iter.peek_item() {
+            Some(Ok(item)) => item,
             Some(Err(e)) => return TryProduce::Ready(Err(e.into())),
             None => return TryProduce::Exhausted,
         };
 
+        let raw_size = k.len() + v.len();
+
         // Fast path 1: existing lease already covers the entry.
         if raw_size <= lease.size() {
+            // Decode copies data out of the iterator, releasing the borrow.
+            let result = decode_user_state_key_value(k, v);
+            iter.advance();
             return TryProduce::Ready(
-                items
-                    .take_next()
+                result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
                     .map_err(BudgetedReadError::from),
             );
@@ -625,9 +599,10 @@ impl<I: BudgetedStateItems> BudgetedStateStream<'_, I> {
         let deficit = raw_size - lease.size();
         if let Some(extra) = budget.try_reserve(deficit) {
             lease.merge(extra);
+            let result = decode_user_state_key_value(k, v);
+            iter.advance();
             return TryProduce::Ready(
-                items
-                    .take_next()
+                result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
                     .map_err(BudgetedReadError::from),
             );
@@ -637,7 +612,7 @@ impl<I: BudgetedStateItems> BudgetedStateStream<'_, I> {
     }
 }
 
-impl<I: BudgetedStateItems> Stream for BudgetedStateStream<'_, I> {
+impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
     type Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -687,7 +662,7 @@ impl<I: BudgetedStateItems> Stream for BudgetedStateStream<'_, I> {
             }
 
             // Try the synchronous fast path.
-            match Self::try_produce_next(this.items, this.budget, this.lease) {
+            match Self::try_produce_next(this.iter, this.budget, this.lease) {
                 TryProduce::Exhausted => return Poll::Ready(None),
                 TryProduce::Ready(result) => return Poll::Ready(Some(result)),
                 TryProduce::NeedsBudget(deficit) => {
@@ -699,7 +674,7 @@ impl<I: BudgetedStateItems> Stream for BudgetedStateStream<'_, I> {
     }
 }
 
-impl<I: BudgetedStateItems> PinnableMemoryStream for BudgetedStateStream<'_, I> {
+impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
     fn pin_memory(self: Pin<&mut Self>, amount: usize) {
         let this = self.project();
         *this.pinned = this.pinned.saturating_add(amount);

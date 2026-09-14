@@ -114,7 +114,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
     fn read_state_budgeted<'a>(
         &'a self,
         _service_id: &ServiceId,
-        _eager_state_config: EagerStateConfig,
+        _eager_state_config: &EagerStateConfig,
         _budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(

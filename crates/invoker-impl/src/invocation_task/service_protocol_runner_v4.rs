@@ -326,7 +326,7 @@ where
                 Some(shortcircuit!(
                     txn.read_state_budgeted(
                         &state_read.service_id,
-                        state_read.config.clone(),
+                        &state_read.config,
                         outbound_budget,
                     )
                     .map_err(InvokerError::from_state_reader)
