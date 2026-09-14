@@ -1870,11 +1870,19 @@ pub mod v1 {
                     .into_iter()
                     .map(|kv| (kv.key, kv.value))
                     .collect();
+                let request_id = state_mutation
+                    .request_id
+                    .map(|request_id| {
+                        PartitionProcessorRpcRequestId::from_slice(&request_id)
+                            .map_err(ConversionError::invalid_data)
+                    })
+                    .transpose()?;
 
                 Ok(restate_types::state_mut::ExternalStateMutation {
                     service_id,
                     version: state_mutation.version,
                     state,
+                    request_id,
                 })
             }
         }
@@ -1892,6 +1900,9 @@ pub mod v1 {
                     service_id: Some(service_id),
                     version: state_mutation.version,
                     kv_pairs,
+                    request_id: state_mutation
+                        .request_id
+                        .map(|request_id| Bytes::copy_from_slice(&request_id.to_bytes())),
                 }
             }
         }

@@ -54,7 +54,7 @@ use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
 use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcError, PartitionProcessorRpcResponse, PatchStateRpcResponse,
 };
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
@@ -98,6 +98,7 @@ type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 pub(super) enum RpcReciprocal {
     Legacy(Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>),
+    PatchState(Reciprocal<Oneshot<Result<PatchStateRpcResponse, PartitionProcessorRpcError>>>),
 }
 
 impl RpcReciprocal {
@@ -106,13 +107,24 @@ impl RpcReciprocal {
             RpcReciprocal::Legacy(reciprocal) => {
                 reciprocal.send(Err(error));
             }
+            RpcReciprocal::PatchState(reciprocal) => {
+                reciprocal.send(Err(error));
+            }
         }
     }
 
     fn send_legacy(self, response: PartitionProcessorRpcResponse) {
         let_assert!(
             RpcReciprocal::Legacy(result_tx) = self,
-            "expected 'Put' callback"
+            "expected 'Legacy' callback"
+        );
+        result_tx.send(Ok(response));
+    }
+
+    fn send_patch_state(self, response: PatchStateRpcResponse) {
+        let_assert!(
+            RpcReciprocal::PatchState(result_tx) = self,
+            "expected 'PatchState' callback"
         );
         result_tx.send(Ok(response));
     }

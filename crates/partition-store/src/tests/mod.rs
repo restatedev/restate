@@ -104,6 +104,7 @@ pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutatio
         service_id,
         version: None,
         state: HashMap::default(),
+        request_id: None,
     }
 }
 

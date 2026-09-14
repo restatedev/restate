@@ -71,6 +71,7 @@ use restate_types::net::ingest::{
 };
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
+    PatchStateRpcRequest,
 };
 use restate_types::net::{RpcRequest, RpcResponse, ingest};
 use restate_types::partitions::PartitionFeatureChange;
@@ -850,6 +851,18 @@ where
                 }
                 self.on_pp_rpc_request(response_tx, body, schemas, permit, RpcReciprocal::Legacy)
                     .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PatchStateRpcRequest::TYPE => {
+                let msg = msg.into_typed::<PatchStateRpcRequest>();
+                let (response_tx, body) = msg.split();
+                self.on_pp_rpc_request(
+                    response_tx,
+                    body,
+                    schemas,
+                    permit,
+                    RpcReciprocal::PatchState,
+                )
+                .await;
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
                 self.on_pp_ingest_request(msg.into_typed(), permit);

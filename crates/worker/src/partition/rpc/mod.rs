@@ -15,6 +15,7 @@ mod cancel_invocation;
 mod get_invocation_output;
 mod get_invocation_status;
 mod kill_invocation;
+mod patch_state;
 mod pause_invocation;
 mod purge_invocation;
 mod purge_journal;
@@ -32,7 +33,8 @@ use restate_types::identifiers::{
 use restate_types::invocation::InvocationRequest;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, PatchStateRpcRequest,
+    PatchStateRpcResponse,
 };
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::Command;
@@ -224,5 +226,27 @@ where
                 .await
             }
         }
+    }
+}
+
+impl<'a, TSchemas, TStorage> RpcHandler<PatchStateRpcRequest, PatchStateRpcResponse>
+    for RpcContext<'a, TSchemas, TStorage>
+where
+    TSchemas: DeploymentResolver,
+    TStorage: ReadInvocationStatusTable + ReadJournalTable + journal_table_v1::ReadJournalTable,
+{
+    async fn handle(
+        self,
+        PatchStateRpcRequest {
+            request_id,
+            mutation,
+            ..
+        }: PatchStateRpcRequest,
+    ) -> Decision<PatchStateRpcResponse> {
+        self.handle(patch_state::Request {
+            request_id,
+            mutation,
+        })
+        .await
     }
 }
