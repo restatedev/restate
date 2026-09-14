@@ -11,9 +11,10 @@
 mod retry_after;
 mod service_protocol_runner_v4;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::pin::Pin;
+use std::sync::LazyLock;
 use std::task::{Context, Poll, ready};
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use std::convert::Infallible;
 use bytes::Bytes;
 use futures::{FutureExt, Stream, StreamExt};
 use http::response::Parts as ResponseParts;
-use http::{HeaderName, HeaderValue, Response};
+use http::{HeaderName, HeaderValue, Response, Uri};
 use http_body::{Body, Frame};
 use http_body_util::StreamBody;
 use metrics::{counter, histogram};
@@ -33,13 +34,14 @@ use tracing::{debug, instrument};
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
+use restate_types::config::Configuration;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
 use restate_types::live::Live;
-use restate_types::schema::deployment::DeploymentResolver;
+use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
@@ -53,6 +55,41 @@ use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
 use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
+
+/// Stable synthetic deployment id used by the schemaless single-endpoint mode for the
+/// lifetime of the process.
+static SCHEMALESS_DEPLOYMENT_ID: LazyLock<DeploymentId> = LazyLock::new(DeploymentId::new);
+
+/// Build the single configured endpoint deployment, used as a fallback for services that are not
+/// found in the schema registry (schemaless demo mode).
+fn single_endpoint_deployment(id: DeploymentId) -> Result<Deployment, InvokerError> {
+    let config = Configuration::pinned();
+    let invoker = &config.worker.invoker;
+
+    let address: Uri = invoker
+        .single_endpoint_address
+        .parse()
+        .map_err(|_| InvokerError::NoDeploymentForService)?;
+    let (protocol_type, http_version) = invoker.single_endpoint_mode.protocol_and_http_version();
+
+    let mut additional_headers = HashMap::default();
+    if let Some(token) = &invoker.single_endpoint_auth_token {
+        additional_headers.insert(
+            HeaderName::from_bytes(invoker.single_endpoint_auth_header.as_bytes())
+                .expect("single-endpoint-auth-header must be a valid header name"),
+            HeaderValue::from_str(token)
+                .expect("single-endpoint-auth-token must be a valid header value"),
+        );
+    }
+
+    Ok(Deployment::single_http_endpoint(
+        id,
+        address,
+        protocol_type,
+        http_version,
+        additional_headers,
+    ))
+}
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
 // https://github.com/rust-lang/rust/issues/40543#issuecomment-1212981256
@@ -444,19 +481,20 @@ where
                 .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
         );
 
-        // Resolve the deployment metadata
+        // Resolve the deployment metadata from the schema registry. For services that are not
+        // registered (schemaless demo mode), fall back to a single configured endpoint.
         let schemas = self.schemas.live_load();
         let (deployment, chosen_service_protocol_version, deployment_changed) =
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
                 // deployments have been registered for the same service.
-                let deployment_metadata = shortcircuit!(
-                    schemas
-                        .get_deployment(&pinned_deployment.deployment_id)
-                        .ok_or_else(|| InvokerError::UnknownDeployment(
+                let deployment_metadata =
+                    match schemas.get_deployment(&pinned_deployment.deployment_id) {
+                        Some(deployment) => deployment,
+                        None => shortcircuit!(single_endpoint_deployment(
                             pinned_deployment.deployment_id
-                        ))
-                );
+                        )),
+                    };
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
@@ -475,15 +513,14 @@ where
                     /* has_changed= */ false,
                 )
             } else {
-                // We can choose the freshest deployment for the latest revision
-                // of the registered service.
-                let deployment = shortcircuit!(
-                    schemas
-                        .resolve_latest_deployment_for_service(
-                            self.invocation_target.service_name()
-                        )
-                        .ok_or(InvokerError::NoDeploymentForService)
-                );
+                // We can choose the freshest deployment for the latest revision of the registered
+                // service, or fall back to the single configured endpoint if it's not registered.
+                let deployment = match schemas
+                    .resolve_latest_deployment_for_service(self.invocation_target.service_name())
+                {
+                    Some(deployment) => deployment,
+                    None => shortcircuit!(single_endpoint_deployment(*SCHEMALESS_DEPLOYMENT_ID)),
+                };
 
                 let chosen_service_protocol_version = shortcircuit!(
                     ServiceProtocolVersion::pick(&deployment.supported_protocol_versions)

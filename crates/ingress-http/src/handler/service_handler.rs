@@ -23,16 +23,17 @@ use tracing::{Instrument, debug, trace, trace_span};
 use ulid::Ulid;
 
 use restate_types::Scope;
+use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
     Header, InvocationRequest, InvocationRequestHeader, InvocationTarget, InvocationTargetType,
-    SpanRelation, WorkflowHandlerType,
+    SpanRelation, WorkflowHandlerType, X_RESTATE_HANDLER_KIND_HEADER,
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::nodes_config::ClusterFeature;
 use restate_types::schema::invocation_target::{
-    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
+    DeploymentStatus, InputRules, InvocationTargetMetadata, InvocationTargetResolver, OutputRules,
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::{ReString, RestateString};
@@ -47,6 +48,24 @@ use crate::metric_definitions::{
     INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED, REQUEST_ERROR,
     REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR,
 };
+
+/// Schemaless fallback: synthesize invocation-target metadata for services not found in the
+/// schema registry. Treated as public, with default input/output rules (accept anything) and the
+/// server default retentions.
+pub(super) fn schemaless_target_metadata(
+    target_ty: InvocationTargetType,
+) -> InvocationTargetMetadata {
+    let config = Configuration::pinned();
+    InvocationTargetMetadata {
+        public: true,
+        completion_retention: config.invocation.default_idempotency_retention.into(),
+        journal_retention: config.invocation.default_journal_retention.into(),
+        target_ty,
+        input_rules: InputRules::default(),
+        output_rules: OutputRules::default(),
+        deployment_status: DeploymentStatus::Enabled,
+    }
+}
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
 const LIMIT_KEY_HEADER: HeaderName = HeaderName::from_static("x-restate-limit-key");
@@ -152,10 +171,18 @@ where
             }
             invocation_target
         } else {
-            return Err(HandlerError::ServiceHandlerNotFound(
-                service_name.to_string(),
-                handler_name.clone(),
-            ));
+            // Schemaless fallback: fake the target metadata for unregistered services. Key present
+            // => VirtualObject (handler kind from the well-known header, default exclusive), else
+            // Service.
+            let handler_kind = req
+                .headers()
+                .get(X_RESTATE_HANDLER_KIND_HEADER)
+                .and_then(|v| v.to_str().ok());
+            let target_ty = InvocationTargetType::schemaless(
+                matches!(target, TargetType::Keyed { .. }),
+                handler_kind,
+            );
+            schemaless_target_metadata(target_ty)
         };
         if let DeploymentStatus::Deprecated(dp_id) = invocation_target_meta.deployment_status {
             return Err(HandlerError::DeploymentDeprecated(

@@ -32,6 +32,7 @@ use crate::config::{
 use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
 use crate::retries::RetryPolicy;
+use crate::schema::deployment::ProtocolType;
 
 const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
     NonZeroByteCount::new(NonZeroUsize::new(32 * 1024 * 1024).unwrap());
@@ -510,6 +511,61 @@ pub struct InvokerOptions {
     ///
     /// Since v1.7.3
     pub max_awaited_future_depth: usize,
+
+    // -- Schemaless (schemaregistryless) experimental single-endpoint mode --
+    /// # Single endpoint address
+    ///
+    /// Base URI of the single SDK endpoint every invocation is shipped to in schemaless mode.
+    /// The invoker appends `/invoke/{service}/{handler}` to this base.
+    pub single_endpoint_address: String,
+
+    /// # Single endpoint auth header name
+    ///
+    /// Header name used to carry the `single-endpoint-auth-token` on every outgoing request.
+    pub single_endpoint_auth_header: String,
+
+    /// # Single endpoint auth token
+    ///
+    /// Optional auth token value sent (verbatim) under `single-endpoint-auth-header`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_endpoint_auth_token: Option<String>,
+
+    /// # Single endpoint protocol mode
+    ///
+    /// Selects how the single endpoint is invoked:
+    /// - `bidi`: bidirectional stream over HTTP/2
+    /// - `reqreshttp2`: request/response over HTTP/2
+    /// - `reqreshttp1`: request/response over HTTP/1.1
+    pub single_endpoint_mode: SingleEndpointMode,
+}
+
+/// Protocol mode used for the schemaless single endpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "lowercase")]
+pub enum SingleEndpointMode {
+    /// Bidirectional stream over HTTP/2.
+    #[default]
+    Bidi,
+    /// Request/response over HTTP/2.
+    ReqresHttp2,
+    /// Request/response over HTTP/1.1.
+    ReqresHttp1,
+}
+
+impl SingleEndpointMode {
+    /// Returns the `(ProtocolType, http::Version)` pair for this mode.
+    pub fn protocol_and_http_version(self) -> (ProtocolType, http::Version) {
+        match self {
+            SingleEndpointMode::Bidi => (ProtocolType::BidiStream, http::Version::HTTP_2),
+            SingleEndpointMode::ReqresHttp2 => {
+                (ProtocolType::RequestResponse, http::Version::HTTP_2)
+            }
+            SingleEndpointMode::ReqresHttp1 => {
+                (ProtocolType::RequestResponse, http::Version::HTTP_11)
+            }
+        }
+    }
 }
 
 impl InvokerOptions {
@@ -645,6 +701,10 @@ impl Default for InvokerOptions {
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
             service_client: ServiceClientOptions::default(),
             max_awaited_future_depth: 1000,
+            single_endpoint_address: "http://localhost:9080".to_owned(),
+            single_endpoint_auth_header: "authorization".to_owned(),
+            single_endpoint_auth_token: None,
+            single_endpoint_mode: SingleEndpointMode::Bidi,
         }
     }
 }

@@ -43,7 +43,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
-    SpanRelation,
+    SpanRelation, X_RESTATE_HANDLER_KIND_HEADER,
 };
 use restate_types::journal;
 use restate_types::journal_v2::command::{
@@ -56,7 +56,9 @@ use restate_types::journal_v2::{
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
-use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
+use restate_types::schema::invocation_target::{
+    DeploymentStatus, InputRules, InvocationTargetMetadata, InvocationTargetResolver, OutputRules,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
@@ -1558,14 +1560,34 @@ fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
     request: InvokeRequest,
 ) -> Result<CallRequest, CommandPreconditionError> {
-    let meta = invocation_target_resolver
+    // Resolve from the schema registry; for services that are not registered (schemaless demo
+    // mode) fall back to a synthesized single-endpoint target: key => VirtualObject, else Service.
+    let meta = match invocation_target_resolver
         .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
-        .ok_or_else(|| {
-            CommandPreconditionError::ServiceHandlerNotFound(
-                request.service_name.to_string(),
-                request.handler_name.to_string(),
-            )
-        })?;
+    {
+        Some(meta) => meta,
+        None => {
+            // The handler kind (shared vs exclusive) can't be derived without a schema, so honor
+            // the well-known handler-kind header if the caller set it (defaults to exclusive).
+            let handler_kind = request
+                .headers
+                .iter()
+                .find(|h| h.name.eq_ignore_ascii_case(X_RESTATE_HANDLER_KIND_HEADER))
+                .map(|h| h.value.as_ref());
+            let target_ty =
+                InvocationTargetType::schemaless(!request.key.is_empty(), handler_kind);
+            let config = restate_types::config::Configuration::pinned();
+            InvocationTargetMetadata {
+                public: true,
+                completion_retention: config.invocation.default_idempotency_retention.into(),
+                journal_retention: config.invocation.default_journal_retention.into(),
+                target_ty,
+                input_rules: InputRules::default(),
+                output_rules: OutputRules::default(),
+                deployment_status: DeploymentStatus::Enabled,
+            }
+        }
+    };
 
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
         return Err(CommandPreconditionError::DeploymentDeprecated(

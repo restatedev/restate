@@ -153,7 +153,25 @@ pub enum InvocationTargetType {
     Workflow(WorkflowHandlerType),
 }
 
+/// Well-known header used in schemaless mode to select the virtual object handler kind for a
+/// keyed target. Value `shared` selects a shared handler; anything else (or absent) is exclusive.
+pub const X_RESTATE_HANDLER_KIND_HEADER: &str = "x-restate-handler-kind";
+
 impl InvocationTargetType {
+    /// Build a target type without a schema, from the presence of a key and the optional
+    /// handler-kind header value (see [`X_RESTATE_HANDLER_KIND_HEADER`]). Used by the schemaless
+    /// fallback in ingress and service-to-service calls: no key => Service; key + `shared` =>
+    /// shared VirtualObject; key otherwise => exclusive VirtualObject.
+    pub fn schemaless(has_key: bool, handler_kind: Option<&str>) -> Self {
+        if !has_key {
+            InvocationTargetType::Service
+        } else if handler_kind.is_some_and(|kind| kind.eq_ignore_ascii_case("shared")) {
+            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+        } else {
+            InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+        }
+    }
+
     pub fn is_keyed(&self) -> bool {
         matches!(
             self,
