@@ -37,14 +37,6 @@ pub trait InvokerHandle {
         idempotency_key: Option<ReString>,
     ) -> Result<(), NotRunningError>;
 
-    // The `notify_*` forwards below don't carry a `fencing_token` as the invoke calls establish
-    // the current fencing token which is used to stamp all outgoing invoker effects.
-    fn notify_completion(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) -> Result<(), NotRunningError>;
-
     fn notify_notification(
         &mut self,
         invocation_id: InvocationId,

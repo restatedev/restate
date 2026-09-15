@@ -892,13 +892,6 @@ impl LeaderState {
                     .notify_stored_command_ack(invocation_id, command_index)
                     .map_err(Error::Invoker)?;
             }
-            Action::ForwardCompletion {
-                invocation_id,
-                entry_index,
-            } => self
-                .invoker_handle
-                .notify_completion(invocation_id, entry_index)
-                .map_err(Error::Invoker)?,
             Action::AbortInvocation { invocation_id } => {
                 // The attempt is ending; drop its fencing token so any straggler effect is dropped
                 // at write time (a later re-invoke mints a fresh token).

@@ -17,16 +17,13 @@ use restate_types::journal_v2::{Entry, EntryIndex, NotificationId};
 pub mod storage {
     use super::*;
 
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
     };
-    use restate_storage_api::journal_table::JournalEntry;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::{DeploymentId, InvocationId};
     use restate_types::invocation::InvocationTarget;
-    use restate_types::journal::Entry;
 
     pub fn has_journal_length(
         journal_length: EntryIndex,
@@ -62,12 +59,6 @@ pub mod storage {
                 eq(invocation_id)
             ))
         })
-    }
-
-    pub fn is_entry(entry: Entry) -> impl Matcher<ActualT = JournalEntry> {
-        pat!(JournalEntry::Entry(eq(
-            ProtobufRawEntryCodec::serialize_enriched(entry)
-        )))
     }
 
     pub fn is_variant(
@@ -163,12 +154,6 @@ pub mod actions {
         })
     }
 
-    pub fn forward_canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCompletion {
-            entry_index: eq(entry_index),
-        })
-    }
-
     pub fn forward_cancel_invocation_response(
         request_id: PartitionProcessorRpcRequestId,
         cancel_invocation_response: CancelInvocationResponse,
@@ -196,16 +181,6 @@ pub mod actions {
         pat!(Action::ForwardPurgeInvocationResponse {
             request_id: eq(request_id),
             response: eq(purge_invocation_response)
-        })
-    }
-
-    pub fn forward_completion(
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCompletion {
-            invocation_id: eq(invocation_id),
-            entry_index: eq(entry_index),
         })
     }
 

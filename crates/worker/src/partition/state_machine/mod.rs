@@ -5072,17 +5072,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         }
     }
 
-    fn forward_completion(&mut self, invocation_id: InvocationId, entry_index: EntryIndex) {
+    fn forward_completion(&mut self, _: InvocationId, entry_index: EntryIndex) {
         debug_if_leader!(
             self.is_leader,
             restate.journal.index = entry_index,
-            "Forward completion to deployment",
+            "Dropping protocol < v4 completion, because the invoker doesnt support it",
         );
-
-        self.action_collector.push(Action::ForwardCompletion {
-            invocation_id,
-            entry_index,
-        });
+        // Nothing happens because the invoker doesn't support running protocol < v4.
+        // Any pending invocation to it will be terminally failed by the invoker anyway.
     }
 
     fn do_append_response_sink(

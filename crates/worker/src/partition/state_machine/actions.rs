@@ -57,10 +57,6 @@ pub enum Action {
         invocation_id: InvocationId,
         command_index: CommandIndex,
     },
-    ForwardCompletion {
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    },
     ForwardNotification {
         invocation_id: InvocationId,
         entry_index: EntryIndex,

@@ -147,14 +147,6 @@ impl InvokerHandle for MockInvokerHandle {
         Ok(())
     }
 
-    fn notify_completion(
-        &mut self,
-        _invocation_id: InvocationId,
-        _entry_index: EntryIndex,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
     fn notify_notification(
         &mut self,
         _invocation_id: InvocationId,

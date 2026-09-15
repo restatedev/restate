@@ -464,15 +464,6 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         }
     }
 
-    pub(super) fn notify_completion(&mut self, entry_index: EntryIndex) {
-        if let AttemptState::InFlight {
-            notifications_tx, ..
-        } = &mut self.invocation_state
-        {
-            Self::try_send_notification(notifications_tx, Notification::Completion(entry_index));
-        }
-    }
-
     pub(super) fn notify_entry(
         &mut self,
         entry_index: EntryIndex,
