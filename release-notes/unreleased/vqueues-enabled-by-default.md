@@ -44,6 +44,11 @@ converge to the same execution model.
 - Setting `worker.invoker.tmp-dir` or `worker.invoker.in-memory-queue-length-limit` (or the
   `RESTATE_WORKER__INVOKER__TMP_DIR` environment variable) no longer has any effect, and restate-server
   no longer writes invoker spill files to the temporary directory.
+- The metrics `restate.invoker.concurrency_limit`, `restate.invoker.concurrency_slots.acquired` and
+  `restate.invoker.concurrency_slots.released` now track the node-wide permits handed out by the
+  VQueues scheduler instead of a per-partition invoker quota. `acquired - released` therefore also
+  counts permits the scheduler holds for invocations about to start, not only attempts already
+  running in the invoker.
 - Memory-pool exhaustion now yields instead of retrying, so invocations no longer consume retry
   attempts (or hit retry policies) due to memory pressure alone.
 - Scoped Virtual Object invocations, previously rejected at the HTTP ingress, Kafka ingress, and
