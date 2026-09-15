@@ -435,3 +435,87 @@ pub struct HandlerStateStats {
     pub oldest_at: chrono::DateTime<Local>,
     pub oldest_invocation: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Mirrors the `JsonResponse` wrapper returned by the server's /query endpoint.
+    #[derive(serde::Deserialize)]
+    struct Rows<T> {
+        rows: Vec<T>,
+    }
+
+    #[test]
+    fn invocation_state_parse_and_display_roundtrip() {
+        let cases = [
+            ("pending", InvocationState::Pending),
+            ("scheduled", InvocationState::Scheduled),
+            ("ready", InvocationState::Ready),
+            ("running", InvocationState::Running),
+            ("suspended", InvocationState::Suspended),
+            ("backing-off", InvocationState::BackingOff),
+            ("completed", InvocationState::Completed),
+            ("paused", InvocationState::Paused),
+        ];
+        for (s, expected) in cases {
+            let parsed: InvocationState = s.parse().unwrap();
+            assert_eq!(parsed, expected, "parse('{s}')");
+            assert_eq!(parsed.to_string(), s, "display({expected:?})");
+        }
+    }
+
+    #[test]
+    fn invocation_state_unknown_fallback() {
+        let state: InvocationState = "bogus-state".parse().unwrap();
+        assert_eq!(state, InvocationState::Unknown);
+        assert_eq!(state.to_string(), "unknown");
+    }
+
+    #[test]
+    fn invocation_completion_from_sql() {
+        assert!(matches!(
+            InvocationCompletion::from_sql(Some("success".into()), None),
+            Some(InvocationCompletion::Success)
+        ));
+        // failure with message
+        assert!(matches!(
+            InvocationCompletion::from_sql(Some("failure".into()), Some("timeout".into())),
+            Some(InvocationCompletion::Failure(msg)) if msg == "timeout"
+        ));
+        // failure without message falls back to "Unknown"
+        assert!(matches!(
+            InvocationCompletion::from_sql(Some("failure".into()), None),
+            Some(InvocationCompletion::Failure(msg)) if msg == "Unknown"
+        ));
+        assert!(InvocationCompletion::from_sql(None, None).is_none());
+        assert!(InvocationCompletion::from_sql(None, Some("x".into())).is_none());
+    }
+
+    #[test]
+    fn simple_invocation_deserializes_from_json() {
+        let json = r#"{"rows":[
+            {"id":"inv_1","target":"Greeter/greet"},
+            {"id":"inv_2","target":"Counter/inc"}
+        ]}"#;
+        let resp: Rows<SimpleInvocation> = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.rows.len(), 2);
+        assert_eq!(resp.rows[0].id, "inv_1");
+        assert_eq!(resp.rows[0].target, "Greeter/greet");
+        assert_eq!(resp.rows[1].id, "inv_2");
+    }
+
+    #[test]
+    fn service_handler_usage_deserializes_from_json() {
+        let json = r#"{"rows":[
+            {"service":"Greeter","handler":"greet","inv_count":5},
+            {"service":"Counter","handler":"inc","inv_count":0}
+        ]}"#;
+        let resp: Rows<ServiceHandlerUsage> = serde_json::from_str(json).unwrap();
+        assert_eq!(resp.rows.len(), 2);
+        assert_eq!(resp.rows[0].service, "Greeter");
+        assert_eq!(resp.rows[0].handler, "greet");
+        assert_eq!(resp.rows[0].inv_count, 5);
+        assert_eq!(resp.rows[1].inv_count, 0);
+    }
+}
