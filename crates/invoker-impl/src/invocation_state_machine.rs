@@ -24,7 +24,6 @@ use restate_types::vqueues::VQueueId;
 use restate_worker_api::resources::ReservedResources;
 
 use crate::error::RequestedErrorBehavior;
-use crate::quota::ConcurrencySlot;
 
 use super::*;
 
@@ -43,7 +42,7 @@ impl<T: Copy + PartialEq + Eq + fmt::Debug + Send + 'static> TimerKey for T {}
 #[derive(derive_more::Debug)]
 pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_queue::Key> {
     #[allow(dead_code)]
-    pub(super) qid: Option<VQueueId>,
+    pub(super) qid: VQueueId,
     #[allow(dead_code)]
     #[debug(skip)]
     pub(super) _permit: ReservedResources,
@@ -61,7 +60,6 @@ pub(super) struct InvocationStateMachine<K: TimerKey = tokio_util::time::delay_q
     /// For more details of when we bump it, see [`InvokerError::should_bump_start_message_retry_count_since_last_stored_entry`].
     pub(super) start_message_retry_count_since_last_stored_command: u32,
     pub(super) requested_pause: bool,
-    _concurrency_slot: ConcurrencySlot,
     /// Per-invocation memory budget, preserved across retries to avoid
     /// re-acquiring from the global pool. `None` before the first task
     /// starts and after the ISM is finally cleaned up.
@@ -224,7 +222,7 @@ struct RetryPolicyState {
 impl<K: TimerKey> InvocationStateMachine<K> {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn create(
-        qid: Option<VQueueId>,
+        qid: VQueueId,
         permit: ReservedResources,
         fencing_token: FencingToken,
         invocation_target: InvocationTarget,
@@ -232,7 +230,6 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         idempotency_key: Option<ReString>,
         retry_iter: retries::RetryIter<'static>,
         on_max_attempts: OnMaxAttempts,
-        concurrency_slot: ConcurrencySlot,
     ) -> InvocationStateMachine<K> {
         let start_message_retry_count_since_last_stored_command =
             permit.metadata.retry_count_since_last_stored_command;
@@ -253,7 +250,6 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             },
             start_message_retry_count_since_last_stored_command,
             requested_pause: false,
-            _concurrency_slot: concurrency_slot,
             budget: None,
         }
     }
@@ -601,14 +597,13 @@ impl<K: TimerKey> InvocationStateMachine<K> {
 
             // if Qid is present, vqueues are used so we switch into retrying via the scheduler
             // when the retry interval is greater > (threshold) second.
-            if let Some(ref qid) = self.qid
-                && next_timer
-                    >= Configuration::pinned()
-                        .invocation
-                        .invocation_yield_threshold()
+            if next_timer
+                >= Configuration::pinned()
+                    .invocation
+                    .invocation_yield_threshold()
             {
                 trace!(
-                    vqueue = %qid,
+                    vqueue = %self.qid,
                     "Invocation is using vqueues, switching to retrying via scheduler");
                 return OnTaskError::RetryViaScheduler {
                     retry_after: next_timer,
@@ -744,7 +739,7 @@ mod tests {
 
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
         InvocationStateMachine::create(
-            None,
+            VQueueId::custom(0, "test"),
             ReservedResources::new_empty(),
             0,
             InvocationTarget::mock_virtual_object(),
@@ -752,7 +747,6 @@ mod tests {
             None,
             RetryPolicy::fixed_delay(Duration::from_secs(1), Some(10)).into_iter(),
             OnMaxAttempts::Kill,
-            ConcurrencySlot::empty(),
         )
     }
 

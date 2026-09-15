@@ -74,7 +74,6 @@ restate-node = { path = "crates/node" }
 restate-object-store-util = { path = "crates/object-store-util" }
 restate-partition-store = { path = "crates/partition-store" }
 restate-platform = { path = "crates/platform" }
-restate-queue = { path = "crates/queue" }
 restate-rocksdb = { path = "crates/rocksdb" }
 restate-serde-util = { path = "crates/serde-util" }
 restate-server = { path = "server" }
@@ -127,7 +126,6 @@ aws-smithy-types = { version = "1.6.2", features = ["http-body-1-x"] }
 axum = { version = "0.8.8", default-features = false }
 base64 = "0.22"
 bilrost = { version = "0.1015", default-features = false, features = ["std", "auto-optimize", "derive"] }
-bincode = { version = "2.0.1", default-features = false }
 bitflags = { version = "2.10.0" }
 bs58 = { version = "0.5.1" }
 bytes = { version = "1.11", features = ["serde"] }

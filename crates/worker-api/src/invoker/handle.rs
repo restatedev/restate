@@ -18,13 +18,6 @@ use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
 
 pub trait InvokerHandle {
-    fn invoke(
-        &mut self,
-        invocation_id: InvocationId,
-        fencing_token: FencingToken,
-        invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError>;
-
     #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,

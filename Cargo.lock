@@ -1228,16 +1228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bincode"
-version = "2.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36eaf5d7b090263e8150820482d5d93cd964a81e4019913c972f4edcc6edb740"
-dependencies = [
- "serde",
- "unty",
-]
-
-[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8137,7 +8127,6 @@ dependencies = [
  "restate-futures-util",
  "restate-memory",
  "restate-platform",
- "restate-queue",
  "restate-service-client",
  "restate-service-protocol",
  "restate-service-protocol-v4",
@@ -8150,7 +8139,6 @@ dependencies = [
  "restate-worker-api",
  "restate-workspace-hack",
  "serde",
- "tempfile",
  "test-log",
  "thiserror 2.0.20",
  "tokio",
@@ -8591,21 +8579,6 @@ dependencies = [
  "restate-util-string",
  "restate-workspace-hack",
  "thiserror 2.0.20",
-]
-
-[[package]]
-name = "restate-queue"
-version = "1.8.0-dev"
-dependencies = [
- "bincode",
- "criterion",
- "futures",
- "restate-fs-util",
- "restate-types",
- "restate-workspace-hack",
- "serde",
- "tempfile",
- "tokio",
 ]
 
 [[package]]
@@ -11548,12 +11521,6 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
-
-[[package]]
-name = "unty"
-version = "0.0.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6d49784317cd0d1ee7ec5c716dd598ec5b4483ea832a2dced265471cc0f690ae"
 
 [[package]]
 name = "url"

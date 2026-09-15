@@ -125,15 +125,6 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
 pub struct MockInvokerHandle;
 
 impl InvokerHandle for MockInvokerHandle {
-    fn invoke(
-        &mut self,
-        _invocation_id: InvocationId,
-        _fencing_token: FencingToken,
-        _invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
     fn vqueue_invoke(
         &mut self,
         _qid: VQueueId,
