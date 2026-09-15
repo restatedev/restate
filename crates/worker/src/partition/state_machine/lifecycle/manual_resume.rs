@@ -449,13 +449,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ForwardResumeInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(ResumeInvocationResponse::Ok)
+            }))
         );
         assert_that!(
             test_env
@@ -517,13 +514,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ForwardResumeInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(ResumeInvocationResponse::Ok)
+            }))
         );
         assert_that!(
             test_env
@@ -588,13 +582,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ForwardResumeInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(ResumeInvocationResponse::Ok)
+            }))
         );
         assert_that!(
             test_env

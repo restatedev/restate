@@ -35,7 +35,7 @@ async fn start_and_complete_idempotent_invocation() {
     let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -46,10 +46,12 @@ async fn start_and_complete_idempotent_invocation() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Send output, then end
@@ -173,7 +175,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -186,10 +188,12 @@ async fn attach_with_service_invocation_command_while_executing() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation
@@ -273,7 +277,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
     };
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -287,10 +291,12 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation, but with a send call
@@ -410,16 +416,11 @@ async fn attach_inboxed_with_send_service_invocation() {
         .await;
     assert_that!(
         actions,
-        all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id_1),
-                execution_time: none(),
-                is_new_invocation: eq(true),
-            }))
-        )
+        contains(pat!(Action::IngressSubmitNotification {
+            request_id: eq(request_id_1),
+            execution_time: none(),
+            is_new_invocation: eq(true),
+        }))
     );
     // Invocation is inboxed
     assert_that!(
@@ -454,9 +455,6 @@ async fn attach_inboxed_with_send_service_invocation() {
     assert_that!(
         actions,
         all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
             not(contains(pat!(Action::IngressResponse { .. }))),
             contains(pat!(Action::IngressSubmitNotification {
                 request_id: eq(request_id_2),
@@ -481,7 +479,7 @@ async fn attach_command() {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -494,10 +492,12 @@ async fn attach_command() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation, but with a send call
@@ -572,7 +572,7 @@ async fn attach_command_without_blocking_inflight() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -585,10 +585,12 @@ async fn attach_command_without_blocking_inflight() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation without blocking on inflight invocation

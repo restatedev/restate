@@ -212,12 +212,15 @@ mod tests {
             }))
         );
 
-        let actions = test_env
+        let _ = test_env
             .apply(commands::TimerCommand::test_envelope(timer_key_value))
             .await;
         assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(is_variant(InvocationStatusDiscriminants::Invoked))
         );
 
         // Check journal
@@ -271,15 +274,18 @@ mod tests {
             ]
         );
 
-        let actions = test_env
+        let _ = test_env
             .apply(invoker_suspended(
                 invocation_id,
                 NotificationId::for_completion(completion_id),
             ))
             .await;
         assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await,
+            ok(is_variant(InvocationStatusDiscriminants::Invoked))
         );
 
         // Check journal
@@ -339,7 +345,7 @@ mod tests {
             id: SignalId::for_index(17),
             result: SignalResult::Void,
         };
-        let actions = test_env
+        let _ = test_env
             .apply(commands::NotifySignalCommand::test_envelope(
                 NotifySignalRequest {
                     invocation_id,
@@ -347,10 +353,6 @@ mod tests {
                 },
             ))
             .await;
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
-        );
 
         assert_that!(
             test_env
@@ -408,7 +410,7 @@ mod tests {
             signal_result: SignalResult,
             remaining: UnresolvedFuture,
         ) -> Self {
-            let actions = self
+            let _ = self
                 .test_env
                 .apply(commands::NotifySignalCommand::test_envelope(
                     NotifySignalRequest {
@@ -422,12 +424,6 @@ mod tests {
                 .await;
             self.log_invocation_status().await;
 
-            assert_that!(
-                actions,
-                not(contains(matchers::actions::invoke_for_id(
-                    self.invocation_id
-                )))
-            );
             assert_that!(
                 self.test_env
                     .storage()
@@ -443,7 +439,7 @@ mod tests {
             signal_id: SignalId,
             signal_result: SignalResult,
         ) -> Self {
-            let actions = self
+            let _ = self
                 .test_env
                 .apply(commands::NotifySignalCommand::test_envelope(
                     NotifySignalRequest {
@@ -457,10 +453,6 @@ mod tests {
                 .await;
             self.log_invocation_status().await;
 
-            assert_that!(
-                actions,
-                contains(matchers::actions::invoke_for_id(self.invocation_id))
-            );
             assert_that!(
                 self.test_env
                     .storage()

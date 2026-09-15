@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::num::NonZeroUsize;
-
 use super::*;
 
 mod delayed_send;
@@ -67,7 +65,7 @@ use restate_types::partitions::{Partition, PersistedFeatures};
 use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_wal_protocol::v2::Command;
-use restate_worker_api::invoker::{Effect, EffectKind, YieldReason};
+use restate_worker_api::invoker::{Effect, EffectKind};
 
 use crate::partition::state_machine::tests::fixtures::{
     background_invoke_entry, incomplete_invoke_entry,
@@ -439,7 +437,7 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         })))
     );
 
-    let actions = test_env
+    test_env
         .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id,
             kind: InvokerEffectKind::Suspended {
@@ -448,11 +446,14 @@ async fn awakeable_completion_received_before_entry() -> TestResult {
         }))
         .await;
 
+    // The completion is already there, so the invocation resumes right away
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id)
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
     test_env.shutdown().await;
     Ok(())
@@ -936,7 +937,7 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
     let request_id_3 = PartitionProcessorRpcRequestId::default();
 
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             response_sink: Some(ServiceInvocationResponseSink::Ingress {
                 request_id: request_id_1,
@@ -949,10 +950,12 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Let's add another ingress
@@ -1037,7 +1040,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     let second_invocation_id = InvocationId::mock_generate(&invocation_target);
 
     // Let's start the first invocation
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: first_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -1045,8 +1048,12 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         }))
         .await;
     assert_that!(
-        actions,
-        contains(matchers::actions::invoke_for_id(first_invocation_id))
+        test_env
+            .storage
+            .get_invocation_status(&first_invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
     assert_that!(
         test_env
@@ -1057,7 +1064,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     // Let's start the second invocation
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id: second_invocation_id,
             invocation_target: invocation_target.clone(),
@@ -1066,12 +1073,6 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
         .await;
 
     // This should have not been invoked, but it should rather be in the inbox
-    assert_that!(
-        actions,
-        not(contains(matchers::actions::invoke_for_id(
-            second_invocation_id
-        )))
-    );
     assert_that!(
         test_env
             .storage
@@ -1093,16 +1094,20 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     // Send the End Effect to terminate the first invocation
-    let actions = test_env
+    test_env
         .apply(commands::InvokerEffectCommand::test_envelope(Effect {
             invocation_id: first_invocation_id,
             kind: InvokerEffectKind::End,
         }))
         .await;
-    // At this point we expect the invoke for the second, and also the lock updated
+    // At this point we expect the second to be invoked, and also the lock updated
     assert_that!(
-        actions,
-        contains(matchers::actions::invoke_for_id(second_invocation_id))
+        test_env
+            .storage
+            .get_invocation_status(&second_invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
     assert_that!(
         test_env
@@ -1162,78 +1167,24 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         .await;
     assert_that!(
         actions,
-        all!(
-            contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                is_new_invocation: eq(true)
-            }))
-        )
+        contains(pat!(Action::IngressSubmitNotification {
+            request_id: eq(request_id),
+            is_new_invocation: eq(true)
+        }))
     );
 
-    // Applying this again won't generate Invoke action,
-    // but will return same submit notification.
+    // Applying this again will return the same submit notification.
     let actions = test_env
         .apply(commands::InvokeCommand::test_envelope(service_invocation))
         .await;
     assert_that!(
         actions,
-        all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                is_new_invocation: eq(true)
-            }))
-        )
+        contains(pat!(Action::IngressSubmitNotification {
+            request_id: eq(request_id),
+            is_new_invocation: eq(true)
+        }))
     );
 
     test_env.shutdown().await;
     Ok(())
-}
-
-#[restate_core::test]
-async fn yield_effect_resumes_invocation() {
-    let mut test_env = TestEnv::create().await;
-    let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
-    fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
-
-    // Apply a Yield effect — the invocation should be immediately re-invoked
-    let actions = test_env
-        .apply(commands::InvokerEffectCommand::test_envelope(Effect {
-            invocation_id,
-            kind: EffectKind::Yield {
-                error_event: None,
-                resume_at: None,
-                reason: YieldReason::ExhaustedMemoryBudget {
-                    needed_memory: restate_memory::NonZeroByteCount::new(
-                        NonZeroUsize::new(32768).unwrap(),
-                    ),
-                },
-            },
-        }))
-        .await;
-
-    // Yield should produce an Action::Invoke to re-schedule the invocation
-    assert_that!(
-        actions,
-        contains(matchers::actions::invoke_for_id(invocation_id))
-    );
-
-    // The invocation should still be in Invoked status (not ended or suspended)
-    assert_that!(
-        test_env
-            .storage
-            .get_invocation_status(&invocation_id)
-            .await
-            .unwrap(),
-        matchers::storage::is_variant(
-            restate_storage_api::invocation_status_table::InvocationStatusDiscriminants::Invoked
-        )
-    );
-
-    test_env.shutdown().await;
 }

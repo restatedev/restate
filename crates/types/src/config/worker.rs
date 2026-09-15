@@ -378,19 +378,6 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     message_size_limit: Option<NonZeroByteCount>,
 
-    /// # Temporary directory
-    ///
-    /// Temporary directory to use for the invoker temporary files.
-    /// If empty, the system temporary directory will be used instead.
-    tmp_dir: Option<PathBuf>,
-
-    /// # Spill invocations to disk
-    ///
-    /// Defines the threshold after which queues invocations will spill to disk at
-    /// the path defined in `tmp-dir`. In other words, this is the number of invocations
-    /// that can be kept in memory before spilling to disk. This is a per-partition limit.
-    in_memory_queue_length_limit: NonZeroUsize,
-
     /// # Limit number of concurrent invocations from this node
     ///
     /// Number of invocations that can be concurrently processed by this node.
@@ -513,18 +500,8 @@ pub struct InvokerOptions {
 }
 
 impl InvokerOptions {
-    pub fn gen_tmp_dir(&self) -> PathBuf {
-        self.tmp_dir.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new()))
-        })
-    }
-
     pub fn concurrent_invocations_limit(&self) -> Option<NonZeroUsize> {
         self.concurrent_invocations_limit
-    }
-
-    pub fn in_memory_queue_length_limit(&self) -> usize {
-        self.in_memory_queue_length_limit.into()
     }
 
     pub fn message_size_limit(&self) -> NonZeroUsize {
@@ -625,14 +602,12 @@ impl InvokerOptions {
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
-            in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),
             message_size_warning: NonZeroByteCount::new(
                 NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
             ),
             message_size_limit: None,
-            tmp_dir: None,
             concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
