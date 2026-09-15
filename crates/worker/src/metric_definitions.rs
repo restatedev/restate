@@ -107,6 +107,12 @@ pub(crate) fn describe_metrics() {
         "Count of specific journal entries processed by partition leaders"
     );
 
+    describe_counter!(
+        USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+        Unit::Bytes,
+        "Total number of bytes of journal entries processed by partition leaders"
+    );
+
     describe_histogram!(
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
