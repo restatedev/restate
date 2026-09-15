@@ -88,7 +88,6 @@ use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
 use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
 use self::leadership::{CommitCallback, RpcProcessingPermit, RpcReciprocal};
@@ -775,22 +774,6 @@ where
         match decision {
             rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
             rpc::Decision::Reply(reply) => response_tx.send(reply),
-            rpc::Decision::NotifyInvokerAndReply {
-                notification,
-                reply,
-            } => {
-                if let Some(invoker_handle) = self.leadership_state.invoker_handle() {
-                    match notification {
-                        rpc::InvokerNotification::RetryNow(invocation_id) => {
-                            let _ = invoker_handle.retry_invocation_now(invocation_id);
-                        }
-                        rpc::InvokerNotification::Pause(invocation_id) => {
-                            let _ = invoker_handle.pause_invocation(invocation_id);
-                        }
-                    }
-                }
-                response_tx.send(Ok(reply));
-            }
         }
     }
 
