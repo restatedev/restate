@@ -14,8 +14,6 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
-// Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
-pub(crate) use lifecycle::resolve_pinned_deployment;
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
