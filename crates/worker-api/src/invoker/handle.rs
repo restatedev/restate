@@ -37,8 +37,6 @@ pub trait InvokerHandle {
         notification_id: NotificationId,
     ) -> Result<(), NotRunningError>;
 
-    fn retry_invocation_now(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError>;
-
     fn pause_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError>;
 
     fn notify_stored_command_ack(

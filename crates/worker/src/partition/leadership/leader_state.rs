@@ -1041,10 +1041,6 @@ impl LeaderState {
         Ok(())
     }
 
-    pub fn invoker_handle(&mut self) -> &mut InvokerChannelServiceHandle {
-        &mut self.invoker_handle
-    }
-
     fn handle_vqueue_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
         self.scheduler.on_inbox_event(metas, event);
     }

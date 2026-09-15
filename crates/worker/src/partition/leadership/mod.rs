@@ -31,9 +31,7 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_impl::{
-    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
-};
+use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -850,14 +848,6 @@ where
                 .await
                 .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run(ctx).await,
-        }
-    }
-
-    // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
-    pub fn invoker_handle(&mut self) -> Option<&mut InvokerChannelServiceHandle> {
-        match &mut self.state {
-            State::Leader(leader_state) => Some(leader_state.invoker_handle()),
-            _ => None,
         }
     }
 }
