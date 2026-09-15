@@ -11,3 +11,4 @@
 //! Client side abstractions to talk to the partition processor owning a given partition key.
 
 pub mod client;
+pub mod requests;
