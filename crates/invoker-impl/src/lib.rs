@@ -102,8 +102,6 @@ fn fence(token: FencingToken, effect: Effect) -> FencedEffect {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Notification {
-    /// V1 completion signal: just the entry index (data read from RocksDB on demand).
-    Completion(EntryIndex),
     /// V2 notification signal: entry index.
     Entry(EntryIndex),
     /// V2 command ack: already signal-only.
@@ -511,9 +509,6 @@ where
                     InputCommand::AbortAll => {
                         self.handle_abort_all();
                     }
-                    InputCommand::Completion { invocation_id, entry_index } => {
-                        self.handle_completion(invocation_id, entry_index);
-                    },
                     InputCommand::Notification {invocation_id, entry_index, notification_id } => {
                         self.handle_notification(options, invocation_id, entry_index, notification_id);
                     },
@@ -930,25 +925,6 @@ where
             // If no state machine, this might be an entry for an aborted invocation.
             trace!("No state machine found for given entry");
         }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.invocation.id = %invocation_id,
-        )
-    )]
-    fn handle_completion(&mut self, invocation_id: InvocationId, entry_index: EntryIndex) {
-        self.invocation_state_machine_manager
-            .handle_for_invocation(&invocation_id, |_, ism| {
-                trace!(
-                    restate.invocation.target = %ism.invocation_target,
-                    restate.journal.index = entry_index,
-                    "Notifying completion"
-                );
-                ism.notify_completion(entry_index);
-            });
     }
 
     #[instrument(

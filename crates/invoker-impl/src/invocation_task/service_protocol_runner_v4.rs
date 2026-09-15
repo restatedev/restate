@@ -627,9 +627,6 @@ where
                             trace!("Sending the entry to the wire");
                             shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
                         }
-                        Some(Notification::Completion(_)) => {
-                            panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
-                        },
                         Some(Notification::CommandAck(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
