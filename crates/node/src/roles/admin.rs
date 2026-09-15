@@ -46,7 +46,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::retries::RetryPolicy;
 use restate_wal_protocol::Envelope;
-use restate_worker_api::PartitionProcessorInvocationClient;
+use restate_worker_api::PartitionProcessorRpcClient;
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum AdminRoleBuildError {
@@ -71,7 +71,7 @@ pub struct AdminRole<T> {
         MetadataService,
         ServiceDiscovery,
         TelemetryClient,
-        PartitionProcessorInvocationClient<T>,
+        PartitionProcessorRpcClient<T>,
         T,
     >,
     storage_accounting_task: Option<StorageAccountingTask>,
@@ -144,7 +144,7 @@ impl<T: TransportConnect> AdminRole<T> {
             listeners,
             metadata_writer.clone(),
             ingestion_client,
-            PartitionProcessorInvocationClient::new(
+            PartitionProcessorRpcClient::new(
                 networking.clone(),
                 partition_table,
                 partition_routing,
