@@ -21,11 +21,11 @@ use crate::{
     v2::{self, Envelope, commands::TruncateOutboxCommand},
 };
 
-// TODO: Keep for backward compatibility only. Do not extend
-// v1 Commands with new commands. New commands should be
-// added to v2 only.
+// TODO: Backward compatibility only. Do not add new commands to v1; all new
+// commands must be added to v2 only.
 //
-// Drop in v1.9
+// This conversion can be removed once no v1 records can exist anymore, i.e. once
+// every log that ever contained v1 records has been trimmed past them.
 impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
     type Error = anyhow::Error;
 

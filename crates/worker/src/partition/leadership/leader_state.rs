@@ -21,8 +21,6 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt, stream};
 use itertools::Itertools;
 use metrics::counter;
-#[cfg(test)]
-use restate_wal_protocol::v2::{Command, CommandWithKeys};
 use tokio::time::Instant;
 use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
@@ -54,6 +52,8 @@ use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueuesMeta};
 use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
+#[cfg(test)]
+use restate_wal_protocol::v2::{Command, CommandWithKeys};
 use restate_wal_protocol::v2::{CommandKind, ErasedCommand, commands};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::resources::ReservedResources;
