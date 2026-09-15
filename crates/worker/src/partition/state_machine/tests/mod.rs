@@ -526,6 +526,7 @@ async fn mutate_state() -> anyhow::Result<()> {
                 service_id: keyed_service_id.clone(),
                 version: None,
                 state: first_state_mutation,
+                request_id: None,
             },
         ))
         .await;
@@ -535,6 +536,7 @@ async fn mutate_state() -> anyhow::Result<()> {
                 service_id: keyed_service_id.clone(),
                 version: None,
                 state: second_state_mutation.clone(),
+                request_id: None,
             },
         ))
         .await;

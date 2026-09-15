@@ -28,6 +28,7 @@ use crate::net::codec::{
 };
 use crate::net::{ProtocolVersion, ServiceTag};
 use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::state_mut::{ExternalStateMutation, PatchStateResponse};
 use crate::time::MillisSinceEpoch;
 
 pub struct PartitionLeaderService;
@@ -510,6 +511,44 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
     fn from(value: PauseInvocationRpcResponse) -> Self {
         Self::PauseInvocation(value)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchStateRpcRequest {
+    pub request_id: PartitionProcessorRpcRequestId,
+    pub mutation: ExternalStateMutation,
+}
+default_wire_codec!(PatchStateRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatchStateRpcResponse {
+    Accepted,
+    VersionMismatch,
+}
+default_wire_codec!(Result<PatchStateRpcResponse, PartitionProcessorRpcError>);
+
+impl From<PatchStateRpcResponse> for PatchStateResponse {
+    fn from(value: PatchStateRpcResponse) -> Self {
+        match value {
+            PatchStateRpcResponse::Accepted => PatchStateResponse::Accepted,
+            PatchStateRpcResponse::VersionMismatch => PatchStateResponse::VersionMismatch,
+        }
+    }
+}
+
+impl From<PatchStateResponse> for PatchStateRpcResponse {
+    fn from(value: PatchStateResponse) -> Self {
+        match value {
+            PatchStateResponse::Accepted => PatchStateRpcResponse::Accepted,
+            PatchStateResponse::VersionMismatch => PatchStateRpcResponse::VersionMismatch,
+        }
+    }
+}
+
+define_rpc! {
+    @request = PatchStateRpcRequest,
+    @response = Result<PatchStateRpcResponse, PartitionProcessorRpcError>,
+    @service = PartitionLeaderService,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

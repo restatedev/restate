@@ -15,6 +15,7 @@ mod cancel_invocation;
 mod get_invocation_output;
 mod get_invocation_status;
 mod kill_invocation;
+mod patch_state;
 mod pause_invocation;
 mod purge_invocation;
 mod purge_journal;

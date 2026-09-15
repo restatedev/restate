@@ -40,6 +40,7 @@ async fn get_inbox() {
             service_id: service_id.clone(),
             version: None,
             state: Default::default(),
+            request_id: None,
         }),
     )
     .unwrap();

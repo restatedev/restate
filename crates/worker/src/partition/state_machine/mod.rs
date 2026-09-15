@@ -110,8 +110,7 @@ use restate_types::journal_v2::{
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::state_mut::ExternalStateMutation;
-use restate_types::state_mut::StateMutationVersion;
+use restate_types::state_mut::{ExternalStateMutation, PatchStateResponse, StateMutationVersion};
 use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
@@ -5132,6 +5131,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_id,
             version,
             state,
+            request_id,
         } = state_mutation;
 
         // overwrite all existing key value pairs with the provided ones; delete all entries that
@@ -5151,6 +5151,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     "Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'",
                     &service_id, expected, actual
                 );
+                if let Some(request_id) = request_id {
+                    self.action_collector
+                        .push(Action::ForwardPatchStateResponse {
+                            request_id: *request_id,
+                            response: PatchStateResponse::VersionMismatch,
+                        });
+                }
                 return Ok(vqueue_table::Status::Failed);
             }
         }
@@ -5164,6 +5171,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // overwrite existing key value pairs
         for (key, value) in state {
             self.storage.put_user_state(service_id, key, value)?;
+        }
+
+        if let Some(request_id) = request_id {
+            self.action_collector
+                .push(Action::ForwardPatchStateResponse {
+                    request_id: *request_id,
+                    response: PatchStateResponse::Accepted,
+                });
         }
 
         Ok(vqueue_table::Status::Succeeded)

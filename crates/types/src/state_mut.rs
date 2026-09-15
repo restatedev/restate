@@ -16,7 +16,7 @@ use bytes::Bytes;
 use serde_with::serde_as;
 use sha2::{Digest, Sha256};
 
-use crate::identifiers::ServiceId;
+use crate::identifiers::{PartitionProcessorRpcRequestId, ServiceId};
 
 #[serde_as]
 /// ExternalStateMutation
@@ -35,6 +35,14 @@ pub struct ExternalStateMutation {
     #[bilrost(3)]
     #[debug("<hidden>")]
     pub state: HashMap<Bytes, Bytes>,
+    #[bilrost(4)]
+    pub request_id: Option<PartitionProcessorRpcRequestId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PatchStateResponse {
+    Accepted,
+    VersionMismatch,
 }
 
 /// # StateMutationVersion
