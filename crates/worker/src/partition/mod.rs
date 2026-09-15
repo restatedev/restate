@@ -763,7 +763,10 @@ where
             schemas,
             &mut self.partition_store,
         );
+
         let decision = rpc::RpcHandler::handle(context, body).await;
+        // todo: we should reject the proposals outside the key range of this partition
+        // possibly without decoding the payload.
 
         match decision {
             rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
