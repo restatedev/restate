@@ -353,6 +353,10 @@ where
             _ => unreachable!(),
         }
 
+        self.poll_acquire(cx)
+    }
+
+    fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         if self.permit.is_some() {
             return Poll::Ready(Ok(()));
         }
@@ -363,7 +367,15 @@ where
 
         let acquire = self.acquire.as_mut().unwrap();
 
-        self.permit = Some(ready!(acquire.poll_unpin(cx)));
+        let permit = acquire.poll_unpin(cx);
+        // Register the capacity waiter before rechecking retirement: draining
+        // may have broadcast before this poll created its notification future.
+        if self.is_closed() {
+            self.acquire = None;
+            return Poll::Ready(Err(Error::Closed));
+        }
+
+        self.permit = Some(ready!(permit));
         self.acquire = None;
 
         Poll::Ready(Ok(()))
@@ -1007,6 +1019,47 @@ mod test {
             .await
             .unwrap();
         resp.into_body()
+    }
+
+    #[tokio::test]
+    async fn draining_before_capacity_registration_rejects_admission() {
+        use std::sync::atomic::Ordering;
+        use std::task::{Context, Poll};
+
+        let mut connection = Connection::new(
+            TestConnector::new(1),
+            ConnectionConfigBuilder::default()
+                .streams_per_connection_limit(1)
+                .build()
+                .unwrap(),
+        );
+        connection
+            .shared
+            .state
+            .store(super::STATE_CONNECTED, Ordering::Release);
+        let active = connection.shared.concurrency.acquire().await;
+
+        // Model draining after poll_ready's state check but before acquisition
+        // creates its notification future. No waiter receives this broadcast.
+        connection.shared.drain();
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        assert!(matches!(
+            connection.poll_acquire(&mut cx),
+            Poll::Ready(Err(super::Error::Closed))
+        ));
+        assert!(connection.acquire.is_none());
+        assert!(connection.permit.is_none());
+        assert_eq!(connection.inflight(), 1);
+
+        // Also reject a permit that becomes available after the state check.
+        drop(active);
+        assert!(matches!(
+            connection.poll_acquire(&mut cx),
+            Poll::Ready(Err(super::Error::Closed))
+        ));
+        assert!(connection.acquire.is_none());
+        assert!(connection.permit.is_none());
+        assert_eq!(connection.inflight(), 0);
     }
 
     #[tokio::test]
