@@ -39,10 +39,6 @@ pub enum Action {
         invocation_target: InvocationTarget,
         idempotency_key: Option<ReString>,
     },
-    Invoke {
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-    },
     NewOutboxMessage {
         seq_number: MessageIndex,
         message: OutboxMessage,

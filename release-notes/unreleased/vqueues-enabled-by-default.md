@@ -20,6 +20,11 @@ enabled:
   Scoped invocations in general no longer require an opt-in (previously rejected with
   "scoped invocations require vqueues to be enabled" unless the vqueues flag was set).
 
+The partition leader no longer runs the legacy, non-VQueues invocation path. Invocations are always
+handed to the invoker by the VQueues scheduler, so the invoker's on-disk spill queue has been removed
+together with its configuration options `worker.invoker.tmp-dir` and
+`worker.invoker.in-memory-queue-length-limit`.
+
 ### Why This Matters
 
 VQueues are the foundation for node-level invoker concurrency, scoped invocations, and fair
@@ -36,6 +41,9 @@ converge to the same execution model.
   still on v1.7. It requires all other nodes in the cluster to be running v1.7.3 or higher; we
   strongly recommend upgrading the cluster to v1.7.10 before going to v1.8.0.
 - Setting the removed `experimental-enable-*` flags in configuration no longer has any effect.
+- Setting `worker.invoker.tmp-dir` or `worker.invoker.in-memory-queue-length-limit` (or the
+  `RESTATE_WORKER__INVOKER__TMP_DIR` environment variable) no longer has any effect, and restate-server
+  no longer writes invoker spill files to the temporary directory.
 - Memory-pool exhaustion now yields instead of retrying, so invocations no longer consume retry
   attempts (or hit retry policies) due to memory pressure alone.
 - Scoped Virtual Object invocations, previously rejected at the HTTP ingress, Kafka ingress, and
@@ -55,6 +63,8 @@ converge to the same execution model.
 
 - Remove any `experimental-enable-vqueues`, `experimental-enable-vqueues-migration-skip-completed`,
   `experimental-enable-invoker-yield`, or `experimental-enable-scoped-virtual-objects` entries from
+  your configuration.
+- Remove any `worker.invoker.tmp-dir` and `worker.invoker.in-memory-queue-length-limit` entries from
   your configuration.
 - Make sure all nodes run v1.7.3 or higher before upgrading to v1.8.0; we strongly recommend
   upgrading to v1.7.10 first.

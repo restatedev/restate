@@ -477,15 +477,12 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(new_id)),
-                contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::Ok {
-                        new_invocation_id: new_id
-                    })
-                }))
-            )
+            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(RestartAsNewInvocationResponse::Ok {
+                    new_invocation_id: new_id
+                })
+            }))
         );
 
         assert_that!(
@@ -552,15 +549,12 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(new_id)),
-                contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::Ok {
-                        new_invocation_id: new_id
-                    })
-                }))
-            )
+            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(RestartAsNewInvocationResponse::Ok {
+                    new_invocation_id: new_id
+                })
+            }))
         );
 
         assert_that!(

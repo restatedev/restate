@@ -108,31 +108,15 @@ pub mod actions {
 
     use crate::partition::state_machine::Action;
     use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::invocation::ResponseResult;
     use restate_types::invocation::client::{
         CancelInvocationResponse, KillInvocationResponse, PurgeInvocationResponse,
     };
-    use restate_types::invocation::{InvocationTarget, ResponseResult};
     use restate_types::journal_v2::Signal;
-
-    pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
-        pat!(Action::Invoke {
-            invocation_id: eq(invocation_id)
-        })
-    }
 
     pub fn abort_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::AbortInvocation {
             invocation_id: eq(invocation_id)
-        })
-    }
-
-    pub fn invoke_for_id_and_target(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-    ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-            invocation_target: eq(invocation_target)
         })
     }
 

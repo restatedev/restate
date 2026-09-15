@@ -304,11 +304,12 @@ async fn kill_call_tree() -> anyhow::Result<()> {
 
     // Inbox should have been popped
     assert_that!(
-        actions,
-        contains(matchers::actions::invoke_for_id_and_target(
-            enqueued_invocation_id_on_same_target,
-            invocation_target.clone(),
-        ))
+        test_env
+            .storage
+            .get_invocation_status(&enqueued_invocation_id_on_same_target)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Invocation should be finally gone
@@ -612,11 +613,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 call_invocation_id,
                 TerminationFlavor::Cancel
             )),
-            contains(matchers::actions::delete_sleep_timer(5)),
-            contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-                invocation_target: eq(invocation_target)
-            }))
+            contains(matchers::actions::delete_sleep_timer(5))
         )
     );
     test_env.shutdown().await;

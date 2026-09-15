@@ -13,22 +13,16 @@ mod input_command;
 mod invocation_state_machine;
 mod invocation_task;
 mod metric_definitions;
-mod quota;
 mod state_machine_manager;
 mod status_store;
 
 use std::collections::HashSet;
-use std::io::ErrorKind;
 use std::ops::RangeBounds;
-use std::path::PathBuf;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use std::{cmp, panic};
 
 use futures::StreamExt;
-use gardal::futures::ThrottledStream;
-use gardal::{PaddedAtomicSharedStorage, StreamExt as GardalStreamExt, TokioClock};
 use metrics::counter;
 use tokio::sync::mpsc;
 use tokio::task::{AbortHandle, JoinSet};
@@ -39,8 +33,7 @@ use tracing::{debug, trace, warn};
 
 use restate_core::cancellation_token;
 use restate_errors::warn_it;
-use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, MemoryPool, OutOfMemoryKind};
-use restate_queue::SegmentQueue;
+use restate_memory::{ByteCount, LocalMemoryPool, MemoryLease, OutOfMemoryKind};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_types::clock::RoughTimestamp;
 use restate_types::config::{Configuration, InvokerOptions, ServiceClientOptions};
@@ -66,12 +59,11 @@ use restate_worker_api::invoker::invocation_reader::InvocationReader;
 use restate_worker_api::invoker::{
     Effect, EffectKind, FencedEffect, InvocationStatusReport, YieldReason,
 };
-use restate_worker_api::resources::ReservedResources;
 
 use crate::error::InvocationMemoryExhausted;
 use crate::error::InvokerError;
 use crate::error::SdkInvocationErrorV2;
-use crate::input_command::{InputCommand, InvokeCommand};
+use crate::input_command::InputCommand;
 use crate::invocation_state_machine::InvocationStateMachine;
 use crate::invocation_state_machine::OnTaskError;
 use crate::invocation_task::InvocationTask;
@@ -227,12 +219,9 @@ pub struct Service<StorageReader, Schemas> {
     status_tx: mpsc::UnboundedSender<
         restate_futures_util::command::Command<KeyRange, Vec<InvocationStatusReport>>,
     >,
-    // For the segment queue
-    tmp_dir: PathBuf,
     // We have this level of indirection to hide the InvocationTaskRunner,
     // which is a rather internal thing we have only for mocking.
     inner: ServiceInner<DefaultInvocationTaskRunner<Schemas>, Schemas, StorageReader>,
-    invocation_token_bucket: Option<TokenBucket>,
 }
 
 impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
@@ -242,12 +231,9 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         key_range: KeyRange,
         storage_reader: StorageReader,
         sender: mpsc::Sender<FencedEffect>,
-        options: &InvokerOptions,
         schemas: Live<Schemas>,
         client: ServiceClient,
-        invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
-        memory_pool: MemoryPool,
     ) -> Service<StorageReader, Schemas>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -263,7 +249,6 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         Self {
             input_tx,
             status_tx,
-            tmp_dir: options.gen_tmp_dir(),
             inner: ServiceInner {
                 input_rx,
                 status_rx,
@@ -278,7 +263,6 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 last_retry_timer_compact: Instant::now(),
-                quota: quota::InvokerConcurrencyQuota::new(options.concurrent_invocations_limit()),
                 invoker_id_label,
                 status_store: Default::default(),
                 invocation_state_machine_manager: InvocationStateMachineManager::new(
@@ -286,10 +270,7 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
                     storage_reader,
                     sender,
                 ),
-                memory_pool,
-                pending_memory_lease: None,
             },
-            invocation_token_bucket,
         }
     }
 
@@ -300,11 +281,8 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
         storage_reader: StorageReader,
         sender: mpsc::Sender<FencedEffect>,
         service_client_options: &ServiceClientOptions,
-        invoker_options: &InvokerOptions,
         schemas: Live<Schemas>,
-        invocation_token_bucket: Option<TokenBucket>,
         action_token_bucket: Option<TokenBucket>,
-        memory_pool: MemoryPool,
     ) -> Result<Service<StorageReader, Schemas>, BuildError>
     where
         StorageReader: InvocationReader + Clone + Send + Sync + 'static,
@@ -319,12 +297,9 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
             key_range,
             storage_reader,
             sender,
-            invoker_options,
             schemas,
             client,
-            invocation_token_bucket,
             action_token_bucket,
-            memory_pool,
         ))
     }
 }
@@ -353,48 +328,14 @@ where
     pub async fn run(self, mut updateable_options: impl LiveLoad<Live = InvokerOptions>) {
         debug!("Starting the invoker");
         let Service {
-            tmp_dir,
-            inner: mut service,
-            invocation_token_bucket,
-            ..
+            inner: mut service, ..
         } = self;
-
-        let in_memory_limit = updateable_options
-            .live_load()
-            .in_memory_queue_length_limit();
-
-        invocation_token_bucket.as_ref().inspect(|bucket| {
-            debug!("Invocation throttling limit: {:?}", bucket.limit());
-        });
-
-        // Prepare the segmented queue
-        let mut segmented_input_queue = match SegmentQueue::init(tmp_dir.clone(), in_memory_limit)
-            .await
-        {
-            Ok(queue) => std::pin::pin!(queue.throttle(invocation_token_bucket)),
-            Err(e) if e.kind() == ErrorKind::PermissionDenied => {
-                warn!(
-                    "Could not initialize the invoker spill queue, permission denied to write the directory '{}'\n\
-                Make sure restate-server has permissions to write that directory, or change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
-                    tmp_dir.display()
-                );
-                panic!("Could not initialize invoker spill queue: {e}");
-            }
-            Err(e) => {
-                warn!(
-                    "Could not initialize the invoker spill queue, error when trying to write directory '{}'\n\
-                If the error persists, change the spill queue directory with the config option 'worker.invoker.tmp_dir' or the env RESTATE_WORKER__INVOKER__TMP_DIR.\n{e}",
-                    tmp_dir.display()
-                );
-                panic!("Could not initialize invoker spill queue: {e}");
-            }
-        };
 
         let cancel = cancellation_token();
         loop {
             let options = updateable_options.live_load();
             if cancel
-                .run_until_cancelled(service.step(options, segmented_input_queue.as_mut()))
+                .run_until_cancelled(service.step(options))
                 .await
                 .is_none()
             {
@@ -428,18 +369,10 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     invocation_tasks: JoinSet<()>,
     retry_timers: DelayQueue<InvocationId>,
     last_retry_timer_compact: Instant,
-    quota: quota::InvokerConcurrencyQuota,
     invoker_id_label: Arc<str>,
     status_store: InvocationStatusStore,
     invocation_state_machine_manager:
         state_machine_manager::InvocationStateMachineManager<StorageReader>,
-
-    // Global memory budget shared across all invocations on this node.
-    memory_pool: MemoryPool,
-    /// Pre-acquired memory lease for the next invocation from the segment queue.
-    /// Acquired at the top of `step()` when the queue is non-empty, and consumed
-    /// when the segment queue arm fires.
-    pending_memory_lease: Option<MemoryLease>,
 }
 
 impl<ITR, Schemas, IR> ServiceInner<ITR, Schemas, IR>
@@ -449,28 +382,7 @@ where
     Schemas: InvocationTargetResolver,
 {
     // Returns true if we should execute another step, false if we should stop executing steps
-    async fn step(
-        &mut self,
-        options: &InvokerOptions,
-        mut segmented_input_queue: Pin<
-            &mut ThrottledStream<
-                SegmentQueue<Box<InvokeCommand>>,
-                PaddedAtomicSharedStorage,
-                TokioClock,
-            >,
-        >,
-    ) {
-        // Pre-acquire a memory lease from the memory pool so the segment queue arm
-        // can create a budget without blocking inside select!.
-        let initial_invocation_memory = options.per_invocation_initial_memory.as_usize();
-        if segmented_input_queue.inner().is_empty() {
-            // Release the lease if the queue drained since we acquired it, so the
-            // memory is returned to the global pool instead of being held idle.
-            self.pending_memory_lease = None;
-        } else if self.pending_memory_lease.is_none() {
-            self.pending_memory_lease = self.memory_pool.try_reserve(initial_invocation_memory);
-        }
-
+    async fn step(&mut self, options: &InvokerOptions) {
         tokio::select! {
             Some(cmd) = self.status_rx.recv() => {
                 let keys = *cmd.payload();
@@ -484,11 +396,6 @@ where
 
             Some(input_message) = self.input_rx.recv() => {
                 match input_message {
-                    // --- Spillable queue loading/offloading
-                    InputCommand::Invoke(invoke_command) => {
-                        counter!(INVOKER_ENQUEUE, "partition_id" => self.invoker_id_label.clone()).increment(1);
-                        segmented_input_queue.inner_pin_mut().enqueue(invoke_command).await;
-                    },
                     InputCommand::VQInvoke(command) => {
                         counter!(
                             INVOKER_ENQUEUE,
@@ -498,7 +405,7 @@ where
                         .increment(1);
                         self.handle_vqueue_invoke(options, *command);
                     },
-                    // --- Other commands (they don't go through the segment queue)
+                    // --- Other commands
                     InputCommand::Abort { ref invocation_id } => {
                         self.handle_abort_invocation(invocation_id);
                     }
@@ -522,14 +429,6 @@ where
                     }
                 }
             },
-            Some(invoke_input_command) = segmented_input_queue.next(), if !segmented_input_queue.inner().is_empty() && self.quota.is_slot_available() && self.pending_memory_lease.is_some() => {
-                let initial_memory_lease = self.pending_memory_lease.take().unwrap();
-                let budget = self.create_outbound_budget(options, initial_memory_lease);
-                self.handle_invoke(options, invoke_input_command.invocation_id, invoke_input_command.fencing_token, invoke_input_command.invocation_target, budget);
-            },
-            memory_lease = self.memory_pool.reserve(initial_invocation_memory), if !segmented_input_queue.inner().is_empty() && self.pending_memory_lease.is_none() => {
-                self.pending_memory_lease = Some(memory_lease);
-            }
             Some(invocation_task_msg) = self.invocation_tasks_rx.recv() => {
                 let InvocationTaskOutput {
                     invocation_id,
@@ -649,7 +548,6 @@ where
         );
 
         let storage_reader = self.invocation_state_machine_manager.storage_reader();
-        let concurrency_slot = self.quota.acquire_slot();
 
         // VQueue path: the vqueue scheduler supplies a pre-acquired MemoryLease
         // used as the initial memory for the outbound budget.
@@ -659,7 +557,7 @@ where
             storage_reader.clone(),
             command.invocation_id,
             InvocationStateMachine::create(
-                Some(command.qid),
+                command.qid,
                 command.permit,
                 command.fencing_token,
                 command.invocation_target,
@@ -667,54 +565,6 @@ where
                 command.idempotency_key,
                 retry_iter,
                 on_max_attempts,
-                concurrency_slot,
-            ),
-            budget,
-        )
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            rpc.service = %invocation_target.service_name(),
-            rpc.method = %invocation_target.handler_name(),
-            restate.invocation.id = %invocation_id,
-            restate.invocation.target = %invocation_target,
-        )
-    )]
-    fn handle_invoke(
-        &mut self,
-        options: &InvokerOptions,
-        invocation_id: InvocationId,
-        fencing_token: FencingToken,
-        invocation_target: InvocationTarget,
-        budget: LocalMemoryPool,
-    ) {
-        let (retry_iter, on_max_attempts) =
-            self.schemas.live_load().resolve_invocation_retry_policy(
-                None,
-                invocation_target.service_name(),
-                invocation_target.handler_name(),
-            );
-
-        let storage_reader = self.invocation_state_machine_manager.storage_reader();
-        let concurrency_slot = self.quota.acquire_slot();
-        let fake_permit = ReservedResources::new_empty();
-        self.start_invocation_task(
-            options,
-            storage_reader.clone(),
-            invocation_id,
-            InvocationStateMachine::create(
-                None,
-                fake_permit,
-                fencing_token,
-                invocation_target,
-                LimitKey::None,
-                None,
-                retry_iter,
-                on_max_attempts,
-                concurrency_slot,
             ),
             budget,
         )
@@ -1798,16 +1648,14 @@ pub mod test_util;
 mod tests {
     use super::*;
 
-    use std::future::{pending, ready};
+    use std::future::pending;
     use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use bytes::Bytes;
-    use gardal::StreamExt as GardalStreamExt;
     use googletest::prelude::*;
-    use tempfile::tempdir;
     use test_log::test;
     use tokio::sync::mpsc;
 
@@ -1834,11 +1682,11 @@ mod tests {
     use restate_util_bytecount::NonZeroByteCount;
     use restate_util_time::FriendlyDuration;
     use restate_worker_api::invoker::InvokerHandle;
+    use restate_worker_api::resources::ReservedResources;
 
     use crate::error::{
         InvocationMemoryExhausted, InvokerError, RequestedErrorBehavior, SdkInvocationErrorV2,
     };
-    use crate::quota::{ConcurrencySlot, InvokerConcurrencyQuota};
     use crate::test_util::EmptyStorageReader;
 
     // -- Mocks
@@ -1852,7 +1700,6 @@ mod tests {
         fn mock(
             invocation_task_runner: ITR,
             schemas: Schemas,
-            concurrency_limit: Option<NonZeroUsize>,
             storage_reader: IR,
         ) -> (
             mpsc::UnboundedSender<InputCommand>,
@@ -1877,7 +1724,6 @@ mod tests {
                 invocation_tasks: Default::default(),
                 retry_timers: Default::default(),
                 last_retry_timer_compact: Instant::now(),
-                quota: InvokerConcurrencyQuota::new(concurrency_limit),
                 invoker_id_label: Arc::from("0"),
                 status_store: Default::default(),
                 invocation_state_machine_manager: InvocationStateMachineManager::new(
@@ -1885,24 +1731,31 @@ mod tests {
                     storage_reader,
                     output_tx,
                 ),
-                memory_pool: MemoryPool::unlimited(),
-                pending_memory_lease: None,
             };
             (input_tx, status_tx, output_rx, service_inner)
         }
 
-        /// Helper for tests: Create an outbound budget from the mock's unlimited pool.
-        fn test_budget(&self) -> LocalMemoryPool {
-            let upper_bound = match NonZeroUsize::new(self.memory_pool.capacity().as_usize()) {
-                None => NonZeroByteCount::new(NonZeroUsize::MAX),
-                Some(cap) => NonZeroByteCount::new(cap),
-            };
-            let initial_lease = self.memory_pool.empty_lease();
-            LocalMemoryPool::new(
-                self.memory_pool.clone(),
-                initial_lease,
-                ByteCount::ZERO,
-                upper_bound,
+        /// Helper for tests: Start an invocation through the vqueue path with an empty permit.
+        fn handle_invoke(
+            &mut self,
+            options: &InvokerOptions,
+            invocation_id: InvocationId,
+            fencing_token: FencingToken,
+            invocation_target: InvocationTarget,
+        ) where
+            ITR: InvocationTaskRunner<IR>,
+        {
+            self.handle_vqueue_invoke(
+                options,
+                VQueueInvokeCommand {
+                    qid: VQueueId::custom(invocation_id.partition_key(), invocation_id.to_string()),
+                    permit: ReservedResources::new_empty(),
+                    invocation_id,
+                    fencing_token,
+                    invocation_target,
+                    limit_key: LimitKey::None,
+                    idempotency_key: None,
+                },
             )
         }
 
@@ -2105,7 +1958,6 @@ mod tests {
             KeyRange::new(0, 0),
             EmptyStorageReader,
             output_tx,
-            &invoker_options,
             // all invocations are unknown leading to immediate retries
             Live::from_value(MockSchemas(
                 // fixed amount of retries so that an invocation eventually completes with a failure
@@ -2118,8 +1970,6 @@ mod tests {
             )
             .unwrap(),
             None,
-            None,
-            MemoryPool::unlimited(),
         );
 
         let mut handle = service.handle();
@@ -2135,117 +1985,22 @@ mod tests {
         let invocation_target = InvocationTarget::mock_service();
         let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-        handle.invoke(invocation_id, 0, invocation_target).unwrap();
+        handle
+            .vqueue_invoke(
+                VQueueId::custom(invocation_id.partition_key(), invocation_id.to_string()),
+                ReservedResources::new_empty(),
+                invocation_id,
+                0,
+                invocation_target,
+                LimitKey::None,
+                None,
+            )
+            .unwrap();
 
         // Make sure invocation inputs are processed in order and produce an output effect.
         check!(let Some(_) = output_rx.recv().await);
 
         invoker_task.cancel_and_wait().await.unwrap();
-    }
-
-    #[test(restate_core::test)]
-    async fn quota_allows_one_concurrent_invocation() {
-        let invoker_options = InvokerOptionsBuilder::default()
-            .inactivity_timeout(FriendlyDuration::ZERO)
-            .abort_timeout(FriendlyDuration::ZERO)
-            .disable_eager_state(false)
-            .message_size_warning(NonZeroUsize::new(1024).unwrap().into())
-            .message_size_limit(None)
-            .build()
-            .unwrap();
-
-        let mut segment_queue =
-            std::pin::pin!(SegmentQueue::new(tempdir().unwrap().keep(), 1024).throttle(None));
-
-        let invocation_id_1 = InvocationId::mock_random();
-        let invocation_id_2 = InvocationId::mock_random();
-
-        let (_invoker_tx, _status_tx, _effects_rx, mut service_inner) = ServiceInner::mock(
-            |_, _, _, _, _| ready(()),
-            MockSchemas(
-                // fixed amount of retries so that an invocation eventually completes with a failure
-                Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
-                Some(OnMaxAttempts::Kill),
-            ),
-            Some(NonZeroUsize::new(1).unwrap()),
-            EmptyStorageReader,
-        );
-
-        // Enqueue sid_1 and sid_2
-        segment_queue
-            .as_mut()
-            .inner_pin_mut()
-            .enqueue(Box::new(InvokeCommand {
-                invocation_id: invocation_id_1,
-                fencing_token: 0,
-                invocation_target: InvocationTarget::mock_virtual_object(),
-            }))
-            .await;
-        segment_queue
-            .as_mut()
-            .inner_pin_mut()
-            .enqueue(Box::new(InvokeCommand {
-                invocation_id: invocation_id_2,
-                fencing_token: 0,
-                invocation_target: InvocationTarget::mock_virtual_object(),
-            }))
-            .await;
-
-        // Now step the state machine to start the invocation
-        service_inner
-            .step(&invoker_options, segment_queue.as_mut())
-            .await;
-
-        // Check status and quota
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(&invocation_id_1)
-                .unwrap()
-                .in_flight()
-        );
-        assert!(!service_inner.quota.is_slot_available());
-
-        // Step again to remove sid_1 from task queue. This should not invoke sid_2!
-        service_inner
-            .step(&invoker_options, segment_queue.as_mut())
-            .await;
-
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(&invocation_id_2)
-                .is_none()
-        );
-        assert!(!service_inner.quota.is_slot_available());
-
-        // Send the close signal
-        service_inner
-            .handle_invocation_task_closed(invocation_id_1)
-            .await;
-
-        // Slot should be available again
-        assert!(service_inner.quota.is_slot_available());
-
-        // Step now should invoke sid_2
-        service_inner
-            .step(&invoker_options, segment_queue.as_mut())
-            .await;
-
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(&invocation_id_1)
-                .is_none()
-        );
-        assert!(
-            service_inner
-                .status_store
-                .resolve_invocation(&invocation_id_2)
-                .unwrap()
-                .in_flight()
-        );
-        assert!(!service_inner.quota.is_slot_available());
     }
 
     #[test(restate_core::test(start_paused = true))]
@@ -2281,16 +2036,12 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(1))),
                 Some(OnMaxAttempts::Kill),
             ),
-            None,
             EmptyStorageReader,
         );
 
         // Create an invocation state machine and register it with an in-flight notification proposal
         let mut ism = InvocationStateMachine::create(
-            Some(VQueueId::custom(
-                invocation_id.partition_key(),
-                invocation_id.to_string(),
-            )),
+            VQueueId::custom(invocation_id.partition_key(), invocation_id.to_string()),
             ReservedResources::new_empty(),
             0,
             invocation_target.clone(),
@@ -2298,7 +2049,6 @@ mod tests {
             None,
             RetryPolicy::fixed_delay(Duration::from_millis(100), None).into_iter(),
             OnMaxAttempts::Kill,
-            ConcurrencySlot::empty(),
         );
         let (tx, _rx) = mpsc::unbounded_channel();
         ism.start(tokio::spawn(async {}).abort_handle(), tx);
@@ -2319,7 +2069,7 @@ mod tests {
             .handle_invocation_task_failed(
                 invocation_id,
                 InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
-                service_inner.test_budget(),
+                LocalMemoryPool::unlimited(),
             )
             .await;
 
@@ -2344,16 +2094,14 @@ mod tests {
         let invocation_id = InvocationId::mock_random();
 
         let (_, _status_tx, _effects_rx, mut service_inner) =
-            ServiceInner::mock((), MockSchemas::default(), None, EmptyStorageReader);
+            ServiceInner::mock((), MockSchemas::default(), EmptyStorageReader);
 
         // Start an invocation with epoch 0
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &InvokerOptions::default(),
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Simulate a transient failure to populate last_retry_attempt_failure
@@ -2361,7 +2109,7 @@ mod tests {
             .handle_invocation_task_failed(
                 invocation_id,
                 InvokerError::SdkV2(SdkInvocationErrorV2::unknown()),
-                service_inner.test_budget(),
+                LocalMemoryPool::unlimited(),
             )
             .await;
 
@@ -2427,18 +2175,15 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
                 Some(OnMaxAttempts::Kill),
             ),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation epoch 0
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Select protocol V4 to allow proposing events
@@ -2457,7 +2202,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error_a, LocalMemoryPool::unlimited())
             .await;
         assert_that!(
             *effects_rx
@@ -2484,7 +2229,11 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_a_same, service_inner.test_budget())
+            .handle_invocation_task_failed(
+                invocation_id,
+                error_a_same,
+                LocalMemoryPool::unlimited(),
+            )
             .await;
         assert!(
             effects_rx.try_recv().is_err(),
@@ -2503,7 +2252,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom-2").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_b, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error_b, LocalMemoryPool::unlimited())
             .await;
         assert_that!(
             *effects_rx
@@ -2539,18 +2288,15 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
                 Some(OnMaxAttempts::Kill),
             ),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation epoch 0
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Select protocol V4 to allow proposing events
@@ -2567,7 +2313,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
         assert_that!(
             *effects_rx
@@ -2603,18 +2349,15 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::ZERO, Some(3))),
                 Some(OnMaxAttempts::Pause),
             ),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation epoch 0
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             FencingToken::default(),
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Select protocol V4 to allow proposing events
@@ -2631,7 +2374,7 @@ mod tests {
             error: InvocationError::new(codes::INTERNAL, "boom").into(),
         });
         service_inner
-            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
         assert_that!(
             effects_rx.try_recv().expect("expected a Failed effect"),
@@ -2653,16 +2396,14 @@ mod tests {
 
         // Mock service
         let (_, _status_tx, _effects_rx, mut service_inner) =
-            ServiceInner::mock((), MockSchemas::default(), None, EmptyStorageReader);
+            ServiceInner::mock((), MockSchemas::default(), EmptyStorageReader);
 
         // Start invocation epoch 0
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &InvokerOptions::default(),
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Abort error
@@ -2670,7 +2411,7 @@ mod tests {
             .handle_invocation_task_failed(
                 invocation_id,
                 InvokerError::AbortTimeoutFired(Duration::from_secs(10).into()),
-                service_inner.test_budget(),
+                LocalMemoryPool::unlimited(),
             )
             .await;
 
@@ -2704,24 +2445,21 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::from_millis(1), Some(1))),
                 Some(OnMaxAttempts::Pause),
             ),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // First transient error -> schedules retry (because 1 attempt available)
         let error_a = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_a, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error_a, LocalMemoryPool::unlimited())
             .await;
         // There might be an extra transient error event proposed; drain if present
         let _ = effects_rx.try_recv();
@@ -2732,7 +2470,7 @@ mod tests {
         // Second transient error -> retries exhausted and Pause behavior -> expect Paused effect
         let error_b = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, error_b, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error_b, LocalMemoryPool::unlimited())
             .await;
 
         let effect = effects_rx
@@ -2802,16 +2540,14 @@ mod tests {
 
         let invocation_id = InvocationId::mock_random();
         let (_, _status_tx, mut effects_rx, mut service_inner) =
-            ServiceInner::mock((), SwitchingResolver, None, EmptyStorageReader);
+            ServiceInner::mock((), SwitchingResolver, EmptyStorageReader);
 
         // Start invocation
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Pin deployment (switches policy to Kill and resets attempts)
@@ -2821,7 +2557,7 @@ mod tests {
         // First transient failure after pin -> schedules retry
         let err1 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, err1, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, err1, LocalMemoryPool::unlimited())
             .await;
         // Drain any proposed event
         effects_rx.try_recv().unwrap();
@@ -2830,7 +2566,7 @@ mod tests {
         // Second transient failure after pin -> schedules retry (attempts now exhausted)
         let err2 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, err2, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, err2, LocalMemoryPool::unlimited())
             .await;
         effects_rx.try_recv().unwrap_err();
         service_inner.process_retry_timers(&invoker_options).await;
@@ -2842,7 +2578,7 @@ mod tests {
         // Next failure should hit OnMaxAttempts::Kill immediately (no more retries)
         let err3 = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, err3, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, err3, LocalMemoryPool::unlimited())
             .await;
 
         let effect = effects_rx
@@ -2871,24 +2607,21 @@ mod tests {
         let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
             (),
             MockSchemas(None, Some(OnMaxAttempts::Kill)),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
         // Drain any proposed event
         let _ = effects_rx.try_recv();
@@ -2935,18 +2668,15 @@ mod tests {
         let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
             (),
             MockSchemas(None, Some(OnMaxAttempts::Kill)),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation (goes to InFlight state with pending task)
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Call manual pause while in flight
@@ -2996,18 +2726,15 @@ mod tests {
         let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
             (),
             MockSchemas(None, Some(OnMaxAttempts::Kill)),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation (goes to InFlight state with pending task)
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Call manual pause while in flight
@@ -3023,7 +2750,7 @@ mod tests {
         // Simulate the invocation task failing with a transient error
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
 
         // Should emit Paused effect (not Kill or ScheduleRetry) with last_failure set
@@ -3059,24 +2786,21 @@ mod tests {
         let (_, _status_tx, mut effects_rx, mut service_inner) = ServiceInner::mock(
             (),
             MockSchemas(None, Some(OnMaxAttempts::Kill)),
-            None,
             EmptyStorageReader,
         );
 
         // Start invocation
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Simulate a transient error to put invocation in WaitingRetry state
         let error = InvokerError::SdkV2(SdkInvocationErrorV2::unknown());
         service_inner
-            .handle_invocation_task_failed(invocation_id, error, service_inner.test_budget())
+            .handle_invocation_task_failed(invocation_id, error, LocalMemoryPool::unlimited())
             .await;
         // Drain any proposed event
         let _ = effects_rx.try_recv();
@@ -3126,17 +2850,14 @@ mod tests {
                 Some(RetryPolicy::fixed_delay(Duration::from_millis(100), None)),
                 None,
             ),
-            None,
             EmptyStorageReader,
         );
 
-        let budget = service_inner.test_budget();
         service_inner.handle_invoke(
             &invoker_options,
             invocation_id,
             0,
             InvocationTarget::mock_virtual_object(),
-            budget,
         );
 
         // Simulate yield from invocation task
@@ -3148,7 +2869,7 @@ mod tests {
                     kind: OutOfMemoryKind::PoolExhausted,
                     context: "test",
                 },
-                service_inner.test_budget(),
+                LocalMemoryPool::unlimited(),
             )
             .await;
 
@@ -3168,7 +2889,12 @@ mod tests {
             })
         );
 
-        // The invocation should no longer be tracked (slot released)
-        assert!(service_inner.quota.is_slot_available());
+        // The invocation should no longer be tracked
+        assert!(
+            service_inner
+                .invocation_state_machine_manager
+                .resolve_invocation(&invocation_id)
+                .is_none()
+        );
     }
 }
