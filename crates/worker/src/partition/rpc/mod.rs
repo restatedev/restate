@@ -46,15 +46,15 @@ pub(crate) struct RpcProposal {
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum Decision {
+pub(crate) enum Decision<Response = PartitionProcessorRpcResponse> {
     Propose(RpcProposal),
     /// Reply immediately; nothing is proposed.
-    Reply(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>),
+    Reply(Result<Response, PartitionProcessorRpcError>),
     /// Legacy invoker-owned paths only: poke the invoker, then reply immediately.
     /// TODO: remove this once the non-vqueues support is dropped.
     NotifyInvokerAndReply {
         notification: InvokerNotification,
-        reply: PartitionProcessorRpcResponse,
+        reply: Response,
     },
 }
 
@@ -105,8 +105,8 @@ impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
     }
 }
 
-pub(super) trait RpcHandler<Input> {
-    fn handle(self, input: Input) -> impl Future<Output = Decision>;
+pub(super) trait RpcHandler<Input, Response = PartitionProcessorRpcResponse> {
+    fn handle(self, input: Input) -> impl Future<Output = Decision<Response>>;
 }
 
 impl<'a, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
