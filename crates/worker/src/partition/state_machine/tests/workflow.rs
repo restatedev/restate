@@ -30,7 +30,7 @@ async fn start_workflow_method() {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -42,10 +42,12 @@ async fn start_workflow_method() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Assert we don't write virtual object status anymore for locking.
@@ -69,21 +71,16 @@ async fn start_workflow_method() {
             ..ServiceInvocation::mock()
         }))
         .await;
+    // We get back this error due to the fact that we disabled the attach semantics
     assert_that!(
         actions,
-        all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
-            // We get back this error due to the fact that we disabled the attach semantics
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_2),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Failure(
-                    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
-                ))
-            }))
-        )
+        contains(pat!(Action::IngressResponse {
+            request_id: eq(request_id_2),
+            invocation_id: some(eq(invocation_id)),
+            response: eq(InvocationOutputResponse::Failure(
+                WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+            ))
+        }))
     );
 
     // Send output, then end
@@ -179,7 +176,7 @@ async fn attach_by_workflow_key() {
     let request_id_3 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -191,10 +188,12 @@ async fn attach_by_workflow_key() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Sending another invocation won't re-execute
@@ -211,15 +210,7 @@ async fn attach_by_workflow_key() {
             },
         ))
         .await;
-    assert_that!(
-        actions,
-        all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
-            not(contains(pat!(Action::IngressResponse { .. })))
-        )
-    );
+    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");

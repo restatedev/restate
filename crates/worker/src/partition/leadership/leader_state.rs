@@ -135,8 +135,6 @@ impl LeaderState {
         invoker_task_handle: TaskHandle<()>,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
-        // Fencing tokens seeded for the invocations resumed on becoming leader. See `fencing_tokens`.
-        fencing_tokens: FencingTokens,
         shuffle_rx: tokio::sync::watch::Receiver<Option<shuffle::OutboxTruncation>>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
@@ -164,7 +162,7 @@ impl LeaderState {
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
-            fencing_tokens,
+            fencing_tokens: FencingTokens::default(),
             invoker_stream: invoker_rx,
             shuffle_stream: WatchStream::new(shuffle_rx),
             durability_tracker,
@@ -853,15 +851,6 @@ impl LeaderState {
         action: Action,
     ) -> Result<(), Error> {
         match action {
-            Action::Invoke {
-                invocation_id,
-                invocation_target,
-            } => {
-                let fencing_token = self.fencing_tokens.mint(invocation_id);
-                self.invoker_handle
-                    .invoke(invocation_id, fencing_token, invocation_target)
-                    .map_err(Error::Invoker)?;
-            }
             Action::NewOutboxMessage {
                 seq_number,
                 message,

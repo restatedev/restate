@@ -22,13 +22,6 @@ use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::resources::ReservedResources;
 // -- Input messages
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct InvokeCommand {
-    pub(super) invocation_id: InvocationId,
-    pub(super) fencing_token: FencingToken,
-    pub(super) invocation_target: InvocationTarget,
-}
-
 #[derive(derive_more::Debug)]
 pub(crate) struct VQueueInvokeCommand {
     pub(super) qid: VQueueId,
@@ -43,7 +36,6 @@ pub(crate) struct VQueueInvokeCommand {
 
 #[derive(Debug)]
 pub(crate) enum InputCommand {
-    Invoke(Box<InvokeCommand>),
     VQInvoke(Box<VQueueInvokeCommand>),
     Notification {
         invocation_id: InvocationId,
@@ -82,21 +74,6 @@ pub struct InvokerHandle {
 }
 
 impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
-    fn invoke(
-        &mut self,
-        invocation_id: InvocationId,
-        fencing_token: FencingToken,
-        invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::Invoke(Box::new(InvokeCommand {
-                invocation_id,
-                fencing_token,
-                invocation_target,
-            })))
-            .map_err(|_| NotRunningError)
-    }
-
     fn vqueue_invoke(
         &mut self,
         qid: VQueueId,

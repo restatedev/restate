@@ -10,9 +10,32 @@
 
 use std::num::NonZeroUsize;
 
-use restate_futures_util::concurrency::Concurrency;
+use metrics::{Counter, counter, gauge};
+
+use restate_futures_util::concurrency::{Concurrency, PermitObserver};
 use restate_memory::{MemoryPool, NonZeroByteCount};
 use restate_types::config::{DEFAULT_PER_INVOCATION_INITIAL_MEMORY, ThrottlingOptions};
+
+use crate::metric_definitions::{
+    INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
+    INVOKER_CONCURRENCY_SLOTS_RELEASED, describe_metrics,
+};
+
+/// Publishes acquisitions and releases of invoker concurrency slots as metrics.
+struct ConcurrencyMetrics {
+    acquired: Counter,
+    released: Counter,
+}
+
+impl PermitObserver for ConcurrencyMetrics {
+    fn on_acquire(&self, permits: u32) {
+        self.acquired.increment(u64::from(permits));
+    }
+
+    fn on_release(&self, permits: u32) {
+        self.released.increment(u64::from(permits));
+    }
+}
 
 pub type TokenBucket<C = gardal::TokioClock> = gardal::SharedTokenBucket<C>;
 
@@ -44,8 +67,18 @@ impl InvokerCapacity {
         memory_pool: MemoryPool,
         initial_invocation_memory: NonZeroByteCount,
     ) -> Self {
+        describe_metrics();
+        gauge!(INVOKER_CONCURRENCY_LIMIT)
+            .set(concurrency.map_or(f64::INFINITY, |limit| limit.get() as f64));
+
         Self {
-            concurrency: Concurrency::new(concurrency),
+            concurrency: Concurrency::with_observer(
+                concurrency,
+                ConcurrencyMetrics {
+                    acquired: counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED),
+                    released: counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED),
+                },
+            ),
             invocation_token_bucket: invocation_throttling.map(|opts| {
                 TokenBucket::new(gardal::Limit::from(opts.clone()), gardal::TokioClock)
             }),
