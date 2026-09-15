@@ -35,6 +35,7 @@ use restate_types::storage::StorageEncode;
 
 use crate::appender::Appender;
 use crate::background_appender::BackgroundAppender;
+use crate::log_chain_watcher::LogChainWatcherHandle;
 use crate::log_chain_writer::LogChainCommand;
 use crate::loglet::{FindTailOptions, LogletProvider, OperationError};
 use crate::loglet_wrapper::LogletWrapper;
@@ -296,15 +297,17 @@ pub struct BifrostInner {
     pub(crate) providers: OnceLock<EnumMap<ProviderKind, Option<Arc<dyn LogletProvider>>>>,
     shutting_down: AtomicBool,
     pub(crate) read_stream_registry: crate::read_stream_registry::ActiveReadStreamRegistry,
+    log_chain_watcher: LogChainWatcherHandle,
 }
 
 impl BifrostInner {
-    pub fn new(watchdog: WatchdogSender) -> Self {
+    pub fn new(watchdog: WatchdogSender, log_chain_watcher: LogChainWatcherHandle) -> Self {
         Self {
             watchdog,
             providers: Default::default(),
             shutting_down: AtomicBool::new(false),
             read_stream_registry: Default::default(),
+            log_chain_watcher,
         }
     }
 
@@ -662,6 +665,10 @@ impl BifrostInner {
             segment.config.clone(),
             loglet,
         ))
+    }
+
+    pub fn log_chain_watcher(&self) -> &LogChainWatcherHandle {
+        &self.log_chain_watcher
     }
 }
 
