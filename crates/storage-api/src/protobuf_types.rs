@@ -3597,6 +3597,28 @@ pub mod v1 {
                     outbox_message::OutboxMessage::NotifySignal(notify_signal) => {
                         crate::outbox_table::OutboxMessage::NotifySignal(notify_signal.try_into()?)
                     }
+                    outbox_message::OutboxMessage::Opaque(opaque) => {
+                        let msg = crate::outbox_table::OpaqueMessage {
+                            partition_key: opaque.partition_key,
+                            codec: u8::try_from(opaque.codec)
+                                .map_err(|_| {
+                                    ConversionError::InvalidData(anyhow!(
+                                        "codec value does not fit u8"
+                                    ))
+                                })?
+                                .try_into()
+                                .map_err(|_| {
+                                    ConversionError::UnexpectedEnumVariant(
+                                        "codec",
+                                        opaque.codec as i32,
+                                    )
+                                })?,
+                            kind: opaque.kind as u8,
+                            message: opaque.message,
+                        };
+
+                        crate::outbox_table::OutboxMessage::Opaque(msg)
+                    }
                 };
 
                 Ok(result)
@@ -3659,6 +3681,14 @@ pub mod v1 {
                     ),
                     crate::outbox_table::OutboxMessage::NotifySignal(notify_signal) => {
                         outbox_message::OutboxMessage::NotifySignal(notify_signal.into())
+                    }
+                    crate::outbox_table::OutboxMessage::Opaque(opaque) => {
+                        outbox_message::OutboxMessage::Opaque(outbox_message::Opaque {
+                            partition_key: opaque.partition_key,
+                            kind: opaque.kind as u32,
+                            codec: u8::from(opaque.codec).into(),
+                            message: opaque.message,
+                        })
                     }
                 };
 
