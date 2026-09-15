@@ -132,6 +132,7 @@ impl HasRecordKeys for InvokeCommand {
 }
 
 #[derive(Debug, Clone, bilrost::Message)]
+#[bilrost(reserved_tags(2))]
 pub struct TruncateOutboxCommand {
     #[bilrost(1)]
     pub index: MessageIndex,
