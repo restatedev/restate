@@ -13,10 +13,11 @@ use super::{RequestDispatcher, RequestDispatcherError};
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithInvocationId};
 use restate_types::invocation::client::{
     AttachInvocationResponse, GetInvocationOutputResponse, GetInvocationStatusResponse,
-    InvocationClient, InvocationClientError, InvocationOutput, SubmittedInvocationNotification,
+    InvocationClient, InvocationOutput, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use restate_types::journal_v2::Signal;
+use restate_types::partition_processor::client::PartitionProcessorClientError;
 use restate_types::retries::RetryPolicy;
 use std::future::Future;
 use std::sync::Arc;
@@ -57,7 +58,7 @@ impl<IC> InvocationClientRequestDispatcher<IC> {
     ) -> Result<T, RequestDispatcherError>
     where
         Fn: FnMut() -> Fut,
-        Fut: Future<Output = Result<T, InvocationClientError>>,
+        Fut: Future<Output = Result<T, PartitionProcessorClientError>>,
     {
         Ok(self
             .retry_policy
