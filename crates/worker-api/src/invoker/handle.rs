@@ -18,13 +18,6 @@ use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
 
 pub trait InvokerHandle {
-    fn invoke(
-        &mut self,
-        invocation_id: InvocationId,
-        fencing_token: FencingToken,
-        invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError>;
-
     #[allow(clippy::too_many_arguments)]
     fn vqueue_invoke(
         &mut self,
@@ -35,14 +28,6 @@ pub trait InvokerHandle {
         invocation_target: InvocationTarget,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
-    ) -> Result<(), NotRunningError>;
-
-    // The `notify_*` forwards below don't carry a `fencing_token` as the invoke calls establish
-    // the current fencing token which is used to stamp all outgoing invoker effects.
-    fn notify_completion(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
     ) -> Result<(), NotRunningError>;
 
     fn notify_notification(

@@ -23,7 +23,6 @@ use tracing::{Instrument, debug, trace, trace_span};
 use ulid::Ulid;
 
 use restate_types::Scope;
-use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
 use restate_types::invocation::{
@@ -199,30 +198,6 @@ where
         } else {
             None
         };
-
-        // Scoped invocations require vqueues to be enabled
-        if scope.is_some()
-            && !Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-        {
-            return Err(HandlerError::ScopeRequiresVQueues);
-        }
-
-        // Scoped Virtual Objects are gated behind an experimental flag
-        if scope.is_some()
-            && matches!(
-                invocation_target_meta.target_ty,
-                InvocationTargetType::VirtualObject(_)
-            )
-            && !Configuration::pinned()
-                .common
-                .experimental
-                .is_scoped_virtual_objects_enabled()
-        {
-            return Err(HandlerError::ScopedVirtualObjectNotSupported);
-        }
 
         // Craft Invocation Target and Id
         let invocation_target = if let TargetType::Keyed { key } = target {
@@ -416,6 +391,10 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
             || k == header::HOST
             || k == IDEMPOTENCY_KEY
             || k == IDEMPOTENCY_EXPIRES
+            // Drop any client-supplied `x-restate-*` header. This namespace is
+            // reserved for the ingress (e.g. `x-restate-ingress-path` set above);
+            // forwarding client values would let callers spoof it.
+            || k.as_str().starts_with("x-restate-")
         {
             continue;
         }

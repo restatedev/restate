@@ -71,9 +71,9 @@ use restate_types::net::ingest::{
 };
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcResponse,
+    PatchStateRpcRequest,
 };
-use restate_types::net::{RpcRequest, ingest};
+use restate_types::net::{RpcRequest, RpcResponse, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -88,10 +88,9 @@ use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
 use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::RpcProcessingPermit;
+use self::leadership::{CommitCallback, RpcProcessingPermit, RpcReciprocal};
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -195,7 +194,7 @@ impl PartitionProcessorBuilder {
 
     pub async fn build<T>(
         self,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, v2::Envelope<v2::Raw>>,
         partition_db: PartitionDb,
     ) -> Result<PartitionProcessor<T>, ProcessorError>
     where
@@ -748,42 +747,33 @@ where
             .handle_leader_query(self.ctx.vqueues(), leader_query_cmd);
     }
 
-    async fn on_pp_rpc_request(
+    async fn on_pp_rpc_request<Request, Response>(
         &mut self,
-        response_tx: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        body: PartitionProcessorRpcRequest,
+        response_tx: Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>,
+        body: Request,
         schemas: &Schema,
         permit: RpcProcessingPermit,
-    ) {
+    ) where
+        Request: RpcRequest<Response = Result<Response, PartitionProcessorRpcError>>,
+        Result<Response, PartitionProcessorRpcError>: RpcResponse,
+        RpcReciprocal: From<Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>>,
+        Response: Send + Sync + 'static,
+        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request, Response>,
+    {
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
             self.leadership_state.partition_id(),
             schemas,
             &mut self.partition_store,
         );
+
         let decision = rpc::RpcHandler::handle(context, body).await;
+        // todo: we should reject the proposals outside the key range of this partition
+        // possibly without decoding the payload.
 
         match decision {
             rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
             rpc::Decision::Reply(reply) => response_tx.send(reply),
-            rpc::Decision::NotifyInvokerAndReply {
-                notification,
-                reply,
-            } => {
-                if let Some(invoker_handle) = self.leadership_state.invoker_handle() {
-                    match notification {
-                        rpc::InvokerNotification::RetryNow(invocation_id) => {
-                            let _ = invoker_handle.retry_invocation_now(invocation_id);
-                        }
-                        rpc::InvokerNotification::Pause(invocation_id) => {
-                            let _ = invoker_handle.pause_invocation(invocation_id);
-                        }
-                    }
-                }
-                response_tx.send(Ok(reply));
-            }
         }
     }
 
@@ -842,6 +832,11 @@ where
                         sent_at.elapsed().friendly()
                     );
                 }
+                self.on_pp_rpc_request(response_tx, body, schemas, permit)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PatchStateRpcRequest::TYPE => {
+                let (response_tx, body) = msg.into_typed::<PatchStateRpcRequest>().split();
                 self.on_pp_rpc_request(response_tx, body, schemas, permit)
                     .await;
             }
@@ -951,7 +946,21 @@ where
         permit: RpcProcessingPermit,
     ) {
         let (reciprocal, request) = msg.split();
-        permit.buffer_forwarded_records(request.records, reciprocal);
+        let on_commit =
+            CommitCallback::from(move |result: Result<(), PartitionProcessorRpcError>| {
+                let status = match result {
+                    Ok(()) => ResponseStatus::Ack,
+                    Err(
+                        PartitionProcessorRpcError::NotLeader(of)
+                        | PartitionProcessorRpcError::LostLeadership(of),
+                    ) => ResponseStatus::NotLeader { of },
+                    Err(PartitionProcessorRpcError::Internal(msg)) => {
+                        ResponseStatus::Internal { msg }
+                    }
+                };
+                reciprocal.send(status.into());
+            });
+        permit.buffer_forwarded_records(request.records, on_commit);
     }
 
     // --- Apply new commands/records

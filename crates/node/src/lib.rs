@@ -540,11 +540,6 @@ impl Node {
                     config.common.cluster_name()
                 );
             } else {
-                let mut default_features = ClusterFeature::default_features();
-                if config.common.disable_controlled_idempotent_sharding {
-                    default_features -= ClusterFeature::ControlledIdempotentSharding
-                }
-
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                     let metadata_writer = metadata_writer.clone();
@@ -555,7 +550,7 @@ impl Node {
                             &metadata_writer,
                             &common_opts,
                             &cluster_configuration,
-                            default_features,
+                            ClusterFeature::default_features(),
                         )
                         .await;
 

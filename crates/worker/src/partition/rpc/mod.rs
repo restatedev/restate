@@ -15,6 +15,7 @@ mod cancel_invocation;
 mod get_invocation_output;
 mod get_invocation_status;
 mod kill_invocation;
+mod patch_state;
 mod pause_invocation;
 mod purge_invocation;
 mod purge_journal;
@@ -26,60 +27,86 @@ use std::sync::Arc;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-};
+use restate_types::identifiers::{InvocationId, PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationRequest;
+use restate_types::logs::Keys;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::{Command, CommandWithKeys, ErasedCommand};
 
-#[derive(Debug, Clone)]
-pub(crate) struct RpcProposal {
-    pub(crate) partition_key: PartitionKey,
-    pub(crate) cmd: Command,
-    pub(crate) reply_on: ReplyOn,
+#[derive(Clone, derive_more::Debug)]
+pub(crate) struct RpcProposal<Response> {
+    keys: Keys,
+    cmd: ErasedCommand,
+    reply_on: ReplyOn<Response>,
 }
 
-#[derive(Debug)]
+impl<R> RpcProposal<R> {
+    pub(crate) fn new<C: Command>(cmd: impl CommandWithKeys<C>, reply_on: ReplyOn<R>) -> Self {
+        let keys = cmd.keys();
+        let cmd = cmd.inner();
+        Self {
+            keys,
+            cmd: ErasedCommand::new(cmd),
+            reply_on,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Keys, ErasedCommand, ReplyOn<R>) {
+        let Self {
+            keys,
+            cmd,
+            reply_on,
+        } = self;
+
+        (keys, cmd, reply_on)
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
-pub(crate) enum Decision {
-    Propose(RpcProposal),
+#[derive(Debug)]
+pub(crate) enum Decision<Response = PartitionProcessorRpcResponse> {
+    Propose(RpcProposal<Response>),
     /// Reply immediately; nothing is proposed.
-    Reply(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>),
-    /// Legacy invoker-owned paths only: poke the invoker, then reply immediately.
-    /// TODO: remove this once the non-vqueues support is dropped.
-    NotifyInvokerAndReply {
-        notification: InvokerNotification,
-        reply: PartitionProcessorRpcResponse,
-    },
+    Reply(Result<Response, PartitionProcessorRpcError>),
+}
+
+impl<R> Decision<R> {
+    #[cfg(test)]
+    fn extract_as_rpc_proposal<C: Command>(self) -> (Keys, C, ReplyOn<R>) {
+        let Self::Propose(proposal) = self else {
+            panic!("Invalid Decision variant, expecting Decision::Propose");
+        };
+
+        let Some(inner) = proposal.cmd.downcast_arc::<C>() else {
+            panic!("Command type is not match '{}'", C::KIND);
+        };
+
+        (
+            proposal.keys,
+            Arc::into_inner(inner).expect("only owner"),
+            proposal.reply_on,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ReplyOn {
+pub(crate) enum ReplyOn<Response> {
     /// Responds to the request; the state machine's Action replies later.
     Apply {
         request_id: PartitionProcessorRpcRequestId,
     },
     /// Append WITHOUT dedup ESN; reply `response` on Bifrost commit.
-    Commit {
-        response: PartitionProcessorRpcResponse,
-    },
+    Commit { response: Response },
     /// Like Apply, but clear the invocation's fencing token strictly AFTER the
     /// append succeeds.
     ApplyAndFence {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     },
-}
-
-#[derive(Debug)]
-pub(crate) enum InvokerNotification {
-    RetryNow(InvocationId), // resume legacy path, resume_invocation.rs:92
-    Pause(InvocationId),    // pause legacy path,  pause_invocation.rs:93
 }
 
 pub(super) struct RpcContext<'a, Schemas, Storage> {
@@ -105,8 +132,8 @@ impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
     }
 }
 
-pub(super) trait RpcHandler<Input> {
-    fn handle(self, input: Input) -> impl Future<Output = Decision>;
+pub(super) trait RpcHandler<Input, Response = PartitionProcessorRpcResponse> {
+    fn handle(self, input: Input) -> impl Future<Output = Decision<Response>>;
 }
 
 impl<'a, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>

@@ -14,8 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::{
-    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionKey,
-    PartitionProcessorRpcRequestId, WithPartitionKey,
+    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId,
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
@@ -29,6 +28,7 @@ use crate::net::codec::{
 };
 use crate::net::{ProtocolVersion, ServiceTag};
 use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::state_mut::{ExternalStateMutation, PatchStateResponse};
 use crate::time::MillisSinceEpoch;
 
 pub struct PartitionLeaderService;
@@ -54,6 +54,21 @@ pub struct PartitionProcessorRpcRequest {
     /// Time at which the source node sent the request.
     pub sent_at: Option<MillisSinceEpoch>,
     pub inner: PartitionProcessorRpcRequestInner,
+}
+
+impl PartitionProcessorRpcRequest {
+    pub fn new(
+        request_id: PartitionProcessorRpcRequestId,
+        partition_id: PartitionId,
+        inner: PartitionProcessorRpcRequestInner,
+    ) -> Self {
+        Self {
+            request_id,
+            partition_id,
+            sent_at: Some(MillisSinceEpoch::now()),
+            inner,
+        }
+    }
 }
 
 impl WireEncode for PartitionProcessorRpcRequest {
@@ -147,41 +162,6 @@ pub enum PartitionProcessorRpcRequestInner {
     PauseInvocation {
         invocation_id: InvocationId,
     },
-}
-
-impl WithPartitionKey for PartitionProcessorRpcRequestInner {
-    fn partition_key(&self) -> PartitionKey {
-        match self {
-            PartitionProcessorRpcRequestInner::AppendInvocation(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendSignal(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
-                invocation_id.partition_key()
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
@@ -531,6 +511,44 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
     fn from(value: PauseInvocationRpcResponse) -> Self {
         Self::PauseInvocation(value)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchStateRpcRequest {
+    pub request_id: PartitionProcessorRpcRequestId,
+    pub mutation: ExternalStateMutation,
+}
+default_wire_codec!(PatchStateRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatchStateRpcResponse {
+    Accepted,
+    VersionMismatch,
+}
+default_wire_codec!(Result<PatchStateRpcResponse, PartitionProcessorRpcError>);
+
+impl From<PatchStateRpcResponse> for PatchStateResponse {
+    fn from(value: PatchStateRpcResponse) -> Self {
+        match value {
+            PatchStateRpcResponse::Accepted => PatchStateResponse::Accepted,
+            PatchStateRpcResponse::VersionMismatch => PatchStateResponse::VersionMismatch,
+        }
+    }
+}
+
+impl From<PatchStateResponse> for PatchStateRpcResponse {
+    fn from(value: PatchStateResponse) -> Self {
+        match value {
+            PatchStateResponse::Accepted => PatchStateRpcResponse::Accepted,
+            PatchStateResponse::VersionMismatch => PatchStateRpcResponse::VersionMismatch,
+        }
+    }
+}
+
+define_rpc! {
+    @request = PatchStateRpcRequest,
+    @response = Result<PatchStateRpcResponse, PartitionProcessorRpcError>,
+    @service = PartitionLeaderService,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

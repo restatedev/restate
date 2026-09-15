@@ -11,6 +11,7 @@
 mod durability_tracker;
 mod fencing;
 mod leader_state;
+mod pending_rpcs;
 mod self_proposer;
 pub mod trim_queue;
 
@@ -27,19 +28,14 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, warn};
 
-use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
+use restate_core::network::TransportConnect;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_impl::{
-    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
-};
+use restate_invoker_impl::Service as InvokerService;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::invocation_status_table::{
-    InvokedInvocationStatusLite, ScanInvocationStatusTable,
-};
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
@@ -51,10 +47,9 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
-};
+use restate_types::net::RpcResponse;
+use restate_types::net::ingest::IngestRecord;
+use restate_types::net::partition_processor::PartitionProcessorRpcError;
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::schema::Schema;
@@ -68,14 +63,14 @@ use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Envelope};
-use restate_worker_api::invoker::InvokerHandle;
+use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
 use self::durability_tracker::DurabilityTracker;
-use self::fencing::FencingTokens;
+pub(crate) use self::pending_rpcs::{CommitCallback, RpcReciprocal};
+use self::pending_rpcs::{PendingReply, RpcResponseTx};
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
@@ -93,9 +88,6 @@ use super::{processor::*, rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
-type RpcReciprocal =
-    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
-type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -161,18 +153,28 @@ pub(crate) enum LeaderEvent {
 }
 
 #[derive(derive_more::Debug)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetworkServiceEvent {
+    /// Propose a single command; `reply` decides when and how the caller is answered.
     RpcProposal {
-        proposal: rpc::RpcProposal,
-        #[debug(skip)]
-        reciprocal: RpcReciprocal,
+        keys: Keys,
+        cmd: ErasedCommand,
+        reply: PendingReply,
     },
+    /// Forward already-built records; the caller is answered on commit.
     IngestRecords {
         records: Vec<IngestRecord>,
         #[debug(skip)]
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
     },
+}
+
+impl NetworkServiceEvent {
+    fn fail(self, error: PartitionProcessorRpcError) {
+        match self {
+            NetworkServiceEvent::RpcProposal { reply, .. } => reply.fail(error),
+            NetworkServiceEvent::IngestRecords { on_commit, .. } => on_commit.call(Err(error)),
+        }
+    }
 }
 
 enum State {
@@ -210,7 +212,7 @@ pub(crate) struct LeadershipState<T> {
     state: State,
 
     partition_id: PartitionId,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     leader_query_tx: LeaderQuerySender,
 }
 
@@ -220,7 +222,7 @@ where
 {
     pub(crate) fn new(
         partition_id: PartitionId,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         leader_query_tx: LeaderQuerySender,
     ) -> Self {
         Self {
@@ -298,14 +300,14 @@ where
         let campaign_started_at = Instant::now();
         let leader_epoch = leadership_info.leader_epoch;
 
-        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
+        let announce_leader = AnnounceLeaderCommand {
             node_id: node_ctx.my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
             partition_key_range: ctx.key_range(),
             current_config: Some(leadership_info.current_config),
             next_config: leadership_info.next_config,
-        }));
+        };
 
         let mut self_proposer = SelfProposer::new(
             ctx.log_id(),
@@ -313,7 +315,7 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer.self_propose_unaccounted(ctx.key_range().start(), announce_leader)?;
+        self_proposer.self_propose_unaccounted(announce_leader)?;
 
         self.state = State::Candidate {
             campaign_started_at,
@@ -540,53 +542,18 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableJournalV2);
             }
 
-            // Opt this partition in to vqueues if the operator has flipped the experimental config
-            // flag on and the FSM hasn't already recorded the opt-in. The FSM update itself
-            // happens via `OnVersionBarrierCommand` once this proposed barrier is applied; we do
-            // not touch the local FSM mirror here.
-            if config.common.experimental.is_vqueues_enabled() {
-                // The vqueues flag is true, one of the following will happen:
-                //   1. We're already on vqueues, so nothing to do.
-                //   2. We're not yet on vqueues, so we'll migrate either fully or partially depending
-                //      on the vqueues_skip_completed flag.
-                //   3. We've previously partially migrated to vqueues, but now we want to fully migrate,
-                //      so we'll trigger a full migration.
-                match (
-                    config
-                        .common
-                        .experimental
-                        .is_vqueues_migration_skip_completed_enabled(),
-                    processor.fsm().features().is_vqueues_enabled(),
-                    processor.fsm().features().is_fully_migrated_to_vqueues(),
-                ) {
-                    (_, _, true) => {
-                        // Nothing to do here, we're fully migrated to vqueues.
-                    }
-
-                    (false, _, false) => {
-                        // skip_completed=False (full migration), and we're not yet fully migrated,
-                        // so we'll trigger a full migration.
-                        feature_changes.push(PartitionFeatureChange::EnableVqueues);
-                    }
-
-                    (true, true, false) => {
-                        // skip_completed=True (partial migration), and we're already partially migrated,
-                        // nothing to do here.
-                    }
-                    (true, false, false) => {
-                        // skip_completed=True (partial migration), and we're yet on vqueues, so we'll
-                        // trigger a partial migration.
-                        feature_changes.push(PartitionFeatureChange::EnableVqueuesSkipCompleted);
-                    }
-                }
+            // Since v1.8.0 we're enabling unique random seeds by default
+            if !processor.fsm().features().is_unique_random_seeds_enabled() {
+                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
             }
 
-            // Persist a unique random seed on new invocations. Needs to be opted-in because
-            // it was only introduced with v1.7.0
-            if config.common.experimental.is_unique_random_seeds_enabled()
-                && !processor.fsm().features().is_unique_random_seeds_enabled()
-            {
-                feature_changes.push(PartitionFeatureChange::EnableUniqueRandomSeeds);
+            // Since v1.8.0, vqueues are enabled by default. If this partition hasn't fully
+            // migrated yet (including partitions that previously did a partial migration via
+            // the removed skip-completed flag), propose the full migration. The FSM update
+            // itself happens via `OnVersionBarrierCommand` once this proposed barrier is
+            // applied; we do not touch the local FSM mirror here.
+            if !processor.fsm().features().is_fully_migrated_to_vqueues() {
+                feature_changes.push(PartitionFeatureChange::EnableVqueues);
             }
 
             if config
@@ -613,15 +580,12 @@ where
                     .max(processor.fsm().min_restate_version())
                     .clone();
 
-                self_proposer.self_propose_unaccounted(
-                    processor.key_range().start(),
-                    Command::VersionBarrier(VersionBarrierCommand {
-                        version: barrier_version,
-                        partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                        human_reason: Some("Apply state-machine feature changes".to_owned()),
-                        feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
-                    }),
-                )?;
+                self_proposer.self_propose_unaccounted(VersionBarrierCommand {
+                    version: barrier_version,
+                    partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                    human_reason: Some("Apply state-machine feature changes".to_owned()),
+                    feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
+                })?;
 
                 // Switch to BecomingLeader state until we finish any pending tasks to enable the
                 // new features. We will transition us to an effective leader when the state
@@ -672,14 +636,11 @@ where
                     InvokerStorageReader::new(partition_store.clone()),
                     invoker_tx,
                     &config.worker.invoker.service_client,
-                    &config.worker.invoker,
                     schema,
-                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
                     node_ctx.invoker_capacity.action_token_bucket.clone(),
-                    node_ctx.invoker_capacity.memory_pool.clone(),
                 )?;
 
-            let mut invoker_handle = invoker.handle();
+            let invoker_handle = invoker.handle();
 
             // Register the direct invoker-status handle so DataFusion reads bypass
             // the partition processor's main select! loop. The guard is moved into
@@ -745,16 +706,7 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled() {
-                // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
-                // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
-                // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
-                // invocations anyways.
-                FencingTokens::default()
-            } else {
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
-            };
-
+            assert!(processor.fsm().features().is_vqueues_enabled());
             let timer_service = TimerService::new(
                 TokioClock,
                 config.worker.num_timers_in_memory_limit(),
@@ -764,7 +716,7 @@ where
             let (shuffle_tx, shuffle_rx) = tokio::sync::watch::channel(None);
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(processor.partition_id(), leader_epoch),
+                ShuffleMetadata::new(processor.partition_id()),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
@@ -843,7 +795,6 @@ where
                 invoker_task_guard.into_handle(),
                 self_proposer,
                 invoker_rx,
-                fencing_tokens,
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
@@ -854,46 +805,6 @@ where
         } else {
             unreachable!("Can only become the leader if I was the candidate before!");
         }
-    }
-
-    // This function is only called when vqueues are not enabled, in the vqueues world, the
-    // the scheduler takes care of resuming those invocations. This should be removed once
-    // we no longer have non-vqueues based invocations.
-    async fn resume_invoked_invocations(
-        invoker_handle: &mut InvokerChannelServiceHandle,
-        partition_store: &mut PartitionStore,
-    ) -> Result<FencingTokens, Error> {
-        let mut invoked_invocations = std::pin::pin!(
-            partition_store
-                .scan_legacy_invoked_invocations()
-                .map_err(Error::Storage)?
-        );
-
-        let start = tokio::time::Instant::now();
-        // Seed a fresh fencing token per resumed invocation so the leader accepts its effects and
-        // can later fence stragglers from a re-invoke. On a fresh term there are no in-flight
-        // stragglers yet, so the starting tokens only need to be distinct from the ones minted
-        // later, which they are (the counter keeps advancing).
-        let mut fencing_tokens = FencingTokens::default();
-        let mut count = 0usize;
-        while let Some(invoked_invocation) = invoked_invocations.next().await {
-            let InvokedInvocationStatusLite {
-                invocation_id,
-                invocation_target,
-            } = invoked_invocation?;
-            let fencing_token = fencing_tokens.mint(invocation_id);
-            invoker_handle
-                .invoke(invocation_id, fencing_token, invocation_target)
-                .map_err(Error::Invoker)?;
-            count += 1;
-        }
-        debug!(
-            "Leader partition resumed {} invocations in {:?}",
-            count,
-            start.elapsed(),
-        );
-
-        Ok(fencing_tokens)
     }
 
     async fn become_follower(&mut self) {
@@ -946,14 +857,6 @@ where
                 .await
                 .expect_err("never should never be returned")),
             State::Leader(leader_state) => leader_state.run(ctx).await,
-        }
-    }
-
-    // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
-    pub fn invoker_handle(&mut self) -> Option<&mut InvokerChannelServiceHandle> {
-        match &mut self.state {
-            State::Leader(leader_state) => Some(leader_state.invoker_handle()),
-            _ => None,
         }
     }
 }
@@ -1032,34 +935,34 @@ pub(super) enum RpcProcessingPermit {
 }
 
 impl RpcProcessingPermit {
-    pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
+    pub fn buffer_rpc_proposal<R>(self, proposal: rpc::RpcProposal<R>, reciprocal: RpcResponseTx<R>)
+    where
+        RpcReciprocal: From<RpcResponseTx<R>>,
+        Result<R, PartitionProcessorRpcError>: RpcResponse,
+        R: Send + Sync + 'static,
+    {
         match self {
             RpcProcessingPermit::NonLeader { partition_id } => {
                 reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
             }
             RpcProcessingPermit::Leader(permit) => {
+                let (keys, cmd, reply_on) = proposal.into_parts();
                 permit.send(NetworkServiceEvent::RpcProposal {
-                    proposal,
-                    reciprocal,
+                    keys,
+                    cmd,
+                    reply: PendingReply::new(reply_on, reciprocal),
                 });
             }
         }
     }
 
-    pub fn buffer_forwarded_records(
-        self,
-        records: Vec<IngestRecord>,
-        reciprocal: IngestReciprocal,
-    ) {
+    pub fn buffer_forwarded_records(self, records: Vec<IngestRecord>, on_commit: CommitCallback) {
         match self {
             RpcProcessingPermit::NonLeader { partition_id } => {
-                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into());
+                on_commit.call(Err(PartitionProcessorRpcError::NotLeader(partition_id)));
             }
             RpcProcessingPermit::Leader(permit) => {
-                permit.send(NetworkServiceEvent::IngestRecords {
-                    records,
-                    reciprocal,
-                });
+                permit.send(NetworkServiceEvent::IngestRecords { records, on_commit });
             }
         }
     }
@@ -1073,9 +976,8 @@ mod tests {
     use test_log::test;
     use tokio_stream::StreamExt;
 
-    use assert2::let_assert;
     use restate_bifrost::Bifrost;
-    use restate_core::network::Reciprocal;
+    use restate_core::network::{Oneshot, Reciprocal};
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -1088,6 +990,7 @@ mod tests {
     };
     use restate_types::invocation::FencingToken;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
@@ -1095,9 +998,9 @@ mod tests {
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::control::AnnounceLeaderCommand;
     use restate_wal_protocol::invocation::PauseInvocationCommand;
+    use restate_wal_protocol::v2::{CommandKind, Envelope, Raw, commands};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
     use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
@@ -1173,9 +1076,12 @@ mod tests {
             .expect("valid reader");
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<AnnounceLeaderCommand>();
 
-        let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+        let announce_leader = envelope.into_inner()?;
         assert_eq!(announce_leader.node_id, NODE_ID);
         assert_eq!(announce_leader.leader_epoch, leader_epoch);
         assert_eq!(announce_leader.partition_key_range, PARTITION_KEY_RANGE);
@@ -1191,24 +1097,39 @@ mod tests {
             )
             .await?;
 
-        // Since v1.7.0, winning the campaign first proposes a VersionBarrier to enable
-        // the journal-v2 default; the processor stays `BecomingLeader` until that barrier
-        // is applied.
+        // Winning the campaign first proposes a VersionBarrier to enable the journal-v2
+        // default (since v1.7.0) and the unique-random-seeds and vqueues defaults (since
+        // v1.8.0); the processor stays `BecomingLeader` until that barrier is applied.
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
-        let_assert!(Command::VersionBarrier(barrier) = envelope.command);
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<commands::VersionBarrierCommand>();
+        let barrier = envelope.into_inner()?;
         assert!(
             barrier
                 .feature_changes
                 .contains(&PartitionFeatureChange::EnableJournalV2.id())
+        );
+        assert!(
+            barrier
+                .feature_changes
+                .contains(&PartitionFeatureChange::EnableUniqueRandomSeeds.id())
+        );
+        assert!(
+            barrier
+                .feature_changes
+                .contains(&PartitionFeatureChange::EnableVqueues.id())
         );
 
         // Simulate the barrier being applied to the FSM, then complete the transition
         // into a full leader (no further feature changes remain to be proposed).
         ctx.set_enabled_features_in_memory(PersistedFeatures {
             journal_v2: true,
+            unique_random_seeds: true,
+            vqueues: true,
             ..PersistedFeatures::default()
         });
         state
@@ -1288,10 +1209,14 @@ mod tests {
             .expect("valid reader");
         let announce_leader = {
             let record = reader.next().await.unwrap()?;
-            let_assert!(
-                Command::AnnounceLeader(announce_leader) =
-                    record.try_decode::<Envelope>().unwrap()?.command
-            );
+
+            let announce_leader: commands::AnnounceLeaderCommand = record
+                .try_decode::<Envelope<Raw>>()
+                .unwrap()?
+                .into_typed::<AnnounceLeaderCommand>()
+                .into_inner()
+                .unwrap();
+
             announce_leader
         };
 
@@ -1324,15 +1249,19 @@ mod tests {
 
         // Pause: append the PauseInvocation command and clear the token (after the append).
         let request_id = PartitionProcessorRpcRequestId::new();
-        let (reciprocal, _rx) = Reciprocal::mock();
-        let pause_cmd = Command::PauseInvocation(
-            PauseInvocationCommand {
-                invocation_id,
-                request_id: Some(request_id),
-            }
-            .bilrost_encode_to_bytes(),
+        let (reciprocal, _rx) =
+            Reciprocal::<Oneshot<Result<PartitionProcessorRpcResponse, _>>>::mock();
+        let pause_cmd = PauseInvocationCommand {
+            invocation_id,
+            request_id: Some(request_id),
+        };
+
+        leader_state.propose_pause_and_fence(
+            request_id,
+            reciprocal.into(),
+            invocation_id,
+            pause_cmd,
         );
-        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
         // The pause cleared the token, so attempt 1's token is no longer accepted.
         assert!(
             !leader_state
@@ -1367,15 +1296,19 @@ mod tests {
         let mut saw_pause = false;
         for _ in 0..3 {
             let record = reader.next().await.unwrap()?;
-            match record.try_decode::<Envelope>().unwrap()?.command {
-                Command::InvokerEffect(effect) => {
+            let envelope = record.try_decode::<Envelope<Raw>>().unwrap()?;
+            match envelope.kind() {
+                CommandKind::InvokerEffect => {
+                    let effect = envelope
+                        .into_typed::<commands::InvokerEffectCommand>()
+                        .into_inner()?;
                     assert_eq!(effect.invocation_id, invocation_id);
-                    let EffectKind::PinnedDeployment(pinned) = effect.kind else {
+                    let EffectKind::PinnedDeployment(pinned) = Effect::from(effect).kind else {
                         panic!("expected only PinnedDeployment effect kinds")
                     };
                     invoker_effect_deployments.push(pinned.deployment_id);
                 }
-                Command::PauseInvocation(_) => saw_pause = true,
+                CommandKind::PauseInvocation => saw_pause = true,
                 other => panic!("unexpected command appended: {other:?}"),
             }
         }

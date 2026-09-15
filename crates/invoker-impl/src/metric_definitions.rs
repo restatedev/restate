@@ -12,6 +12,8 @@ use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
+// TODO: not emitted at the moment. The invoker no longer tracks its own concurrency quota, the
+// limit is enforced by the vqueues scheduler. A follow-up commit reports these from there.
 pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrency_slots.acquired";
 pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
 pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";

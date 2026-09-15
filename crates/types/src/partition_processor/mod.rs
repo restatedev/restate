@@ -8,12 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub mod control;
-pub mod invocation;
-pub mod timer;
-pub mod v1;
-pub mod v2;
-pub mod vqueues;
+//! Client side abstractions to talk to the partition processor owning a given partition key.
 
-// Drop v1 in v1.9
-pub use v1::{Command, Destination, Envelope, Header, Source};
+pub mod client;
+pub mod requests;

@@ -125,15 +125,6 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
 pub struct MockInvokerHandle;
 
 impl InvokerHandle for MockInvokerHandle {
-    fn invoke(
-        &mut self,
-        _invocation_id: InvocationId,
-        _fencing_token: FencingToken,
-        _invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
     fn vqueue_invoke(
         &mut self,
         _qid: VQueueId,
@@ -143,14 +134,6 @@ impl InvokerHandle for MockInvokerHandle {
         _invocation_target: InvocationTarget,
         _limit_key: LimitKey<ReString>,
         _idempotency_key: Option<ReString>,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
-    fn notify_completion(
-        &mut self,
-        _invocation_id: InvocationId,
-        _entry_index: EntryIndex,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }

@@ -200,6 +200,7 @@ fn generate_patch_state(rng: &mut StdRng, spec: &WorkloadSpec) -> Envelope<Raw> 
             service_id,
             version: None,
             state,
+            request_id: None,
         }),
     )
     .into_raw()

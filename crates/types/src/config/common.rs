@@ -672,16 +672,6 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub experimental: Experimental,
-
-    /// # Explicitly disable the `controlled-idempotent-sharding`
-    ///
-    /// TODO: Removed in Restate v1.8. This is a stopgap solution to
-    /// fix e2e forward compatibility tests.
-    ///
-    /// Since v1.7
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub disable_controlled_idempotent_sharding: bool,
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -767,23 +757,6 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
-    /// Current in heavy development, do not enable this feature unless you are a contributor
-    vqueues,
-
-    /// When enabled, invocations that exhaust their memory budget will yield back to
-    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
-    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
-    ///
-    /// Since v1.7.0
-    invoker_yield,
-
-    /// # Enables unique random seeds
-    ///
-    /// When enabled, invocations get a unique random seed assigned.
-    ///
-    /// Since v1.7.0
-    unique_random_seeds,
-
     /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
@@ -810,37 +783,14 @@ experimental! {
     /// Since v1.7.9
     scoped_state_table_migration,
 
-    /// # Allow scope on Virtual Object targets
-    ///
-    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
-    /// `vqueues` to be enabled as well.
-    ///
-    /// Since v1.7.0
-    scoped_virtual_objects,
-
     /// # Enables Kafka header support for scoped invocations
     ///
     /// When enabled, Kafka subscriptions read `x-restate-scope` and
     /// `x-restate-limit-key` record headers to drive vqueue scope and
-    /// hierarchical limit-key routing. Requires `vqueues` to also be enabled.
+    /// hierarchical limit-key routing.
     ///
     /// Since v1.7.0
     kafka_scope,
-
-    /// # Skip completed invocations during the vqueues migration
-    ///
-    /// When enabled, the vqueues migration does not migrate completed
-    /// invocations into their vqueue's `Finished` stage. Completed invocations
-    /// keep their existing status and are still cleaned up by their
-    /// `CleanInvocationStatus` timer, but they will not appear in vqueue
-    /// introspection. This can significantly speed up the migration on stores
-    /// with a large completion-retention backlog. Requires `vqueues` to also be
-    /// enabled.
-    ///
-    /// By default, all invocations (including completed ones) are migrated.
-    ///
-    /// Since v1.7.5
-    vqueues_migration_skip_completed,
 
     /// Apply completion and journal retention when terminating a preflight invocation.
     ///
@@ -1120,7 +1070,6 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
-            disable_controlled_idempotent_sharding: false,
         }
     }
 }

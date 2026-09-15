@@ -14,8 +14,6 @@ mod lifecycle;
 mod utils;
 
 pub use actions::{Action, ActionCollector};
-// Re-exported so the resume RPC handler can resolve deployments the same way the apply path does.
-pub(crate) use lifecycle::resolve_pinned_deployment;
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
@@ -110,8 +108,7 @@ use restate_types::journal_v2::{
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::state_mut::ExternalStateMutation;
-use restate_types::state_mut::StateMutationVersion;
+use restate_types::state_mut::{ExternalStateMutation, PatchStateResponse, StateMutationVersion};
 use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
@@ -926,7 +923,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.record_created_at,
             );
 
-        self.init_journal_and_invoke(
+        self.init_journal_and_set_invoked(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -1271,9 +1268,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
-    /// invocation_input is `None`, then the journal must have been created before and we only
-    /// invoke the invocation.
-    fn init_journal_and_invoke(
+    /// invocation_input is `None`, then the journal must have been created before.
+    fn init_journal_and_set_invoked(
         &mut self,
         invocation_id: &InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
@@ -1301,7 +1297,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             );
         }
 
-        self.invoke(invocation_id, in_flight_invocation_metadata)
+        self.storage
+            .put_invocation_status(
+                invocation_id,
+                &InvocationStatus::Invoked(in_flight_invocation_metadata),
+            )
+            .map_err(Error::Storage)
     }
 
     /// This method creates a journal for the given invocation id. Depending on `min_restate_version`
@@ -1430,32 +1431,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 idempotency_key: invocation_metadata.idempotency_key.map(ReString::new),
             });
         }
-
-        Ok(())
-    }
-
-    fn invoke(
-        &mut self,
-        invocation_id: &InvocationId,
-        in_flight_invocation_metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error>
-    where
-        S: WriteInvocationStatusTable,
-    {
-        debug_if_leader!(self.is_leader, "Invoke");
-
-        if self.is_leader {
-            self.action_collector.push(Action::Invoke {
-                invocation_id: *invocation_id,
-                invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
-            });
-        }
-        self.storage
-            .put_invocation_status(
-                invocation_id,
-                &InvocationStatus::Invoked(in_flight_invocation_metadata),
-            )
-            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -2480,7 +2455,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.record_created_at,
             );
 
-        self.init_journal_and_invoke(
+        self.init_journal_and_set_invoked(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -2720,27 +2695,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     }
                     .apply(self)
                     .await?;
-                }
-
-                // Special casing for memory-budget yields when vqueues are disabled.
-                // todo: remove when vqueues are always enabled
-                if self.is_leader
-                    && let YieldReason::ExhaustedMemoryBudget { .. } = reason
-                    && let Some(metadata) = invocation_status.get_invocation_metadata()
-                    && metadata.vqueue_id.is_none()
-                {
-                    let Some(invocation_target) = invocation_status.invocation_target().cloned()
-                    else {
-                        return Ok(());
-                    };
-
-                    debug_if_leader!(self.is_leader, "Effect: Yield");
-
-                    self.action_collector.push(Action::Invoke {
-                        invocation_id: effect.invocation_id,
-                        invocation_target,
-                    });
-                    return Ok(());
                 }
 
                 // Submit the journal event if we have one
@@ -3336,7 +3290,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                                 inboxed_invocation,
                                 self.record_created_at,
                             );
-                        self.init_journal_and_invoke(
+                        self.init_journal_and_set_invoked(
                             &invocation_id,
                             in_flight_invocation_meta,
                             invocation_input,
@@ -4597,11 +4551,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if metadata.vqueue_id.is_some() {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
-        } else {
-            self.action_collector.push(Action::Invoke {
-                invocation_id,
-                invocation_target: metadata.invocation_target.clone(),
-            });
         }
 
         self.storage
@@ -5094,17 +5043,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         }
     }
 
-    fn forward_completion(&mut self, invocation_id: InvocationId, entry_index: EntryIndex) {
+    fn forward_completion(&mut self, _: InvocationId, entry_index: EntryIndex) {
         debug_if_leader!(
             self.is_leader,
             restate.journal.index = entry_index,
-            "Forward completion to deployment",
+            "Dropping protocol < v4 completion, because the invoker doesnt support it",
         );
-
-        self.action_collector.push(Action::ForwardCompletion {
-            invocation_id,
-            entry_index,
-        });
+        // Nothing happens because the invoker doesn't support running protocol < v4.
+        // Any pending invocation to it will be terminally failed by the invoker anyway.
     }
 
     fn do_append_response_sink(
@@ -5205,6 +5151,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_id,
             version,
             state,
+            request_id,
         } = state_mutation;
 
         // overwrite all existing key value pairs with the provided ones; delete all entries that
@@ -5224,6 +5171,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     "Ignore state mutation for service id '{:?}' because the expected version '{}' is not matching the actual version '{}'",
                     &service_id, expected, actual
                 );
+                if let Some(request_id) = request_id {
+                    self.action_collector
+                        .push(Action::ForwardPatchStateResponse {
+                            request_id: *request_id,
+                            response: PatchStateResponse::VersionMismatch,
+                        });
+                }
                 return Ok(vqueue_table::Status::Failed);
             }
         }
@@ -5237,6 +5191,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // overwrite existing key value pairs
         for (key, value) in state {
             self.storage.put_user_state(service_id, key, value)?;
+        }
+
+        if let Some(request_id) = request_id {
+            self.action_collector
+                .push(Action::ForwardPatchStateResponse {
+                    request_id: *request_id,
+                    response: PatchStateResponse::Accepted,
+                });
         }
 
         Ok(vqueue_table::Status::Succeeded)

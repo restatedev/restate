@@ -898,11 +898,6 @@ pub trait ScanInvocationStatusTable {
         &self,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
-
-    /// Legacy invoked invocations are those that have not been migrated to vqueues
-    fn scan_legacy_invoked_invocations(
-        &self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
 pub trait WriteInvocationStatusTable {

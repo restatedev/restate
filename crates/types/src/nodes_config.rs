@@ -173,6 +173,7 @@ pub enum ClusterFeature {
     /// re-shard them onto different partitions and break deduplication. For that
     /// reason this flag is persisted in [`NodesConfiguration`] at provisioning
     /// time and cannot be toggled afterward.
+    #[cfg_attr(feature = "clap", clap(skip))]
     ControlledIdempotentSharding,
 }
 

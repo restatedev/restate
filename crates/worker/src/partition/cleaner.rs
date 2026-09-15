@@ -203,9 +203,7 @@ mod tests {
     use futures::{Stream, stream};
     use googletest::prelude::*;
     use prost::Message;
-    use restate_storage_api::invocation_status_table::{
-        InvokedInvocationStatusLite, ScanInvocationStatusTableRange,
-    };
+    use restate_storage_api::invocation_status_table::ScanInvocationStatusTableRange;
     use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
     use restate_storage_api::{StorageError, protobuf_types};
     use restate_types::identifiers::{InvocationId, InvocationUuid, PartitionKey};
@@ -295,14 +293,6 @@ mod tests {
                     })
                 }),
             )
-        }
-
-        fn scan_legacy_invoked_invocations(
-            &self,
-        ) -> restate_storage_api::Result<
-            impl Stream<Item = restate_storage_api::Result<InvokedInvocationStatusLite>> + Send,
-        > {
-            Ok(stream::empty())
         }
     }
 

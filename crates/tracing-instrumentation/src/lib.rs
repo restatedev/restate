@@ -19,7 +19,7 @@ use std::fmt::Display;
 use std::sync::OnceLock;
 
 use opentelemetry::global::{BoxedSpan, BoxedTracer};
-use opentelemetry::trace::{SpanContext, Status, TracerProvider};
+use opentelemetry::trace::{SpanContext, SpanKind, Status, TracerProvider};
 use opentelemetry::{
     Context, trace,
     trace::{Link, TraceContextExt, Tracer},
@@ -215,22 +215,30 @@ fn install_opentelemetry_tracer_provider(
         .expect("service tracing not set");
 
     // Build the tracer provider.
-    let resource = opentelemetry_sdk::Resource::builder_empty()
-        .with_attributes(otel_resource_attributes_from_env())
-        .with_service_name("services")
-        .with_attributes(vec![
-            KeyValue::new(semconv::resource::SERVICE_NAME, "Restate"),
-            KeyValue::new(semconv::resource::SERVICE_NAMESPACE, "Restate"),
-            KeyValue::new(
-                semconv::resource::SERVICE_INSTANCE_ID,
-                format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
-            ),
-            KeyValue::new(
-                semconv::resource::SERVICE_VERSION,
-                env!("CARGO_PKG_VERSION"),
-            ),
-        ])
-        .build();
+    let resource = {
+        let mut builder = opentelemetry_sdk::Resource::builder_empty()
+            // Restate defaults are applied first so that the user-provided `OTEL_RESOURCE_ATTRIBUTES`
+            // and `OTEL_SERVICE_NAME`, applied afterwards, can override them.
+            .with_attributes(vec![
+                KeyValue::new(semconv::resource::SERVICE_NAME, "Restate"),
+                KeyValue::new(semconv::resource::SERVICE_NAMESPACE, "Restate"),
+                KeyValue::new(
+                    semconv::resource::SERVICE_INSTANCE_ID,
+                    format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
+                ),
+                KeyValue::new(
+                    semconv::resource::SERVICE_VERSION,
+                    env!("CARGO_PKG_VERSION"),
+                ),
+            ])
+            .with_attributes(otel_resource_attributes_from_env());
+
+        if let Some(service_name) = env::var("OTEL_SERVICE_NAME").ok().filter(|s| !s.is_empty()) {
+            builder = builder.with_service_name(service_name);
+        }
+
+        builder.build()
+    };
 
     // Parse the endpoint and headers to build the exporter.
     let exporter =
@@ -760,6 +768,7 @@ pub fn create_invocation_start_span(
 
     let builder = tracer
         .span_builder(format!("invocation-start {}", invocation_target.short()))
+        .with_kind(SpanKind::Consumer)
         .with_start_time(start_time)
         .with_trace_id(span_ctx.span_context().trace_id())
         .with_span_id(span_ctx.span_context().span_id())
@@ -927,7 +936,6 @@ pub fn get_services_tracer() -> BoxedTracer {
 
 #[cfg(test)]
 mod test {
-
     use opentelemetry::trace::SpanId;
     use restate_types::invocation::InvocationTarget;
 
