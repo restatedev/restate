@@ -21,6 +21,7 @@ use restate_types::invocation::client::{
 };
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
+use restate_types::state_mut::PatchStateResponse;
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 use restate_vqueues::{VQueueEvent, VQueueHandle};
@@ -108,6 +109,11 @@ pub enum Action {
     /// advances. Followers ignore this action (no live UserLimiter to
     /// notify); only the leader's `leader_state` dispatches it onward.
     RulesUpdated(Box<[RuleUpdate]>),
+
+    ForwardPatchStateResponse {
+        request_id: PartitionProcessorRpcRequestId,
+        response: PatchStateResponse,
+    },
 }
 
 impl From<VQueueEvent> for Action {

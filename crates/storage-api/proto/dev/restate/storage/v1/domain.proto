@@ -411,6 +411,7 @@ message StateMutation {
   ServiceId service_id = 1;
   optional string version = 2;
   repeated KvPair kv_pairs = 3;
+  optional bytes request_id = 4;
 }
 
 message InboxEntry {

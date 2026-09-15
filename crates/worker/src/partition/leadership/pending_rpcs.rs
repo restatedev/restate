@@ -16,8 +16,9 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::net::RpcResponse;
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcError, PartitionProcessorRpcResponse, PatchStateRpcResponse,
 };
+use restate_types::state_mut::PatchStateResponse;
 
 use crate::partition::rpc;
 
@@ -26,14 +27,30 @@ pub(super) type RpcResponseTx<Response> =
 
 /// The outcome of applying an rpc-originated command, as carried by the state machine's replying
 /// [`crate::partition::state_machine::Action`]s.
+#[allow(clippy::large_enum_variant)]
 pub(super) enum ApplyOutcome {
     Legacy(PartitionProcessorRpcResponse),
+    PatchState(PatchStateResponse),
 }
 
-impl From<ApplyOutcome> for PartitionProcessorRpcResponse {
-    fn from(value: ApplyOutcome) -> Self {
+impl TryFrom<ApplyOutcome> for PartitionProcessorRpcResponse {
+    type Error = ();
+
+    fn try_from(value: ApplyOutcome) -> Result<Self, ()> {
         match value {
-            ApplyOutcome::Legacy(response) => response,
+            ApplyOutcome::Legacy(response) => Ok(response),
+            ApplyOutcome::PatchState(_) => Err(()),
+        }
+    }
+}
+
+impl TryFrom<ApplyOutcome> for PatchStateRpcResponse {
+    type Error = ();
+
+    fn try_from(value: ApplyOutcome) -> Result<Self, ()> {
+        match value {
+            ApplyOutcome::PatchState(response) => Ok(response.into()),
+            ApplyOutcome::Legacy(_) => Err(()),
         }
     }
 }
@@ -86,7 +103,10 @@ macro_rules! define_rpc_reciprocals {
     };
 }
 
-define_rpc_reciprocals!(Legacy => PartitionProcessorRpcResponse);
+define_rpc_reciprocals!(
+    Legacy => PartitionProcessorRpcResponse,
+    PatchState => PatchStateRpcResponse,
+);
 
 /// The rpcs whose command has been proposed and whose reply is produced by a state machine
 /// [`crate::partition::state_machine::Action`] once the command is applied.

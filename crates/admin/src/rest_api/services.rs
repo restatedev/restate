@@ -248,6 +248,7 @@ where
         service_id,
         version,
         state: new_state,
+        request_id: None,
     };
 
     let envelop = v2::Envelope::new(

@@ -987,7 +987,7 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use restate_bifrost::Bifrost;
-    use restate_core::network::Reciprocal;
+    use restate_core::network::{Oneshot, Reciprocal};
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -1000,6 +1000,7 @@ mod tests {
     };
     use restate_types::invocation::FencingToken;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
@@ -1258,7 +1259,8 @@ mod tests {
 
         // Pause: append the PauseInvocation command and clear the token (after the append).
         let request_id = PartitionProcessorRpcRequestId::new();
-        let (reciprocal, _rx) = Reciprocal::mock();
+        let (reciprocal, _rx) =
+            Reciprocal::<Oneshot<Result<PartitionProcessorRpcResponse, _>>>::mock();
         let pause_cmd = PauseInvocationCommand {
             invocation_id,
             request_id: Some(request_id),

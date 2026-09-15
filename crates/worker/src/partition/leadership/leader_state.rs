@@ -979,6 +979,14 @@ impl LeaderState {
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);
             }
+            Action::ForwardPatchStateResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::PatchState(response));
+                }
+            }
         }
 
         Ok(())
