@@ -49,6 +49,7 @@ pub const SNAPSHOT_AGE: &str = "restate.partition.snapshot_age.seconds";
 pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
 
 pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal_entry_count.total";
+pub const USAGE_LEADER_JOURNAL_ENTRY_BYTES: &str = "restate.usage.leader_journal_entry_bytes.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
