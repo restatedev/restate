@@ -913,7 +913,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.record_created_at,
             );
 
-        self.init_journal_and_invoke(
+        self.init_journal_and_set_invoked(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -1269,9 +1269,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     }
 
     /// Inits the journal if invocation_input is `Some` and invokes the invocation. If
-    /// invocation_input is `None`, then the journal must have been created before and we only
-    /// invoke the invocation.
-    fn init_journal_and_invoke(
+    /// invocation_input is `None`, then the journal must have been created before.
+    fn init_journal_and_set_invoked(
         &mut self,
         invocation_id: &InvocationId,
         mut in_flight_invocation_metadata: InFlightInvocationMetadata,
@@ -1308,7 +1307,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             );
         }
 
-        self.invoke(invocation_id, in_flight_invocation_metadata)
+        self.storage
+            .put_invocation_status(
+                invocation_id,
+                &InvocationStatus::Invoked(in_flight_invocation_metadata),
+            )
+            .map_err(Error::Storage)
     }
 
     /// This method creates a journal for the given invocation id. Depending on `min_restate_version`
@@ -1408,32 +1412,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 idempotency_key: invocation_metadata.idempotency_key.map(ReString::new),
             });
         }
-
-        Ok(())
-    }
-
-    fn invoke(
-        &mut self,
-        invocation_id: &InvocationId,
-        in_flight_invocation_metadata: InFlightInvocationMetadata,
-    ) -> Result<(), Error>
-    where
-        S: WriteInvocationStatusTable,
-    {
-        debug_if_leader!(self.is_leader, "Invoke");
-
-        if self.is_leader {
-            self.action_collector.push(Action::Invoke {
-                invocation_id: *invocation_id,
-                invocation_target: in_flight_invocation_metadata.invocation_target.clone(),
-            });
-        }
-        self.storage
-            .put_invocation_status(
-                invocation_id,
-                &InvocationStatus::Invoked(in_flight_invocation_metadata),
-            )
-            .map_err(Error::Storage)?;
 
         Ok(())
     }
@@ -2458,7 +2436,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.record_created_at,
             );
 
-        self.init_journal_and_invoke(
+        self.init_journal_and_set_invoked(
             invocation_id,
             in_flight_invocation_metadata,
             invocation_input,
@@ -2698,27 +2676,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     }
                     .apply(self)
                     .await?;
-                }
-
-                // Special casing for memory-budget yields when vqueues are disabled.
-                // todo: remove when vqueues are always enabled
-                if self.is_leader
-                    && let YieldReason::ExhaustedMemoryBudget { .. } = reason
-                    && let Some(metadata) = invocation_status.get_invocation_metadata()
-                    && metadata.vqueue_id.is_none()
-                {
-                    let Some(invocation_target) = invocation_status.invocation_target().cloned()
-                    else {
-                        return Ok(());
-                    };
-
-                    debug_if_leader!(self.is_leader, "Effect: Yield");
-
-                    self.action_collector.push(Action::Invoke {
-                        invocation_id: effect.invocation_id,
-                        invocation_target,
-                    });
-                    return Ok(());
                 }
 
                 // Submit the journal event if we have one
@@ -3314,7 +3271,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                                 inboxed_invocation,
                                 self.record_created_at,
                             );
-                        self.init_journal_and_invoke(
+                        self.init_journal_and_set_invoked(
                             &invocation_id,
                             in_flight_invocation_meta,
                             invocation_input,
@@ -4575,11 +4532,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if metadata.vqueue_id.is_some() {
             self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
-        } else {
-            self.action_collector.push(Action::Invoke {
-                invocation_id,
-                invocation_target: metadata.invocation_target.clone(),
-            });
         }
 
         self.storage

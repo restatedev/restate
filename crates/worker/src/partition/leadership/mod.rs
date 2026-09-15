@@ -37,9 +37,6 @@ use restate_invoker_impl::{
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::invocation_status_table::{
-    InvokedInvocationStatusLite, ScanInvocationStatusTable,
-};
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
@@ -69,13 +66,11 @@ use restate_wal_protocol::control::{
 };
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{Envelope, Raw};
-use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
 use self::durability_tracker::DurabilityTracker;
-use self::fencing::FencingTokens;
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
@@ -634,14 +629,11 @@ where
                     InvokerStorageReader::new(partition_store.clone()),
                     invoker_tx,
                     &config.worker.invoker.service_client,
-                    &config.worker.invoker,
                     schema,
-                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
                     node_ctx.invoker_capacity.action_token_bucket.clone(),
-                    node_ctx.invoker_capacity.memory_pool.clone(),
                 )?;
 
-            let mut invoker_handle = invoker.handle();
+            let invoker_handle = invoker.handle();
 
             // Register the direct invoker-status handle so DataFusion reads bypass
             // the partition processor's main select! loop. The guard is moved into
@@ -707,16 +699,7 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled() {
-                // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
-                // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
-                // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
-                // invocations anyways.
-                FencingTokens::default()
-            } else {
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
-            };
-
+            assert!(processor.fsm().features().is_vqueues_enabled());
             let timer_service = TimerService::new(
                 TokioClock,
                 config.worker.num_timers_in_memory_limit(),
@@ -805,7 +788,6 @@ where
                 invoker_task_guard.into_handle(),
                 self_proposer,
                 invoker_rx,
-                fencing_tokens,
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
@@ -816,46 +798,6 @@ where
         } else {
             unreachable!("Can only become the leader if I was the candidate before!");
         }
-    }
-
-    // This function is only called when vqueues are not enabled, in the vqueues world, the
-    // the scheduler takes care of resuming those invocations. This should be removed once
-    // we no longer have non-vqueues based invocations.
-    async fn resume_invoked_invocations(
-        invoker_handle: &mut InvokerChannelServiceHandle,
-        partition_store: &mut PartitionStore,
-    ) -> Result<FencingTokens, Error> {
-        let mut invoked_invocations = std::pin::pin!(
-            partition_store
-                .scan_legacy_invoked_invocations()
-                .map_err(Error::Storage)?
-        );
-
-        let start = tokio::time::Instant::now();
-        // Seed a fresh fencing token per resumed invocation so the leader accepts its effects and
-        // can later fence stragglers from a re-invoke. On a fresh term there are no in-flight
-        // stragglers yet, so the starting tokens only need to be distinct from the ones minted
-        // later, which they are (the counter keeps advancing).
-        let mut fencing_tokens = FencingTokens::default();
-        let mut count = 0usize;
-        while let Some(invoked_invocation) = invoked_invocations.next().await {
-            let InvokedInvocationStatusLite {
-                invocation_id,
-                invocation_target,
-            } = invoked_invocation?;
-            let fencing_token = fencing_tokens.mint(invocation_id);
-            invoker_handle
-                .invoke(invocation_id, fencing_token, invocation_target)
-                .map_err(Error::Invoker)?;
-            count += 1;
-        }
-        debug!(
-            "Leader partition resumed {} invocations in {:?}",
-            count,
-            start.elapsed(),
-        );
-
-        Ok(fencing_tokens)
     }
 
     async fn become_follower(&mut self) {
