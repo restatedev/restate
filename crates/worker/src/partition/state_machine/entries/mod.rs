@@ -50,7 +50,9 @@ use restate_types::journal_v2::{
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
-use crate::metric_definitions::USAGE_LEADER_JOURNAL_ENTRY_COUNT;
+use crate::metric_definitions::{
+    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
@@ -173,6 +175,11 @@ where
                     "entry" => entry.ty().prometheus_label(),
                 )
                 .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => entry.ty().prometheus_label(),
+                )
+                .increment(entry.serialized_size() as u64);
             }
 
             // --- Process entry effect
