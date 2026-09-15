@@ -14,8 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::{
-    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionKey,
-    PartitionProcessorRpcRequestId, WithPartitionKey,
+    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId,
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
@@ -54,6 +53,21 @@ pub struct PartitionProcessorRpcRequest {
     /// Time at which the source node sent the request.
     pub sent_at: Option<MillisSinceEpoch>,
     pub inner: PartitionProcessorRpcRequestInner,
+}
+
+impl PartitionProcessorRpcRequest {
+    pub fn new(
+        request_id: PartitionProcessorRpcRequestId,
+        partition_id: PartitionId,
+        inner: PartitionProcessorRpcRequestInner,
+    ) -> Self {
+        Self {
+            request_id,
+            partition_id,
+            sent_at: Some(MillisSinceEpoch::now()),
+            inner,
+        }
+    }
 }
 
 impl WireEncode for PartitionProcessorRpcRequest {
@@ -147,41 +161,6 @@ pub enum PartitionProcessorRpcRequestInner {
     PauseInvocation {
         invocation_id: InvocationId,
     },
-}
-
-impl WithPartitionKey for PartitionProcessorRpcRequestInner {
-    fn partition_key(&self) -> PartitionKey {
-        match self {
-            PartitionProcessorRpcRequestInner::AppendInvocation(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendSignal(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
-                invocation_id.partition_key()
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
