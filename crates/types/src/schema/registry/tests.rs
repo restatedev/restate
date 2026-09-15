@@ -36,6 +36,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         journal_retention: None,
         workflow_completion_retention: None,
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -58,6 +59,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        always_eager_state_keys: vec![],
         retry_policy_on_max_attempts: None,
     }
 }

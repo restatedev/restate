@@ -3,7 +3,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "title": "Endpoint",
-  "description": "Restate endpoint manifest v3",
+  "description": "Restate endpoint manifest v5",
   "properties": {
     "protocolMode": {
       "title": "ProtocolMode",
@@ -174,7 +174,12 @@
                 },
                 "enableLazyState":  {
                   "type": "boolean",
-                  "description": "If true, lazy state is enabled."
+                  "description": "If true, lazy state is enabled. Acts as the default for state keys not matched by alwaysEagerStateKeys."
+                },
+                "alwaysEagerStateKeys":  {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "description": "When enableLazyState is true, a whitelist of exact state keys to still preload eagerly into the invocation. Best-effort: bounded by the server eager state size limit, so an entry that doesn't fit is served lazily instead. Ignored when enableLazyState is false (all state is already preloaded)."
                 },
                 "ingressPrivate":  {
                   "type": "boolean",
@@ -243,7 +248,12 @@
           },
           "enableLazyState":  {
             "type": "boolean",
-            "description": "If true, lazy state is enabled."
+            "description": "If true, lazy state is enabled. Acts as the default for state keys not matched by alwaysEagerStateKeys."
+          },
+          "alwaysEagerStateKeys":  {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "When enableLazyState is true, a whitelist of exact state keys to still preload eagerly into the invocation. Best-effort: bounded by the server eager state size limit, so an entry that doesn't fit is served lazily instead. Ignored when enableLazyState is false (all state is already preloaded)."
           },
           "ingressPrivate":  {
             "type": "boolean",

@@ -36,6 +36,7 @@ use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
 use http::{HeaderValue, Uri};
+use restate_util_string::ReString;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -616,6 +617,12 @@ impl SchemaUpdater {
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
 
+        let always_eager_state_keys: Vec<ReString> = service
+            .always_eager_state_keys
+            .into_iter()
+            .map(ReString::from)
+            .collect();
+
         Ok(ServiceRevision {
             name: service_name.to_string(),
             handlers,
@@ -630,6 +637,7 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
+            always_eager_state_keys,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -1274,6 +1282,12 @@ impl Handler {
             });
         }
 
+        let always_eager_state_keys: Vec<ReString> = handler
+            .always_eager_state_keys
+            .into_iter()
+            .map(ReString::from)
+            .collect();
+
         Ok(Self {
             name: handler.name.to_string(),
             target_ty: ty,
@@ -1303,6 +1317,7 @@ impl Handler {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
+            always_eager_state_keys,
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
         })
