@@ -11,6 +11,7 @@
 mod durability_tracker;
 mod fencing;
 mod leader_state;
+mod pending_rpcs;
 mod self_proposer;
 pub mod trim_queue;
 
@@ -27,7 +28,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, warn};
 
-use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
+use restate_core::network::TransportConnect;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
@@ -48,10 +49,9 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
-use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
-};
+use restate_types::net::RpcResponse;
+use restate_types::net::ingest::IngestRecord;
+use restate_types::net::partition_processor::PartitionProcessorRpcError;
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
 use restate_types::schema::Schema;
@@ -65,12 +65,14 @@ use restate_wal_protocol::control::{
     AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
 };
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::v2::{Envelope, Raw};
+use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
 use self::durability_tracker::DurabilityTracker;
+pub(crate) use self::pending_rpcs::{CommitCallback, RpcReciprocal};
+use self::pending_rpcs::{PendingReply, RpcResponseTx};
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::{self, Cleaner};
@@ -88,9 +90,6 @@ use super::{processor::*, rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
-type RpcReciprocal =
-    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
-type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -156,18 +155,28 @@ pub(crate) enum LeaderEvent {
 }
 
 #[derive(derive_more::Debug)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetworkServiceEvent {
+    /// Propose a single command; `reply` decides when and how the caller is answered.
     RpcProposal {
-        proposal: rpc::RpcProposal,
-        #[debug(skip)]
-        reciprocal: RpcReciprocal,
+        keys: Keys,
+        cmd: ErasedCommand,
+        reply: PendingReply,
     },
+    /// Forward already-built records; the caller is answered on commit.
     IngestRecords {
         records: Vec<IngestRecord>,
         #[debug(skip)]
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
     },
+}
+
+impl NetworkServiceEvent {
+    fn fail(self, error: PartitionProcessorRpcError) {
+        match self {
+            NetworkServiceEvent::RpcProposal { reply, .. } => reply.fail(error),
+            NetworkServiceEvent::IngestRecords { on_commit, .. } => on_commit.call(Err(error)),
+        }
+    }
 }
 
 enum State {
@@ -936,34 +945,34 @@ pub(super) enum RpcProcessingPermit {
 }
 
 impl RpcProcessingPermit {
-    pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
+    pub fn buffer_rpc_proposal<R>(self, proposal: rpc::RpcProposal<R>, reciprocal: RpcResponseTx<R>)
+    where
+        RpcReciprocal: From<RpcResponseTx<R>>,
+        Result<R, PartitionProcessorRpcError>: RpcResponse,
+        R: Send + Sync + 'static,
+    {
         match self {
             RpcProcessingPermit::NonLeader { partition_id } => {
                 reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
             }
             RpcProcessingPermit::Leader(permit) => {
+                let (keys, cmd, reply_on) = proposal.into_parts();
                 permit.send(NetworkServiceEvent::RpcProposal {
-                    proposal,
-                    reciprocal,
+                    keys,
+                    cmd,
+                    reply: PendingReply::new(reply_on, reciprocal),
                 });
             }
         }
     }
 
-    pub fn buffer_forwarded_records(
-        self,
-        records: Vec<IngestRecord>,
-        reciprocal: IngestReciprocal,
-    ) {
+    pub fn buffer_forwarded_records(self, records: Vec<IngestRecord>, on_commit: CommitCallback) {
         match self {
             RpcProcessingPermit::NonLeader { partition_id } => {
-                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into());
+                on_commit.call(Err(PartitionProcessorRpcError::NotLeader(partition_id)));
             }
             RpcProcessingPermit::Leader(permit) => {
-                permit.send(NetworkServiceEvent::IngestRecords {
-                    records,
-                    reciprocal,
-                });
+                permit.send(NetworkServiceEvent::IngestRecords { records, on_commit });
             }
         }
     }
@@ -1255,7 +1264,12 @@ mod tests {
             request_id: Some(request_id),
         };
 
-        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
+        leader_state.propose_pause_and_fence(
+            request_id,
+            reciprocal.into(),
+            invocation_id,
+            pause_cmd,
+        );
         // The pause cleared the token, so attempt 1's token is no longer accepted.
         assert!(
             !leader_state
