@@ -8,15 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
+use metrics::{Unit, describe_counter, describe_histogram};
 
 pub const INVOKER_ENQUEUE: &str = "restate.invoker.enqueue.total";
 pub const INVOKER_INVOCATION_TASKS: &str = "restate.invoker.invocation_tasks.total";
-// TODO: not emitted at the moment. The invoker no longer tracks its own concurrency quota, the
-// limit is enforced by the vqueues scheduler. A follow-up commit reports these from there.
-pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrency_slots.acquired";
-pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
-pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
 pub const INVOKER_TASK_DURATION: &str = "restate.invoker.task_duration.seconds";
 pub const INVOKER_EAGER_STATE_TRUNCATED: &str = "restate.invoker.eager_state_truncated.total";
 
@@ -36,28 +31,10 @@ pub(crate) fn describe_metrics() {
         "Number of invocations that were added to the queue"
     );
 
-    describe_gauge!(
-        INVOKER_CONCURRENCY_LIMIT,
-        Unit::Count,
-        "Concurrency limit (slots) for invoker tasks"
-    );
-
     describe_counter!(
         INVOKER_INVOCATION_TASKS,
         Unit::Count,
         "Invocation task operation"
-    );
-
-    describe_counter!(
-        INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
-        Unit::Count,
-        "Number of concurrency slots acquired"
-    );
-
-    describe_counter!(
-        INVOKER_CONCURRENCY_SLOTS_RELEASED,
-        Unit::Count,
-        "Number of concurrency slots released"
     );
 
     describe_histogram!(
