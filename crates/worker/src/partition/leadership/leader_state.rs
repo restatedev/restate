@@ -1055,6 +1055,14 @@ impl LeaderState {
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);
             }
+            Action::PatchStateResponse {
+                request_id,
+                response,
+            } => {
+                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
+                    response_tx.send_patch_state(response.into());
+                }
+            }
         }
 
         Ok(())

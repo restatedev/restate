@@ -30,7 +30,9 @@ use crate::journal_v2::Signal;
 use crate::net::partition_processor::{
     AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionProcessorRpcError,
     PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    PatchStateRpcRequest, PatchStateRpcResponse,
 };
+use crate::state_mut::{ExternalStateMutation, PatchStateResponse};
 
 use super::client::{PartitionProcessorRpc, WireResponseError};
 
@@ -640,5 +642,42 @@ impl PartitionProcessorRpc for PauseInvocation {
             PartitionProcessorRpcResponse::PauseInvocation(res) => Ok(res.into()),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
+    }
+}
+
+/// Mutate the state of a virtual object.
+#[derive(Debug, Clone)]
+pub struct PatchState {
+    pub mutation: ExternalStateMutation,
+}
+
+impl WithPartitionKey for PatchState {
+    fn partition_key(&self) -> PartitionKey {
+        self.mutation.service_id.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for PatchState {
+    type Response = PatchStateResponse;
+    type Wire = PatchStateRpcRequest;
+
+    fn into_wire(
+        self,
+        request_id: PartitionProcessorRpcRequestId,
+        _partition_id: PartitionId,
+    ) -> Self::Wire {
+        PatchStateRpcRequest {
+            request_id,
+            mutation: self.mutation,
+        }
+    }
+
+    fn from_wire(
+        _request_id: PartitionProcessorRpcRequestId,
+        response: Result<PatchStateRpcResponse, PartitionProcessorRpcError>,
+    ) -> Result<Self::Response, WireResponseError> {
+        response
+            .map(Into::into)
+            .map_err(WireResponseError::Processor)
     }
 }
