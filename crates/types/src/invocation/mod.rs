@@ -140,6 +140,11 @@ impl fmt::Display for WorkflowHandlerType {
     bilrost::Oneof,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+// NOTE: Do not add a variant to InvocationTargetType without skipping a
+// version first. This is a `bilrost::Oneof`, and a node running an older
+// version decodes an unrecognized tag as `Self::Service` instead of
+// failing, so it would silently treat the new target type as a plain
+// service.
 pub enum InvocationTargetType {
     Service,
     #[bilrost(tag = 1)]
@@ -880,18 +885,16 @@ impl ServiceInvocationSpanContext {
         }
     }
 
-    /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
-    /// when the invocation completes.
+    /// Create a [`SpanContext`] for this invocation.
+    ///
+    /// Valid unsampled contexts are retained for propagation without enabling recording.
     ///
     /// This function is **deterministic**.
     pub fn start(
         invocation_id: &InvocationId,
         related_span: SpanRelation,
     ) -> ServiceInvocationSpanContext {
-        if !related_span.is_sampled() {
-            // don't waste any time or storage space on unsampled traces
-            // sampling based on parent is default otel behaviour; we do the same for the
-            // non-parent background invoke relationship
+        if !related_span.is_valid() {
             return ServiceInvocationSpanContext::empty();
         }
 
@@ -1093,11 +1096,11 @@ impl SpanRelation {
         Self::Linked(ctx.into())
     }
 
-    fn is_sampled(&self) -> bool {
+    fn is_valid(&self) -> bool {
         match self {
             SpanRelation::None => false,
-            SpanRelation::Parent(span_context) => span_context.is_sampled(),
-            SpanRelation::Linked(span_context) => span_context.is_sampled(),
+            SpanRelation::Parent(span_context) => span_context.is_valid(),
+            SpanRelation::Linked(span_context) => span_context.is_valid(),
         }
     }
 }
@@ -1278,10 +1281,6 @@ impl SpanContextDef {
 
     pub fn into_trace_state(self) -> TraceStateDef {
         self.trace_state
-    }
-
-    fn is_sampled(&self) -> bool {
-        self.trace_flags().is_sampled()
     }
 }
 

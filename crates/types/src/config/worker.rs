@@ -39,7 +39,9 @@ const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
-const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 5000;
+// Max successive merges are disabled by default to reduce the CPU during
+// writes/flushes.
+const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 0;
 
 /// # Worker options
 #[serde_as]
@@ -391,7 +393,11 @@ pub struct InvokerOptions {
 
     /// # Limit number of concurrent invocations from this node
     ///
-    /// Number of concurrent invocations that can be processed by the invoker.
+    /// Number of invocations that can be concurrently processed by this node.
+    ///
+    /// Note: Default has been increased from 1000 to 24000 since v1.8.0. This value
+    /// sets the limit on per restate-server node level. In prior versions, the limit
+    /// was applied per-partition.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
     /// # Eager state size limit (since v1.7.0)
@@ -627,7 +633,7 @@ impl Default for InvokerOptions {
             ),
             message_size_limit: None,
             tmp_dir: None,
-            concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
             invocation_throttling: None,

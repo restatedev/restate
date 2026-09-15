@@ -12,7 +12,7 @@ use super::ConnectInfo;
 
 use http::Request;
 use opentelemetry::global::ObjectSafeSpan;
-use opentelemetry::trace::{SpanContext, TraceContextExt};
+use opentelemetry::trace::{SpanContext, SpanKind, TraceContextExt};
 use restate_tracing_instrumentation as instrumentation;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{InvocationTarget, SpanRelation};
@@ -52,7 +52,8 @@ pub(crate) fn prepare_tracing_span<B>(
             tags = (
                 client.socket.address = client_addr,
                 client.socket.port = port as i64
-            )
+            ),
+            fields = (with_kind = SpanKind::Server)
         )
     } else {
         // unix sockets connections don't have a port, address is also likely "anonymous"
@@ -61,7 +62,8 @@ pub(crate) fn prepare_tracing_span<B>(
             prefix = "ingress",
             id = invocation_id,
             target = invocation_target,
-            tags = (client.socket.address = client_addr)
+            tags = (client.socket.address = client_addr),
+            fields = (with_kind = SpanKind::Server)
         )
     };
 

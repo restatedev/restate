@@ -18,14 +18,9 @@ use std::{
 
 use metrics::{Counter, counter, gauge};
 
-use restate_types::config::Configuration;
-
-use crate::{
-    InvokerId,
-    metric_definitions::{
-        INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
-        INVOKER_CONCURRENCY_SLOTS_RELEASED,
-    },
+use crate::metric_definitions::{
+    INVOKER_CONCURRENCY_LIMIT, INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
+    INVOKER_CONCURRENCY_SLOTS_RELEASED,
 };
 
 /// Bundles the available-slots atomic with the released-slots counter
@@ -51,22 +46,11 @@ pub(super) struct InvokerConcurrencyQuota {
 }
 
 impl InvokerConcurrencyQuota {
-    pub(super) fn new(invoker_id: impl Into<InvokerId>, quota: Option<NonZeroUsize>) -> Self {
-        let invoker_id = invoker_id.into();
-        let invoker_id = invoker_id.0.to_string();
+    pub(super) fn new(quota: Option<NonZeroUsize>) -> Self {
+        // With vqueues, the concurrency is global and shared across all invokers
         let inner = match quota {
             Some(available_slots) => {
-                if Configuration::pinned()
-                    .common
-                    .experimental
-                    .is_vqueues_enabled()
-                {
-                    // With vqueues, the concurrency is global and shared across all invokers
-                    gauge!(INVOKER_CONCURRENCY_LIMIT).set(available_slots.get() as f64);
-                } else {
-                    gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => invoker_id)
-                        .set(available_slots.get() as f64);
-                }
+                gauge!(INVOKER_CONCURRENCY_LIMIT).set(available_slots.get() as f64);
 
                 let acquired_counter = counter!(INVOKER_CONCURRENCY_SLOTS_ACQUIRED);
                 let released_counter = counter!(INVOKER_CONCURRENCY_SLOTS_RELEASED);
@@ -80,17 +64,7 @@ impl InvokerConcurrencyQuota {
                 }
             }
             None => {
-                if Configuration::pinned()
-                    .common
-                    .experimental
-                    .is_vqueues_enabled()
-                {
-                    // With vqueues, the concurrency is global and shared across all invokers
-                    gauge!(INVOKER_CONCURRENCY_LIMIT).set(f64::INFINITY);
-                } else {
-                    gauge!(INVOKER_CONCURRENCY_LIMIT, "invoker_id" => invoker_id)
-                        .set(f64::INFINITY);
-                }
+                gauge!(INVOKER_CONCURRENCY_LIMIT).set(f64::INFINITY);
 
                 InvokerConcurrencyQuotaInner::Unlimited
             }
@@ -132,16 +106,6 @@ impl InvokerConcurrencyQuota {
                 ConcurrencySlot {
                     inner: Some(Arc::clone(slots)),
                 }
-            }
-        }
-    }
-
-    #[cfg(test)]
-    pub(super) fn available_slots(&self) -> usize {
-        match &self.inner {
-            InvokerConcurrencyQuotaInner::Unlimited => usize::MAX,
-            InvokerConcurrencyQuotaInner::Limited { slots, .. } => {
-                slots.available_slots.load(Ordering::Relaxed)
             }
         }
     }

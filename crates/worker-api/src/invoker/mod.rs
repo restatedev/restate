@@ -10,13 +10,11 @@
 
 pub mod capacity;
 mod effects;
-pub mod entry_enricher;
 mod handle;
 pub mod invocation_reader;
 pub mod status_handle;
 
 pub use effects::*;
-pub use entry_enricher::EntryEnricher;
 pub use handle::*;
 pub use invocation_reader::{InvocationReaderError, JournalKind, JournalMetadata};
 pub use restate_storage_api::vqueue_table::scheduler::YieldReason;
