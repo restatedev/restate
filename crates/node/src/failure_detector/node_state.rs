@@ -62,6 +62,20 @@ pub enum NodeState {
     FailingOver,
 }
 
+/// The condition that determines the failure detector's target state.
+///
+/// This is test-only because production applies the resulting state transition directly. The
+/// deterministic harness uses the cause to hold only local-observer age expirations without
+/// manufacturing a different target state.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FailureDetectorTransitionCause {
+    AgeExpired,
+    TerminalConnection,
+    FailingOver,
+    Alive,
+}
+
 impl NodeState {
     pub fn is_potentially_alive(&self) -> bool {
         matches!(self, NodeState::Alive | NodeState::Suspect { .. })
@@ -106,9 +120,27 @@ pub struct Node {
     // The connection swims on gossip's swimlane.
     #[debug("is_closed?={}, is_none?={}", connection.as_ref().is_some_and(|c| c.is_closed()), connection.is_none())]
     connection: Option<LazyConnection>,
+    #[cfg(test)]
+    terminally_closed_for_test: bool,
 }
 
 impl Node {
+    #[cfg(test)]
+    pub(super) fn failure_detector_transition_cause(
+        &self,
+        opts: &GossipOptions,
+    ) -> FailureDetectorTransitionCause {
+        if self.is_gone() {
+            FailureDetectorTransitionCause::TerminalConnection
+        } else if self.gossip_age > opts.gossip_failure_threshold.get() {
+            FailureDetectorTransitionCause::AgeExpired
+        } else if self.in_failover {
+            FailureDetectorTransitionCause::FailingOver
+        } else {
+            FailureDetectorTransitionCause::Alive
+        }
+    }
+
     pub fn new(gen_node_id: GenerationalNodeId) -> Self {
         Self {
             gen_node_id,
@@ -118,6 +150,8 @@ impl Node {
             in_failover: false,
             nc_version_witness: Version::INVALID,
             connection: None,
+            #[cfg(test)]
+            terminally_closed_for_test: false,
         }
     }
     /// Resets the node state if the generation is higher than the current one.
@@ -138,6 +172,10 @@ impl Node {
             self.in_failover = false;
             self.nc_version_witness = nc_version;
             self.connection = None;
+            #[cfg(test)]
+            {
+                self.terminally_closed_for_test = false;
+            }
             true
         } else if instance_ts > self.instance_ts {
             // note that instance_ts can be 0 if the node is not alive yet, we accept that we don't
@@ -286,7 +324,21 @@ impl Node {
     }
 
     pub fn is_gone(&self) -> bool {
-        self.connection.as_ref().is_some_and(|c| c.is_closed())
+        self.connection.as_ref().is_some_and(|c| c.is_closed()) || {
+            #[cfg(test)]
+            {
+                self.terminally_closed_for_test
+            }
+            #[cfg(not(test))]
+            {
+                false
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn mark_terminally_closed_for_test(&mut self) {
+        self.terminally_closed_for_test = true;
     }
 
     pub fn send_gossip(
