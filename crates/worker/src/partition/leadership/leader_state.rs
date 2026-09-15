@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::future::Future;
 use std::ops::RangeBounds;
 use std::pin::Pin;
@@ -26,7 +24,6 @@ use tokio_stream::wrappers::{ReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
-use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
@@ -39,7 +36,7 @@ use restate_types::invocation::PurgeInvocationRequest;
 use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::BodyWithKeys;
 use restate_types::logs::Keys;
-use restate_types::net::ingest::{IngestRecord, ResponseStatus};
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcResponse,
 };
@@ -67,7 +64,6 @@ use crate::partition::leadership::{
     Error, InvokerStream, LeaderEvent, NetworkServiceEvent, RpcReciprocal, TimerService,
 };
 use crate::partition::processor::{FsmAccess, Processor};
-use crate::partition::rpc::{ReplyOn, RpcProposal};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
 use crate::partition::state_machine::Action;
@@ -75,6 +71,7 @@ use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
+use super::pending_rpcs::{ApplyOutcome, CommitCallback, PendingReply, PendingRpcs};
 
 const BATCH_READY_UP_TO: usize = 10;
 const NETWORK_EVENTS_BUFFER_SIZE: usize = 1;
@@ -97,7 +94,7 @@ pub struct LeaderState {
     invoker_task_handle: Option<TaskHandle<()>>,
     self_proposer: SelfProposer,
 
-    awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
+    awaiting_rpc_actions: PendingRpcs,
     awaiting_rpc_self_propose: FuturesUnordered<SelfAppendFuture>,
 
     /// Leader-local fencing tokens for in-flight invoker attempts. Used to drop stale invoker
@@ -426,15 +423,11 @@ impl LeaderState {
         }
 
         // Reply to all RPCs with not a leader
-        for (request_id, reciprocal) in self.awaiting_rpc_actions.drain() {
-            trace!(
-                %request_id,
-                "Failing rpc because I lost leadership",
-            );
-            reciprocal.send(Err(PartitionProcessorRpcError::LostLeadership(
+        self.awaiting_rpc_actions
+            .fail_all(PartitionProcessorRpcError::LostLeadership(
                 self.partition_id,
-            )))
-        }
+            ));
+
         for fut in self.awaiting_rpc_self_propose.iter_mut() {
             fut.fail_with_lost_leadership(self.partition_id);
         }
@@ -447,17 +440,9 @@ impl LeaderState {
         // buffered, so a non-blocking drain loses nothing.
         self.network_events_stream.close();
         while let Some(Some(event)) = self.network_events_stream.next().now_or_never() {
-            match event {
-                NetworkServiceEvent::RpcProposal { reciprocal, .. } => reciprocal.send(Err(
-                    PartitionProcessorRpcError::LostLeadership(self.partition_id),
-                )),
-                NetworkServiceEvent::IngestRecords { reciprocal, .. } => reciprocal.send(
-                    ResponseStatus::NotLeader {
-                        of: self.partition_id,
-                    }
-                    .into(),
-                ),
-            }
+            event.fail(PartitionProcessorRpcError::LostLeadership(
+                self.partition_id,
+            ));
         }
     }
 }
@@ -465,56 +450,46 @@ impl LeaderState {
 struct LeaderEventHandlerState<'a> {
     partition_key_range: KeyRange,
     self_proposer: &'a mut SelfProposer,
-    awaiting_rpc_actions: &'a mut HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
+    awaiting_rpc_actions: &'a mut PendingRpcs,
     awaiting_rpc_self_propose: &'a mut FuturesUnordered<SelfAppendFuture>,
     fencing_tokens: &'a mut FencingTokens,
 }
 
 impl LeaderEventHandlerState<'_> {
-    fn handle_rpc_proposal(&mut self, proposal: RpcProposal, reciprocal: RpcReciprocal) {
-        let (keys, cmd, reply_on) = proposal.into_parts();
-
-        match reply_on {
-            ReplyOn::Apply { request_id } => {
-                self.handle_rpc_proposal_command(request_id, reciprocal, keys, cmd)
-            }
-            ReplyOn::Commit { response } => {
-                self.append_and_respond_asynchronously(keys, cmd, reciprocal, response)
-            }
-            ReplyOn::ApplyAndFence {
+    fn handle_rpc_proposal(&mut self, keys: Keys, cmd: ErasedCommand, reply: PendingReply) {
+        match reply {
+            PendingReply::OnApply {
                 request_id,
-                invocation_id,
+                fence: None,
+                reciprocal,
+            } => self.handle_rpc_proposal_command(request_id, reciprocal, keys, cmd),
+            PendingReply::OnApply {
+                request_id,
+                fence: Some(invocation_id),
+                reciprocal,
             } => self.propose_pause_and_fence(request_id, reciprocal, invocation_id, keys, cmd),
+            PendingReply::OnCommit(response) => {
+                self.append_and_respond_asynchronously(keys, cmd, response)
+            }
         }
     }
 
     fn handle_rpc_proposal_command(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        reciprocal: RpcReciprocal,
         keys: Keys,
         cmd: ErasedCommand,
     ) {
-        match self.awaiting_rpc_actions.entry(request_id) {
-            Entry::Occupied(mut o) => {
-                // In this case, someone already proposed this command,
-                // let's just replace the reciprocal and fail the old one to avoid keeping it dangling
-                let old_reciprocal = o.insert(reciprocal);
-                trace!(%request_id, "Replacing rpc with newer request");
-                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
-                    "retried".to_string(),
-                )));
-            }
-            Entry::Vacant(v) => {
-                // In this case, no one proposed this command yet, let's try to propose it
-                if let Err(e) = self.self_proposer.self_propose_erased(keys, cmd) {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                } else {
-                    v.insert(reciprocal);
-                }
-            }
+        if !self.awaiting_rpc_actions.insert(request_id, reciprocal) {
+            // A retry of an already proposed command; the newer reciprocal replaced the older one.
+            return;
+        }
+
+        if let Err(error) = self.self_proposer.self_propose_erased(keys, cmd)
+            && let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id)
+        {
+            reciprocal.fail(PartitionProcessorRpcError::Internal(error.to_string()));
         }
     }
 
@@ -532,9 +507,7 @@ impl LeaderEventHandlerState<'_> {
     fn propose_pause_and_fence(
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
-        reciprocal: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
+        reciprocal: RpcReciprocal,
         invocation_id: InvocationId,
         keys: Keys,
         cmd: impl Into<ErasedCommand>,
@@ -543,27 +516,23 @@ impl LeaderEventHandlerState<'_> {
         debug_assert!(keys == Keys::Single(invocation_id.partition_key()));
         debug_assert!(cmd.kind() == CommandKind::PauseInvocation);
 
-        match self.awaiting_rpc_actions.entry(request_id) {
-            Entry::Occupied(mut o) => {
-                // Retry of an already-proposed pause: replace the reciprocal and fail the old one.
-                // The original successful propose already cleared the token; don't disturb a newer
-                // attempt's token from here.
-                let old_reciprocal = o.insert(reciprocal);
-                trace!(%request_id, "Replacing rpc with newer request");
-                old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
-                    "retried".to_string(),
-                )));
+        if !self.awaiting_rpc_actions.insert(request_id, reciprocal) {
+            // Retry of an already-proposed pause. The original successful propose already cleared
+            // the token; don't disturb a newer attempt's token from here.
+            return;
+        }
+
+        match self
+            .self_proposer
+            .self_propose_erased(Keys::Single(invocation_id.partition_key()), cmd)
+        {
+            Ok(_) => {
+                // Clear ONLY here -- after the append succeeded. See the method doc.
+                self.fencing_tokens.clear(&invocation_id);
             }
-            Entry::Vacant(v) => {
-                if let Err(e) = self
-                    .self_proposer
-                    .self_propose_erased(Keys::Single(invocation_id.partition_key()), cmd)
-                {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                } else {
-                    v.insert(reciprocal);
-                    // Clear ONLY here -- after the append succeeded. See the method doc.
-                    self.fencing_tokens.clear(&invocation_id);
+            Err(error) => {
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.fail(PartitionProcessorRpcError::Internal(error.to_string()));
                 }
             }
         }
@@ -578,35 +547,28 @@ impl LeaderEventHandlerState<'_> {
         &mut self,
         keys: Keys,
         cmd: ErasedCommand,
-        reciprocal: RpcReciprocal,
-        success_response: PartitionProcessorRpcResponse,
+        response: CommitCallback,
     ) {
         match self.self_proposer.append_with_notification(keys, cmd) {
             Ok(result) => {
-                self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
-                    result.commit_token,
-                    |result: Result<(), PartitionProcessorRpcError>| {
-                        reciprocal.send(result.map(|_| success_response));
-                    },
-                ));
+                self.awaiting_rpc_self_propose
+                    .push(SelfAppendFuture::new(result.commit_token, response));
             }
-            Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+            Err(e) => response.call(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
     }
 
-    fn forward_many_and_respond_on_commit<F>(
+    fn forward_many_and_respond_on_commit(
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
-        callback: F,
-    ) where
-        F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
-    {
+        response: CommitCallback,
+    ) {
         match self.self_proposer.forward_many_with_notification(records) {
             Ok(result) => {
                 self.awaiting_rpc_self_propose
-                    .push(SelfAppendFuture::new(result.commit_token, callback));
+                    .push(SelfAppendFuture::new(result.commit_token, response));
             }
-            Err(e) => callback(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+            Err(e) => response.call(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
         }
     }
 }
@@ -790,30 +752,11 @@ impl LeaderEventHandler for Arc<RuleBook> {
 impl LeaderEventHandler for NetworkServiceEvent {
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
         match self {
-            NetworkServiceEvent::RpcProposal {
-                proposal,
-                reciprocal,
-            } => state.handle_rpc_proposal(proposal, reciprocal),
-            NetworkServiceEvent::IngestRecords {
-                records,
-                reciprocal,
-            } => {
-                state.forward_many_and_respond_on_commit(
-                    records.into_iter(),
-                    move |result: Result<(), PartitionProcessorRpcError>| {
-                        let status = match result {
-                            Ok(()) => ResponseStatus::Ack,
-                            Err(
-                                PartitionProcessorRpcError::NotLeader(id)
-                                | PartitionProcessorRpcError::LostLeadership(id),
-                            ) => ResponseStatus::NotLeader { of: id },
-                            Err(PartitionProcessorRpcError::Internal(msg)) => {
-                                ResponseStatus::Internal { msg }
-                            }
-                        };
-                        reciprocal.send(status.into());
-                    },
-                );
+            NetworkServiceEvent::RpcProposal { keys, cmd, reply } => {
+                state.handle_rpc_proposal(keys, cmd, reply)
+            }
+            NetworkServiceEvent::IngestRecords { records, on_commit } => {
+                state.forward_many_and_respond_on_commit(records.into_iter(), on_commit);
             }
         }
         Ok(())
@@ -886,8 +829,8 @@ impl LeaderState {
                 completion_expiry_time,
                 ..
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Output(
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(PartitionProcessorRpcResponse::Output(
                         InvocationOutput {
                             request_id,
                             invocation_id,
@@ -905,14 +848,14 @@ impl LeaderState {
                 is_new_invocation,
                 ..
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Submitted(
-                        SubmittedInvocationNotification {
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::Submitted(SubmittedInvocationNotification {
                             request_id,
                             execution_time,
                             is_new_invocation,
-                        },
-                    )));
+                        }),
+                    ));
                 }
             }
             Action::ForwardNotification {
@@ -928,70 +871,70 @@ impl LeaderState {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::KillInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::KillInvocation(response.into()),
+                    ));
                 }
             }
             Action::ForwardCancelResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::CancelInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::CancelInvocation(response.into()),
+                    ));
                 }
             }
             Action::ForwardPurgeInvocationResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::PurgeInvocation(response.into()),
+                    ));
                 }
             }
             Action::ForwardPurgeJournalResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeJournal(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::PurgeJournal(response.into()),
+                    ));
                 }
             }
             Action::ForwardResumeInvocationResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::ResumeInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::ResumeInvocation(response.into()),
+                    ));
                 }
             }
             Action::ForwardPauseInvocationResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PauseInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::PauseInvocation(response.into()),
+                    ));
                 }
             }
             Action::ForwardRestartAsNewInvocationResponse {
                 request_id,
                 response,
             } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                        response.into(),
-                    )));
+                if let Some(reciprocal) = self.awaiting_rpc_actions.remove(&request_id) {
+                    reciprocal.reply(ApplyOutcome::Legacy(
+                        PartitionProcessorRpcResponse::RestartAsNewInvocation(response.into()),
+                    ));
                 }
             }
             Action::VQEvent(inbox_event) => {
@@ -1050,47 +993,13 @@ impl LeaderState {
     }
 }
 
-trait CallbackInner: Send + Sync + 'static {
-    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>);
-}
-
-impl<F> CallbackInner for F
-where
-    F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
-{
-    fn call(self: Box<Self>, result: Result<(), PartitionProcessorRpcError>) {
-        self(result)
-    }
-}
-
-struct Callback {
-    inner: Box<dyn CallbackInner>,
-}
-
-impl Callback {
-    fn call(self, result: Result<(), PartitionProcessorRpcError>) {
-        self.inner.call(result);
-    }
-}
-
-impl<I> From<I> for Callback
-where
-    I: CallbackInner,
-{
-    fn from(value: I) -> Self {
-        Self {
-            inner: Box::new(value),
-        }
-    }
-}
-
 struct SelfAppendFuture {
     commit_token: CommitToken,
-    callback: Option<Callback>,
+    callback: Option<CommitCallback>,
 }
 
 impl SelfAppendFuture {
-    fn new(commit_token: CommitToken, callback: impl Into<Callback>) -> Self {
+    fn new(commit_token: CommitToken, callback: impl Into<CommitCallback>) -> Self {
         Self {
             commit_token,
             callback: Some(callback.into()),

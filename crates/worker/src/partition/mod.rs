@@ -71,9 +71,8 @@ use restate_types::net::ingest::{
 };
 use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcResponse,
 };
-use restate_types::net::{RpcRequest, ingest};
+use restate_types::net::{RpcRequest, RpcResponse, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -91,7 +90,7 @@ use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::RpcProcessingPermit;
+use self::leadership::{CommitCallback, RpcProcessingPermit, RpcReciprocal};
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -748,15 +747,19 @@ where
             .handle_leader_query(self.ctx.vqueues(), leader_query_cmd);
     }
 
-    async fn on_pp_rpc_request(
+    async fn on_pp_rpc_request<Request, Response>(
         &mut self,
-        response_tx: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        body: PartitionProcessorRpcRequest,
+        response_tx: Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>,
+        body: Request,
         schemas: &Schema,
         permit: RpcProcessingPermit,
-    ) {
+    ) where
+        Request: RpcRequest<Response = Result<Response, PartitionProcessorRpcError>>,
+        Result<Response, PartitionProcessorRpcError>: RpcResponse,
+        RpcReciprocal: From<Reciprocal<Oneshot<Result<Response, PartitionProcessorRpcError>>>>,
+        Response: Send + Sync + 'static,
+        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request, Response>,
+    {
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
             self.leadership_state.partition_id(),
@@ -954,7 +957,21 @@ where
         permit: RpcProcessingPermit,
     ) {
         let (reciprocal, request) = msg.split();
-        permit.buffer_forwarded_records(request.records, reciprocal);
+        let on_commit =
+            CommitCallback::from(move |result: Result<(), PartitionProcessorRpcError>| {
+                let status = match result {
+                    Ok(()) => ResponseStatus::Ack,
+                    Err(
+                        PartitionProcessorRpcError::NotLeader(of)
+                        | PartitionProcessorRpcError::LostLeadership(of),
+                    ) => ResponseStatus::NotLeader { of },
+                    Err(PartitionProcessorRpcError::Internal(msg)) => {
+                        ResponseStatus::Internal { msg }
+                    }
+                };
+                reciprocal.send(status.into());
+            });
+        permit.buffer_forwarded_records(request.records, on_commit);
     }
 
     // --- Apply new commands/records
