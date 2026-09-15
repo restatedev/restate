@@ -11,7 +11,6 @@
 use std::pin;
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::warn;
@@ -29,9 +28,7 @@ use restate_types::net::remote_query_scanner::{
 
 use crate::context::QueryContext;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::scanner_task::{ScannerHandle, ScannerTask};
-
-pub(super) type ScannerMap = DashMap<ScannerId, ScannerHandle, ahash::RandomState>;
+use crate::scanner_task::{ScannerMap, ScannerTask};
 
 pub struct RemoteQueryScannerServer {
     query_context: QueryContext,
@@ -88,7 +85,9 @@ impl RemoteQueryScannerServer {
                         ServiceMessage::Rpc(msg) if msg.msg_type() == RemoteQueryScannerClose::TYPE => {
                             let close_req = msg.into_typed::<RemoteQueryScannerClose>();
                             let (reciprocal, close_req) = close_req.split();
-                            scanners.remove(&close_req.scanner_id);
+                            if let Some((_, scanner)) = scanners.remove(&close_req.scanner_id) {
+                                scanner.cancel();
+                            }
                             let res = RemoteQueryScannerClosed {
                                 scanner_id: close_req.scanner_id,
                             };
@@ -111,6 +110,9 @@ impl RemoteQueryScannerServer {
         let peer = scan_req.peer();
         let (reciprocal, body) = scan_req.split();
         let partition_id = body.partition_id;
+        let supports_extended_open_response =
+            body.expected_partition_owner.is_some() || body.fragment.is_some();
+        let owner_validation_requested = body.expected_partition_owner.is_some();
         let scanner_id = body.scanner_id.unwrap_or_else(|| {
             *next_scanner_id += 1;
             ScannerId(my_node_id(), *next_scanner_id)
@@ -121,14 +123,15 @@ impl RemoteQueryScannerServer {
         // (e.g. counter wraparound or replay) and we surface it as a failure rather
         // than clobber an in-flight scanner.
         if scanners.contains_key(&scanner_id) {
-            warn!(
-                "Refusing to open scanner {scanner_id} in partition {partition_id}: id already in use",
+            let message = format!(
+                "refusing to open scanner {scanner_id} in partition {partition_id}: id already in use"
             );
-            reciprocal.send(RemoteQueryScannerOpened::Failure);
+            warn!("{message}");
+            reciprocal.send(open_failure(message, supports_extended_open_response));
             return;
         }
 
-        if let Err(e) = ScannerTask::spawn(
+        let fragment_applied = match ScannerTask::spawn(
             scanner_id,
             query_context,
             remote_scanner_manager,
@@ -136,12 +139,21 @@ impl RemoteQueryScannerServer {
             scanners,
             body,
         ) {
-            warn!("Unable to create a scanner in partition {partition_id}:  {e}");
-            reciprocal.send(RemoteQueryScannerOpened::Failure);
-            return;
-        }
+            Ok(fragment_applied) => fragment_applied,
+            Err(e) => {
+                let message =
+                    format!("unable to create a scanner in partition {partition_id}: {e}");
+                warn!("{message}");
+                reciprocal.send(open_failure(message, supports_extended_open_response));
+                return;
+            }
+        };
 
-        reciprocal.send(RemoteQueryScannerOpened::Success { scanner_id });
+        reciprocal.send(open_success(
+            scanner_id,
+            owner_validation_requested,
+            fragment_applied,
+        ));
     }
 
     fn on_next(scanners: &ScannerMap, req: Incoming<Rpc<RemoteQueryScannerNext>>) {
@@ -172,5 +184,62 @@ impl RemoteQueryScannerServer {
                 .reciprocal
                 .send(RemoteQueryScannerNextResult::NoSuchScanner(scanner_id));
         }
+    }
+}
+
+fn open_success(
+    scanner_id: ScannerId,
+    owner_validation_requested: bool,
+    fragment_applied: bool,
+) -> RemoteQueryScannerOpened {
+    if fragment_applied {
+        RemoteQueryScannerOpened::SuccessWithFragment { scanner_id }
+    } else if owner_validation_requested {
+        RemoteQueryScannerOpened::SuccessWithOwnerValidation { scanner_id }
+    } else {
+        RemoteQueryScannerOpened::Success { scanner_id }
+    }
+}
+
+fn open_failure(message: String, supports_extended_response: bool) -> RemoteQueryScannerOpened {
+    if supports_extended_response {
+        RemoteQueryScannerOpened::FailureWithMessage { message }
+    } else {
+        RemoteQueryScannerOpened::Failure
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::GenerationalNodeId;
+
+    use super::*;
+
+    #[test]
+    fn open_response_acknowledges_new_request_semantics() {
+        let scanner_id = ScannerId(GenerationalNodeId::new(1, 2), 3);
+
+        assert_eq!(
+            open_success(scanner_id, false, false),
+            RemoteQueryScannerOpened::Success { scanner_id }
+        );
+        assert_eq!(
+            open_success(scanner_id, true, false),
+            RemoteQueryScannerOpened::SuccessWithOwnerValidation { scanner_id }
+        );
+        assert_eq!(
+            open_success(scanner_id, true, true),
+            RemoteQueryScannerOpened::SuccessWithFragment { scanner_id }
+        );
+        assert_eq!(
+            open_failure("owner changed".to_owned(), true),
+            RemoteQueryScannerOpened::FailureWithMessage {
+                message: "owner changed".to_owned()
+            }
+        );
+        assert_eq!(
+            open_failure("not sent to an old client".to_owned(), false),
+            RemoteQueryScannerOpened::Failure
+        );
     }
 }
