@@ -109,6 +109,14 @@ impl VQueueStatistics {
         }
     }
 
+    fn is_fully_empty(&self) -> bool {
+        self.num_inbox == 0
+            && self.num_running == 0
+            && self.num_paused == 0
+            && self.num_suspended == 0
+            && self.num_finished == 0
+    }
+
     /// Returns the last timestamp that the vqueue was created, enqueued, started, attempted,
     /// or finished.
     pub fn last_modified_at(&self) -> UniqueTimestamp {
@@ -278,6 +286,12 @@ pub struct VQueueMetaRef<'a> {
 }
 
 impl<'a> VQueueMetaRef<'a> {
+    /// A vqueue is obsolete when it is unpaused and holds no entries in any stage,
+    /// including `Finished`. Obsolete vqueue metadata records can be purged from storage.
+    pub fn is_obsolete(&self) -> bool {
+        !self.queue_is_paused && self.stats.is_fully_empty()
+    }
+
     /// A vqueue is considered active when it's of interest to the scheduler.
     ///
     /// The scheduler cares about vqueues that have entries that are already running or that are waiting
@@ -379,10 +393,10 @@ impl VQueueMeta {
         self.len() == 0
     }
 
-    /// A vqueue is obsolete when it holds no entries in any stage, including
-    /// `Finished`. Obsolete vqueue metadata records can be purged from storage.
+    /// A vqueue is obsolete when it is unpaused and holds no entries in any stage,
+    /// including `Finished`. Obsolete vqueue metadata records can be purged from storage.
     pub fn is_obsolete(&self) -> bool {
-        self.is_empty() && self.stats.num_finished == 0
+        !self.queue_is_paused && self.stats.is_fully_empty()
     }
 
     pub fn total_waiting(&self) -> u64 {
@@ -613,6 +627,19 @@ mod tests {
             }),
             ..metrics(last_transition_at_ms, first_runnable_at_ms, has_started)
         }
+    }
+
+    #[test]
+    fn paused_empty_vqueue_is_not_obsolete() {
+        let at = ts(BASE_TS_MS);
+        let mut meta = VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+        assert!(meta.is_obsolete());
+
+        meta.apply_update(&Update::new(at, Action::PauseVQueue {}));
+        assert!(!meta.is_obsolete());
+
+        meta.apply_update(&Update::new(at, Action::ResumeVQueue {}));
+        assert!(meta.is_obsolete());
     }
 
     #[test]
@@ -934,5 +961,6 @@ mod tests {
         );
         assert_eq!(borrowed.stats.num_inbox(), owned.stats.num_inbox());
         assert_eq!(borrowed.is_active(), owned.is_active());
+        assert_eq!(borrowed.is_obsolete(), owned.is_obsolete());
     }
 }

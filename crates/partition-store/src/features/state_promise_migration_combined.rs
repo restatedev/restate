@@ -58,14 +58,16 @@ impl StorageFeature for super::MigratedToScopedPromiseAndStateTablesFeature {
         features.is_migrated_to_scoped_promise_and_state_tables = true;
     }
 
-    fn enable(
+    async fn enable(
         storage: &mut PartitionStore,
         cancel: &CancellationToken,
         config: &Configuration,
         finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError> {
-        super::MigratedToScopedPromiseTableFeature::enable(storage, cancel, config, finalization)?;
-        super::MigratedToScopedStateTableFeature::enable(storage, cancel, config, finalization)?;
+        super::MigratedToScopedPromiseTableFeature::enable(storage, cancel, config, finalization)
+            .await?;
+        super::MigratedToScopedStateTableFeature::enable(storage, cancel, config, finalization)
+            .await?;
         Ok(())
     }
 }
