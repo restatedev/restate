@@ -78,12 +78,14 @@ use restate_types::invocation::{
 };
 use restate_types::limit_key::parse_limit_key;
 use restate_types::live::Live;
+use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
-use restate_types::sharding::WithPartitionKey;
+use restate_types::sharding::{PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{Scope, limit_key};
 use restate_util_string::{ReString, RestrictedValue, RestrictedValueError};
-use restate_wal_protocol::{Command, DedupInformation, Destination, Envelope};
+use restate_wal_protocol::v2::commands::InvokeCommand;
+use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
 
 /// Generated protobuf bindings for `dev.restate.ingress.ingestion`
 /// (see `protobuf/ingestion_svc.proto`).
@@ -108,7 +110,7 @@ use crate::metric_definitions::{
 /// [`IngestionService`] configured with the given ingestion client, schema
 /// resolver and maximum send-window size.
 pub(crate) fn ingestion_server<T, Schemas>(
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     schemas: Live<Schemas>,
     max_window_size: NonZeroU32,
     max_message_size: usize,
@@ -157,14 +159,14 @@ pub(super) const RECLAIM_WINDOW_THRESHOLD: u32 = 50; // 50% of max window size
 /// and the configured maximum send-window size handed to each stream.
 #[derive(Clone)]
 pub(crate) struct IngestionService<T, Schemas> {
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     schemas: Live<Schemas>,
     max_window_size: NonZeroU32,
 }
 
 impl<T, Schemas> IngestionService<T, Schemas> {
     fn new(
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         schemas: Live<Schemas>,
         max_window_size: NonZeroU32,
     ) -> Self {
@@ -233,7 +235,7 @@ enum State {
 
 impl<I, S, Schemas> IngestionStream<I, S, Schemas>
 where
-    I: Ingestion<Envelope>,
+    I: Ingestion<Envelope<Raw>>,
     S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
     Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
 {
@@ -566,11 +568,14 @@ where
                     return Err(Error::GoAway(GoAwayError::OffsetViolation));
                 }
 
-                let envelope = self.build_envelope(state, invocation)?;
+                let (partition_key, envelope) = self.build_envelope(state, invocation)?;
 
                 let commit = self
                     .ingestion_client
-                    .ingest(envelope.partition_key(), envelope)
+                    .ingest(
+                        partition_key,
+                        BodyWithKeys::new(envelope.into_raw(), Keys::Single(partition_key)),
+                    )
                     .await
                     .map_err(|err| Error::Ingestion(offset, err))?
                     .map(|_| (offset, invocation_size));
@@ -590,7 +595,7 @@ where
         &self,
         state: &ProcessorState,
         record: IngestionInvocation,
-    ) -> Result<Envelope, Error>
+    ) -> Result<(PartitionKey, Envelope<InvokeCommand>), Error>
     where
         Schemas: InvocationTargetResolver,
     {
@@ -787,11 +792,8 @@ where
             restate_types::invocation::Source::Ingress(PartitionProcessorRpcRequestId::default())
         };
 
-        let mut invocation = Box::new(ServiceInvocation::initialize(
-            invocation_id,
-            invocation_target,
-            source,
-        ));
+        let mut invocation =
+            ServiceInvocation::initialize(invocation_id, invocation_target, source);
 
         invocation.with_related_span(SpanRelation::parent(span_context));
         invocation.argument = record.payload;
@@ -805,21 +807,18 @@ where
         invocation.limit_key = limit_key;
 
         let dedup = match state.dedup_mode {
-            DedupMode::None => None,
-            DedupMode::OffsetBased(producer_id) => {
-                Some(DedupInformation::producer(producer_id, record.offset))
-            }
-        };
-
-        let header = restate_wal_protocol::Header {
-            source: restate_wal_protocol::Source::Ingress {},
-            dest: Destination::Processor {
-                partition_key: invocation.partition_key(),
-                dedup,
+            DedupMode::None => Dedup::None,
+            DedupMode::OffsetBased(producer_id) => Dedup::Arbitrary {
+                prefix: None,
+                producer_id: producer_id.into(),
+                seq: record.offset,
             },
         };
 
-        Ok(Envelope::new(header, Command::Invoke(invocation)))
+        Ok((
+            invocation.partition_key(),
+            Envelope::new(dedup, InvokeCommand::from(invocation)),
+        ))
     }
 }
 

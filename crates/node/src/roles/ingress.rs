@@ -20,7 +20,7 @@ use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
-use restate_wal_protocol::Envelope;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::PartitionProcessorRpcClient;
 
 type IngressHttp<T> = HyperServerIngress<
@@ -37,7 +37,7 @@ impl<T: TransportConnect> IngressRole<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
         mut ingress_options: BoxLiveLoad<IngressOptions>,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         address_book: &mut AddressBook,
         health: HealthStatus<IngressStatus>,
         networking: Networking<T>,

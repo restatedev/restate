@@ -32,6 +32,8 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures::{FutureExt, StreamExt};
 use prost::Message;
+use restate_wal_protocol::v2::commands::InvokeCommand;
+use restate_wal_protocol::v2::{CommandKind, Dedup, Envelope, Raw};
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -46,7 +48,6 @@ use restate_types::live::Live;
 use restate_types::logs::Keys;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetMetadata};
 use restate_types::time::MillisSinceEpoch;
-use restate_wal_protocol::{Command, DedupInformation, Destination, Envelope};
 
 use crate::ingestion::ingestion_svc::proto::ingestion_request::Kind;
 use crate::ingestion::ingestion_svc::proto::{
@@ -76,7 +77,7 @@ const TEST_WINDOW_SIZE: u32 = MIN_WINDOW_SIZE.get();
 /// responses in the background.
 fn stream<F>(max_window_size: u32, handler: F) -> TestStream
 where
-    F: MockIngestHandler<Envelope> + Send + 'static,
+    F: MockIngestHandler<Envelope<Raw>> + Send + 'static,
 {
     let (request_tx, request_rx) = mpsc::unbounded_channel();
 
@@ -232,17 +233,18 @@ fn invocation_with_payload(offset: u64, payload_len: usize) -> IngestionInvocati
 /// arrives, see [`initial_window_is_topped_up_with_the_first_ack`].
 fn started_stream<F>(max_window_size: u32, start: IngestionStart, handler: F) -> TestStream
 where
-    F: MockIngestHandler<Envelope> + Send + 'static,
+    F: MockIngestHandler<Envelope<Raw>> + Send + 'static,
 {
     let stream = stream(max_window_size, handler);
     stream.send(Kind::Start(start));
     stream
 }
 
-fn single_invoke(envelope: Envelope) -> (Box<ServiceInvocation>, Option<DedupInformation>) {
-    let_assert!(Destination::Processor { dedup, .. } = envelope.header.dest);
-    let_assert!(Command::Invoke(invocation) = envelope.command);
-    (invocation, dedup)
+fn single_invoke(envelope: Envelope<Raw>) -> (ServiceInvocation, Dedup) {
+    assert_eq!(envelope.kind(), CommandKind::Invoke);
+    let envelope = envelope.into_typed::<InvokeCommand>();
+    let (header, command) = envelope.split().expect("to decode");
+    (command.into(), header.dedup().clone())
 }
 
 /// The producer id the server derives for [`PRODUCER`]; pins the hashing that
@@ -256,12 +258,16 @@ fn expected_producer_id() -> u128 {
 /// Ingestion handler that commits every record right away; for tests that either
 /// never get as far as ingesting a record, or that do not care about *when*
 /// records commit.
-fn auto_commit(_keys: Keys, _record: Envelope) -> Ready<Result<RecordCommit, IngestionError>> {
+fn auto_commit(_keys: Keys, _record: Envelope<Raw>) -> Ready<Result<RecordCommit, IngestionError>> {
     std::future::ready(Ok(RecordCommit::resolved()))
 }
 
 /// One ingested record, together with the resolver of its pending commit.
-type IngestedRecord = (oneshot::Sender<Result<(), CancelledError>>, Keys, Envelope);
+type IngestedRecord = (
+    oneshot::Sender<Result<(), CancelledError>>,
+    Keys,
+    Envelope<Raw>,
+);
 
 /// The test side of an [`IngestHandler`]: every ingested record shows up here and
 /// stays uncommitted until the test resolves it.
@@ -274,14 +280,14 @@ impl IngestHandlerResolver {
     /// of `f`.
     async fn handle_next<F>(&mut self, f: F)
     where
-        F: FnOnce(Keys, Envelope) -> Result<(), CancelledError>,
+        F: FnOnce(Keys, Envelope<Raw>) -> Result<(), CancelledError>,
     {
         let (o, keys, envelope) = self.rx.recv().await.unwrap();
         o.send(f(keys, envelope)).unwrap();
     }
 
     /// Waits for the next ingested record, commits it and returns its envelope.
-    async fn commit_next(&mut self) -> Envelope {
+    async fn commit_next(&mut self) -> Envelope<Raw> {
         let (o, _keys, envelope) = self.rx.recv().await.unwrap();
         o.send(Ok(())).unwrap();
         envelope
@@ -301,11 +307,11 @@ impl IngestHandler {
     }
 }
 
-impl MockIngestHandler<Envelope> for IngestHandler {
+impl MockIngestHandler<Envelope<Raw>> for IngestHandler {
     fn handle(
         &mut self,
         keys: Keys,
-        record: Envelope,
+        record: Envelope<Raw>,
     ) -> impl Future<Output = Result<RecordCommit, IngestionError>> + Send + Sync + 'static {
         let (one_tx, one_rx) = oneshot::channel::<Result<(), CancelledError>>();
         self.tx.send((one_tx, keys, record)).unwrap();
@@ -342,7 +348,11 @@ async fn ingests_records_and_replenishes_window() {
             assert_eq!(invoke.argument, Bytes::from_static(b"payload"));
             assert_eq!(
                 dedup,
-                Some(DedupInformation::producer(expected_producer_id(), 0))
+                Dedup::Arbitrary {
+                    prefix: None,
+                    producer_id: expected_producer_id().into(),
+                    seq: 0
+                }
             );
             Ok(())
         })
@@ -372,7 +382,11 @@ async fn ingests_records_and_replenishes_window() {
                 assert_eq!(invoke.argument, Bytes::from_static(b"payload"));
                 assert_eq!(
                     dedup,
-                    Some(DedupInformation::producer(expected_producer_id(), i))
+                    Dedup::Arbitrary {
+                        prefix: None,
+                        producer_id: expected_producer_id().into(),
+                        seq: i
+                    }
                 );
                 Ok(())
             })
@@ -772,12 +786,6 @@ async fn record_rejections_carry_the_offset() {
             "Unexpected idempotency key",
         ),
         (
-            "scope without vqueues enabled",
-            with_service(SERVICE, |record| record.scope = Some("scope".to_owned())),
-            ErrorKind::BadRequest,
-            "Scopes requires VQueues",
-        ),
-        (
             "limit key without a scope",
             with_service(SERVICE, |record| {
                 record.limit_key = Some("limit".to_owned())
@@ -807,7 +815,7 @@ async fn oversized_record_is_rejected_by_the_ingestion_client() {
     let mut stream = started_stream(
         TEST_WINDOW_SIZE,
         start(Some(defaults(Some(SERVICE), Some(HANDLER)))),
-        |_keys, _record: Envelope| {
+        |_keys, _record: Envelope<Raw>| {
             std::future::ready::<Result<RecordCommit, IngestionError>>(Err(
                 IngestionError::RecordMaxSizeExceeded {
                     size: 1024,
@@ -936,7 +944,7 @@ async fn deduplication_can_be_disabled() {
 
     stream.send(Kind::Invocation(invocation(0)));
     let (invoke, dedup) = single_invoke(resolver.commit_next().await);
-    assert_eq!(dedup, None);
+    assert_eq!(dedup, Dedup::None);
     assert_eq!(invoke.invocation_target.service_name(), SERVICE);
 
     // Offsets are still tracked and reported even without deduplication.

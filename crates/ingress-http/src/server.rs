@@ -19,6 +19,7 @@ use hyper::body::Incoming;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
 use metrics::counter;
+use restate_wal_protocol::v2::{Envelope, Raw};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::either::Either;
 use tokio_util::sync::CancellationToken;
@@ -44,7 +45,6 @@ use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 use restate_util_time::DurationExt;
-use restate_wal_protocol::Envelope;
 
 use super::*;
 use crate::handler::Handler;
@@ -64,7 +64,7 @@ pub struct HyperServerIngress<T, Schemas, Dispatcher> {
     request_size_limit: usize,
     http2_max_concurrent_streams: Option<NonZeroU32>,
     ingestion_api_options: IngestionApiOptions,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     // Parameters to build the layers
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
@@ -80,7 +80,7 @@ where
 {
     pub fn from_options(
         ingress_options: &IngressOptions,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         listeners: Listeners<HttpIngressPort>,
         dispatcher: Dispatcher,
         schemas: Live<Schemas>,
@@ -110,7 +110,7 @@ where
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         listeners: Listeners<HttpIngressPort>,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         concurrency_limit: usize,
         request_size_limit: usize,
         http2_max_concurrent_streams: Option<NonZeroU32>,
