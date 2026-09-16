@@ -828,14 +828,14 @@ experimental! {
     /// Since v1.7.10
     vqueue_obsolete_cleanup,
 
-    /// # Write invocation response result using reference
+    /// # Write invocation response result into output table
     ///
     /// Instead of embedding the response result (which can be huge)
     /// in the invocation status, we instead keep a reference to the
-    /// output journal entry.
+    /// output that is written to the output table
     ///
     /// Since v1.8.0
-    write_result_reference,
+    write_output_table,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

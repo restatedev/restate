@@ -69,12 +69,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.8*
     EnablePreflightInvocationTerminationRetention = 5,
-    /// Write a reference to the output journal
-    /// instead of embedding the invocation result
-    /// in the completion status.
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
     ///
     /// *Since v1.8.0*
-    EnableWriteResultReference,
+    EnableWriteOutputTable,
 }
 
 impl PartitionFeatureChange {
@@ -93,7 +93,7 @@ impl PartitionFeatureChange {
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
-            Self::EnableWriteResultReference => &RESTATE_VERSION_1_8_0,
+            Self::EnableWriteOutputTable => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -118,8 +118,8 @@ impl PartitionFeatureChange {
                 &mut features.preflight_invocation_termination_retention,
                 true,
             ),
-            Self::EnableWriteResultReference => {
-                !std::mem::replace(&mut features.write_result_reference, true)
+            Self::EnableWriteOutputTable => {
+                !std::mem::replace(&mut features.write_output_table, true)
             }
         }
     }
@@ -178,13 +178,13 @@ pub struct PersistedFeatures {
     #[bilrost(tag(5))]
     pub preflight_invocation_termination_retention: bool,
 
-    /// Write a reference to the output journal
-    /// instead of embedding the invocation result
-    /// in the completion status.
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
     ///
     /// *Since v1.8.0*
     #[bilrost(tag(6))]
-    pub write_result_reference: bool,
+    pub write_output_table: bool,
 }
 
 impl PersistedFeatures {

@@ -560,16 +560,10 @@ where
                     .push(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention);
             }
 
-            if config
-                .common
-                .experimental
-                .is_write_result_reference_enabled()
-                && !processor
-                    .fsm()
-                    .features()
-                    .is_write_result_reference_enabled()
+            if config.common.experimental.is_write_output_table_enabled()
+                && !processor.fsm().features().is_write_output_table_enabled()
             {
-                feature_changes.push(PartitionFeatureChange::EnableWriteResultReference);
+                feature_changes.push(PartitionFeatureChange::EnableWriteOutputTable);
             }
 
             if !feature_changes.is_empty() {
@@ -1188,7 +1182,7 @@ mod tests {
                 vqueues_skip_completed: true,
                 unique_random_seeds: true,
                 preflight_invocation_termination_retention: true,
-                write_result_reference: true,
+                write_output_table: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

@@ -50,12 +50,12 @@ pub trait PartitionFeatures {
         self.has_feature(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention)
     }
 
-    /// Write a reference to the output journal
-    /// instead of embedding the invocation result
-    /// in the completion status.
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
     ///
     /// *Since v1.8.0*
-    fn is_write_result_reference_enabled(&self) -> bool;
+    fn is_write_output_table_enabled(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -69,7 +69,7 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
                 self.preflight_invocation_termination_retention
             }
-            PartitionFeatureChange::EnableWriteResultReference => self.write_result_reference,
+            PartitionFeatureChange::EnableWriteOutputTable => self.write_output_table,
         }
     }
 
@@ -99,8 +99,8 @@ impl PartitionFeatures for PersistedFeatures {
     }
 
     #[inline]
-    fn is_write_result_reference_enabled(&self) -> bool {
-        self.write_result_reference
+    fn is_write_output_table_enabled(&self) -> bool {
+        self.write_output_table
     }
 }
 
@@ -131,8 +131,8 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
         (**self).is_preflight_invocation_termination_retention_enabled()
     }
 
-    fn is_write_result_reference_enabled(&self) -> bool {
-        (**self).is_write_result_reference_enabled()
+    fn is_write_output_table_enabled(&self) -> bool {
+        (**self).is_write_output_table_enabled()
     }
 }
 
@@ -161,7 +161,7 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
         (**self).is_preflight_invocation_termination_retention_enabled()
     }
 
-    fn is_write_result_reference_enabled(&self) -> bool {
-        (**self).is_write_result_reference_enabled()
+    fn is_write_output_table_enabled(&self) -> bool {
+        (**self).is_write_output_table_enabled()
     }
 }

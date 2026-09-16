@@ -318,7 +318,7 @@ where
             .processor
             .fsm()
             .features()
-            .is_write_result_reference_enabled()
+            .is_write_output_table_enabled()
             && pinned_service_protocol_version.is_none_or(|v| v >= ServiceProtocolVersion::V4);
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
