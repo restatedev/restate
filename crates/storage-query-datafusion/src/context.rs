@@ -262,12 +262,6 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::keyed_service_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
         crate::locks::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -446,12 +440,6 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::invocation_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::keyed_service_status::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),
