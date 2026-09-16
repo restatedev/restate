@@ -130,13 +130,14 @@ impl ConnectionShared {
             )
             .is_ok()
         {
-            self.concurrency.wake_waiters();
+            self.concurrency.close();
         }
     }
 
     /// Mark the connection as closed and wake any pending waiters.
     fn close(&self) {
         self.state.store(STATE_CLOSED, Ordering::Relaxed);
+        self.concurrency.close();
         if let Some(h2) = self.h2.get() {
             h2.cancel.cancel();
         }
@@ -303,7 +304,7 @@ where
     }
 
     /// Returns `true` if the connection no longer accepts new requests.
-    pub fn is_closed(&self) -> bool {
+    pub fn is_retired(&self) -> bool {
         matches!(
             self.shared.state.load(Ordering::Relaxed),
             STATE_CLOSED | STATE_DRAINING
@@ -349,10 +350,6 @@ where
             _ => unreachable!(),
         }
 
-        self.poll_acquire(cx)
-    }
-
-    fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         if self.permit.is_some() {
             return Poll::Ready(Ok(()));
         }
@@ -363,16 +360,9 @@ where
 
         let acquire = self.acquire.as_mut().unwrap();
 
-        let permit = acquire.poll_unpin(cx);
-        // Register the capacity waiter before rechecking retirement: draining
-        // may have broadcast before this poll created its notification future.
-        if self.is_closed() {
-            self.acquire = None;
-            return Poll::Ready(Err(Error::Closed));
-        }
-
-        self.permit = Some(ready!(permit));
+        let permit = ready!(acquire.poll_unpin(cx));
         self.acquire = None;
+        self.permit = Some(permit.map_err(|_| Error::Closed)?);
 
         Poll::Ready(Ok(()))
     }
@@ -1020,98 +1010,38 @@ mod test {
     }
 
     #[tokio::test]
-    async fn draining_before_capacity_registration_rejects_admission() {
+    async fn retirement_closes_admission_without_releasing_active_permits() {
         use std::sync::atomic::Ordering;
         use std::task::{Context, Poll};
 
-        let mut connection = Connection::new(
-            TestConnector::new(1),
-            ConnectionConfigBuilder::default()
-                .streams_per_connection_limit(1)
-                .build()
-                .unwrap(),
-        );
-        connection
-            .shared
-            .state
-            .store(super::STATE_CONNECTED, Ordering::Release);
-        let active = connection.shared.concurrency.acquire().await;
-
-        // Model draining after poll_ready's state check but before acquisition
-        // creates its notification future. No waiter receives this broadcast.
-        connection.shared.drain();
-        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
-        assert!(matches!(
-            connection.poll_acquire(&mut cx),
-            Poll::Ready(Err(super::Error::Closed))
-        ));
-        assert!(connection.acquire.is_none());
-        assert!(connection.permit.is_none());
-        assert_eq!(connection.inflight(), 1);
-
-        // Also reject a permit that becomes available after the state check.
-        drop(active);
-        assert!(matches!(
-            connection.poll_acquire(&mut cx),
-            Poll::Ready(Err(super::Error::Closed))
-        ));
-        assert!(connection.acquire.is_none());
-        assert!(connection.permit.is_none());
-        assert_eq!(connection.inflight(), 0);
-    }
-
-    #[tokio::test]
-    async fn draining_wakes_all_capacity_waiters_without_releasing_permits() {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-        };
-        use std::task::Context;
-
-        use futures::FutureExt;
-        use futures::task::{ArcWake, waker};
-
-        struct WakeFlag(AtomicBool);
-        impl ArcWake for WakeFlag {
-            fn wake_by_ref(flag: &Arc<Self>) {
-                flag.0.store(true, Ordering::SeqCst);
-            }
-        }
-
-        let shared = super::ConnectionShared::new(
-            ConnectionConfigBuilder::default()
-                .streams_per_connection_limit(1)
-                .build()
-                .unwrap(),
-        );
-        shared
-            .state
-            .store(super::STATE_CONNECTED, Ordering::Release);
-        let active = shared.concurrency.acquire().await;
-        let mut waiters = Vec::new();
-        for _ in 0..8 {
-            let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-            let waker = waker(flag.clone());
+        for drain in [true, false] {
+            let shared = super::ConnectionShared::new(
+                ConnectionConfigBuilder::default()
+                    .streams_per_connection_limit(1)
+                    .build()
+                    .unwrap(),
+            );
+            shared
+                .state
+                .store(super::STATE_CONNECTED, Ordering::Release);
+            let active = shared.concurrency.acquire().await.unwrap();
             let mut waiter = Box::pin(shared.concurrency.acquire());
-            assert!(
-                waiter
-                    .poll_unpin(&mut Context::from_waker(&waker))
-                    .is_pending()
-            );
-            waiters.push((waiter, flag));
-        }
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            assert!(waiter.as_mut().poll(&mut cx).is_pending());
 
-        shared.drain();
-
-        assert_eq!(shared.state.load(Ordering::Acquire), super::STATE_DRAINING);
-        assert_eq!(shared.concurrency.acquired(), 1);
-        for (_, flag) in &waiters {
-            assert!(
-                flag.0.load(Ordering::SeqCst),
-                "capacity waiter was not woken"
-            );
+            if drain {
+                shared.drain();
+            } else {
+                shared.close();
+            }
+            assert!(matches!(
+                waiter.as_mut().poll(&mut cx),
+                Poll::Ready(Err(super::concurrency::Closed))
+            ));
+            assert_eq!(shared.concurrency.acquired(), 1);
+            drop(active);
+            assert_eq!(shared.concurrency.acquired(), 0);
         }
-        drop(active);
     }
 
     #[tokio::test]
@@ -1204,7 +1134,7 @@ mod test {
                 request.into_body().collect().await.unwrap().to_bytes(),
                 Bytes::from_static(b"not sent")
             );
-            assert!(connection.is_closed());
+            assert!(connection.is_retired());
             assert!(!connection.shared.h2.get().unwrap().cancel.is_cancelled());
             finish_tx.send(()).unwrap();
             let body = response
@@ -1478,7 +1408,7 @@ mod test {
         for result in &results {
             assert!(result.is_ok(), "all requests should succeed: {result:?}");
         }
-        assert!(!connection.is_closed());
+        assert!(!connection.is_retired());
     }
 
     #[tokio::test]
@@ -1514,7 +1444,7 @@ mod test {
         for result in &results {
             assert!(result.is_err(), "all requests should fail: {result:?}");
         }
-        assert!(connection.is_closed());
+        assert!(connection.is_retired());
     }
 
     #[tokio::test]
@@ -1567,6 +1497,6 @@ mod test {
                 "expected ConnectionError::Closed, got {err:?}"
             );
         }
-        assert!(connection.is_closed());
+        assert!(connection.is_retired());
     }
 }

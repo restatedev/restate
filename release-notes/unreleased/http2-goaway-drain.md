@@ -11,6 +11,6 @@ and could interrupt unrelated service invocations. Hard connection failures stil
 propagate normally; requests already sent are not automatically replayed by this
 change. No configuration or migration is required.
 
-Callers waiting for stream capacity also recheck retirement after registering
-their waiter, so a concurrent drain cannot leave them waiting for an active
-stream to release capacity.
+Retiring a connection also closes its concurrency limiter, waking callers waiting
+for capacity and signalling reserved but unsent requests to retry. Existing
+streams retain their permits until they finish.
