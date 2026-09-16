@@ -31,8 +31,8 @@ use restate_types::config::Configuration;
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::client::{
     AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
-    GetInvocationStatusResponse, InvocationClient, InvocationClientError, InvocationOutput,
-    KillInvocationResponse, PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    GetInvocationStatusResponse, InvocationClient, InvocationOutput, KillInvocationResponse,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
     RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
@@ -41,6 +41,7 @@ use restate_types::invocation::{
 use restate_types::journal_v2::{EntryIndex, Signal};
 use restate_types::live::Constant;
 use restate_types::net::listener::Listeners;
+use restate_types::partition_processor::client::PartitionProcessorClientError;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::kafka::KafkaCluster;
@@ -102,8 +103,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: Arc<InvocationRequest>,
-    ) -> impl Future<Output = Result<SubmittedInvocationNotification, InvocationClientError>> + Send
-    {
+    ) -> impl Future<Output = Result<SubmittedInvocationNotification, PartitionProcessorClientError>>
+    + Send {
         pending()
     }
 
@@ -111,7 +112,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: Arc<InvocationRequest>,
-    ) -> impl Future<Output = Result<InvocationOutput, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<InvocationOutput, PartitionProcessorClientError>> + Send {
         pending()
     }
 
@@ -119,7 +120,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationQuery,
-    ) -> impl Future<Output = Result<AttachInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<AttachInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -127,7 +129,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationQuery,
-    ) -> impl Future<Output = Result<GetInvocationOutputResponse, InvocationClientError>> + Send
+    ) -> impl Future<Output = Result<GetInvocationOutputResponse, PartitionProcessorClientError>> + Send
     {
         pending()
     }
@@ -136,7 +138,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<GetInvocationStatusResponse, InvocationClientError>> + Send
+    ) -> impl Future<Output = Result<GetInvocationStatusResponse, PartitionProcessorClientError>> + Send
     {
         pending()
     }
@@ -145,7 +147,7 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationResponse,
-    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<(), PartitionProcessorClientError>> + Send {
         pending()
     }
 
@@ -154,7 +156,7 @@ impl InvocationClient for Mock {
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
         _: Signal,
-    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<(), PartitionProcessorClientError>> + Send {
         pending()
     }
 
@@ -162,7 +164,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<CancelInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<CancelInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -170,7 +173,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<KillInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<KillInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -178,7 +182,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -186,7 +191,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<PurgeInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -196,7 +202,7 @@ impl InvocationClient for Mock {
         _: InvocationId,
         _: EntryIndex,
         _: PatchDeploymentId,
-    ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send
+    ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, PartitionProcessorClientError>> + Send
     {
         pending()
     }
@@ -206,7 +212,8 @@ impl InvocationClient for Mock {
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
         _: PatchDeploymentId,
-    ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<ResumeInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 
@@ -214,7 +221,8 @@ impl InvocationClient for Mock {
         &self,
         _: PartitionProcessorRpcRequestId,
         _: InvocationId,
-    ) -> impl Future<Output = Result<PauseInvocationResponse, InvocationClientError>> + Send {
+    ) -> impl Future<Output = Result<PauseInvocationResponse, PartitionProcessorClientError>> + Send
+    {
         pending()
     }
 }
