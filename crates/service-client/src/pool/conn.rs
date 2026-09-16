@@ -55,14 +55,10 @@ fn next_connection_id() -> usize {
 pub enum ConnectionError<R> {
     #[error(transparent)]
     Error(#[from] Error),
-    /// The connection's concurrency limit was reduced and this request's permit
-    /// was reclaimed before the request could be sent. The caller should retry
-    /// on a different connection. The original request is returned inside.
-    #[error("permit to use the connection was reclaimed")]
-    PermitReclaimed(R),
-    /// A graceful GOAWAY rejected this request before any bytes were sent.
-    #[error("connection is draining after GOAWAY")]
-    Draining(R),
+    /// The request was not sent and can be retried on another connection.
+    /// Returns the original request and the reason admission was rejected.
+    #[error("request must be retried: {1}")]
+    Retry(R, &'static str),
 }
 
 const STATE_NEW: u8 = 0;
@@ -676,8 +672,9 @@ where
         loop {
             match this.state {
                 ResponseFutureState::Draining => {
-                    return Poll::Ready(Err(ConnectionError::Draining(
+                    return Poll::Ready(Err(ConnectionError::Retry(
                         this.request.take().expect("unsent request"),
+                        "connection is draining after GOAWAY",
                     )));
                 }
                 ResponseFutureState::Error { ref mut err } => {
@@ -776,8 +773,9 @@ where
                                 Poll::Ready(()) => {
                                     // Permit reclaimed. Return the request so the
                                     // caller can retry on a different connection.
-                                    return Poll::Ready(Err(ConnectionError::PermitReclaimed(
+                                    return Poll::Ready(Err(ConnectionError::Retry(
                                         this.request.take().unwrap(),
+                                        "permit to use the connection was reclaimed",
                                     )));
                                 }
                                 Poll::Pending => {
@@ -1183,13 +1181,20 @@ mod test {
                         .unwrap(),
                 )
                 .await;
-            assert!(matches!(result, Err(super::ConnectionError::Draining(_))));
+            assert!(matches!(
+                result,
+                Err(super::ConnectionError::Retry(
+                    _,
+                    "connection is draining after GOAWAY"
+                ))
+            ));
             let request = Request::builder()
                 .method("POST")
                 .uri("http://test-host/unsent")
                 .body(http_body_util::Full::new(Bytes::from_static(b"not sent")))
                 .unwrap();
-            let Err(super::ConnectionError::Draining(request)) = concurrent.request(request).await
+            let Err(super::ConnectionError::Retry(request, "connection is draining after GOAWAY")) =
+                concurrent.request(request).await
             else {
                 panic!("a reserved caller must also retry without cancelling the connection");
             };
