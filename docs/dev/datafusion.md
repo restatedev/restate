@@ -63,7 +63,6 @@ The query engine uses a two-tier architecture:
 **Partitioned tables** (data distributed across partitions by partition key):
 - `sys_invocation_status` - Invocation metadata and status
 - `sys_invocation_state` - Runtime invocation state (retry info, in-flight status)
-- `keyed_service_status` - Virtual object lock status
 - `state` - User state key-value pairs
 - `journal` - Journal entries
 - `journal_events` - Decoded journal events
