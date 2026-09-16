@@ -314,7 +314,7 @@ where
         //
         // A missing pinned deployment means no user code has run yet, so the journal only holds
         // entries we wrote ourselves in v2 format; it's safe to treat it as V4.
-        let is_write_result_reference_enabled = ctx
+        let is_write_output_table_enabled = ctx
             .processor
             .fsm()
             .features()
@@ -323,7 +323,7 @@ where
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
-        if is_write_result_reference_enabled {
+        if is_write_output_table_enabled {
             // auto append (error) output journal entry if one doesn't exist
             let err = match &reason {
                 EndInvocationReason::Killed => Some(KILLED_INVOCATION_ERROR),
@@ -381,7 +381,7 @@ where
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
-            let response_result_ref = match is_write_result_reference_enabled {
+            let response_result_ref = match is_write_output_table_enabled {
                 // always inline, we can't reference the output entry
                 false => match reason {
                     EndInvocationReason::Killed => {
