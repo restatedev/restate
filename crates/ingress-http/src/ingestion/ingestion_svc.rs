@@ -372,21 +372,12 @@ where
         // scope extraction
         // todo: Store the parsed scope and limit key on the setting objects
         // and save few cycles in case invocations don't have their own scope/limit-key
-        let scope = settings
+        _ = settings
             .scope
             .as_deref()
             .map(|scope| RestrictedValue::new(ReString::from(scope)).map(Scope::new))
             .transpose()
             .map_err(|err| Error::BadRequest(BadRequestError::InvalidScope(err)))?;
-
-        if scope.is_some()
-            && !Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-        {
-            return Err(Error::BadRequest(BadRequestError::UnexpectedScope));
-        }
 
         settings
             .limit_key
@@ -673,18 +664,6 @@ where
                 Error::BadRequestWithOffset(record.offset, BadRequestError::InvalidScope(err))
             })?;
 
-        if scope.is_some()
-            && !Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-        {
-            return Err(Error::BadRequestWithOffset(
-                record.offset,
-                BadRequestError::UnexpectedScope,
-            ));
-        }
-
         let limit_key = record
             .limit_key
             .as_deref()
@@ -728,22 +707,9 @@ where
                     })?;
 
                 match scope {
-                    Some(scope) => {
-                        if Configuration::pinned()
-                            .common
-                            .experimental
-                            .is_scoped_virtual_objects_enabled()
-                        {
-                            InvocationTarget::scoped_virtual_object(
-                                service, key, handler, handler_ty, scope,
-                            )
-                        } else {
-                            return Err(Error::BadRequestWithOffset(
-                                record.offset,
-                                BadRequestError::UnexpectedScope,
-                            ));
-                        }
-                    }
+                    Some(scope) => InvocationTarget::scoped_virtual_object(
+                        service, key, handler, handler_ty, scope,
+                    ),
                     None => InvocationTarget::virtual_object(service, key, handler, handler_ty),
                 }
             }
@@ -1030,8 +996,6 @@ enum BadRequestError {
     MissingKey,
     #[error("Unexpected service key")]
     UnexpectedKey,
-    #[error("Scopes requires VQueues")]
-    UnexpectedScope,
     #[error("Invalid scope: {0}")]
     InvalidScope(RestrictedValueError),
     #[error("Unexpected limit key without scope")]

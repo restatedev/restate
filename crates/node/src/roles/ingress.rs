@@ -26,7 +26,7 @@ use restate_worker_api::PartitionProcessorRpcClient;
 type IngressHttp<T> = HyperServerIngress<
     T,
     Schema,
-    InvocationClientRequestDispatcher<PartitionProcessorInvocationClient<T>>,
+    InvocationClientRequestDispatcher<PartitionProcessorRpcClient<T>>,
 >;
 
 pub struct IngressRole<T> {
