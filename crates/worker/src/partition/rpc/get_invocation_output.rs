@@ -14,7 +14,6 @@ use crate::partition::state_machine;
 use super::*;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::output_table::ReadOutputTable;
-use restate_types::identifiers::WithPartitionKey;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{

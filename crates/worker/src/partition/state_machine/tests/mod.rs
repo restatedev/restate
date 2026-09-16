@@ -817,7 +817,7 @@ async fn consecutive_exclusive_handler_invocations_will_use_inbox() -> TestResul
     );
 
     // Send the End Effect to terminate the first invocation
-    let actions = test_env
+    test_env
         .apply_multiple([
             fixtures::pinned_deployment(first_invocation_id, ServiceProtocolVersion::V4),
             fixtures::invoker_entry_effect(
