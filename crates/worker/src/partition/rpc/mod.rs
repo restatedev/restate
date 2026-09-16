@@ -71,12 +71,6 @@ pub(crate) enum Decision {
     Propose(RpcProposal),
     /// Reply immediately; nothing is proposed.
     Reply(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>),
-    /// Legacy invoker-owned paths only: poke the invoker, then reply immediately.
-    /// TODO: remove this once the non-vqueues support is dropped.
-    NotifyInvokerAndReply {
-        notification: InvokerNotification,
-        reply: PartitionProcessorRpcResponse,
-    },
 }
 
 impl Decision {
@@ -114,12 +108,6 @@ pub(crate) enum ReplyOn {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     },
-}
-
-#[derive(Debug)]
-pub(crate) enum InvokerNotification {
-    RetryNow(InvocationId), // resume legacy path, resume_invocation.rs:92
-    Pause(InvocationId),    // pause legacy path,  pause_invocation.rs:93
 }
 
 pub(super) struct RpcContext<'a, Schemas, Storage> {

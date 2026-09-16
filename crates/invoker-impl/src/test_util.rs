@@ -163,13 +163,6 @@ impl InvokerHandle for MockInvokerHandle {
         Ok(())
     }
 
-    fn retry_invocation_now(
-        &mut self,
-        _invocation_id: InvocationId,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
     fn pause_invocation(&mut self, _invocation_id: InvocationId) -> Result<(), NotRunningError> {
         Ok(())
     }

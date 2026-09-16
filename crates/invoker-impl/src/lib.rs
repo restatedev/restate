@@ -407,9 +407,6 @@ where
                     InputCommand::Abort { ref invocation_id } => {
                         self.handle_abort_invocation(invocation_id);
                     }
-                    InputCommand::RetryNow { invocation_id } => {
-                        self.handle_retry_now_invocation(options, invocation_id);
-                    }
                     InputCommand::Pause { invocation_id } => {
                         self.handle_pause_invocation(invocation_id).await;
                     }
@@ -1115,33 +1112,6 @@ where
             self.status_store.on_end(invocation_id);
         } else {
             trace!("Ignoring Abort command because there is no matching invocation");
-        }
-    }
-
-    #[instrument(
-        level = "trace",
-        skip_all,
-        fields(
-            restate.invocation.id = %invocation_id,
-        )
-    )]
-    fn handle_retry_now_invocation(
-        &mut self,
-        options: &InvokerOptions,
-        invocation_id: InvocationId,
-    ) {
-        // Get the timer key from the ISM if it's in WaitingRetry state
-        let timer_key = self
-            .invocation_state_machine_manager
-            .resolve_invocation(&invocation_id)
-            .and_then(|(_, ism)| ism.take_retry_timer_key());
-
-        if let Some(timer_key) = timer_key {
-            // Cancel the pending timer from the queue
-            self.retry_timers.try_remove(&timer_key);
-
-            // Retry now is equivalent to immediately firing the retry timer
-            self.handle_retry_timer_fired(options, invocation_id, timer_key);
         }
     }
 
