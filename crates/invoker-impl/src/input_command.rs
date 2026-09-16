@@ -52,11 +52,6 @@ pub(crate) enum InputCommand {
         invocation_id: InvocationId,
     },
 
-    /// Retry now specific invocation id
-    RetryNow {
-        invocation_id: InvocationId,
-    },
-
     /// Pause specific invocation id
     Pause {
         invocation_id: InvocationId,
@@ -134,12 +129,6 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn abort_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort { invocation_id })
-            .map_err(|_| NotRunningError)
-    }
-
-    fn retry_invocation_now(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::RetryNow { invocation_id })
             .map_err(|_| NotRunningError)
     }
 
