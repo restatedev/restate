@@ -150,7 +150,7 @@ where
 /// sending `WindowUpdate` messages.
 pub const MIN_WINDOW_SIZE: NonZeroU32 = NonZeroU32::new(32 * 1024).expect("non-zero"); // 32KiB according to specs
 /// Maximum supported producer id length
-pub const MAX_PRODUCER_ID_LEN: usize = 250;
+pub const MAX_PRODUCER_ID_LEN: usize = 256;
 /// Maximum supported integration string length
 pub const MAX_INTEGRATION_STRING_LEN: usize = 50;
 /// Maximum supported header size
