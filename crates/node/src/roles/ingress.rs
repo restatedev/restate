@@ -36,7 +36,7 @@ pub struct IngressRole<T> {
 impl<T: TransportConnect> IngressRole<T> {
     #[allow(clippy::too_many_arguments)]
     pub fn create(
-        mut ingress_options: BoxLiveLoad<IngressOptions>,
+        ingress_options: BoxLiveLoad<IngressOptions>,
         ingestion_client: IngestionClient<T, Envelope<Raw>>,
         address_book: &mut AddressBook,
         health: HealthStatus<IngressStatus>,
@@ -51,7 +51,7 @@ impl<T: TransportConnect> IngressRole<T> {
             partition_routing,
         ));
         let ingress_http = HyperServerIngress::from_options(
-            ingress_options.live_load(),
+            ingress_options,
             ingestion_client,
             address_book.take_listeners(),
             dispatcher,
