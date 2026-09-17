@@ -47,6 +47,8 @@ use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
 
+const EAGER_STATE_KEYS_WHITELIST_LIMIT: usize = 32 * 1024;
+
 /// Whether to allow breaking schema changes between the existing service revision and the new service revision.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AllowBreakingChanges {
@@ -150,6 +152,13 @@ pub(in crate::schema) enum ServiceError {
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),
+    #[error("the eager state keys whitelist for '{target}' the limit: {size} > {limit}")]
+    #[code(unknown)]
+    EagerStateKeysWhitelistLimit {
+        target: String,
+        size: usize,
+        limit: usize,
+    },
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -616,6 +625,22 @@ impl SchemaUpdater {
                 ))
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
+
+        if let whitelist_size = service
+            .eager_state_keys_whitelist
+            .iter()
+            .map(|s| s.len())
+            .sum()
+            && whitelist_size > EAGER_STATE_KEYS_WHITELIST_LIMIT
+        {
+            return Err(SchemaError::Service(
+                ServiceError::EagerStateKeysWhitelistLimit {
+                    target: service.name.to_string(),
+                    size: whitelist_size,
+                    limit: EAGER_STATE_KEYS_WHITELIST_LIMIT,
+                },
+            ));
+        }
 
         let eager_state_keys_whitelist: Vec<ReString> = service
             .eager_state_keys_whitelist
@@ -1279,6 +1304,20 @@ impl Handler {
             return Err(ServiceError::BadHandlerVisibility {
                 service: service_name.to_owned(),
                 handler: handler.name.to_string(),
+            });
+        }
+
+        if let whitelist_size = handler
+            .eager_state_keys_whitelist
+            .iter()
+            .map(|s| s.len())
+            .sum()
+            && whitelist_size > EAGER_STATE_KEYS_WHITELIST_LIMIT
+        {
+            return Err(ServiceError::EagerStateKeysWhitelistLimit {
+                target: format!("{}/{}", service_name, handler.name.as_str()),
+                size: whitelist_size,
+                limit: EAGER_STATE_KEYS_WHITELIST_LIMIT,
             });
         }
 
