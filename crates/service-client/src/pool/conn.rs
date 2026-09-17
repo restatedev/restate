@@ -55,17 +55,17 @@ fn next_connection_id() -> usize {
 pub enum ConnectionError<R> {
     #[error(transparent)]
     Error(#[from] Error),
-    /// The connection's concurrency limit was reduced and this request's permit
-    /// was reclaimed before the request could be sent. The caller should retry
-    /// on a different connection. The original request is returned inside.
-    #[error("permit to use the connection was reclaimed")]
-    PermitReclaimed(R),
+    /// The request was not sent and can be retried on another connection.
+    /// Returns the original request and the reason admission was rejected.
+    #[error("request must be retried: {1}")]
+    Retry(R, &'static str),
 }
 
 const STATE_NEW: u8 = 0;
 const STATE_CONNECTING: u8 = 1;
 const STATE_CONNECTED: u8 = 2;
 const STATE_CLOSED: u8 = 3;
+const STATE_DRAINING: u8 = 4;
 
 /// The H2 handle obtained after a successful handshake. Set exactly once.
 #[derive(Debug)]
@@ -76,7 +76,8 @@ struct H2Handle {
 
 /// Lock-free shared state for an H2 connection.
 ///
-/// State transitions: `New → Connecting → Connected → Closed`.
+/// State transitions: `New → Connecting → Connected → Draining → Closed`.
+/// Fatal errors can transition directly to `Closed`.
 /// The `state` field tracks the discriminant atomically. The `h2` handle is set
 /// once via `OnceLock` when transitioning to `Connected`. Only the waiter list
 /// requires a brief lock during the `Connecting` phase.
@@ -117,9 +118,26 @@ impl ConnectionShared {
         }
     }
 
+    /// Stop admission while the connection task finishes accepted streams.
+    fn drain(&self) {
+        if self
+            .state
+            .compare_exchange(
+                STATE_CONNECTED,
+                STATE_DRAINING,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+        {
+            self.concurrency.close();
+        }
+    }
+
     /// Mark the connection as closed and wake any pending waiters.
     fn close(&self) {
         self.state.store(STATE_CLOSED, Ordering::Relaxed);
+        self.concurrency.close();
         if let Some(h2) = self.h2.get() {
             h2.cancel.cancel();
         }
@@ -285,9 +303,12 @@ where
         self.shared.concurrency.size()
     }
 
-    /// Returns `true` if the connection has been closed or encountered a fatal error.
-    pub fn is_closed(&self) -> bool {
-        self.shared.state.load(Ordering::Relaxed) == STATE_CLOSED
+    /// Returns `true` if the connection no longer accepts new requests.
+    pub fn is_retired(&self) -> bool {
+        matches!(
+            self.shared.state.load(Ordering::Relaxed),
+            STATE_CLOSED | STATE_DRAINING
+        )
     }
 
     /// Must be polled before each request. This makes sure we acquire the permit
@@ -305,7 +326,7 @@ where
                     return Poll::Ready(Err(err));
                 }
             }
-            STATE_CLOSED => {
+            STATE_CLOSED | STATE_DRAINING => {
                 return Poll::Ready(Err(Error::Closed));
             }
             STATE_CONNECTED => {
@@ -339,8 +360,9 @@ where
 
         let acquire = self.acquire.as_mut().unwrap();
 
-        self.permit = Some(ready!(acquire.poll_unpin(cx)));
+        let permit = ready!(acquire.poll_unpin(cx));
         self.acquire = None;
+        self.permit = Some(permit.map_err(|_| Error::Closed)?);
 
         Poll::Ready(Ok(()))
     }
@@ -415,6 +437,7 @@ where
                             .clone(),
                     };
                 }
+                STATE_DRAINING => return ResponseFutureState::Draining,
                 STATE_CLOSED => return ResponseFutureState::error(Error::Closed),
                 _ => unreachable!(),
             }
@@ -542,8 +565,10 @@ where
 /// - **WaitingConnection** – another request is driving the handshake; we wait for notification.
 /// - **PreFlight** – we have a `SendRequest` handle and are waiting for H2 stream capacity.
 /// - **InFlight** – the request has been sent; we are waiting for the response.
+/// - **Draining** – graceful GOAWAY requires retrying the unsent request elsewhere.
 /// - **Error** – a terminal error was captured for the caller to consume.
 enum ResponseFutureState {
+    Draining,
     Driving {
         fut: BoxFuture<'static, Result<(SendRequest<Bytes>, DropGuard), Error>>,
     },
@@ -617,7 +642,9 @@ where
     //
     // **Connection-level** (close the entire connection via `shared.close()`):
     //   - Errors during `Driving` (handshake failures).
-    //   - Errors from `send_request.poll_ready()` in `PreFlight`.
+    //   - Errors from `send_request.poll_ready()` in `PreFlight`, except graceful GOAWAY.
+    //     Graceful GOAWAY retires the connection and returns the unsent request
+    //     for another connection without cancelling accepted streams.
     //   These go through the `Error` state which cancels the h2 handle and marks
     //   the connection as closed.
     //
@@ -630,13 +657,16 @@ where
     //   (triggering a connection close in PreFlight), or via the background
     //   connection task detecting the h2 shutdown and calling `shared.close()`.
     //
-    // This simplifies error handling here: we don't need to distinguish h2
-    // connection errors from stream errors ourselves — we let the phase of
-    // the lifecycle determine the behavior.
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         loop {
             match this.state {
+                ResponseFutureState::Draining => {
+                    return Poll::Ready(Err(ConnectionError::Retry(
+                        this.request.take().expect("unsent request"),
+                        "connection is draining after GOAWAY",
+                    )));
+                }
                 ResponseFutureState::Error { ref mut err } => {
                     this.shared.close();
                     return Poll::Ready(Err(err
@@ -714,6 +744,13 @@ where
                 } => {
                     match send_request.poll_ready(cx) {
                         Poll::Ready(Ok(_)) => {}
+                        Poll::Ready(Err(err))
+                            if err.is_go_away() && err.reason() == Some(Reason::NO_ERROR) =>
+                        {
+                            this.shared.drain();
+                            this.state = ResponseFutureState::Draining;
+                            continue;
+                        }
                         Poll::Ready(Err(err)) => {
                             this.state = ResponseFutureState::error(err);
                             continue;
@@ -726,8 +763,9 @@ where
                                 Poll::Ready(()) => {
                                     // Permit reclaimed. Return the request so the
                                     // caller can retry on a different connection.
-                                    return Poll::Ready(Err(ConnectionError::PermitReclaimed(
+                                    return Poll::Ready(Err(ConnectionError::Retry(
                                         this.request.take().unwrap(),
+                                        "permit to use the connection was reclaimed",
                                     )));
                                 }
                                 Poll::Pending => {
@@ -969,6 +1007,148 @@ mod test {
             .await
             .unwrap();
         resp.into_body()
+    }
+
+    #[tokio::test]
+    async fn retirement_closes_admission_without_releasing_active_permits() {
+        use std::sync::atomic::Ordering;
+        use std::task::{Context, Poll};
+
+        for drain in [true, false] {
+            let shared = super::ConnectionShared::new(
+                ConnectionConfigBuilder::default()
+                    .streams_per_connection_limit(1)
+                    .build()
+                    .unwrap(),
+            );
+            shared
+                .state
+                .store(super::STATE_CONNECTED, Ordering::Release);
+            let active = shared.concurrency.acquire().await.unwrap();
+            let mut waiter = Box::pin(shared.concurrency.acquire());
+            let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+            assert!(waiter.as_mut().poll(&mut cx).is_pending());
+
+            if drain {
+                shared.drain();
+            } else {
+                shared.close();
+            }
+            assert!(matches!(
+                waiter.as_mut().poll(&mut cx),
+                Poll::Ready(Err(super::concurrency::Closed))
+            ));
+            assert_eq!(shared.concurrency.acquired(), 1);
+            drop(active);
+            assert_eq!(shared.concurrency.acquired(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn goaway_preserves_active_response() {
+        let scenario = async {
+            let (client, server) = tokio::io::duplex(64 * 1024);
+            let socket = std::sync::Arc::new(parking_lot::Mutex::new(Some(client)));
+            let connector = tower::service_fn(move |_: http::Uri| {
+                let socket = socket.lock().take().unwrap();
+                async move { Ok::<_, std::io::Error>(socket) }
+            });
+            let (drain_tx, drain_rx) = tokio::sync::oneshot::channel();
+            let (finish_tx, finish_rx) = tokio::sync::oneshot::channel();
+            let server = tokio::spawn(async move {
+                let mut server = h2::server::handshake(server).await.unwrap();
+                let (_, mut response) = server.accept().await.unwrap().unwrap();
+                let mut body = response
+                    .send_response(http::Response::new(()), false)
+                    .unwrap();
+                tokio::select! {
+                    result = server.accept() => panic!("unexpected request before drain: {result:?}"),
+                    result = drain_rx => result.unwrap(),
+                }
+                server.graceful_shutdown();
+                tokio::select! {
+                    result = server.accept() => panic!("active stream closed during drain: {result:?}"),
+                    _ = finish_rx => {}
+                }
+                body.send_data(Bytes::from_static(b"completed"), true)
+                    .unwrap();
+                assert!(server.accept().await.is_none());
+            });
+            let mut connection = Connection::new(
+                connector,
+                ConnectionConfigBuilder::default().build().unwrap(),
+            );
+            connection.ready().await.unwrap();
+            let response = connection
+                .request(
+                    Request::builder()
+                        .uri("http://test-host")
+                        .body(http_body_util::Empty::<Bytes>::new())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            // Reserve a stream before the peer starts draining, as a concurrent caller can.
+            connection.ready().await.unwrap();
+            let mut concurrent = connection.clone();
+            concurrent.ready().await.unwrap();
+            drain_tx.send(()).unwrap();
+            let mut sender = connection.shared.h2.get().unwrap().send_request.clone();
+            loop {
+                match futures::future::poll_fn(|cx| sender.poll_ready(cx)).await {
+                    Err(err) => {
+                        assert!(err.is_go_away());
+                        break;
+                    }
+                    Ok(()) => tokio::task::yield_now().await,
+                }
+            }
+            let result = connection
+                .request(
+                    Request::builder()
+                        .uri("http://test-host")
+                        .body(http_body_util::Empty::<Bytes>::new())
+                        .unwrap(),
+                )
+                .await;
+            assert!(matches!(
+                result,
+                Err(super::ConnectionError::Retry(
+                    _,
+                    "connection is draining after GOAWAY"
+                ))
+            ));
+            let request = Request::builder()
+                .method("POST")
+                .uri("http://test-host/unsent")
+                .body(http_body_util::Full::new(Bytes::from_static(b"not sent")))
+                .unwrap();
+            let Err(super::ConnectionError::Retry(request, "connection is draining after GOAWAY")) =
+                concurrent.request(request).await
+            else {
+                panic!("a reserved caller must also retry without cancelling the connection");
+            };
+            assert_eq!(request.method(), http::Method::POST);
+            assert_eq!(request.uri().path(), "/unsent");
+            assert_eq!(
+                request.into_body().collect().await.unwrap().to_bytes(),
+                Bytes::from_static(b"not sent")
+            );
+            assert!(connection.is_retired());
+            assert!(!connection.shared.h2.get().unwrap().cancel.is_cancelled());
+            finish_tx.send(()).unwrap();
+            let body = response
+                .into_body()
+                .collect()
+                .await
+                .expect("GOAWAY must not cancel an accepted stream")
+                .to_bytes();
+            assert_eq!(body, Bytes::from_static(b"completed"));
+            server.await.unwrap();
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), scenario)
+            .await
+            .expect("GOAWAY regression timed out");
     }
 
     #[test]
@@ -1228,7 +1408,7 @@ mod test {
         for result in &results {
             assert!(result.is_ok(), "all requests should succeed: {result:?}");
         }
-        assert!(!connection.is_closed());
+        assert!(!connection.is_retired());
     }
 
     #[tokio::test]
@@ -1264,7 +1444,7 @@ mod test {
         for result in &results {
             assert!(result.is_err(), "all requests should fail: {result:?}");
         }
-        assert!(connection.is_closed());
+        assert!(connection.is_retired());
     }
 
     #[tokio::test]
@@ -1317,6 +1497,6 @@ mod test {
                 "expected ConnectionError::Closed, got {err:?}"
             );
         }
-        assert!(connection.is_closed());
+        assert!(connection.is_retired());
     }
 }
