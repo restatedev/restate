@@ -26,6 +26,14 @@ use restate_types::config::MetadataClientKind;
 use super::version_repository::{Tag, TaggedValue, VersionRepository, VersionRepositoryError};
 use crate::objstore::version_repository::{Content, ValueEncoding};
 
+/// Metadata object-store backends must provide atomic conditional writes for the
+/// optimistic concurrency the metadata store relies on (`PutMode::Create` plus
+/// `PutMode::Update` on the current tag). S3 and GCS both provide these via their
+/// native APIs; anything else is rejected up front with a clear error.
+fn is_supported_metadata_scheme(scheme: &str) -> bool {
+    matches!(scheme, "s3" | "gs")
+}
+
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
     object_store: Box<dyn ObjectStore>,
@@ -51,15 +59,23 @@ impl ObjectStoreVersionRepository {
             .inspect(|params| info!("Metadata path parameters ignored: {params}"));
         url.set_query(None);
 
-        if url.scheme() != "s3" {
-            anyhow::bail!("Only the `s3://` protocol is supported for metadata path");
+        if !is_supported_metadata_scheme(url.scheme()) {
+            anyhow::bail!(
+                "Only the `s3://` and `gs://` protocols are supported for the metadata path, got `{}`",
+                url.scheme()
+            );
         }
         let prefix = Path::from(url.path());
 
         let object_store =
             create_object_store_client(url, &object_store, &object_store_retry_policy)
                 .await
-                .map_err(|e| anyhow::anyhow!("Unable to build an S3 object store: {}", e))?;
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "Unable to build an object store client for the metadata path: {}",
+                        e
+                    )
+                })?;
 
         Ok(Self {
             object_store: Box::new(object_store),
@@ -333,6 +349,14 @@ mod tests {
 
     const HELLO: Bytes = Bytes::from_static(b"hello");
     const WORLD: Bytes = Bytes::from_static(b"world");
+
+    #[test]
+    fn supported_metadata_schemes() {
+        assert!(is_supported_metadata_scheme("s3"));
+        assert!(is_supported_metadata_scheme("gs"));
+        assert!(!is_supported_metadata_scheme("az"));
+        assert!(!is_supported_metadata_scheme("http"));
+    }
 
     #[test_log::test(tokio::test)]
     async fn simple_usage() {
