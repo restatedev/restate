@@ -667,7 +667,7 @@ impl ServiceRevision {
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
-            always_eager_state_keys: self
+            eager_state_keys_whitelist: self
                 .always_eager_state_keys
                 .iter()
                 .map(ToString::to_string)
@@ -743,11 +743,9 @@ struct Handler {
     #[bilrost(tag = 12)]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
-    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true (best-effort,
-    /// bounded by the invoker eager state size limit). Overrides the service-level list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[bilrost(tag = 19)]
-    always_eager_state_keys: Vec<ReString>,
+    eager_state_keys_whitelist: Vec<ReString>,
     #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
@@ -843,8 +841,8 @@ impl Handler {
             },
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
-            always_eager_state_keys: self
-                .always_eager_state_keys
+            eager_state_keys_whitelist: self
+                .eager_state_keys_whitelist
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -1060,10 +1058,10 @@ impl InvocationTargetResolver for Schema {
 
         let eager_state = if default_lazy {
             // Handler whitelist overrides the service whitelist when non-empty.
-            let keys = if handler.always_eager_state_keys.is_empty() {
+            let keys = if handler.eager_state_keys_whitelist.is_empty() {
                 &service_revision.always_eager_state_keys
             } else {
-                &handler.always_eager_state_keys
+                &handler.eager_state_keys_whitelist
             };
             // Resolve to `ByteString` so the invoker can convert to `Bytes` zero-copy.
             let always_eager_keys = keys.iter().map(|k| ByteString::from(k.as_str())).collect();

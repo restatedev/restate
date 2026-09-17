@@ -178,12 +178,12 @@ pub struct ServiceMetadata {
     #[serde(default = "restate_serde_util::default::bool::<false>")]
     pub enable_lazy_state: bool,
 
-    /// # Always eager state keys
+    /// # Eager state keys whitelist
     ///
-    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true (best-effort,
-    /// bounded by the server eager state size limit).
+    /// State keys whitelist to preload eagerly when `enable_lazy_state` is true.
+    /// (best-effort, bounded by the server eager state size limit).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub always_eager_state_keys: Vec<String>,
+    pub eager_state_keys_whitelist: Vec<String>,
 
     /// # Retry policy
     ///
@@ -404,11 +404,14 @@ pub struct HandlerMetadata {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
-    /// # Always eager state keys
+    /// # Eager state keys whitelist
     ///
-    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true. Overrides the service-level list.
+    /// State keys whitelist to preload eagerly when `enable_lazy_state` is true.
+    /// (best-effort, bounded by the server eager state size limit).
+    ///
+    /// Overrides the service-level list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub always_eager_state_keys: Vec<String>,
+    pub eager_state_keys_whitelist: Vec<String>,
 
     /// # Public
     ///
@@ -571,7 +574,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
-                                always_eager_state_keys: vec![],
+                                eager_state_keys_whitelist: vec![],
 
                                 public: true,
                                 input_description: "any".to_string(),
@@ -596,7 +599,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
-                always_eager_state_keys: vec![],
+                eager_state_keys_whitelist: vec![],
                 retry_policy: Default::default(),
                 info: vec![],
             }
@@ -623,7 +626,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
-                                always_eager_state_keys: vec![],
+                                eager_state_keys_whitelist: vec![],
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -647,7 +650,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
-                always_eager_state_keys: vec![],
+                eager_state_keys_whitelist: vec![],
                 retry_policy: Default::default(),
                 info: vec![],
             }

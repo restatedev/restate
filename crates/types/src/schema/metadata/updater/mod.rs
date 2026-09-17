@@ -617,8 +617,8 @@ impl SchemaUpdater {
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
 
-        let always_eager_state_keys: Vec<ReString> = service
-            .always_eager_state_keys
+        let eager_state_keys_whitelist: Vec<ReString> = service
+            .eager_state_keys_whitelist
             .into_iter()
             .map(ReString::from)
             .collect();
@@ -637,7 +637,7 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
-            always_eager_state_keys,
+            always_eager_state_keys: eager_state_keys_whitelist,
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -1282,8 +1282,8 @@ impl Handler {
             });
         }
 
-        let always_eager_state_keys: Vec<ReString> = handler
-            .always_eager_state_keys
+        let eager_state_keys_whitelist: Vec<ReString> = handler
+            .eager_state_keys_whitelist
             .into_iter()
             .map(ReString::from)
             .collect();
@@ -1317,7 +1317,7 @@ impl Handler {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
-            always_eager_state_keys,
+            eager_state_keys_whitelist,
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
         })
