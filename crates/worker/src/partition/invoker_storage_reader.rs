@@ -24,7 +24,7 @@ use restate_storage_api::{
     BudgetedReadError, IsolationLevel, journal_table as journal_table_v1, journal_table_v2,
 };
 use restate_types::identifiers::{InvocationId, ServiceId};
-use restate_types::schema::invocation_target::EagerStateConfig;
+use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
     EagerState, InvocationReader, InvocationReaderError, InvocationReaderTransaction, JournalEntry,
@@ -329,24 +329,22 @@ where
     fn read_state_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        eager_state_config: &EagerStateConfig,
+        eager_state_config: &StatePreloadPolicy,
         budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         let (stream, partial) = match eager_state_config {
             // Preload the full state.
-            EagerStateConfig::Eager => {
+            StatePreloadPolicy::All => {
                 let stream = self.txn.get_all_user_states_budgeted(service_id, budget)?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Left(stream), false)
             }
             // Lazy default: preload only the whitelisted keys via exact point reads and serve
             // everything else on demand, so the result is partial.
-            EagerStateConfig::Lazy { always_eager_keys } => {
-                let stream = self.txn.get_user_states_budgeted(
-                    service_id,
-                    always_eager_keys.as_ref(),
-                    budget,
-                )?;
+            StatePreloadPolicy::Partial(eager_keys) => {
+                let stream =
+                    self.txn
+                        .get_user_states_budgeted(service_id, eager_keys.as_ref(), budget)?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Right(stream), true)
             }

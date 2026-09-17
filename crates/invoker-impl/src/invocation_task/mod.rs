@@ -11,6 +11,7 @@
 mod retry_after;
 mod service_protocol_runner_v4;
 
+use std::cmp;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -41,7 +42,7 @@ use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFu
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::{
-    EagerStateConfig, InvocationAttemptOptions, InvocationTargetResolver,
+    InvocationAttemptOptions, InvocationTargetResolver, StatePreloadPolicy,
 };
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
@@ -93,7 +94,7 @@ const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server")
 /// receiving `None` is fully lazy (not keyed, or a lazy default with no always-eager keys).
 pub(super) struct EagerStateRead {
     pub(super) service_id: ServiceId,
-    pub(super) config: EagerStateConfig,
+    pub(super) policy: StatePreloadPolicy,
 }
 
 /// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
@@ -354,7 +355,8 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
-            eager_state_size_limit,
+            // Make sure eager_state_size_limit is capped to message size limit
+            eager_state_size_limit: cmp::min(eager_state_size_limit, message_size_limit.get()),
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
@@ -517,7 +519,7 @@ where
             .unwrap_or(InvocationAttemptOptions {
                 abort_timeout: None,
                 inactivity_timeout: None,
-                eager_state: EagerStateConfig::Eager,
+                state_preload_policy: StatePreloadPolicy::All,
             });
 
         // Override the inactivity timeout and abort timeout, if available
@@ -538,7 +540,7 @@ where
 
         // The eager state size limit (a memory safety cap) always applies and comes solely from
         // the server config; the per-handler/service config only carries the eager/lazy *policy*.
-        let eager_state = invocation_attempt_options.eager_state;
+        let state_preload_policy = invocation_attempt_options.state_preload_policy;
         let keyed_service_id = self.invocation_target.as_keyed_service_id();
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
@@ -549,10 +551,10 @@ where
         // Protocol runner for service protocol v4+. Reads state upfront only for keyed targets
         // that preload anything (eager default, or always-eager keys under a lazy default).
         let state_read = keyed_service_id
-            .filter(|_| eager_state.reads_any_eager_state())
+            .filter(|_| state_preload_policy.preload_any_state() && self.eager_state_size_limit > 0)
             .map(|service_id| EagerStateRead {
                 service_id,
-                config: eager_state,
+                policy: state_preload_policy,
             });
         let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
             self,

@@ -44,8 +44,8 @@ use crate::retries::{RetryIter, RetryPolicy};
 use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType};
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DeploymentStatus, EagerStateConfig, InputRules, InvocationAttemptOptions,
-    InvocationTargetMetadata, InvocationTargetResolver, OnMaxAttempts, OutputRules,
+    DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
+    InvocationTargetResolver, OnMaxAttempts, OutputRules, StatePreloadPolicy,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -1067,9 +1067,9 @@ impl InvocationTargetResolver for Schema {
             };
             // Resolve to `ByteString` so the invoker can convert to `Bytes` zero-copy.
             let always_eager_keys = keys.iter().map(|k| ByteString::from(k.as_str())).collect();
-            EagerStateConfig::Lazy { always_eager_keys }
+            StatePreloadPolicy::Partial(always_eager_keys)
         } else {
-            EagerStateConfig::Eager
+            StatePreloadPolicy::All
         };
 
         Some(InvocationAttemptOptions {
@@ -1077,7 +1077,7 @@ impl InvocationTargetResolver for Schema {
             inactivity_timeout: handler
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
-            eager_state,
+            state_preload_policy: eager_state,
         })
     }
 

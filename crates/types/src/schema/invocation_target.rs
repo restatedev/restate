@@ -128,26 +128,25 @@ impl InvocationTargetMetadata {
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
-    /// Per-key eager/lazy state policy for this invocation.
-    pub eager_state: EagerStateConfig,
+    /// State preload policy for this invocation.
+    pub state_preload_policy: StatePreloadPolicy,
 }
 
 /// Resolved eager/lazy state policy for an invocation.
 #[derive(Debug, Clone, Eq, PartialEq)]
-pub enum EagerStateConfig {
+pub enum StatePreloadPolicy {
     /// Preload all state eagerly (up to the invoker's eager state size limit).
-    Eager,
-    /// Lazy by default: preload only these exact state keys (best-effort, capped by the invoker's
-    /// eager state size limit); everything else is served on demand.
-    Lazy { always_eager_keys: Vec<ByteString> },
+    All,
+    /// Preload only these exact state keys (best-effort, capped by the invoker's eager state size limit);
+    /// everything else is served on demand.
+    Partial(Vec<ByteString>),
 }
 
-impl EagerStateConfig {
-    /// Whether any state might be preloaded (always for `Eager`; only a non-empty whitelist for `Lazy`).
-    pub fn reads_any_eager_state(&self) -> bool {
+impl StatePreloadPolicy {
+    pub fn preload_any_state(&self) -> bool {
         match self {
-            Self::Eager => true,
-            Self::Lazy { always_eager_keys } => !always_eager_keys.is_empty(),
+            Self::All => true,
+            Self::Partial(eager_keys) => !eager_keys.is_empty(),
         }
     }
 }
@@ -603,7 +602,7 @@ pub mod test_util {
                     .map(|_| InvocationAttemptOptions {
                         abort_timeout: None,
                         inactivity_timeout: None,
-                        eager_state: EagerStateConfig::Eager,
+                        state_preload_policy: StatePreloadPolicy::All,
                     })
             })
         }

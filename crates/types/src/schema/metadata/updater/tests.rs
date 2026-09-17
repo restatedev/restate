@@ -18,8 +18,8 @@ use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
-    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, EagerStateConfig,
-    InvocationTargetResolver,
+    DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetResolver,
+    StatePreloadPolicy,
 };
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
@@ -2173,7 +2173,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
-                eager_state: EagerStateConfig::Eager,
+                state_preload_policy: StatePreloadPolicy::All,
             })
         )
     }
@@ -2198,7 +2198,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
-                eager_state: EagerStateConfig::Eager,
+                state_preload_policy: StatePreloadPolicy::All,
             })
         )
     }
@@ -2215,10 +2215,10 @@ mod endpoint_manifest_options_propagation {
         // The handler-level always-eager list fully replaces the service-level one, under the
         // resolved lazy default.
         assert_that!(
-            resolved.eager_state,
-            eq(EagerStateConfig::Lazy {
-                always_eager_keys: vec![ByteString::from_static("handler-key")],
-            })
+            resolved.state_preload_policy,
+            eq(StatePreloadPolicy::Partial(vec![ByteString::from_static(
+                "handler-key"
+            )]))
         )
     }
 
