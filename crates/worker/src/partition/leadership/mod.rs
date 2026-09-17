@@ -560,6 +560,12 @@ where
                     .push(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention);
             }
 
+            if config.common.experimental.is_write_output_table_enabled()
+                && !processor.fsm().features().is_write_output_table_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableWriteOutputTable);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -1176,6 +1182,7 @@ mod tests {
                 vqueues_skip_completed: true,
                 unique_random_seeds: true,
                 preflight_invocation_termination_retention: true,
+                write_output_table: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

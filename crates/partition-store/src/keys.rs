@@ -83,6 +83,10 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
+    // # Output
+    // stores the invocation output separated from the invocation
+    // status
+    Output,
 }
 
 impl KeyKind {
@@ -146,6 +150,7 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
+            KeyKind::Output => b"io",
         }
     }
 
@@ -165,6 +170,7 @@ impl KeyKind {
             b"ib" => Some(KeyKind::Inbox),
             b"is" => Some(KeyKind::InvocationStatusV1),
             b"iS" => Some(KeyKind::InvocationStatus),
+            b"io" => Some(KeyKind::Output),
             b"jo" => Some(KeyKind::Journal),
             b"j2" => Some(KeyKind::JournalV2),
             b"je" => Some(KeyKind::JournalEvent),

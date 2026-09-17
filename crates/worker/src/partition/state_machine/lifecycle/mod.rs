@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod cancel;
+mod end_invocation;
 mod event;
 mod manual_pause;
 mod manual_resume;
@@ -27,6 +28,7 @@ mod suspend;
 mod yield_invocation;
 
 pub(super) use cancel::OnCancelCommand;
+pub(super) use end_invocation::{EndInvocationCommand, EndInvocationReason};
 pub(super) use event::ApplyEventCommand;
 pub(super) use manual_pause::OnManualPauseCommand;
 pub(super) use manual_resume::OnManualResumeCommand;

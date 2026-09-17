@@ -140,11 +140,14 @@ pub mod v1 {
             span_relation, submit_notification_sink, timer, virtual_object_status,
         };
         use crate::invocation_status_table::{
-            PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
+            self, PreFlightInvocationArgument, PreFlightInvocationInput,
+            PreFlightInvocationJournal, ResponseResultRef,
         };
         use crate::protobuf_types::ConversionError;
+        use crate::protobuf_types::v1::invocation_status_v2::CompletionStatus;
         use crate::protobuf_types::v1::{
             Future, NotificationEntryIndex, NotificationResultVariant,
+            response_result::ResponseFailure, response_result::ResponseSuccess,
         };
 
         impl TryFrom<VirtualObjectStatus> for crate::service_status_table::VirtualObjectStatus {
@@ -432,6 +435,8 @@ pub mod v1 {
                     nested_futures,
                     combinator_type,
                     result,
+                    completion_status,
+                    failure_status_code,
                     hotfix_apply_cancellation_after_deployment_is_pinned,
                 } = value;
 
@@ -677,6 +682,12 @@ pub mod v1 {
                         ))
                     }
                     invocation_status_v2::Status::Completed => {
+                        let response_result = ResponseResultRef::create(
+                            result,
+                            completion_status,
+                            failure_status_code,
+                        )?;
+
                         Ok(crate::invocation_status_table::InvocationStatus::Completed(
                             crate::invocation_status_table::CompletedInvocation {
                                 vqueue_id,
@@ -687,7 +698,7 @@ pub mod v1 {
                                 source,
                                 execution_time: execution_time.map(MillisSinceEpoch::new),
                                 idempotency_key: idempotency_key.map(ByteString::from),
-                                response_result: expect_or_fail!(result)?.try_into()?,
+                                response_result,
                                 completion_retention_duration: completion_retention_duration
                                     .unwrap_or_default()
                                     .try_into()?,
@@ -785,6 +796,8 @@ pub mod v1 {
                         nested_futures: vec![],
                         combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
+                        completion_status: None,
+                        failure_status_code: None,
                         random_seed,
                     },
                     crate::invocation_status_table::InvocationStatus::Scheduled(
@@ -869,6 +882,8 @@ pub mod v1 {
                             nested_futures: vec![],
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
+                            completion_status: None,
+                            failure_status_code: None,
                             random_seed,
                         }
                     }
@@ -941,6 +956,8 @@ pub mod v1 {
                         nested_futures: vec![],
                         combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
+                        completion_status: None,
+                        failure_status_code: None,
                         random_seed,
                     },
                     crate::invocation_status_table::InvocationStatus::Inboxed(
@@ -1025,6 +1042,8 @@ pub mod v1 {
                             nested_futures: vec![],
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
+                            completion_status: None,
+                            failure_status_code: None,
                             random_seed,
                         }
                     }
@@ -1102,6 +1121,8 @@ pub mod v1 {
                             nested_futures: vec![],
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
+                            completion_status: None,
+                            failure_status_code: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1203,6 +1224,8 @@ pub mod v1 {
                             nested_futures: nested_futures.into_iter().map(Into::into).collect(),
                             combinator_type: super::CombinatorType::from(combinator_type).into(),
                             result: None,
+                            completion_status: None,
+                            failure_status_code: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1281,6 +1304,8 @@ pub mod v1 {
                             nested_futures: vec![],
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
+                            completion_status: None,
+                            failure_status_code: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
                         }
@@ -1310,6 +1335,9 @@ pub mod v1 {
                                 Some(pinned_deployment.service_protocol_version.as_repr()),
                             ),
                         };
+
+                        let (result, completion_status, failure_status_code) =
+                            response_result.split();
 
                         InvocationStatusV2 {
                             status: invocation_status_v2::Status::Completed.into(),
@@ -1355,7 +1383,9 @@ pub mod v1 {
                             waiting_for_signal_names: vec![],
                             nested_futures: vec![],
                             combinator_type: super::CombinatorType::Unknown.into(),
-                            result: Some(response_result.into()),
+                            result,
+                            completion_status: completion_status.map(Into::into),
+                            failure_status_code,
                             random_seed,
                         }
                     }
@@ -3701,31 +3731,152 @@ pub mod v1 {
             }
         }
 
+        impl TryFrom<ResponseResult> for ResponseResultRef {
+            type Error = ConversionError;
+
+            fn try_from(value: ResponseResult) -> Result<Self, ConversionError> {
+                let result = match value
+                    .response_result
+                    .ok_or_else(|| ConversionError::missing_field("response_result"))?
+                {
+                    response_result::ResponseResult::ResponseSuccess(success) => {
+                        Self::Success(success.value)
+                    }
+                    response_result::ResponseResult::ResponseFailure(failure) => {
+                        // we should be able to turn the incoming Bytes into a String without a copy
+                        let failure_message = Vec::<u8>::from(failure.failure_message);
+                        let failure_message = String::from_utf8(failure_message)
+                            .map_err(ConversionError::invalid_data)?;
+                        Self::Failure(
+                            InvocationError::new(failure.failure_code, failure_message)
+                                .with_metadata_vec(
+                                    failure
+                                        .failure_metadata
+                                        .into_iter()
+                                        .map(|m| (m.key, m.value))
+                                        .collect(),
+                                ),
+                        )
+                    }
+                };
+
+                Ok(result)
+            }
+        }
+
         impl From<restate_types::invocation::ResponseResult> for ResponseResult {
             fn from(value: restate_types::invocation::ResponseResult) -> Self {
                 let response_result = match value {
                     restate_types::invocation::ResponseResult::Success(value) => {
-                        response_result::ResponseResult::ResponseSuccess(
-                            response_result::ResponseSuccess { value },
-                        )
+                        response_result::ResponseResult::ResponseSuccess(ResponseSuccess { value })
                     }
                     restate_types::invocation::ResponseResult::Failure(err) => {
-                        response_result::ResponseResult::ResponseFailure(
-                            response_result::ResponseFailure {
-                                failure_code: err.code().into(),
-                                failure_message: Bytes::copy_from_slice(err.message().as_ref()),
-                                failure_metadata: err
-                                    .metadata
-                                    .into_iter()
-                                    .map(|(key, value)| FailureMetadata { key, value })
-                                    .collect(),
-                            },
-                        )
+                        response_result::ResponseResult::ResponseFailure(ResponseFailure {
+                            failure_code: err.code().into(),
+                            failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                            failure_metadata: err
+                                .metadata
+                                .into_iter()
+                                .map(|(key, value)| FailureMetadata { key, value })
+                                .collect(),
+                        })
                     }
                 };
 
                 ResponseResult {
                     response_result: Some(response_result),
+                }
+            }
+        }
+
+        impl ResponseResultRef {
+            fn split(
+                self,
+            ) -> (
+                Option<ResponseResult>,
+                Option<CompletionStatus>,
+                Option<u32>,
+            ) {
+                let (result, completion_status, failure_status_code) = match self {
+                    Self::Killed => (None, Some(CompletionStatus::Killed), None),
+                    Self::Success(bytes) => {
+                        let result = ResponseResult {
+                            response_result: Some(
+                                response_result::ResponseResult::ResponseSuccess(ResponseSuccess {
+                                    value: bytes,
+                                }),
+                            ),
+                        };
+                        (Some(result), None, None)
+                    }
+                    Self::Failure(err) => {
+                        let result = ResponseResult {
+                            response_result: Some(
+                                response_result::ResponseResult::ResponseFailure(ResponseFailure {
+                                    failure_code: err.code().into(),
+                                    failure_message: Bytes::copy_from_slice(err.message().as_ref()),
+                                    failure_metadata: err
+                                        .metadata
+                                        .into_iter()
+                                        .map(|(key, value)| FailureMetadata { key, value })
+                                        .collect(),
+                                }),
+                            ),
+                        };
+                        (Some(result), None, None)
+                    }
+                    Self::Completed(status) => {
+                        let (status, code) = match status {
+                            invocation_status_table::CompletionStatus::Failure(code) => {
+                                (CompletionStatus::Failure, Some(code.into()))
+                            }
+                            invocation_status_table::CompletionStatus::Success => {
+                                (CompletionStatus::Success, None)
+                            }
+                        };
+
+                        (None, Some(status), code)
+                    }
+                };
+
+                (result, completion_status, failure_status_code)
+            }
+
+            fn create(
+                result: Option<ResponseResult>,
+                completion_status: Option<i32>,
+                failure_status_code: Option<u32>,
+            ) -> Result<Self, ConversionError> {
+                let completion_status = completion_status
+                    .map(CompletionStatus::try_from)
+                    .transpose()
+                    .map_err(|err| {
+                        ConversionError::UnexpectedEnumVariant("competition_status", err.0)
+                    })?;
+
+                match (result, completion_status) {
+                    (None, None) => Err(ConversionError::invalid_data_static(
+                        "either result or completion",
+                    )),
+                    (Some(_), Some(_)) => Err(ConversionError::invalid_data_static(
+                        "result and completion_status are mutually exclusive",
+                    )),
+                    (Some(result), None) => Ok(result.try_into()?),
+                    (None, Some(status)) => {
+                        let result = match status {
+                            CompletionStatus::Success => {
+                                Self::Completed(invocation_status_table::CompletionStatus::Success)
+                            }
+                            CompletionStatus::Failure => {
+                                Self::Completed(invocation_status_table::CompletionStatus::Failure(
+                                    expect_or_fail!(failure_status_code)?.into(),
+                                ))
+                            }
+                            CompletionStatus::Killed => Self::Killed,
+                        };
+
+                        Ok(result)
+                    }
                 }
             }
         }
@@ -4157,10 +4308,12 @@ pub mod v1 {
             service_protocol::ServiceProtocolVersion,
         };
 
+        use crate::protobuf_types::v1::invocation_status_v2::CompletionStatus;
+        use crate::protobuf_types::v1::response_result;
         use crate::protobuf_types::v1::{
-            InvocationTarget, ResponseResult, Source, SpanContextLite,
+            InvocationTarget, Source, SpanContextLite,
             pb_conversion::{expect_or_fail, try_bytes_into_trace_id},
-            response_result, source,
+            source,
         };
 
         fn merge_bytes_zerocopy<'a>(
@@ -4462,6 +4615,16 @@ pub mod v1 {
                 }
             }
 
+            pub fn completion_status(&self) -> Result<Option<CompletionStatus>, ConversionError> {
+                self.inner
+                    .completion_status
+                    .map(CompletionStatus::try_from)
+                    .transpose()
+                    .map_err(|err| {
+                        ConversionError::unexpected_enum_variant("completion_status", err.0)
+                    })
+            }
+
             pub fn response_result(
                 &self,
             ) -> Result<response_result::ResponseResult, ConversionError> {
@@ -4470,7 +4633,7 @@ pub mod v1 {
                 let result = self.result_lazy.as_ref();
                 let result = expect_or_fail!(result)?;
 
-                let result = ResponseResult::decode(*result)
+                let result = super::ResponseResult::decode(*result)
                     .map_err(|_| ConversionError::invalid_data_static("result"))?;
 
                 let response_result = result.response_result.as_ref();

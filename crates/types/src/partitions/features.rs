@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -69,6 +69,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.8*
     EnablePreflightInvocationTerminationRetention = 5,
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.0*
+    EnableWriteOutputTable,
 }
 
 impl PartitionFeatureChange {
@@ -87,6 +93,7 @@ impl PartitionFeatureChange {
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
+            Self::EnableWriteOutputTable => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -111,6 +118,9 @@ impl PartitionFeatureChange {
                 &mut features.preflight_invocation_termination_retention,
                 true,
             ),
+            Self::EnableWriteOutputTable => {
+                !std::mem::replace(&mut features.write_output_table, true)
+            }
         }
     }
 }
@@ -167,6 +177,14 @@ pub struct PersistedFeatures {
     /// *Since v1.7.8*
     #[bilrost(tag(5))]
     pub preflight_invocation_termination_retention: bool,
+
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(6))]
+    pub write_output_table: bool,
 }
 
 impl PersistedFeatures {
