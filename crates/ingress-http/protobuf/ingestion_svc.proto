@@ -49,7 +49,7 @@ message IngestionStart {
     // Max length is 256 bytes.
     string producer_id = 1;
     // Integration identification in format `name/version`
-    // Max length is 50 bytes
+    // Max length is 64 bytes
     string integration = 2;
     // Deduplication strategy for this stream. Defaults to `DISABLED`.
     DeduplicationMode deduplication_mode = 3;
@@ -127,6 +127,7 @@ message IngestionDefaults {
     optional string service = 4;
     optional string handler = 5;
     optional string key = 6;
+    // Total headers size should not exceed a max of 2KiB (keys + values)
     map<string, string> headers = 8;
 }
 
@@ -167,6 +168,8 @@ message IngestionInvocation {
     // or workflow. This can also be set via a preceding IngestionDefaults message.
     optional string key = 6;
     optional string idempotency_key = 7;
+    // IngestionDefaults::headers + IngestionInvocation::headers size
+    // should not exceed a max of 2KiB (keys + values)
     map<string, string> additional_headers = 8;
 
     // starttime timestamp in ms.

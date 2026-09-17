@@ -152,7 +152,7 @@ pub const MIN_WINDOW_SIZE: NonZeroU32 = NonZeroU32::new(32 * 1024).expect("non-z
 /// Maximum supported producer id length
 pub const MAX_PRODUCER_ID_LEN: usize = 256;
 /// Maximum supported integration string length
-pub const MAX_INTEGRATION_STRING_LEN: usize = 50;
+pub const MAX_INTEGRATION_STRING_LEN: usize = 64;
 /// Maximum supported header size
 pub const HEADERS_SIZE_LIMIT: usize = 2 * 1024; //2KiB
 
