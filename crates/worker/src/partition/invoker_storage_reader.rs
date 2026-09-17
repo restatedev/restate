@@ -327,7 +327,7 @@ where
     }
 
     fn read_state_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         service_id: &ServiceId,
         eager_state_config: &StatePreloadPolicy,
         budget: &'a mut LocalMemoryPool,

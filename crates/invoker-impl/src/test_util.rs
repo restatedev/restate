@@ -112,7 +112,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
     }
 
     fn read_state_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         _service_id: &ServiceId,
         _eager_state_config: &StatePreloadPolicy,
         _budget: &'a mut LocalMemoryPool,

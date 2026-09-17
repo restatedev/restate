@@ -300,7 +300,7 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn run_inner<Txn, S, IR>(
         &mut self,
-        txn: Txn,
+        mut txn: Txn,
         protocol_type: ProtocolType,
         journal_metadata: JournalMetadata,
         state_read: Option<EagerStateRead>,
