@@ -12,6 +12,7 @@ use super::{assert_stream_eq, storage_test_environment};
 
 use crate::PartitionStore;
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::StreamExt;
 use restate_memory::LocalMemoryPool;
 use restate_rocksdb::RocksDbManager;
@@ -76,12 +77,12 @@ async fn point_reads_budgeted<T: ReadStateTable>(table: &T) {
     // Whitelist interleaves present keys with an absent one: absent keys are
     // omitted, present ones are returned with their leases.
     let keys = vec![
-        Bytes::from_static(b"k1"),
-        Bytes::from_static(b"absent"),
-        Bytes::from_static(b"k2"),
+        ByteString::from_static("k1"),
+        ByteString::from_static("absent"),
+        ByteString::from_static("k2"),
     ];
     let stream = table
-        .get_user_states_budgeted(&service_id, keys, &mut budget)
+        .get_user_states_budgeted(&service_id, keys.as_slice(), &mut budget)
         .unwrap();
     let mut got: Vec<(Bytes, Bytes)> = stream
         .map(|entry| {

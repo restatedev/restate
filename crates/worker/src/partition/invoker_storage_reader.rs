@@ -342,13 +342,11 @@ where
             // Lazy default: preload only the whitelisted keys via exact point reads and serve
             // everything else on demand, so the result is partial.
             EagerStateConfig::Lazy { always_eager_keys } => {
-                let keys: Vec<Bytes> = always_eager_keys
-                    .iter()
-                    .map(|k| k.clone().into_bytes())
-                    .collect();
-                let stream = self
-                    .txn
-                    .get_user_states_budgeted(service_id, keys, budget)?;
+                let stream = self.txn.get_user_states_budgeted(
+                    service_id,
+                    always_eager_keys.as_ref(),
+                    budget,
+                )?;
                 let stream = PinnableMapErr::new(stream, InvokerStorageReaderError::from);
                 (Either::Right(stream), true)
             }

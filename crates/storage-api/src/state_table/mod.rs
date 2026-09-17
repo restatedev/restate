@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
@@ -63,7 +64,7 @@ pub trait ReadStateTable {
     fn get_user_states_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        keys: Vec<Bytes>,
+        keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
         impl PinnableMemoryStream<

@@ -339,7 +339,7 @@ impl ReadStateTable for PartitionStore {
     fn get_user_states_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        keys: Vec<Bytes>,
+        keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
         impl PinnableMemoryStream<
@@ -464,7 +464,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     fn get_user_states_budgeted<'a>(
         &'a self,
         service_id: &ServiceId,
-        keys: Vec<Bytes>,
+        keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,
     ) -> Result<
         impl PinnableMemoryStream<
@@ -702,13 +702,14 @@ fn preload_user_states<S: StorageAccess>(
     storage: &S,
     storage_features: StorageFeatures,
     service_id: &ServiceId,
-    keys: Vec<Bytes>,
+    keys: &[ByteString],
     budget: &mut LocalMemoryPool,
 ) -> Result<Vec<(Bytes, Bytes, LocalMemoryLease)>> {
-    let _x = RocksDbReadPerfGuard::new("get-user-states-budgeted");
+    let _x = RocksDbReadPerfGuard::new("preload-user-states");
     let mut preloaded = Vec::with_capacity(keys.len());
+    // TODO this function could use MultiGet feature from rocksdb
     for state_key in keys {
-        let encoded = encode_user_state_key(storage_features, service_id, &state_key);
+        let encoded = encode_user_state_key(storage_features, service_id, state_key.as_bytes());
         let Some(value) = storage.get(State, &encoded)? else {
             continue;
         };
@@ -718,7 +719,11 @@ fn preload_user_states<S: StorageAccess>(
         let Some(lease) = budget.try_reserve(state_key.len() + value.len()) else {
             break;
         };
-        preloaded.push((state_key, Bytes::copy_from_slice(value), lease));
+        preloaded.push((
+            state_key.as_bytes().clone(),
+            Bytes::copy_from_slice(value),
+            lease,
+        ));
     }
     Ok(preloaded)
 }
