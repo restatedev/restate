@@ -45,8 +45,11 @@ message IngestionStart {
     // The ID must be unique across producers: two distinct producers
     // sharing an ID will be treated as one and will shadow each other's
     // offsets.
+    //
+    // Max length is 256 bytes.
     string producer_id = 1;
     // Integration identification in format `name/version`
+    // Max length is 50 bytes
     string integration = 2;
     // Deduplication strategy for this stream. Defaults to `DISABLED`.
     DeduplicationMode deduplication_mode = 3;
@@ -90,15 +93,13 @@ enum DeduplicationMode {
     // producer ID fails the stream with `GO_AWAY`. It also requires the
     // producer to reuse the same ID across streams, since a new ID starts
     // from a fresh deduplication state.
-    //
-    // This is the default: leaving `deduplication_mode` unset selects it.
     OFFSET_BASED = 1;
 }
 
 // An IngestionDefaults message defines the default values applied to all
 // subsequent records in the stream.
-// Each IngestionDefaults message must specify every field it wants to set:
-// its fields are not merged with those of previous IngestionDefaults messages.
+// Each IngestionDefaults message must specify every field it wants to set.
+// Each IngestionDefaults message overwrites the values set by previous IngestionDefaults messages.
 // Leaving an optional field unset clears any previously established
 // default, so later records must supply the value explicitly if needed.
 //
@@ -118,12 +119,14 @@ enum DeduplicationMode {
 // Note: Keep the field tags uniform with the Invocation message
 // This allows parsing IngestionInvocation message as IngestionDefaults.
 message IngestionDefaults {
+    reserved 7;
+
+    // scope is limited to 36 bytes.
     optional string scope = 2;
     optional string limit_key = 3;
     optional string service = 4;
     optional string handler = 5;
     optional string key = 6;
-    optional string idempotency_key = 7;
     map<string, string> headers = 8;
 }
 
@@ -154,6 +157,8 @@ message IngestionInvocation {
     uint64 offset = 1;
 
     // Overrides
+
+    // scope is limited to 36 bytes.
     optional string scope = 2;
     optional string limit_key = 3;
     optional string service = 4;
@@ -187,10 +192,10 @@ message IngestionRequest {
 // It tells the client how many more bytes it can send
 // before it must wait for the next window update.
 //
-// WindowUpdate also doubles as an explicit ack: the
-// server can send an update with a 0 increment to
-// acknowledge commits up to `Response.last_committed`
-// without changing the window size.
+// This frame only replenishes the window; it carries no
+// acknowledgement. Acking is the job of the enclosing
+// IngestionResponse.last_committed, which is set
+// regardless of which variant the response carries.
 //
 // If the next invocation is bigger than the available
 // window, it's legal to send it anyway (letting the
@@ -206,6 +211,10 @@ message IngestionRequest {
 // always safe to start sending against it; every
 // WindowUpdate that follows can only grow the window
 // beyond that point.
+//
+// Only IngestionInvocation frames are counted against the window;
+// IngestionStart and IngestionDefaults frames are free and never
+// consume it.
 message WindowUpdate {
     uint32 increment_bytes = 1;
 }
@@ -265,10 +274,20 @@ message Error {
 }
 
 message IngestionResponse {
-    // Offsets are 0-based, so last_committed must be optional
-    // to distinguish "offset 0 committed" from "nothing committed yet".
-    // This matters when an error is returned on the first
-    // ingestion message.
+    // Acknowledgement. When set, every record up to and
+    // including this offset has been committed.
+    //
+    // It is set on every response that has something to ack,
+    // including responses carrying an Error, so a client whose
+    // stream is torn down can always resume from the offset on
+    // the last response it saw.
+    //
+    // It is unset only when nothing has been committed yet on
+    // this stream. The field must be optional because offsets
+    // are 0-based: "offset 0 committed" has to stay
+    // distinguishable from "nothing committed", which matters
+    // when an error is returned on the very first ingestion
+    // message.
     optional uint64 last_committed = 1;
 
     oneof response {

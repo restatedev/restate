@@ -593,7 +593,7 @@ async fn start_frame_contract() {
             "first frame has no kind",
             IngestionRequest { kind: None },
             ErrorKind::GoAway,
-            "Missing request payload",
+            "Missing request kind",
         ),
         (
             "offset based deduplication without a producer id",
@@ -680,7 +680,7 @@ async fn frames_rejected_while_processing() {
         (
             "a frame without payload",
             IngestionRequest { kind: None },
-            "Missing request payload",
+            "Missing request kind",
         ),
         (
             "defaults referencing an unknown service",
@@ -847,7 +847,6 @@ async fn defaults_are_replaced_and_overridden_per_record() {
                 ("a".to_owned(), "1".to_owned()),
                 ("b".to_owned(), "2".to_owned()),
             ]),
-            idempotency_key: Some("from-defaults".to_owned()),
             ..defaults(Some(SERVICE), Some(HANDLER))
         })),
         handler,
@@ -858,7 +857,6 @@ async fn defaults_are_replaced_and_overridden_per_record() {
     let (invoke, _) = single_invoke(resolver.commit_next().await);
     assert_eq!(invoke.invocation_target.service_name(), SERVICE);
     assert_eq!(invoke.invocation_target.handler_name(), HANDLER);
-    assert_eq!(invoke.idempotency_key.as_deref(), Some("from-defaults"));
     let mut headers: Vec<_> = invoke
         .headers
         .iter()

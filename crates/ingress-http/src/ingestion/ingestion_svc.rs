@@ -27,26 +27,41 @@
 //!
 //! Ingestion is flow-controlled with a byte-based send window, mirroring the
 //! `WindowUpdate` frame in the proto. The server tracks
-//! [`ProcessorState::current_window_size`]: every `Invocation` received subtracts
-//! its encoded size, and every committed record replenishes the window by the same
-//! amount. A [`WindowUpdate`] response returns credit to the client and doubles as
-//! an ack of `Response.last_committed`.
+//! [`ProcessorState::current_window_size`]: receiving an `Invocation` subtracts its
+//! encoded size, and those bytes are handed back to the client once that record
+//! commits.
 //!
-//! To avoid a response per commit, the server accumulates the bytes reclaimed by
-//! committed records and only yields a `WindowUpdate` once they reach
-//! [`RECLAIM_WINDOW_THRESHOLD`] percent of the maximum window, or once there is
-//! nothing left in flight to wait for. The client may let the window go negative
-//! for a single oversized invocation, but sending more once it is depleted is a
-//! protocol violation and results in a `GO_AWAY` error.
+//! A [`WindowUpdate`] does one thing only: it replenishes the window by
+//! `increment_bytes`. It is not an ack; acking is carried by the enclosing
+//! [`IngestionResponse`] (see below), independently of which variant it holds.
 //!
-//! ## Committing records
+//! A client starts on an implicit [`MIN_WINDOW_SIZE`] it is never told about, so the
+//! first `WindowUpdate` of a stream only tops that floor up to the configured
+//! maximum. To avoid a response per commit, reclaimed bytes are then accumulated and
+//! released in a single update once they reach [`RECLAIM_WINDOW_THRESHOLD`] percent
+//! of the maximum window, or once there is nothing left to wait for (no inflight
+//! commit and no invocation already readable on the inbound stream). The client may
+//! let the window go negative for a single oversized invocation, but sending more
+//! once it is depleted is a protocol violation and results in a `GO_AWAY` error.
+//!
+//! ## Committing and acking records
 //!
 //! For each `Invocation` the server resolves the invocation target against the
 //! schema, builds a WAL [`Envelope`] (see [`IngestionStream::build_envelope`]) and
 //! hands it to the [`IngestionClient`]. The returned [`RecordCommit`] future is
 //! pushed onto [`ProcessorState::inflight`] and awaited in order, so
-//! `last_committed` advances monotonically and back-pressure from the log flows
-//! back to the client through the window.
+//! `last_committed` advances monotonically and back-pressure from the log flows back
+//! to the client through the window. Invocation offsets must strictly increase; a
+//! repeated or out-of-order offset is a `GO_AWAY` violation.
+//!
+//! Every [`IngestionResponse`] carries the current `last_committed`, and when it is
+//! set it acks every record up to and including that offset. This holds for
+//! responses carrying an error just as much as for those carrying a `WindowUpdate`,
+//! so a client whose stream is torn down can always resume from the offset on the
+//! last response it saw. It is left unset only when nothing has been committed yet
+//! on the stream, for example when the `Start` frame itself is rejected. That is why
+//! the field is optional: offsets are 0-based, so "offset 0 committed" has to stay
+//! distinguishable from "nothing committed".
 
 use std::collections::VecDeque;
 use std::hash::Hash;
@@ -57,6 +72,7 @@ use std::time::Duration;
 use futures::future::OptionFuture;
 use futures::stream::{BoxStream, Peekable};
 use futures::{FutureExt, Stream, StreamExt};
+use http::header;
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
@@ -100,6 +116,7 @@ use proto::{
 };
 use tracing::debug;
 
+use crate::handler::{IDEMPOTENCY_EXPIRES, IDEMPOTENCY_KEY};
 use crate::ingestion::ingestion_svc::Error::BadRequestWithOffset;
 use crate::ingestion::ingestion_svc::proto::DeduplicationMode;
 use crate::metric_definitions::{
@@ -132,6 +149,12 @@ where
 /// advertises less than this, but it can grow the window beyond it by
 /// sending `WindowUpdate` messages.
 pub const MIN_WINDOW_SIZE: NonZeroU32 = NonZeroU32::new(32 * 1024).expect("non-zero"); // 32KiB according to specs
+/// Maximum supported producer id length
+pub const MAX_PRODUCER_ID_LEN: usize = 250;
+/// Maximum supported integration string length
+pub const MAX_INTEGRATION_STRING_LEN: usize = 50;
+/// Maximum supported header size
+pub const HEADERS_SIZE_LIMIT: usize = 2 * 1024; //2KiB
 
 /// Percentage of the maximum window size that must be reclaimed before a
 /// `WindowUpdate` is sent to the client.
@@ -341,7 +364,7 @@ where
         }
     }
 
-    fn validate_defaults(&self, settings: &IngestionDefaults) -> Result<(), Error> {
+    fn validate_defaults(&self, settings: &mut IngestionDefaults) -> Result<(), Error> {
         let schemas = self.schemas.pinned();
 
         let service = settings.service.as_deref();
@@ -355,12 +378,7 @@ where
                 .ok_or_else(|| NotFoundError::UnknownService {
                     service: service.to_owned(),
                 }),
-            (None, Some(_)) => {
-                // nothing we can do here, this can fail
-                // later when ingesting an invocation if
-                // the handler doesn't exist
-                Ok(())
-            }
+            (None, Some(_)) => return Err(Error::BadRequest(BadRequestError::MissingService)),
             (Some(service), Some(handler)) => schemas
                 .resolve_latest_invocation_target(service, handler)
                 .map(|_| ())
@@ -371,6 +389,17 @@ where
         }
         .map_err(Error::NotFound)?;
 
+        // filter out unsupported headers
+        settings.headers.retain(valid_header);
+
+        let headers_size = settings
+            .headers
+            .iter()
+            .fold(0, |size, (k, v)| size + k.len() + v.len());
+
+        if headers_size > HEADERS_SIZE_LIMIT {
+            return Err(Error::BadRequest(BadRequestError::HeadersMaxSizeReached));
+        }
         // scope extraction
         // todo: Store the parsed scope and limit key on the setting objects
         // and save few cycles in case invocations don't have their own scope/limit-key
@@ -409,14 +438,26 @@ where
 
         let payload = first
             .kind
-            .ok_or_else(|| Error::GoAway(GoAwayError::MissingRequestPayload))?;
+            .ok_or_else(|| Error::GoAway(GoAwayError::MissingRequestKind))?;
 
         let ingestion_request::Kind::Start(start) = payload else {
             return Err(Error::GoAway(GoAwayError::ExpectingStartMessage));
         };
 
-        let defaults = start.defaults;
-        if let Some(ref defaults) = defaults {
+        if start.producer_id.len() > MAX_PRODUCER_ID_LEN {
+            return Err(Error::GoAway(GoAwayError::InvalidProducer(
+                "exceeds maximum length",
+            )));
+        }
+
+        if start.integration.len() > MAX_INTEGRATION_STRING_LEN {
+            return Err(Error::GoAway(GoAwayError::InvalidIntegration(
+                "exceeds maximum length",
+            )));
+        }
+
+        let mut defaults = start.defaults;
+        if let Some(ref mut defaults) = defaults {
             self.validate_defaults(defaults)?;
         }
 
@@ -490,7 +531,7 @@ where
                     metrics::counter!(INGESTION_COMMITTED_BYTES).increment(invocation_size as u64);
 
                     state.last_committed = Some(offset);
-                    replenish_size += invocation_size;
+                    replenish_size = replenish_size.saturating_add(invocation_size);
 
                     // Note: Peeking will actually try to fetch the next item from the stream
                     // and hence consume memory that is not (yet) counted against the
@@ -537,19 +578,19 @@ where
         let request = request.map_err(|status| Error::GoAway(GoAwayError::unknown(status)))?;
 
         let Some(payload) = request.kind else {
-            return Err(Error::GoAway(GoAwayError::MissingRequestPayload));
+            return Err(Error::GoAway(GoAwayError::MissingRequestKind));
         };
 
         match payload {
             Kind::Start(_) => {
                 return Err(Error::GoAway(GoAwayError::UnexpectedStartMessage));
             }
-            Kind::Defaults(defaults) => {
-                self.validate_defaults(&defaults)?;
+            Kind::Defaults(mut defaults) => {
+                self.validate_defaults(&mut defaults)?;
                 state.defaults = defaults;
             }
             Kind::Invocation(invocation) => {
-                if state.current_window_size < 0 {
+                if state.current_window_size <= 0 {
                     return Err(Error::GoAway(GoAwayError::WindowSizeViolation));
                 }
 
@@ -700,7 +741,11 @@ where
                         BadRequestError::UnexpectedKey,
                     ));
                 }
-                InvocationTarget::service(service, handler)
+
+                match scope {
+                    Some(scope) => InvocationTarget::scoped_service(service, handler, scope),
+                    None => InvocationTarget::service(service, handler),
+                }
             }
             InvocationTargetType::VirtualObject(handler_ty) => {
                 let key = record
@@ -736,10 +781,7 @@ where
             }
         };
 
-        let idempotency_key = record
-            .idempotency_key
-            .as_deref()
-            .or(state.defaults.idempotency_key.as_deref());
+        let idempotency_key = record.idempotency_key.as_deref();
 
         if idempotency_key.is_some()
             && target_meta.target_ty
@@ -756,8 +798,18 @@ where
         // merge headers Defaults + Record headers
         let mut headers = state.defaults.headers.clone();
 
-        for (name, value) in record.additional_headers {
-            headers.insert(name, value);
+        for (name, mut value) in record.additional_headers {
+            if valid_header(&name, &mut value) {
+                headers.insert(name, value);
+            }
+        }
+
+        let headers_size = headers
+            .iter()
+            .fold(0, |size, (k, v)| size + k.len() + v.len());
+
+        if headers_size > HEADERS_SIZE_LIMIT {
+            return Err(Error::BadRequest(BadRequestError::HeadersMaxSizeReached));
         }
 
         let seed = PartitionKeySeed {
@@ -822,6 +874,22 @@ where
     }
 }
 
+fn valid_header(key: &String, _value: &mut String) -> bool {
+    if key == header::CONNECTION.as_str()
+            || key == header::HOST.as_str()
+            || key == IDEMPOTENCY_KEY.as_str()
+            || key == IDEMPOTENCY_EXPIRES.as_str()
+            // Drop any client-supplied `x-restate-*` header. This namespace is
+            // reserved for the ingress (e.g. `x-restate-ingress-path` set above);
+            // forwarding client values would let callers spoof it.
+            || key.starts_with("x-restate-")
+    {
+        false
+    } else {
+        true
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn prepare_tracing_span(
     invocation_id: &InvocationId,
@@ -879,7 +947,7 @@ impl<'a> Extractor for TraceContextExtractor<'a> {
 /// Seed hashed into a partition key for records that have no idempotency key.
 ///
 /// Combining the `producer` id with the record `offset` keeps the derived
-/// [`InvocationId`] deterministic and stable per producer, so retrying the same
+/// [`Partitionkey`] deterministic and stable per producer, so retrying the same
 /// record yields the same key.
 #[derive(Hash)]
 struct PartitionKeySeed<'a> {
@@ -966,10 +1034,14 @@ enum GoAwayError {
     WindowSizeViolation,
     #[error("offset value violation")]
     OffsetViolation,
-    #[error("Missing request payload")]
-    MissingRequestPayload,
+    #[error("Missing request kind")]
+    MissingRequestKind,
     #[error("Timeout")]
     Timeout,
+    #[error("Invalid producer string: {0}")]
+    InvalidProducer(&'static str),
+    #[error("Invalid integration string: {0}")]
+    InvalidIntegration(&'static str),
     #[error(transparent)]
     Unknown(#[from] GenericError),
 }
@@ -1007,6 +1079,8 @@ enum BadRequestError {
     DeprecatedDeployment(DeploymentId),
     #[error("Unknown deduplication mode")]
     UnknownDeduplicationMode,
+    #[error("Headers are exceeding maximum allowed size")]
+    HeadersMaxSizeReached,
 }
 
 /// The referenced invocation target does not exist in the current schema. Maps
