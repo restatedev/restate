@@ -120,7 +120,8 @@ use crate::handler::{IDEMPOTENCY_EXPIRES, IDEMPOTENCY_KEY};
 use crate::ingestion::ingestion_svc::Error::BadRequestWithOffset;
 use crate::ingestion::ingestion_svc::proto::DeduplicationMode;
 use crate::metric_definitions::{
-    INGESTION_COMMITTED_BYTES, INGESTION_COMMITTED_RECORDS, INGESTION_INFLIGHT_BYTES,
+    INGESTION_AWAITING_PERMITS_BYTES, INGESTION_COMMITTED_BYTES, INGESTION_COMMITTED_RECORDS,
+    INGESTION_INFLIGHT_BYTES,
 };
 
 /// Builds the tonic server that serves [`IngestionSvc`], wrapping a fresh
@@ -600,6 +601,8 @@ where
                 let invocation_size = u32::try_from(invocation.encoded_len())
                     .map_err(|_| Error::GoAway(GoAwayError::WindowSizeViolation))?;
 
+                metrics::counter!(INGESTION_AWAITING_PERMITS_BYTES)
+                    .increment(invocation_size as u64);
                 state.current_window_size -= invocation_size as i64;
                 let offset = invocation.offset;
                 if state
