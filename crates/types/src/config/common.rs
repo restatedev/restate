@@ -1237,10 +1237,10 @@ pub enum MetadataClientKind {
         /// # Object store path for metadata storage
         ///
         /// This location will be used to persist cluster metadata. Takes the form of a URL
-        /// with `s3://` as the protocol and bucket name as the authority, plus an optional
-        /// prefix specified as the path component.
+        /// with `s3://` or `gs://` as the protocol and bucket name as the authority, plus
+        /// an optional prefix specified as the path component.
         ///
-        /// Example: `s3://bucket/prefix`
+        /// Examples: `s3://bucket/prefix`, `gs://bucket/prefix`
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         path: String,
 
