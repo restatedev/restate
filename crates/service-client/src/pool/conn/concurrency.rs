@@ -13,7 +13,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     task::{Context, Poll, ready},
 };
@@ -24,6 +24,7 @@ use tokio::sync::{Notify, futures::OwnedNotified};
 /// Shared state for the concurrency limiter.
 #[derive(Debug)]
 struct ConcurrencyInner {
+    closed: AtomicBool,
     size: AtomicUsize,
     inflight: AtomicUsize,
     capacity: Arc<Notify>,
@@ -44,6 +45,7 @@ impl Concurrency {
     pub fn new(size: usize) -> Self {
         Self {
             inner: Arc::new(ConcurrencyInner {
+                closed: AtomicBool::new(false),
                 size: AtomicUsize::new(size),
                 inflight: AtomicUsize::new(0),
                 capacity: Arc::new(Notify::new()),
@@ -52,7 +54,7 @@ impl Concurrency {
         }
     }
 
-    /// Returns a future that resolves to a [`Permit`] once capacity is available.
+    /// Acquire a permit once capacity is available, or fail if closed.
     pub fn acquire(&self) -> PermitFuture {
         PermitFuture::new(self.clone())
     }
@@ -76,6 +78,19 @@ impl Concurrency {
         }
     }
 
+    /// Permanently stop admission and signal waiters and reserved permit holders.
+    /// Existing permits remain held until their owners drop them.
+    pub fn close(&self) {
+        if !self.inner.closed.swap(true, Ordering::AcqRel) {
+            self.inner.capacity.notify_waiters();
+            self.inner.reclaim.notify_waiters();
+        }
+    }
+
+    fn is_closed(&self) -> bool {
+        self.inner.closed.load(Ordering::Acquire)
+    }
+
     /// Returns the current concurrency limit.
     pub fn size(&self) -> usize {
         self.inner.size.load(Ordering::Relaxed)
@@ -91,7 +106,11 @@ impl Concurrency {
     /// This is a best-effort snapshot since `size` and `inflight` are read
     /// as two separate atomic loads and may be inconsistent under contention.
     pub fn available(&self) -> usize {
-        self.size().saturating_sub(self.acquired())
+        if self.is_closed() {
+            0
+        } else {
+            self.size().saturating_sub(self.acquired())
+        }
     }
 }
 
@@ -118,13 +137,18 @@ impl Drop for Permit {
 impl Permit {
     /// Polls whether the concurrency limit has been reduced and this permit
     /// should be returned. Returns [`Poll::Ready`] when a reclaim has been
-    /// requested (via [`Concurrency::resize`] to a smaller limit).
+    /// requested by shrinking or closing the limiter.
     ///
     /// Dropping the permit is voluntary — callers should only do so when
     /// they can safely give up the resource (e.g. the resource is idle or
     /// the caller is not waiting on additional work).
     pub fn poll_reclaimed(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        Pin::new(&mut self.reclaimed).poll(cx)
+        let reclaimed = Pin::new(&mut self.reclaimed).poll(cx);
+        if self.concurrency.is_closed() {
+            Poll::Ready(())
+        } else {
+            reclaimed
+        }
     }
 }
 
@@ -137,7 +161,12 @@ enum PermitFutureState {
     },
 }
 
-/// A future that resolves to a [`Permit`] when concurrency capacity becomes available.
+/// The limiter no longer accepts new acquisitions.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("concurrency limiter is closed")]
+pub struct Closed;
+
+/// A future that acquires a permit or returns [`Closed`] after shutdown.
 #[pin_project::pin_project]
 pub struct PermitFuture {
     concurrency: Concurrency,
@@ -155,7 +184,7 @@ impl PermitFuture {
 }
 
 impl Future for PermitFuture {
-    type Output = Permit;
+    type Output = Result<Permit, Closed>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();
@@ -181,6 +210,12 @@ impl Future for PermitFuture {
                     // enabled or polled yet.
                     let reclaimed = this.concurrency.inner.reclaim.clone().notified_owned();
 
+                    // Register both notifications before checking closure so a
+                    // concurrent close either wakes us or is observed here.
+                    if this.concurrency.is_closed() {
+                        return Poll::Ready(Err(Closed));
+                    }
+
                     let mut size = this.concurrency.inner.size.load(Ordering::Relaxed);
                     let mut inflight = this.concurrency.inner.inflight.load(Ordering::Relaxed);
 
@@ -192,9 +227,16 @@ impl Future for PermitFuture {
                             Ordering::Relaxed,
                         ) {
                             Ok(_) => {
-                                return Poll::Ready(Permit {
+                                let permit = Permit {
                                     concurrency: this.concurrency.clone(),
                                     reclaimed: Reclaimed::new(reclaimed),
+                                };
+                                // If closure raced with reservation, dropping
+                                // this permit returns the capacity immediately.
+                                return Poll::Ready(if this.concurrency.is_closed() {
+                                    Err(Closed)
+                                } else {
+                                    Ok(permit)
                                 });
                             }
                             Err(value) => {
@@ -248,10 +290,57 @@ mod tests {
     use tokio::sync::oneshot;
 
     #[tokio::test]
+    async fn close_rejects_acquisition_and_signals_reserved_permits() {
+        struct WakeCount(AtomicUsize);
+        impl futures::task::ArcWake for WakeCount {
+            fn wake_by_ref(counter: &Arc<Self>) {
+                counter.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let counter = Arc::new(WakeCount(AtomicUsize::new(0)));
+        let waker = futures::task::waker(counter.clone());
+        let mut cx = Context::from_waker(&waker);
+        let conc = Concurrency::new(2);
+        let mut active = conc.acquire().await.unwrap();
+        let mut reserved = conc.acquire().await.unwrap();
+        let mut waiters: Vec<_> = (0..8).map(|_| Box::pin(conc.acquire())).collect();
+        for waiter in &mut waiters {
+            assert!(waiter.as_mut().poll(&mut cx).is_pending());
+        }
+        assert!(active.poll_reclaimed(&mut cx).is_pending());
+        // Created before close, but first polled after the broadcast.
+        let late = conc.acquire();
+        conc.close();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 9);
+        conc.close();
+        assert_eq!(counter.0.load(Ordering::Relaxed), 9);
+        for waiter in &mut waiters {
+            assert!(matches!(
+                waiter.as_mut().poll(&mut cx),
+                Poll::Ready(Err(Closed))
+            ));
+        }
+        assert!(matches!(late.await, Err(Closed)));
+        assert!(active.poll_reclaimed(&mut cx).is_ready());
+        // This permit's reclaim future was never polled before close.
+        assert!(reserved.poll_reclaimed(&mut cx).is_ready());
+        assert_eq!(conc.acquired(), 2);
+        assert_eq!(conc.available(), 0);
+        conc.resize(10);
+        assert!(matches!(conc.acquire().await, Err(Closed)));
+        drop(active);
+        drop(reserved);
+        assert_eq!(conc.acquired(), 0);
+        assert_eq!(conc.available(), 0);
+        assert!(matches!(conc.acquire().await, Err(Closed)));
+    }
+
+    #[tokio::test]
     async fn acquire_within_limit() {
         let conc = Concurrency::new(2);
-        let _p1 = conc.acquire().await;
-        let _p2 = conc.acquire().await;
+        let _p1 = conc.acquire().await.unwrap();
+        let _p2 = conc.acquire().await.unwrap();
         assert_eq!(conc.acquired(), 2);
         assert_eq!(conc.available(), 0);
     }
@@ -260,14 +349,14 @@ mod tests {
     async fn drop_permit_releases_capacity() {
         let conc = Concurrency::new(1);
 
-        let p1 = conc.acquire().await;
+        let p1 = conc.acquire().await.unwrap();
         assert_eq!(conc.acquired(), 1);
 
         // Spawn a task that waits for a permit
         let conc2 = conc.clone();
         let (tx, rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _p2 = conc2.acquire().await;
+            let _p2 = conc2.acquire().await.unwrap();
             tx.send(conc2.acquired()).unwrap();
         });
 
@@ -288,14 +377,14 @@ mod tests {
         let conc1 = conc.clone();
         let (tx1, rx1) = oneshot::channel();
         tokio::spawn(async move {
-            let _p = conc1.acquire().await;
+            let _p = conc1.acquire().await.unwrap();
             tx1.send(()).unwrap();
         });
 
         let conc2 = conc.clone();
         let (tx2, rx2) = oneshot::channel();
         tokio::spawn(async move {
-            let _p = conc2.acquire().await;
+            let _p = conc2.acquire().await.unwrap();
             tx2.send(()).unwrap();
         });
 
@@ -315,9 +404,9 @@ mod tests {
     async fn resize_down_drains_existing_permits() {
         let conc = Concurrency::new(3);
 
-        let p1 = conc.acquire().await;
-        let p2 = conc.acquire().await;
-        let p3 = conc.acquire().await;
+        let p1 = conc.acquire().await.unwrap();
+        let p2 = conc.acquire().await.unwrap();
+        let p3 = conc.acquire().await.unwrap();
         assert_eq!(conc.acquired(), 3);
 
         // Resize down to 1 — existing permits are not revoked
@@ -328,7 +417,7 @@ mod tests {
         let conc2 = conc.clone();
         let (tx, mut rx) = oneshot::channel();
         tokio::spawn(async move {
-            let _p = conc2.acquire().await;
+            let _p = conc2.acquire().await.unwrap();
             tx.send(conc2.acquired()).unwrap();
         });
 
@@ -360,20 +449,20 @@ mod tests {
     #[tokio::test]
     async fn multiple_waiters_released_one_at_a_time() {
         let conc = Concurrency::new(1);
-        let p1 = conc.acquire().await;
+        let p1 = conc.acquire().await.unwrap();
 
         // Each spawned task sends its permit back so it stays alive
         let conc2 = conc.clone();
         let (tx1, rx1) = oneshot::channel();
         tokio::spawn(async move {
-            let p = conc2.acquire().await;
+            let p = conc2.acquire().await.unwrap();
             tx1.send(p).unwrap();
         });
 
         let conc3 = conc.clone();
         let (tx2, rx2) = oneshot::channel();
         tokio::spawn(async move {
-            let p = conc3.acquire().await;
+            let p = conc3.acquire().await.unwrap();
             tx2.send(p).unwrap();
         });
 
@@ -395,8 +484,8 @@ mod tests {
     #[tokio::test]
     async fn resize_down_signals_reclaim() {
         let conc = Concurrency::new(2);
-        let mut p1 = conc.acquire().await;
-        let mut p2 = conc.acquire().await;
+        let mut p1 = conc.acquire().await.unwrap();
+        let mut p2 = conc.acquire().await.unwrap();
 
         // No reclaim yet — poll_reclaimed should return Pending
         assert!(
@@ -422,7 +511,7 @@ mod tests {
     #[tokio::test]
     async fn reclaim_not_signalled_on_resize_up() {
         let conc = Concurrency::new(1);
-        let mut p1 = conc.acquire().await;
+        let mut p1 = conc.acquire().await.unwrap();
 
         // Resize up — should NOT trigger reclaim
         conc.resize(3);
@@ -439,8 +528,8 @@ mod tests {
     #[tokio::test]
     async fn reclaim_then_reacquire() {
         let conc = Concurrency::new(2);
-        let mut p1 = conc.acquire().await;
-        let p2 = conc.acquire().await;
+        let mut p1 = conc.acquire().await.unwrap();
+        let p2 = conc.acquire().await.unwrap();
         assert_eq!(conc.acquired(), 2);
 
         // Shrink to 1 and drop the reclaimed permit
@@ -451,20 +540,20 @@ mod tests {
 
         // Drop p2 so a new acquire succeeds under the reduced limit
         drop(p2);
-        let _p3 = conc.acquire().await;
+        let _p3 = conc.acquire().await.unwrap();
         assert_eq!(conc.acquired(), 1);
     }
 
     #[tokio::test]
     async fn resize_up_while_at_capacity() {
         let conc = Concurrency::new(1);
-        let _p1 = conc.acquire().await;
+        let _p1 = conc.acquire().await.unwrap();
 
         // Waiter blocked because at capacity — send permit back to keep it alive
         let conc2 = conc.clone();
         let (tx, mut rx) = oneshot::channel();
         tokio::spawn(async move {
-            let p = conc2.acquire().await;
+            let p = conc2.acquire().await.unwrap();
             tx.send(p).unwrap();
         });
 
