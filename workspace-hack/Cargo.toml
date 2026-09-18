@@ -125,9 +125,11 @@ time = { version = "0.3", features = ["formatting", "local-offset", "macros", "p
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "time"] }
-toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
-toml_edit = { version = "0.22", features = ["serde"] }
+toml_datetime-3b31131e45eafb45 = { package = "toml_datetime", version = "0.6", default-features = false, features = ["serde"] }
+toml_datetime-dff4ba8e3ae991db = { package = "toml_datetime", version = "1", features = ["serde"] }
+toml_edit = { version = "0.25" }
 toml_parser = { version = "1" }
+toml_writer = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
 tower-http-ca01ad9e24f5d932 = { package = "tower-http", version = "0.7", default-features = false, features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "limit", "normalize-path", "trace"] }
@@ -263,9 +265,11 @@ time-macros = { version = "0.2", default-features = false, features = ["formatti
 tokio-rustls = { version = "0.26", features = ["ring"] }
 tokio-stream = { version = "0.1", features = ["net", "sync"] }
 tokio-util = { version = "0.7", features = ["codec", "io-util", "net", "rt", "time"] }
-toml_datetime = { version = "0.6", default-features = false, features = ["serde"] }
-toml_edit = { version = "0.22", features = ["serde"] }
+toml_datetime-3b31131e45eafb45 = { package = "toml_datetime", version = "0.6", default-features = false, features = ["serde"] }
+toml_datetime-dff4ba8e3ae991db = { package = "toml_datetime", version = "1", features = ["serde"] }
+toml_edit = { version = "0.25" }
 toml_parser = { version = "1" }
+toml_writer = { version = "1" }
 tonic = { version = "0.14", features = ["gzip", "tls-native-roots", "tls-ring", "zstd"] }
 tower = { version = "0.5", default-features = false, features = ["balance", "buffer", "limit", "load-shed", "retry", "timeout"] }
 tower-http-ca01ad9e24f5d932 = { package = "tower-http", version = "0.7", default-features = false, features = ["compression-br", "compression-gzip", "compression-zstd", "cors", "limit", "normalize-path", "trace"] }
