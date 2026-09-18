@@ -14,28 +14,295 @@
 //! Requests lower onto either the legacy [`PartitionProcessorRpcRequest`] envelope or their
 //! dedicated wire message.
 
+use std::sync::Arc;
+
 use crate::identifiers::{
     InvocationId, PartitionKey, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
-use crate::invocation::InvocationResponse;
 use crate::invocation::client::{
-    CancelInvocationResponse, KillInvocationResponse, PatchDeploymentId, PauseInvocationResponse,
-    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
+    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
+    GetInvocationStatusResponse, InvocationOutput, KillInvocationResponse, PatchDeploymentId,
+    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
+    ResumeInvocationResponse, SubmittedInvocationNotification,
 };
+use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal::EntryIndex;
 use crate::journal_v2::Signal;
+use crate::net::RpcRequest;
 use crate::net::partition_processor::{
-    AppendInvocationResponseRpcRequest, AppendInvocationResponseRpcResponse,
-    AppendSignalRpcRequest, AppendSignalRpcResponse, CancelInvocationRpcRequest,
-    KillInvocationRpcRequest, PartitionProcessorRpcError, PartitionProcessorRpcRequestHeader,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, PauseInvocationRpcRequest,
-    PurgeInvocationRpcRequest, PurgeJournalRpcRequest, RestartAsNewInvocationRpcRequest,
-    ResumeInvocationRpcRequest,
+    AppendInvocationReplyOn, AppendInvocationResponseRpcRequest,
+    AppendInvocationResponseRpcResponse, AppendInvocationRpcRequest, AppendSignalRpcRequest,
+    AppendSignalRpcResponse, CancelInvocationRpcRequest, GetInvocationOutputResponseMode,
+    GetInvocationOutputRpcRequest, GetInvocationStatusRpcRequest, KillInvocationRpcRequest,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequestHeader,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    PartitionProcessorWireEnvelope, PauseInvocationRpcRequest, PurgeInvocationRpcRequest,
+    PurgeJournalRpcRequest, RestartAsNewInvocationRpcRequest, ResumeInvocationRpcRequest,
 };
 
 use super::client::{PartitionProcessorRpc, WireResponseError};
 
 type LegacyResponse = Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>;
+
+/// Append the invocation to the log, replying once the partition processor emitted the
+/// [`SubmittedInvocationNotification`].
+#[derive(Debug, Clone)]
+pub struct SubmitInvocation {
+    pub invocation_request: Arc<InvocationRequest>,
+}
+
+impl WithPartitionKey for SubmitInvocation {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_request.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for SubmitInvocation {
+    const HAS_LEGACY_WIRE: bool = true;
+    type Response = SubmittedInvocationNotification;
+    type Wire = AppendInvocationRpcRequest;
+
+    fn into_legacy_wire(self) -> Option<PartitionProcessorRpcRequestInner> {
+        Some(PartitionProcessorRpcRequestInner::AppendInvocation(
+            self.invocation_request,
+            AppendInvocationReplyOn::Submitted,
+        ))
+    }
+
+    fn into_wire(self, header: PartitionProcessorRpcRequestHeader) -> Self::Wire {
+        AppendInvocationRpcRequest {
+            header,
+            invocation_request: self.invocation_request,
+            append_invocation_reply_on: AppendInvocationReplyOn::Submitted,
+        }
+    }
+
+    fn from_legacy_response(
+        request_id: PartitionProcessorRpcRequestId,
+        response: LegacyResponse,
+    ) -> Result<Self::Response, WireResponseError> {
+        let PartitionProcessorRpcResponse::Submitted(submit_notification) = response? else {
+            return Err(WireResponseError::UnexpectedResponse);
+        };
+        debug_assert_eq!(
+            request_id, submit_notification.request_id,
+            "Conflicting submit notification received"
+        );
+        Ok(submit_notification)
+    }
+
+    fn from_wire(
+        request_id: PartitionProcessorRpcRequestId,
+        response: <Self::Wire as RpcRequest>::Response,
+    ) -> Result<Self::Response, WireResponseError> {
+        let submit_notification = Self::Response::try_from(response.into_result()?)?;
+        debug_assert_eq!(
+            request_id, submit_notification.request_id,
+            "Conflicting submit notification received"
+        );
+        Ok(submit_notification)
+    }
+}
+
+/// Append the invocation to the log and wait for its output.
+#[derive(Debug, Clone)]
+pub struct CallInvocation {
+    pub invocation_request: Arc<InvocationRequest>,
+}
+
+impl WithPartitionKey for CallInvocation {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_request.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for CallInvocation {
+    const HAS_LEGACY_WIRE: bool = true;
+    type Response = InvocationOutput;
+    type Wire = AppendInvocationRpcRequest;
+
+    fn into_legacy_wire(self) -> Option<PartitionProcessorRpcRequestInner> {
+        Some(PartitionProcessorRpcRequestInner::AppendInvocation(
+            self.invocation_request,
+            AppendInvocationReplyOn::Output,
+        ))
+    }
+
+    fn into_wire(self, header: PartitionProcessorRpcRequestHeader) -> Self::Wire {
+        AppendInvocationRpcRequest {
+            header,
+            invocation_request: self.invocation_request,
+            append_invocation_reply_on: AppendInvocationReplyOn::Output,
+        }
+    }
+
+    fn from_legacy_response(
+        request_id: PartitionProcessorRpcRequestId,
+        response: LegacyResponse,
+    ) -> Result<Self::Response, WireResponseError> {
+        let PartitionProcessorRpcResponse::Output(invocation_output) = response? else {
+            return Err(WireResponseError::UnexpectedResponse);
+        };
+        debug_assert_eq!(
+            request_id, invocation_output.request_id,
+            "Conflicting invocation output received"
+        );
+        Ok(invocation_output)
+    }
+
+    fn from_wire(
+        request_id: PartitionProcessorRpcRequestId,
+        response: <Self::Wire as RpcRequest>::Response,
+    ) -> Result<Self::Response, WireResponseError> {
+        let invocation_output = Self::Response::try_from(response.into_result()?)?;
+        debug_assert_eq!(
+            request_id, invocation_output.request_id,
+            "Conflicting invocation output received"
+        );
+        Ok(invocation_output)
+    }
+}
+
+/// Attach to an existing invocation and wait for its output.
+#[derive(Debug, Clone)]
+pub struct AttachInvocation {
+    pub invocation_query: InvocationQuery,
+}
+
+impl WithPartitionKey for AttachInvocation {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_query.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for AttachInvocation {
+    const HAS_LEGACY_WIRE: bool = true;
+    type Response = AttachInvocationResponse;
+    type Wire = GetInvocationOutputRpcRequest;
+
+    fn into_legacy_wire(self) -> Option<PartitionProcessorRpcRequestInner> {
+        Some(PartitionProcessorRpcRequestInner::GetInvocationOutput(
+            self.invocation_query,
+            GetInvocationOutputResponseMode::BlockWhenNotReady,
+        ))
+    }
+
+    fn into_wire(self, header: PartitionProcessorRpcRequestHeader) -> Self::Wire {
+        GetInvocationOutputRpcRequest {
+            header,
+            invocation_query: self.invocation_query.into(),
+            response_mode: GetInvocationOutputResponseMode::BlockWhenNotReady,
+        }
+    }
+
+    fn from_legacy_response(
+        _request_id: PartitionProcessorRpcRequestId,
+        response: LegacyResponse,
+    ) -> Result<Self::Response, WireResponseError> {
+        Ok(match response? {
+            PartitionProcessorRpcResponse::NotFound => AttachInvocationResponse::NotFound,
+            PartitionProcessorRpcResponse::NotSupported => AttachInvocationResponse::NotSupported,
+            PartitionProcessorRpcResponse::Output(output) => {
+                AttachInvocationResponse::Ready(output)
+            }
+            _ => return Err(WireResponseError::UnexpectedResponse),
+        })
+    }
+}
+
+/// Get an invocation output, when present.
+#[derive(Debug, Clone)]
+pub struct GetInvocationOutput {
+    pub invocation_query: InvocationQuery,
+}
+
+impl WithPartitionKey for GetInvocationOutput {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_query.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for GetInvocationOutput {
+    const HAS_LEGACY_WIRE: bool = true;
+    type Response = GetInvocationOutputResponse;
+    type Wire = GetInvocationOutputRpcRequest;
+
+    fn into_legacy_wire(self) -> Option<PartitionProcessorRpcRequestInner> {
+        Some(PartitionProcessorRpcRequestInner::GetInvocationOutput(
+            self.invocation_query,
+            GetInvocationOutputResponseMode::ReplyIfNotReady,
+        ))
+    }
+
+    fn into_wire(self, header: PartitionProcessorRpcRequestHeader) -> Self::Wire {
+        GetInvocationOutputRpcRequest {
+            header,
+            invocation_query: self.invocation_query.into(),
+            response_mode: GetInvocationOutputResponseMode::ReplyIfNotReady,
+        }
+    }
+
+    fn from_legacy_response(
+        _request_id: PartitionProcessorRpcRequestId,
+        response: LegacyResponse,
+    ) -> Result<Self::Response, WireResponseError> {
+        Ok(match response? {
+            PartitionProcessorRpcResponse::NotFound => GetInvocationOutputResponse::NotFound,
+            PartitionProcessorRpcResponse::NotSupported => {
+                GetInvocationOutputResponse::NotSupported
+            }
+            PartitionProcessorRpcResponse::NotReady => GetInvocationOutputResponse::NotReady,
+            PartitionProcessorRpcResponse::Output(output) => {
+                GetInvocationOutputResponse::Ready(output)
+            }
+            _ => return Err(WireResponseError::UnexpectedResponse),
+        })
+    }
+}
+
+/// Get the invocation status, when present.
+#[derive(Debug, Clone)]
+pub struct GetInvocationStatus {
+    pub invocation_id: InvocationId,
+}
+
+impl WithPartitionKey for GetInvocationStatus {
+    fn partition_key(&self) -> PartitionKey {
+        self.invocation_id.partition_key()
+    }
+}
+
+impl PartitionProcessorRpc for GetInvocationStatus {
+    const HAS_LEGACY_WIRE: bool = true;
+    type Response = GetInvocationStatusResponse;
+    type Wire = GetInvocationStatusRpcRequest;
+
+    fn into_legacy_wire(self) -> Option<PartitionProcessorRpcRequestInner> {
+        Some(PartitionProcessorRpcRequestInner::GetInvocationStatus {
+            invocation_id: self.invocation_id,
+        })
+    }
+
+    fn into_wire(self, header: PartitionProcessorRpcRequestHeader) -> Self::Wire {
+        GetInvocationStatusRpcRequest {
+            header,
+            invocation_id: self.invocation_id,
+        }
+    }
+
+    fn from_legacy_response(
+        _request_id: PartitionProcessorRpcRequestId,
+        response: LegacyResponse,
+    ) -> Result<Self::Response, WireResponseError> {
+        Ok(match response? {
+            PartitionProcessorRpcResponse::NotFound => GetInvocationStatusResponse::NotFound,
+            PartitionProcessorRpcResponse::Status(status) => {
+                GetInvocationStatusResponse::Status(status)
+            }
+            _ => return Err(WireResponseError::UnexpectedResponse),
+        })
+    }
+}
 
 /// **DEPRECATED** Append an [`InvocationResponse`] to an existing invocation journal.
 /// Only ServiceProtocol <= 3.
