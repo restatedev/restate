@@ -75,13 +75,15 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.13" }
+itertools-3575ec1268b04181 = { package = "itertools", version = "0.15" }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+md-5 = { version = "0.11" }
 memchr = { version = "2" }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
@@ -101,8 +103,8 @@ rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
-ring = { version = "0.17", features = ["std"] }
+reqwest-594e8ee84c453af0 = { package = "reqwest", version = "0.13", default-features = false, features = ["default-tls", "form", "http2", "json", "query", "rustls-no-provider", "stream"] }
+reqwest-5ef9efb8ec2df382 = { package = "reqwest", version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 schemars = { version = "1", features = ["bytes1"] }
@@ -206,13 +208,15 @@ hyper-util = { version = "0.1", features = ["full"] }
 idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
-itertools = { version = "0.13" }
+itertools-3575ec1268b04181 = { package = "itertools", version = "0.15" }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 lexical-parse-float = { version = "1", features = ["format"] }
 lexical-parse-integer = { version = "1", default-features = false, features = ["format", "std"] }
 lexical-util = { version = "1", default-features = false, features = ["format", "parse-floats", "parse-integers", "std", "write-floats", "write-integers"] }
 libc = { version = "0.2", features = ["extra_traits"] }
 libz-sys = { version = "1", features = ["static"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
+md-5 = { version = "0.11" }
 memchr = { version = "2" }
 nom = { version = "7" }
 num-bigint = { version = "0.4" }
@@ -233,8 +237,8 @@ rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "rustls-tls-native-roots", "stream"] }
-ring = { version = "0.17", features = ["std"] }
+reqwest-594e8ee84c453af0 = { package = "reqwest", version = "0.13", default-features = false, features = ["default-tls", "form", "http2", "json", "query", "rustls-no-provider", "stream"] }
+reqwest-5ef9efb8ec2df382 = { package = "reqwest", version = "0.12", default-features = false, features = ["blocking", "http2", "json", "rustls-tls", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
 schemars = { version = "1", features = ["bytes1"] }
@@ -288,9 +292,12 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
+quick-xml = { version = "0.41", features = ["overlapped-lists", "serialize"] }
+ring = { version = "0.17", features = ["std"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
@@ -307,9 +314,12 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
+quick-xml = { version = "0.41", features = ["overlapped-lists", "serialize"] }
+ring = { version = "0.17", features = ["std"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 signal-hook = { version = "0.3" }
 tikv-jemalloc-ctl = { version = "0.7", features = ["stats", "use_std"] }
@@ -325,9 +335,12 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
+quick-xml = { version = "0.41", features = ["overlapped-lists", "serialize"] }
+ring = { version = "0.17", features = ["std"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 security-framework-sys = { version = "2" }
 signal-hook = { version = "0.3" }
@@ -345,9 +358,12 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+nix = { version = "0.31", default-features = false, features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
+quick-xml = { version = "0.41", features = ["overlapped-lists", "serialize"] }
+ring = { version = "0.17", features = ["std"] }
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 security-framework-sys = { version = "2" }
 signal-hook = { version = "0.3" }
