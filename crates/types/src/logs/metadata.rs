@@ -669,6 +669,7 @@ impl PartialEq<ProviderKind> for InternalKind {
     serde::Serialize,
     serde::Deserialize,
     Enum,
+    strum::EnumCount,
     strum::EnumIter,
     strum::Display,
 )]
