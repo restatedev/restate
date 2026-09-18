@@ -122,9 +122,12 @@ where
                             break;
                         }
 
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(remainder.is_empty(), "Each serialized InvocationStatusKey should have KEY_LEN");
+
                         let results = raw_db.batched_multi_get_cf_opt(
                             &cf,
-                            key_buf.chunks_exact(KEY_LEN),
+                            keys,
                             true,
                             &readopts,
                         );
