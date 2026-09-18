@@ -50,7 +50,9 @@ use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
 };
-use restate_types::invocation::client::InvocationOutputResponse;
+use restate_types::invocation::client::{
+    InvocationOutput, InvocationOutputResponse, SubmittedInvocationNotification,
+};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTermination, ResponseResult, ServiceInvocation,
     ServiceInvocationResponseSink, Source, VirtualObjectHandlerType,
@@ -704,7 +706,12 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
         }))
         .await;
     // No ingress response is expected at this point because the invocation did not end yet
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
+    assert_that!(
+        actions,
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+        })))
+    );
 
     // Send the End Effect
     let actions = test_env
@@ -717,26 +724,32 @@ async fn send_ingress_response_to_multiple_targets() -> TestResult {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_1),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_2),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_2),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_3),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_3),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
         )
     );
@@ -882,9 +895,11 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id),
-            is_new_invocation: eq(true)
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id),
+                is_new_invocation: eq(true)
+            })))
         }))
     );
 
@@ -894,9 +909,11 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id),
-            is_new_invocation: eq(true)
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id),
+                is_new_invocation: eq(true)
+            })))
         }))
     );
 
