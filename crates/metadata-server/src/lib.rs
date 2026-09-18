@@ -245,7 +245,7 @@ pub async fn create_metadata_server_and_client(
 
 impl MetadataStoreRequest {
     fn into_request(self) -> (Request, ClusterIdentity) {
-        let request_id = Ulid::new();
+        let request_id = Ulid::generate();
 
         match self {
             MetadataStoreRequest::Get {

@@ -288,7 +288,7 @@ tracing-subscriber = { version = "0.3", features = [
 tracing-test = { version = "0.2.5" }
 typed-builder = "0.23.2"
 typify = { version = "0.8.0" }
-ulid = { version = "1.2.1" }
+ulid = { version = "3.0.0" }
 url = { version = "2.5" }
 urlencoding = { version = "2.1" }
 utoipa = { version = "5.4" }

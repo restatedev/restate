@@ -101,6 +101,7 @@ prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
 quanta = { version = "0.12" }
 quote = { version = "1" }
+rand = { version = "0.9" }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 regex = { version = "1" }
@@ -138,7 +139,7 @@ tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
@@ -242,6 +243,7 @@ prost-types = { version = "0.14" }
 protobuf = { version = "2", default-features = false, features = ["with-bytes"] }
 quanta = { version = "0.12" }
 quote = { version = "1" }
+rand = { version = "0.9" }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 regex = { version = "1" }
@@ -281,7 +283,7 @@ tracing = { version = "0.1", features = ["log", "max_level_trace", "release_max_
 tracing-core = { version = "0.1" }
 tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
-ulid = { version = "1", features = ["serde"] }
+ulid = { version = "3", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
 utoipa = { version = "5", features = ["axum_extras", "time"] }
 utoipa-gen = { version = "5", default-features = false, features = ["axum_extras", "time"] }

@@ -354,7 +354,7 @@ impl InvocationUuid {
             }
             (_, _) => {
                 // Regular invocation
-                Ulid::new().into()
+                Ulid::generate().into()
             }
         };
 
@@ -1155,7 +1155,7 @@ macro_rules! ulid_backed_id {
 
             impl [< $res_name Id >] {
                 pub fn new() -> Self {
-                    Self(Ulid::new())
+                    Self(Ulid::generate())
                 }
 
                 pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {
