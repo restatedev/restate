@@ -3621,7 +3621,9 @@ pub mod v1 {
                                         opaque.codec as i32,
                                     )
                                 })?,
-                            kind: opaque.kind as u8,
+                            kind: u16::try_from(opaque.kind).map_err(|_| {
+                                ConversionError::UnexpectedEnumVariant("kind", opaque.kind as i32)
+                            })?,
                             message: opaque.message,
                         };
 

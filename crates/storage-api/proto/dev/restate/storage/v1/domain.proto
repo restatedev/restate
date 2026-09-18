@@ -718,7 +718,7 @@ message OutboxMessage {
     }
   }
 
-  message Opaque{
+  message Opaque {
     uint64 partition_key = 1;
     uint32 kind = 2;
     uint32 codec = 3;

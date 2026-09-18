@@ -27,7 +27,7 @@ use crate::protobuf_types::PartitionStoreProtobufValue;
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OpaqueMessage {
     pub partition_key: PartitionKey,
-    pub kind: u8,
+    pub kind: u16,
     #[serde_as(as = "TryFromInto<u8>")]
     pub codec: StorageCodecKind,
     pub message: Bytes,

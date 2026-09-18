@@ -245,7 +245,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
-            encoding_arena: BytesMut::with_capacity(128 * 1024),
+            encoding_arena: BytesMut::new(),
         })
     }
 }

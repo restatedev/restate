@@ -310,7 +310,6 @@ pub enum CommandScope {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration, strum::Display, strum::IntoStaticStr,
 )]
-#[repr(u8)]
 pub enum CommandKind {
     Unknown = 0,
 
@@ -398,15 +397,15 @@ pub enum CommandKind {
     PurgeVQueueMeta = 26,
 }
 
-impl From<CommandKind> for u8 {
+impl From<CommandKind> for u16 {
     fn from(value: CommandKind) -> Self {
-        value as u8
+        value as u16
     }
 }
 
-impl TryFrom<u8> for CommandKind {
+impl TryFrom<u16> for CommandKind {
     type Error = ConversionError;
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
         let v = match value {
             0 => Self::Unknown,
             1 => Self::AnnounceLeader,
