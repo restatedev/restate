@@ -73,7 +73,7 @@ mnemonic = "1.1.1"
 octocrab = { workspace = true, features = ["stream"] }
 open = "5.3.3"
 rand = { workspace = true }
-reqwest = { workspace = true, default-features = false, features = ["json", "rustls-tls", "stream", "http2"] }
+reqwest = { workspace = true, default-features = false, features = ["form", "http2"] }
 rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
 serde_json = { workspace = true }
