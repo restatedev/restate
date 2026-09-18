@@ -159,7 +159,7 @@ derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", default-features = false }
 dialoguer = { version = "0.12.0" }
 downcast-rs = { version = "2.0.2" }
-enum-map = { version = "2.7.3" }
+enum-map = { version = "3.1.0" }
 enumset = { version = "1.1.10" }
 etcd-client = { version = "0.17" }
 flexbuffers = { version = "25.12.19" }

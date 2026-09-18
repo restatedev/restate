@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use ahash::{HashMap, HashMapExt};
-use enum_map::{Enum, EnumMap};
+use enum_map::EnumMap;
 use tokio::sync::mpsc;
 use tracing::{debug, error, trace};
 
@@ -46,7 +46,7 @@ impl BifrostService {
             watchdog_tx,
             watchdog_rx,
             metadata_writer,
-            factories: HashMap::with_capacity(ProviderKind::LENGTH),
+            factories: HashMap::with_capacity(EnumMap::<ProviderKind, ()>::default().len()),
         }
     }
 

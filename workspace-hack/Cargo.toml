@@ -54,7 +54,7 @@ derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "zeroize"] }
 either = { version = "1", features = ["use_std"] }
-enum-map = { version = "2", default-features = false, features = ["serde"] }
+enum-map = { version = "3", features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
@@ -190,7 +190,7 @@ digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["m
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "zeroize"] }
 displaydoc = { version = "0.2" }
 either = { version = "1", features = ["use_std"] }
-enum-map = { version = "2", default-features = false, features = ["serde"] }
+enum-map = { version = "3", features = ["serde"] }
 flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 futures-channel = { version = "0.3", features = ["sink"] }
