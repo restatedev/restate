@@ -12,6 +12,7 @@ use std::ops::RangeInclusive;
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures::FutureExt;
 
 use crate::errors::InvocationError;
 use crate::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
@@ -67,15 +68,25 @@ pub enum GetInvocationOutputResponse {
     Ready(InvocationOutput),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Enumeration,
+)]
 pub enum InvocationState {
+    #[bilrost(0)]
     Scheduled,
+    #[bilrost(1)]
     Inboxed,
+    #[bilrost(2)]
     Invoked,
+    #[bilrost(3)]
     Suspended,
+    #[bilrost(4)]
     Paused,
+    #[bilrost(5)]
     Killed,
+    #[bilrost(6)]
     Failed,
+    #[bilrost(7)]
     Succeeded,
 }
 
@@ -146,12 +157,26 @@ pub enum RestartAsNewInvocationResponse {
     },
 }
 
-#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    bilrost::Oneof,
+    bilrost::Message,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub enum PatchDeploymentId {
     #[default]
+    #[bilrost(empty)]
     KeepPinned,
+    #[bilrost(tag(1), message)]
     PinToLatest,
+    #[bilrost(tag(2), message)]
     PinTo {
+        #[bilrost(tag(1))]
         id: DeploymentId,
     },
 }
@@ -191,132 +216,164 @@ pub trait InvocationClient: PartitionProcessorClient {
     /// Append the invocation to the log, waiting for the PP to emit [`SubmittedInvocationNotification`] when the command is processed.
     fn append_invocation_and_wait_submit_notification(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_request: Arc<InvocationRequest>,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_request: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<SubmittedInvocationNotification, PartitionProcessorClientError>>
     + Send {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::SubmitInvocation { invocation_request },
+        )
     }
 
     /// Append the invocation and wait for its output.
     fn append_invocation_and_wait_output(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_request: Arc<InvocationRequest>,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_request: Arc<InvocationRequest>,
     ) -> impl Future<Output = Result<InvocationOutput, PartitionProcessorClientError>> + Send {
-        async { todo!() }
+        self.send(request_id, requests::CallInvocation { invocation_request })
     }
 
     /// Attach to an existing invocation and wait for its output.
     fn attach_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_query: InvocationQuery,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<AttachInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::AttachInvocation { invocation_query })
     }
 
     /// Get an invocation output, when present.
     fn get_invocation_output(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_query: InvocationQuery,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_query: InvocationQuery,
     ) -> impl Future<Output = Result<GetInvocationOutputResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::GetInvocationOutput { invocation_query },
+        )
     }
 
     /// Get invocation status, when present.
     fn get_invocation_status(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
     ) -> impl Future<Output = Result<GetInvocationStatusResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::GetInvocationStatus { invocation_id })
     }
 
     /// **DEPRECATED** Append [`InvocationResponse`] to an existing invocation journal. Only ServiceProtocol <= 3
     fn append_invocation_response(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_response: InvocationResponse,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_response: InvocationResponse,
     ) -> impl Future<Output = Result<(), PartitionProcessorClientError>> + Send {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::AppendInvocationResponse {
+                invocation_response,
+            },
+        )
+        .map(|_| Ok(()))
     }
 
     /// Append a signal to an existing invocation journal.
     fn append_signal(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
-        _signal: Signal,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        signal: Signal,
     ) -> impl Future<Output = Result<(), PartitionProcessorClientError>> + Send {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::AppendSignal {
+                invocation_id,
+                signal,
+            },
+        )
+        .map(|_| Ok(()))
     }
 
     /// Cancel the given invocation.
     fn cancel_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
     ) -> impl Future<Output = Result<CancelInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::CancelInvocation { invocation_id })
     }
 
     /// Kill the given invocation.
     fn kill_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
     ) -> impl Future<Output = Result<KillInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::KillInvocation { invocation_id })
     }
 
     /// Purge the given invocation. This cleanups all the state for the given invocation. This command applies only to completed invocations.
     fn purge_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::PurgeInvocation { invocation_id })
     }
 
     /// Purge the given invocation journal. This cleanups only the journal for the given invocation, retaining the metadata. This command applies only to completed invocations.
     fn purge_journal(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
     ) -> impl Future<Output = Result<PurgeInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(request_id, requests::PurgeJournal { invocation_id })
     }
 
     /// Restart the given invocation as a new invocation, with a new invocation id.
     fn restart_as_new_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
-        _copy_prefix_up_to_index_included: EntryIndex,
-        _patch_deployment_id: PatchDeploymentId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        copy_prefix_up_to_index_included: EntryIndex,
+        patch_deployment_id: PatchDeploymentId,
     ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::RestartAsNewInvocation {
+                invocation_id,
+                copy_prefix_up_to_index_included,
+                patch_deployment_id,
+            },
+        )
     }
 
     /// Resume the given invocation.
     fn resume_invocation(
         &self,
-        _request_id: PartitionProcessorRpcRequestId,
-        _invocation_id: InvocationId,
-        _resume_invocation_deployment_id: PatchDeploymentId,
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        resume_invocation_deployment_id: PatchDeploymentId,
     ) -> impl Future<Output = Result<ResumeInvocationResponse, PartitionProcessorClientError>> + Send
     {
-        async { todo!() }
+        self.send(
+            request_id,
+            requests::ResumeInvocation {
+                invocation_id,
+                deployment_id: resume_invocation_deployment_id,
+            },
+        )
     }
 
     /// Pause the given invocation.

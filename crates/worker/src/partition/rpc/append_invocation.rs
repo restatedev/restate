@@ -8,28 +8,29 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_types::invocation;
 use restate_types::invocation::{
     ServiceInvocation, ServiceInvocationResponseSink, SubmitNotificationSink,
 };
+use restate_types::net::partition_processor::{
+    AppendInvocationRpcRequest, AppendInvocationRpcResponse,
+};
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_request: Arc<InvocationRequest>,
-    pub(super) append_invocation_reply_on: AppendInvocationReplyOn,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<AppendInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        Request {
-            request_id,
+        AppendInvocationRpcRequest {
+            header,
             invocation_request,
             append_invocation_reply_on,
-        }: Request,
-    ) -> Decision {
+        }: AppendInvocationRpcRequest,
+    ) -> Decision<AppendInvocationRpcResponse> {
+        let request_id = header.request_id;
         let mut service_invocation = ServiceInvocation::from_request(
             Arc::unwrap_or_clone(invocation_request),
             invocation::Source::ingress(request_id),
@@ -53,7 +54,7 @@ impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TS
             commands::InvokeCommand::from(service_invocation),
             match append_invocation_reply_on {
                 AppendInvocationReplyOn::Appended => ReplyOn::Commit {
-                    response: PartitionProcessorRpcResponse::Appended,
+                    response: AppendInvocationRpcResponse::Appended,
                 },
                 AppendInvocationReplyOn::Submitted | AppendInvocationReplyOn::Output => {
                     ReplyOn::Apply { request_id }
@@ -65,11 +66,13 @@ impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TS
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use googletest::prelude::*;
-    use restate_test_util::let_assert;
     use test_log::test;
+
+    use restate_test_util::let_assert;
+    use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
+
+    use super::*;
 
     async fn handle(
         request_id: PartitionProcessorRpcRequestId,
@@ -77,13 +80,14 @@ mod tests {
     ) -> Decision {
         RpcHandler::handle(
             RpcContext::new(true, PartitionId::MIN, &(), &mut ()),
-            Request {
-                request_id,
+            AppendInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(request_id),
                 invocation_request: Arc::new(InvocationRequest::mock()),
                 append_invocation_reply_on,
             },
         )
         .await
+        .map_response(Into::into)
     }
 
     #[test(restate_core::test)]

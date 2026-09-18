@@ -18,7 +18,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2;
-use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationRequestHeader,
@@ -27,27 +27,23 @@ use restate_types::invocation::{
 };
 use restate_types::journal as journal_v1;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
-use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
+use restate_types::net::partition_processor::{
+    RestartAsNewInvocationRpcRequest, RestartAsNewInvocationRpcResponse,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
 use restate_wal_protocol::v2::commands;
-
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-    pub(super) copy_prefix_up_to_index_included: EntryIndex,
-    pub(super) patch_deployment_id: PatchDeploymentId,
-}
 
 macro_rules! bail {
     ($err:expr) => {
         use RestartAsNewInvocationRpcResponse::*;
 
-        return Decision::Reply(Ok($err.into()));
+        return Decision::Reply(Ok($err));
     };
 }
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<RestartAsNewInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
 where
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
@@ -56,13 +52,14 @@ where
 {
     async fn handle(
         self,
-        Request {
-            request_id,
+        RestartAsNewInvocationRpcRequest {
+            header,
             invocation_id,
             copy_prefix_up_to_index_included,
             patch_deployment_id,
-        }: Request,
-    ) -> Decision {
+        }: RestartAsNewInvocationRpcRequest,
+    ) -> Decision<RestartAsNewInvocationRpcResponse> {
+        let request_id = header.request_id;
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
@@ -239,7 +236,7 @@ where
             return Decision::Propose(RpcProposal::new(
                 cmd,
                 ReplyOn::Commit {
-                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }.into(),
+                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 },
             ));
         }
@@ -292,8 +289,7 @@ where
                             pinned_protocol_version: pinned_service_protocol as i32,
                             deployment_id: deployment.id,
                             supported_protocol_versions: deployment.supported_protocol_versions,
-                        }
-                        .into(),
+                        },
                     ));
                 }
                 Some(deployment.id)
@@ -406,6 +402,24 @@ mod tests {
     use restate_types::time::MillisSinceEpoch;
 
     use super::*;
+
+    struct Request {
+        request_id: PartitionProcessorRpcRequestId,
+        invocation_id: InvocationId,
+        copy_prefix_up_to_index_included: EntryIndex,
+        patch_deployment_id: PatchDeploymentId,
+    }
+
+    impl From<Request> for RestartAsNewInvocationRpcRequest {
+        fn from(request: Request) -> Self {
+            Self {
+                header: PartitionProcessorRpcRequestHeader::new(request.request_id),
+                invocation_id: request.invocation_id,
+                copy_prefix_up_to_index_included: request.copy_prefix_up_to_index_included,
+                patch_deployment_id: request.patch_deployment_id,
+            }
+        }
+    }
 
     struct MockStorage {
         expected_invocation_id: InvocationId,
@@ -710,11 +724,13 @@ mod tests {
         storage: &mut MockStorage,
         request: Request,
     ) -> Decision {
+        let request: RestartAsNewInvocationRpcRequest = request.into();
         RpcHandler::handle(
             RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
             request,
         )
         .await
+        .map_response(Into::into)
     }
 
     #[test(restate_core::test)]
