@@ -377,9 +377,7 @@ impl Deployment {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress {
-                    uri: other_address,
-                    auth: _,
-                    ..
+                    uri: other_address, ..
                 }),
             ) => deployment::Deployment::semantic_eq_http(
                 this_address,

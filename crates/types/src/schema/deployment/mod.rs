@@ -99,9 +99,7 @@ impl Deployment {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress {
-                    uri: other_address,
-                    auth: _,
-                    ..
+                    uri: other_address, ..
                 }),
             ) => Self::semantic_eq_http(
                 this_address,

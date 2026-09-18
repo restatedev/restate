@@ -352,14 +352,7 @@ where
                     invocation_id,
                     execution_time: response
                         .execution_time
-                        .and_then(|m| {
-                            if m == MillisSinceEpoch::UNIX_EPOCH {
-                                // Ignore
-                                None
-                            } else {
-                                Some(m)
-                            }
-                        })
+                        .filter(|&m| m != MillisSinceEpoch::UNIX_EPOCH)
                         .map(SystemTime::from)
                         .map(Into::into),
                     status: if response.is_new_invocation {

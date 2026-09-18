@@ -388,7 +388,7 @@ async fn register_v3_admin_api(
 
     progress.set_message(format!(
         "Asking restate server at {} for a dry-run discovery of {}",
-        &client.base_url, discover_opts.deployment
+        client.base_url, discover_opts.deployment
     ));
 
     // This fails if the endpoint exists and --force is not set.
@@ -484,7 +484,7 @@ async fn register_v3_admin_api(
 
     progress.set_message(format!(
         "Asking restate server {} to confirm this deployment (at {})",
-        &client.base_url, discover_opts.deployment
+        client.base_url, discover_opts.deployment
     ));
 
     let registration_result = client
@@ -526,7 +526,7 @@ async fn register_v2_admin_api(
 
     progress.set_message(format!(
         "Asking restate server at {} for a dry-run discovery of {}",
-        &client.base_url, discover_opts.deployment
+        client.base_url, discover_opts.deployment
     ));
 
     // This fails if the endpoint exists and --force is not set.
@@ -591,7 +591,7 @@ async fn register_v2_admin_api(
 
     progress.set_message(format!(
         "Asking restate server {} to confirm this deployment (at {})",
-        &client.base_url, discover_opts.deployment
+        client.base_url, discover_opts.deployment
     ));
 
     let registration_result = client

@@ -185,13 +185,18 @@ impl ServiceClient {
                         let token = gcp
                             .mint(impersonate, &audience)
                             .await
-                            .map_err(|e| ServiceClientError::GcpAuth(uri.clone(), e))?;
+                            .map_err(|source| {
+                                ServiceClientError::GcpAuth(Box::new(GcpAuthCallError {
+                                    uri: uri.clone(),
+                                    source,
+                                }))
+                            })?;
 
                         let bearer = ::http::HeaderValue::try_from(format!("Bearer {token}"))
                             .map_err(|e| {
-                                ServiceClientError::GcpAuth(
-                                    uri.clone(),
-                                    gcp::GcpAuthError::Mint {
+                                ServiceClientError::GcpAuth(Box::new(GcpAuthCallError {
+                                    uri: uri.clone(),
+                                    source: gcp::GcpAuthError::Mint {
                                         audience: audience.clone(),
                                         impersonate: impersonate
                                             .unwrap_or("(ambient)")
@@ -200,14 +205,16 @@ impl ServiceClient {
                                             "minted token cannot be used as an HTTP header value: {e}"
                                         ),
                                     },
-                                )
+                                }))
                             })?;
                         headers.insert(X_SERVERLESS_AUTHORIZATION, bearer);
                     }
                     let resp = http
                         .request(uri.clone(), version, method, body, path, headers)
                         .await
-                        .map_err(|e| ServiceClientError::Http(uri, e))?;
+                        .map_err(|source| {
+                            ServiceClientError::Http(Box::new(HttpCallError { uri, source }))
+                        })?;
                     Ok(resp.map(http_body_util::Either::Left))
                 }
                 .left_future()
@@ -237,14 +244,30 @@ impl ServiceClient {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ServiceClientError {
-    #[error("error when calling '{0}': {1}")]
-    Http(Uri, #[source] http::HttpError),
+    #[error(transparent)]
+    Http(Box<HttpCallError>),
     #[error("error when calling '{0}': {1}")]
     Lambda(LambdaARN, #[source] lambda::LambdaError),
-    #[error("error minting GCP ID token for '{0}': {1}")]
-    GcpAuth(Uri, #[source] gcp::GcpAuthError),
+    #[error(transparent)]
+    GcpAuth(Box<GcpAuthCallError>),
     #[error(transparent)]
     IdentityV1(#[from] <request_identity::v1::Signer<'static, 'static> as SignRequest>::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("error when calling '{uri}': {source}")]
+pub struct HttpCallError {
+    pub uri: Uri,
+    #[source]
+    pub source: HttpError,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("error minting GCP ID token for '{uri}': {source}")]
+pub struct GcpAuthCallError {
+    pub uri: Uri,
+    #[source]
+    pub source: GcpAuthError,
 }
 
 impl ServiceClientError {
@@ -252,7 +275,7 @@ impl ServiceClientError {
     /// retrying can succeed.
     pub fn is_retryable(&self) -> bool {
         match self {
-            ServiceClientError::Http(_, http_error) => http_error.is_retryable(),
+            ServiceClientError::Http(http_error) => http_error.source.is_retryable(),
             ServiceClientError::Lambda(_, lambda_error) => lambda_error.is_retryable(),
             // GCP token-mint errors:
             // - Application Default Credentials (`Adc`) load failure is treated as transient (e.g.
@@ -269,7 +292,7 @@ impl ServiceClientError {
             //   overhead is bounded.
             // - `AmbientUnsupported` is a misconfiguration (the ambient ADC source cannot mint
             //   ID tokens directly); retrying cannot help.
-            ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
+            ServiceClientError::GcpAuth(gcp_error) => match &gcp_error.source {
                 gcp::GcpAuthError::Adc { .. }
                 | gcp::GcpAuthError::Timeout { .. }
                 | gcp::GcpAuthError::Mint { .. } => true,
@@ -406,11 +429,26 @@ impl fmt::Display for Endpoint {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::time::Duration;
+
+    use super::*;
 
     fn uri() -> Uri {
         "https://svc.example.com/".parse().unwrap()
+    }
+
+    #[test]
+    fn http_error_preserves_context_and_source() {
+        let source = HttpError::PossibleHTTP11Only;
+        let expected = format!("error when calling '{}': {source}", uri());
+        let error = ServiceClientError::Http(Box::new(HttpCallError { uri: uri(), source }));
+
+        assert_eq!(error.to_string(), expected);
+        assert!(matches!(
+            error.source().unwrap().downcast_ref::<HttpError>(),
+            Some(HttpError::PossibleHTTP11Only)
+        ));
+        assert!(!error.is_retryable());
     }
 
     #[test]
@@ -461,7 +499,15 @@ mod tests {
             ),
         ];
         for (err, expected) in cases {
-            let wrapped = ServiceClientError::GcpAuth(uri(), err.clone_for_test());
+            let wrapped = ServiceClientError::GcpAuth(Box::new(GcpAuthCallError {
+                uri: uri(),
+                source: err.clone_for_test(),
+            }));
+            assert_eq!(
+                wrapped.to_string(),
+                format!("error minting GCP ID token for '{}': {err}", uri())
+            );
+            assert!(wrapped.source().unwrap().is::<GcpAuthError>());
             assert_eq!(
                 wrapped.is_retryable(),
                 *expected,
