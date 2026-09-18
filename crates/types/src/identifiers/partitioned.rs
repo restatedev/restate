@@ -128,7 +128,7 @@ macro_rules! partitioned_resource_id {
                 }
 
                 pub fn generate(partition_key: $crate::PartitionKey) -> Self {
-                    Self { partition_key, remainder: ::ulid::Ulid::new().to_bytes() }
+                    Self { partition_key, remainder: ::ulid::Ulid::generate().to_bytes() }
                 }
 
                 pub const fn from_partition_key_and_bytes(partition_key: $crate::PartitionKey, remainder: [u8;16]) -> Self {

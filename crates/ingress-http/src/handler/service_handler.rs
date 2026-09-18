@@ -185,7 +185,7 @@ where
             )
             && idempotency_key.is_none()
         {
-            idempotency_key = Some(Ulid::new().to_string().into());
+            idempotency_key = Some(Ulid::generate().to_string().into());
         }
 
         // Compute retention values
