@@ -73,7 +73,6 @@ bytestring = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 paste = { workspace = true }
-pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 prost = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }
