@@ -8,26 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, PurgeInvocationRequest,
 };
+use restate_types::net::partition_processor::{PurgeInvocationRpcResponse, PurgeJournalRpcRequest};
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<PurgeJournalRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        Request {
-            request_id,
+        PurgeJournalRpcRequest {
+            header,
             invocation_id,
-        }: Request,
-    ) -> Decision {
+        }: PurgeJournalRpcRequest,
+    ) -> Decision<PurgeInvocationRpcResponse> {
+        let request_id = header.request_id;
         Decision::Propose(RpcProposal::new(
             commands::PurgeJournalCommand::from(PurgeInvocationRequest {
                 invocation_id,
