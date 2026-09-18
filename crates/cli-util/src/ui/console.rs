@@ -452,7 +452,7 @@ macro_rules! c_warn {
     ($($arg:tt)*) => {
         {
             let mut table = $crate::_comfy_table::Table::new();
-            table.load_preset($crate::_comfy_table::presets::UTF8_BORDERS_ONLY);
+            table.load_style($crate::_comfy_table::presets::UTF8_BORDERS_ONLY);
             table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
             table.set_width(120);
             let formatted = format!($($arg)*);
@@ -472,7 +472,7 @@ macro_rules! c_tip {
     ($($arg:tt)*) => {
         {
             let mut table = $crate::_comfy_table::Table::new();
-            table.load_preset($crate::_comfy_table::presets::NOTHING);
+            table.load_style($crate::_comfy_table::presets::NOTHING);
             table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
             table.set_width(120);
             let formatted = format!($($arg)*);
