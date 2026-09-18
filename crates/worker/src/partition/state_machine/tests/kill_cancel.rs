@@ -10,8 +10,6 @@
 
 use super::{fixtures, matchers, *};
 
-use assert2::assert;
-use assert2::let_assert;
 use googletest::any;
 use prost::Message;
 use restate_storage_api::journal_table;
@@ -19,6 +17,7 @@ use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
 };
+use restate_test_util::assert;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
@@ -407,7 +406,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     }
     // Update journal length and suspend invocation
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
-    let_assert!(InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
+    assert!(let InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
     in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
 
     tx.put_invocation_status(

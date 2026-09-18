@@ -164,11 +164,11 @@ mod tests {
         has_commands, has_journal_length, in_flight_metadata, is_variant,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
-    use assert2::let_assert;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
+    use restate_test_util::assert;
     use restate_types::identifiers::InvocationId;
     use restate_types::invocation::NotifySignalRequest;
     use restate_types::journal_v2::{
@@ -489,7 +489,7 @@ mod tests {
                 .await
                 .unwrap();
 
-            let_assert!(InvocationStatus::Suspended { awaiting_on, .. } = invocation_status);
+            assert!(let InvocationStatus::Suspended { awaiting_on, .. } = invocation_status);
             assert_eq!(awaiting_on, expected_awaiting_on);
 
             self

@@ -113,7 +113,7 @@ anyhow = "1"
 arc-swap = "1.9"
 arrayvec = { version = "0.7" }
 arrow = { version = "59.3.0", default-features = false }
-assert2 = "0.3.16"
+assert2 = "0.4.1"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
 aws-config = "1.11.0"

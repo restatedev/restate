@@ -10,7 +10,7 @@
 
 use super::*;
 
-use assert2::let_assert;
+use assert2::assert;
 use opentelemetry::trace::Span;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
@@ -172,7 +172,7 @@ where
                     return Ok(None);
                 }
 
-                let_assert!(
+                assert!(let
                     journal_v1::Entry::Input(journal_v1::InputEntry { value, headers }) = entry
                         .deserialize_entry_ref::<OldProtocolEntryCodec>()
                         .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
@@ -392,6 +392,7 @@ mod tests {
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
     use restate_storage_api::journal_table_v2::NotificationEntryIndex;
+    use restate_test_util::assert;
     use restate_test_util::rand;
     use restate_test_util::rand::bytestring;
     use restate_types::deployment::PinnedDeployment;
@@ -760,7 +761,7 @@ mod tests {
         let (_, service_invocation_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::InvokeCommand>();
 
-        let_assert!(ReplyOn::Commit { response } = reply_on);
+        assert!(let ReplyOn::Commit { response } = reply_on);
         let service_invocation: ServiceInvocation = service_invocation_command.into();
 
         assert_that!(
@@ -980,7 +981,7 @@ mod tests {
         let (_, restart_as_new_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
 
-        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        assert!(let ReplyOn::Apply { .. } = reply_on);
         let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
 
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
@@ -1024,7 +1025,7 @@ mod tests {
         let (_, restart_as_new_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
 
-        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        assert!(let ReplyOn::Apply { .. } = reply_on);
         let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
 
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
@@ -1240,7 +1241,7 @@ mod tests {
         let (_, restart_as_new_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
 
-        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        assert!(let ReplyOn::Apply { .. } = reply_on);
         let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
 
         assert_eq!(request.copy_prefix_up_to_index_included, 1);
@@ -1286,7 +1287,7 @@ mod tests {
         let (_, restart_as_new_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
 
-        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        assert!(let ReplyOn::Apply { .. } = reply_on);
         let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
 
         assert_eq!(request.copy_prefix_up_to_index_included, 1);

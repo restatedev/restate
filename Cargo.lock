@@ -456,20 +456,22 @@ dependencies = [
 
 [[package]]
 name = "assert2"
-version = "0.3.16"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d6c710e60d14b07d8f42d0e702b16120865eea39edb751e75cd6bf401d18f14"
+checksum = "be34ac78fd9be6726029f207e434d76b417c0f36b51d79c8f6e0867a608e1eea"
 dependencies = [
  "assert2-macros",
  "diff",
+ "terminal_size",
+ "unicode-width 0.2.2",
  "yansi",
 ]
 
 [[package]]
 name = "assert2-macros"
-version = "0.3.16"
+version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9008cbbba9e1d655538870b91fd93814bd82e6968f27788fc734375120ac6f57"
+checksum = "cda2103d813e362645a09b3f4712f8a899dbfd29594ccd948f6a06a46c5bf7ee"
 dependencies = [
  "proc-macro2",
  "quote",
