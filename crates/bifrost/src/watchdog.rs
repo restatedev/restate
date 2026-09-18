@@ -229,7 +229,7 @@ impl Watchdog {
                 && !self.pending_trims.is_empty()
                 && !shutdown_requested
             {
-                let trims = self.pending_trims.drain().collect();
+                let trims = std::mem::take(&mut self.pending_trims);
                 match self.spawn_trim(trims) {
                     Ok(task_handle) => self.in_flight_trim = Some(task_handle),
                     Err(ShutdownError) => {

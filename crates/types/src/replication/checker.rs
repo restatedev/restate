@@ -351,7 +351,7 @@ impl<Attr: Eq + Hash + Clone + std::fmt::Debug> NodeSetChecker<Attr> {
         // To check for write-quorum, the quorum-check needs to pass on *all* scopes. The check on
         // every scope ensures we have enough domains to replicate a record according to the
         // configured replication property _at_ the specified scope.
-        for (_scope, scope_state) in self.scopes.iter() {
+        for scope_state in self.scopes.values() {
             if !scope_state.check_write_quorum(&predicate) {
                 // todo(asoli): change return type to encode failed-scope information so upper layers can
                 // log useful information about why write-quorum cannot be achieved.

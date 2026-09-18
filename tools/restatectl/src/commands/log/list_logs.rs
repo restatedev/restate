@@ -72,8 +72,8 @@ pub async fn list_logs(connection: &ConnectionInfo, _opts: &ListLogsOpts) -> any
             let params = deserialize_replicated_log_params(&chain.tail());
             logs_table.add_row(vec![
                 Cell::new(log_id),
-                Cell::new(format!("{}", &chain.num_segments())),
-                Cell::new(format!("{}", &chain.tail().base_lsn)),
+                Cell::new(format!("{}", chain.num_segments())),
+                Cell::new(format!("{}", chain.tail().base_lsn)),
                 Cell::new(format!("{}", chain.tail().config.kind)),
                 render_loglet_params(&params, |p| Cell::new(p.loglet_id)),
                 render_loglet_params(&params, |p| Cell::new(format!("{:#}", p.replication))),
