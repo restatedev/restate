@@ -479,6 +479,10 @@ pub struct CommonOptions {
     ///
     /// Log filter configuration. Can be overridden by the `RUST_LOG` environment variable.
     /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
+    ///
+    /// RocksDB's own info log is available under the `rocksdb` target. Warnings and errors
+    /// are enabled by default, including write stalls and stops. Add e.g. `rocksdb=info`
+    /// for more detail. Changes require a restart.
     pub log_filter: String,
 
     /// # Logging format
@@ -1045,7 +1049,7 @@ impl Default for CommonOptions {
             service_client: Default::default(),
             shutdown_timeout: NonZeroFriendlyDuration::from_secs_unchecked(60),
             tracing: TracingOptions::default(),
-            log_filter: "warn,restate=info".to_string(),
+            log_filter: "warn,restate=info,rocksdb=warn".to_string(),
             log_format: Default::default(),
             log_disable_ansi_codes: false,
             tokio_console_bind_address: None,
