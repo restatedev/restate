@@ -91,7 +91,6 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::TestEnv;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_end_effect, invoker_entry_effect, pinned_deployment,
@@ -99,6 +98,7 @@ mod tests {
     use crate::partition::state_machine::tests::matchers::storage::{
         has_commands, has_journal_length, is_variant,
     };
+    use crate::partition::state_machine::{Action, RpcReply};
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::prelude::{all, assert_that, contains, eq, none, ok, pat, some};
@@ -107,7 +107,7 @@ mod tests {
     };
     use restate_storage_api::journal_table_v2::ReadJournalTable;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-    use restate_types::invocation::client::InvocationOutputResponse;
+    use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
     use restate_types::invocation::{
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
@@ -155,13 +155,15 @@ mod tests {
         // Assert response
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         );
 
@@ -209,13 +211,15 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         );
 
