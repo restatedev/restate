@@ -591,12 +591,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized MetaKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
@@ -755,12 +756,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized EntryStatusKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
