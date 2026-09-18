@@ -37,6 +37,7 @@ use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
 use bytestring::ByteString;
 use http::{HeaderValue, Uri};
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -642,10 +643,13 @@ impl SchemaUpdater {
             ));
         }
 
+        // Drop empty keys and deduplicate, keeping first-occurrence order.
         let eager_state_keys_whitelist: Vec<ByteString> = service
             .eager_state_keys_whitelist
             .into_iter()
+            .filter(|k| !k.is_empty())
             .map(ByteString::from)
+            .unique()
             .collect();
 
         Ok(ServiceRevision {
@@ -1324,10 +1328,13 @@ impl Handler {
             });
         }
 
+        // Drop empty keys and deduplicate, keeping first-occurrence order.
         let eager_state_keys_whitelist: Vec<ByteString> = handler
             .eager_state_keys_whitelist
             .into_iter()
+            .filter(|k| !k.is_empty())
             .map(ByteString::from)
+            .unique()
             .collect();
 
         Ok(Self {
