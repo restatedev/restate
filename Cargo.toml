@@ -162,7 +162,7 @@ dialoguer = { version = "0.12.0" }
 downcast-rs = { version = "2.0.2" }
 enum-map = { version = "3.1.0" }
 enumset = { version = "1.1.10" }
-etcd-client = { version = "0.17" }
+etcd-client = { version = "0.20.0" }
 flexbuffers = { version = "25.12.19" }
 futures = "0.3.31"
 futures-util = "0.3.31"
