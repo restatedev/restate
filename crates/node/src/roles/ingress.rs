@@ -19,12 +19,10 @@ use restate_types::net::listener::AddressBook;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::IngressStatus;
 use restate_types::schema::Schema;
-use restate_worker_api::PartitionProcessorInvocationClient;
+use restate_worker_api::PartitionProcessorRpcClient;
 
-type IngressHttp<T> = HyperServerIngress<
-    Schema,
-    InvocationClientRequestDispatcher<PartitionProcessorInvocationClient<T>>,
->;
+type IngressHttp<T> =
+    HyperServerIngress<Schema, InvocationClientRequestDispatcher<PartitionProcessorRpcClient<T>>>;
 
 pub struct IngressRole<T> {
     ingress_http: IngressHttp<T>,
@@ -40,9 +38,11 @@ impl<T: TransportConnect> IngressRole<T> {
         partition_table: Live<PartitionTable>,
         partition_routing: PartitionRouting,
     ) -> Self {
-        let dispatcher = InvocationClientRequestDispatcher::new(
-            PartitionProcessorInvocationClient::new(networking, partition_table, partition_routing),
-        );
+        let dispatcher = InvocationClientRequestDispatcher::new(PartitionProcessorRpcClient::new(
+            networking,
+            partition_table,
+            partition_routing,
+        ));
         let ingress_http = HyperServerIngress::from_options(
             ingress_options.live_load(),
             address_book.take_listeners(),
