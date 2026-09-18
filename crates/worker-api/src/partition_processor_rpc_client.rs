@@ -20,8 +20,10 @@ use restate_core::network::{NetworkSender, RpcReplyError, Swimlane};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
+use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::live::Live;
+use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::EncodeError;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestHeader,
@@ -315,6 +317,19 @@ where
             .await
             .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
 
+        // We should use the dedicated message format if:
+        // 1. Our peer understands the dedicated message format (i.e. on protocol V4+), and the flag
+        //    that controls this is enabled.
+        // 2. The RPC doesn't have a legacy wire implementation (aka new RPCs). In this case, it's
+        //    on the caller to make sure that the peer understands that new message before sending
+        //    it, otherwise it'll get an unexpected message error from the peer.
+        let use_dedicated_message = !R::HAS_LEGACY_WIRE
+            || (connection.protocol_version() >= ProtocolVersion::V4
+                && Configuration::pinned()
+                    .common
+                    .experimental
+                    .is_partition_processor_dedicated_messages_enabled());
+
         let permit = connection.reserve().await.ok_or_else(|| {
             RpcError::from_err(
                 partition_id,
@@ -323,11 +338,7 @@ where
             )
         })?;
         let header = PartitionProcessorRpcRequestHeader::new(request_id);
-
-        // TODO(mbassem): Implement decision logic
-        let should_use_dedicated = false;
-
-        let res = if should_use_dedicated || !R::HAS_LEGACY_WIRE {
+        let res = if use_dedicated_message {
             let request = request.into_wire(header);
             let response = permit
                 .send_rpc(request, Some(*partition_id as u64))
