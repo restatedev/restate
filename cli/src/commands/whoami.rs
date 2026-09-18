@@ -36,7 +36,7 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!("       https://restate.dev/");
     c_println!();
     let mut table = Table::new();
-    table.load_preset(comfy_table::presets::NOTHING);
+    table.load_style(comfy_table::presets::NOTHING);
     table.add_row(vec![
         "Ingress base URL",
         env.ingress_base_url()
@@ -62,7 +62,7 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!();
     c_println!("Local Environment");
     let mut table = Table::new();
-    table.load_preset(comfy_table::presets::NOTHING);
+    table.load_style(comfy_table::presets::NOTHING);
     table.add_row(vec![
         "Config Dir",
         &format!(
@@ -123,7 +123,7 @@ pub async fn run(State(env): State<CliEnv>) {
     c_println!();
     c_println!("Restate CLI Build Information");
     let mut table = Table::new();
-    table.load_preset(comfy_table::presets::NOTHING);
+    table.load_style(comfy_table::presets::NOTHING);
     table.add_row(vec!["Version", build_info::RESTATE_CLI_VERSION]);
     table.add_row(vec!["Target", build_info::RESTATE_CLI_TARGET_TRIPLE]);
     table.add_row(vec!["Debug Build?", &format!("{}", build_info::is_debug())]);
@@ -167,7 +167,7 @@ pub async fn run(State(env): State<CliEnv>) {
                 None => ("(NONE)", "(NONE)"),
             };
 
-            table.load_preset(comfy_table::presets::NOTHING);
+            table.load_style(comfy_table::presets::NOTHING);
             table.add_row(vec!["Account ID", account_id]);
             table.add_row(vec!["Environment ID", environment_id]);
 
@@ -205,7 +205,7 @@ pub async fn run(State(env): State<CliEnv>) {
                 c_success!("Admin Service '{}' is healthy!", client.base_url);
                 if let Some(advertised_ingress_address) = client.advertised_ingress_address {
                     let mut table = Table::new();
-                    table.load_preset(comfy_table::presets::NOTHING);
+                    table.load_style(comfy_table::presets::NOTHING);
                     table.add_row(vec![
                         "Advertised ingress address",
                         &advertised_ingress_address,
