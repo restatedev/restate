@@ -8,8 +8,6 @@ ignore = [
     { id = "RUSTSEC-2024-0436", reason = "crate is unmaintained. We need to migrate to a different crate than `paste`" },
     { id = "RUSTSEC-2024-0437", reason = "protobuf-rs stackoverflow in deep nested messages, not fixed yet" },
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },
-    # package proc-macro-error2 is pulled by `raft` -> `getset` -> `proc-macro-error2`
-    { id = "RUSTSEC-2026-0173", reason = "The author of `proc-macro-error2` has [confirmed](https://github.com/GnomedDev/proc-macro-error-2/issues/17#issuecomment-4643215473) that the crate is no longer maintained and recommends that users migrate away from it" },
     # smartstring is a dependency of rust-rocksdb
     { id = "RUSTSEC-2026-0249", reason = "The smartstring crate is unmaintained; all versions are affected. The GitHub repository was archived by the owner on 2026-05-03." },
 ]
