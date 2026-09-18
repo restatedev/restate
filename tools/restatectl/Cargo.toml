@@ -56,14 +56,14 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap_complete = { workspace = true }
-clap-stdin = "0.6.0"
+clap-stdin = "0.8.1"
 cling = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"
 futures = { workspace = true }
 itertools = { workspace = true }
-json-patch = "2.0.0"
+json-patch = "4.2.0"
 humantime = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
