@@ -212,13 +212,7 @@ impl LogReadStream {
     /// The read pointer points to the next LSN will be attempted on the next
     /// `poll_next()`.
     fn calculate_read_pointer(record: &LogEntry) -> Lsn {
-        // On trim gaps, we fast-forward the read pointer beyond the end of the gap. We do
-        // this after delivering a TrimGap record. This means that the next read operation
-        // skips over the boundary of the gap.
-        record
-            .trim_gap_to_sequence_number()
-            .unwrap_or_else(|| record.sequence_number())
-            .next()
+        record.next_sequence_number()
     }
 
     pub fn safe_known_tail(&self) -> Option<Lsn> {
