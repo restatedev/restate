@@ -49,12 +49,7 @@ tempfile = { workspace = true }
 tikv-jemallocator = { workspace = true }
 
 [build-dependencies]
-vergen = { workspace = true, default-features = false, features = [
-    "build",
-    "git",
-    "gitcl",
-    "cargo",
-] }
+vergen-gitcl = { workspace = true }
 
 [lints]
 workspace = true

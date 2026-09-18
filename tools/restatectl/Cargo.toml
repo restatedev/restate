@@ -78,12 +78,7 @@ tonic = { workspace = true, features = ["transport", "zstd", "gzip"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-vergen = { workspace = true, default-features = false, features = [
-    "build",
-    "git",
-    "gitcl",
-    "cargo",
-] }
+vergen-gitcl = { workspace = true }
 
 [dev-dependencies]
 restate-local-cluster-runner = { workspace = true }

@@ -67,12 +67,7 @@ ulid = { workspace = true }
 url = { workspace = true }
 
 [build-dependencies]
-vergen = { workspace = true, default-features = false, features = [
-    "build",
-    "git",
-    "gitcl",
-    "cargo",
-] }
+vergen-gitcl = { workspace = true }
 
 [[bin]]
 name = "restate-doctor"
