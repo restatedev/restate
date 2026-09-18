@@ -721,7 +721,7 @@ mod tests {
     use test_log::test;
     use tokio::sync::mpsc::error::TryRecvError;
 
-    use restate_test_util::{assert, check, let_assert};
+    use restate_test_util::{assert, check};
     use restate_types::retries::RetryPolicy;
 
     fn create_test_invocation_state_machine() -> InvocationStateMachine<u64> {
@@ -936,7 +936,7 @@ mod tests {
         );
 
         // Notify error
-        let_assert!(
+        assert!(let
             OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
@@ -956,7 +956,7 @@ mod tests {
         );
 
         // Get error again
-        let_assert!(
+        assert!(let
             OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
@@ -998,7 +998,7 @@ mod tests {
 
         // Invoker generates entry 1
         invocation_state_machine.notify_new_command(1, false);
-        let_assert!(
+        assert!(let
             OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
@@ -1012,7 +1012,7 @@ mod tests {
 
         // Still waiting retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = &invocation_state_machine.invocation_state);
 
         // After the retry timer fires, we're ready to retry
         invocation_state_machine.notify_retry_timer_fired(0);
@@ -1040,7 +1040,7 @@ mod tests {
             NotificationId::CompletionId(1),
             false,
         );
-        let_assert!(
+        assert!(let
             OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,
@@ -1051,7 +1051,7 @@ mod tests {
 
         // Waiting notifications acks and retry timer fired
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = &invocation_state_machine.invocation_state);
 
         // Got completion 18
         invocation_state_machine.notify_entry(0, NotificationId::CompletionId(18));
@@ -1061,14 +1061,14 @@ mod tests {
 
         // Waiting notifications acks
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = &invocation_state_machine.invocation_state);
 
         // For whatever reason notification index 2
         invocation_state_machine.notify_entry(1, NotificationId::CompletionId(2));
 
         // Still waiting completion id 1
         assert!(!invocation_state_machine.is_ready_to_retry());
-        assert!(let AttemptState::WaitingRetry { .. } = invocation_state_machine.invocation_state);
+        assert!(let AttemptState::WaitingRetry { .. } = &invocation_state_machine.invocation_state);
 
         // Send notification index 1
         invocation_state_machine.notify_entry(2, NotificationId::CompletionId(1));
@@ -1082,7 +1082,7 @@ mod tests {
         let mut invocation_state_machine = create_test_invocation_state_machine();
 
         // Put the ISM in WaitingRetry state with timer key 0
-        let_assert!(
+        assert!(let
             OnTaskError::Retrying(_) = invocation_state_machine.handle_task_error(
                 true,
                 RequestedErrorBehavior::Retry,

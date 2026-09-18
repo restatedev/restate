@@ -23,7 +23,7 @@ use std::ops::RangeBounds;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use assert2::let_assert;
+use assert2::assert;
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
@@ -2272,7 +2272,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         .await?;
 
                     // For the sleep, we also delete the associated timer
-                    let_assert!(
+                    assert!(let
                         Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                             ProtobufRawEntryCodec::deserialize(EntryType::Sleep, entry)?
                     );
@@ -2434,7 +2434,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             return Ok(());
         }
 
-        let_assert!(
+        assert!(let
             InvocationStatus::Scheduled(scheduled_invocation) = invocation_status,
             "Invocation {} should be in scheduled status",
             invocation_id
@@ -3273,7 +3273,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     InboxEntry::Invocation(_, invocation_id) => {
                         let inboxed_status = self.get_invocation_status(&invocation_id).await?;
 
-                        let_assert!(
+                        assert!(let
                             InvocationStatus::Inboxed(inboxed_invocation) = inboxed_status,
                             "InvocationStatus must contain an Inboxed invocation for the id {}",
                             invocation_id
@@ -3354,7 +3354,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::GetState { is_completed, .. } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::GetState(GetStateEntry { key, .. }) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3387,7 +3387,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 }
             }
             EnrichedEntryHeader::SetState { .. } => {
-                let_assert!(
+                assert!(let
                     Entry::SetState(SetStateEntry { key, value }) =
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
@@ -3405,7 +3405,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 }
             }
             EnrichedEntryHeader::ClearState { .. } => {
-                let_assert!(
+                assert!(let
                     Entry::ClearState(ClearStateEntry { key }) =
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
@@ -3462,7 +3462,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::GetPromise { is_completed, .. } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::GetPromise(GetPromiseEntry { key, .. }) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3532,7 +3532,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::PeekPromise { is_completed, .. } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::PeekPromise(PeekPromiseEntry { key, .. }) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3572,7 +3572,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::CompletePromise { is_completed, .. } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::CompletePromise(CompletePromiseEntry {
                             key,
                             completion,
@@ -3653,7 +3653,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::Sleep { is_completed, .. } => {
                 debug_assert!(!is_completed, "Sleep entry must not be completed.");
-                let_assert!(
+                assert!(let
                     Entry::Sleep(SleepEntry { wake_up_time, .. }) =
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
@@ -3676,7 +3676,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     completion_retention_time,
                 }) = enrichment_result
                 {
-                    let_assert!(
+                    assert!(let
                         Entry::Call(InvokeEntry { request, .. }) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3720,7 +3720,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     completion_retention_time,
                 } = enrichment_result;
 
-                let_assert!(
+                assert!(let
                     Entry::OneWayCall(OneWayCallEntry {
                         request,
                         invoke_time
@@ -3783,7 +3783,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     },
                 ..
             } => {
-                let_assert!(
+                assert!(let
                     Entry::CompleteAwakeable(entry) =
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
@@ -3831,7 +3831,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 // We just store it
             }
             EntryHeader::CancelInvocation => {
-                let_assert!(
+                assert!(let
                     Entry::CancelInvocation(entry) =
                         journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );
@@ -3840,7 +3840,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EntryHeader::GetCallInvocationId { is_completed } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::GetCallInvocationId(entry) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3875,7 +3875,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::AttachInvocation { is_completed } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::AttachInvocation(entry) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -3902,7 +3902,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             EnrichedEntryHeader::GetInvocationOutput { is_completed } => {
                 if !is_completed {
-                    let_assert!(
+                    assert!(let
                         Entry::GetInvocationOutput(entry) =
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
@@ -4215,7 +4215,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
             output_entry
                 .map(|enriched_entry| {
-                    let_assert!(
+                    assert!(let
                         Entry::Output(e) =
                             enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );

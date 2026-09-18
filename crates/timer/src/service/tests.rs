@@ -21,7 +21,6 @@ use futures_util::FutureExt;
 use test_log::test;
 use tokio::sync::oneshot;
 
-use restate_test_util::let_assert;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::timer::TimerKey;
 
@@ -308,7 +307,7 @@ async fn add_new_timers() {
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 0..4 {
-        let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
+        restate_test_util::assert!(let TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
 }
@@ -332,7 +331,7 @@ async fn earlier_timers_replace_older_ones() {
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 0..2 {
-        let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
+        restate_test_util::assert!(let TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
 }
@@ -418,7 +417,7 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
 
     clock.advance_time_to(MillisSinceEpoch::new(3));
 
-    let_assert!(TimerValue { value: 0, .. } = service.as_mut().next_timer().await);
+    restate_test_util::assert!(let TimerValue { value: 0, .. } = service.as_mut().next_timer().await);
 
     let new_timer = TimerValue::new(1, 0.into());
     timer_reader.add_timer(new_timer);
@@ -427,7 +426,7 @@ async fn earlier_timers_wont_trigger_reemission_of_fired_timers() {
     clock.advance_time_to(MillisSinceEpoch::new(10));
 
     for i in 1..3 {
-        let_assert!(TimerValue { value, .. } = service.as_mut().next_timer().await);
+        restate_test_util::assert!(let TimerValue { value, .. } = service.as_mut().next_timer().await);
         assert_eq!(value, i);
     }
 }

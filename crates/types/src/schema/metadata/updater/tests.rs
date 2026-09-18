@@ -664,7 +664,7 @@ mod change_service_type {
             ..add_deployment_request(vec![greeter_virtual_object()])
         });
 
-        assert!(let &SchemaError::Service(
+        assert!(let SchemaError::Service(
                 ServiceError::DifferentType(_)
             ) = compute_result.unwrap_err());
     }
@@ -882,7 +882,7 @@ fn update_latest_deployment() {
         .unwrap()
         .1;
 
-    assert!(let &SchemaError::NotFound(_) = updater.update_deployment(
+    assert!(let SchemaError::NotFound(_) = updater.update_deployment(
             UpdateDeploymentRequest {
                 overwrite: Overwrite::Yes,
                 ..update_deployment_request(DeploymentId::new(), vec![])
