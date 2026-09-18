@@ -1472,17 +1472,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-platform"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd0061da739915fae12ea00e16397555ed4371a6bb285431aab930f61b0aa4ba"
+dependencies = [
+ "serde",
+ "serde_core",
+]
+
+[[package]]
 name = "cargo_metadata"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2d886547e41f740c616ae73108f6eb70afe6d940c7bc697cb30f13daec073037"
 dependencies = [
  "camino",
- "cargo-platform",
+ "cargo-platform 0.1.9",
  "semver",
  "serde",
  "serde_json",
  "thiserror 1.0.69",
+]
+
+[[package]]
+name = "cargo_metadata"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef987d17b0a113becdd19d3d0022d04d7ef41f9efe4f3fb63ac44ba61df3ade9"
+dependencies = [
+ "camino",
+ "cargo-platform 0.3.3",
+ "semver",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
 ]
 
 [[package]]
@@ -4939,21 +4963,6 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "9.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5a87cc7a48537badeae96744432de36f4be2b4a34a05a5ef32e9dd8a1c169dde"
-dependencies = [
- "base64 0.22.1",
- "js-sys",
- "pem",
- "ring",
- "serde",
- "serde_json",
- "simple_asn1",
-]
-
-[[package]]
-name = "jsonwebtoken"
 version = "10.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
@@ -5975,31 +5984,32 @@ dependencies = [
 
 [[package]]
 name = "octocrab"
-version = "0.44.1"
+version = "0.54.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86996964f8b721067b6ed238aa0ccee56ecad6ee5e714468aa567992d05d2b91"
+checksum = "8486ecb1ba585c76dd91472320b5334e95d0d2e8b451a3f0a3fced4415ec3993"
 dependencies = [
  "arc-swap",
- "async-trait",
  "base64 0.22.1",
  "bytes",
+ "cargo_metadata 0.23.1",
  "cfg-if",
  "chrono",
- "either",
  "futures",
  "futures-core",
  "futures-util",
+ "getrandom 0.2.17",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
+ "http-serde",
  "hyper",
  "hyper-rustls",
  "hyper-timeout",
  "hyper-util",
- "jsonwebtoken 9.3.1",
- "once_cell",
+ "jsonwebtoken 10.4.0",
  "percent-encoding",
  "pin-project",
+ "rustls",
  "secrecy",
  "serde",
  "serde_json",
@@ -6008,7 +6018,7 @@ dependencies = [
  "snafu",
  "tokio",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tracing",
  "url",
  "web-time",
@@ -7307,7 +7317,6 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
- "h2",
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
@@ -7329,7 +7338,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -7372,7 +7381,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -7441,7 +7450,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "urlencoding",
  "utoipa",
@@ -7489,7 +7498,7 @@ dependencies = [
  "http 1.5.0",
  "mock-service-endpoint",
  "rand 0.10.2",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-clock",
  "restate-core",
  "restate-node",
@@ -7600,7 +7609,7 @@ dependencies = [
  "octocrab",
  "open",
  "rand 0.10.2",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-admin-rest-model",
  "restate-cli-util",
  "restate-cloud-tunnel-client",
@@ -7755,7 +7764,7 @@ dependencies = [
  "tonic-prost-build",
  "tonic-reflection",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-subscriber",
  "tracing-test",
@@ -7963,7 +7972,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower",
- "tower-http",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-opentelemetry",
  "tracing-test",
@@ -8075,7 +8084,7 @@ version = "1.8.0-dev"
 dependencies = [
  "anyhow",
  "http 1.5.0",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-admin",
  "restate-bifrost",
  "restate-clock",
@@ -8114,7 +8123,7 @@ dependencies = [
  "nix 0.31.3",
  "rand 0.10.2",
  "regex",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-clock",
  "restate-core",
  "restate-metadata-providers",
@@ -8549,7 +8558,7 @@ dependencies = [
  "rand 0.10.2",
  "rcgen",
  "regex",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-admin",
  "restate-bifrost",
  "restate-clock",
@@ -9247,6 +9256,7 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "gardal",
+ "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "half",
@@ -9297,9 +9307,7 @@ dependencies = [
  "regex",
  "regex-automata",
  "regex-syntax",
- "reqwest 0.12.28",
  "reqwest 0.13.5",
- "ring",
  "rustix",
  "rustls",
  "rustls-webpki",
@@ -9330,7 +9338,8 @@ dependencies = [
  "toml_parser",
  "tonic",
  "tower",
- "tower-http",
+ "tower-http 0.6.11",
+ "tower-http 0.7.1",
  "tracing",
  "tracing-core",
  "tracing-log",
@@ -11057,22 +11066,39 @@ version = "0.6.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4cfcf7e2740e6fc6d4d688b4ef00650406bb94adf4731e43c096c3a19fe40840"
 dependencies = [
- "async-compression",
  "bitflags 2.13.2",
  "bytes",
- "futures-core",
  "futures-util",
  "http 1.5.0",
  "http-body 1.1.0",
- "http-body-util",
  "pin-project-lite",
- "tokio",
- "tokio-util",
  "tower",
  "tower-layer",
  "tower-service",
  "tracing",
  "url",
+]
+
+[[package]]
+name = "tower-http"
+version = "0.7.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
+dependencies = [
+ "async-compression",
+ "bitflags 2.13.2",
+ "bytes",
+ "futures-core",
+ "http 1.5.0",
+ "http-body 1.1.0",
+ "http-body-util",
+ "percent-encoding",
+ "pin-project-lite",
+ "tokio",
+ "tokio-util",
+ "tower-layer",
+ "tower-service",
+ "tracing",
 ]
 
 [[package]]
@@ -11521,7 +11547,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2990d9ea5967266ea0ccf413a4aa5c42a93dbcfda9cb49a97de6931726b12566"
 dependencies = [
  "anyhow",
- "cargo_metadata",
+ "cargo_metadata 0.18.1",
  "cfg-if",
  "regex",
  "rustversion",
@@ -12039,7 +12065,7 @@ name = "xtask"
 version = "1.8.0-dev"
 dependencies = [
  "anyhow",
- "reqwest 0.12.28",
+ "reqwest 0.13.5",
  "restate-admin",
  "restate-core",
  "restate-ingestion-client",
