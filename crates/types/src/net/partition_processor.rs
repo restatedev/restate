@@ -17,9 +17,10 @@ use crate::identifiers::{
     DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId,
 };
 use crate::invocation::client::{
-    CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
-    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse, SubmittedInvocationNotification,
+    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
+    GetInvocationStatusResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
+    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
+    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
@@ -33,6 +34,8 @@ use crate::net::{
 };
 use crate::partition_processor::client::WireResponseError;
 use crate::time::MillisSinceEpoch;
+
+mod dto;
 
 pub struct PartitionLeaderService;
 
@@ -247,11 +250,11 @@ pub enum PartitionProcessorRpcRequestInner {
     RestartAsNewInvocation {
         invocation_id: InvocationId,
         copy_prefix_up_to_index_included: EntryIndex,
-        patch_deployment_id: crate::invocation::client::PatchDeploymentId,
+        patch_deployment_id: PatchDeploymentId,
     },
     ResumeInvocation {
         invocation_id: InvocationId,
-        deployment_id: crate::invocation::client::PatchDeploymentId,
+        deployment_id: PatchDeploymentId,
     },
     // *Since v1.6/Protocol Version V3*
     PauseInvocation {
@@ -525,52 +528,6 @@ impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Default, Clone, bilrost::Oneof, bilrost::Message, PartialEq, Eq)]
-pub enum PatchDeploymentId {
-    #[default]
-    #[bilrost(empty)]
-    KeepPinned,
-    #[bilrost(tag(1), message)]
-    PinToLatest,
-    #[bilrost(tag(2), message)]
-    PinTo {
-        #[bilrost(tag(1))]
-        id: DeploymentId,
-    },
-}
-
-impl From<PatchDeploymentId> for crate::invocation::client::PatchDeploymentId {
-    fn from(value: PatchDeploymentId) -> Self {
-        match value {
-            PatchDeploymentId::KeepPinned => {
-                crate::invocation::client::PatchDeploymentId::KeepPinned
-            }
-            PatchDeploymentId::PinToLatest => {
-                crate::invocation::client::PatchDeploymentId::PinToLatest
-            }
-            PatchDeploymentId::PinTo { id } => {
-                crate::invocation::client::PatchDeploymentId::PinTo { id }
-            }
-        }
-    }
-}
-
-impl From<crate::invocation::client::PatchDeploymentId> for PatchDeploymentId {
-    fn from(value: crate::invocation::client::PatchDeploymentId) -> Self {
-        match value {
-            crate::invocation::client::PatchDeploymentId::KeepPinned => {
-                PatchDeploymentId::KeepPinned
-            }
-            crate::invocation::client::PatchDeploymentId::PinToLatest => {
-                PatchDeploymentId::PinToLatest
-            }
-            crate::invocation::client::PatchDeploymentId::PinTo { id } => {
-                PatchDeploymentId::PinTo { id }
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct RestartAsNewInvocationRpcRequest {
     #[bilrost(tag(1))]
@@ -580,7 +537,7 @@ pub struct RestartAsNewInvocationRpcRequest {
     #[bilrost(tag(3))]
     pub copy_prefix_up_to_index_included: EntryIndex,
     #[bilrost(tag(4))]
-    pub patch_deployment_id: PatchDeploymentId,
+    pub patch_deployment_id: dto::PatchDeploymentId,
 }
 
 bilrost_wire_codec!(RestartAsNewInvocationRpcRequest);
@@ -726,7 +683,7 @@ pub struct ResumeInvocationRpcRequest {
     #[bilrost(tag(2))]
     pub invocation_id: InvocationId,
     #[bilrost(tag(3))]
-    pub deployment_id: PatchDeploymentId,
+    pub deployment_id: dto::PatchDeploymentId,
 }
 bilrost_wire_codec!(ResumeInvocationRpcRequest);
 
@@ -868,6 +825,194 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendInvocationRpcRequest {
+    pub header: PartitionProcessorRpcRequestHeader,
+    pub invocation_request: Arc<InvocationRequest>,
+    pub append_invocation_reply_on: AppendInvocationReplyOn,
+}
+default_wire_codec!(AppendInvocationRpcRequest);
+
+#[allow(clippy::large_enum_variant)]
+#[derive(bilrost::Oneof, bilrost::Message)]
+pub enum AppendInvocationRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
+    Appended,
+    #[bilrost(tag(2), message)]
+    Submitted(dto::SubmittedInvocationNotification),
+    #[bilrost(tag(3), message)]
+    Output(dto::InvocationOutput),
+}
+
+impl TryFrom<AppendInvocationRpcResponse> for PartitionProcessorRpcResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: AppendInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            AppendInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
+            AppendInvocationRpcResponse::Appended => Self::Appended,
+            AppendInvocationRpcResponse::Submitted(notification) => {
+                Self::Submitted(notification.into())
+            }
+            AppendInvocationRpcResponse::Output(output) => {
+                Self::Output(output.try_into().map_err(|_| UnexpectedResponse)?)
+            }
+        })
+    }
+}
+
+impl TryFrom<AppendInvocationRpcResponse> for SubmittedInvocationNotification {
+    type Error = UnexpectedResponse;
+    fn try_from(value: AppendInvocationRpcResponse) -> Result<Self, Self::Error> {
+        match value {
+            AppendInvocationRpcResponse::Submitted(notification) => Ok(notification.into()),
+            _ => Err(UnexpectedResponse),
+        }
+    }
+}
+
+impl TryFrom<AppendInvocationRpcResponse> for InvocationOutput {
+    type Error = UnexpectedResponse;
+    fn try_from(value: AppendInvocationRpcResponse) -> Result<Self, Self::Error> {
+        match value {
+            AppendInvocationRpcResponse::Output(output) => {
+                Ok(output.try_into().map_err(|_| UnexpectedResponse)?)
+            }
+            _ => Err(UnexpectedResponse),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GetInvocationOutputRpcRequest {
+    pub header: PartitionProcessorRpcRequestHeader,
+    pub invocation_query: InvocationQuery,
+    pub response_mode: GetInvocationOutputResponseMode,
+}
+default_wire_codec!(GetInvocationOutputRpcRequest);
+
+#[allow(clippy::large_enum_variant)]
+#[derive(bilrost::Oneof, bilrost::Message)]
+pub enum GetInvocationOutputRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
+    NotFound,
+    #[bilrost(tag(2), message)]
+    NotReady,
+    #[bilrost(tag(3), message)]
+    NotSupported,
+    #[bilrost(tag(4), message)]
+    Output(dto::InvocationOutput),
+}
+
+impl TryFrom<GetInvocationOutputRpcResponse> for PartitionProcessorRpcResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: GetInvocationOutputRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            GetInvocationOutputRpcResponse::Unknown => return Err(UnexpectedResponse),
+            GetInvocationOutputRpcResponse::NotFound => Self::NotFound,
+            GetInvocationOutputRpcResponse::NotReady => Self::NotReady,
+            GetInvocationOutputRpcResponse::NotSupported => Self::NotSupported,
+            GetInvocationOutputRpcResponse::Output(output) => {
+                Self::Output(output.try_into().map_err(|_| UnexpectedResponse)?)
+            }
+        })
+    }
+}
+
+impl TryFrom<GetInvocationOutputRpcResponse> for GetInvocationOutputResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: GetInvocationOutputRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            GetInvocationOutputRpcResponse::Unknown => return Err(UnexpectedResponse),
+            GetInvocationOutputRpcResponse::NotFound => Self::NotFound,
+            GetInvocationOutputRpcResponse::NotReady => Self::NotReady,
+            GetInvocationOutputRpcResponse::NotSupported => Self::NotSupported,
+            GetInvocationOutputRpcResponse::Output(output) => {
+                Self::Ready(output.try_into().map_err(|_| UnexpectedResponse)?)
+            }
+        })
+    }
+}
+/// Attaching blocks until the output is ready, so `NotReady` is never a valid reply.
+impl TryFrom<GetInvocationOutputRpcResponse> for AttachInvocationResponse {
+    type Error = UnexpectedResponse;
+    fn try_from(value: GetInvocationOutputRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            GetInvocationOutputRpcResponse::Unknown => return Err(UnexpectedResponse),
+            GetInvocationOutputRpcResponse::NotFound => Self::NotFound,
+            GetInvocationOutputRpcResponse::NotSupported => Self::NotSupported,
+            GetInvocationOutputRpcResponse::Output(output) => {
+                Self::Ready(output.try_into().map_err(|_| UnexpectedResponse)?)
+            }
+            GetInvocationOutputRpcResponse::NotReady => return Err(UnexpectedResponse),
+        })
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct GetInvocationStatusRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(GetInvocationStatusRpcRequest);
+
+#[derive(bilrost::Oneof, bilrost::Message)]
+pub enum GetInvocationStatusRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
+    NotFound,
+    #[bilrost(tag(2), message)]
+    Status {
+        #[bilrost(1)]
+        state: dto::InvocationState,
+        #[bilrost(2)]
+        error: Option<dto::InvocationError>,
+    },
+}
+
+impl TryFrom<GetInvocationStatusRpcResponse> for PartitionProcessorRpcResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: GetInvocationStatusRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            GetInvocationStatusRpcResponse::Unknown => return Err(UnexpectedResponse),
+            GetInvocationStatusRpcResponse::NotFound => Self::NotFound,
+            GetInvocationStatusRpcResponse::Status { state, error } => {
+                Self::Status(InvocationStatus {
+                    state: state.into(),
+                    error: error.map(Into::into),
+                })
+            }
+        })
+    }
+}
+
+impl TryFrom<GetInvocationStatusRpcResponse> for GetInvocationStatusResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: GetInvocationStatusRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            GetInvocationStatusRpcResponse::Unknown => return Err(UnexpectedResponse),
+            GetInvocationStatusRpcResponse::NotFound => Self::NotFound,
+            GetInvocationStatusRpcResponse::Status { state, error } => {
+                Self::Status(InvocationStatus {
+                    state: state.into(),
+                    error: error.map(Into::into),
+                })
+            }
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppendInvocationResponseRpcRequest {
     pub header: PartitionProcessorRpcRequestHeader,
     pub invocation_response: InvocationResponse,
@@ -939,6 +1084,9 @@ macro_rules! define_partition_processor_rpcs {
 }
 
 define_partition_processor_rpcs! {
+    AppendInvocationRpcRequest => AppendInvocationRpcResponse,
+    GetInvocationOutputRpcRequest => GetInvocationOutputRpcResponse,
+    GetInvocationStatusRpcRequest => GetInvocationStatusRpcResponse,
     AppendInvocationResponseRpcRequest => AppendInvocationResponseRpcResponse,
     AppendSignalRpcRequest => AppendSignalRpcResponse,
     CancelInvocationRpcRequest => CancelInvocationRpcResponse,
