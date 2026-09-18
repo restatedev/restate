@@ -1209,9 +1209,9 @@ dependencies = [
 
 [[package]]
 name = "bilrost"
-version = "0.1015.1"
+version = "0.1016.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e695464f6609257c7f526cfb349af9f9f3382ba303575fec0aa5c8aa6dc8f172"
+checksum = "7889f8fca3d341b7c2a3fdb13e4579c4a039b7dc5e81231a93d21c61ce3150e3"
 dependencies = [
  "autocfg",
  "bilrost-derive",
@@ -1222,15 +1222,15 @@ dependencies = [
 
 [[package]]
 name = "bilrost-derive"
-version = "0.1015.1"
+version = "0.1016.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "012c3b56920a8d65ab7967e173184dd95f33f36b6b9a6cde3350d358134bf0d8"
+checksum = "9c9d8b804c1beeeeebcf8cd81099f4d80a88ab8545ac9536876cc7e38e6993ef"
 dependencies = [
  "eyre",
  "itertools 0.15.0",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]
