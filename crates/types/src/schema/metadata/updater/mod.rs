@@ -25,7 +25,7 @@ use crate::schema::Redaction;
 use crate::schema::deployment::DeploymentType;
 use crate::schema::invocation_target::{
     BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
-    OutputRules,
+    OutputRules, StatePreloadPolicy,
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
@@ -35,8 +35,8 @@ use crate::schema::subscriptions::{
 use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
+use bytestring::ByteString;
 use http::{HeaderValue, Uri};
-use restate_util_string::ReString;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -642,10 +642,10 @@ impl SchemaUpdater {
             ));
         }
 
-        let eager_state_keys_whitelist: Vec<ReString> = service
+        let eager_state_keys_whitelist: Vec<ByteString> = service
             .eager_state_keys_whitelist
             .into_iter()
-            .map(ReString::from)
+            .map(ByteString::from)
             .collect();
 
         Ok(ServiceRevision {
@@ -662,7 +662,10 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
-            always_eager_state_keys: eager_state_keys_whitelist,
+            state_preload_policy: state_preload_policy_discovery(
+                service.enable_lazy_state,
+                eager_state_keys_whitelist,
+            ),
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -1321,10 +1324,10 @@ impl Handler {
             });
         }
 
-        let eager_state_keys_whitelist: Vec<ReString> = handler
+        let eager_state_keys_whitelist: Vec<ByteString> = handler
             .eager_state_keys_whitelist
             .into_iter()
-            .map(ReString::from)
+            .map(ByteString::from)
             .collect();
 
         Ok(Self {
@@ -1356,7 +1359,10 @@ impl Handler {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
-            eager_state_keys_whitelist,
+            state_preload_policy: state_preload_policy_discovery(
+                handler.enable_lazy_state,
+                eager_state_keys_whitelist,
+            ),
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
         })
@@ -1497,6 +1503,20 @@ impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
         uri: &jsonschema::Uri<String>,
     ) -> Result<Value, Box<dyn Error + Send + Sync>> {
         Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
+    }
+}
+
+fn state_preload_policy_discovery(
+    enable_lazy_state: Option<bool>,
+    eager_state_keys: Vec<ByteString>,
+) -> Option<StatePreloadPolicy> {
+    match enable_lazy_state {
+        // Eager: everything is preloaded, so the eager-keys list is irrelevant.
+        Some(false) => Some(StatePreloadPolicy::All),
+        Some(true) => Some(StatePreloadPolicy::Partial(eager_state_keys)),
+        // A whitelist without an explicit flag still expresses selective preloading.
+        None if !eager_state_keys.is_empty() => Some(StatePreloadPolicy::Partial(eager_state_keys)),
+        None => None,
     }
 }
 

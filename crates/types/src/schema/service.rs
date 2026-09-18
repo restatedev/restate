@@ -25,7 +25,9 @@ use crate::invocation::{
 use crate::net::address::AdvertisedAddress;
 use crate::net::address::HttpIngressPort;
 use crate::schema::info::SchemaInfo;
-use crate::schema::invocation_target::{DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts};
+use crate::schema::invocation_target::{
+    DEFAULT_IDEMPOTENCY_RETENTION, OnMaxAttempts, StatePreloadPolicy,
+};
 
 /// This API returns service metadata, as shown in the Admin API.
 ///
@@ -170,20 +172,24 @@ pub struct ServiceMetadata {
     )]
     pub abort_timeout: Duration,
 
+    // TODO(v1.9): remove `enable_lazy_state`; it is superseded by `state_preload_policy` and only
+    //  kept for backwards compatibility of the Admin API.
     /// # Enable lazy state
     ///
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
-    /// Acts as the fallback for keys not listed in the always eager/lazy state key lists.
     #[serde(default = "restate_serde_util::default::bool::<false>")]
     pub enable_lazy_state: bool,
 
-    /// # Eager state keys whitelist
+    /// # State preload policy
     ///
-    /// State keys whitelist to preload eagerly when `enable_lazy_state` is true.
-    /// (best-effort, bounded by the server eager state size limit).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub eager_state_keys_whitelist: Vec<String>,
+    /// Which state is preloaded (sent eagerly) at the start of an invocation to this service.
+    /// This is relevant only for Workflows and Virtual Objects.
+    ///
+    /// `"All"` preloads all state eagerly; `{"Partial": ["key", ...]}` preloads only the listed
+    /// keys eagerly (an empty list means fully lazy state).
+    #[serde(default)]
+    pub state_preload_policy: StatePreloadPolicy,
 
     /// # Retry policy
     ///
@@ -395,6 +401,8 @@ pub struct HandlerMetadata {
     )]
     pub abort_timeout: Option<Duration>,
 
+    // TODO(v1.9): remove `enable_lazy_state`; it is superseded by `state_preload_policy` and only
+    //  kept for backwards compatibility of the Admin API.
     /// # Enable lazy state
     ///
     /// If true, lazy state will be enabled for all invocations to this service.
@@ -404,14 +412,17 @@ pub struct HandlerMetadata {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub enable_lazy_state: Option<bool>,
 
-    /// # Eager state keys whitelist
+    /// # State preload policy
     ///
-    /// State keys whitelist to preload eagerly when `enable_lazy_state` is true.
-    /// (best-effort, bounded by the server eager state size limit).
+    /// Which state is preloaded (sent eagerly) at the start of an invocation to this handler.
+    /// This is relevant only for Workflows and Virtual Objects.
     ///
-    /// Overrides the service-level list.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub eager_state_keys_whitelist: Vec<String>,
+    /// If set, it overrides the service-level policy.
+    ///
+    /// `"All"` preloads all state eagerly; `{"Partial": ["key", ...]}` preloads only the listed
+    /// keys eagerly (an empty list means fully lazy state).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_preload_policy: Option<StatePreloadPolicy>,
 
     /// # Public
     ///
@@ -574,8 +585,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
-                                eager_state_keys_whitelist: vec![],
-
+                                state_preload_policy: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -599,7 +609,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
-                eager_state_keys_whitelist: vec![],
+                state_preload_policy: Default::default(),
                 retry_policy: Default::default(),
                 info: vec![],
             }
@@ -626,7 +636,7 @@ pub mod test_util {
                                 inactivity_timeout: None,
                                 abort_timeout: None,
                                 enable_lazy_state: None,
-                                eager_state_keys_whitelist: vec![],
+                                state_preload_policy: None,
                                 public: true,
                                 input_description: "any".to_string(),
                                 output_description: "any".to_string(),
@@ -650,7 +660,7 @@ pub mod test_util {
                 inactivity_timeout: DEFAULT_INACTIVITY_TIMEOUT,
                 abort_timeout: DEFAULT_ABORT_TIMEOUT,
                 enable_lazy_state: false,
-                eager_state_keys_whitelist: vec![],
+                state_preload_policy: Default::default(),
                 retry_policy: Default::default(),
                 info: vec![],
             }

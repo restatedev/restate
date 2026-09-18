@@ -132,25 +132,6 @@ pub struct InvocationAttemptOptions {
     pub state_preload_policy: StatePreloadPolicy,
 }
 
-/// Resolved eager/lazy state policy for an invocation.
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum StatePreloadPolicy {
-    /// Preload all state eagerly (up to the invoker's eager state size limit).
-    All,
-    /// Preload only these exact state keys (best-effort, capped by the invoker's eager state size limit);
-    /// everything else is served on demand.
-    Partial(Vec<ByteString>),
-}
-
-impl StatePreloadPolicy {
-    pub fn preload_any_state(&self) -> bool {
-        match self {
-            Self::All => true,
-            Self::Partial(eager_keys) => !eager_keys.is_empty(),
-        }
-    }
-}
-
 // --- Input rules
 
 #[derive(Debug, thiserror::Error)]
@@ -432,6 +413,48 @@ impl FromStr for InputContentType {
             }),
             Some((t, "*")) => Ok(InputContentType::MimeType(t.into())),
             Some((t, st)) => Ok(InputContentType::MimeTypeAndSubtype(t.into(), st.into())),
+        }
+    }
+}
+
+/// Eager/lazy state preload policy for an invocation.
+///
+/// This is both the resolved policy handed to the invoker and the per-handler state preload
+/// configuration persisted in the schema (see the schema metadata module).
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, bilrost::Message, bilrost::Oneof,
+)]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+pub enum StatePreloadPolicy {
+    /// Preload all state eagerly (up to the invoker's eager state size limit).
+    #[default]
+    All,
+    /// Preload only these exact state keys (best-effort, capped by the invoker's eager state size
+    /// limit); everything else is served on demand. An empty list means fully lazy state.
+    #[bilrost(tag = 1, message)]
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Vec<String>))]
+    Partial(Vec<ByteString>),
+}
+
+impl StatePreloadPolicy {
+    pub fn preload_any_state(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Partial(eager_keys) => !eager_keys.is_empty(),
+        }
+    }
+
+    pub fn lazy() -> Self {
+        StatePreloadPolicy::Partial(Default::default())
+    }
+}
+
+impl fmt::Display for StatePreloadPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "eager"),
+            Self::Partial(keys) if keys.is_empty() => write!(f, "lazy"),
+            Self::Partial(keys) => write!(f, "partial ({})", keys.iter().join(", ")),
         }
     }
 }

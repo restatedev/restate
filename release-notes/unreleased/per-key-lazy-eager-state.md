@@ -8,7 +8,7 @@ The service discovery manifest gained a per-key eager-preload whitelist on top o
 `enableLazyState` boolean. A new optional array is accepted at both the service and the handler
 level:
 
-- `alwaysEagerStateKeys`: when `enableLazyState` is `true`, a whitelist of exact state keys to
+- `eagerStateKeysWhitelist`: when `enableLazyState` is `true`, a whitelist of exact state keys to
   still preload eagerly into the invocation's START message.
 
 `enableLazyState` continues to decide the default: with it `false`, all state is preloaded as
@@ -18,7 +18,7 @@ exact keys listed in `alwaysEagerStateKeys`. Handler-level lists override the se
 This is exposed through a new service discovery protocol version, **V5**
 (`application/vnd.restate.endpointmanifest.v5+json`).
 
-The list is surfaced read-only on the Admin API service/handler metadata (`alwaysEagerStateKeys`).
+The list is surfaced read-only on the Admin API service/handler metadata (`eagerStateKeysWhitelist`).
 
 ### Why This Matters
 
@@ -29,7 +29,7 @@ whitelist allows preloading those specific keys without giving up the lazy defau
 ### Behavior and limits
 
 - The invoker's eager state size limit (a memory safety cap, `worker.invoker` configuration) still
-  always applies. `alwaysEagerStateKeys` is therefore **best-effort**: an entry that does not fit
+  always applies. `eagerStateKeysWhitelist` is therefore **best-effort**: an entry that does not fit
   the cap is not preloaded and is served lazily instead (the START message is marked partial).
 - Under a lazy default, the whitelist is served via exact point lookups for just those keys, so
   the object's full state is not scanned. Entries are read on demand while building the START
@@ -37,6 +37,8 @@ whitelist allows preloading those specific keys without giving up the lazy defau
 - Whitelisted entries use the same memory-budget handling as full eager state loading: reads
   wait for reclaimable memory when the reservation is feasible and report memory exhaustion
   otherwise, rather than silently omitting the remaining keys on a failed reservation.
+- In case of a rollback to a previous restate version, the behavior of `eagerStateKeysWhitelist` will
+  stop applying.
 
 ### Impact on Users
 

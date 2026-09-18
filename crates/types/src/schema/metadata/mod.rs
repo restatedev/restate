@@ -19,7 +19,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arc_swap::ArcSwapOption;
-use bytestring::ByteString;
 use http::{HeaderName, HeaderValue};
 use restate_encoding::{Arced, RestateEncoding};
 use serde::{Deserialize, Serialize};
@@ -27,7 +26,6 @@ use serde_json::Value;
 use serde_with::serde_as;
 
 use restate_serde_util::MapAsVecItem;
-use restate_util_string::ReString;
 use restate_util_time::FriendlyDuration;
 
 use crate::config::{Configuration, InvocationRetryPolicyOptions};
@@ -495,18 +493,21 @@ struct ServiceRevision {
     #[bilrost(tag(12))]
     abort_timeout: Option<Duration>,
 
+    // TODO(v1.9): remove `enable_lazy_state`; it is superseded by `state_preload_policy` and only
+    //  kept (dual-written) so a rollback to the previous minor can still read the lazy-state flag.
     /// If true, lazy state will be enabled for all invocations to this service.
     /// This is relevant only for Workflows and Virtual Objects.
-    /// Acts as the default for keys not matched by `always_eager_state_keys`.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[bilrost(tag(13))]
     enable_lazy_state: Option<bool>,
 
-    /// Exact state keys to preload eagerly even when `enable_lazy_state` is true (best-effort,
-    /// bounded by the invoker eager state size limit). Ignored when `enable_lazy_state` is false.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Service-level state preload policy. Read in preference to the deprecated `enable_lazy_state`
+    /// field above; falls back to it when unset (i.e. for schemas written before this field existed).
+    ///
+    /// TODO(v1.9): make mandatory (drop the `Option`) once `enable_lazy_state` is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag(19))]
-    always_eager_state_keys: Vec<ReString>,
+    state_preload_policy: Option<StatePreloadPolicy>,
 
     #[serde(
         default,
@@ -667,11 +668,7 @@ impl ServiceRevision {
                 .abort_timeout
                 .unwrap_or_else(|| configuration.worker.invoker.abort_timeout.into()),
             enable_lazy_state: self.enable_lazy_state.unwrap_or(false),
-            eager_state_keys_whitelist: self
-                .always_eager_state_keys
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            state_preload_policy: self.state_preload_policy.clone().unwrap_or_default(),
             retry_policy,
             info,
         }
@@ -740,12 +737,19 @@ struct Handler {
     #[bilrost(tag = 11)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     documentation: Option<String>,
+    // TODO(v1.9): remove `enable_lazy_state`; it is superseded by `state_preload_policy` and only
+    //  kept (dual-written) so a rollback to the previous minor can still read the lazy-state flag.
     #[bilrost(tag = 12)]
     #[serde(skip_serializing_if = "Option::is_none", default)]
     enable_lazy_state: Option<bool>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    /// Handler-level state preload policy, overriding the service-level one when set. Read in
+    /// preference to the deprecated `enable_lazy_state` field above; falls back to it when unset
+    /// (i.e. for schemas written before this field existed).
+    ///
+    /// TODO(v1.9): make mandatory (drop the `Option`) once `enable_lazy_state` is gone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 19)]
-    eager_state_keys_whitelist: Vec<ReString>,
+    state_preload_policy: Option<StatePreloadPolicy>,
     #[bilrost(tag = 13)]
     #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
     metadata: HashMap<String, String>,
@@ -841,11 +845,7 @@ impl Handler {
             },
             abort_timeout: self.abort_timeout,
             enable_lazy_state: self.enable_lazy_state,
-            eager_state_keys_whitelist: self
-                .eager_state_keys_whitelist
-                .iter()
-                .map(ToString::to_string)
-                .collect(),
+            state_preload_policy: self.state_preload_policy.clone(),
             retry_policy: HandlerRetryPolicyMetadata {
                 initial_interval: self.retry_policy_initial_interval,
                 exponentiation_factor: self.retry_policy_exponentiation_factor,
@@ -1051,31 +1051,34 @@ impl InvocationTargetResolver for Schema {
         let service_revision = deployment.services.get(service_name)?;
         let handler = service_revision.handlers.get(handler_name)?;
 
-        let default_lazy = handler
-            .enable_lazy_state
-            .or(service_revision.enable_lazy_state)
-            .unwrap_or(false);
-
-        let eager_state = if default_lazy {
-            // Handler whitelist overrides the service whitelist when non-empty.
-            let keys = if handler.eager_state_keys_whitelist.is_empty() {
-                &service_revision.always_eager_state_keys
-            } else {
-                &handler.eager_state_keys_whitelist
-            };
-            // Resolve to `ByteString` so the invoker can convert to `Bytes` zero-copy.
-            let always_eager_keys = keys.iter().map(|k| ByteString::from(k.as_str())).collect();
-            StatePreloadPolicy::Partial(always_eager_keys)
-        } else {
-            StatePreloadPolicy::All
-        };
+        // Prefer the handler-level policy, falling back to the service-level one. Schemas written
+        // before `state_preload_policy` existed have neither, so we derive the policy from the
+        // deprecated `enable_lazy_state` flag (eager keys were never stored at that point).
+        // TODO(v1.9): once `state_preload_policy` is mandatory, this becomes
+        //  `handler.state_preload_policy.clone().or_else(|| service_revision.state_preload_policy.clone()).unwrap_or_default()`
+        //  and the legacy fallback can go.
+        let state_preload_policy = handler
+            .state_preload_policy
+            .clone()
+            .or_else(|| service_revision.state_preload_policy.clone())
+            .unwrap_or_else(|| {
+                let lazy = handler
+                    .enable_lazy_state
+                    .or(service_revision.enable_lazy_state)
+                    .unwrap_or(false);
+                if lazy {
+                    StatePreloadPolicy::lazy()
+                } else {
+                    StatePreloadPolicy::All
+                }
+            });
 
         Some(InvocationAttemptOptions {
             abort_timeout: handler.abort_timeout.or(service_revision.abort_timeout),
             inactivity_timeout: handler
                 .inactivity_timeout
                 .or(service_revision.inactivity_timeout),
-            state_preload_policy: eager_state,
+            state_preload_policy,
         })
     }
 
