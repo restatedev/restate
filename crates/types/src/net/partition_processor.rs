@@ -18,11 +18,11 @@ use crate::identifiers::{
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
-    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
+    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
+    ResumeInvocationResponse, SubmittedInvocationNotification,
 };
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
-use crate::journal_v2::Signal;
+use crate::journal_v2;
 use crate::net::codec::{
     EncodeError, WireDecode, WireEncode, decode_as_bilrost, decode_as_flexbuffers,
     encode_as_bilrost, encode_as_flexbuffers,
@@ -231,7 +231,7 @@ pub enum PartitionProcessorRpcRequestInner {
         invocation_id: InvocationId,
     },
     AppendInvocationResponse(InvocationResponse),
-    AppendSignal(InvocationId, Signal),
+    AppendSignal(InvocationId, journal_v2::Signal),
     CancelInvocation {
         invocation_id: InvocationId,
     },
@@ -247,11 +247,11 @@ pub enum PartitionProcessorRpcRequestInner {
     RestartAsNewInvocation {
         invocation_id: InvocationId,
         copy_prefix_up_to_index_included: EntryIndex,
-        patch_deployment_id: PatchDeploymentId,
+        patch_deployment_id: crate::invocation::client::PatchDeploymentId,
     },
     ResumeInvocation {
         invocation_id: InvocationId,
-        deployment_id: PatchDeploymentId,
+        deployment_id: crate::invocation::client::PatchDeploymentId,
     },
     // *Since v1.6/Protocol Version V3*
     PauseInvocation {
@@ -376,11 +376,24 @@ where
     type Service = PartitionLeaderService;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct CancelInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(CancelInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum CancelInvocationRpcResponse {
+    #[bilrost(0)]
     Done,
+    #[bilrost(1)]
     Appended,
+    #[bilrost(2)]
     NotFound,
+    #[bilrost(3)]
     AlreadyCompleted,
 }
 
@@ -412,10 +425,22 @@ impl From<CancelInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct KillInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(KillInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum KillInvocationRpcResponse {
+    #[bilrost(0)]
     Ok,
+    #[bilrost(1)]
     NotFound,
+    #[bilrost(2)]
     AlreadyCompleted,
 }
 
@@ -445,10 +470,32 @@ impl From<KillInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PurgeInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(PurgeInvocationRpcRequest);
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PurgeJournalRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(PurgeJournalRpcRequest);
+
+/// Both purge journal and purge invocation use the same response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum PurgeInvocationRpcResponse {
+    #[bilrost(0)]
     Ok,
+    #[bilrost(1)]
     NotFound,
+    #[bilrost(2)]
     NotCompleted,
 }
 
@@ -478,30 +525,109 @@ impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, bilrost::Oneof, bilrost::Message, PartialEq, Eq)]
+pub enum PatchDeploymentId {
+    #[default]
+    #[bilrost(empty)]
+    KeepPinned,
+    #[bilrost(tag(1), message)]
+    PinToLatest,
+    #[bilrost(tag(2), message)]
+    PinTo {
+        #[bilrost(tag(1))]
+        id: DeploymentId,
+    },
+}
+
+impl From<PatchDeploymentId> for crate::invocation::client::PatchDeploymentId {
+    fn from(value: PatchDeploymentId) -> Self {
+        match value {
+            PatchDeploymentId::KeepPinned => {
+                crate::invocation::client::PatchDeploymentId::KeepPinned
+            }
+            PatchDeploymentId::PinToLatest => {
+                crate::invocation::client::PatchDeploymentId::PinToLatest
+            }
+            PatchDeploymentId::PinTo { id } => {
+                crate::invocation::client::PatchDeploymentId::PinTo { id }
+            }
+        }
+    }
+}
+
+impl From<crate::invocation::client::PatchDeploymentId> for PatchDeploymentId {
+    fn from(value: crate::invocation::client::PatchDeploymentId) -> Self {
+        match value {
+            crate::invocation::client::PatchDeploymentId::KeepPinned => {
+                PatchDeploymentId::KeepPinned
+            }
+            crate::invocation::client::PatchDeploymentId::PinToLatest => {
+                PatchDeploymentId::PinToLatest
+            }
+            crate::invocation::client::PatchDeploymentId::PinTo { id } => {
+                PatchDeploymentId::PinTo { id }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct RestartAsNewInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+    #[bilrost(tag(3))]
+    pub copy_prefix_up_to_index_included: EntryIndex,
+    #[bilrost(tag(4))]
+    pub patch_deployment_id: PatchDeploymentId,
+}
+
+bilrost_wire_codec!(RestartAsNewInvocationRpcRequest);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum RestartAsNewInvocationRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok {
+        #[bilrost(tag(1))]
         new_invocation_id: InvocationId,
     },
+    #[bilrost(tag(2), message)]
     NotFound,
+    #[bilrost(tag(3), message)]
     StillRunning,
+    #[bilrost(tag(4), message)]
     Unsupported,
+    #[bilrost(tag(5), message)]
     JournalIndexOutOfRange,
+    #[bilrost(tag(6), message)]
     JournalCopyRangeInvalid,
+    #[bilrost(tag(7), message)]
     MissingInput,
+    #[bilrost(tag(8), message)]
     NotStarted,
+    #[bilrost(tag(9), message)]
     CannotPatchDeploymentId,
+    #[bilrost(tag(10), message)]
     DeploymentNotFound,
+    #[bilrost(tag(11), message)]
     IncompatibleDeploymentId {
+        #[bilrost(tag(1))]
         pinned_protocol_version: i32,
+        #[bilrost(tag(2))]
         deployment_id: DeploymentId,
+        #[bilrost(tag(3))]
         supported_protocol_versions: RangeInclusive<i32>,
     },
 }
 
-impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
-    fn from(value: RestartAsNewInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: RestartAsNewInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            RestartAsNewInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             RestartAsNewInvocationRpcResponse::Ok { new_invocation_id } => {
                 RestartAsNewInvocationResponse::Ok { new_invocation_id }
             }
@@ -539,7 +665,7 @@ impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse 
                 deployment_id,
                 supported_protocol_versions,
             },
-        }
+        })
     }
 }
 
@@ -593,24 +719,50 @@ impl From<RestartAsNewInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct ResumeInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+    #[bilrost(tag(3))]
+    pub deployment_id: PatchDeploymentId,
+}
+bilrost_wire_codec!(ResumeInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum ResumeInvocationRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
+    #[bilrost(tag(2), message)]
     NotFound,
+    #[bilrost(tag(3), message)]
     NotStarted,
+    #[bilrost(tag(4), message)]
     Completed,
+    #[bilrost(tag(5), message)]
     CannotPatchDeploymentId,
+    #[bilrost(tag(6), message)]
     DeploymentNotFound,
+    #[bilrost(tag(7), message)]
     IncompatibleDeploymentId {
+        #[bilrost(tag(1))]
         pinned_protocol_version: i32,
+        #[bilrost(tag(2))]
         deployment_id: DeploymentId,
+        #[bilrost(tag(3))]
         supported_protocol_versions: RangeInclusive<i32>,
     },
 }
 
-impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
-    fn from(value: ResumeInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: ResumeInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ResumeInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             ResumeInvocationRpcResponse::Ok => ResumeInvocationResponse::Ok,
             ResumeInvocationRpcResponse::NotFound => ResumeInvocationResponse::NotFound,
             ResumeInvocationRpcResponse::NotStarted => ResumeInvocationResponse::NotStarted,
@@ -630,7 +782,7 @@ impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
                 deployment_id,
                 supported_protocol_versions,
             },
-        }
+        })
     }
 }
 
@@ -715,6 +867,100 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendInvocationResponseRpcRequest {
+    pub header: PartitionProcessorRpcRequestHeader,
+    pub invocation_response: InvocationResponse,
+}
+default_wire_codec!(AppendInvocationResponseRpcRequest);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct AppendInvocationResponseRpcResponse;
+
+impl From<AppendInvocationResponseRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(_: AppendInvocationResponseRpcResponse) -> Self {
+        Self::Appended
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Oneof)]
+pub enum SignalId {
+    #[bilrost(tag(3))]
+    Index(u32),
+    #[bilrost(tag(4))]
+    Name(bytestring::ByteString),
+}
+
+impl From<journal_v2::SignalId> for SignalId {
+    fn from(value: journal_v2::SignalId) -> Self {
+        match value {
+            journal_v2::SignalId::Index(idx) => SignalId::Index(idx),
+            journal_v2::SignalId::Name(name) => SignalId::Name(name),
+        }
+    }
+}
+
+impl From<SignalId> for journal_v2::SignalId {
+    fn from(value: SignalId) -> Self {
+        match value {
+            SignalId::Index(idx) => journal_v2::SignalId::Index(idx),
+            SignalId::Name(name) => journal_v2::SignalId::Name(name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Oneof)]
+pub enum SignalResult {
+    #[bilrost(tag(5), message)]
+    Void,
+    #[bilrost(tag(6))]
+    Success(bytes::Bytes),
+    #[bilrost(tag(7))]
+    Failure(journal_v2::Failure),
+}
+
+impl From<journal_v2::SignalResult> for SignalResult {
+    fn from(value: journal_v2::SignalResult) -> Self {
+        match value {
+            journal_v2::SignalResult::Void => SignalResult::Void,
+            journal_v2::SignalResult::Success(s) => SignalResult::Success(s),
+            journal_v2::SignalResult::Failure(f) => SignalResult::Failure(f),
+        }
+    }
+}
+
+impl From<SignalResult> for journal_v2::SignalResult {
+    fn from(value: SignalResult) -> Self {
+        match value {
+            SignalResult::Void => journal_v2::SignalResult::Void,
+            SignalResult::Success(s) => journal_v2::SignalResult::Success(s),
+            SignalResult::Failure(f) => journal_v2::SignalResult::Failure(f),
+        }
+    }
+}
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct AppendSignalRpcRequest {
+    #[bilrost(1)]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(2)]
+    pub invocation_id: InvocationId,
+    #[bilrost(oneof(3, 4))]
+    pub signal_id: Option<SignalId>,
+    #[bilrost(oneof(5, 6, 7))]
+    pub result: Option<SignalResult>,
+}
+bilrost_wire_codec!(AppendSignalRpcRequest);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct AppendSignalRpcResponse;
+
+impl From<AppendSignalRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(_: AppendSignalRpcResponse) -> Self {
+        Self::Appended
+    }
+}
+
 /// TODO: Remove in 1.9 when all RPCs are usign the dedicated messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
@@ -754,5 +1000,13 @@ macro_rules! define_partition_processor_rpcs {
 }
 
 define_partition_processor_rpcs! {
+    AppendInvocationResponseRpcRequest => AppendInvocationResponseRpcResponse,
+    AppendSignalRpcRequest => AppendSignalRpcResponse,
+    CancelInvocationRpcRequest => CancelInvocationRpcResponse,
+    KillInvocationRpcRequest => KillInvocationRpcResponse,
+    PurgeInvocationRpcRequest => PurgeInvocationRpcResponse,
+    PurgeJournalRpcRequest => PurgeInvocationRpcResponse,
+    RestartAsNewInvocationRpcRequest => RestartAsNewInvocationRpcResponse,
+    ResumeInvocationRpcRequest => ResumeInvocationRpcResponse,
     PauseInvocationRpcRequest => PauseInvocationRpcResponse,
 }
