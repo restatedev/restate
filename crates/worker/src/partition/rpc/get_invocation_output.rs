@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_types::invocation;
@@ -17,15 +16,12 @@ use restate_types::invocation::{
     AttachInvocationRequest, InvocationQuery, ServiceInvocationResponseSink,
 };
 use restate_types::net::partition_processor::{
-    GetInvocationOutputResponseMode, PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    GetInvocationOutputResponseMode, GetInvocationOutputRpcRequest, GetInvocationOutputRpcResponse,
+    PartitionProcessorRpcError,
 };
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_query: InvocationQuery,
-    pub(super) response_mode: GetInvocationOutputResponseMode,
-}
+use super::*;
 
 impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
@@ -35,50 +31,61 @@ where
         &mut self,
         request_id: PartitionProcessorRpcRequestId,
         invocation_query: InvocationQuery,
-    ) -> Result<PartitionProcessorRpcResponse, StorageError> {
+    ) -> Result<GetInvocationOutputRpcResponse, StorageError> {
         // We can handle this immediately by querying the partition store, no need to go through proposals
         let invocation_id = invocation_query.to_invocation_id();
         let invocation_status = self.storage.get_invocation_status(&invocation_id).await?;
 
         match invocation_status {
-            InvocationStatus::Free => Ok(PartitionProcessorRpcResponse::NotFound),
+            InvocationStatus::Free => Ok(GetInvocationOutputRpcResponse::NotFound),
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
-                Ok(PartitionProcessorRpcResponse::Output(InvocationOutput {
-                    request_id,
-                    response: match completed.response_result.clone() {
-                        invocation::ResponseResult::Success(res) => {
-                            InvocationOutputResponse::Success(completed.invocation_target, res)
-                        }
-                        invocation::ResponseResult::Failure(err) => {
-                            InvocationOutputResponse::Failure(err)
-                        }
-                    },
-                    invocation_id: Some(invocation_id),
-                    completion_expiry_time,
-                }))
+                Ok(GetInvocationOutputRpcResponse::Output(
+                    InvocationOutput {
+                        request_id,
+                        response: match completed.response_result.clone() {
+                            invocation::ResponseResult::Success(res) => {
+                                InvocationOutputResponse::Success(completed.invocation_target, res)
+                            }
+                            invocation::ResponseResult::Failure(err) => {
+                                InvocationOutputResponse::Failure(err)
+                            }
+                        },
+                        invocation_id: Some(invocation_id),
+                        completion_expiry_time,
+                    }
+                    .into(),
+                ))
             }
-            _ => Ok(PartitionProcessorRpcResponse::NotReady),
+            _ => Ok(GetInvocationOutputRpcResponse::NotReady),
         }
     }
 }
 
-impl<'a, TSchemas, Storage> RpcHandler<Request> for RpcContext<'a, TSchemas, Storage>
+impl<'a, TSchemas, Storage> RpcHandler<GetInvocationOutputRpcRequest>
+    for RpcContext<'a, TSchemas, Storage>
 where
     Storage: ReadInvocationStatusTable,
 {
     async fn handle(
         mut self,
-        Request {
-            request_id,
+        GetInvocationOutputRpcRequest {
+            header,
             invocation_query,
             response_mode,
-        }: Request,
-    ) -> Decision {
+        }: GetInvocationOutputRpcRequest,
+    ) -> Decision<GetInvocationOutputRpcResponse> {
+        let request_id = header.request_id;
+        let invocation_query: InvocationQuery = match invocation_query.try_into() {
+            Ok(invocation_query) => invocation_query,
+            Err(err) => {
+                return Decision::Reply(Err(PartitionProcessorRpcError::Internal(err.to_string())));
+            }
+        };
         match response_mode {
             GetInvocationOutputResponseMode::BlockWhenNotReady => {
                 // Try to get invocation output now, if it's ready reply immediately with it
-                if let Ok(ready_result @ PartitionProcessorRpcResponse::Output(_)) = self
+                if let Ok(ready_result @ GetInvocationOutputRpcResponse::Output(_)) = self
                     .get_invocation_output(request_id, invocation_query.clone())
                     .await
                 {
