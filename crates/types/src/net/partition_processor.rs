@@ -376,11 +376,24 @@ where
     type Service = PartitionLeaderService;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct CancelInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(CancelInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum CancelInvocationRpcResponse {
+    #[bilrost(0)]
     Done,
+    #[bilrost(1)]
     Appended,
+    #[bilrost(2)]
     NotFound,
+    #[bilrost(3)]
     AlreadyCompleted,
 }
 
@@ -412,10 +425,22 @@ impl From<CancelInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct KillInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(KillInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum KillInvocationRpcResponse {
+    #[bilrost(0)]
     Ok,
+    #[bilrost(1)]
     NotFound,
+    #[bilrost(2)]
     AlreadyCompleted,
 }
 
@@ -445,10 +470,32 @@ impl From<KillInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PurgeInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(PurgeInvocationRpcRequest);
+
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PurgeJournalRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(PurgeJournalRpcRequest);
+
+/// Both purge journal and purge invocation use the same response.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum PurgeInvocationRpcResponse {
+    #[bilrost(0)]
     Ok,
+    #[bilrost(1)]
     NotFound,
+    #[bilrost(2)]
     NotCompleted,
 }
 
@@ -478,30 +525,63 @@ impl From<PurgeInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct RestartAsNewInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+    #[bilrost(tag(3))]
+    pub copy_prefix_up_to_index_included: EntryIndex,
+    #[bilrost(tag(4))]
+    pub patch_deployment_id: PatchDeploymentId,
+}
+
+bilrost_wire_codec!(RestartAsNewInvocationRpcRequest);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum RestartAsNewInvocationRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok {
+        #[bilrost(tag(1))]
         new_invocation_id: InvocationId,
     },
+    #[bilrost(tag(2), message)]
     NotFound,
+    #[bilrost(tag(3), message)]
     StillRunning,
+    #[bilrost(tag(4), message)]
     Unsupported,
+    #[bilrost(tag(5), message)]
     JournalIndexOutOfRange,
+    #[bilrost(tag(6), message)]
     JournalCopyRangeInvalid,
+    #[bilrost(tag(7), message)]
     MissingInput,
+    #[bilrost(tag(8), message)]
     NotStarted,
+    #[bilrost(tag(9), message)]
     CannotPatchDeploymentId,
+    #[bilrost(tag(10), message)]
     DeploymentNotFound,
+    #[bilrost(tag(11), message)]
     IncompatibleDeploymentId {
+        #[bilrost(tag(1))]
         pinned_protocol_version: i32,
+        #[bilrost(tag(2))]
         deployment_id: DeploymentId,
+        #[bilrost(tag(3))]
         supported_protocol_versions: RangeInclusive<i32>,
     },
 }
 
-impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
-    fn from(value: RestartAsNewInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: RestartAsNewInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            RestartAsNewInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             RestartAsNewInvocationRpcResponse::Ok { new_invocation_id } => {
                 RestartAsNewInvocationResponse::Ok { new_invocation_id }
             }
@@ -539,7 +619,7 @@ impl From<RestartAsNewInvocationRpcResponse> for RestartAsNewInvocationResponse 
                 deployment_id,
                 supported_protocol_versions,
             },
-        }
+        })
     }
 }
 
@@ -593,24 +673,50 @@ impl From<RestartAsNewInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct ResumeInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+    #[bilrost(tag(3))]
+    pub deployment_id: PatchDeploymentId,
+}
+bilrost_wire_codec!(ResumeInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum ResumeInvocationRpcResponse {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
+    #[bilrost(tag(2), message)]
     NotFound,
+    #[bilrost(tag(3), message)]
     NotStarted,
+    #[bilrost(tag(4), message)]
     Completed,
+    #[bilrost(tag(5), message)]
     CannotPatchDeploymentId,
+    #[bilrost(tag(6), message)]
     DeploymentNotFound,
+    #[bilrost(tag(7), message)]
     IncompatibleDeploymentId {
+        #[bilrost(tag(1))]
         pinned_protocol_version: i32,
+        #[bilrost(tag(2))]
         deployment_id: DeploymentId,
+        #[bilrost(tag(3))]
         supported_protocol_versions: RangeInclusive<i32>,
     },
 }
 
-impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
-    fn from(value: ResumeInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: ResumeInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ResumeInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             ResumeInvocationRpcResponse::Ok => ResumeInvocationResponse::Ok,
             ResumeInvocationRpcResponse::NotFound => ResumeInvocationResponse::NotFound,
             ResumeInvocationRpcResponse::NotStarted => ResumeInvocationResponse::NotStarted,
@@ -630,7 +736,7 @@ impl From<ResumeInvocationRpcResponse> for ResumeInvocationResponse {
                 deployment_id,
                 supported_protocol_versions,
             },
-        }
+        })
     }
 }
 
@@ -715,6 +821,39 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendInvocationResponseRpcRequest {
+    pub header: PartitionProcessorRpcRequestHeader,
+    pub invocation_response: InvocationResponse,
+}
+default_wire_codec!(AppendInvocationResponseRpcRequest);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
+pub struct AppendInvocationResponseRpcResponse;
+
+impl From<AppendInvocationResponseRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(_: AppendInvocationResponseRpcResponse) -> Self {
+        Self::Appended
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppendSignalRpcRequest {
+    pub header: PartitionProcessorRpcRequestHeader,
+    pub invocation_id: InvocationId,
+    pub signal: Signal,
+}
+default_wire_codec!(AppendSignalRpcRequest);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
+pub struct AppendSignalRpcResponse;
+
+impl From<AppendSignalRpcResponse> for PartitionProcessorRpcResponse {
+    fn from(_: AppendSignalRpcResponse) -> Self {
+        Self::Appended
+    }
+}
+
 /// TODO: Remove in 1.9 when all RPCs are usign the dedicated messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
@@ -754,5 +893,13 @@ macro_rules! define_partition_processor_rpcs {
 }
 
 define_partition_processor_rpcs! {
+    AppendInvocationResponseRpcRequest => AppendInvocationResponseRpcResponse,
+    AppendSignalRpcRequest => AppendSignalRpcResponse,
+    CancelInvocationRpcRequest => CancelInvocationRpcResponse,
+    KillInvocationRpcRequest => KillInvocationRpcResponse,
+    PurgeInvocationRpcRequest => PurgeInvocationRpcResponse,
+    PurgeJournalRpcRequest => PurgeInvocationRpcResponse,
+    RestartAsNewInvocationRpcRequest => RestartAsNewInvocationRpcResponse,
+    ResumeInvocationRpcRequest => ResumeInvocationRpcResponse,
     PauseInvocationRpcRequest => PauseInvocationRpcResponse,
 }
