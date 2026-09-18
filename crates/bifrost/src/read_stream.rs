@@ -461,6 +461,8 @@ impl Stream for LogReadStream {
                                     Poll::Ready(Some(TailState::Open(tail))) => {
                                         // Safe to consider this as a tail.
                                         *safe_known_tail = Some(tail);
+                                        substream.notify_readable_tail(tail);
+                                        continue;
                                     }
                                     Poll::Ready(Some(TailState::Sealed(_))) => {
                                         // Wait for reconfiguration to complete.
