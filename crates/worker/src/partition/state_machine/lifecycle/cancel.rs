@@ -124,8 +124,8 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::state_machine::{Action, RpcReply};
     use crate::partition::types::InvokerEffectKind;
     use assert2::assert;
     use googletest::prelude::*;
@@ -137,7 +137,7 @@ mod tests {
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};
-    use restate_types::invocation::client::InvocationOutputResponse;
+    use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
     use restate_types::invocation::{
         InvocationTarget, InvocationTermination, JournalCompletionTarget, NotifySignalRequest,
         ResponseResult, ServiceInvocation, ServiceInvocationResponseSink,
@@ -340,10 +340,12 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(rpc_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Failure(CANCELED_INVOCATION_ERROR))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(rpc_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Failure(CANCELED_INVOCATION_ERROR))
+                })))
             }))
         );
 
