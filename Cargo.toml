@@ -164,7 +164,6 @@ enumset = { version = "1.1.10" }
 etcd-client = { version = "0.17" }
 flexbuffers = { version = "25.12.19" }
 futures = "0.3.31"
-futures-sink = "0.3.31"
 futures-util = "0.3.31"
 gardal = { version = "0.0.1-alpha.9" }
 generic-array = { version = "1.4.1" }
@@ -198,7 +197,6 @@ metrics = { version = "0.24" }
 metrics-exporter-prometheus = { version = "0.18.1", default-features = false, features = [
     "async-runtime",
 ] }
-metrics-util = { version = "0.20.1" }
 moka = "0.12.12"
 mockall = { version = "0.14.0" }
 num-traits = { version = "0.2.19" }

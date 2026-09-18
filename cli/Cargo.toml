@@ -48,7 +48,6 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
-clap-verbosity-flag = { workspace = true }
 clap_complete = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
@@ -89,7 +88,6 @@ toml_edit = "0.22.27"
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-uuid = { workspace = true }
 zip = { version = "8.0" }
 
 
