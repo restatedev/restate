@@ -124,7 +124,7 @@ aws-smithy-async = { version = "1.3.0", default-features = false }
 aws-smithy-runtime-api = { version = "1.15.0", features = ["client", "http-1x"] }
 aws-smithy-types = { version = "1.6.2", features = ["http-body-1-x"] }
 axum = { version = "0.8.8", default-features = false }
-base64 = "0.22"
+base64 = "0.23.1"
 bilrost = { version = "0.1015", default-features = false, features = ["std", "auto-optimize", "derive"] }
 bitflags = { version = "2.10.0" }
 bs58 = { version = "0.5.1" }
@@ -140,7 +140,7 @@ clap-verbosity-flag = { version = "3.0.4" }
 clap_complete = { version = "4.5" }
 cling = { version = "0.1.3", default-features = false, features = ["derive"] }
 comfy-table = { version = "7.2.1" }
-compact_str = { version = "0.9", default-features = false }
+compact_str = { version = "0.10.0", default-features = false }
 const_format = "0.2.35"
 criterion = "0.8.2"
 crossterm = { version = "0.29.0" }
@@ -169,7 +169,7 @@ gardal = { version = "0.0.1-alpha.9" }
 generic-array = { version = "1.4.1" }
 google-cloud-auth = { version = "1.10", features = ["idtoken"] }
 googletest = { version = "0.10", features = ["anyhow"] }
-hashbrown = { version = "0.16" }
+hashbrown = { version = "0.17.1" }
 slotmap = { version = "1" }
 hostname = { version = "0.4.2" }
 http = "1.4.0"
@@ -190,7 +190,7 @@ hyper-util = { version = "0.1" }
 indexmap = "2.12"
 itertools = "0.14.0"
 jiff = "0.2.17"
-jsonptr = "0.7.1"
+jsonptr = "0.8.2"
 jsonschema = { version = "0.38.1", default-features = false }
 jsonwebtoken = { version = "10.3.0", features = ["aws_lc_rs"] }
 metrics = { version = "0.24" }
@@ -198,7 +198,7 @@ metrics-exporter-prometheus = { version = "0.18.1", default-features = false, fe
     "async-runtime",
 ] }
 moka = "0.12.12"
-mockall = { version = "0.14.0" }
+mockall = { version = "0.15.0" }
 num-traits = { version = "0.2.19" }
 num_cpus = { version = "1.17.0" }
 object_store = { version = "0.14.2", features = ["aws", "azure", "gcp"] }
@@ -232,7 +232,7 @@ rocksdb = { version = "0.51.1", package = "rust-rocksdb", features = [
     "multi-threaded-cf",
     "jemalloc",
 ], git = "https://github.com/restatedev/rust-rocksdb", rev = "5df796cd539c15cec10f5c3c0d9dff1b4fbc6e42" }
-rstest = "0.26.1"
+rstest = "0.27.0"
 rustls = { version = "0.23.35", default-features = false, features = ["ring"] }
 rustyline = { version = "14.0.0" }
 schemars = { version = "1.2", features = ["bytes1"] }
