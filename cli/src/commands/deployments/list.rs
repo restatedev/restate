@@ -177,7 +177,7 @@ fn render_services(
             write!(
                 &mut out,
                 "- {} [{}]",
-                &service.name,
+                service.name,
                 Styled(style, service.revision)
             )
             .unwrap();

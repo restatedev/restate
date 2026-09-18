@@ -133,7 +133,7 @@ async fn render_handlers_status(
         .sorted_unstable_by(|a, b| a.name.cmp(&b.name))
     {
         let mut row = vec![];
-        row.push(Cell::new(format!("  {}", &handler.name)));
+        row.push(Cell::new(format!("  {}", handler.name)));
         // Pending
         row.push(render_handler_state_stats(
             svc_status,
@@ -236,7 +236,7 @@ async fn render_locked_keys(
         for (key, key_info) in keys {
             let mut row = vec![];
             // Key
-            row.push(Cell::new(format!("  {}", &key)));
+            row.push(Cell::new(format!("  {}", key)));
 
             // Queue
             let queue_color = if key_info.num_pending > 10 {

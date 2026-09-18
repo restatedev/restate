@@ -51,7 +51,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         "Created at:",
         format!(
             "{} ({})",
-            &inv.created_at,
+            inv.created_at,
             duration_to_human_rough(
                 chrono::Local::now().signed_duration_since(inv.created_at),
                 chrono_humanize::Tense::Past
@@ -62,7 +62,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     table.add_kv_row_if(
         || inv.state_modified_at.is_some(),
         "Modified at:",
-        || format!("{}", &inv.state_modified_at.unwrap()),
+        || format!("{}", inv.state_modified_at.unwrap()),
     );
 
     c_title!("📜", "Invocation Information");

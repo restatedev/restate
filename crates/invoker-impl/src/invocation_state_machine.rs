@@ -497,13 +497,9 @@ impl<K: TimerKey> InvocationStateMachine<K> {
         notifications_tx: &mut Option<mpsc::UnboundedSender<Notification>>,
         notification: Notification,
     ) {
-        *notifications_tx = notifications_tx.take().and_then(move |sender| {
-            if sender.send(notification).is_ok() {
-                Some(sender)
-            } else {
-                None
-            }
-        });
+        *notifications_tx = notifications_tx
+            .take()
+            .filter(move |sender| sender.send(notification).is_ok());
     }
 
     /// Notifies that a retry timer has fired.
