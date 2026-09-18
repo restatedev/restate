@@ -13,7 +13,7 @@ mod entries;
 mod lifecycle;
 mod utils;
 
-pub use actions::{Action, ActionCollector};
+pub use actions::{Action, ActionCollector, RpcReply};
 use restate_worker_api::processor::PartitionFeatures;
 
 use std::collections::HashSet;
@@ -78,8 +78,9 @@ use restate_types::identifiers::{
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
+    CancelInvocationResponse, InvocationOutput, InvocationOutputResponse, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
+    SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
@@ -1004,12 +1005,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 "Sending ingress attach invocation for {invocation_id}, will run at: {execution_time:?}"
             );
 
-            self.action_collector
-                .push(Action::IngressSubmitNotification {
+            self.action_collector.push(Action::ReplyRpc {
+                request_id,
+                reply: RpcReply::Submitted(SubmittedInvocationNotification {
                     request_id,
                     execution_time,
                     is_new_invocation: true,
-                });
+                }),
+            });
         }
 
         Ok(())
@@ -4337,11 +4340,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
         };
 
-        self.action_collector.push(Action::IngressResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            invocation_id,
-            completion_expiry_time,
-            response,
+            reply: RpcReply::Output(InvocationOutput {
+                request_id,
+                invocation_id,
+                completion_expiry_time,
+                response,
+            }),
         });
     }
 
@@ -4362,9 +4368,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector.push(Action::ForwardCancelResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            response,
+            reply: RpcReply::CancelInvocation(response),
         });
     }
 
@@ -4385,9 +4391,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector.push(Action::ForwardKillResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            response,
+            reply: RpcReply::KillInvocation(response),
         });
     }
 
@@ -4408,11 +4414,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPurgeInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PurgeInvocation(response),
+        });
     }
 
     fn reply_to_purge_journal(
@@ -4432,11 +4437,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPurgeJournalResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PurgeJournal(response),
+        });
     }
 
     fn reply_to_resume_invocation(
@@ -4456,11 +4460,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardResumeInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::ResumeInvocation(response),
+        });
     }
 
     fn reply_to_pause_invocation(
@@ -4480,11 +4483,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPauseInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PauseInvocation(response),
+        });
     }
 
     fn send_submit_notification_if_needed(
@@ -4502,12 +4504,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 invocation_id,
             );
 
-            self.action_collector
-                .push(Action::IngressSubmitNotification {
+            self.action_collector.push(Action::ReplyRpc {
+                request_id,
+                reply: RpcReply::Submitted(SubmittedInvocationNotification {
                     request_id,
                     execution_time,
                     is_new_invocation,
-                });
+                }),
+            });
         }
     }
 
