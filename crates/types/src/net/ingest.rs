@@ -12,11 +12,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 
-use restate_encoding::{ArcedSlice, RestateEncoding};
+use restate_encoding::ArcedSlice;
 
 use crate::identifiers::PartitionId;
 use crate::logs::{HasRecordKeys, Keys};
-use crate::message::MessageIndex;
 use crate::net::partition_processor::PartitionLeaderService;
 use crate::net::{RpcRequest, bilrost_wire_codec, define_rpc};
 
@@ -117,47 +116,41 @@ impl RpcRequest for ReceivedIngestRequest {
     type Service = PartitionLeaderService;
 }
 
-// The following messages are used by the kafka ingress
-// only during the migration from using string based
-// producer ids to number producer ids.
-// added on version v1.6.0
-// todo(azmy): deprecate
+#[allow(deprecated)]
+pub use dedup_sn_query::{DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse};
 
-/// Query the sequence number associated with
-/// the deduplication key
+#[allow(deprecated)]
+mod dedup_sn_query {
+    use crate::{
+        message::MessageIndex,
+        net::{
+            bilrost_wire_codec, define_rpc, ingest::ResponseStatus,
+            partition_processor::PartitionLeaderService,
+        },
+    };
 
-#[derive(Debug, Clone, bilrost::Oneof)]
-pub enum ProducerId {
-    Unknown,
-    #[bilrost(1)]
-    String(String),
-    #[bilrost(tag(2), encoding(RestateEncoding))]
-    Numeric(u128),
-}
+    #[derive(Debug, Clone, bilrost::Message)]
+    #[bilrost(reserved_tags(1, 2))]
+    #[deprecated]
+    pub struct DedupSequenceNrQueryRequest {}
 
-#[derive(Debug, Clone, bilrost::Message)]
-pub struct DedupSequenceNrQueryRequest {
-    // ProducerId of the deduplication information
-    // required.
-    #[bilrost(oneof(1, 2))]
-    pub producer_id: ProducerId,
-}
+    bilrost_wire_codec!(DedupSequenceNrQueryRequest);
 
-bilrost_wire_codec!(DedupSequenceNrQueryRequest);
+    /// Last sequence number recorded by the partition processor
+    #[derive(Debug, Clone, bilrost::Message)]
+    #[deprecated]
+    pub struct DedupSequenceNrQueryResponse {
+        #[bilrost(1)]
+        pub status: ResponseStatus,
+        #[bilrost(2)]
+        pub sequence_number: Option<MessageIndex>,
+    }
 
-/// Last sequence number recorded by the partition processor
-#[derive(Debug, Clone, bilrost::Message)]
-pub struct DedupSequenceNrQueryResponse {
-    #[bilrost(1)]
-    pub status: ResponseStatus,
-    #[bilrost(2)]
-    pub sequence_number: Option<MessageIndex>,
-}
+    bilrost_wire_codec!(DedupSequenceNrQueryResponse);
 
-bilrost_wire_codec!(DedupSequenceNrQueryResponse);
-
-define_rpc! {
-    @request = DedupSequenceNrQueryRequest,
-    @response = DedupSequenceNrQueryResponse,
-    @service = PartitionLeaderService,
+    define_rpc! {
+        @request = DedupSequenceNrQueryRequest,
+        @response = DedupSequenceNrQueryResponse,
+        @service = PartitionLeaderService,
+    }
 }

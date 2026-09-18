@@ -50,21 +50,20 @@ use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
     Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
+use restate_core::{Metadata, ShutdownError, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{
     PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
 use restate_platform::memory::EstimatedMemorySize;
-use restate_storage_api::deduplication_table::{
-    DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
-};
 use restate_storage_api::{StorageError, Transaction};
 use restate_tracing::warn_ratelimited;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{self, Lsn, RecordDecodeError, SequenceNumber};
+use restate_types::net::RpcRequest;
+#[allow(deprecated)]
 use restate_types::net::ingest::{
     DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
@@ -73,7 +72,6 @@ use restate_types::net::partition_processor::{
     PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcResponse,
 };
-use restate_types::net::{RpcRequest, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -351,16 +349,6 @@ impl From<PartitionSeal> for ProcessorError {
     }
 }
 
-/// OrderedOperations are scheduled operations that
-/// will only get executed once the partition read up to
-/// the bifrost tail that was found once the operation
-/// was submitted.
-enum OrderedOp {
-    QueryLegacyDedupSn {
-        request: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
-    },
-}
-
 impl<T> PartitionProcessor<T>
 where
     T: TransportConnect,
@@ -439,8 +427,6 @@ where
     }
 
     async fn run_inner(&mut self) -> Result<(), ProcessorError> {
-        let last_applied_lsn_watch = self.ctx.subscribe_to_last_applied_lsn();
-
         let log_id = self.ctx.log_id();
         let partition_id = self.ctx.partition_id();
         let my_node = self.node_ctx.my_node_id().as_plain();
@@ -600,7 +586,7 @@ where
                         "network_leader_svc_rx",
                     );
                     // todo: replace the live schema with the leader's consistent schema
-                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, network_processing_permit.expect("guarded with is_some")).await;
+                    self.on_rpc(msg, live_schemas.live_load(),  network_processing_permit.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
@@ -808,7 +794,6 @@ where
         &mut self,
         msg: ServiceMessage<PartitionLeaderService>,
         schemas: &Schema,
-        last_applied_lsn_watch: &watch::Receiver<Lsn>,
         permit: RpcProcessingPermit,
     ) {
         match msg {
@@ -834,99 +819,17 @@ where
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
                 self.on_pp_ingest_request(msg.into_typed(), permit);
             }
+            // todo: Completely remove in v1.9
+            #[allow(deprecated)]
             ServiceMessage::Rpc(msg) if msg.msg_type() == DedupSequenceNrQueryRequest::TYPE => {
-                self.wait_for_tail_then(
-                    last_applied_lsn_watch,
-                    OrderedOp::QueryLegacyDedupSn {
-                        request: msg.into_typed(),
-                    },
-                );
+                let msg = msg.into_typed::<DedupSequenceNrQueryRequest>();
+                msg.into_reciprocal().send(DedupSequenceNrQueryResponse {
+                    status: ResponseStatus::Ack,
+                    sequence_number: None,
+                });
             }
             msg => {
                 msg.fail(Verdict::MessageUnrecognized);
-            }
-        }
-    }
-
-    async fn on_ordered_op(partition_store: &mut PartitionStore, op: OrderedOp) {
-        match op {
-            OrderedOp::QueryLegacyDedupSn { request } => {
-                Self::on_dedup_sn_query(partition_store, request).await;
-            }
-        }
-    }
-
-    fn wait_for_tail_then(
-        &self,
-        last_applied_lsn_watch: &watch::Receiver<Lsn>,
-        ordered_op: OrderedOp,
-    ) {
-        let bifrost = self.node_ctx.bifrost.clone();
-        let log_id = self.ctx.log_id();
-        let mut last_applied_lsn_watch = last_applied_lsn_watch.clone();
-        let mut partition_store = self.partition_store.clone();
-
-        _ = TaskCenter::current().spawn_child(
-            TaskKind::Disposable,
-            "ordered-operation",
-            async move {
-                let tail = bifrost
-                    .find_tail(log_id, FindTailOptions::ConsistentRead)
-                    .await?;
-                let wait_for = tail.offset().prev();
-                last_applied_lsn_watch.wait_for(|v| v >= &wait_for).await?;
-                Self::on_ordered_op(&mut partition_store, ordered_op).await;
-                Ok(())
-            },
-        );
-    }
-
-    /// Used mainly by kafka-ingress to query old style dedup information
-    /// during the migration to the new u128 based producer id introduced with v1.6.
-    async fn on_dedup_sn_query(
-        partition_store: &mut PartitionStore,
-        msg: Incoming<Rpc<DedupSequenceNrQueryRequest>>,
-    ) {
-        let (tx, body) = msg.split();
-        let producer_id = match body.producer_id {
-            ingest::ProducerId::Unknown => {
-                tx.send(DedupSequenceNrQueryResponse {
-                    status: ResponseStatus::Internal {
-                        msg: "missing producer id".into(),
-                    },
-                    sequence_number: None,
-                });
-                return;
-            }
-            ingest::ProducerId::String(v) => ProducerId::Other(v.into()),
-            ingest::ProducerId::Numeric(v) => ProducerId::Producer(v.into()),
-        };
-
-        match partition_store
-            .get_dedup_sequence_number(&producer_id)
-            .await
-        {
-            Ok(result) => {
-                let sequence_number = result.and_then(|v| {
-                    if let DedupSequenceNumber::Sn(sn) = v {
-                        Some(sn)
-                    } else {
-                        None
-                    }
-                });
-
-                tx.send(DedupSequenceNrQueryResponse {
-                    status: ResponseStatus::Ack,
-                    sequence_number,
-                });
-            }
-            Err(err) => {
-                tx.send(DedupSequenceNrQueryResponse {
-                    status: ResponseStatus::Internal {
-                        msg: err.to_string(),
-                    },
-                    sequence_number: None,
-                });
             }
         }
     }
