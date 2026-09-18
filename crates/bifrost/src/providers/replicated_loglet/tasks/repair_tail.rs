@@ -260,11 +260,9 @@ impl<T: TransportConnect> RepairTail<T> {
             self.networking.clone(),
             KeyFilter::Any,
             self.digests.start_offset(),
-            Some(self.digests.target_tail().prev()),
             OffsetWatch::new(self.digests.target_tail()),
             self.known_global_tail.clone(),
             self.record_cache.clone(),
-            /* move-beyond-global-tail = */ true,
         )
         .await
         else {
