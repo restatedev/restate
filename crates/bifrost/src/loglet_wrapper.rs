@@ -226,6 +226,12 @@ impl LogletWrapper {
         self.loglet.seal().await
     }
 
+    /// `tail` is an exclusive chain-relative LSN. See [`Loglet::notify_known_tail`].
+    pub fn notify_known_tail(&self, tail: Lsn) {
+        self.loglet
+            .notify_known_tail(tail.into_offset(self.base_lsn));
+    }
+
     #[cfg(any(test, feature = "test-util"))]
     pub fn inner(&self) -> &Arc<dyn Loglet> {
         &self.loglet

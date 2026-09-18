@@ -150,6 +150,11 @@ pub trait Loglet: Send + Sync {
     /// Appends **SHOULD NOT** succeed after a `seal()` call is successful. And appends **MUST
     /// NOT** succeed after the offset returned by the *first* TailState::Sealed() response.
     async fn seal(&self) -> Result<(), OperationError>;
+
+    /// Hint that `tail` is known-committed and sealed, learned from an external source such as
+    /// chain metadata. Must never move the tail backwards or unseal. A provider that always
+    /// observes its own tail authoritatively may leave this a no-op.
+    fn notify_known_tail(&self, _tail: LogletOffset) {}
 }
 
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
