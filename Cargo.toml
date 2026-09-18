@@ -188,7 +188,7 @@ hyper-rustls = { version = "0.27.7", default-features = false, features = [
 ] }
 hyper-util = { version = "0.1" }
 indexmap = "2.12"
-itertools = "0.14.0"
+itertools = "0.15.0"
 jiff = "0.2.17"
 jsonptr = "0.8.2"
 jsonschema = { version = "0.38.1", default-features = false }

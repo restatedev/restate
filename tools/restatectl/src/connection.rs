@@ -15,7 +15,7 @@ use std::sync::RwLock;
 use std::{cmp::Ordering, fmt::Display, sync::Arc};
 
 use cling::{Collect, prelude::Parser};
-use itertools::{Either, Itertools, Position};
+use itertools::{Either, Itertools};
 use rand::{rng, seq::SliceRandom};
 use tokio::sync::{Mutex, MutexGuard};
 use tonic::{Code, Status, transport::Channel};
@@ -760,17 +760,13 @@ impl NodesErrors {
 impl Display for NodesErrors {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (position, (address, status)) in self.node_status.iter().with_position() {
-            match position {
-                Position::Only => {
-                    writeln!(f, "{address}: {status}")?;
-                }
-                Position::First => {
+            if position.is_first() && position.is_last() {
+                writeln!(f, "{address}: {status}")?;
+            } else {
+                if position.is_first() {
                     writeln!(f, "Encountered multiple errors:")?;
-                    writeln!(f, " - {address} -> {status}")?;
                 }
-                Position::Middle | Position::Last => {
-                    writeln!(f, " - {address} -> {status}")?;
-                }
+                writeln!(f, " - {address} -> {status}")?;
             }
         }
         Ok(())
