@@ -771,19 +771,27 @@ impl schemars::JsonSchema for InvocationId {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq, Hash, PartialEq, Clone, Debug, bilrost::Message, serde::Serialize, serde::Deserialize,
+)]
 pub struct IdempotencyId {
     /// Identifies the invoked service
+    #[bilrost(1)]
     pub service_name: ByteString,
     /// Service key, if any
+    #[bilrost(2)]
     pub service_key: Option<ByteString>,
     /// Identifies the invoked service handler
+    #[bilrost(3)]
     pub service_handler: ByteString,
     /// The user supplied idempotency_key
+    #[bilrost(4)]
     pub idempotency_key: ByteString,
     /// Optional scope for vqueue partitioning
+    #[bilrost(5)]
     pub scope: Option<Scope>,
 
+    #[bilrost(6)]
     partition_key: PartitionKey,
 }
 
