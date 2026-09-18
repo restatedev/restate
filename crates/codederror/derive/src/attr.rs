@@ -11,8 +11,8 @@
 //! Some parts copied from https://github.com/dtolnay/thiserror/blob/39aaeb00ff270a49e3c254d7b38b10e934d3c7a5/impl/src/attr.rs
 //! License Apache-2.0 or MIT
 
-use syn::parse::{Nothing, ParseStream};
-use syn::{Attribute, Error as SynError, Path, Result};
+use syn::parse::ParseStream;
+use syn::{Attribute, Error as SynError, Meta, Path, Result};
 
 pub struct Attrs<'a> {
     // We parse these just to figure out who should we delegate to during codegen
@@ -68,16 +68,16 @@ pub fn get(input: &[Attribute]) -> Result<Attrs<'_>> {
     };
 
     for attr in input {
-        if attr.path.is_ident("source") {
+        if attr.path().is_ident("source") {
             require_empty_attribute(attr)?;
             attrs.mark_source(attr)?;
-        } else if attr.path.is_ident("from") {
-            if !attr.tokens.is_empty() {
+        } else if attr.path().is_ident("from") {
+            if !matches!(attr.meta, Meta::Path(_)) {
                 // Assume this is meant for derive_more crate or something.
                 continue;
             }
             attrs.mark_from(attr)?;
-        } else if attr.path.is_ident("code") {
+        } else if attr.path().is_ident("code") {
             parse_code_attribute(&mut attrs, attr)?;
         }
     }
@@ -86,7 +86,7 @@ pub fn get(input: &[Attribute]) -> Result<Attrs<'_>> {
 }
 
 fn parse_code_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Result<()> {
-    if attr.tokens.is_empty() {
+    if matches!(attr.meta, Meta::Path(_)) {
         return attrs.mark_code(attr);
     }
 
@@ -120,6 +120,31 @@ fn parse_code_attribute<'a>(attrs: &mut Attrs<'a>, attr: &'a Attribute) -> Resul
 }
 
 fn require_empty_attribute(attr: &Attribute) -> Result<()> {
-    syn::parse2::<Nothing>(attr.tokens.clone())?;
-    Ok(())
+    attr.meta.require_path_only().map(|_| ())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    #[test]
+    fn attribute_shapes() {
+        let markers = [parse_quote!(#[source]), parse_quote!(#[code])];
+        let attrs = get(&markers).unwrap();
+        assert!(attrs.source.is_some());
+        assert!(attrs.code_marker.is_some());
+        assert!(attrs.code.is_none());
+
+        let explicit = [parse_quote!(#[from]), parse_quote!(#[code(unknown)])];
+        let attrs = get(&explicit).unwrap();
+        assert!(attrs.from.is_some());
+        assert!(attrs.code.unwrap().value.is_none());
+
+        let derive_more = [parse_quote!(#[from(SomeType)])];
+        assert!(get(&derive_more).unwrap().from.is_none());
+        assert!(get(&[parse_quote!(#[source()])]).is_err());
+        assert!(get(&[parse_quote!(#[code()])]).is_err());
+        assert!(get(&[parse_quote!(#[source]), parse_quote!(#[source])]).is_err());
+    }
 }
