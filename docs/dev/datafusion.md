@@ -60,28 +60,41 @@ The query engine uses a two-tier architecture:
 
 ### Tables
 
+Table names below are the registered SQL names (see `storage-query-datafusion/src/context.rs`).
+
 **Partitioned tables** (data distributed across partitions by partition key):
 - `sys_invocation_status` - Invocation metadata and status
-- `sys_invocation_state` - Runtime invocation state (retry info, in-flight status)
-- `keyed_service_status` - Virtual object lock status
+- `sys_invocation_state` - Runtime invocation state (retry info, in-flight status); served by the partition leader
+- `sys_scheduler` - Per-VQueue scheduler state (inbox depth, head entry, next runnable time); served by the partition leader
+- `sys_user_limits` - Concurrency limit counters per scope/key hierarchy level; served by the partition leader
+- `sys_locks` - Virtual object/workflow lock status (replaces the removed `sys_keyed_service_status`)
 - `state` - User state key-value pairs
-- `journal` - Journal entries
-- `journal_events` - Decoded journal events
-- `inbox` - Pending invocations in inbox
-- `idempotency` - Idempotency key mappings
-- `promise` - Promise completions
+- `sys_journal` - Journal entries
+- `sys_journal_events` - Decoded journal events
+- `sys_inbox` - Pending invocations in inbox
+- `sys_promise` - Workflow promises
+- `sys_vqueue_meta` - VQueue metadata (active/paused flags, service, scope, statistics)
+- `sys_vqueue_entry_status` - Per-entry VQueue stage and processing status
+- `sys_vqueues` - VQueue entries with stage and processing status
 
 **Non-partitioned tables** (cluster-wide metadata):
-- `deployment` - Registered deployments
-- `service` - Registered services
-- `node` - Cluster nodes
-- `partition` - Partition metadata
+- `sys_deployment` - Registered deployments
+- `sys_service` - Registered services
+- `sys_rules` - Concurrency limit rules
+- `nodes` - Cluster nodes
+- `partitions` - Partition metadata
 - `partition_replica_set` - Partition replica distribution
-- `log` - Bifrost logs
 - `partition_state` - Partition processor states
+- `logs` - Bifrost logs
+
+**Node fan-out tables** (each node contributes its local rows):
+- `loglet_workers` - Log-server loglet worker state
+- `bifrost_read_streams` - Active Bifrost read streams
+- `config` - Effective node configuration (disabled with `disable-config-sql-table`)
 
 **Views**:
 - `sys_invocation` - Joins `sys_invocation_status` and `sys_invocation_state` with computed status
+- `logs_tail_segments` - Latest segment of each log from `logs`
 
 ## Query Path: `invocation_status` Example
 
