@@ -72,7 +72,6 @@ use std::time::Duration;
 use futures::future::OptionFuture;
 use futures::stream::{BoxStream, Peekable};
 use futures::{FutureExt, Stream, StreamExt};
-use http::header;
 use opentelemetry::global::ObjectSafeSpan;
 use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::{SpanContext, TraceContextExt};
@@ -116,7 +115,7 @@ use proto::{
 };
 use tracing::debug;
 
-use crate::handler::{IDEMPOTENCY_EXPIRES, IDEMPOTENCY_KEY};
+use crate::handler::is_reserved_header_name;
 use crate::ingestion::ingestion_svc::Error::BadRequestWithOffset;
 use crate::ingestion::ingestion_svc::proto::DeduplicationMode;
 use crate::metric_definitions::{
@@ -390,8 +389,8 @@ where
         }
         .map_err(Error::NotFound)?;
 
-        // filter out unsupported headers
-        settings.headers.retain(valid_header);
+        // filter out headers reserved by the ingress
+        settings.headers.retain(|k, _| !is_reserved_header_name(k));
 
         let headers_size = settings
             .headers
@@ -801,8 +800,8 @@ where
         // merge headers Defaults + Record headers
         let mut headers = state.defaults.headers.clone();
 
-        for (name, mut value) in record.additional_headers {
-            if valid_header(&name, &mut value) {
+        for (name, value) in record.additional_headers {
+            if !is_reserved_header_name(&name) {
                 headers.insert(name, value);
             }
         }
@@ -874,22 +873,6 @@ where
             invocation.partition_key(),
             Envelope::new(dedup, InvokeCommand::from(invocation)),
         ))
-    }
-}
-
-fn valid_header(key: &String, _value: &mut String) -> bool {
-    if key == header::CONNECTION.as_str()
-            || key == header::HOST.as_str()
-            || key == IDEMPOTENCY_KEY.as_str()
-            || key == IDEMPOTENCY_EXPIRES.as_str()
-            // Drop any client-supplied `x-restate-*` header. This namespace is
-            // reserved for the ingress (e.g. `x-restate-ingress-path` set above);
-            // forwarding client values would let callers spoof it.
-            || key.starts_with("x-restate-")
-    {
-        false
-    } else {
-        true
     }
 }
 

@@ -17,15 +17,20 @@ connections without restarting the server.
 
 ### Why This Matters
 
-Previously the ingress had no liveness check on inbound HTTP/2 connections. When a client
-disappeared without closing its connection cleanly — a crashed process, a laptop going to sleep, a
-NAT or load balancer silently dropping the flow — the server kept the connection and all of its
-in-flight streams open until the operating system's TCP timeout expired, which can take many
-minutes. Those connections consumed stream slots and held request state that could not make
-progress.
+The ingress now serves long-running gRPC ingestion streams. Such a stream stays open across idle
+stretches where no frame flows in either direction, and idle connections are exactly what the
+network reclaims: NATs, load balancers and firewalls commonly drop a flow that has been quiet for a
+few minutes, without notifying either side. Periodic PING frames keep the connection continuously
+active, so an ingestion stream survives its idle periods instead of being silently torn down
+mid-session.
 
-With keep-alive enabled, such connections are detected within roughly a minute and their resources
-are released.
+Detecting peers that are already gone falls out of the same mechanism. Previously the ingress had no
+liveness check on inbound HTTP/2 connections. When a client disappeared without closing its
+connection cleanly — a crashed process, a laptop going to sleep, a NAT or load balancer silently
+dropping the flow — the server kept the connection and all of its in-flight streams open until the
+operating system's TCP timeout expired, which can take many minutes, consuming stream slots and
+holding request state that could not make progress. With keep-alive enabled, such connections are
+now detected within roughly a minute and their resources are released.
 
 ### Impact on Users
 

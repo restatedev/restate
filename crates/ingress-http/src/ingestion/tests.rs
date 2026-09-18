@@ -836,7 +836,8 @@ async fn oversized_record_is_rejected_by_the_ingestion_client() {
 
 /// Defaults are replaced wholesale by a later `IngestionDefaults` frame, and any
 /// field set on a record wins over the current default. Headers are the exception:
-/// they are merged, with the record's headers overriding.
+/// they are merged, with the record's headers overriding. Headers whose name is
+/// reserved by the ingress are dropped from both, regardless of casing.
 #[tokio::test(start_paused = true)]
 async fn defaults_are_replaced_and_overridden_per_record() {
     let (handler, mut resolver) = IngestHandler::new();
@@ -846,6 +847,8 @@ async fn defaults_are_replaced_and_overridden_per_record() {
             headers: HashMap::from([
                 ("a".to_owned(), "1".to_owned()),
                 ("b".to_owned(), "2".to_owned()),
+                // Reserved for the ingress, dropped even though it is not lowercase.
+                ("X-Restate-Ingress-Path".to_owned(), "/spoofed".to_owned()),
             ]),
             ..defaults(Some(SERVICE), Some(HANDLER))
         })),
@@ -881,6 +884,8 @@ async fn defaults_are_replaced_and_overridden_per_record() {
         additional_headers: HashMap::from([
             ("b".to_owned(), "overridden".to_owned()),
             ("c".to_owned(), "3".to_owned()),
+            ("Idempotency-Key".to_owned(), "spoofed".to_owned()),
+            ("Connection".to_owned(), "close".to_owned()),
         ]),
         ..invocation(1)
     }));
