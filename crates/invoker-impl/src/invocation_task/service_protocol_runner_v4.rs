@@ -55,7 +55,9 @@ use restate_types::journal_v2::{
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
-use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
+use restate_types::schema::invocation_target::{
+    DeploymentStatus, InvocationTargetResolver, StatePreloadPolicy,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
@@ -69,8 +71,8 @@ use crate::error::{
     RequestedErrorBehavior, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    EagerStateRead, InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType,
-    ResponseChunk, ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
+    InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
+    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
     invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
     service_protocol_version_to_header_value,
 };
@@ -139,7 +141,7 @@ where
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
-        state_read: Option<EagerStateRead>,
+        state_read: Option<StatePreloadPolicy>,
         deployment: Deployment,
         invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
@@ -303,7 +305,7 @@ where
         mut txn: Txn,
         protocol_type: ProtocolType,
         journal_metadata: JournalMetadata,
-        state_read: Option<EagerStateRead>,
+        state_read: Option<StatePreloadPolicy>,
         mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
         invocation_reader: IR,
@@ -322,14 +324,15 @@ where
             // a whitelist preloads only those keys. Both return the same `EagerState` stream type, so
             // the collection (inside `write_start`) is uniform.
             // Budget-gated: each entry takes a lease from the outbound budget.
-            let state = if let Some(state_read) = &state_read {
+            // Only keyed targets have state to preload; resolve (and clone) the ServiceId here, and
+            // skip the read entirely when the target is not keyed.
+            let state = if let Some(policy) = &state_read
+                && let Some(service_id) =
+                    self.invocation_task.invocation_target.as_keyed_service_id()
+            {
                 Some(shortcircuit!(
-                    txn.read_state_budgeted(
-                        &state_read.service_id,
-                        &state_read.policy,
-                        outbound_budget,
-                    )
-                    .map_err(InvokerError::from_state_reader)
+                    txn.read_state_budgeted(&service_id, policy, outbound_budget)
+                        .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None

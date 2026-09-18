@@ -35,7 +35,7 @@ use restate_memory::{LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream};
 use restate_service_client::{ResponseBody, ServiceClient, ServiceClientError};
 use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::{InvocationId, ServiceId};
+use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{FencingToken, InvocationTarget};
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
@@ -89,13 +89,6 @@ const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
-
-/// Tells a protocol runner to eagerly read state for a keyed invocation per `config`. A runner
-/// receiving `None` is fully lazy (not keyed, or a lazy default with no always-eager keys).
-pub(super) struct EagerStateRead {
-    pub(super) service_id: ServiceId,
-    pub(super) policy: StatePreloadPolicy,
-}
 
 /// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
 ///
@@ -541,21 +534,17 @@ where
         // The eager state size limit (a memory safety cap) always applies and comes solely from
         // the server config; the per-handler/service config only carries the eager/lazy *policy*.
         let state_preload_policy = invocation_attempt_options.state_preload_policy;
-        let keyed_service_id = self.invocation_target.as_keyed_service_id();
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
             deployment_changed,
         ));
 
-        // Protocol runner for service protocol v4+. Reads state upfront only for keyed targets
-        // that preload anything (eager default, or always-eager keys under a lazy default).
-        let state_read = keyed_service_id
-            .filter(|_| state_preload_policy.preload_any_state() && self.eager_state_size_limit > 0)
-            .map(|service_id| EagerStateRead {
-                service_id,
-                policy: state_preload_policy,
-            });
+        // Protocol runner for service protocol v4+. Preload state upfront only when the policy asks
+        // for it and the memory cap allows it.
+        let state_read = (state_preload_policy.preload_any_state()
+            && self.eager_state_size_limit > 0)
+            .then_some(state_preload_policy);
         let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
             self,
             chosen_service_protocol_version,
