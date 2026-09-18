@@ -21,8 +21,6 @@ use futures::future::BoxFuture;
 use http::{Request, Uri};
 use http_body_util::BodyExt;
 use hyper_util::client::legacy::connect::{Connected, Connection};
-use pprof::criterion::{Output, PProfProfiler};
-use pprof::flamegraph::Options;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, ReadBuf};
 use tokio::runtime::Builder;
 use tokio::task::JoinSet;
@@ -216,15 +214,6 @@ fn boxed_body_request(uri: &str, payload: Bytes) -> Request<BoxBody> {
                 .boxed(),
         )
         .unwrap()
-}
-
-fn flamegraph_options<'a>() -> Options<'a> {
-    #[allow(unused_mut)]
-    let mut options = Options::default();
-    if cfg!(target_os = "macos") {
-        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
-    }
-    options
 }
 
 // ---------------------------------------------------------------------------
@@ -494,9 +483,9 @@ fn bench_body_throughput(c: &mut Criterion) {
 }
 
 criterion_group!(
-    name = benches;
-    config = Criterion::default()
-        .with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
-    targets = bench_sequential_requests, bench_concurrent_requests, bench_body_throughput
+    benches,
+    bench_sequential_requests,
+    bench_concurrent_requests,
+    bench_body_throughput
 );
 criterion_main!(benches);

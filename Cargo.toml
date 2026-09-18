@@ -143,7 +143,7 @@ cling = { version = "0.1.3", default-features = false, features = ["derive"] }
 comfy-table = { version = "7.2.1" }
 compact_str = { version = "0.9", default-features = false }
 const_format = "0.2.35"
-criterion = "0.5"
+criterion = "0.8.2"
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6" }
 datafusion = { version = "54.0.0", default-features = false, features = [
