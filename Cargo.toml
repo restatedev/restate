@@ -112,7 +112,7 @@ ahash = "0.8.12"
 anyhow = "1"
 arc-swap = "1.9"
 arrayvec = { version = "0.7" }
-arrow = { version = "58.3.0", default-features = false }
+arrow = { version = "59.3.0", default-features = false }
 assert2 = "0.3.16"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
@@ -146,7 +146,7 @@ const_format = "0.2.35"
 criterion = "0.8.2"
 crossterm = { version = "0.29.0" }
 dashmap = { version = "6" }
-datafusion = { version = "54.0.0", default-features = false, features = [
+datafusion = { version = "55.1.0", default-features = false, features = [
     "crypto_expressions",
     "encoding_expressions",
     "nested_expressions",
@@ -154,8 +154,8 @@ datafusion = { version = "54.0.0", default-features = false, features = [
     "unicode_expressions",
     "recursive_protection",
 ] }
-datafusion-functions-json = { version = "0.54.2" }
-datafusion-proto = { version = "54.0.0", default-features = false }
+datafusion-functions-json = { version = "0.55.2" }
+datafusion-proto = { version = "55.1.0", default-features = false }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", default-features = false }
 dialoguer = { version = "0.12.0" }
