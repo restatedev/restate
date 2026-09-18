@@ -73,7 +73,6 @@ criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 google-cloud-gax = { version = "1.14.0" }
 hyper = { workspace = true, features = ["server"] }
-pprof = { version = "0.15", features = ["criterion", "flamegraph"] }
 tempfile = { workspace = true }
 tokio-stream = {workspace = true}
 
