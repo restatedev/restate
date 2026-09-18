@@ -271,7 +271,7 @@ tokio = { version = "1.53.1", default-features = false, features = [
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 tokio-stream = "0.1.17"
 tokio-util = { version = "0.7.17" }
-toml = { version = "0.9" }
+toml = { version = "1.1.6" }
 tonic = { version = "0.14.2", default-features = false }
 tonic-reflection = { version = "0.14.2" }
 tonic-prost = "0.14.2"
