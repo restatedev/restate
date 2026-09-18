@@ -126,7 +126,7 @@ aws-smithy-types = { version = "1.6.2", features = ["http-body-1-x"] }
 aws-sigv4 = { version = "1.5" }
 axum = { version = "0.8.8", default-features = false }
 base64 = "0.23.1"
-bilrost = { version = "0.1015", default-features = false, features = ["std", "auto-optimize", "derive"] }
+bilrost = { version = "0.1016.1", default-features = false, features = ["std", "auto-optimize", "derive"] }
 bitflags = { version = "2.10.0" }
 bs58 = { version = "0.5.1" }
 bytes = { version = "1.11", features = ["serde"] }

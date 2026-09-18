@@ -34,7 +34,7 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
+bilrost = { version = "0.1016", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
@@ -169,7 +169,7 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
+bilrost = { version = "0.1016", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
 bytestring = { version = "1", default-features = false, features = ["serde"] }
