@@ -42,7 +42,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
-compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
+compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.8", features = ["async_tokio"] }
@@ -89,7 +89,8 @@ md-5 = { version = "0.11" }
 memchr = { version = "2" }
 moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
-num-bigint = { version = "0.4" }
+num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
+num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
@@ -176,7 +177,7 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
-compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
+compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.8", features = ["async_tokio"] }
@@ -225,7 +226,8 @@ md-5 = { version = "0.11" }
 memchr = { version = "2" }
 moka = { version = "0.12", features = ["future", "logging", "sync"] }
 nom = { version = "7" }
-num-bigint = { version = "0.4" }
+num-bigint-9fbad63c4bcf4a8f = { package = "num-bigint", version = "0.4" }
+num-bigint-d8f496e17d97b5cb = { package = "num-bigint", version = "0.5" }
 num-integer = { version = "0.1", features = ["i128"] }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1", features = ["critical-section"] }
@@ -298,7 +300,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -319,7 +321,7 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -339,7 +341,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -361,7 +363,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.31", default-features = false, features = ["signal"] }
+nix = { version = "0.31", features = ["signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }

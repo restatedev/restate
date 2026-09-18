@@ -69,7 +69,7 @@ jsonschema = { workspace = true }
 listenfd = { version = "1" }
 moka = { workspace = true, features = ["sync", "logging"] }
 notify = { version = "8.2.0" }
-notify-debouncer-full = { version = "0.6" }
+notify-debouncer-full = { version = "0.7.0" }
 num-traits = { workspace = true }
 num_cpus = { workspace = true }
 opentelemetry = { workspace = true , features = ["trace"]}

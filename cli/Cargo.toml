@@ -52,11 +52,11 @@ clap_complete = { workspace = true }
 cling = { workspace = true }
 comfy-table = { workspace = true }
 const_format = { workspace = true }
-convert_case = "0.10"
+convert_case = "0.12.0"
 crossterm = { workspace = true }
 ctrlc = { version = "3.5.1" }
 dialoguer = { workspace = true }
-dirs = { version = "6.0" }
+dirs = { version = "7.0.0" }
 figment = { version = "0.10.19", features = ["env", "toml"] }
 futures = { workspace = true }
 hickory-resolver = "0.26.1"

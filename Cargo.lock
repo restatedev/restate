@@ -1654,9 +1654,9 @@ dependencies = [
 
 [[package]]
 name = "clap-stdin"
-version = "0.6.0"
+version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1101d998d15574d862ee282bcb93e0cf2d192c2fb12338dec35daa91425769a9"
+checksum = "3c597a504c7d12819c50d2e1f78719afb6e01d4e14cbc94eb4c5f6a850494d1c"
 dependencies = [
  "thiserror 2.0.20",
 ]
@@ -1814,18 +1814,17 @@ dependencies = [
 
 [[package]]
 name = "compact_str"
-version = "0.9.1"
+version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9dfdd1c2274d9aa354115b09dc9a901d6c5576818cdf70d14cae2bdb47df00ab"
+checksum = "79fcda08c33bb58b97008b2cdada6622500e949e060f5913361763121abd2416"
 dependencies = [
  "bytes",
  "castaway",
  "cfg-if",
  "itoa",
- "rustversion",
- "ryu",
  "serde",
  "static_assertions",
+ "zmij",
 ]
 
 [[package]]
@@ -1980,6 +1979,15 @@ name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1af709f1f33454bf52eadfc8c78b3b9ef9cb26fb54d16dc9cd9a7299f899fd1b"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -3163,7 +3171,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -3215,9 +3223,9 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "6.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys",
 ]
@@ -3596,15 +3604,6 @@ dependencies = [
  "num_enum 0.5.11",
  "serde",
  "serde_derive",
-]
-
-[[package]]
-name = "fluent-uri"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17c704e9dbe1ddd863da1e6ff3567795087b1eb201ce80d8fa81162e1516500d"
-dependencies = [
- "bitflags 1.3.2",
 ]
 
 [[package]]
@@ -4892,18 +4891,6 @@ dependencies = [
 
 [[package]]
 name = "json-patch"
-version = "2.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b1fb8864823fad91877e6caea0baca82e49e8db50f8e5c9f9a453e27d3330fc"
-dependencies = [
- "jsonptr 0.4.7",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "json-patch"
 version = "4.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7421438de105a0827e44fadd05377727847d717c80ce29a229f85fd04c427b72"
@@ -4916,20 +4903,19 @@ dependencies = [
 
 [[package]]
 name = "jsonptr"
-version = "0.4.7"
+version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1c6e529149475ca0b2820835d3dce8fcc41c6b943ca608d32f35b449255e4627"
+checksum = "a5a3cc660ba5d72bce0b3bb295bf20847ccbb40fd423f3f05b61273672e561fe"
 dependencies = [
- "fluent-uri 0.1.4",
  "serde",
  "serde_json",
 ]
 
 [[package]]
 name = "jsonptr"
-version = "0.7.1"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a5a3cc660ba5d72bce0b3bb295bf20847ccbb40fd423f3f05b61273672e561fe"
+checksum = "72c22d99362c7aac7d77efab6b49c2181674b165d7e6e7c755b3432ded64bf51"
 dependencies = [
  "serde",
  "serde_json",
@@ -5573,9 +5559,9 @@ dependencies = [
 
 [[package]]
 name = "mockall"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f58d964098a5f9c6b63d0798e5372fd04708193510a7af313c22e9f29b7b620b"
+checksum = "1a6ceddfe3ce334925e96bf420fdb2dcee5bed6c632a168ece622676dadeaf8a"
 dependencies = [
  "cfg-if",
  "downcast",
@@ -5587,9 +5573,9 @@ dependencies = [
 
 [[package]]
 name = "mockall_derive"
-version = "0.14.0"
+version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca41ce716dda6a9be188b385aa78ee5260fc25cd3802cb2a8afdc6afbe6b6dbf"
+checksum = "9cfe16fbe8a314aeec0b861ac24e60b1e123e97634bab045475b9d6a18416fd8"
 dependencies = [
  "cfg-if",
  "proc-macro2",
@@ -5653,18 +5639,6 @@ dependencies = [
 
 [[package]]
 name = "nix"
-version = "0.30.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "74523f3a35e05aba87a1d978330aef40f67b0304ac79c1c00b294c9830543db6"
-dependencies = [
- "bitflags 2.13.2",
- "cfg-if",
- "cfg_aliases 0.2.2",
- "libc",
-]
-
-[[package]]
-name = "nix"
 version = "0.31.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
@@ -5714,9 +5688,9 @@ dependencies = [
 
 [[package]]
 name = "notify-debouncer-full"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "375bd3a138be7bfeff3480e4a623df4cbfb55b79df617c055cd810ba466fa078"
+checksum = "c02b49179cfebc9932238d04d6079912d26de0379328872846118a0fa0dbb302"
 dependencies = [
  "file-id",
  "log",
@@ -7276,7 +7250,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "15a8af0c6bb8eaf8b07cb06fc31ff30ca6fe19fb99afa476c276d8b24f365b0b"
 dependencies = [
  "ahash",
- "fluent-uri 0.4.1",
+ "fluent-uri",
  "getrandom 0.3.4",
  "hashbrown 0.16.1",
  "parking_lot",
@@ -7514,7 +7488,7 @@ dependencies = [
 name = "restate-base64-util"
 version = "1.8.0-dev"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "restate-workspace-hack",
 ]
 
@@ -7608,7 +7582,7 @@ dependencies = [
  "arc-swap",
  "arrow",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "chrono-humanize",
@@ -7617,7 +7591,7 @@ dependencies = [
  "cling",
  "comfy-table",
  "const_format",
- "convert_case",
+ "convert_case 0.12.0",
  "crossterm",
  "ctrlc",
  "dialoguer",
@@ -7633,7 +7607,7 @@ dependencies = [
  "indicatif",
  "indoc",
  "itertools 0.14.0",
- "json-patch 4.2.0",
+ "json-patch",
  "mnemonic",
  "mock-service-endpoint",
  "octocrab",
@@ -8026,7 +8000,7 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-msk-iam-sasl-signer",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bytes",
  "derive_more",
  "futures",
@@ -8158,7 +8132,7 @@ dependencies = [
  "futures",
  "http 1.5.0",
  "itertools 0.14.0",
- "nix 0.30.1",
+ "nix 0.31.3",
  "rand 0.10.2",
  "regex",
  "reqwest 0.12.28",
@@ -8475,7 +8449,7 @@ dependencies = [
  "googletest",
  "jiff",
  "metrics",
- "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "object_store 0.14.2",
  "parking_lot",
  "paste",
@@ -8524,7 +8498,7 @@ dependencies = [
  "bytestring",
  "derive_more",
  "downcast-rs",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "parking_lot",
  "restate-util-string",
  "restate-workspace-hack",
@@ -8643,7 +8617,7 @@ dependencies = [
  "aws-sigv4",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bs58",
  "bytes",
  "bytestring",
@@ -8725,7 +8699,7 @@ dependencies = [
  "http-body 1.1.0",
  "http-body-util",
  "itertools 0.14.0",
- "jsonptr 0.7.1",
+ "jsonptr 0.8.2",
  "paste",
  "prettyplease",
  "prost",
@@ -8922,7 +8896,7 @@ dependencies = [
  "anyhow",
  "arc-swap",
  "base62",
- "base64 0.22.1",
+ "base64 0.23.1",
  "bilrost",
  "bitflags 2.13.2",
  "bytes",
@@ -8948,7 +8922,7 @@ dependencies = [
  "http 1.5.0",
  "indexmap 2.14.2",
  "itertools 0.14.0",
- "jsonptr 0.7.1",
+ "jsonptr 0.8.2",
  "jsonschema",
  "listenfd",
  "moka",
@@ -9045,7 +9019,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "compact_str",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "metrics",
  "opentelemetry",
  "restate-util-string",
@@ -9091,7 +9065,7 @@ dependencies = [
  "derive_more",
  "enum-map",
  "gardal",
- "hashbrown 0.16.1",
+ "hashbrown 0.17.1",
  "itertools 0.14.0",
  "metrics",
  "pin-project",
@@ -9333,6 +9307,7 @@ dependencies = [
  "nom 7.1.3",
  "num",
  "num-bigint 0.4.8",
+ "num-bigint 0.5.1",
  "num-integer",
  "num-traits",
  "once_cell",
@@ -9426,7 +9401,7 @@ dependencies = [
  "googletest",
  "humantime",
  "itertools 0.14.0",
- "json-patch 2.0.0",
+ "json-patch",
  "prost-types",
  "rand 0.10.2",
  "restate-bifrost",
@@ -9501,9 +9476,9 @@ dependencies = [
 
 [[package]]
 name = "rstest"
-version = "0.26.1"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5a3193c063baaa2a95a33f03035c8a72b83d97a54916055ba22d35ed3839d49"
+checksum = "948203e6d13b83e51a90d7cf236dd58a0065f23f4b902f00f306e7eb2bd09b9c"
 dependencies = [
  "futures-timer",
  "futures-util",
@@ -9512,9 +9487,9 @@ dependencies = [
 
 [[package]]
 name = "rstest_macros"
-version = "0.26.1"
+version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c845311f0ff7951c5506121a9ad75aec44d083c31583b2ea5a30bcb0b0abba0"
+checksum = "a8d92eaf7b6e51e12471d71ddc72608e7151573de44099aacfbb1128177c0da4"
 dependencies = [
  "cfg-if",
  "glob",
