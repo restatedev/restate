@@ -19,7 +19,7 @@ restate-util-time = { workspace = true }
 bytes = { workspace = true }
 thiserror = { workspace = true }
 # Lua
-mlua = { version = "0.10.2", features = ["module", "macros", "lua54"] }
+mlua = { version = "0.12.1", features = ["module", "macros", "lua54"] }
 
 [lints]
 workspace = true
