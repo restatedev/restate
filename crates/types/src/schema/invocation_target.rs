@@ -18,7 +18,6 @@ use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use restate_encoding::RestateEncoding;
-use restate_util_bytecount::ByteCount;
 
 use crate::identifiers::DeploymentId;
 use crate::invocation::{
@@ -125,14 +124,12 @@ impl InvocationTargetMetadata {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Default)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
     pub inactivity_timeout: Option<Duration>,
-    /// Per-handler/service override for the eager state size limit.
-    /// `Some(ByteCount::ZERO)` means no eager state (equivalent to lazy state).
-    /// `None` means no per-handler override (use server default).
-    pub eager_state_size_limit: Option<ByteCount>,
+    /// State preload policy for this invocation.
+    pub state_preload_policy: StatePreloadPolicy,
 }
 
 // --- Input rules
@@ -420,6 +417,48 @@ impl FromStr for InputContentType {
     }
 }
 
+/// Eager/lazy state preload policy for an invocation.
+///
+/// This is both the resolved policy handed to the invoker and the per-handler state preload
+/// configuration persisted in the schema (see the schema metadata module).
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, bilrost::Message, bilrost::Oneof,
+)]
+#[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
+pub enum StatePreloadPolicy {
+    /// Preload all state eagerly (up to the invoker's eager state size limit).
+    #[default]
+    All,
+    /// Preload only these exact state keys (best-effort, capped by the invoker's eager state size
+    /// limit); everything else is served on demand. An empty list means fully lazy state.
+    #[bilrost(tag = 1, message)]
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = Vec<String>))]
+    Partial(Vec<ByteString>),
+}
+
+impl StatePreloadPolicy {
+    pub fn preload_any_state(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Partial(eager_keys) => !eager_keys.is_empty(),
+        }
+    }
+
+    pub fn lazy() -> Self {
+        StatePreloadPolicy::Partial(Default::default())
+    }
+}
+
+impl fmt::Display for StatePreloadPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "eager"),
+            Self::Partial(keys) if keys.is_empty() => write!(f, "lazy"),
+            Self::Partial(keys) => write!(f, "partial ({})", keys.iter().join(", ")),
+        }
+    }
+}
+
 // --- Output rules
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, bilrost::Message)]
@@ -583,7 +622,11 @@ pub mod test_util {
         ) -> Option<InvocationAttemptOptions> {
             self.0.get(service_name.as_ref()).and_then(|c| {
                 c.1.get(handler_name.as_ref())
-                    .map(|_| InvocationAttemptOptions::default())
+                    .map(|_| InvocationAttemptOptions {
+                        abort_timeout: None,
+                        inactivity_timeout: None,
+                        state_preload_policy: StatePreloadPolicy::All,
+                    })
             })
         }
 

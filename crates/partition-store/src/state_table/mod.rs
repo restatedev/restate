@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::Stream;
 use futures_util::stream;
@@ -31,7 +31,7 @@ use restate_util_string::ReString;
 
 use crate::TableKind::State;
 use crate::features::StorageFeatures;
-use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -332,7 +332,26 @@ impl ReadStateTable for PartitionStore {
     > {
         self.assert_partition_key(service_id)?;
         let iter = get_all_user_states_for_service(self, self.storage_features(), service_id)?;
-        Ok(budgeted_state_stream(iter, budget))
+        Ok(BudgetedStateStream::new(iter, budget))
+    }
+
+    fn get_user_states_budgeted<'a>(
+        &'a mut self,
+        service_id: &ServiceId,
+        keys: &[ByteString],
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let features = self.storage_features();
+        Ok(BudgetedStateStream::new(
+            PointReadStateSource::new(self, features, service_id, keys),
+            budget,
+        ))
     }
 }
 
@@ -436,7 +455,26 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     > {
         self.assert_partition_key(service_id)?;
         let iter = get_all_user_states_for_service(self, self.storage_features(), service_id)?;
-        Ok(budgeted_state_stream(iter, budget))
+        Ok(BudgetedStateStream::new(iter, budget))
+    }
+
+    fn get_user_states_budgeted<'a>(
+        &'a mut self,
+        service_id: &ServiceId,
+        keys: &[ByteString],
+        budget: &'a mut LocalMemoryPool,
+    ) -> Result<
+        impl PinnableMemoryStream<
+            Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>,
+        > + Send
+        + 'a,
+    > {
+        self.assert_partition_key(service_id)?;
+        let features = self.storage_features();
+        Ok(BudgetedStateStream::new(
+            PointReadStateSource::new(self, features, service_id, keys),
+            budget,
+        ))
     }
 }
 
@@ -482,8 +520,8 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
 /// is stashed and the stream waits for an [`AvailabilityNotified`] signal,
 /// then retries.
 #[pin_project::pin_project]
-struct BudgetedStateStream<'a, DB: DBAccess> {
-    iter: StateEntryIter<'a, DB>,
+struct BudgetedStateStream<'a, S> {
+    source: S,
     budget: &'a mut LocalMemoryPool,
     /// Memory the caller has accumulated (merged) that won't be released
     /// until the caller's operation completes.
@@ -497,6 +535,20 @@ struct BudgetedStateStream<'a, DB: DBAccess> {
     notified: Option<AvailabilityNotified>,
 }
 
+impl<'a, S> BudgetedStateStream<'a, S> {
+    fn new(source: S, budget: &'a mut LocalMemoryPool) -> Self {
+        let lease = budget.empty_lease();
+        Self {
+            source,
+            budget,
+            pinned: 0,
+            lease,
+            pending_deficit: 0,
+            notified: None,
+        }
+    }
+}
+
 /// Result of a synchronous attempt to produce the next state entry.
 enum TryProduce {
     /// Entry decoded and lease split off. Ready to yield.
@@ -507,18 +559,26 @@ enum TryProduce {
     NeedsBudget(usize),
 }
 
-impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
+trait BudgetedStateSource {
     /// Try to peek, reserve, decode, and split a lease for the next entry.
     ///
     /// On success the entry's lease is split from `lease`, which retains any
     /// leftover capacity for the next iteration (avoiding a round-trip to the
     /// global pool).
     fn try_produce_next(
-        iter: &mut StateEntryIter<'_, DB>,
+        &mut self,
+        budget: &mut LocalMemoryPool,
+        lease: &mut LocalMemoryLease,
+    ) -> TryProduce;
+}
+
+impl<DB: DBAccess> BudgetedStateSource for StateEntryIter<'_, DB> {
+    fn try_produce_next(
+        &mut self,
         budget: &mut LocalMemoryPool,
         lease: &mut LocalMemoryLease,
     ) -> TryProduce {
-        let (k, v) = match iter.peek_item() {
+        let (k, v) = match self.peek_item() {
             Some(Ok(item)) => item,
             Some(Err(e)) => return TryProduce::Ready(Err(e.into())),
             None => return TryProduce::Exhausted,
@@ -530,7 +590,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
         if raw_size <= lease.size() {
             // Decode copies data out of the iterator, releasing the borrow.
             let result = decode_user_state_key_value(k, v);
-            iter.advance();
+            self.advance();
             return TryProduce::Ready(
                 result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
@@ -543,7 +603,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
         if let Some(extra) = budget.try_reserve(deficit) {
             lease.merge(extra);
             let result = decode_user_state_key_value(k, v);
-            iter.advance();
+            self.advance();
             return TryProduce::Ready(
                 result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
@@ -555,7 +615,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
     }
 }
 
-impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
+impl<S: BudgetedStateSource + Send> Stream for BudgetedStateStream<'_, S> {
     type Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -605,7 +665,7 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
             }
 
             // Try the synchronous fast path.
-            match Self::try_produce_next(this.iter, this.budget, this.lease) {
+            match this.source.try_produce_next(this.budget, this.lease) {
                 TryProduce::Exhausted => return Poll::Ready(None),
                 TryProduce::Ready(result) => return Poll::Ready(Some(result)),
                 TryProduce::NeedsBudget(deficit) => {
@@ -617,7 +677,7 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
     }
 }
 
-impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
+impl<S: BudgetedStateSource + Send> PinnableMemoryStream for BudgetedStateStream<'_, S> {
     fn pin_memory(self: Pin<&mut Self>, amount: usize) {
         let this = self.project();
         *this.pinned = this.pinned.saturating_add(amount);
@@ -629,19 +689,107 @@ impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
     }
 }
 
-fn budgeted_state_stream<'a, DB: DBAccess + Send>(
-    iter: StateEntryIter<'a, DB>,
-    budget: &'a mut LocalMemoryPool,
-) -> BudgetedStateStream<'a, DB> {
-    let lease = budget.empty_lease();
-    BudgetedStateStream {
-        iter,
-        budget,
-        pinned: 0,
-        lease,
-        pending_deficit: 0,
-        notified: None,
+/// Reads only the requested keys, on demand, without opening a service-prefix scan.
+struct PointReadStateSource<'a, S> {
+    storage: &'a mut S,
+    storage_features: StorageFeatures,
+    service_id: ServiceId,
+    keys: std::vec::IntoIter<ByteString>,
+}
+
+impl<'a, S> PointReadStateSource<'a, S> {
+    fn new(
+        storage: &'a mut S,
+        storage_features: StorageFeatures,
+        service_id: &ServiceId,
+        keys: &[ByteString],
+    ) -> Self {
+        // Own the key list so the stream does not borrow the caller's policy.
+        let keys = keys.to_vec();
+        Self {
+            storage,
+            storage_features,
+            service_id: service_id.clone(),
+            keys: keys.into_iter(),
+        }
     }
+}
+
+impl<S: StorageAccess> BudgetedStateSource for PointReadStateSource<'_, S> {
+    fn try_produce_next(
+        &mut self,
+        budget: &mut LocalMemoryPool,
+        lease: &mut LocalMemoryLease,
+    ) -> TryProduce {
+        let _x = RocksDbReadPerfGuard::new("get-user-states-budgeted-point-read");
+        while let Some(state_key) = self.keys.as_slice().first() {
+            let encoded = encode_user_state_key(
+                self.storage_features,
+                &self.service_id,
+                state_key.as_bytes(),
+            );
+            let value = match self.storage.get(State, &encoded) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    self.keys.next();
+                    continue;
+                }
+                Err(err) => return TryProduce::Ready(Err(err.into())),
+            };
+            let raw_size = state_key.len() + value.len();
+            if raw_size > lease.size() {
+                let deficit = raw_size - lease.size();
+                let Some(extra) = budget.try_reserve(deficit) else {
+                    // Drop the pinned slice before waiting. Retry the same key and
+                    // recheck its size after obtaining budget, as point reads without
+                    // repeatable-read isolation can observe a changed value.
+                    return TryProduce::NeedsBudget(deficit);
+                };
+                lease.merge(extra);
+            }
+            let entry = (
+                state_key.as_bytes().clone(),
+                Bytes::copy_from_slice(value.as_ref()),
+                lease.split(raw_size),
+            );
+            self.keys.next();
+            return TryProduce::Ready(Ok(entry));
+        }
+        TryProduce::Exhausted
+    }
+}
+
+/// Serializes the full storage key for `state_key` exactly as it is stored, so
+/// it can be used as a point-lookup key against the state table.
+fn encode_user_state_key(
+    storage_features: StorageFeatures,
+    service_id: &ServiceId,
+    state_key: &Bytes,
+) -> Bytes {
+    let mut buf = BytesMut::new();
+    if use_scoped_state(storage_features, service_id) {
+        //todo(tillrohrmann) remove once ServiceId carries the right types
+        let service_name = ServiceName::new(service_id.service_name.as_ref());
+        let service_key = ReString::new(&service_id.key);
+        let partition_key = service_id.partition_key();
+
+        let key = ScopedStateKeyRef::builder()
+            .partition_key(&partition_key)
+            .scope(&service_id.scope)
+            .service_name(&service_name)
+            .service_key(&service_key)
+            .state_key(state_key)
+            .into_complete()
+            .expect("key to be complete");
+
+        buf.reserve(key.serialized_length());
+        key.serialize_to(&mut buf);
+    } else {
+        let key = write_state_entry_key(service_id, state_key);
+        buf.reserve(key.serialized_length());
+        key.serialize_to(&mut buf);
+    }
+    buf.freeze()
 }
 
 fn decode_user_state_key_value(k: &[u8], v: &[u8]) -> Result<(Bytes, Bytes)> {

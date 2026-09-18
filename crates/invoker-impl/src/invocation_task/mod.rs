@@ -11,6 +11,7 @@
 mod retry_after;
 mod service_protocol_runner_v4;
 
+use std::cmp;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -40,7 +41,9 @@ use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{
+    InvocationAttemptOptions, InvocationTargetResolver, StatePreloadPolicy,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
@@ -87,14 +90,11 @@ const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
-/// Collects state entries from an [`EagerState`] stream, respecting a size limit.
+/// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
 ///
-/// Returns a tuple of `(is_partial, entries, memory_lease)` where:
-/// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
-/// - `entries` contains the collected and mapped key-value bytes
-/// - `memory_lease` represents the memory that entries occupy
-///
-/// If the first entry already exceeds the size limit, then an empty entries [`Vec`] is returned.
+/// Returns `(is_partial, entries, memory_lease)`. `is_partial` is true if the source was already
+/// partial or the size limit truncated collection. If the first entry alone exceeds the limit,
+/// `entries` is empty.
 async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
@@ -348,7 +348,8 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
-            eager_state_size_limit,
+            // Make sure eager_state_size_limit is capped to message size limit
+            eager_state_size_limit: cmp::min(eager_state_size_limit, message_size_limit.get()),
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
@@ -508,7 +509,11 @@ where
                 self.invocation_target.service_name(),
                 self.invocation_target.handler_name(),
             )
-            .unwrap_or_default();
+            .unwrap_or(InvocationAttemptOptions {
+                abort_timeout: None,
+                inactivity_timeout: None,
+                state_preload_policy: StatePreloadPolicy::All,
+            });
 
         // Override the inactivity timeout and abort timeout, if available
         if let Some(inactivity_timeout) = invocation_attempt_options.inactivity_timeout {
@@ -526,29 +531,20 @@ where
             )));
         }
 
-        // Resolve the effective eager state size limit:
-        // Per-handler/service override takes precedence over server-level config.
-        // 0 means "disable eager state", non-zero values are clamped to the message size limit.
-        if let Some(limit) = invocation_attempt_options.eager_state_size_limit {
-            let limit = limit.as_usize();
-            self.eager_state_size_limit = limit.min(self.message_size_limit.get());
-        }
-
-        // Determine if we need to read state (0 means lazy state / no eager state)
-        let keyed_service_id = if self.invocation_target.as_keyed_service_id().is_some()
-            && self.eager_state_size_limit > 0
-        {
-            self.invocation_target.as_keyed_service_id()
-        } else {
-            None
-        };
+        // The eager state size limit (a memory safety cap) always applies and comes solely from
+        // the server config; the per-handler/service config only carries the eager/lazy *policy*.
+        let state_preload_policy = invocation_attempt_options.state_preload_policy;
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
             deployment_changed,
         ));
 
-        // Protocol runner for service protocol v4+
+        // Protocol runner for service protocol v4+. Preload state upfront only when the policy asks
+        // for it and the memory cap allows it.
+        let state_read = (state_preload_policy.preload_any_state()
+            && self.eager_state_size_limit > 0)
+            .then_some(state_preload_policy);
         let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
             self,
             chosen_service_protocol_version,
@@ -559,7 +555,7 @@ where
             .run(
                 txn,
                 journal_metadata,
-                keyed_service_id,
+                state_read,
                 deployment,
                 reader_for_bidi,
                 invocation_budget,

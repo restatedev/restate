@@ -66,8 +66,9 @@ pub(super) const ABORT_TIMEOUT: &str = indoc! {
 
     This overrides the default abort timeout set in invoker options."
 };
-pub(super) const ENABLE_LAZY_STATE: &str = indoc! {
-    "If true, lazy state will be enabled for all invocations to this service.
+pub(super) const STATE_PRELOAD_POLICY: &str = indoc! {
+    "Which state is preloaded (sent eagerly) at the start of an invocation:
+    'eager' preloads all state, 'lazy' preloads none, 'selective (...)' preloads only the listed keys.
     This is relevant only for Workflows and Virtual Objects."
 };
 pub(super) const RETRY_POLICY: &str = indoc! {
@@ -153,9 +154,12 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     c_println!();
 
     let mut table = Table::new_styled();
-    table.add_kv_row("Enable lazy state:", service.enable_lazy_state);
+    table.add_kv_row(
+        "State preload policy:",
+        service.state_preload_policy.to_string(),
+    );
     c_println!("{table}");
-    c_tip!("{}", ENABLE_LAZY_STATE);
+    c_tip!("{}", STATE_PRELOAD_POLICY);
     c_println!();
 
     let mut table = Table::new_styled();
@@ -198,7 +202,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
             || handler.journal_retention.is_some()
             || handler.inactivity_timeout.is_some()
             || handler.abort_timeout.is_some()
-            || handler.enable_lazy_state.is_some()
+            || handler.state_preload_policy.is_some()
             || handler.public != service.public
             || !is_retry_policy_empty(&handler.retry_policy);
 
@@ -228,8 +232,8 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
                 table.add_kv_row("  Abort timeout:", abort_timeout.friendly());
             }
 
-            if let Some(enable_lazy_state) = handler.enable_lazy_state {
-                table.add_kv_row("  Enable lazy state:", enable_lazy_state);
+            if let Some(state_preload_policy) = &handler.state_preload_policy {
+                table.add_kv_row("  State preload policy:", state_preload_policy.to_string());
             }
 
             if handler.public != service.public {

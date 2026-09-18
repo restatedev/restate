@@ -18,6 +18,7 @@ use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::CommandIndex;
+use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
@@ -111,8 +112,9 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
     }
 
     fn read_state_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         _service_id: &ServiceId,
+        _eager_state_config: &StatePreloadPolicy,
         _budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
