@@ -42,7 +42,8 @@ use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
 use super::tracing::prepare_tracing_span;
 use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
-use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
+use crate::handler::is_reserved_header_name;
+use crate::handler::responses::X_RESTATE_ID;
 use crate::metric_definitions::{
     INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED, REQUEST_ERROR,
     REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR,
@@ -387,15 +388,7 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
             continue;
         };
 
-        if k == header::CONNECTION
-            || k == header::HOST
-            || k == IDEMPOTENCY_KEY
-            || k == IDEMPOTENCY_EXPIRES
-            // Drop any client-supplied `x-restate-*` header. This namespace is
-            // reserved for the ingress (e.g. `x-restate-ingress-path` set above);
-            // forwarding client values would let callers spoof it.
-            || k.as_str().starts_with("x-restate-")
-        {
+        if is_reserved_header_name(&k) {
             continue;
         }
 

@@ -13,6 +13,7 @@ use http::StatusCode;
 use tracing::warn;
 
 use restate_core::network::TransportConnect;
+use restate_ingestion_client::Ingestion;
 use restate_types::identifiers::PartitionKey;
 use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::vqueues::VQueueId;
