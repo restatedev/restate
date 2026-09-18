@@ -59,7 +59,6 @@ impl<'a, TSchemas, TStorage> RpcHandler<PauseRequest> for RpcContext<'a, TSchema
 mod tests {
     use std::assert_matches;
 
-    use assert2::let_assert;
     use restate_wal_protocol::v2::commands;
     use test_log::test;
 
@@ -108,7 +107,7 @@ mod tests {
         let (keys, pause, reply_on) =
             decision.extract_as_rpc_proposal::<commands::PauseInvocationCommand>();
 
-        let_assert!(
+        assert2::assert!(let
             ReplyOn::ApplyAndFence {
                 request_id: actual_request_id,
                 invocation_id: actual_invocation_id,

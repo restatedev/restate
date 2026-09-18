@@ -825,13 +825,11 @@ impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
 pub mod test_util {
     use super::*;
 
-    use assert2::let_assert;
-
     pub struct OneshotRxMock<O>(oneshot::Receiver<ReplyEnvelope>, PhantomData<O>);
 
     impl<O: WireDecode> OneshotRxMock<O> {
         pub async fn recv(self) -> O {
-            let_assert!(
+            assert2::assert!(let
                 Ok(ReplyEnvelope {
                     body: rpc_reply::Body::Payload(buf),
                     ..

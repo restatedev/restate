@@ -11,7 +11,6 @@
 use std::fmt::Debug;
 use std::str::FromStr;
 
-use assert2::let_assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
@@ -732,7 +731,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         name,
                         ..
                     } = decode_or_bail!(cmd.serialized_content(), CallCommandMessage);
-                    let_assert!(
+                    assert2::assert!(let
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
@@ -770,7 +769,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         name,
                         ..
                     } = decode_or_bail!(cmd.serialized_content(), OneWayCallCommandMessage);
-                    let_assert!(
+                    assert2::assert!(let
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
@@ -1185,7 +1184,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         name,
                         ..
                     } = decode_or_bail!(cmd.serialized_content(), CallCommandMessage);
-                    let_assert!(
+                    assert2::assert!(let
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );
@@ -1205,7 +1204,7 @@ impl Decoder for ServiceProtocolV4Codec {
                         name,
                         ..
                     } = decode_or_bail!(cmd.serialized_content(), OneWayCallCommandMessage);
-                    let_assert!(
+                    assert2::assert!(let
                         RawCommandSpecificMetadata::CallOrSend(metadata) =
                             cmd.command_specific_metadata()
                     );

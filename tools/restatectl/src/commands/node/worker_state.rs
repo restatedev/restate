@@ -11,7 +11,6 @@
 use std::collections::HashMap;
 
 use anyhow::bail;
-use assert2::let_assert;
 use cling::prelude::*;
 
 use restate_cli_util::{CliContext, c_println};
@@ -91,7 +90,7 @@ async fn set_worker_state(connection: &ConnectionInfo, opts: &SetOpts) -> anyhow
     if !opts.force && opts.worker_state != WorkerState::Active {
         // check whether we can still create new replica sets
         let partition_table = connection.get_partition_table().await?;
-        let_assert!(
+        assert2::assert!(let
             PartitionReplication::Limit(partition_replication) = partition_table.replication(),
             "Partition table replication is not a limit, but {:?}. This is not supported for worker-state changes",
             partition_table.replication()

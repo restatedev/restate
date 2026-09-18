@@ -68,7 +68,6 @@ mod tests {
     use super::*;
 
     use googletest::prelude::*;
-    use restate_test_util::let_assert;
     use test_log::test;
 
     async fn handle(
@@ -94,7 +93,7 @@ mod tests {
                 .extract_as_rpc_proposal::<commands::InvokeCommand>();
 
         let service_invocation: ServiceInvocation = service_invocation_command.into();
-        let_assert!(ReplyOn::Commit { response } = reply_on);
+        restate_test_util::assert!(let ReplyOn::Commit { response } = reply_on);
 
         assert_eq!(response, PartitionProcessorRpcResponse::Appended);
         assert_that!(
@@ -116,7 +115,7 @@ mod tests {
                 .extract_as_rpc_proposal::<commands::InvokeCommand>();
 
         let service_invocation: ServiceInvocation = service_invocation_command.into();
-        let_assert!(
+        restate_test_util::assert!(let
             ReplyOn::Apply {
                 request_id: actual_request_id
             } = reply_on
@@ -145,7 +144,7 @@ mod tests {
                 .extract_as_rpc_proposal::<commands::InvokeCommand>();
 
         let service_invocation: ServiceInvocation = service_invocation_command.into();
-        let_assert!(
+        restate_test_util::assert!(let
             ReplyOn::Apply {
                 request_id: actual_request_id
             } = reply_on
