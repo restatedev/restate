@@ -47,7 +47,7 @@ hyper-util = { workspace = true, features = ["client-legacy", "client-proxy"] }
 jsonwebtoken = { workspace = true }
 moka = { workspace = true, features = ["future"] }
 parking_lot = { workspace = true }
-pem = { version = "3.0.6" }
+pem = { version = "4.0.0" }
 pin-project = { workspace = true }
 metrics = { workspace = true }
 ring = { version = "0.17.14" }
