@@ -193,12 +193,15 @@ pub trait InvocationReaderTransaction {
 
     /// Budget-gated state loading stream.
     ///
-    /// Delegates to the storage-api `get_all_user_states_budgeted` trait method
-    /// which peeks each state entry's raw byte size from RocksDB, acquires a
-    /// [`LocalMemoryLease`] from `budget` for that size *before* the entry is
-    /// decoded, then decodes and yields the key-value pair together with its lease.
+    /// Delegates to the storage-api budgeted state reads, acquiring a
+    /// [`LocalMemoryLease`] *before* copying each value. Waits for reclaimable
+    /// memory when feasible and yields a budget error otherwise.
+    ///
+    /// The exclusive borrow allows lazy point-read streams to remain `Send`
+    /// even when the underlying storage transaction is not `Sync`; see
+    /// `ReadStateTable::get_user_states_budgeted` for the storage-side constraint.
     fn read_state_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         service_id: &ServiceId,
         eager_state_config: &StatePreloadPolicy,
         budget: &'a mut LocalMemoryPool,

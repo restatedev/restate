@@ -50,19 +50,25 @@ pub trait ReadStateTable {
 
     /// Budget-gated point reads of a specific set of state keys.
     ///
-    /// Point-reads the requested `keys` (exact match) up front, omitting keys
-    /// with no stored value, and returns them as an already-materialized stream
-    /// that owns its data (no borrow on the store, no full-service scan). Each
-    /// entry's [`LocalMemoryLease`] is reserved from `budget` **before** its
-    /// value is copied out, so preloaded memory is fully accounted.
+    /// Point-reads the requested `keys` (exact match) when polled, omitting keys
+    /// with no stored value. The stream borrows `self` and `budget`, but owns
+    /// its service ID and keys. Each entry's [`LocalMemoryLease`] is acquired
+    /// **before** its value is copied out.
     ///
-    /// Unlike [`get_all_user_states_budgeted`], preloading runs synchronously and
-    /// cannot wait for budget: if a reservation fails, preloading stops and the
-    /// remaining keys are left to be served lazily on demand.
+    /// Like [`get_all_user_states_budgeted`], waits for reclaimable memory when
+    /// a reservation is feasible, and returns a budget error otherwise.
+    /// Storage and budget errors are yielded through the stream.
     ///
     /// [`get_all_user_states_budgeted`]: Self::get_all_user_states_budgeted
+    // The lazy stream retains a storage borrow and must be Send. The partition
+    // store's transaction contains a WriteBatchWithIndex, which is Send but not
+    // Sync: an exclusive borrow keeps the stream Send, while a shared borrow
+    // would require Sync.
+    // TODO: Introduce a snapshot-backed read-only transaction, or spawn invocation
+    //  tasks as local tasks and relax the stream's Send requirement, so this API
+    //  can use a shared borrow.
     fn get_user_states_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         service_id: &ServiceId,
         keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,

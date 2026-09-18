@@ -19,8 +19,7 @@ use futures_util::stream;
 use rocksdb::{DBAccess, DBRawIteratorWithThreadMode};
 
 use restate_memory::{
-    AvailabilityNotified, IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool,
-    PinnableMemoryStream,
+    AvailabilityNotified, LocalMemoryLease, LocalMemoryPool, PinnableMemoryStream,
 };
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::state_table::{ReadStateTable, ScanStateTable, WriteStateTable};
@@ -337,7 +336,7 @@ impl ReadStateTable for PartitionStore {
     }
 
     fn get_user_states_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         service_id: &ServiceId,
         keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,
@@ -348,13 +347,11 @@ impl ReadStateTable for PartitionStore {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let preloaded =
-            preload_user_states(self, self.storage_features(), service_id, keys, budget)?;
-        // The entries are already leased, so the stream never waits on the budget:
-        // pin/unpin tracking is unnecessary.
-        Ok(IgnorePinnableMemoryStream::new(stream::iter(
-            preloaded.into_iter().map(Ok::<_, BudgetedReadError>),
-        )))
+        let features = self.storage_features();
+        Ok(BudgetedStateStream::new(
+            PointReadStateSource::new(self, features, service_id, keys),
+            budget,
+        ))
     }
 }
 
@@ -462,7 +459,7 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
     }
 
     fn get_user_states_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         service_id: &ServiceId,
         keys: &[ByteString],
         budget: &'a mut LocalMemoryPool,
@@ -473,13 +470,11 @@ impl ReadStateTable for PartitionStoreTransaction<'_> {
         + 'a,
     > {
         self.assert_partition_key(service_id)?;
-        let preloaded =
-            preload_user_states(self, self.storage_features(), service_id, keys, budget)?;
-        // The entries are already leased, so the stream never waits on the budget:
-        // pin/unpin tracking is unnecessary.
-        Ok(IgnorePinnableMemoryStream::new(stream::iter(
-            preloaded.into_iter().map(Ok::<_, BudgetedReadError>),
-        )))
+        let features = self.storage_features();
+        Ok(BudgetedStateStream::new(
+            PointReadStateSource::new(self, features, service_id, keys),
+            budget,
+        ))
     }
 }
 
@@ -525,8 +520,8 @@ impl WriteStateTable for PartitionStoreTransaction<'_> {
 /// is stashed and the stream waits for an [`AvailabilityNotified`] signal,
 /// then retries.
 #[pin_project::pin_project]
-struct BudgetedStateStream<'a, DB: DBAccess> {
-    iter: StateEntryIter<'a, DB>,
+struct BudgetedStateStream<'a, S> {
+    source: S,
     budget: &'a mut LocalMemoryPool,
     /// Memory the caller has accumulated (merged) that won't be released
     /// until the caller's operation completes.
@@ -540,11 +535,11 @@ struct BudgetedStateStream<'a, DB: DBAccess> {
     notified: Option<AvailabilityNotified>,
 }
 
-impl<'a, DB: DBAccess> BudgetedStateStream<'a, DB> {
-    fn new(iter: StateEntryIter<'a, DB>, budget: &'a mut LocalMemoryPool) -> Self {
+impl<'a, S> BudgetedStateStream<'a, S> {
+    fn new(source: S, budget: &'a mut LocalMemoryPool) -> Self {
         let lease = budget.empty_lease();
         Self {
-            iter,
+            source,
             budget,
             pinned: 0,
             lease,
@@ -564,18 +559,26 @@ enum TryProduce {
     NeedsBudget(usize),
 }
 
-impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
+trait BudgetedStateSource {
     /// Try to peek, reserve, decode, and split a lease for the next entry.
     ///
     /// On success the entry's lease is split from `lease`, which retains any
     /// leftover capacity for the next iteration (avoiding a round-trip to the
     /// global pool).
     fn try_produce_next(
-        iter: &mut StateEntryIter<'_, DB>,
+        &mut self,
+        budget: &mut LocalMemoryPool,
+        lease: &mut LocalMemoryLease,
+    ) -> TryProduce;
+}
+
+impl<DB: DBAccess> BudgetedStateSource for StateEntryIter<'_, DB> {
+    fn try_produce_next(
+        &mut self,
         budget: &mut LocalMemoryPool,
         lease: &mut LocalMemoryLease,
     ) -> TryProduce {
-        let (k, v) = match iter.peek_item() {
+        let (k, v) = match self.peek_item() {
             Some(Ok(item)) => item,
             Some(Err(e)) => return TryProduce::Ready(Err(e.into())),
             None => return TryProduce::Exhausted,
@@ -587,7 +590,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
         if raw_size <= lease.size() {
             // Decode copies data out of the iterator, releasing the borrow.
             let result = decode_user_state_key_value(k, v);
-            iter.advance();
+            self.advance();
             return TryProduce::Ready(
                 result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
@@ -600,7 +603,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
         if let Some(extra) = budget.try_reserve(deficit) {
             lease.merge(extra);
             let result = decode_user_state_key_value(k, v);
-            iter.advance();
+            self.advance();
             return TryProduce::Ready(
                 result
                     .map(|(key, value)| (key, value, lease.split(raw_size)))
@@ -612,7 +615,7 @@ impl<DB: DBAccess + Send> BudgetedStateStream<'_, DB> {
     }
 }
 
-impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
+impl<S: BudgetedStateSource + Send> Stream for BudgetedStateStream<'_, S> {
     type Item = std::result::Result<(Bytes, Bytes, LocalMemoryLease), BudgetedReadError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -662,7 +665,7 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
             }
 
             // Try the synchronous fast path.
-            match Self::try_produce_next(this.iter, this.budget, this.lease) {
+            match this.source.try_produce_next(this.budget, this.lease) {
                 TryProduce::Exhausted => return Poll::Ready(None),
                 TryProduce::Ready(result) => return Poll::Ready(Some(result)),
                 TryProduce::NeedsBudget(deficit) => {
@@ -674,7 +677,7 @@ impl<DB: DBAccess + Send> Stream for BudgetedStateStream<'_, DB> {
     }
 }
 
-impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
+impl<S: BudgetedStateSource + Send> PinnableMemoryStream for BudgetedStateStream<'_, S> {
     fn pin_memory(self: Pin<&mut Self>, amount: usize) {
         let this = self.project();
         *this.pinned = this.pinned.saturating_add(amount);
@@ -686,46 +689,74 @@ impl<DB: DBAccess + Send> PinnableMemoryStream for BudgetedStateStream<'_, DB> {
     }
 }
 
-/// Point-reads the requested `keys` for `service_id`, preloading each present
-/// entry into an owned `(state_key, value)` pair together with a
-/// [`LocalMemoryLease`] covering its size. Absent keys are skipped.
-///
-/// Used to build the always-eager whitelist for lazy state: it issues one point
-/// lookup per key instead of opening a full service-prefix scan.
-///
-/// Budget: the lease for an entry is reserved from `budget` **before** the value
-/// is copied out of the store, so preloaded memory is fully accounted. Because
-/// this runs in a synchronous context it cannot wait for budget to free up: if a
-/// reservation fails, preloading stops and the remaining keys are simply served
-/// lazily on demand (this is a lazy default, so that path always exists).
-fn preload_user_states<S: StorageAccess>(
-    storage: &S,
+/// Reads only the requested keys, on demand, without opening a service-prefix scan.
+struct PointReadStateSource<'a, S> {
+    storage: &'a mut S,
     storage_features: StorageFeatures,
-    service_id: &ServiceId,
-    keys: &[ByteString],
-    budget: &mut LocalMemoryPool,
-) -> Result<Vec<(Bytes, Bytes, LocalMemoryLease)>> {
-    let _x = RocksDbReadPerfGuard::new("preload-user-states");
-    let mut preloaded = Vec::with_capacity(keys.len());
-    // TODO this function could use MultiGet feature from rocksdb
-    for state_key in keys {
-        let encoded = encode_user_state_key(storage_features, service_id, state_key.as_bytes());
-        let Some(value) = storage.get(State, &encoded)? else {
-            continue;
-        };
-        let value = value.as_ref();
-        // Reserve before materializing the owned copy. On failure, stop: the rest
-        // is served lazily rather than allocated off-budget.
-        let Some(lease) = budget.try_reserve(state_key.len() + value.len()) else {
-            break;
-        };
-        preloaded.push((
-            state_key.as_bytes().clone(),
-            Bytes::copy_from_slice(value),
-            lease,
-        ));
+    service_id: ServiceId,
+    keys: std::vec::IntoIter<ByteString>,
+}
+
+impl<'a, S> PointReadStateSource<'a, S> {
+    fn new(
+        storage: &'a mut S,
+        storage_features: StorageFeatures,
+        service_id: &ServiceId,
+        keys: &[ByteString],
+    ) -> Self {
+        // Own the key list so the stream does not borrow the caller's policy.
+        let keys = keys.to_vec();
+        Self {
+            storage,
+            storage_features,
+            service_id: service_id.clone(),
+            keys: keys.into_iter(),
+        }
     }
-    Ok(preloaded)
+}
+
+impl<S: StorageAccess> BudgetedStateSource for PointReadStateSource<'_, S> {
+    fn try_produce_next(
+        &mut self,
+        budget: &mut LocalMemoryPool,
+        lease: &mut LocalMemoryLease,
+    ) -> TryProduce {
+        let _x = RocksDbReadPerfGuard::new("get-user-states-budgeted-point-read");
+        while let Some(state_key) = self.keys.as_slice().first() {
+            let encoded = encode_user_state_key(
+                self.storage_features,
+                &self.service_id,
+                state_key.as_bytes(),
+            );
+            let value = match self.storage.get(State, &encoded) {
+                Ok(Some(value)) => value,
+                Ok(None) => {
+                    self.keys.next();
+                    continue;
+                }
+                Err(err) => return TryProduce::Ready(Err(err.into())),
+            };
+            let raw_size = state_key.len() + value.len();
+            if raw_size > lease.size() {
+                let deficit = raw_size - lease.size();
+                let Some(extra) = budget.try_reserve(deficit) else {
+                    // Drop the pinned slice before waiting. Retry the same key and
+                    // recheck its size after obtaining budget, as point reads without
+                    // repeatable-read isolation can observe a changed value.
+                    return TryProduce::NeedsBudget(deficit);
+                };
+                lease.merge(extra);
+            }
+            let entry = (
+                state_key.as_bytes().clone(),
+                Bytes::copy_from_slice(value.as_ref()),
+                lease.split(raw_size),
+            );
+            self.keys.next();
+            return TryProduce::Ready(Ok(entry));
+        }
+        TryProduce::Exhausted
+    }
 }
 
 /// Serializes the full storage key for `state_key` exactly as it is stored, so

@@ -32,7 +32,11 @@ whitelist allows preloading those specific keys without giving up the lazy defau
   always applies. `alwaysEagerStateKeys` is therefore **best-effort**: an entry that does not fit
   the cap is not preloaded and is served lazily instead (the START message is marked partial).
 - Under a lazy default, the whitelist is served via exact point lookups for just those keys, so
-  the object's full state is not scanned.
+  the object's full state is not scanned. Entries are read on demand while building the START
+  message, avoiding reads of the remaining keys once the eager state size limit is reached.
+- Whitelisted entries use the same memory-budget handling as full eager state loading: reads
+  wait for reclaimable memory when the reservation is feasible and report memory exhaustion
+  otherwise, rather than silently omitting the remaining keys on a failed reservation.
 
 ### Impact on Users
 
