@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use assert2::let_assert;
-
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::InFlightInvocationMetadata;
@@ -49,8 +47,8 @@ where
             .await?
             {
                 // Extract the old entry, it must be an input entry!
-                let_assert!(journal_table_v1::JournalEntry::Entry(old_entry) = old_journal_entry);
-                let_assert!(
+                assert2::assert!(let journal_table_v1::JournalEntry::Entry(old_entry) = old_journal_entry);
+                assert2::assert!(let
                     journal_v1::Entry::Input(journal_v1::InputEntry { headers, value }) =
                         old_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                 );

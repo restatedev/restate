@@ -28,7 +28,7 @@ macro_rules! assert_no_recv {
 }
 
 // A couple of useful re-exports
-pub use assert2::{assert, check, let_assert};
+pub use assert2::{assert, check};
 pub use pretty_assertions::{assert_eq, assert_ne};
 
 pub mod matchers;

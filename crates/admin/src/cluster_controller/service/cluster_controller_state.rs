@@ -10,7 +10,6 @@
 
 use std::mem;
 
-use assert2::let_assert;
 use futures::future::OptionFuture;
 use itertools::Itertools;
 use tokio::sync::mpsc;
@@ -72,7 +71,7 @@ impl ClusterControllerState {
                     "Cluster controller switching to follower mode, I think the leader is {}",
                     maybe_leader.expect("a leader must be identified"),
                 );
-                let_assert!(
+                assert2::assert!(let
                     ClusterControllerState::Leader(leader) =
                         mem::replace(self, ClusterControllerState::Follower)
                 );
