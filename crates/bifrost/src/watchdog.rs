@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
-use enum_map::Enum;
+use enum_map::EnumMap;
 use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
@@ -106,7 +106,7 @@ impl Watchdog {
             chain_writer_tx,
             chain_writer_task,
             inbound,
-            live_providers: Vec::with_capacity(ProviderKind::LENGTH),
+            live_providers: Vec::with_capacity(EnumMap::<ProviderKind, ()>::default().len()),
             in_flight_trim: None,
             pending_trims: HashMap::with_capacity(128),
             my_preferred_logs: HashMap::default(),
