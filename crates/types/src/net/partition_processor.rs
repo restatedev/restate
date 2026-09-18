@@ -14,8 +14,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::identifiers::{
-    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionKey,
-    PartitionProcessorRpcRequestId, WithPartitionKey,
+    DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId,
 };
 use crate::invocation::client::{
     CancelInvocationResponse, InvocationOutput, InvocationStatus, KillInvocationResponse,
@@ -25,10 +24,14 @@ use crate::invocation::client::{
 use crate::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
 use crate::journal_v2::Signal;
 use crate::net::codec::{
-    EncodeError, WireDecode, WireEncode, decode_as_flexbuffers, encode_as_flexbuffers,
+    EncodeError, WireDecode, WireEncode, decode_as_bilrost, decode_as_flexbuffers,
+    encode_as_bilrost, encode_as_flexbuffers,
 };
-use crate::net::{ProtocolVersion, ServiceTag};
-use crate::net::{default_wire_codec, define_rpc, define_service};
+use crate::net::{
+    ProtocolVersion, RpcRequest, RpcResponse, ServiceTag, bilrost_wire_codec, default_wire_codec,
+    define_rpc, define_service,
+};
+use crate::partition_processor::client::WireResponseError;
 use crate::time::MillisSinceEpoch;
 
 pub struct PartitionLeaderService;
@@ -36,6 +39,66 @@ pub struct PartitionLeaderService;
 define_service! {
     @service = PartitionLeaderService,
     @tag = ServiceTag::PartitionLeaderService,
+}
+
+/// The partition processor replied with a variant the request never expects.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+#[error("unexpected response from partition processor")]
+pub struct UnexpectedResponse;
+
+/// The header that's sent with every partition processor RPC request.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, bilrost::Message)]
+pub struct PartitionProcessorRpcRequestHeader {
+    #[bilrost(tag(1))]
+    pub request_id: PartitionProcessorRpcRequestId,
+    /// Time at which the source node sent the request.
+    #[bilrost(tag(2))]
+    pub sent_at: Option<MillisSinceEpoch>,
+}
+
+impl PartitionProcessorRpcRequestHeader {
+    pub fn new(request_id: PartitionProcessorRpcRequestId) -> Self {
+        Self {
+            request_id,
+            sent_at: Some(MillisSinceEpoch::now()),
+        }
+    }
+}
+
+/// A trait that's implemented by the envelopes of the PP RPCs. To help map the
+/// envelope to its successful variant type. Needed for type magic in the handlers
+/// later on. There are two envelopes right now:
+/// - The legacy flexbuffers-based envelope which is a Result<PartitionProcessorRpcResponse, Error>
+/// - The new bilrost-based envelope which is `PartitionProcessorResponseRpcEnvelope`.
+///
+/// Once the legacy envelope is removed, this trait can go away.
+pub trait PartitionProcessorWireEnvelope:
+    RpcResponse<Service = PartitionLeaderService>
+    + From<Result<Self::Ok, PartitionProcessorRpcError>>
+    + Sync
+    + 'static
+{
+    /// The handler's successful response type.
+    type Ok: PartitionProcessorRpcOk<WireEnvelope = Self>;
+
+    /// Converts the envelope into a result.
+    fn into_result(self) -> Result<Self::Ok, WireResponseError>;
+}
+
+/// Mapping from the RPC responsr to the wire envelope that carries it.
+pub trait PartitionProcessorRpcOk: Send + Sync + 'static {
+    type WireEnvelope: PartitionProcessorWireEnvelope;
+}
+
+/// The successful payload of the wire envelope `W`.
+pub type PartitionProcessorRpcOkOf<W> =
+    <<W as RpcRequest>::Response as PartitionProcessorWireEnvelope>::Ok;
+
+/// The trait implemented by all PP request wire formats.
+pub trait PartitionProcessorWireRpc:
+    RpcRequest<Service = PartitionLeaderService, Response: PartitionProcessorWireEnvelope>
+{
+    fn header(&self) -> PartitionProcessorRpcRequestHeader;
 }
 
 define_rpc! {
@@ -46,6 +109,7 @@ define_rpc! {
 
 default_wire_codec!(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>);
 
+/// TODO: Remove in 1.9 when all RPCs are using the dedicated messages.
 /// Requests to individual partition processors. We still need to route them through the PP manager.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionProcessorRpcRequest {
@@ -89,6 +153,52 @@ impl WireDecode for PartitionProcessorRpcRequest {
         Self: Sized,
     {
         decode_as_flexbuffers(buf, protocol_version)
+    }
+}
+
+impl PartitionProcessorRpcRequest {
+    pub fn with_header(
+        header: PartitionProcessorRpcRequestHeader,
+        partition_id: PartitionId,
+        inner: PartitionProcessorRpcRequestInner,
+    ) -> Self {
+        Self {
+            request_id: header.request_id,
+            partition_id,
+            sent_at: header.sent_at,
+            inner,
+        }
+    }
+}
+
+impl PartitionProcessorWireRpc for PartitionProcessorRpcRequest {
+    fn header(&self) -> PartitionProcessorRpcRequestHeader {
+        PartitionProcessorRpcRequestHeader {
+            request_id: self.request_id,
+            sent_at: self.sent_at,
+        }
+    }
+}
+
+impl PartitionProcessorRpcOk for PartitionProcessorRpcResponse {
+    type WireEnvelope = Result<Self, PartitionProcessorRpcError>;
+}
+
+impl From<PartitionProcessorRpcError>
+    for Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>
+{
+    fn from(value: PartitionProcessorRpcError) -> Self {
+        Err(value)
+    }
+}
+
+impl PartitionProcessorWireEnvelope
+    for Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>
+{
+    type Ok = PartitionProcessorRpcResponse;
+
+    fn into_result(self) -> Result<PartitionProcessorRpcResponse, WireResponseError> {
+        Ok(self?)
     }
 }
 
@@ -149,41 +259,6 @@ pub enum PartitionProcessorRpcRequestInner {
     },
 }
 
-impl WithPartitionKey for PartitionProcessorRpcRequestInner {
-    fn partition_key(&self) -> PartitionKey {
-        match self {
-            PartitionProcessorRpcRequestInner::AppendInvocation(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::GetInvocationOutput(iq, _) => iq.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendInvocationResponse(ir) => ir.partition_key(),
-            PartitionProcessorRpcRequestInner::AppendSignal(si, _) => si.partition_key(),
-            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::RestartAsNewInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::ResumeInvocation { invocation_id, .. } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
-                invocation_id.partition_key()
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
-                invocation_id.partition_key()
-            }
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
 pub enum PartitionProcessorRpcError {
     #[error("not leader for partition '{0}'")]
@@ -197,14 +272,108 @@ pub enum PartitionProcessorRpcError {
     Internal(String),
 }
 
-impl PartitionProcessorRpcError {
-    pub fn likely_stale_route(&self) -> bool {
+/// The response envelope that wraps all the dedicated partition processor RPC messages.
+/// This envelope inlines some of the common errors that can be returned by a PP RPC
+/// regardless of the RPC type (e.g. getting a not a leader, etc).
+#[derive(bilrost::Oneof, bilrost::Message)]
+pub enum PartitionProcessorResponseRpcEnvelope<T> {
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1))]
+    Ok(T),
+    #[bilrost(tag(2))]
+    NotLeader(PartitionId),
+    #[bilrost(tag(3))]
+    LostLeadership(PartitionId),
+    #[bilrost(tag(4))]
+    Internal(String),
+}
+
+impl<T> PartitionProcessorWireEnvelope for PartitionProcessorResponseRpcEnvelope<T>
+where
+    T: PartitionProcessorRpcOk<WireEnvelope = Self>,
+    Self: RpcResponse<Service = PartitionLeaderService>,
+{
+    type Ok = T;
+
+    fn into_result(self) -> Result<T, WireResponseError> {
         match self {
-            PartitionProcessorRpcError::NotLeader(_) => true,
-            PartitionProcessorRpcError::LostLeadership(_) => true,
-            PartitionProcessorRpcError::Internal(_) => false,
+            Self::Ok(value) => Ok(value),
+            Self::NotLeader(partition_id) => {
+                Err(PartitionProcessorRpcError::NotLeader(partition_id).into())
+            }
+            Self::LostLeadership(partition_id) => {
+                Err(PartitionProcessorRpcError::LostLeadership(partition_id).into())
+            }
+            Self::Internal(message) => Err(PartitionProcessorRpcError::Internal(message).into()),
+            Self::Unknown => Err(UnexpectedResponse.into()),
         }
     }
+}
+
+impl<T> PartitionProcessorRpcOk for T
+where
+    T: Send + Sync + 'static,
+    PartitionProcessorResponseRpcEnvelope<T>: RpcResponse<Service = PartitionLeaderService>,
+{
+    type WireEnvelope = PartitionProcessorResponseRpcEnvelope<T>;
+}
+
+impl<T> WireEncode for PartitionProcessorResponseRpcEnvelope<T>
+where
+    Self: bilrost::Message,
+{
+    fn encode_to_bytes(
+        &self,
+        _protocol_version: ProtocolVersion,
+    ) -> Result<::bytes::Bytes, EncodeError> {
+        Ok(encode_as_bilrost(self))
+    }
+}
+
+impl<T> WireDecode for PartitionProcessorResponseRpcEnvelope<T>
+where
+    Self: bilrost::OwnedMessage,
+{
+    type Error = anyhow::Error;
+
+    fn try_decode(
+        buf: impl bytes::Buf,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Self, anyhow::Error>
+    where
+        Self: Sized,
+    {
+        decode_as_bilrost(buf, protocol_version)
+    }
+}
+
+impl<T> From<Result<T, PartitionProcessorRpcError>> for PartitionProcessorResponseRpcEnvelope<T> {
+    fn from(value: Result<T, PartitionProcessorRpcError>) -> Self {
+        match value {
+            Ok(value) => Self::Ok(value),
+            Err(err) => err.into(),
+        }
+    }
+}
+
+impl<T> From<PartitionProcessorRpcError> for PartitionProcessorResponseRpcEnvelope<T> {
+    fn from(value: PartitionProcessorRpcError) -> Self {
+        match value {
+            PartitionProcessorRpcError::NotLeader(partition_id) => Self::NotLeader(partition_id),
+            PartitionProcessorRpcError::LostLeadership(partition_id) => {
+                Self::LostLeadership(partition_id)
+            }
+            PartitionProcessorRpcError::Internal(msg) => Self::Internal(msg),
+        }
+    }
+}
+
+impl<T> RpcResponse for PartitionProcessorResponseRpcEnvelope<T>
+where
+    Self: WireDecode + WireEncode + Unpin + Send,
+{
+    type Service = PartitionLeaderService;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -497,11 +666,24 @@ impl From<ResumeInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct PauseInvocationRpcRequest {
+    #[bilrost(tag(1))]
+    pub header: PartitionProcessorRpcRequestHeader,
+    #[bilrost(tag(2))]
+    pub invocation_id: InvocationId,
+}
+bilrost_wire_codec!(PauseInvocationRpcRequest);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
 pub enum PauseInvocationRpcResponse {
+    #[bilrost(0)]
     AlreadyPaused,
+    #[bilrost(1)]
     Accepted,
+    #[bilrost(2)]
     NotFound,
+    #[bilrost(3)]
     NotRunning,
 }
 
@@ -533,6 +715,7 @@ impl From<PauseInvocationRpcResponse> for PartitionProcessorRpcResponse {
     }
 }
 
+/// TODO: Remove in 1.9 when all RPCs are usign the dedicated messages.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PartitionProcessorRpcResponse {
     Appended,
@@ -549,4 +732,27 @@ pub enum PartitionProcessorRpcResponse {
     RestartAsNewInvocation(RestartAsNewInvocationRpcResponse),
     ResumeInvocation(ResumeInvocationRpcResponse),
     PauseInvocation(PauseInvocationRpcResponse),
+}
+
+/// Registers dedicated partition processor rpcs: `Request => Ok` means the processor answers
+/// `Request` with `Ok`. The envelope is fixed for all new RPCs.
+macro_rules! define_partition_processor_rpcs {
+    ($($request:ty => $ok:ty),* $(,)?) => {
+        $(
+            impl RpcRequest for $request {
+                const TYPE: &str = stringify!($request);
+                type Response = PartitionProcessorResponseRpcEnvelope<$ok>;
+                type Service = PartitionLeaderService;
+            }
+            impl PartitionProcessorWireRpc for $request {
+                fn header(&self) -> PartitionProcessorRpcRequestHeader {
+                    self.header
+                }
+            }
+        )*
+    };
+}
+
+define_partition_processor_rpcs! {
+    PauseInvocationRpcRequest => PauseInvocationRpcResponse,
 }
