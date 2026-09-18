@@ -19,11 +19,11 @@ publish = false
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "58", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
-arrow-array = { version = "58", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
-arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow-array = { version = "59", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "59", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
+arrow-schema = { version = "59", default-features = false, features = ["canonical_extension_types"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1", default-features = false, features = ["hardcoded-credentials", "test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
@@ -34,7 +34,7 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-base64 = { version = "0.23", default-features = false, features = ["std"] }
+base64 = { version = "0.23" }
 bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
@@ -113,7 +113,7 @@ schemars = { version = "1", features = ["bytes1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
@@ -153,11 +153,11 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 adaptive-timeout = { version = "0.0.1-alpha.4", features = ["schemars", "serde", "sync", "tokio"] }
 ahash = { version = "0.8", features = ["serde"] }
 arrayvec = { version = "0.7" }
-arrow = { version = "58", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
-arrow-array = { version = "58", default-features = false, features = ["chrono-tz"] }
-arrow-cast = { version = "58", default-features = false, features = ["prettyprint"] }
-arrow-ipc = { version = "58", features = ["lz4", "zstd"] }
-arrow-schema = { version = "58", default-features = false, features = ["canonical_extension_types"] }
+arrow = { version = "59", features = ["canonical_extension_types", "chrono-tz", "prettyprint"] }
+arrow-array = { version = "59", default-features = false, features = ["chrono-tz"] }
+arrow-cast = { version = "59", default-features = false, features = ["prettyprint"] }
+arrow-ipc = { version = "59", features = ["lz4", "zstd"] }
+arrow-schema = { version = "59", default-features = false, features = ["canonical_extension_types"] }
 aws-config = { version = "1", features = ["behavior-version-latest"] }
 aws-credential-types = { version = "1", default-features = false, features = ["hardcoded-credentials", "test-util"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
@@ -168,7 +168,7 @@ aws-sigv4 = { version = "1", features = ["http0-compat", "sign-eventstream"] }
 aws-smithy-http = { version = "0.64", default-features = false, features = ["event-stream"] }
 aws-smithy-types = { version = "1", default-features = false, features = ["byte-stream-poll-next", "http-body-0-4-x", "http-body-1-x", "rt-tokio", "test-util"] }
 axum = { version = "0.8", default-features = false, features = ["http1", "http2", "json", "query", "tokio"] }
-base64 = { version = "0.23", default-features = false, features = ["std"] }
+base64 = { version = "0.23" }
 bilrost = { version = "0.1015", default-features = false, features = ["auto-optimize", "bytestring", "derive", "smallvec", "std"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 bytes = { version = "1", features = ["serde"] }
@@ -250,7 +250,7 @@ schemars = { version = "1", features = ["bytes1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
