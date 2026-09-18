@@ -58,7 +58,6 @@ clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "s
 clap_complete = { workspace = true }
 clap-stdin = "0.6.0"
 cling = { workspace = true }
-dirs = { version = "5.0" }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"

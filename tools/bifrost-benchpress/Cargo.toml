@@ -24,7 +24,6 @@ restate-errors = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-server = { workspace = true }
 restate-rocksdb = { workspace = true }
-restate-test-util = { workspace = true }
 restate-tracing-instrumentation = { workspace = true, features = ["rt-tokio"] }
 restate-types = { workspace = true, features = ["test-util", "clap"] }
 
@@ -32,7 +31,6 @@ anyhow = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "color", "help", "wrap_help", "usage", "suggestions", "error-context", "std"] }
 codederror = { workspace = true }
-figment = { version = "0.10.8", features = ["env", "toml"] }
 futures = { workspace = true }
 hdrhistogram = { version = "7.5.4" }
 metrics = { workspace = true }
@@ -41,17 +39,8 @@ quanta = { version = "0.12.3" }
 rlimit = { workspace = true }
 rocksdb = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
-serde_with = { workspace = true }
-static_assertions = { workspace = true }
-strum = { workspace = true }
-tempfile = { workspace = true }
-thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = { workspace = true }
-toml = { version = "0.8" }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_supported_platforms"] }
