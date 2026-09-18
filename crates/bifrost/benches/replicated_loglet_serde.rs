@@ -16,8 +16,6 @@ use anyhow::{Context, bail};
 use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use criterion::{Criterion, criterion_group, criterion_main};
-use pprof::criterion::{Output, PProfProfiler};
-use pprof::flamegraph::Options;
 use prost::Message as _;
 use rand::distr::Alphanumeric;
 use rand::{Rng, RngExt, random};
@@ -45,16 +43,6 @@ use restate_worker_api::invoker::{Effect, EffectKind};
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-pub fn flamegraph_options<'a>() -> Options<'a> {
-    #[allow(unused_mut)]
-    let mut options = Options::default();
-    if cfg!(target_os = "macos") {
-        // Ignore different thread origins to merge traces. This seems not needed on Linux.
-        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
-    }
-    options
-}
 
 fn rand_string(len: usize) -> String {
     rand::rng()
@@ -327,8 +315,8 @@ fn replicated_loglet_append_invoker_effect_cmd_serde(c: &mut Criterion) {
 }
 
 criterion_group!(
-    name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
-    targets = replicated_loglet_append_invoke_cmd_serde, replicated_loglet_append_invoker_effect_cmd_serde
+    benches,
+    replicated_loglet_append_invoke_cmd_serde,
+    replicated_loglet_append_invoker_effect_cmd_serde
 );
 criterion_main!(benches);
