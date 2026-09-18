@@ -74,7 +74,6 @@ hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
 hyper = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
-idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-3575ec1268b04181 = { package = "itertools", version = "0.15" }
@@ -105,7 +104,7 @@ quote = { version = "1" }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 regex = { version = "1" }
-regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["default-tls", "form", "http2", "json", "query", "rustls-no-provider", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
@@ -114,7 +113,7 @@ schemars = { version = "1", features = ["bytes1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1", features = ["alloc", "float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
@@ -211,7 +210,6 @@ hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
 hyper = { version = "1", features = ["full"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "http2", "logging", "native-tokio", "ring", "tls12"] }
 hyper-util = { version = "0.1", features = ["full"] }
-idna = { version = "1" }
 indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-3575ec1268b04181 = { package = "itertools", version = "0.15" }
@@ -243,7 +241,7 @@ quote = { version = "1" }
 rdkafka = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 rdkafka-sys = { git = "https://github.com/restatedev/rust-rdkafka.git", rev = "e92cad90eff797a0dc29fa524cabb89b602ae234", default-features = false, features = ["cmake-build", "curl-static", "gssapi-vendored", "libz-static", "ssl-vendored", "zstd"] }
 regex = { version = "1" }
-regex-automata = { version = "0.4", default-features = false, features = ["dfa", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
+regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa", "perf", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
 reqwest = { version = "0.13", default-features = false, features = ["default-tls", "form", "http2", "json", "query", "rustls-no-provider", "stream"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "prefer-post-quantum", "ring", "std", "tls12"] }
@@ -252,7 +250,7 @@ schemars = { version = "1", features = ["bytes1"] }
 semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
-serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value", "unbounded_depth"] }
+serde_json = { version = "1", features = ["alloc", "float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
 slab = { version = "0.4" }
