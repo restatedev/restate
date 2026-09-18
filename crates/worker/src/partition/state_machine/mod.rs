@@ -124,7 +124,7 @@ use restate_worker_api::invoker::Effect;
 use self::utils::SpanExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
@@ -824,6 +824,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .into();
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => "Command/Input",
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => "Command/Input",
+                )
+                .increment(new_raw_entry.serialized_length() as u64);
+            }
+
             // Now write the entry in the new table
             journal_table_v2::WriteJournalTable::put_journal_entry(
                 self.storage,
@@ -1235,17 +1248,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
     {
-        // Usage metering for "actions" should include the Input journal entry
-        // type, but it gets filtered out before reaching the state machine.
-        // Therefore we count it here, as a special case.
-        if self.is_leader {
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-        }
-
         if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
@@ -1288,15 +1290,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         // Emit the trace anchor span for the invocation.
         if self.is_leader {
-            // Usage metering for "actions" should include the Input journal entry
-            // type, but it gets filtered out before reaching the state machine.
-            // Therefore we count it here, as a special case.
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-
             let _start = instrumentation::create_invocation_start_span(
                 invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
@@ -1346,9 +1339,24 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 name: Default::default(),
             }
             .into();
+            let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
+
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => "Command/Input",
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => "Command/Input",
+                )
+                .increment(new_raw_entry.serialized_length() as u64);
+            }
+
             let stored_entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(self.record_created_at),
-                new_entry.encode::<ServiceProtocolV4Codec>(),
+                new_raw_entry,
             );
 
             // Now write the entry in the new table
@@ -1366,15 +1374,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             // When pinning the deployment version we figure the concrete protocol version
             // * If <= V3, we keep everything in JournalTable V1
             // * If >= V4, we migrate the JournalTable to V2
-            let input_entry = JournalEntry::Entry(ProtobufRawEntryCodec::serialize_as_input_entry(
+            let input_entry = ProtobufRawEntryCodec::serialize_as_input_entry(
                 invocation_input.headers,
                 invocation_input.argument,
-            ));
+            );
+
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => "Command/Input",
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => "Command/Input",
+                )
+                .increment(input_entry.serialized_entry().len() as u64);
+            }
+
             journal_table::WriteJournalTable::put_journal_entry(
                 self.storage,
                 invocation_id,
                 0,
-                &input_entry,
+                &JournalEntry::Entry(input_entry),
             )
             .map_err(Error::Storage)?;
 
