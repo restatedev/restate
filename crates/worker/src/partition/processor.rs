@@ -37,8 +37,6 @@ pub use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 pub use restate_worker_api::processor::*;
 pub use status::HasStatusMut;
 
-use crate::partition::processor::context::HasEncodingArena;
-
 use self::fsm::Fsm;
 
 /// The full set of processor-context capabilities required by the state-machine
@@ -48,12 +46,6 @@ use self::fsm::Fsm;
 /// `ProcessorRawContext` (and test doubles) qualify automatically. Handlers that
 /// only need a narrower capability should bound on that capability directly (e.g.
 /// [`HasOutboxMut`]) rather than on this bundle.
-pub trait ProcessorContext:
-    Processor + HasFsmMut + HasOutboxMut + HasVQueuesMut + HasEncodingArena
-{
-}
+pub trait ProcessorContext: Processor + HasFsmMut + HasOutboxMut + HasVQueuesMut {}
 
-impl<T: Processor + HasFsmMut + HasOutboxMut + HasVQueuesMut + HasEncodingArena> ProcessorContext
-    for T
-{
-}
+impl<T: Processor + HasFsmMut + HasOutboxMut + HasVQueuesMut> ProcessorContext for T {}

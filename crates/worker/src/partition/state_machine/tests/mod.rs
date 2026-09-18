@@ -141,12 +141,14 @@ impl TestEnv {
     pub async fn apply(&mut self, envelope: v2::Envelope<v2::Raw>) -> Vec<Action> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
+        let mut arena = BytesMut::with_capacity(128 * 1024);
         StateMachine::apply(
             &mut self.processor,
             &mut transaction,
             Self::record(envelope),
             &mut action_collector,
             true,
+            &mut arena,
         )
         .await
         .unwrap();

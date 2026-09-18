@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use assert2::let_assert;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
@@ -205,6 +205,7 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
     is_leader: bool,
+    encoding_arena: &'a mut BytesMut,
 }
 
 trait CommandHandler<CTX> {
@@ -218,6 +219,7 @@ impl StateMachine {
         envelope: DataRecord<v2::Envelope<v2::Raw>>,
         action_collector: &mut ActionCollector,
         is_leader: bool,
+        encoding_arena: &mut BytesMut,
     ) -> Result<(), Error> {
         let span = utils::state_machine_apply_command_span(is_leader, envelope.inner().kind());
         async {
@@ -233,6 +235,7 @@ impl StateMachine {
                 record_lsn,
                 action_collector,
                 is_leader,
+                encoding_arena,
             }
             .on_apply(envelope.into_inner())
             .await;
@@ -4703,14 +4706,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let message = if SemanticRestateVersion::current() < &RESTATE_VERSION_1_9_0 {
             message.into_outbox_message()
         } else {
-            let arena = self.processor.encoding_arena();
-            message.encode(arena).map_err(Error::Outbox)?;
+            message.encode(self.encoding_arena).map_err(Error::Outbox)?;
 
             OutboxMessage::Opaque(OpaqueMessage {
                 partition_key: message.partition_key(),
                 codec: message.default_codec(),
                 kind: M::KIND.into(),
-                message: arena.split().freeze(),
+                message: self.encoding_arena.split().freeze(),
             })
         };
 
