@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use bytes::BytesMut;
 use futures::{FutureExt, StreamExt};
 use metrics::histogram;
 use tokio::sync::watch;
@@ -244,6 +245,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
+            encoding_arena: BytesMut::new(),
         })
     }
 }
@@ -257,6 +259,7 @@ pub struct PartitionProcessor<T> {
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
+    encoding_arena: BytesMut,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1019,6 +1022,7 @@ where
                     envelope,
                     action_collector,
                     self.leadership_state.is_leader(),
+                    &mut self.encoding_arena,
                 )
                 .await?;
                 Ok(NextStep::AdvanceLastAppliedLsn { lsn, dedup, scope })

@@ -59,7 +59,6 @@ pub struct ProcessorRawContext {
     /// The vqueues metadata cache
     vqueues: VQueuesMetaCache,
 }
-
 impl ProcessorRawContext {
     pub async fn create(
         current_restate_version: &SemanticRestateVersion,
