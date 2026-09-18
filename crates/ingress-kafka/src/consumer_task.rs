@@ -13,9 +13,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::Duration;
 
-use anyhow::Context;
 use futures::StreamExt;
 use futures::future::OptionFuture;
 use metrics::{counter, gauge};
@@ -30,16 +28,11 @@ use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, instrument, trace, warn};
 
-use restate_core::network::{NetworkSender, Swimlane, TransportConnect};
-use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind, task_center};
+use restate_core::network::TransportConnect;
+use restate_core::{TaskCenter, TaskHandle, TaskKind, task_center};
 use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, RecordCommit};
 use restate_types::identifiers::SubscriptionId;
-use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::logs::{BodyWithKeys, Keys};
-use restate_types::net::ingest::{DedupSequenceNrQueryRequest, ProducerId, ResponseStatus};
-use restate_types::partitions::FindPartition;
-use restate_types::retries::RetryPolicy;
-use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink};
 use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::Error;
@@ -455,102 +448,6 @@ where
         _ = self.failed.send(err);
     }
 
-    /// query the legacy dedup information for this consumption task.
-    async fn legacy_dedup_offset(&self) -> Option<u64> {
-        if !matches!(
-            self.builder.subscription().sink(),
-            Sink {
-                event_invocation_target_template: EventInvocationTargetTemplate::Service { .. }
-            }
-        ) {
-            // legacy dedup is only valid for services which used to
-            // be proxied
-            return None;
-        }
-
-        #[derive(Hash)]
-        pub struct LegacyKafkaDeduplicationId<'a> {
-            consumer_group: &'a str,
-            topic: &'a str,
-            partition: i32,
-        }
-
-        // producer id constructed as {consumer-group}-{topic}-{kafka-partition}
-        let legacy_producer_id = format!(
-            "{}-{}-{}",
-            self.consumer_group_id, self.topic_partition.0, self.topic_partition.1
-        );
-
-        let proxy_partition_key =
-            HashPartitioner::compute_partition_key(&LegacyKafkaDeduplicationId {
-                consumer_group: &self.consumer_group_id,
-                topic: &self.topic_partition.0,
-                partition: self.topic_partition.1,
-            });
-
-        RetryPolicy::exponential(
-            Duration::from_millis(50),
-            2.0,
-            None,
-            Some(Duration::from_secs(1)),
-        )
-        .retry_with_inspect(
-            || async {
-                let partition_id = Metadata::with_current(|m| {
-                    m.partition_table_ref()
-                        .find_partition_id(proxy_partition_key)
-                })?;
-
-                let node_id = self
-                    .ingestion
-                    .partition_routing()
-                    .get_node_by_partition(partition_id)
-                    .with_context(|| {
-                        format!("cannot lookup node id for partition id {partition_id}")
-                    })?;
-
-                // we use long timeout of 5 seconds in case partition processor is catching up
-                let response = self
-                    .ingestion
-                    .networking()
-                    .call_rpc(
-                        node_id,
-                        Swimlane::General,
-                        DedupSequenceNrQueryRequest {
-                            producer_id: ProducerId::String(legacy_producer_id.clone()),
-                        },
-                        Some(partition_id.into()),
-                        Some(Duration::from_secs(5)),
-                    )
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "failed to query legacy dedup \
-                            sequence number for producer '{legacy_producer_id}' \
-                            from node {node_id}"
-                        )
-                    })?;
-
-                match response.status {
-                    ResponseStatus::Ack => Ok(response.sequence_number),
-                    status => Err(anyhow::anyhow!(
-                        "failed to query latest dedup \
-                        sequence number from node {node_id} for '{legacy_producer_id}': {status:?}"
-                    )),
-                }
-            },
-            |attempts, err| {
-                if attempts >= 10 {
-                    warn!("Failed to query legacy dedup information: {err:#} .. retrying");
-                } else {
-                    debug!("Failed to query legacy dedup information: {err:#} .. retrying");
-                }
-            },
-        )
-        .await
-        .expect("tries forever")
-    }
-
     #[instrument(skip(self), fields(
         restate.subscription.id = %self.builder.subscription().id(),
         topic=%self.topic_partition.0,
@@ -559,9 +456,6 @@ where
     )]
     async fn run_inner(&mut self) -> Result<(), Error> {
         debug!("Starting topic consumption loop");
-
-        let legacy_dedup_offset = self.legacy_dedup_offset().await;
-        debug!("Legacy dedup offset: {legacy_dedup_offset:?}",);
 
         let producer_id = dedup_producer_id(
             &self.builder.subscription().id(),
@@ -598,15 +492,6 @@ where
                 Some(received) = consumer_stream.next() => {
                     let msg = received?;
                     let offset = msg.offset();
-                    if legacy_dedup_offset.is_some_and(|dedup_offset| offset as u64 <= dedup_offset) {
-                        // skip duplicated messages. Any gap should be small.
-                        debug!(
-                            offset=%offset,
-                            "Skipping kafka message (dedup)"
-                        );
-                        self.consumer.store_offset(&self.topic_partition.0, self.topic_partition.1, offset)?;
-                        continue;
-                    }
 
                     trace!(
                         offset=%offset,
