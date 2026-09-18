@@ -116,11 +116,10 @@ impl StyledTable for comfy_table::Table {
         table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
         match ctx.table_style() {
             TableStyle::Compact => {
-                table.load_preset(comfy_table::presets::NOTHING);
+                table.load_style(comfy_table::presets::NOTHING);
             }
             TableStyle::Borders => {
-                table.load_preset(comfy_table::presets::UTF8_FULL);
-                table.apply_modifier(comfy_table::modifiers::UTF8_ROUND_CORNERS);
+                table.load_style(comfy_table::presets::UTF8_FULL.with_rounded_corners());
             }
         }
         if !ctx.colors_enabled() {

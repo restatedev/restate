@@ -41,7 +41,6 @@ bytestring = { version = "1", default-features = false, features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
-comfy-table = { version = "7" }
 compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
@@ -175,7 +174,6 @@ bytestring = { version = "1", default-features = false, features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
-comfy-table = { version = "7" }
 compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
 constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
@@ -292,13 +290,12 @@ zstd-sys = { version = "2", features = ["experimental", "std"] }
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
-crossterm = { version = "0.29" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.31", features = ["signal"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "poll", "signal", "term"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -313,13 +310,12 @@ tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", feature
 bitflags = { version = "2", default-features = false, features = ["std"] }
 cc = { version = "1", default-features = false, features = ["parallel"] }
 clap = { version = "4" }
-crossterm = { version = "0.29" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
 mio = { version = "1", features = ["net", "os-ext"] }
-nix = { version = "0.31", features = ["signal"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "poll", "signal", "term"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -333,13 +329,12 @@ tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", feature
 [target.aarch64-apple-darwin.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 clap = { version = "4" }
-crossterm = { version = "0.29" }
 errno = { version = "0.3" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.31", features = ["signal"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "poll", "signal", "term"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -355,13 +350,12 @@ tower-http-3b31131e45eafb45 = { package = "tower-http", version = "0.6", feature
 bitflags = { version = "2", default-features = false, features = ["std"] }
 cc = { version = "1", default-features = false, features = ["parallel"] }
 clap = { version = "4" }
-crossterm = { version = "0.29" }
 errno = { version = "0.3" }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
-nix = { version = "0.31", features = ["signal"] }
+nix = { version = "0.31", features = ["fs", "ioctl", "poll", "signal", "term"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
