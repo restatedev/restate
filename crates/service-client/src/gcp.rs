@@ -37,8 +37,6 @@ use tracing::warn;
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
-#[cfg(test)]
-use google_cloud_auth::credentials::idtoken::IDTokenCredentialsProvider;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
 
@@ -235,6 +233,7 @@ struct CredentialRegistry {
     test_hooks: TestHooks,
 }
 
+#[derive(Debug)]
 struct RecoverableCredentialSource {
     cell: tokio::sync::Mutex<Option<GoogleCredentials>>,
 }
@@ -681,14 +680,12 @@ fn build_impersonated_credentials(
 ) -> Result<IDTokenCredentials, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
-    let credentials =
-        idtoken::impersonated::Builder::from_source_credentials(audience, service_account, source)
-            .build()
-            .map_err(|e| GcpAuthError::Build {
-                audience: audience.to_owned(),
-                message: e.to_string(),
-            })?;
-    Ok(credentials)
+    idtoken::impersonated::Builder::from_source_credentials(audience, service_account, source)
+        .build()
+        .map_err(|e| GcpAuthError::Build {
+            audience: audience.to_owned(),
+            message: e.to_string(),
+        })
 }
 
 #[cfg(any(test, feature = "test_util"))]
@@ -785,6 +782,8 @@ fn test_override(
 mod tests {
     use std::assert_matches;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use google_cloud_auth::credentials::idtoken::IDTokenCredentialsProvider;
 
     use super::*;
 

@@ -74,15 +74,6 @@ fn initialize_config_once(
     config_slot: &OnceLock<Option<GcpFederationOptions>>,
     config: Option<GcpFederationOptions>,
 ) -> Result<(), String> {
-    if let Some(installed) = config_slot.get() {
-        if installed != &config {
-            warn!(
-                "ignoring GCP federation configuration that differs from the value captured at \
-                 first node startup; restart the server to apply the new configuration"
-            );
-        }
-        return Ok(());
-    }
     if let Some(config) = &config {
         validate_aws_role_arn(&config.aws_role_arn)?;
         validate_aws_role_session_name(&config.aws_role_session_name)?;
@@ -450,6 +441,7 @@ struct SubjectTokenHeader {
 }
 
 /// Shared Google STS access-token source for one workload identity provider.
+#[derive(Debug)]
 pub(super) struct FederatedAccessTokenSource {
     pub(super) credentials: RecoverableCredentialSource,
 }
@@ -535,17 +527,10 @@ impl FederatedAccessTokenSourceIndex {
 }
 
 /// Per-audience/service-account ID-token credentials, retaining their source's lease.
+#[derive(Debug)]
 pub(super) struct FederatedIdTokenCredentials {
     credentials: IDTokenCredentials,
     _access_token_source: Arc<FederatedAccessTokenSource>,
-}
-
-impl fmt::Debug for FederatedIdTokenCredentials {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("FederatedIdTokenCredentials")
-            .field("credentials", &self.credentials)
-            .finish_non_exhaustive()
-    }
 }
 
 impl IDTokenCredentialsProvider for FederatedIdTokenCredentials {
@@ -611,9 +596,12 @@ async fn build_federated_access_token_source_on_tc_task(
             "gcp-federated-source-recovery",
             build_federated_access_token_source(provider_resource),
         )
-        .map_err(|_| "TaskCenter is shutting down".to_owned())?;
-    task.await
-        .map_err(|_| "GCP federated credential construction task failed".to_owned())?
+        .map_err(|shutdown| {
+            format!("failed to start federated GCP credential source construction: {shutdown}")
+        })?;
+    task.await.map_err(|shutdown| {
+        format!("federated GCP credential source construction did not complete: {shutdown}")
+    })?
 }
 
 async fn build_federated_access_token_source(
@@ -675,18 +663,12 @@ pub(super) mod test_hooks {
         OVERRIDES.lock().insert(provider.to_owned(), Arc::new(f));
     }
 
-    pub(super) struct FederatedIdTokenCredentials {
+    #[derive(Debug)]
+    pub(super) struct TestFederatedIdTokenCredentials {
         pub(super) _access_token_source: Arc<FederatedAccessTokenSource>,
     }
 
-    impl std::fmt::Debug for FederatedIdTokenCredentials {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.debug_struct("FederatedIdTokenCredentials")
-                .finish_non_exhaustive()
-        }
-    }
-
-    impl IDTokenCredentialsProvider for FederatedIdTokenCredentials {
+    impl IDTokenCredentialsProvider for TestFederatedIdTokenCredentials {
         fn id_token(
             &self,
         ) -> impl std::future::Future<
@@ -699,7 +681,7 @@ pub(super) mod test_hooks {
     pub(in crate::gcp) fn leased_credential(
         access_token_source: Arc<FederatedAccessTokenSource>,
     ) -> IDTokenCredentials {
-        FederatedIdTokenCredentials {
+        TestFederatedIdTokenCredentials {
             _access_token_source: access_token_source,
         }
         .into()

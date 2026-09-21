@@ -21,7 +21,8 @@ them.
 
 ### Configuration
 
-Server operators enable the feature under the invoker's service-client options:
+Server operators enable registration with a top-level experimental flag and configure the AWS
+federation identity under the invoker's service-client options:
 
 ```toml
 experimental-enable-gcp-workload-identity-federation = true
