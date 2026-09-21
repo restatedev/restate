@@ -61,7 +61,7 @@ const BASE_RUN_AT_MS: u64 = 1_744_000_000_000;
 fn entry_at_seq(seq: u64) -> (EntryKey, EntryValue) {
     let run_at = RoughTimestamp::from_unix_millis_clamped(MillisSinceEpoch::new(BASE_RUN_AT_MS));
     let created_at = UniqueTimestamp::try_from(1_000u64 + seq).unwrap();
-    let entry_id = EntryId::new(EntryKind::Invocation, [0u8; EntryId::REMAINDER_LEN]);
+    let entry_id = EntryId::new(EntryKind::Invocation, [1u8; EntryId::REMAINDER_LEN]);
     let key = EntryKey::new(false, run_at, seq, entry_id);
     let stats = EntryStatistics::new(created_at, run_at);
     let value = EntryValue {
