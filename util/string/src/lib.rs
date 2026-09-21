@@ -10,11 +10,18 @@
 
 mod format;
 mod interned;
+#[cfg(feature = "mem-comparable")]
+mod mem_comparable_string;
 mod restricted_value;
 mod string;
 
 pub use format::_format;
 pub use interned::Interned;
+#[cfg(feature = "mem-comparable")]
+pub use mem_comparable_string::{
+    EncodedMemCmpStr, MemCmpResult, MemCmpStr, MemCmpString, MemCmpStringError, MemCmpTarget,
+    decode_str_into, decode_str_with, decode_str_with_unchecked,
+};
 pub use restricted_value::{RestrictedValue, RestrictedValueError};
 pub use string::{ReString, ToReString};
 
