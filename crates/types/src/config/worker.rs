@@ -939,7 +939,10 @@ pub struct StorageOptions {
     ///
     /// Since v1.7.8
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(default, skip_serializing_if = "is_default_max_successive_merges")]
+    #[serde(
+        default = "default_max_successive_merges",
+        skip_serializing_if = "is_default_max_successive_merges"
+    )]
     pub rocksdb_max_successive_merges: u16,
 
     /// # VQueue metadata full-write probability
@@ -1057,6 +1060,10 @@ impl Default for StorageOptions {
                 serde_helpers::default_vqueue_meta_full_write_probability(),
         }
     }
+}
+
+fn default_max_successive_merges() -> u16 {
+    DEFAULT_MAX_SUCCESSIVE_MERGES
 }
 
 fn is_default_max_successive_merges(i: &u16) -> bool {
