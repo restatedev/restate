@@ -1025,7 +1025,7 @@ where
         );
 
         self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), entry_id);
+            .delete_vqueue_entry_status(&entry_id.to_base_id(vqueue_id.partition_key()));
         // delete the entry's input
         self.storage
             .delete_vqueue_input_payload(vqueue_id, entry_key.seq(), entry_id);
@@ -1135,7 +1135,7 @@ where
         );
 
         self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), header.entry_id());
+            .delete_vqueue_entry_status(&header.entry_id().to_base_id(vqueue_id.partition_key()));
         // delete the entry's input
         self.storage
             .delete_vqueue_input_payload(vqueue_id, header.seq(), header.entry_id());
