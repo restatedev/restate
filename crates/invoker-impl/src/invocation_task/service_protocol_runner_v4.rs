@@ -39,7 +39,7 @@ use restate_service_protocol_v4::proto_lite;
 use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
     SpanRelation,
@@ -394,6 +394,7 @@ where
                     // by the time the bidi stream loop needs to read notifications from it.
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
+                    journal_size,
                     outbound_budget,
                     attempt_span
                 )
@@ -581,12 +582,14 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
+    #[allow(clippy::too_many_arguments)]
     async fn bidi_stream_loop<S, IR>(
         &mut self,
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
+        replayed_journal_length: EntryIndex,
         outbound_budget: &mut LocalMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
@@ -602,6 +605,19 @@ where
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
+                        Some(Notification::Entry(entry_index)) if entry_index < replayed_journal_length => {
+                            // The entry was already part of the replayed journal prefix, sending it
+                            // again would deliver the same notification twice to the SDK.
+                            //
+                            // This happens because the invocation state machine starts forwarding
+                            // notifications as soon as the attempt is started, while this task reads
+                            // the journal metadata (and thus fixes the replay prefix) a bit later.
+                            // Any entry appended in between is both replayed and forwarded.
+                            debug!(
+                                restate.journal.index = entry_index,
+                                "Ignoring notification for an entry that was already replayed"
+                            );
+                        }
                         Some(Notification::Entry(entry_index)) => {
                             trace!(restate.journal.index = entry_index, "Reading entry from storage");
                             let (journal_entry, lease) = shortcircuit!(
