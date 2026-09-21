@@ -24,7 +24,7 @@ use std::str::FromStr;
 use std::time::{Duration, Instant};
 
 use assert2::let_assert;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use metrics::{counter, histogram};
@@ -49,7 +49,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::{OpaqueMessage, OutboxMessage, WriteOutboxTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -65,7 +65,6 @@ use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Writ
 use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::RestateVersion;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
@@ -97,7 +96,6 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::*;
 use restate_types::journal_v2;
 use restate_types::journal_v2::command::{OutputCommand, OutputResult};
 use restate_types::journal_v2::raw::RawEntry;
@@ -110,9 +108,13 @@ use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
-use restate_types::storage::{StorageDecodeError, StoredRawEntry, StoredRawEntryHeader};
+use restate_types::storage::{
+    StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
+};
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{self, EntryId, VQueueId};
+use restate_types::{RESTATE_VERSION_1_9_0, journal::*};
+use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_util_string::{ReString, ToReString};
 use restate_vqueues::{VQueue, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyDisplay;
@@ -124,11 +126,11 @@ use restate_worker_api::invoker::Effect;
 use self::utils::SpanExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
-use crate::partition::types::{InvokerEffectKind, OutboxMessageExt};
+use crate::partition::types::InvokerEffectKind;
 
 use super::processor::{FsmAccess, OutboxAccess, OutboxMut};
 
@@ -160,6 +162,8 @@ pub enum Error {
     EnvelopeDecoding(#[from] StorageDecodeError),
     #[error("Bifrost envelope has unknown command kind")]
     UnknownCommandKind,
+    #[error("Failed to encode outbox message: {0}")]
+    Outbox(StorageEncodeError),
 }
 
 #[macro_export]
@@ -201,6 +205,7 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
     is_leader: bool,
+    encoding_arena: &'a mut BytesMut,
 }
 
 trait CommandHandler<CTX> {
@@ -214,6 +219,7 @@ impl StateMachine {
         envelope: DataRecord<v2::Envelope<v2::Raw>>,
         action_collector: &mut ActionCollector,
         is_leader: bool,
+        encoding_arena: &mut BytesMut,
     ) -> Result<(), Error> {
         let span = utils::state_machine_apply_command_span(is_leader, envelope.inner().kind());
         async {
@@ -229,6 +235,7 @@ impl StateMachine {
                 record_lsn,
                 action_collector,
                 is_leader,
+                encoding_arena,
             }
             .on_apply(envelope.into_inner())
             .await;
@@ -469,9 +476,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 let inner = envelope
                     .into_typed::<commands::ProxyThroughCommand>()
                     .into_inner()?;
-                self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(Box::new(
-                    inner.invocation.into(),
-                )))?;
+                self.do_enqueue_into_outbox(inner.invocation)?;
                 Ok(())
             }
             CommandKind::AttachInvocation => {
@@ -823,6 +828,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             .into();
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
+
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => new_raw_entry.ty().prometheus_label(),
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => new_raw_entry.ty().prometheus_label(),
+                )
+                .increment(new_raw_entry.serialized_length() as u64);
+            }
 
             // Now write the entry in the new table
             journal_table_v2::WriteJournalTable::put_journal_entry(
@@ -1235,17 +1253,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteJournalTable + WriteInvocationStatusTable + journal_table_v2::WriteJournalTable,
     {
-        // Usage metering for "actions" should include the Input journal entry
-        // type, but it gets filtered out before reaching the state machine.
-        // Therefore we count it here, as a special case.
-        if self.is_leader {
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-        }
-
         if let Some(invocation_input) = invocation_input {
             self.init_journal(
                 invocation_id,
@@ -1288,15 +1295,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         // Emit the trace anchor span for the invocation.
         if self.is_leader {
-            // Usage metering for "actions" should include the Input journal entry
-            // type, but it gets filtered out before reaching the state machine.
-            // Therefore we count it here, as a special case.
-            counter!(
-                USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                "entry" => "Command/Input",
-            )
-            .increment(1);
-
             let _start = instrumentation::create_invocation_start_span(
                 invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
@@ -1346,9 +1344,24 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 name: Default::default(),
             }
             .into();
+            let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
+
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => new_raw_entry.ty().prometheus_label(),
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => new_raw_entry.ty().prometheus_label(),
+                )
+                .increment(new_raw_entry.serialized_length() as u64);
+            }
+
             let stored_entry = StoredRawEntry::new(
                 StoredRawEntryHeader::new(self.record_created_at),
-                new_entry.encode::<ServiceProtocolV4Codec>(),
+                new_raw_entry,
             );
 
             // Now write the entry in the new table
@@ -1366,15 +1379,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             // When pinning the deployment version we figure the concrete protocol version
             // * If <= V3, we keep everything in JournalTable V1
             // * If >= V4, we migrate the JournalTable to V2
-            let input_entry = JournalEntry::Entry(ProtobufRawEntryCodec::serialize_as_input_entry(
+            let input_entry = ProtobufRawEntryCodec::serialize_as_input_entry(
                 invocation_input.headers,
                 invocation_input.argument,
-            ));
+            );
+
+            if self.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => "Command/Input",
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => "Command/Input",
+                )
+                .increment(input_entry.serialized_entry().len() as u64);
+            }
+
             journal_table::WriteJournalTable::put_journal_entry(
                 self.storage,
                 invocation_id,
                 0,
-                &input_entry,
+                &JournalEntry::Entry(input_entry),
             )
             .map_err(Error::Storage)?;
 
@@ -2172,7 +2199,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         };
 
         for invocation_id in invocation_ids_to_kill {
-            self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
+            self.do_enqueue_into_outbox(commands::TerminateInvocationCommand::from(
                 InvocationTermination {
                     invocation_id,
                     flavor: TerminationFlavor::Kill,
@@ -2226,7 +2253,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 } => {
                     // For calls, we don't immediately complete the call entry with cancelled,
                     // but we let the cancellation result propagate from the callee.
-                    self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
+                    self.do_enqueue_into_outbox(commands::TerminateInvocationCommand::from(
                         InvocationTermination {
                             invocation_id: enrichment_result.invocation_id,
                             flavor: TerminationFlavor::Cancel,
@@ -2927,10 +2954,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         for response_sink in response_sinks {
             match response_sink {
                 ServiceInvocationResponseSink::PartitionProcessor(target) => self
-                    .do_enqueue_into_outbox(OutboxMessage::ServiceResponse(InvocationResponse {
-                        target,
-                        result: result.clone(),
-                    }))?,
+                    .do_enqueue_into_outbox(commands::InvocationResponseCommand::from(
+                        InvocationResponse {
+                            target,
+                            result: result.clone(),
+                        },
+                    ))?,
                 ServiceInvocationResponseSink::Ingress { request_id } => self
                     .send_ingress_response(
                     request_id,
@@ -3574,12 +3603,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                             }) => {
                                 // Send response to listeners
                                 for listener in listeners {
-                                    self.do_enqueue_into_outbox(OutboxMessage::ServiceResponse(
-                                        InvocationResponse {
-                                            target: listener,
-                                            result: completion.clone().into(),
-                                        },
-                                    ))?;
+                                    self.do_enqueue_into_outbox(
+                                        commands::InvocationResponseCommand::from(
+                                            InvocationResponse {
+                                                target: listener,
+                                                result: completion.clone().into(),
+                                            },
+                                        ),
+                                    )?;
                                 }
 
                                 // Now register the promise completion
@@ -3650,7 +3681,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                             journal_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
 
-                    let service_invocation = Box::new(ServiceInvocation {
+                    let service_invocation = ServiceInvocation {
                         invocation_id: *callee_invocation_id,
                         invocation_target: callee_invocation_target.clone(),
                         argument: request.parameter,
@@ -3672,11 +3703,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         limit_key: Default::default(),
                         submit_notification_sink: None,
                         restate_version: RestateVersion::current(),
-                    });
+                    };
 
-                    self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(
-                        service_invocation,
-                    ))?;
+                    self.do_enqueue_into_outbox(commands::InvokeCommand::from(service_invocation))?;
                 } else {
                     // no action needed for an invoke entry that has been completed by the deployment
                 }
@@ -3705,7 +3734,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     Some(MillisSinceEpoch::new(invoke_time))
                 };
 
-                let service_invocation = Box::new(ServiceInvocation {
+                let service_invocation = ServiceInvocation {
                     invocation_id: *callee_invocation_id,
                     invocation_target: callee_invocation_target.clone(),
                     argument: request.parameter,
@@ -3723,9 +3752,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     limit_key: Default::default(),
                     submit_notification_sink: None,
                     restate_version: RestateVersion::current(),
-                });
+                };
 
-                self.do_enqueue_into_outbox(OutboxMessage::ServiceInvocation(service_invocation))?;
+                self.do_enqueue_into_outbox(commands::InvokeCommand::from(service_invocation))?;
             }
             EnrichedEntryHeader::Awakeable { is_completed, .. } => {
                 debug_assert!(!is_completed, "Awakeable entry must not be completed.");
@@ -3761,14 +3790,16 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
                 // Check is this is old or new awakeable id
                 if AwakeableIdentifier::from_str(&entry.id).is_ok() {
-                    self.do_enqueue_into_outbox(OutboxMessage::from_awakeable_completion(
-                        *invocation_id,
-                        *entry_index,
-                        entry.result.into(),
-                    ))?;
+                    self.do_enqueue_into_outbox(
+                        commands::InvocationResponseCommand::from_awakeable_completion(
+                            *invocation_id,
+                            *entry_index,
+                            entry.result.into(),
+                        ),
+                    )?;
                 } else if let Ok(new_awk_id) = ExternalSignalIdentifier::from_str(&entry.id) {
                     let (invocation_id, signal_id) = new_awk_id.into_inner();
-                    self.do_enqueue_into_outbox(OutboxMessage::NotifySignal(
+                    self.do_enqueue_into_outbox(commands::NotifySignalCommand::from(
                         NotifySignalRequest {
                             invocation_id,
                             signal: Signal::new(
@@ -3856,7 +3887,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         )
                         .await?
                     {
-                        self.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(
+                        self.do_enqueue_into_outbox(commands::AttachInvocationCommand::from(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: true,
@@ -3883,7 +3914,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         )
                         .await?
                     {
-                        self.do_enqueue_into_outbox(OutboxMessage::AttachInvocation(
+                        self.do_enqueue_into_outbox(commands::AttachInvocationCommand::from(
                             AttachInvocationRequest {
                                 invocation_query,
                                 block_on_inflight: false,
@@ -3943,7 +3974,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         };
 
         if let Some(target_invocation_id) = target_invocation_id {
-            self.do_enqueue_into_outbox(OutboxMessage::InvocationTermination(
+            self.do_enqueue_into_outbox(commands::TerminateInvocationCommand::from(
                 InvocationTermination {
                     invocation_id: target_invocation_id,
                     flavor: TerminationFlavor::Cancel,
@@ -4666,11 +4697,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         Ok(())
     }
 
-    fn do_enqueue_into_outbox(&mut self, message: OutboxMessage) -> Result<(), Error>
+    fn do_enqueue_into_outbox<M>(&mut self, message: M) -> Result<(), Error>
     where
+        M: v2::OutboxMessage,
         S: WriteOutboxTable + WriteFsmTable,
     {
         let seq_number = self.processor.outbox().outbox_tail();
+
         // TODO Here we could add an optimization to immediately execute outbox message command
         //  for partition_key within the range of this PP, but this is problematic due to how we tie
         //  the effects buffer with tracing. Once we solve that, we could implement that by roughly uncommenting this code :)
@@ -4683,69 +4716,27 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         //                 state
         //             ).await
         //         }
-        if self.is_leader {
-            match &message {
-                OutboxMessage::ServiceInvocation(service_invocation) => {
-                    debug!(
-                        rpc.service = %service_invocation.invocation_target.service_name(),
-                        rpc.method = %service_invocation.invocation_target.handler_name(),
-                        restate.invocation.id = %service_invocation.invocation_id,
-                        restate.invocation.target = %service_invocation.invocation_target,
-                        restate.outbox.seq = seq_number,
-                        "Effect: Send service invocation to partition processor"
-                    )
-                }
-                OutboxMessage::ServiceResponse(InvocationResponse {
-                    result: ResponseResult::Success(_),
-                    target,
-                }) => {
-                    debug!(
-                        restate.invocation.id = %target.caller_id,
-                        restate.outbox.seq = seq_number,
-                        "Effect: Send success response to another invocation for completion id {}",
-                        target.caller_completion_id
-                    )
-                }
-                OutboxMessage::InvocationTermination(invocation_termination) => {
-                    debug!(
-                        restate.invocation.id = %invocation_termination.invocation_id,
-                        restate.outbox.seq = seq_number,
-                        "Effect: Send invocation termination command '{:?}' to partition processor",
-                        invocation_termination.flavor
-                    )
-                }
-                OutboxMessage::ServiceResponse(InvocationResponse {
-                    result: ResponseResult::Failure(e),
-                    target,
-                }) => {
-                    debug!(
-                        restate.invocation.id = %target.caller_id,
-                        restate.outbox.seq = seq_number,
-                        "Effect: Send failure '{}' response to another invocation for completion id {}",
-                        e,
-                        target.caller_completion_id
-                    )
-                }
-                OutboxMessage::AttachInvocation(AttachInvocationRequest {
-                    invocation_query,
-                    ..
-                }) => {
-                    debug!(
-                        restate.outbox.seq = seq_number,
-                        "Effect: Enqueuing attach invocation request to '{:?}'", invocation_query,
-                    )
-                }
-                OutboxMessage::NotifySignal(NotifySignalRequest {
-                    invocation_id,
-                    signal,
-                }) => {
-                    debug!(
-                        restate.outbox.seq = seq_number,
-                        "Notifying signal to {invocation_id} with signal id {:?}", signal.id,
-                    )
-                }
-            }
-        }
+
+        debug_if_leader!(
+            self.is_leader,
+            restate.outbox.seq = seq_number,
+            restate.partition.key = message.partition_key(),
+            "Send outbox message with command kind {}",
+            M::KIND
+        );
+        // Only write opaque message from restate v1.9.0
+        let message = if SemanticRestateVersion::current() < &RESTATE_VERSION_1_9_0 {
+            message.into_outbox_message()
+        } else {
+            message.encode(self.encoding_arena).map_err(Error::Outbox)?;
+
+            OutboxMessage::Opaque(OpaqueMessage {
+                partition_key: message.partition_key(),
+                codec: message.default_codec(),
+                kind: M::KIND.into(),
+                message: self.encoding_arena.split().freeze(),
+            })
+        };
 
         self.processor
             .outbox_mut()

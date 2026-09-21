@@ -49,7 +49,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-opentelemetry = { workspace = true }
 tokio = { workspace = true }
-tokio-util = { workspace = true, features = ["rt"] }
+tokio-util = { workspace = true, features = ["rt", "time"] }
 tonic = { workspace = true, features = ["codegen", "server"] }
 tonic-prost = { workspace = true }
 tower = { workspace = true, features = ["util"] }

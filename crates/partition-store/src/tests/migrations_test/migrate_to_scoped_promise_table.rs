@@ -31,7 +31,7 @@ use crate::migrations::MigrationContext;
 use crate::migrations::migrate_to_scoped_promise_table;
 use crate::migrations::tests::distinct_service_ids;
 use crate::promise_table::{PromiseKey, ScopedPromiseKey};
-use crate::scan::{PhysicalScan, TableScan};
+use crate::scan::TableScan;
 
 #[restate_core::test]
 async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table() {
@@ -109,10 +109,8 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
     let mut unscoped_iter = rocksdb
         .partition_db()
         .scan(
-            PhysicalScan::from(
-                TableScan::ScanPartitionKeyRange::<PromiseKey>(rocksdb.partition_key_range()),
-                &mut arena,
-            ),
+            TableScan::ScanPartitionKeyRange::<PromiseKey>(rocksdb.partition_key_range())
+                .encode(&mut arena),
             rocksdb::ReadOptions::default(),
         )
         .expect("scan should start");
@@ -132,10 +130,8 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
     let mut scoped_iter = rocksdb
         .partition_db()
         .scan(
-            PhysicalScan::from(
-                TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(rocksdb.partition_key_range()),
-                &mut arena,
-            ),
+            TableScan::ScanPartitionKeyRange::<ScopedPromiseKey>(rocksdb.partition_key_range())
+                .encode(&mut arena),
             rocksdb::ReadOptions::default(),
         )
         .expect("scan should start");
