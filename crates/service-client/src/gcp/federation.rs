@@ -269,7 +269,7 @@ async fn aws_federation_credentials() -> Result<Arc<AwsFederationCredentials>, S
             let Some(config) = FEDERATION_CONFIG.get().and_then(Option::as_ref) else {
                 return Err(
                     "this deployment requests GCP workload identity federation, but the server \
-                     has no [gcp-federation] configuration; set aws-role-arn and \
+                     has no [worker.invoker.gcp-federation] configuration; set aws-role-arn and \
                      aws-role-session-name to enable it"
                         .to_owned(),
                 );

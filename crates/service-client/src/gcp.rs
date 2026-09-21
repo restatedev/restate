@@ -2051,7 +2051,7 @@ mod tests {
             audience,
         )
         .await
-        .expect_err("must fail without a [gcp-federation] configuration");
+        .expect_err("must fail without a [worker.invoker.gcp-federation] configuration");
         assert!(
             err.to_string().contains("GCP source credentials"),
             "federated construction failures must not be mislabeled as ADC: {err}"

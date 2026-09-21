@@ -32,16 +32,18 @@ aws-role-arn = "arn:aws:iam::<account>:role/<federation-role>"
 aws-role-session-name = "<a value allowed by the role's trust policy>"
 ```
 
-The experimental flag is required when registering a federated deployment. It is an admission
-gate: removing it does not disable already-registered deployments. Using federation persists
-deployment metadata that Restate v1.7 does not understand, so a server that has registered such a
-deployment cannot safely roll back to v1.7.
+### Impact on Users
 
-Restate validates and captures `gcp-federation` once during node startup, including when it is
-absent. Invalid federation configuration fails startup. Changing `aws-role-arn` or
-`aws-role-session-name` requires a server restart. Removing `gcp-federation` while registered
-deployments depend on it strands those deployments after restart; restore the configuration and
-restart the server to recover them.
+The experimental flag is an admission gate: removing it prevents new federated registrations but
+does not disable already-registered deployments. Using federation persists deployment metadata
+that Restate v1.7 does not understand, so a server that has registered such a deployment cannot
+safely roll back to v1.7.
+
+Restate validates and captures the `[worker.invoker.gcp-federation]` configuration once during
+node startup, including when it is absent. Invalid federation configuration fails startup. Changing
+`aws-role-arn` or `aws-role-session-name` requires a server restart. Removing
+`[worker.invoker.gcp-federation]` while registered deployments depend on it strands those
+deployments after restart; restore the configuration and restart the server to recover them.
 
 ### Usage
 
@@ -58,35 +60,10 @@ federated subject:
 arn:aws:sts::AWS_ACCOUNT:assumed-role/FEDERATION_ROLE/ROLE_SESSION_NAME
 ```
 
-In Google Cloud, create a workload identity pool and AWS provider. Map the AWS ARN to
-`google.subject`, and restrict the provider to the expected AWS account and federation role:
-
-```sh
-gcloud iam workload-identity-pools create RESTATE_POOL \
-  --project=GCP_PROJECT --location=global
-
-gcloud iam workload-identity-pools providers create-aws RESTATE_PROVIDER \
-  --project=GCP_PROJECT --location=global \
-  --workload-identity-pool=RESTATE_POOL \
-  --account-id=AWS_ACCOUNT \
-  --attribute-mapping='google.subject=assertion.arn,attribute.aws_role=assertion.arn.extract("assumed-role/{role}/")' \
-  --attribute-condition="assertion.account == 'AWS_ACCOUNT' && attribute.aws_role == 'FEDERATION_ROLE'"
-```
-
-Grant the exact assumed-role session permission to mint an ID token as the deployment's service
-account. Then grant that service account permission to invoke the private Cloud Run service:
-
-```sh
-gcloud iam service-accounts add-iam-policy-binding \
-  INVOKER_SA@GCP_PROJECT.iam.gserviceaccount.com \
-  --role=roles/iam.serviceAccountOpenIdTokenCreator \
-  --member="principal://iam.googleapis.com/projects/GCP_PROJECT_NUMBER/locations/global/workloadIdentityPools/RESTATE_POOL/subject/arn:aws:sts::AWS_ACCOUNT:assumed-role/FEDERATION_ROLE/ROLE_SESSION_NAME"
-
-gcloud run services add-iam-policy-binding CLOUD_RUN_SERVICE \
-  --project=GCP_PROJECT --region=GCP_REGION \
-  --role=roles/run.invoker \
-  --member="serviceAccount:INVOKER_SA@GCP_PROJECT.iam.gserviceaccount.com"
-```
+In Google Cloud, configure an AWS workload identity provider that maps this assumed-role session
+to `google.subject`. Grant that principal
+`roles/iam.serviceAccountOpenIdTokenCreator` on the deployment's service account, and grant the
+service account `roles/run.invoker` on the private Cloud Run service.
 
 Finally, register the private deployment with its provider and service account:
 
@@ -100,5 +77,6 @@ restate dp register https://SERVICE_URL \
 is the default ID-token audience; use `--gcp-audience` only when the service requires another value.
 The Restate CLI refuses to send federation configuration to a server that does not advertise Admin
 API v5 with the `gcp_workload_identity_federation` experimental feature enabled.
-A deployment that requests federation on a server without `gcp-federation` configured fails closed
-with an actionable error and never sends an unauthenticated fallback request.
+A deployment that requests federation on a server without
+`[worker.invoker.gcp-federation]` configured fails closed with an actionable error and never sends
+an unauthenticated fallback request.

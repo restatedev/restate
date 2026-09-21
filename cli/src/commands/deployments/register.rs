@@ -84,7 +84,8 @@ pub struct Register {
     /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
     /// Use AWS-to-GCP workload identity federation instead of the server's ambient Application
     /// Default Credentials. The server must enable the experimental
-    /// `gcp_workload_identity_federation` feature and have `[gcp-federation]` configured. Requires
+    /// `gcp_workload_identity_federation` feature and have
+    /// `[worker.invoker.gcp-federation]` configured. Requires
     /// --gcp-impersonate-service-account and implies --gcp-id-token.
     #[clap(long, requires = "gcp_impersonate_service_account")]
     gcp_workload_identity_provider: Option<String>,
