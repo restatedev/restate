@@ -27,7 +27,7 @@ use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{
-    BaseEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
+    BaseEntryId, CanonicalEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
 };
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
@@ -501,7 +501,21 @@ impl ScanLocalPartitionFilter for VQueueFilter {
                 }
 
                 entry_ids = entry_ids.or_else(|| {
-                    parse_id_selection("entry_id", range, conjunct, BaseEntryId::partition_key)
+                    let selection = parse_id_selection(
+                        "entry_id",
+                        range,
+                        conjunct,
+                        CanonicalEntryId::partition_key,
+                    )?;
+                    // The status index is keyed by base ID. The full predicate is
+                    // applied to the emitted canonical IDs to check the sequence.
+                    Some(IdSelection {
+                        ids: selection
+                            .ids
+                            .into_iter()
+                            .map(|id| *id.as_base_entry_id())
+                            .collect(),
+                    })
                 });
             }
         }
@@ -721,7 +735,7 @@ mod tests {
     };
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::VQueueId;
+    use restate_types::vqueues::{Seq, VQueueId};
 
     use crate::filter::{
         FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
@@ -1402,12 +1416,17 @@ mod tests {
     fn vqueue_filter_extracts_entry_ids_and_rejects_negated_list() {
         let id1 = make_invocation_id("key-1");
         let id2 = make_invocation_id("key-2");
+        let canonical1 = BaseEntryId::from(id1).canonicalize(Seq::new(1));
+        let canonical2 = BaseEntryId::from(id2).canonicalize(Seq::MAX);
         let filter = VQueueFilter::new(
             FULL_RANGE,
             Some(and(
                 in_list(
                     "entry_id",
-                    vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
+                    vec![
+                        utf8_lit(canonical1.to_string()),
+                        utf8_lit(canonical2.to_string()),
+                    ],
                 ),
                 eq(col("stage"), utf8_lit("running")),
             )),
@@ -1424,7 +1443,10 @@ mod tests {
 
         let filter = VQueueFilter::new(
             FULL_RANGE,
-            Some(not_in_list("entry_id", vec![utf8_lit(id1.to_string())])),
+            Some(not_in_list(
+                "entry_id",
+                vec![utf8_lit(canonical1.to_string())],
+            )),
         );
         assert!(filter.entry_ids.is_none());
     }
