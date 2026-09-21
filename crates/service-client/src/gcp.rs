@@ -18,11 +18,11 @@
 use std::sync::{Arc, Once, OnceLock};
 use std::time::Duration;
 
-use async_trait::async_trait;
 use bytestring::ByteString;
 use futures::FutureExt as _;
 use futures::future::{BoxFuture, Shared};
 use google_cloud_auth::credentials::Credentials as GoogleCredentials;
+use google_cloud_auth::credentials::idtoken::IDTokenCredentials;
 use moka::future::Cache;
 use moka::ops::compute::{CompResult, Op};
 use thiserror::Error;
@@ -35,6 +35,8 @@ use restate_types::deployment::GoogleIdTokenAuth;
 
 #[cfg(any(test, feature = "test_util"))]
 use ahash::HashMap;
+#[cfg(test)]
+use google_cloud_auth::credentials::idtoken::IDTokenCredentialsProvider;
 #[cfg(any(test, feature = "test_util"))]
 use parking_lot::Mutex;
 
@@ -115,13 +117,7 @@ impl IdTokenSpec {
     }
 }
 
-#[async_trait]
-trait IdTokenSource: Send + Sync {
-    async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError>;
-}
-
-type Credential = Arc<dyn IdTokenSource>;
-type CredentialBuild = Shared<BoxFuture<'static, Result<Credential, GcpAuthError>>>;
+type CredentialBuild = Shared<BoxFuture<'static, Result<IDTokenCredentials, GcpAuthError>>>;
 
 /// Cache-owned construction state. Retaining the shared future lets construction outlive any
 /// individual caller, while the once-lock ensures only one TaskCenter build is spawned per entry.
@@ -140,7 +136,7 @@ impl CredentialEntry {
         &self,
         registry: &'static CredentialRegistry,
         spec: &IdTokenSpec,
-    ) -> Result<Credential, GcpAuthError> {
+    ) -> Result<IDTokenCredentials, GcpAuthError> {
         self.build
             .get_or_init(|| registry.start_build(spec.clone()))
             .clone()
@@ -157,15 +153,6 @@ impl CredentialEntry {
                 .now_or_never()
                 .is_some_and(|result| result.is_err()),
         })
-    }
-}
-
-struct Live(google_cloud_auth::credentials::idtoken::IDTokenCredentials);
-
-#[async_trait]
-impl IdTokenSource for Live {
-    async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-        self.0.id_token().await
     }
 }
 
@@ -235,8 +222,11 @@ impl RecoverableCredentialSource {
 }
 
 #[cfg(test)]
-type ConstructOverride =
-    Arc<dyn Fn(IdTokenSpec) -> BoxFuture<'static, Result<Credential, GcpAuthError>> + Send + Sync>;
+type ConstructOverride = Arc<
+    dyn Fn(IdTokenSpec) -> BoxFuture<'static, Result<IDTokenCredentials, GcpAuthError>>
+        + Send
+        + Sync,
+>;
 #[cfg(test)]
 type AmbientSourceOverride = Arc<dyn Fn() -> Result<GoogleCredentials, String> + Send + Sync>;
 
@@ -441,18 +431,17 @@ impl CredentialRegistry {
                 "gcp-ambient-credential-source-build",
                 async move { spawn_bounded_blocking(build).await },
             )
-            .map_err(|_| {
-                "TaskCenter is shutting down while building the ambient GCP credential source"
-                    .to_owned()
+            .map_err(|shutdown| {
+                format!("failed to start ambient GCP credential source construction: {shutdown}")
             })?;
         match task.await {
             Ok(Ok(result)) => result,
             Ok(Err(join_error)) => Err(format!(
                 "ambient GCP credential source construction task panicked: {join_error}"
             )),
-            Err(_shutdown) => {
-                Err("ambient GCP credential source construction task failed".to_owned())
-            }
+            Err(shutdown) => Err(format!(
+                "ambient GCP credential source construction did not complete: {shutdown}"
+            )),
         }
     }
 
@@ -480,25 +469,32 @@ impl CredentialRegistry {
             },
         ) {
             Ok(task) => async move {
-                task.await.unwrap_or_else(|_| {
+                task.await.unwrap_or_else(|shutdown| {
                     Err(GcpAuthError::Build {
                         audience: audience.to_string(),
-                        message: "GCP credential construction task failed".to_owned(),
+                        message: format!(
+                            "GCP ID-token credential construction did not complete: {shutdown}"
+                        ),
                     })
                 })
             }
             .boxed()
             .shared(),
-            Err(_) => futures::future::ready(Err(GcpAuthError::Build {
+            Err(shutdown) => futures::future::ready(Err(GcpAuthError::Build {
                 audience: audience.to_string(),
-                message: "TaskCenter is shutting down".to_owned(),
+                message: format!(
+                    "failed to start GCP ID-token credential construction: {shutdown}"
+                ),
             }))
             .boxed()
             .shared(),
         }
     }
 
-    async fn build_credentials(&self, spec: IdTokenSpec) -> Result<Credential, GcpAuthError> {
+    async fn build_credentials(
+        &self,
+        spec: IdTokenSpec,
+    ) -> Result<IDTokenCredentials, GcpAuthError> {
         let IdTokenSpec {
             impersonate,
             audience,
@@ -556,8 +552,8 @@ async fn spawn_bounded_blocking<T: Send + 'static>(
 
 async fn run_blocking(
     audience: String,
-    build: impl FnOnce() -> Result<Arc<dyn IdTokenSource>, GcpAuthError> + Send + 'static,
-) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+    build: impl FnOnce() -> Result<IDTokenCredentials, GcpAuthError> + Send + 'static,
+) -> Result<IDTokenCredentials, GcpAuthError> {
     spawn_bounded_blocking(build).await.unwrap_or_else(|e| {
         Err(GcpAuthError::Build {
             audience,
@@ -566,10 +562,10 @@ async fn run_blocking(
     })
 }
 
-fn build_ambient_credentials(audience: &str) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+fn build_ambient_credentials(audience: &str) -> Result<IDTokenCredentials, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
-    let credentials = idtoken::Builder::new(audience).build().map_err(|e| {
+    idtoken::Builder::new(audience).build().map_err(|e| {
         // authorized_user (gcloud) and external_account (Workload Identity Federation) ADC
         // sources cannot mint ID tokens directly.
         if e.is_not_supported() {
@@ -582,15 +578,14 @@ fn build_ambient_credentials(audience: &str) -> Result<Arc<dyn IdTokenSource>, G
                 message: e.to_string(),
             }
         }
-    })?;
-    Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
+    })
 }
 
 fn build_impersonated_credentials(
     audience: &str,
     service_account: &str,
     source: GoogleCredentials,
-) -> Result<Arc<dyn IdTokenSource>, GcpAuthError> {
+) -> Result<IDTokenCredentials, GcpAuthError> {
     use google_cloud_auth::credentials::idtoken;
 
     let credentials =
@@ -600,7 +595,7 @@ fn build_impersonated_credentials(
                 audience: audience.to_owned(),
                 message: e.to_string(),
             })?;
-    Ok(Arc::new(Live(credentials)) as Arc<dyn IdTokenSource>)
+    Ok(credentials)
 }
 
 #[cfg(any(test, feature = "test_util"))]
@@ -691,12 +686,14 @@ mod tests {
         "test-token".to_owned()
     }
 
-    fn ok_source() -> Credential {
-        MockSource::new(|_| MockOutcome::Token(token()))
+    fn ok_source() -> IDTokenCredentials {
+        MockSource::credentials(|_| MockOutcome::Token(token()))
     }
 
-    fn permanently_failing_source() -> Credential {
-        MockSource::new(|_| MockOutcome::Error(permanent_error("impersonation misconfigured")))
+    fn permanently_failing_source() -> IDTokenCredentials {
+        MockSource::credentials(|_| {
+            MockOutcome::Error(permanent_error("impersonation misconfigured"))
+        })
     }
 
     #[test]
@@ -718,6 +715,14 @@ mod tests {
         behavior: Mutex<Box<dyn FnMut(usize) -> MockOutcome + Send>>,
     }
 
+    impl std::fmt::Debug for MockSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("MockSource")
+                .field("calls", &self.calls)
+                .finish_non_exhaustive()
+        }
+    }
+
     enum MockOutcome {
         Token(String),
         Error(google_cloud_auth::errors::CredentialsError),
@@ -725,28 +730,35 @@ mod tests {
     }
 
     impl MockSource {
-        fn new(behavior: impl FnMut(usize) -> MockOutcome + Send + 'static) -> Arc<Self> {
-            Arc::new(Self {
+        fn credentials(
+            behavior: impl FnMut(usize) -> MockOutcome + Send + 'static,
+        ) -> IDTokenCredentials {
+            Self {
                 calls: AtomicUsize::new(0),
                 behavior: Mutex::new(Box::new(behavior)),
-            })
+            }
+            .into()
         }
     }
 
-    #[async_trait]
-    impl IdTokenSource for MockSource {
-        async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
+    impl IDTokenCredentialsProvider for MockSource {
+        fn id_token(
+            &self,
+        ) -> impl Future<Output = Result<String, google_cloud_auth::errors::CredentialsError>> + Send
+        {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
             let outcome = (self.behavior.lock())(call);
-            match outcome {
-                MockOutcome::Token(token) => Ok(token),
-                MockOutcome::Error(error) => Err(error),
-                MockOutcome::Hang => std::future::pending().await,
+            async move {
+                match outcome {
+                    MockOutcome::Token(token) => Ok(token),
+                    MockOutcome::Error(error) => Err(error),
+                    MockOutcome::Hang => std::future::pending().await,
+                }
             }
         }
     }
 
-    fn ready_entry(source: Credential) -> Arc<CredentialEntry> {
+    fn ready_entry(source: IDTokenCredentials) -> Arc<CredentialEntry> {
         let entry = Arc::new(CredentialEntry::new());
         assert!(
             entry
@@ -794,7 +806,7 @@ mod tests {
 
     fn add_build_override(
         cache_key: IdTokenSpec,
-        f: impl Fn(&IdTokenSpec) -> Result<Credential, GcpAuthError> + Send + Sync + 'static,
+        f: impl Fn(&IdTokenSpec) -> Result<IDTokenCredentials, GcpAuthError> + Send + Sync + 'static,
     ) {
         let f = Arc::new(f);
         credential_registry()
@@ -813,7 +825,7 @@ mod tests {
     fn add_async_build_override<F, Fut>(cache_key: IdTokenSpec, f: F)
     where
         F: Fn(IdTokenSpec) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = Result<Credential, GcpAuthError>> + Send + 'static,
+        Fut: Future<Output = Result<IDTokenCredentials, GcpAuthError>> + Send + 'static,
     {
         credential_registry()
             .test_hooks
@@ -1033,7 +1045,7 @@ mod tests {
 
         add_async_build_override(IdTokenSpec::ambient(audience), move |_| async move {
             tokio::time::sleep(Duration::from_secs(4)).await;
-            Ok(MockSource::new(|_| MockOutcome::Hang) as Credential)
+            Ok(MockSource::credentials(|_| MockOutcome::Hang))
         });
 
         let started = Instant::now();
@@ -1224,18 +1236,18 @@ mod tests {
         ] {
             let audience = format!("https://{name}.example.com");
             let cache_key = IdTokenSpec::ambient(&audience);
-            let source: Credential = match failure {
-                MintFailure::Transient => MockSource::new(|call| {
+            let source = match failure {
+                MintFailure::Transient => MockSource::credentials(|call| {
                     if call == 0 {
                         MockOutcome::Error(transient_error("temporarily unavailable"))
                     } else {
                         MockOutcome::Token(token())
                     }
                 }),
-                MintFailure::Timeout => MockSource::new(|_| MockOutcome::Hang),
-                MintFailure::Permanent => {
-                    MockSource::new(|_| MockOutcome::Error(permanent_error("misconfigured")))
-                }
+                MintFailure::Timeout => MockSource::credentials(|_| MockOutcome::Hang),
+                MintFailure::Permanent => MockSource::credentials(|_| {
+                    MockOutcome::Error(permanent_error("misconfigured"))
+                }),
             };
             let entry = ready_entry(source);
             credential_registry()
@@ -1296,20 +1308,29 @@ mod tests {
             replacement: Arc<CredentialEntry>,
         }
 
-        #[async_trait]
-        impl IdTokenSource for SwapThenFail {
-            async fn id_token(
-                &self,
-            ) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-                credential_registry()
-                    .cache
-                    .insert(self.spec.clone(), self.replacement.clone())
-                    .await;
-                Err(permanent_error("old, now gone"))
+        impl std::fmt::Debug for SwapThenFail {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct("SwapThenFail")
+                    .field("spec", &self.spec)
+                    .finish_non_exhaustive()
             }
         }
 
-        let old_source: Arc<dyn IdTokenSource> = Arc::new(SwapThenFail {
+        impl IDTokenCredentialsProvider for SwapThenFail {
+            fn id_token(
+                &self,
+            ) -> impl Future<Output = Result<String, google_cloud_auth::errors::CredentialsError>> + Send
+            {
+                let spec = self.spec.clone();
+                let replacement = self.replacement.clone();
+                async move {
+                    credential_registry().cache.insert(spec, replacement).await;
+                    Err(permanent_error("old, now gone"))
+                }
+            }
+        }
+
+        let old_source = IDTokenCredentials::from(SwapThenFail {
             spec: cache_key.clone(),
             replacement: new_entry.clone(),
         });
