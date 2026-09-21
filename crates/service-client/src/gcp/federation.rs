@@ -29,7 +29,6 @@ use std::fmt;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, SystemTime};
 
-use async_trait::async_trait;
 use aws_config::BehaviorVersion;
 use aws_config::sts::AssumeRoleProvider;
 use aws_credential_types::Credentials as AwsCredentials;
@@ -37,7 +36,9 @@ use aws_credential_types::provider::{ProvideCredentials, SharedCredentialsProvid
 use aws_sigv4::http_request::{SignableBody, SignableRequest, SigningSettings, sign};
 use aws_sigv4::sign::v4;
 use google_cloud_auth::credentials::external_account::ProgrammaticBuilder;
-use google_cloud_auth::credentials::idtoken;
+use google_cloud_auth::credentials::idtoken::{
+    self, IDTokenCredentials, IDTokenCredentialsProvider,
+};
 use google_cloud_auth::credentials::subject_token::{
     Builder as SubjectTokenBuilder, SubjectToken, SubjectTokenProvider,
 };
@@ -48,7 +49,7 @@ use tracing::warn;
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::GcpFederationOptions;
 
-use super::{Credential, GcpAuthError, IdTokenSource, RecoverableCredentialSource};
+use super::{GcpAuthError, RecoverableCredentialSource};
 
 /// AWS subject-token type Google STS expects for a SigV4-signed `GetCallerIdentity` envelope.
 const AWS4_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:aws:token-type:aws4_request";
@@ -527,14 +528,25 @@ impl FederatedAccessTokenSourceIndex {
 
 /// Per-audience/service-account ID-token credentials, retaining their source's lease.
 pub(super) struct FederatedIdTokenCredentials {
-    credentials: google_cloud_auth::credentials::idtoken::IDTokenCredentials,
+    credentials: IDTokenCredentials,
     _access_token_source: Arc<FederatedAccessTokenSource>,
 }
 
-#[async_trait]
-impl IdTokenSource for FederatedIdTokenCredentials {
-    async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-        self.credentials.id_token().await
+impl fmt::Debug for FederatedIdTokenCredentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FederatedIdTokenCredentials")
+            .field("credentials", &self.credentials)
+            .finish_non_exhaustive()
+    }
+}
+
+impl IDTokenCredentialsProvider for FederatedIdTokenCredentials {
+    fn id_token(
+        &self,
+    ) -> impl std::future::Future<
+        Output = Result<String, google_cloud_auth::errors::CredentialsError>,
+    > + Send {
+        self.credentials.id_token()
     }
 }
 
@@ -543,7 +555,7 @@ pub(super) async fn build_federated_source(
     provider: String,
     service_account: String,
     audience: String,
-) -> Result<Credential, GcpAuthError> {
+) -> Result<IDTokenCredentials, GcpAuthError> {
     let access_token_source = sources.get_or_create(&provider);
     let access_token_credentials = access_token_source
         .credentials
@@ -572,10 +584,11 @@ pub(super) async fn build_federated_source(
         message: e.to_string(),
     })?;
 
-    Ok(Arc::new(FederatedIdTokenCredentials {
+    Ok(FederatedIdTokenCredentials {
         credentials,
         _access_token_source: access_token_source,
-    }) as Credential)
+    }
+    .into())
 }
 
 async fn build_federated_access_token_source_on_tc_task(
@@ -621,7 +634,9 @@ pub(super) mod test_hooks {
 
     use parking_lot::Mutex;
 
-    use super::{Credential, FederatedAccessTokenSource};
+    use google_cloud_auth::credentials::idtoken::{IDTokenCredentials, IDTokenCredentialsProvider};
+
+    use super::FederatedAccessTokenSource;
 
     pub(super) type AccessTokenSourceOverride =
         Arc<dyn Fn() -> Result<google_cloud_auth::credentials::Credentials, String> + Send + Sync>;
@@ -653,19 +668,30 @@ pub(super) mod test_hooks {
         pub(super) _access_token_source: Arc<FederatedAccessTokenSource>,
     }
 
-    #[async_trait::async_trait]
-    impl super::IdTokenSource for FederatedIdTokenCredentials {
-        async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-            Ok("test-federated-id-token".to_owned())
+    impl std::fmt::Debug for FederatedIdTokenCredentials {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("FederatedIdTokenCredentials")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl IDTokenCredentialsProvider for FederatedIdTokenCredentials {
+        fn id_token(
+            &self,
+        ) -> impl std::future::Future<
+            Output = Result<String, google_cloud_auth::errors::CredentialsError>,
+        > + Send {
+            std::future::ready(Ok("test-federated-id-token".to_owned()))
         }
     }
 
     pub(in crate::gcp) fn leased_credential(
         access_token_source: Arc<FederatedAccessTokenSource>,
-    ) -> Credential {
-        Arc::new(FederatedIdTokenCredentials {
+    ) -> IDTokenCredentials {
+        FederatedIdTokenCredentials {
             _access_token_source: access_token_source,
-        })
+        }
+        .into()
     }
 }
 

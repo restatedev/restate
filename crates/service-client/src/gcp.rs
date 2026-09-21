@@ -1625,7 +1625,7 @@ mod tests {
     async fn build_federated_source_for_spec(
         sources: &federation::FederatedAccessTokenSourceIndex,
         spec: IdTokenSpec,
-    ) -> Result<Credential, GcpAuthError> {
+    ) -> Result<IDTokenCredentials, GcpAuthError> {
         let IdTokenSpec { identity, audience } = spec;
         let IdTokenIdentity::Federated {
             provider,
@@ -1713,9 +1713,10 @@ mod tests {
                 add_build_override(
                     IdTokenSpec::federated(audience, provider, service_account),
                     move |_| {
-                        Ok(Arc::new(LeasedFailingSource {
+                        Ok(LeasedFailingSource {
                             _access_token_source: outer_credential_lease.clone(),
-                        }) as Credential)
+                        }
+                        .into())
                     },
                 );
                 (
@@ -1736,10 +1737,19 @@ mod tests {
         _access_token_source: Arc<federation::FederatedAccessTokenSource>,
     }
 
-    #[async_trait]
-    impl IdTokenSource for LeasedFailingSource {
-        async fn id_token(&self) -> Result<String, google_cloud_auth::errors::CredentialsError> {
-            Err(permanent_error("impersonation misconfigured"))
+    impl std::fmt::Debug for LeasedFailingSource {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("LeasedFailingSource")
+                .finish_non_exhaustive()
+        }
+    }
+
+    impl IDTokenCredentialsProvider for LeasedFailingSource {
+        fn id_token(
+            &self,
+        ) -> impl Future<Output = Result<String, google_cloud_auth::errors::CredentialsError>> + Send
+        {
+            std::future::ready(Err(permanent_error("impersonation misconfigured")))
         }
     }
 
@@ -1991,14 +2001,14 @@ mod tests {
             let impersonated_builds = impersonated_builds.clone();
             move |_| {
                 impersonated_builds.fetch_add(1, Ordering::SeqCst);
-                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential)
+                Ok(MockSource::credentials(|_| MockOutcome::Token(token())))
             }
         });
         add_build_override(federated_key, {
             let federated_builds = federated_builds.clone();
             move |_| {
                 federated_builds.fetch_add(1, Ordering::SeqCst);
-                Ok(MockSource::new(|_| MockOutcome::Token(token())) as Credential)
+                Ok(MockSource::credentials(|_| MockOutcome::Token(token())))
             }
         });
 
