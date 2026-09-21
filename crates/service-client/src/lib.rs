@@ -194,6 +194,7 @@ impl ServiceClient {
                                         message: format!(
                                             "minted token cannot be used as an HTTP header value: {e}"
                                         ),
+                                        transient: false,
                                     },
                                 )
                             })?;
@@ -254,24 +255,18 @@ impl ServiceClientError {
             //   metadata server, AWS STS, or Google STS is briefly unreachable).
             // - `Timeout` from the per-attempt deadline is transient by definition.
             // - `Build` (constructing the credentials builder) is most likely bad configuration.
-            // - `Mint` (the actual `id_token().await` call) is blanket-retryable: the underlying
-            //   SDK error mixes transient HTTP errors (429, 5xx, network failures from the metadata
-            //   server or IAM Credentials API) with permanent failures (bad impersonation perms,
-            //   audience refused by the upstream), and the surfaced error type does not expose the
-            //   HTTP status cleanly enough to split. The trade-off is that permanent mint failures
-            //   retry-and-fail-consistently rather than fail-fast; this is acceptable because the
-            //   discovery / invoker retry loops already bound the attempt count so the worst-case
-            //   overhead is bounded.
+            // - `Mint` preserves google-cloud-auth's transient classification.
             // - `AmbientUnsupported` is a misconfiguration (the ambient ADC source cannot mint
             //   ID tokens directly); retrying cannot help.
-            ServiceClientError::GcpAuth(_, gcp_error) => match gcp_error {
-                gcp::GcpAuthError::CredentialSource { .. }
-                | gcp::GcpAuthError::Timeout { .. }
-                | gcp::GcpAuthError::Mint { .. } => true,
-                gcp::GcpAuthError::Build { .. } | gcp::GcpAuthError::AmbientUnsupported { .. } => {
-                    false
+            ServiceClientError::GcpAuth(_, gcp_error) => {
+                match gcp_error {
+                    gcp::GcpAuthError::CredentialSource { .. }
+                    | gcp::GcpAuthError::Timeout { .. } => true,
+                    gcp::GcpAuthError::Mint { transient, .. } => *transient,
+                    gcp::GcpAuthError::Build { .. }
+                    | gcp::GcpAuthError::AmbientUnsupported { .. } => false,
                 }
-            },
+            }
             ServiceClientError::IdentityV1(_) => false, // this really should never happen
         }
     }
@@ -445,13 +440,17 @@ mod tests {
                     audience: "https://svc.example.com".into(),
                     service_account: "sa@p.iam.gserviceaccount.com".into(),
                     message: "permission denied".into(),
+                    transient: false,
                 },
-                // Mint is blanket-retryable: the SDK error type mixes
-                // transient (429/5xx/network) with permanent
-                // (permissions, audience) failures without a clean
-                // status to split on. Permanent failures will retry
-                // and fail consistently; the dispatch retry loop
-                // bounds the cost.
+                false,
+            ),
+            (
+                gcp::GcpAuthError::Mint {
+                    audience: "https://svc.example.com".into(),
+                    service_account: "sa@p.iam.gserviceaccount.com".into(),
+                    message: "temporarily unavailable".into(),
+                    transient: true,
+                },
                 true,
             ),
         ];
@@ -493,10 +492,12 @@ mod tests {
                     audience,
                     service_account,
                     message,
+                    transient,
                 } => gcp::GcpAuthError::Mint {
                     audience: audience.clone(),
                     service_account: service_account.clone(),
                     message: message.clone(),
+                    transient: *transient,
                 },
                 gcp::GcpAuthError::Timeout {
                     audience,

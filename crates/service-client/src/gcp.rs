@@ -88,6 +88,7 @@ pub enum GcpAuthError {
         audience: String,
         service_account: String,
         message: String,
+        transient: bool,
     },
     #[error(
         "token mint timed out after {duration:?} (audience '{audience}', impersonating '{service_account}')"
@@ -352,9 +353,10 @@ pub(crate) async fn mint(spec: &IdTokenSpec) -> Result<String, GcpAuthError> {
     match tokio::time::timeout_at(deadline, source.id_token()).await {
         Ok(Ok(token)) => Ok(token),
         Ok(Err(error)) => {
+            let transient = error.is_transient();
             let message = display_error_chain(&error);
             // Transient errors may self-heal; evict permanent failures only if still current.
-            if !error.is_transient() && registry.evict_if_unchanged(spec, &entry).await {
+            if !transient && registry.evict_if_unchanged(spec, &entry).await {
                 // Federated and ambient sources recover independently.
                 match &spec.identity {
                     IdTokenIdentity::Federated { provider, .. } => {
@@ -372,6 +374,7 @@ pub(crate) async fn mint(spec: &IdTokenSpec) -> Result<String, GcpAuthError> {
                 audience: audience.to_owned(),
                 service_account: service_account.to_owned(),
                 message,
+                transient,
             })
         }
         // A timeout does not prove the refresh task dead, so retain the entry. A continuously
@@ -773,6 +776,7 @@ fn test_override(
             audience: spec.audience.to_string(),
             service_account: service_account.to_owned(),
             message: message.clone(),
+            transient: false,
         })),
     }
 }
