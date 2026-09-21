@@ -49,7 +49,7 @@ use tracing::warn;
 use restate_core::{TaskCenter, TaskKind};
 use restate_types::config::GcpFederationOptions;
 
-use super::{GcpAuthError, RecoverableCredentialSource};
+use super::{GcpAuthError, RecoverableCredentialSource, display_error_chain};
 
 /// AWS subject-token type Google STS expects for a SigV4-signed `GetCallerIdentity` envelope.
 const AWS4_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:aws:token-type:aws4_request";
@@ -87,7 +87,13 @@ fn initialize_config_once(
         validate_aws_role_arn(&config.aws_role_arn)?;
         validate_aws_role_session_name(&config.aws_role_session_name)?;
     }
-    let _ = config_slot.set(config);
+    let installed = config_slot.get_or_init(|| config.clone());
+    if installed != &config {
+        warn!(
+            "ignoring GCP federation configuration that differs from the value captured at \
+             first node startup; restart the server to apply the new configuration"
+        );
+    }
     Ok(())
 }
 
@@ -114,16 +120,15 @@ fn validate_aws_role_arn(arn: &str) -> Result<(), String> {
     let Some(role_resource) = resource.strip_prefix("role/") else {
         return Err(invalid());
     };
-    let Some(role_name) = role_resource.rsplit('/').next() else {
-        return Err(invalid());
-    };
+    let (role_path, role_name) = role_resource
+        .rsplit_once('/')
+        .unwrap_or(("", role_resource));
     let role_name_ok = (1..=64).contains(&role_name.len())
         && role_name
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || "_+=,.@-".contains(c));
-    let path_ok = role_resource
-        .split('/')
-        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_graphic()));
+    // IAM paths admit every printable ASCII character, including repeated '/'.
+    let path_ok = role_path.chars().all(|c| c.is_ascii_graphic());
     if *scheme != "arn"
         || !matches!(*partition, "aws" | "aws-us-gov")
         || *service != "iam"
@@ -224,7 +229,10 @@ impl AwsFederationCredentials {
 fn federation_error_from_assume_role_failure(
     error: &aws_credential_types::provider::error::CredentialsError,
 ) -> FederationError {
-    let message = format!("assuming the AWS federation role for GCP authentication: {error}");
+    let message = format!(
+        "assuming the AWS federation role for GCP authentication: {}",
+        display_error_chain(error)
+    );
     // These are stable STS API error codes, see AssumeRole and common error references:
     // https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRole.html#API_AssumeRole_Errors
     // https://docs.aws.amazon.com/STS/latest/APIReference/CommonErrors.html
@@ -594,6 +602,9 @@ pub(super) async fn build_federated_source(
 async fn build_federated_access_token_source_on_tc_task(
     provider_resource: String,
 ) -> Result<google_cloud_auth::credentials::Credentials, String> {
+    // google-cloud-auth spawns the source's refresh task onto the current Tokio runtime during
+    // construction. Build on TaskCenter's default runtime so the refresh task does not inherit a
+    // partition processor's shorter lifetime.
     let task = TaskCenter::current()
         .spawn_unmanaged(
             TaskKind::Credentials,
@@ -959,6 +970,8 @@ mod federation_tests {
         // sixth field of the ARN rather than the last colon-separated token.
         super::validate_aws_role_arn("arn:aws:iam::123456789012:role/tenant:a/Federation")
             .expect("a colon inside the role path accepted");
+        super::validate_aws_role_arn("arn:aws:iam::123456789012:role/team//production/Federation")
+            .expect("empty components inside an IAM role path accepted");
     }
 
     #[test]
