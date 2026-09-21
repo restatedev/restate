@@ -21,6 +21,7 @@ use serde::Deserialize;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
+use restate_types::config::Configuration;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
@@ -105,19 +106,14 @@ where
         } => {
             validate_uri(&uri)?;
             let persisted_auth = if let Some(wire_auth) = auth {
-                // V5 prevents clients from mistaking an ignored provider field for ADC auth.
-                if version != AdminApiVersion::Unknown
-                    && version < AdminApiVersion::V5
-                    && matches!(
-                        &wire_auth,
-                        HttpAuth::GoogleIdToken(auth) if auth.workload_identity_provider.is_some()
-                    )
-                {
-                    return Err(MetaApiError::InvalidField(
-                        "auth.workload_identity_provider",
-                        "workload identity federation requires Admin API v5".to_owned(),
-                    ));
-                }
+                validate_gcp_federation_admission(
+                    version,
+                    Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_gcp_workload_identity_federation_enabled(),
+                    &wire_auth,
+                )?;
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
@@ -616,4 +612,65 @@ fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
         ));
     }
     Ok(())
+}
+
+#[allow(clippy::result_large_err)]
+fn validate_gcp_federation_admission(
+    version: AdminApiVersion,
+    feature_enabled: bool,
+    auth: &HttpAuth,
+) -> Result<(), MetaApiError> {
+    let requested = matches!(
+        auth,
+        HttpAuth::GoogleIdToken(auth) if auth.workload_identity_provider.is_some()
+    );
+    if !requested {
+        return Ok(());
+    }
+    // V5 prevents clients from mistaking an ignored provider field for ADC auth.
+    if version != AdminApiVersion::Unknown && version < AdminApiVersion::V5 {
+        return Err(MetaApiError::InvalidField(
+            "auth.workload_identity_provider",
+            "workload identity federation requires Admin API v5".to_owned(),
+        ));
+    }
+    if !feature_enabled {
+        return Err(MetaApiError::InvalidField(
+            "auth.workload_identity_provider",
+            "workload identity federation requires the server option \
+             experimental-enable-gcp-workload-identity-federation"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use bytestring::ByteString;
+
+    use super::*;
+
+    fn federated_auth() -> HttpAuth {
+        HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+            impersonate_service_account: Some(ByteString::from_static(
+                "sa@example.iam.gserviceaccount.com",
+            )),
+            audience: None,
+            workload_identity_provider: Some(ByteString::from_static(
+                "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r",
+            )),
+        })
+    }
+
+    #[test]
+    fn federated_registration_requires_v5_and_the_experimental_feature() {
+        let auth = federated_auth();
+        validate_gcp_federation_admission(AdminApiVersion::V4, true, &auth)
+            .expect_err("Admin API v4 must reject the provider field");
+        validate_gcp_federation_admission(AdminApiVersion::V5, false, &auth)
+            .expect_err("the experimental feature must be enabled");
+        validate_gcp_federation_admission(AdminApiVersion::V5, true, &auth)
+            .expect("an enabled Admin API v5 server accepts federation");
+    }
 }

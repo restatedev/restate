@@ -24,10 +24,17 @@ them.
 Server operators enable the feature under the invoker's service-client options:
 
 ```toml
+experimental-enable-gcp-workload-identity-federation = true
+
 [worker.invoker.gcp-federation]
 aws-role-arn = "arn:aws:iam::<account>:role/<federation-role>"
 aws-role-session-name = "<a value allowed by the role's trust policy>"
 ```
+
+The experimental flag is required when registering a federated deployment. It is an admission
+gate: removing it does not disable already-registered deployments. Using federation persists
+deployment metadata that Restate v1.7 does not understand, so a server that has registered such a
+deployment cannot safely roll back to v1.7.
 
 Restate validates and captures `gcp-federation` once during node startup, including when it is
 absent. Invalid federation configuration fails startup. Changing `aws-role-arn` or
@@ -91,6 +98,6 @@ restate dp register https://SERVICE_URL \
 `--gcp-workload-identity-provider` requires `--gcp-impersonate-service-account`. The deployment URI
 is the default ID-token audience; use `--gcp-audience` only when the service requires another value.
 The Restate CLI refuses to send federation configuration to a server that does not advertise Admin
-API v5.
+API v5 with the `gcp_workload_identity_federation` experimental feature enabled.
 A deployment that requests federation on a server without `gcp-federation` configured fails closed
 with an actionable error and never sends an unauthenticated fallback request.

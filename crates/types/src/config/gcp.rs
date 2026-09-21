@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// Configures the process-wide AWS role Restate uses for GCP workload identity federation. Each
 /// deployment selects its own workload identity provider and service account.
+/// Registering a federated deployment also requires
+/// `experimental-enable-gcp-workload-identity-federation = true`.
 ///
 /// Leave this block unset to disable the federation path entirely: a deployment that requests
 /// `workload_identity_provider` authentication on a server without this configured fails

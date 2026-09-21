@@ -10,6 +10,8 @@
 
 //! A wrapper client for admin HTTP service.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::bail;
@@ -132,6 +134,7 @@ pub struct AdminClient {
     pub(crate) admin_api_version: AdminApiVersion,
     pub(crate) restate_server_version: SemanticRestateVersion,
     pub(crate) advertised_ingress_address: Option<String>,
+    pub(crate) experimental_features: HashMap<Cow<'static, str>, bool>,
 }
 
 impl AdminClient {
@@ -171,6 +174,7 @@ impl AdminClient {
             admin_api_version: AdminApiVersion::Unknown,
             restate_server_version: SemanticRestateVersion::unknown(),
             advertised_ingress_address: None,
+            experimental_features: HashMap::new(),
         };
 
         if let Ok(envelope) = client.version().await {
@@ -226,6 +230,13 @@ impl AdminClient {
         url
     }
 
+    pub(crate) fn is_experimental_feature_enabled(&self, feature: &str) -> bool {
+        self.experimental_features
+            .get(feature)
+            .copied()
+            .unwrap_or(false)
+    }
+
     fn choose_api_version(
         mut client: AdminClient,
         version_information: VersionInformation,
@@ -248,6 +259,7 @@ impl AdminClient {
             client.admin_api_version = admin_api_version;
             client.advertised_ingress_address =
                 version_information.ingress_endpoint.map(|u| u.to_string());
+            client.experimental_features = version_information.features;
             Ok(client)
         } else {
             bail!(

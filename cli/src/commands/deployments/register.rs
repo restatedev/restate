@@ -83,7 +83,8 @@ pub struct Register {
     /// Full resource name of a GCP workload identity federation provider, e.g.
     /// `//iam.googleapis.com/projects/N/locations/global/workloadIdentityPools/P/providers/R`.
     /// Use AWS-to-GCP workload identity federation instead of the server's ambient Application
-    /// Default Credentials. The server must have `[gcp-federation]` configured. Requires
+    /// Default Credentials. The server must enable the experimental
+    /// `gcp_workload_identity_federation` feature and have `[gcp-federation]` configured. Requires
     /// --gcp-impersonate-service-account and implies --gcp-id-token.
     #[clap(long, requires = "gcp_impersonate_service_account")]
     gcp_workload_identity_provider: Option<String>,
@@ -226,10 +227,16 @@ fn validate_gcp_auth_flags(id_token_auth_requested: bool, is_lambda_target: bool
 fn validate_gcp_federation_support(
     provider_requested: bool,
     admin_api_version: AdminApiVersion,
+    feature_enabled: bool,
 ) -> Result<()> {
     if provider_requested && admin_api_version < AdminApiVersion::V5 {
         bail!(
             "--gcp-workload-identity-provider requires a Restate server that supports Admin API v5; upgrade the server before registering this deployment"
+        );
+    }
+    if provider_requested && !feature_enabled {
+        bail!(
+            "--gcp-workload-identity-provider requires the server's experimental-enable-gcp-workload-identity-federation option"
         );
     }
     Ok(())
@@ -256,6 +263,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     validate_gcp_federation_support(
         discover_opts.gcp_workload_identity_provider.is_some(),
         client.admin_api_version,
+        client.is_experimental_feature_enabled("gcp_workload_identity_federation"),
     )?;
 
     if discover_opts.breaking && client.admin_api_version < AdminApiVersion::V3 {
@@ -925,13 +933,23 @@ mod tests {
 
     #[test]
     fn provider_requires_admin_api_v5() {
-        validate_gcp_federation_support(true, AdminApiVersion::V4)
+        validate_gcp_federation_support(true, AdminApiVersion::V4, true)
             .expect_err("an older server must be rejected before registration");
-        validate_gcp_federation_support(true, AdminApiVersion::Unknown)
+        validate_gcp_federation_support(true, AdminApiVersion::Unknown, true)
             .expect_err("an unverified server must be rejected before registration");
-        validate_gcp_federation_support(true, AdminApiVersion::V5)
+        validate_gcp_federation_support(true, AdminApiVersion::V5, true)
             .expect("Admin API v5 supports the provider field");
-        validate_gcp_federation_support(false, AdminApiVersion::V4)
+        validate_gcp_federation_support(false, AdminApiVersion::V4, false)
             .expect("existing registration options remain compatible with v4");
+    }
+
+    #[test]
+    fn provider_requires_the_experimental_server_feature() {
+        validate_gcp_federation_support(true, AdminApiVersion::V5, false)
+            .expect_err("a server without the experimental feature must be rejected");
+        validate_gcp_federation_support(true, AdminApiVersion::V5, true)
+            .expect("an enabled server supports federation registration");
+        validate_gcp_federation_support(false, AdminApiVersion::V5, false)
+            .expect("non-federated registration does not require the feature");
     }
 }
