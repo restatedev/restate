@@ -27,7 +27,7 @@ use crate::keys::DecodeTableKey;
 use crate::migrations::MigrationContext;
 use crate::migrations::migrate_to_scoped_state_table;
 use crate::migrations::tests::distinct_service_ids;
-use crate::scan::{PhysicalScan, TableScan};
+use crate::scan::TableScan;
 use crate::state_table::{ScopedStateKey, StateKey};
 
 #[restate_core::test]
@@ -97,10 +97,8 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     let mut unscoped_iter = rocksdb
         .partition_db()
         .scan(
-            PhysicalScan::from(
-                TableScan::ScanPartitionKeyRange::<StateKey>(rocksdb.partition_key_range()),
-                &mut arena,
-            ),
+            TableScan::ScanPartitionKeyRange::<StateKey>(rocksdb.partition_key_range())
+                .encode(&mut arena),
             rocksdb::ReadOptions::default(),
         )
         .expect("scan should start");
@@ -120,10 +118,8 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
     let mut scoped_iter = rocksdb
         .partition_db()
         .scan(
-            PhysicalScan::from(
-                TableScan::ScanPartitionKeyRange::<ScopedStateKey>(rocksdb.partition_key_range()),
-                &mut arena,
-            ),
+            TableScan::ScanPartitionKeyRange::<ScopedStateKey>(rocksdb.partition_key_range())
+                .encode(&mut arena),
             rocksdb::ReadOptions::default(),
         )
         .expect("scan should start");

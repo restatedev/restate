@@ -18,7 +18,7 @@ use restate_types::sharding::PartitionKey;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
 use crate::promise_table::PromiseKey;
-use crate::scan::{PhysicalScan, TableScan};
+use crate::scan::TableScan;
 
 use super::{MigrationContext, MigrationError};
 
@@ -38,10 +38,7 @@ pub fn migrate_to_scoped_promise_table(
     let mut counter = 0;
 
     let mut iterator = ctx.partition_db.scan(
-        PhysicalScan::from(
-            TableScan::ScanPartitionKeyRange::<PromiseKey>(key_range),
-            &mut ctx.arena,
-        ),
+        TableScan::ScanPartitionKeyRange::<PromiseKey>(key_range).encode(&mut ctx.arena),
         rocksdb::ReadOptions::default(),
     )?;
     iterator.seek_to_first();
