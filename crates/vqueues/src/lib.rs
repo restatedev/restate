@@ -45,9 +45,8 @@ use restate_storage_api::vqueue_table::{
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
+use restate_types::identifiers::{BaseEntryId, DeploymentId, InvocationId, PartitionKey};
 use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
-use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::{EntryId, Seq, VQueueId};
 use restate_types::{LockName, Scope};
 use restate_util_string::{ReString, ToReString};
@@ -377,9 +376,9 @@ where
         wait_stats: WaitStats,
     ) -> EntryKey {
         let vqueue_id = header.vqueue_id();
-        let partition_key = vqueue_id.partition_key();
         assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(header.stage(), Stage::Inbox));
+        let id = header.canonical_entry_id();
 
         // Remove from inbox and move to ready
         self.storage
@@ -411,10 +410,7 @@ where
             // acquire lock
             let lock_state = LockState {
                 acquired_at: at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(
-                    partition_key,
-                    header.entry_id(),
-                ),
+                acquired_by: lock_table::AcquiredBy::from_entry(id.as_base_entry_id()),
             };
 
             self.storage
@@ -986,13 +982,7 @@ where
 
         if delete_after.is_zero() {
             // Delete immediately!
-            self.delete(
-                at,
-                vqueue_id,
-                header.entry_id(),
-                &modified_key,
-                header.metadata(),
-            );
+            self.delete(at, vqueue_id, &modified_key, header.metadata());
         }
     }
 
@@ -1004,14 +994,14 @@ where
         mut self,
         at: UniqueTimestamp,
         vqueue_id: &VQueueId,
-        entry_id: &EntryId,
         entry_key: &EntryKey,
         entry_metadata: &EntryMetadata,
     ) {
         assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
+        let id = entry_key.to_canonical_entry_id(vqueue_id.partition_key());
 
         debug!(
-            entry = %entry_id.display(vqueue_id.partition_key()),
+            entry = %id,
             qid = %vqueue_id,
             "{}->X",
             Stage::Finished,
@@ -1025,10 +1015,9 @@ where
         );
 
         self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), entry_id);
+            .delete_vqueue_entry_status(id.as_base_entry_id());
         // delete the entry's input
-        self.storage
-            .delete_vqueue_input_payload(vqueue_id, entry_key.seq(), entry_id);
+        self.storage.delete_vqueue_input_payload(vqueue_id, &id);
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
@@ -1054,6 +1043,8 @@ where
         // Remove from inbox and move to ready
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Inbox, header.entry_key());
+
+        let id = header.canonical_entry_id();
 
         // Fake run, for the same of completeness
         let update = metadata::Update::new(
@@ -1135,10 +1126,9 @@ where
         );
 
         self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), header.entry_id());
+            .delete_vqueue_entry_status(id.as_base_entry_id());
         // delete the entry's input
-        self.storage
-            .delete_vqueue_input_payload(vqueue_id, header.seq(), header.entry_id());
+        self.storage.delete_vqueue_input_payload(vqueue_id, &id);
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key);
@@ -1293,11 +1283,10 @@ where
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
         let seq = 0;
-        let entry_id = EntryId::from(invocation_id);
+        let entry_id = BaseEntryId::from(invocation_id);
         let stage = Stage::Running;
         let status = Status::Started;
 
-        let partition_key = invocation_id.partition_key();
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(invoked.timestamps.creation_time());
         let modified_at =
@@ -1333,7 +1322,7 @@ where
         if has_lock {
             let lock_state = LockState {
                 acquired_at: started_running_at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+                acquired_by: lock_table::AcquiredBy::from_entry(&entry_id),
             };
             let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
             self.storage.acquire_lock(&None, lock_name, &lock_state);
@@ -1512,10 +1501,9 @@ where
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
         let seq = 0;
-        let entry_id = EntryId::from(invocation_id);
+        let entry_id = BaseEntryId::from(invocation_id);
         let status = Status::Started;
 
-        let partition_key = invocation_id.partition_key();
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(parked.timestamps.creation_time());
 
@@ -1555,7 +1543,7 @@ where
                 // We try to use the last run timestamp if we have it, otherwise we fallback to the
                 // modification time.
                 acquired_at: may_have_ran_at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+                acquired_by: lock_table::AcquiredBy::from_entry(&entry_id),
             };
             let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
             self.storage.acquire_lock(&None, lock_name, &lock_state);

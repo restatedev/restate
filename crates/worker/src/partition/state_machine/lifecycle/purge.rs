@@ -23,13 +23,11 @@ use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::{
     EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
 };
-use restate_types::sharding::WithPartitionKey;
-use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
 use crate::partition::processor::ProcessorContext;
@@ -70,10 +68,9 @@ where
             }) => {
                 // delete the vqueue entry information.
                 if let Some(vqueue_id) = vqueue_id {
-                    let entry_id = EntryId::from(invocation_id);
                     let Some(header) = ctx
                         .storage
-                        .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                         .await?
                     else {
                         // This is equivalent to InvocationStatus::Free.
@@ -96,7 +93,6 @@ where
                     .delete(
                         at,
                         vqueue_id,
-                        &entry_id,
                         header.entry_key(),
                         header.metadata(),
                     );

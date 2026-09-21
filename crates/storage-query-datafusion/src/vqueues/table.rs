@@ -15,14 +15,12 @@ use std::sync::Arc;
 use futures::FutureExt;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_sharding::PartitionKey;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries,
-    ScanVQueueEntryStatusTable, Stage,
+    EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, Stage,
 };
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{CanonicalEntryId, VQueueId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
@@ -73,7 +71,7 @@ struct VQueuesScanner;
 
 enum VQueueRow<'a> {
     Stage(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-    Status(PartitionKey, &'a EntryId, &'a RawStatusHeaderRef<'a>),
+    Status(&'a CanonicalEntryId, &'a RawStatusHeaderRef<'a>),
 }
 
 impl ScanLocalPartition for VQueuesScanner {
@@ -97,7 +95,7 @@ impl ScanLocalPartition for VQueuesScanner {
             return partition_store
                 .for_each_vqueue_entry_status(
                     ScanEntryIdFilter::EntryIdSet(entry_ids.ids),
-                    move |partition_key, entry_id, header| {
+                    move |id, header| {
                         if stages
                             .as_ref()
                             .is_some_and(|stages| !stages.contains(&header.stage))
@@ -105,8 +103,8 @@ impl ScanLocalPartition for VQueuesScanner {
                             return ControlFlow::Continue(());
                         }
 
-                        f(VQueueRow::Status(partition_key, entry_id, header))
-                            .map_break(Result::unwrap)
+                        let canonical_id = id.canonicalize(header.seq);
+                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
                     },
                 )
                 .map(FutureExt::boxed);
@@ -131,8 +129,8 @@ impl ScanLocalPartition for VQueuesScanner {
             VQueueRow::Stage(qid, stage, entry_key, entry) => {
                 append_vqueues_row(row_builder, qid, stage, entry_key, entry);
             }
-            VQueueRow::Status(partition_key, entry_id, header) => {
-                append_vqueues_status_row(row_builder, partition_key, entry_id, header);
+            VQueueRow::Status(id, header) => {
+                append_vqueues_status_row(row_builder, id, header);
             }
         }
         Ok(())

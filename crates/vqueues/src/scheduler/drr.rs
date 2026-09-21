@@ -490,7 +490,7 @@ mod tests {
     };
     use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
-    use restate_types::identifiers::{PartitionId, PartitionKey};
+    use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
     use restate_types::vqueues::VQueueId;
@@ -599,7 +599,7 @@ mod tests {
     ) -> EntryKey {
         let at = UniqueTimestamp::try_from(1100u64).unwrap();
         let header = txn
-            .get_vqueue_entry_status(qid.partition_key(), key.entry_id())
+            .get_vqueue_entry_status(&BaseEntryId::new(qid.partition_key(), *key.entry_id()))
             .await
             .expect("entry state header lookup should succeed")
             .expect("entry state header should exist");
@@ -631,7 +631,7 @@ mod tests {
     ) {
         let at = UniqueTimestamp::try_from(1_300u64).unwrap();
         let header = txn
-            .get_vqueue_entry_status(qid.partition_key(), entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::new(qid.partition_key(), *entry_id))
             .await
             .expect("entry state header lookup should succeed")
             .expect("entry state header should exist");
@@ -662,7 +662,7 @@ mod tests {
     ) {
         let at = UniqueTimestamp::try_from(1_250u64).unwrap();
         let header = txn
-            .get_vqueue_entry_status(qid.partition_key(), entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::new(qid.partition_key(), *entry_id))
             .await
             .expect("entry state header lookup should succeed")
             .expect("entry state header should exist");
@@ -689,7 +689,7 @@ mod tests {
         qid: &VQueueId,
         entry_id: &EntryId,
     ) -> impl EntryStatusHeader + 'static {
-        txn.get_vqueue_entry_status(qid.partition_key(), entry_id)
+        txn.get_vqueue_entry_status(&BaseEntryId::new(qid.partition_key(), *entry_id))
             .await
             .expect("entry state header lookup should succeed")
             .expect("entry state header should exist")

@@ -10,12 +10,9 @@
 
 use std::fmt::Display;
 
-use restate_sharding::PartitionKey;
 use restate_storage_api::vqueue_table::stats::EntryStatistics;
-use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status,
-};
-use restate_types::vqueues::{Seq, VQueueId};
+use restate_storage_api::vqueue_table::{EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status};
+use restate_types::vqueues::{CanonicalEntryId, VQueueId};
 
 use super::schema::SysVqueuesBuilder;
 
@@ -27,16 +24,15 @@ pub(crate) fn append_vqueues_row<'a>(
     entry_key: &'a EntryKey,
     entry: &'a EntryValue,
 ) {
+    let canonical_id = entry_key.to_canonical_entry_id(qid.partition_key());
     append_vqueues_row_inner(
         builder,
-        qid.partition_key(),
         qid,
         stage,
         entry.status,
         entry_key.has_lock(),
         entry_key.run_at().as_unix_millis().as_u64() as i64,
-        entry_key.seq(),
-        entry_key.entry_id(),
+        &canonical_id,
         &entry.stats,
         entry.metadata.deployment.as_deref(),
     );
@@ -45,20 +41,17 @@ pub(crate) fn append_vqueues_row<'a>(
 #[inline]
 pub(crate) fn append_vqueues_status_row(
     builder: &mut SysVqueuesBuilder,
-    partition_key: PartitionKey,
-    entry_id: &EntryId,
+    id: &CanonicalEntryId,
     header: &RawStatusHeaderRef<'_>,
 ) {
     append_vqueues_row_inner(
         builder,
-        partition_key,
         &header.qid,
         header.stage,
         header.status,
         header.has_lock,
         header.next_run_at.as_unix_millis().as_u64() as i64,
-        header.seq,
-        entry_id,
+        id,
         &header.stats,
         header.metadata.deployment,
     );
@@ -67,20 +60,18 @@ pub(crate) fn append_vqueues_status_row(
 #[allow(clippy::too_many_arguments)]
 fn append_vqueues_row_inner(
     builder: &mut SysVqueuesBuilder,
-    partition_key: PartitionKey,
     qid: impl Display,
     stage: Stage,
     status: Status,
     has_lock: bool,
     run_at: i64,
-    seq: Seq,
-    entry_id: &EntryId,
+    id: &CanonicalEntryId,
     stats: &EntryStatistics,
     deployment: Option<&str>,
 ) {
     let mut row = builder.row();
 
-    row.partition_key(partition_key);
+    row.partition_key(id.partition_key());
     if row.is_id_defined() {
         row.fmt_id(qid);
     }
@@ -98,15 +89,15 @@ fn append_vqueues_row_inner(
         row.run_at(run_at);
     }
     if row.is_sequence_number_defined() {
-        row.sequence_number(seq.as_u64());
+        row.sequence_number(id.seq().as_u64());
     }
 
     if row.is_entry_id_defined() {
-        row.fmt_entry_id(entry_id.display(partition_key));
+        row.fmt_entry_id(id);
     }
 
     if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(entry_id.kind());
+        row.fmt_entry_kind(id.kind());
     }
 
     if row.is_created_at_defined() {

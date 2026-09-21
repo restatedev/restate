@@ -42,10 +42,8 @@ define_table!(sys_vqueues(
     /// Sequence number encoded in the queue ordering key.
     sequence_number: DataType::UInt64,
 
-    /// Identifier of the entry.
-    ///
-    /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
-    /// `id` in `sys_invocation_status` for dynamic filter pushdown.
+    /// Canonical identifier of the entry: its resource ID followed by `_` and
+    /// its sequence number.
     entry_id: DataType::LargeUtf8,
 
     /// Entry kind (`invocation` or `state-mutation`).
