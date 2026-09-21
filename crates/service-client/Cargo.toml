@@ -21,7 +21,6 @@ restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
 arc-swap = { workspace = true }
-async-trait = { workspace = true }
 aws-config = { workspace = true }
 aws-credential-types = { workspace = true }
 aws-smithy-runtime-api = { workspace = true }
