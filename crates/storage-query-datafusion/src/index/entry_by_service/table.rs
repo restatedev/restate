@@ -90,6 +90,7 @@ impl ScanLocalPartition for EntryIndexScanner {
     fn for_each_row<F>(
         partition_store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
     where
@@ -99,9 +100,14 @@ impl ScanLocalPartition for EntryIndexScanner {
             + 'static,
     {
         let partition_id = partition_store.partition_id();
-        partition_store.scan_entry_by_service(filter.range, &filter.predicate, move |key| {
-            f((partition_id, key)).map_break(|result| result.map_err(StorageError::from))
-        })
+        partition_store.scan_entry_by_service(
+            filter.range,
+            &filter.predicate,
+            metrics,
+            move |key| {
+                f((partition_id, key)).map_break(|result| result.map_err(StorageError::from))
+            },
+        )
     }
 
     fn append_row<'a>(

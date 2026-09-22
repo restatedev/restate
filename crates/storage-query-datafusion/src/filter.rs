@@ -229,9 +229,8 @@ impl FirstMatchingPartitionKeyExtractor {
     /// Adds a vqueue-entry-id extractor whose matches are grouped into a single
     /// scan per Restate partition.
     ///
-    /// Only use this when the table's scanner re-fetches each entry id exactly
-    /// via an exact-id filter; range-scanning tables would read every
-    /// intermediate key.
+    /// The grouped range can contain intermediate partition keys, so the full
+    /// ID predicate must still be enforced by storage or row filtering.
     pub fn with_grouped_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
         self.append_with_fanout(
             Self::create_vqueue_entry_id_partition_key_extractor(column_name),

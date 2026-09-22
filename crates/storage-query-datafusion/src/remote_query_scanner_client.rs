@@ -31,6 +31,7 @@ use restate_types::net::remote_query_scanner::{
 };
 use restate_types::sharding::KeyRange;
 
+use crate::scan_metrics::ScanMetrics;
 use crate::{decode_record_batch, encode_expr, encode_schema};
 
 #[derive(derive_more::Debug)]
@@ -159,6 +160,7 @@ pub fn remote_scan_as_datafusion_stream(
     predicate: Option<Arc<dyn PhysicalExpr>>,
     batch_size: usize,
     limit: Option<usize>,
+    metrics: Option<ScanMetrics>,
 ) -> SendableRecordBatchStream {
     let mut builder = RecordBatchReceiverStream::builder(projection_schema.clone(), 1);
 
@@ -184,6 +186,7 @@ pub fn remote_scan_as_datafusion_stream(
             limit: limit.map(|limit| u64::try_from(limit).expect("limit to fit in a u64")),
             predicate: initial_predicate,
             batch_size: u64::try_from(batch_size).expect("batch_size to fit in a u64"),
+            collect_metrics: metrics.is_some(),
         };
 
         // RemoteScanner will auto close on drop. Please call forget() if you don't need this
@@ -204,15 +207,36 @@ pub fn remote_scan_as_datafusion_stream(
                     ));
                 }
                 Ok(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                    record_batch, ..
-                })) => decode_record_batch(&record_batch)?,
-                Ok(RemoteQueryScannerNextResult::Failure(ScannerFailure { message, .. })) => {
+                    record_batch,
+                    metrics: report,
+                    ..
+                })) => {
+                    if let (Some(metrics), Some(report)) = (&metrics, report) {
+                        metrics.update(report);
+                    }
+                    decode_record_batch(&record_batch)?
+                }
+                Ok(RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                    message,
+                    metrics: report,
+                    ..
+                })) => {
+                    if let (Some(metrics), Some(report)) = (&metrics, report) {
+                        metrics.update(report);
+                    }
                     // assume server closed the scanner before responding
                     remote_scanner.forget();
                     return Err(DataFusionError::Internal(message));
                 }
                 Ok(RemoteQueryScannerNextResult::NoMoreRecords(_)) => {
                     // assume server closed the scanner before responding
+                    remote_scanner.forget();
+                    return Ok(());
+                }
+                Ok(RemoteQueryScannerNextResult::Completed(completed)) => {
+                    if let Some(metrics) = &metrics {
+                        metrics.update(completed.metrics);
+                    }
                     remote_scanner.forget();
                     return Ok(());
                 }

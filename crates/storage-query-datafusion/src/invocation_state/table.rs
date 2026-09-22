@@ -15,7 +15,6 @@ use anyhow::anyhow;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
-use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
 use tokio::sync::mpsc::Sender;
@@ -30,6 +29,7 @@ use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::invocation_state::row::append_invocation_state_row;
 use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::scan_metrics::ScanMetrics;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::table_util::Builder;
@@ -102,7 +102,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         _access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        _elapsed_compute: Time,
+        _metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();

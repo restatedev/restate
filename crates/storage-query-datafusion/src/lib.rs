@@ -32,6 +32,7 @@ mod partition_state;
 mod partition_store_scanner;
 mod promise;
 mod rules;
+pub mod scan_metrics;
 mod scanner_task;
 mod scheduler_status;
 mod service;
