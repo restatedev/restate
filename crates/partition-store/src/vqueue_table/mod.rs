@@ -226,12 +226,15 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     ) -> VQueueDisposition {
         // Vqueues that was touched more than 1 hour ago will always be fully written.
         const HOUR_MS: u64 = const { 60 * 60 * 1000 };
-        // 1% Probability to perform a full write rather than a merge. (1 in a 100)
-        const DEFAULT_SAMPLE_RATE: u64 = const { u64::MAX / 100 };
+
+        // Otherwise, full writes are sampled with the configured probability
+        // rather than merged.
+        let full_write_threshold =
+            (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
         let was_active_before = meta.is_active();
-        let should_write_full = restate_util_random::pseudo_random() < DEFAULT_SAMPLE_RATE
+        let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();

@@ -35,7 +35,7 @@ use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
@@ -609,6 +609,7 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
+        let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -619,6 +620,7 @@ impl PartitionStore {
             meta: self.db.partition(),
             storage_features,
             snapshot,
+            settings,
         }
     }
 
@@ -958,6 +960,23 @@ impl ScanMode {
     }
 }
 
+/// Tunables snapshotted from the configuration when a transaction is created.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TransactionSettings {
+    /// Probability that a vqueue metadata update is written as a full value instead of a merge.
+    pub vqueue_meta_full_write_probability: f64,
+}
+
+impl From<&StorageOptions> for TransactionSettings {
+    fn from(opts: &StorageOptions) -> Self {
+        Self {
+            vqueue_meta_full_write_probability: opts
+                .vqueue_meta_full_write_probability
+                .clamp(0.0, 1.0),
+        }
+    }
+}
+
 pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
@@ -967,9 +986,14 @@ pub struct PartitionStoreTransaction<'a> {
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
+    settings: TransactionSettings,
 }
 
 impl PartitionStoreTransaction<'_> {
+    pub(crate) fn settings(&self) -> &TransactionSettings {
+        &self.settings
+    }
+
     /// Clears up all buffered operations in the transaction buffer.
     pub fn clear(&mut self) {
         self.write_batch_with_index
