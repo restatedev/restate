@@ -21,11 +21,14 @@ use crate::keys::{IndexFieldDecode, IndexFieldEncode};
 
 use super::PreparedFieldPredicate;
 
+mod timestamp;
+
 /// Binds logical literals to a physical field codec without changing its encoding.
 ///
 /// `Value` may differ from the decoded field type (e.g. string bounds for a
-/// ServiceName). Its encoding must be byte-compatible and order-compatible with
-/// this codec. Validation happens before encoding, never in the row loop.
+/// ServiceName). The default preparation requires byte- and order-compatible
+/// encoding. Codecs with different logical and physical domains must override
+/// preparation to translate predicates. Validation happens before scanning.
 pub(crate) trait IndexFilterCodec: IndexFieldDecode {
     type Value: IndexFieldEncode;
 

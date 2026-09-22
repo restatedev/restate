@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_clock::time::MillisSinceEpoch;
 use restate_types::identifiers::InvocationId;
 use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
@@ -22,6 +23,8 @@ pub enum FilterLiteral<'a> {
     Unsigned(u64),
     Signed(i64),
     Bool(bool),
+    /// Unix timestamp with millisecond precision, distinct from an integer literal.
+    TimestampMillis(i64),
 }
 
 /// Why a literal cannot be converted to a field's value type.
@@ -97,6 +100,22 @@ impl FilterValue for InvocationId {
 
     // ID string order differs from the persisted binary key order. Ordered SQL
     // comparisons must remain residual even though equality and IN are supported.
+}
+
+impl FilterValue for MillisSinceEpoch {
+    fn from_literal(literal: FilterLiteral<'_>) -> Result<Self, LiteralConversionError> {
+        match literal {
+            FilterLiteral::TimestampMillis(value) => u64::try_from(value)
+                .map(Self::new)
+                .map_err(|_| LiteralConversionError::Unrepresentable),
+            FilterLiteral::Null => Err(LiteralConversionError::Unrepresentable),
+            _ => Err(LiteralConversionError::Unsupported),
+        }
+    }
+
+    fn from_ordered_literal(literal: FilterLiteral<'_>) -> Result<Self, LiteralConversionError> {
+        Self::from_literal(literal)
+    }
 }
 
 impl FilterValue for u64 {

@@ -26,9 +26,6 @@ define_table!(
         stage: DataType::LargeUtf8,
         /// Time of the entry's last stage transition, at millisecond precision.
         transitioned_at: TimestampMillisecond,
-        /// Full internal hybrid-logical timestamp, including its logical counter.
-        /// Use this column when ordering entries with transitions in the same millisecond.
-        transitioned_at_hlc: DataType::UInt64,
         /// Invocation ID stored as the index's primary-key suffix.
         invocation_id: DataType::LargeUtf8,
         /// Partition key encoded in the invocation ID.

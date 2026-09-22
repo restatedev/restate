@@ -12,10 +12,9 @@ use std::cmp::Reverse;
 use std::ops::ControlFlow;
 
 use async_trait::async_trait;
-use datafusion::arrow::array::{
-    Int64Array, LargeStringArray, TimestampMillisecondArray, UInt64Array,
-};
+use datafusion::arrow::array::{Int64Array, LargeStringArray, TimestampMillisecondArray};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::ScalarValue;
 use datafusion::execution::TaskContext;
 use datafusion::logical_expr::{col, lit};
 use datafusion::physical_expr::planner::logical2physical;
@@ -65,7 +64,7 @@ async fn select(engine: &MockQueryEngine, sql: &str) -> Vec<RecordBatch> {
         .stream
         .try_collect()
         .await
-        .unwrap()
+        .unwrap_or_else(|error| panic!("{sql}: {error}"))
 }
 
 async fn ids(engine: &MockQueryEngine, sql: &str) -> Vec<String> {
@@ -183,6 +182,21 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
         .is_empty()
     );
     let entries = populate(&mut engine).await;
+    assert_eq!(
+        IdxInvocationByServiceBuilder::schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        [
+            "partition_id",
+            "service_name",
+            "stage",
+            "transitioned_at",
+            "invocation_id",
+            "partition_key"
+        ]
+    );
     let count = select(
         &engine,
         "SELECT COUNT(*) AS n FROM _idx_invocation_by_service",
@@ -276,7 +290,7 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
     .await;
     assert_eq!(ids(&engine, &format!("SELECT invocation_id FROM _idx_invocation_by_service WHERE transitioned_at > to_timestamp_millis({}) LIMIT 1", MS + 3)).await, [entries[5].to_string()]);
 
-    let ordered = ids(&engine, "SELECT invocation_id FROM _idx_invocation_by_service ORDER BY transitioned_at_hlc DESC LIMIT 3").await;
+    let ordered = ids(&engine, "SELECT invocation_id FROM _idx_invocation_by_service ORDER BY transitioned_at DESC LIMIT 3").await;
     assert_eq!(
         ordered,
         [
@@ -285,7 +299,8 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
             entries[3].to_string()
         ]
     );
-    let projected = select(&engine, "SELECT invocation_id, transitioned_at_hlc, transitioned_at, service_name FROM _idx_invocation_by_service WHERE service_name = 'alpha' AND stage = 'inbox' ORDER BY transitioned_at_hlc DESC LIMIT 1").await;
+    // Equal millisecond timestamps are ties, regardless of their hidden HLC counters.
+    let projected = select(&engine, "SELECT invocation_id, transitioned_at, service_name FROM _idx_invocation_by_service WHERE service_name = 'alpha' AND stage = 'inbox' ORDER BY transitioned_at DESC, invocation_id DESC LIMIT 1").await;
     assert_eq!(
         projected[0]
             .column(0)
@@ -293,20 +308,11 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
             .downcast_ref::<LargeStringArray>()
             .unwrap()
             .value(0),
-        entries[1].to_string()
+        entries[..2].iter().map(ToString::to_string).max().unwrap()
     );
     assert_eq!(
         projected[0]
             .column(1)
-            .as_any()
-            .downcast_ref::<UInt64Array>()
-            .unwrap()
-            .value(0),
-        timestamp(MS, 2).as_u64()
-    );
-    assert_eq!(
-        projected[0]
-            .column(2)
             .as_any()
             .downcast_ref::<TimestampMillisecondArray>()
             .unwrap()
@@ -315,7 +321,7 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
     );
     assert_eq!(
         projected[0]
-            .column(3)
+            .column(2)
             .as_any()
             .downcast_ref::<LargeStringArray>()
             .unwrap()
@@ -389,9 +395,26 @@ async fn native_constraints_survive_remote_predicates_and_skip_unselected_keys()
     .await;
 
     let schema = IdxInvocationByServiceBuilder::schema();
+    // A newer timestamp with a truncated primary suffix must be skipped before
+    // decoding the suffix, proving that timestamp filtering reaches storage.
+    let mut poison = Vec::new();
+    InvocationByServiceStageKey::prefix(partition, &mut poison)
+        .service_name("alpha")
+        .stage(Stage::Inbox)
+        .transitioned_at(Reverse(timestamp(MS + 1, 0)));
+    let mut tx = engine.partition_store().transaction();
+    tx.raw_put_cf(KeyKind::SecondaryIndex, poison, []);
+    tx.commit().await.unwrap();
+    drop(tx);
     let predicate = logical2physical(
         &col("service_name")
             .eq(lit("alpha"))
+            .and(
+                col("transitioned_at").eq(lit(ScalarValue::TimestampMillisecond(
+                    Some(MS as i64),
+                    None,
+                ))),
+            )
             .and(col("invocation_id").eq(lit(entries[1].to_string()))),
         &schema,
     );
@@ -425,6 +448,133 @@ async fn native_constraints_survive_remote_predicates_and_skip_unselected_keys()
         failed,
         "a malformed selected index entry must fail the query"
     );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn millisecond_timestamp_ranges_and_in_lists_cover_whole_hlc_buckets() {
+    let mut engine = MockQueryEngine::create().await;
+    let mut entries = Vec::new();
+    let partition = engine.partition_store().partition_id();
+    let mut tx = engine.partition_store().transaction();
+    for offset in 0..5 {
+        let first = timestamp(MS + offset, 0);
+        let last = UniqueTimestamp::try_from(timestamp(MS + offset + 1, 0).as_u64() - 1).unwrap();
+        for at in [first, last] {
+            let id =
+                InvocationId::from_parts(100, InvocationUuid::from_u128(entries.len() as u128 + 1));
+            tx.update_secondary_index(
+                None,
+                Some(&InvocationByServiceStageKey::borrowed(
+                    "svc",
+                    Stage::Inbox,
+                    Reverse(at),
+                    id,
+                )),
+            );
+            entries.push(id);
+        }
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    for (predicate, expected) in [
+        (
+            format!("transitioned_at = to_timestamp_millis({MS})"),
+            &entries[..2],
+        ),
+        (
+            format!("transitioned_at > to_timestamp_millis({MS})"),
+            &entries[2..],
+        ),
+        (
+            format!("transitioned_at >= to_timestamp_millis({})", MS + 1),
+            &entries[2..],
+        ),
+        (
+            format!("transitioned_at < to_timestamp_millis({})", MS + 1),
+            &entries[..2],
+        ),
+        (
+            format!("transitioned_at <= to_timestamp_millis({MS})"),
+            &entries[..2],
+        ),
+        (
+            format!(
+                "transitioned_at BETWEEN to_timestamp_millis({}) AND to_timestamp_millis({})",
+                MS + 1,
+                MS + 3
+            ),
+            &entries[2..8],
+        ),
+        (
+            "transitioned_at > to_timestamp_millis(0)".to_owned(),
+            &entries[..],
+        ),
+        (
+            "transitioned_at <= to_timestamp_millis(0)".to_owned(),
+            &entries[..0],
+        ),
+        (
+            "transitioned_at = to_timestamp_millis(-1)".to_owned(),
+            &entries[..0],
+        ),
+        ("transitioned_at IS NULL".to_owned(), &entries[..0]),
+    ] {
+        assert_ids(
+            &engine,
+            &format!("service_name = 'svc' AND stage = 'inbox' AND ({predicate})"),
+            expected,
+        )
+        .await;
+    }
+
+    // Place malformed data in an IN-list gap, between two valid timestamp buckets.
+    // Correct interval navigation must skip it without losing the later bucket.
+    let mut poison = Vec::new();
+    InvocationByServiceStageKey::prefix(partition, &mut poison)
+        .service_name("svc")
+        .stage(Stage::Inbox)
+        .transitioned_at(Reverse(timestamp(MS + 2, 2)));
+    let mut tx = engine.partition_store().transaction();
+    tx.raw_put_cf(KeyKind::SecondaryIndex, poison, []);
+    tx.commit().await.unwrap();
+    drop(tx);
+    let list = format!(
+        "transitioned_at IN (to_timestamp_millis({MS}), to_timestamp_millis({}), to_timestamp_millis({MS}), NULL)",
+        MS + 4
+    );
+    for (suffix, expected) in [
+        (
+            String::new(),
+            vec![entries[0], entries[1], entries[8], entries[9]],
+        ),
+        (
+            format!(" AND transitioned_at < to_timestamp_millis({})", MS + 4),
+            vec![entries[0], entries[1]],
+        ),
+        (
+            format!(
+                " AND transitioned_at IN (to_timestamp_millis({}), to_timestamp_millis({}))",
+                MS + 1,
+                MS + 4
+            ),
+            vec![entries[8], entries[9]],
+        ),
+        (
+            format!(
+                " AND transitioned_at IN (to_timestamp_millis({}), to_timestamp_millis({}))",
+                MS + 1,
+                MS + 3
+            ),
+            vec![],
+        ),
+    ] {
+        assert_ids(
+            &engine,
+            &format!("service_name = 'svc' AND stage = 'inbox' AND {list}{suffix}"),
+            &expected,
+        )
+        .await;
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -490,7 +640,7 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
             .local_partition_scanner(super::table::NAME)
             .is_some()
     );
-    let batches = ctx.execute("SELECT invocation_id FROM _idx_invocation_by_service ORDER BY transitioned_at_hlc DESC LIMIT 1")
+    let batches = ctx.execute("SELECT invocation_id FROM _idx_invocation_by_service ORDER BY transitioned_at DESC LIMIT 1")
         .await.unwrap().stream.try_collect::<Vec<_>>().await.unwrap();
     assert_eq!(
         batches[0]

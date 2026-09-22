@@ -23,7 +23,6 @@ pub(super) fn append_row(
     row.service_name(key.service_name.as_str());
     row.stage(key.stage.as_str());
     row.transitioned_at(key.transitioned_at.0.to_unix_millis().as_u64() as i64);
-    row.transitioned_at_hlc(key.transitioned_at.0.as_u64());
     if row.is_invocation_id_defined() {
         row.fmt_invocation_id(key.invocation_id);
     }
