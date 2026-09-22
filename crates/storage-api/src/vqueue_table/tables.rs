@@ -11,13 +11,12 @@
 use restate_sharding::KeyRange;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
+use restate_util_string::{EncodedMemCmpStr, encoded_mem_cmp_str};
 
+use super::RawStatusHeaderRef;
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
-use super::{
-    EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, stats::EntryStatistics,
-};
-use super::{RawStatusHeaderRef, Status};
+use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -30,9 +29,16 @@ use crate::Result;
     PartialOrd,
     Ord,
     bilrost::Enumeration,
+    enum_map::Enum,
     strum::EnumCount,
     strum::FromRepr,
     strum::Display,
+    strum::VariantArray,
+    zerocopy::IntoBytes,
+    zerocopy::TryFromBytes,
+    zerocopy::KnownLayout,
+    zerocopy::Immutable,
+    zerocopy::Unaligned,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
@@ -58,9 +64,39 @@ pub enum Stage {
     #[bilrost(5)]
     Finished = b'f',
 }
+
 impl Stage {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Stage::Unknown => "unknown",
+            Stage::Inbox => "inbox",
+            Stage::Running => "running",
+            Stage::Suspended => "suspended",
+            Stage::Paused => "paused",
+            Stage::Finished => "finished",
+        }
+    }
+
+    pub const fn as_mem_cmp_str(self) -> &'static EncodedMemCmpStr {
+        match self {
+            Stage::Unknown => encoded_mem_cmp_str!("unknown"),
+            Stage::Inbox => encoded_mem_cmp_str!("inbox"),
+            Stage::Running => encoded_mem_cmp_str!("running"),
+            Stage::Suspended => encoded_mem_cmp_str!("suspended"),
+            Stage::Paused => encoded_mem_cmp_str!("paused"),
+            Stage::Finished => encoded_mem_cmp_str!("finished"),
+        }
+    }
+
+    pub fn from_mem_cmp_str(value: &EncodedMemCmpStr) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .find(|stage| value == stage.as_mem_cmp_str())
+            .copied()
     }
 }
 
@@ -117,14 +153,11 @@ pub trait WriteVQueueTable {
     /// The `meta` **must** match the vqueue metadata on disk prior to the update,
     /// then it gets updated in place. Obsolete metadata is deleted atomically
     /// with the update and reported through the returned disposition.
-    ///
-    /// Pass `entry_metadata` if the update impacts a single entry.
     fn update_vqueue(
         &mut self,
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &super::metadata::Update,
-        entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition;
 
     /// Deletes a vqueue's metadata record.
@@ -168,19 +201,27 @@ pub trait WriteVQueueTable {
     //     E: EntryState + bilrost::Message + bilrost::encoding::RawMessage,
     //     (): bilrost::encoding::EmptyState<(), E>;
 
-    /// Updates a vqueue's entry's status
-    fn put_vqueue_entry_status(
+    /// Creates a previously absent entry status. The caller must establish absence,
+    /// including earlier writes in this transaction; this operation does not read storage.
+    fn create_vqueue_entry_status(&mut self, context: &EntryContext<'_>, after: EntryStateRef<'_>);
+
+    /// Updates an existing entry, keeping its queue, target, and base identity fixed.
+    /// `before` must describe the actual previous state, including earlier writes in
+    /// this transaction. This operation does not read or compare against storage.
+    ///
+    /// # Panics
+    /// Panics if the before and after entry IDs differ.
+    fn update_vqueue_entry_status(
         &mut self,
-        qid: &VQueueId,
-        stage: Stage,
-        entry_key: &EntryKey,
-        meta: &EntryMetadata,
-        stats: EntryStatistics,
-        status: Status,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+        after: EntryStateRef<'_>,
     );
 
-    /// Deletes the status by base identity, without checking a sequence number.
-    fn delete_vqueue_entry_status(&mut self, id: &BaseEntryId);
+    /// Deletes an existing status by base identity, without checking its sequence.
+    /// `before` must describe the actual previous state, including earlier writes in
+    /// this transaction. This operation does not read or compare against storage.
+    fn delete_vqueue_entry_status(&mut self, context: &EntryContext<'_>, before: EntryStateRef<'_>);
 
     /// Stores a vqueue entry input payload
     fn put_vqueue_input_payload<E>(
