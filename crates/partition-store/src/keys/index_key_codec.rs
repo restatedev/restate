@@ -8,13 +8,78 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Reverse;
+
 use bytes::BufMut;
 
+use restate_clock::UniqueTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_types::identifiers::{InvocationId, InvocationUuid, ResourceId};
 use restate_types::vqueues::EntryKind;
 
 use super::{EncodedMemCmpStr, IndexFieldDecode, IndexFieldEncode};
+
+impl IndexFieldEncode for InvocationId {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(&self.to_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        Self::RAW_BYTES_LEN
+    }
+}
+
+impl IndexFieldDecode for InvocationId {
+    type Owned = Self;
+    type Encoded = [u8; Self::RAW_BYTES_LEN];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        // InvocationUuid::from_bytes asserts that the UUID is non-zero.
+        if encoded[Self::RAW_BYTES_LEN - InvocationUuid::RAW_BYTES_LEN..]
+            .iter()
+            .all(|byte| *byte == 0)
+        {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok((*encoded).into())
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        let Some((encoded, remaining)) = source.split_first_chunk() else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        *source = remaining;
+        Ok(encoded)
+    }
+}
+
+/// Keeps all HLC bits while reversing their bytewise order. Logical predicate
+/// bounds must be reversed too before this codec can be used for filter binding.
+impl IndexFieldEncode for Reverse<UniqueTimestamp> {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_u64(!self.0.as_u64());
+    }
+
+    fn serialized_length(&self) -> usize {
+        size_of::<u64>()
+    }
+}
+
+impl IndexFieldDecode for Reverse<UniqueTimestamp> {
+    type Owned = Self;
+    type Encoded = [u8; size_of::<u64>()];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        UniqueTimestamp::try_from(!u64::from_be_bytes(*encoded))
+            .map(Reverse)
+            .map_err(|_| StorageError::DataIntegrityError)
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        u64::take_encoded(source)
+    }
+}
 
 impl IndexFieldEncode for EntryKind {
     fn encode_field<B: BufMut>(&self, target: &mut B) {

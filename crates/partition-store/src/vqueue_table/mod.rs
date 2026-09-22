@@ -11,6 +11,7 @@
 mod entry;
 mod inbox;
 mod inbox_reader;
+mod index;
 mod input;
 mod key_codec;
 mod metadata;
@@ -433,6 +434,7 @@ impl PartitionStoreTransaction<'_> {
         }
 
         if self.storage_features().is_indexes_v1 {
+            index::on_entry_change(self, context, change);
             stats::on_entry_change(self, context, change);
         }
     }
