@@ -12,6 +12,7 @@ use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
+use restate_types::vqueues::EntryTargetExt;
 
 use crate::debug_if_leader;
 use crate::partition::processor::ProcessorContext;
@@ -42,8 +43,11 @@ where
         metadata.timestamps.update(ctx.record_created_at);
 
         if metadata.vqueue_id.is_some() {
-            ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
-                .await?;
+            ctx.vqueue_move_invocation_to_inbox_stage(
+                &self.invocation_id,
+                &metadata.invocation_target.entry_target_ref(),
+            )
+            .await?;
         }
 
         *self.invocation_status = InvocationStatus::Invoked(metadata.clone());

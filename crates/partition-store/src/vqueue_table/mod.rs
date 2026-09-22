@@ -16,6 +16,7 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
+mod stats;
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -29,7 +30,6 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use futures::FutureExt;
-use restate_types::identifiers::BaseEntryId;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
 use tracing::error;
@@ -39,13 +39,14 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
-    Stage, Status, VQueueDisposition, WriteVQueueTable, stats::EntryStatistics,
+    EntryChange, EntryContext, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue,
+    ReadVQueueTable, ScanVQueueTable, Stage, VQueueDisposition, WriteVQueueTable,
 };
 use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
     ScanVQueueMetaTable,
 };
+use restate_types::identifiers::BaseEntryId;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{CanonicalEntryId, EntryId, Seq, VQueueId};
 
@@ -223,7 +224,6 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &restate_storage_api::vqueue_table::metadata::Update,
-        _entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition {
         // Vqueues that was touched more than 1 hour ago will always be fully written.
         const HOUR_MS: u64 = const { 60 * 60 * 1000 };
@@ -327,53 +327,30 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         );
     }
 
-    fn put_vqueue_entry_status(
-        &mut self,
-        qid: &VQueueId,
-        stage: Stage,
-        entry_key: &EntryKey,
-        metadata: &EntryMetadata,
-        stats: EntryStatistics,
-        status: Status,
-    ) {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        let base_id = entry_key.entry_id().to_base_id(qid.partition_key());
-        EntryStatusKeyRef::builder()
-            .id(&base_id)
-            .serialize_to(&mut key_buffer.as_mut());
-
-        let header = RawStatusHeaderRef {
-            qid: qid.into(),
-            stage,
-            has_lock: entry_key.has_lock(),
-            next_run_at: entry_key.run_at(),
-            seq: entry_key.seq(),
-            metadata: metadata.into(),
-            stats,
-            status,
-        };
-
-        let value_buf = {
-            let header_len = header.encoded_len();
-            let header_len = header_len + bilrost::encoding::encoded_len_varint(header_len as u64);
-
-            let value_buf = self.cleared_value_buffer_mut(header_len);
-            // unwrap is safe because we know the buffer is big enough.
-            header.encode_length_delimited(value_buf).unwrap();
-            value_buf.split()
-        };
-
-        self.raw_put_cf(KeyKind::VQueueEntryStatus, key_buffer, value_buf);
+    fn create_vqueue_entry_status(&mut self, context: &EntryContext<'_>, after: EntryStateRef<'_>) {
+        self.apply_entry_change(context, &EntryChange::Insert { after });
     }
 
-    fn delete_vqueue_entry_status(&mut self, id: &BaseEntryId) {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKeyRef::builder()
-            .id(id)
-            .serialize_to(&mut key_buffer.as_mut());
+    fn update_vqueue_entry_status(
+        &mut self,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+        after: EntryStateRef<'_>,
+    ) {
+        assert_eq!(
+            before.entry_key.entry_id(),
+            after.entry_key.entry_id(),
+            "entry identity cannot change"
+        );
+        self.apply_entry_change(context, &EntryChange::Update { before, after });
+    }
 
-        // Cannot use single delete because we constantly overwrite the same key on transitions
-        self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
+    fn delete_vqueue_entry_status(
+        &mut self,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+    ) {
+        self.apply_entry_change(context, &EntryChange::Delete { before });
     }
 
     fn put_vqueue_input_payload<E>(
@@ -415,6 +392,49 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         self.raw_single_delete_cf(KeyKind::VQueueInput, key_buf);
+    }
+}
+
+impl PartitionStoreTransaction<'_> {
+    /// The single source-write boundary for entry lifecycle changes.
+    fn apply_entry_change(&mut self, context: &EntryContext<'_>, change: &EntryChange<'_>) {
+        let state = match change {
+            EntryChange::Insert { after } | EntryChange::Update { after, .. } => after,
+            EntryChange::Delete { before } => before,
+        };
+        let id = state.base_entry_id(context);
+        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
+        EntryStatusKeyRef::builder()
+            .id(&id)
+            .serialize_to(&mut key_buffer.as_mut());
+
+        if let Some(after) = change.after() {
+            let header = RawStatusHeaderRef {
+                qid: context.qid.into(),
+                stage: after.stage,
+                has_lock: after.entry_key.has_lock(),
+                next_run_at: after.entry_key.run_at(),
+                seq: after.entry_key.seq(),
+                metadata: after.metadata.into(),
+                stats: after.stats.clone(),
+                status: after.status,
+            };
+            let header_len = header.encoded_len();
+            let value_buf = self.cleared_value_buffer_mut(
+                header_len + bilrost::encoding::encoded_len_varint(header_len as u64),
+            );
+            // The buffer has enough capacity for the length-delimited header.
+            header.encode_length_delimited(value_buf).unwrap();
+            let value_buf = value_buf.split();
+            self.raw_put_cf(KeyKind::VQueueEntryStatus, key_buffer, value_buf);
+        } else {
+            // The status key is overwritten on transitions, so SingleDelete is invalid.
+            self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
+        }
+
+        if self.storage_features().is_indexes_v1 {
+            stats::on_entry_change(self, context, change);
+        }
     }
 }
 
