@@ -459,6 +459,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
                 None, // predicate is applied locally after combining
                 batch_size,
                 self.limit,
+                None,
             );
 
             Box::pin(

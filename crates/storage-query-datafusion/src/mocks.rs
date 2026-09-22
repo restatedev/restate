@@ -15,8 +15,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::DataFusionError;
+use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::memory::MemoryStream;
+use datafusion::physical_plan::metrics::Time;
 
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
@@ -24,29 +28,28 @@ use serde_json::Value;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
-use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
-use restate_types::net::remote_query_scanner::RemoteQueryScannerOpen;
 use restate_types::partition_table::Partition;
 use restate_types::schema::deployment::test_util::MockDeploymentMetadataRegistry;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
+use restate_types::{GenerationalNodeId, NodeId};
 use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
 
 use super::context::QueryContext;
 use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
-use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
-use crate::remote_query_scanner_manager::{
-    PartitionLocation, PartitionLocator, RemoteScannerManager,
-};
+use crate::remote_fragment::RemoteFragmentExecution;
+use crate::remote_query_scanner_manager::PartitionLocation;
+use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::table_providers::DistributedPartitionScanner;
 
 #[derive(Debug, Clone, Default)]
 pub struct MockStatusHandle(Vec<InvocationStatusReport>);
@@ -161,33 +164,100 @@ impl SelectPartitions for MockPartitionSelector {
     }
 }
 
-#[allow(dead_code)]
-pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
-
+/// Two partition placements used by physical-fragment optimizer tests.
 #[derive(Debug)]
-struct NoopSvc;
+pub(crate) struct TwoPartitions;
 
 #[async_trait]
-impl RemoteScannerService for NoopSvc {
-    async fn open(
-        &self,
-        _peer: NodeId,
-        _req: RemoteQueryScannerOpen,
-    ) -> Result<RemoteScanner, DataFusionError> {
-        panic!("remote service should not be used")
+impl SelectPartitions for TwoPartitions {
+    async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError> {
+        Ok((0..2)
+            .map(|id| {
+                let id = PartitionId::new_unchecked(id);
+                (id, Partition::new(id, KeyRange::FULL))
+            })
+            .collect())
     }
 }
 
-struct AlwaysLocalPartitionLocator;
+/// In-process local/remote scanner used to verify location-aware rewrites
+/// without involving the transport. Each placement returns one fixed batch and
+/// applies the same fragment binding that production execution uses.
+#[derive(Debug)]
+pub(crate) struct LocatedTestScanner {
+    local: RecordBatch,
+    remote: RecordBatch,
+}
 
-impl PartitionLocator for AlwaysLocalPartitionLocator {
-    fn get_partition_target_node(
+impl LocatedTestScanner {
+    pub(crate) fn new(local: RecordBatch, remote: RecordBatch) -> Self {
+        assert_eq!(local.schema(), remote.schema());
+        Self { local, remote }
+    }
+
+    fn project(
+        batch: &RecordBatch,
+        projection: SchemaRef,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let indices = projection
+            .fields()
+            .iter()
+            .map(|field| batch.schema().index_of(field.name()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let batch = batch.project(&indices)?;
+        Ok(Box::pin(MemoryStream::try_new(
+            vec![batch],
+            projection,
+            None,
+        )?))
+    }
+}
+
+impl DistributedPartitionScanner for LocatedTestScanner {
+    fn partition_location(&self, partition_id: PartitionId) -> anyhow::Result<PartitionLocation> {
+        if partition_id == PartitionId::MIN {
+            Ok(PartitionLocation::Local)
+        } else {
+            Ok(PartitionLocation::Remote {
+                node_id: GenerationalNodeId::new(2, 1).into(),
+            })
+        }
+    }
+
+    fn scan_local_partition(
         &self,
         _partition_id: PartitionId,
-    ) -> anyhow::Result<PartitionLocation> {
-        Ok(PartitionLocation::Local)
+        _range: KeyRange,
+        projection: SchemaRef,
+        _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _batch_size: usize,
+        _limit: Option<usize>,
+        _elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        Self::project(&self.local, projection)
+    }
+
+    fn scan_remote_partition(
+        &self,
+        _target_node: NodeId,
+        _partition_id: PartitionId,
+        _range: KeyRange,
+        projection: SchemaRef,
+        _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _batch_size: usize,
+        _limit: Option<usize>,
+        fragment: Option<RemoteFragmentExecution>,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let stream = Self::project(&self.remote, projection)?;
+        match fragment {
+            Some(fragment) => fragment.execute(stream).map_err(anyhow::Error::from),
+            None => Ok(stream),
+        }
     }
 }
+
+#[allow(dead_code)]
+pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
 
 impl MockQueryEngine {
     pub async fn create_with(
@@ -223,12 +293,7 @@ impl MockQueryEngine {
                 manager,
                 Some(status),
                 Live::from_value(schemas),
-                RemoteScannerManager::new(
-                    Arc::new(NoopSvc),
-                    Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
-                    // The mock locator always returns `Local`, so the manager
-                    // never invokes `allocate_scanner_id` and never reads
-                    // `my_node_id`. A blank Metadata is sufficient here.
+                RemoteScannerManager::local_only(
                     restate_core::MetadataBuilder::default().to_metadata(),
                 ),
                 MetadataStoreClient::new_in_memory(),
