@@ -9108,6 +9108,7 @@ dependencies = [
  "ulid",
  "utoipa",
  "xxhash-rust",
+ "zerocopy",
  "zstd",
 ]
 
