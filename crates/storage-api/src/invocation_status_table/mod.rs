@@ -30,9 +30,18 @@ use restate_types::vqueues::VQueueId;
 use restate_types::{LimitKey, RestateVersion};
 use restate_util_string::ReString;
 
-use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
+use crate::{Result, Table};
+
+crate::define_table! {
+    /// Logical identity of the invocation-status table.
+    pub InvocationStatusTable;
+}
+
+impl Table for InvocationStatusTable {
+    type PrimaryKey = InvocationId;
+}
 
 /// Holds timestamps of the [`InvocationStatus`].
 #[derive(Debug, Clone, PartialEq)]
