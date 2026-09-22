@@ -43,6 +43,13 @@ use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
+    /// Starts one physical-partition scan.
+    ///
+    /// `predicate` remains live for row filtering. `access_predicate` is the initial expression
+    /// used to construct the table's storage filter once, before any remote updates.
+    /// Coordinators pass the same expression in both arguments. Remote workers pass the decoded
+    /// initial expression separately from their update wrapper; it is not a second query predicate.
+    /// Each table's filter decides whether dynamic conjuncts can contribute storage bounds.
     #[allow(clippy::too_many_arguments)]
     fn scan_partition(
         &self,
@@ -50,6 +57,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
@@ -374,6 +382,7 @@ where
                             partition_id,
                             partition.key_range,
                             schema.clone(),
+                            predicate.clone(),
                             predicate.clone(),
                             batch_size,
                             limit,

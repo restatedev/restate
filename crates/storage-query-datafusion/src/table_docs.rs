@@ -8,18 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
+
 use crate::{
     deployment, inbox, invocation_state, invocation_status, journal, journal_events, promise,
-    rules, scheduler_status, service, state, user_limits, vqueue_entry_status, vqueue_meta,
+    rules, scheduler_status, service, state, stats, user_limits, vqueue_entry_status, vqueue_meta,
     vqueues,
 };
-use std::borrow::Cow;
 
 /// List of available table docs. Whenever you add a new table, add its table docs to
 /// this array. This will ensure that the table docs will be included in the automatic
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     deployment::schema::TABLE_DOCS,
+    stats::deployment_stats::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,
     journal::schema::TABLE_DOCS,
     journal_events::schema::TABLE_DOCS,
@@ -27,8 +29,10 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     rules::schema::TABLE_DOCS,
     scheduler_status::schema::TABLE_DOCS,
     service::schema::TABLE_DOCS,
+    stats::service_stats::schema::TABLE_DOCS,
     state::schema::TABLE_DOCS,
     user_limits::schema::TABLE_DOCS,
+    stats::virtual_object_stats::schema::TABLE_DOCS,
     vqueue_entry_status::schema::TABLE_DOCS,
     vqueue_meta::schema::TABLE_DOCS,
     vqueues::schema::TABLE_DOCS,

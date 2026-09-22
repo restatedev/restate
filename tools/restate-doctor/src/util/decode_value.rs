@@ -19,6 +19,8 @@ use restate_limiter::RuleBook;
 use restate_partition_store::PartitionSeal;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::stats::aggregated::{StageCounts, StageStatusCounts};
+use restate_partition_store::stats::{StatKeyPrefix, StatKind, StatValueCodec};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
@@ -154,6 +156,10 @@ impl DecodedValue {
 /// - VQueue tables use bilrost encoding (no codec discriminant)
 /// - FSM table uses different types based on the state_id in the key
 pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue {
+    if key_kind == KeyKind::Stats {
+        return decode_aggregated_stat_value(key, value);
+    }
+
     if value.is_empty() {
         return DecodedValue::empty();
     }
@@ -161,6 +167,9 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
     match key_kind {
         // Raw bytes - user state, no decoding
         KeyKind::State | KeyKind::ScopedState => DecodedValue::raw_bytes(value.len()),
+
+        // TODO: Decode index-specific values once their layouts are defined.
+        KeyKind::SecondaryIndex => DecodedValue::raw_bytes(value.len()),
 
         // Key-only tables (VQueue active have empty values)
         KeyKind::VQueueActive => {
@@ -209,6 +218,51 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),
+        KeyKind::Stats => unreachable!("handled before empty-value decoding"),
+    }
+}
+
+fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
+    let (prefix, _) = match StatKeyPrefix::decode_prefix(key) {
+        Ok(decoded) => decoded,
+        Err(err) => {
+            return DecodedValue::error(None, value.len(), err.to_string());
+        }
+    };
+
+    match prefix.stat_kind() {
+        StatKind::AggregatedGauge => match <u64 as StatValueCodec>::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(None, size_of::<u64>(), format!("Gauge({value})")),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                format!("expected {} bytes for a gauge value", size_of::<u64>()),
+            ),
+        },
+        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(
+                None,
+                value.serialized_len(),
+                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+            ),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                "invalid stage-bucketed gauge value".to_owned(),
+            ),
+        },
+        StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
+            Ok(value) => DecodedValue::decoded(
+                None,
+                value.serialized_len(),
+                format!("StageStatusCounts({:?})", value.iter().collect::<Vec<_>>()),
+            ),
+            Err(_) => DecodedValue::error(
+                None,
+                value.len(),
+                "invalid stage/status-bucketed gauge value".to_owned(),
+            ),
+        },
     }
 }
 
@@ -610,8 +664,15 @@ mod tests {
     use restate_partition_store::PaddedPartitionId;
     use restate_partition_store::fsm_table::PartitionStateMachineKey;
     use restate_partition_store::keys::EncodeTableKeyPrefix;
+    use restate_partition_store::stats::Stat;
+    use restate_partition_store::stats::aggregated::ServiceLoadKey;
+    use restate_storage_api::stats::service_load::ServiceLoad;
+    use restate_storage_api::vqueue_table::{Stage, Status};
+    use restate_types::ServiceName;
     use restate_types::logs::Lsn;
+    use restate_types::sharding::PartitionId;
     use restate_types::storage::StorageCodec;
+    use restate_types::vqueues::EntryKind;
 
     use super::*;
 
@@ -698,6 +759,48 @@ mod tests {
         assert!(
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("future-feature")),
             "storage features should preserve unknown names, got: {decoded}"
+        );
+    }
+
+    #[test]
+    fn decodes_bucketed_gauge_values() {
+        let mut key = Vec::new();
+        ServiceLoad::encode_key(
+            PartitionId::from(7),
+            ServiceLoadKey {
+                service_name: ServiceName::new("greeter"),
+                kind: EntryKind::Invocation,
+                handler: None,
+            },
+            &mut key,
+        );
+
+        let mut value = vec![Stage::Inbox as u8, Status::New as u8];
+        value.extend_from_slice(&42_u64.to_be_bytes());
+        let decoded = decode_value(KeyKind::Stats, &key, &value);
+        assert_eq!(decoded.codec, None);
+        assert_eq!(decoded.payload_size, 2 + size_of::<u64>());
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value.contains("Inbox") && value.contains("New") && value.contains("42"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[0; 7]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Error(error) if error.contains("invalid stage/status-bucketed"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value == "StageStatusCounts([])")
+        );
+
+        let decoded = decode_value(
+            KeyKind::Stats,
+            &key[..StatKeyPrefix::SERIALIZED_LENGTH - 1],
+            &value,
+        );
+        assert!(
+            matches!(decoded.content, DecodedContent::Error(error) if error.contains("failed to decode aggregated statistic key"))
         );
     }
 }

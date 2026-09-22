@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod indexes_v1;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -87,8 +88,15 @@ storage_features! {
     ///
     /// This records one sweep rather than requiring repeated startup scans.
     ///
-    /// *Since v1.7.10*
+    /// Since v1.7.10
     pub VqueueMetadataCleanupV1,
+
+    /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment
+    /// statistics during entries' lifecycle. Additionally, this enables a new set of
+    /// secondary indexes for invocations and vqueues.
+    ///
+    /// Since v1.8.0
+    pub IndexesV1,
 }
 
 trait StorageFeature: Sized + 'static {

@@ -37,6 +37,7 @@ derive_more = { workspace = true, features = ["add", "deref", "display", "from",
 enum-map = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
+itertools = { workspace = true }
 jiff = { workspace = true }
 metrics = { workspace = true }
 object_store = { workspace = true }
@@ -45,11 +46,12 @@ paste = { workspace = true }
 pin-project = { workspace = true }
 prost = { workspace = true }
 rand = { workspace = true }
+restate-util-string = { workspace = true, features = ["bytestring", "mem-comparable"] }
 rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
-restate-util-string = { workspace = true, features = ["bytestring", "mem-comparable"] }
+smallvec = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }
@@ -59,6 +61,7 @@ tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }
 url = { workspace = true }
+zerocopy = { workspace = true }
 
 [dev-dependencies]
 restate-core = { workspace = true, features = ["test-util"] }
