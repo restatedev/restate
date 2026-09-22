@@ -27,7 +27,7 @@ use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{
-    BaseEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
+    BaseEntryId, CanonicalEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
 };
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
@@ -500,9 +500,7 @@ impl ScanLocalPartitionFilter for VQueueFilter {
                     });
                 }
 
-                entry_ids = entry_ids.or_else(|| {
-                    parse_id_selection("entry_id", range, conjunct, BaseEntryId::partition_key)
-                });
+                entry_ids = entry_ids.or_else(|| parse_vqueue_entry_id_selection(range, conjunct));
             }
         }
 
@@ -639,6 +637,29 @@ where
     }
 }
 
+fn parse_vqueue_entry_id_selection(
+    range: KeyRange,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<IdSelection<BaseEntryId>> {
+    parse_id_selection("entry_id", range, predicate, BaseEntryId::partition_key).or_else(|| {
+        let selection = parse_id_selection(
+            "canonical_id",
+            range,
+            predicate,
+            CanonicalEntryId::partition_key,
+        )?;
+        // The status index is keyed by base ID. The full predicate is
+        // applied to the emitted canonical IDs to check the sequence.
+        Some(IdSelection {
+            ids: selection
+                .ids
+                .into_iter()
+                .map(|id| *id.as_base_entry_id())
+                .collect(),
+        })
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct VQueueEntryIdFilter {
     pub partition_keys: KeyRange,
@@ -651,9 +672,7 @@ impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                if let Some(entry_ids) =
-                    parse_id_selection("entry_id", range, conjunct, BaseEntryId::partition_key)
-                {
+                if let Some(entry_ids) = parse_vqueue_entry_id_selection(range, conjunct) {
                     return Self {
                         partition_keys: range,
                         entry_ids: Some(entry_ids),
@@ -721,7 +740,7 @@ mod tests {
     };
     use restate_types::invocation::{InvocationTarget, VirtualObjectHandlerType};
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::VQueueId;
+    use restate_types::vqueues::{Seq, VQueueId};
 
     use crate::filter::{
         FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
@@ -1402,31 +1421,49 @@ mod tests {
     fn vqueue_filter_extracts_entry_ids_and_rejects_negated_list() {
         let id1 = make_invocation_id("key-1");
         let id2 = make_invocation_id("key-2");
-        let filter = VQueueFilter::new(
-            FULL_RANGE,
-            Some(and(
-                in_list(
-                    "entry_id",
-                    vec![utf8_lit(id1.to_string()), utf8_lit(id2.to_string())],
-                ),
-                eq(col("stage"), utf8_lit("running")),
-            )),
-        );
+        let canonical1 = BaseEntryId::from(id1).canonicalize(Seq::new(1));
+        let canonical2 = BaseEntryId::from(id2).canonicalize(Seq::MAX);
+        for (column, ids) in [
+            ("entry_id", [id1.to_string(), id2.to_string()]),
+            (
+                "canonical_id",
+                [canonical1.to_string(), canonical2.to_string()],
+            ),
+        ] {
+            let filter = VQueueFilter::new(
+                FULL_RANGE,
+                Some(and(
+                    in_list(column, ids.iter().map(utf8_lit).collect()),
+                    eq(col("stage"), utf8_lit("running")),
+                )),
+            );
 
-        assert_eq!(
-            filter.entry_ids.expect("should extract entry ids").ids,
-            BTreeSet::from([
-                BaseEntryId::from_str(&id1.to_string()).unwrap(),
-                BaseEntryId::from_str(&id2.to_string()).unwrap(),
-            ])
-        );
-        assert_eq!(filter.stages, Some(BTreeSet::from([Stage::Running])));
+            assert_eq!(
+                filter.entry_ids.expect("should extract entry ids").ids,
+                BTreeSet::from([BaseEntryId::from(id1), BaseEntryId::from(id2)])
+            );
+            assert_eq!(filter.stages, Some(BTreeSet::from([Stage::Running])));
 
-        let filter = VQueueFilter::new(
-            FULL_RANGE,
-            Some(not_in_list("entry_id", vec![utf8_lit(id1.to_string())])),
-        );
-        assert!(filter.entry_ids.is_none());
+            let filter = VQueueEntryIdFilter::new(
+                FULL_RANGE,
+                Some(in_list(column, ids.iter().map(utf8_lit).collect())),
+            );
+            assert_eq!(
+                filter.entry_ids.expect("should extract entry ids").ids,
+                BTreeSet::from([BaseEntryId::from(id1), BaseEntryId::from(id2)])
+            );
+
+            let filter = VQueueFilter::new(
+                FULL_RANGE,
+                Some(not_in_list(column, vec![utf8_lit(&ids[0])])),
+            );
+            assert!(filter.entry_ids.is_none());
+            let filter = VQueueEntryIdFilter::new(
+                FULL_RANGE,
+                Some(not_in_list(column, vec![utf8_lit(&ids[0])])),
+            );
+            assert!(filter.entry_ids.is_none());
+        }
     }
 
     #[test]
