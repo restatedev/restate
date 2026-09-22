@@ -957,6 +957,22 @@ pub struct StorageOptions {
         skip_serializing_if = "is_default_max_successive_merges"
     )]
     pub rocksdb_max_successive_merges: u16,
+
+    /// # VQueue metadata full-write probability
+    ///
+    /// VQueue metadata updates are written as RocksDB merge operands. With this probability, an
+    /// update is instead written as a full value put instead.
+    ///
+    /// Valid range is [0.0, 1.0]. `0.0` never samples full writes (metadata untouched for over
+    /// an hour is still fully written), `1.0` always writes full values and disables merges.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        default = "serde_helpers::default_vqueue_meta_full_write_probability",
+        skip_serializing_if = "serde_helpers::is_default_vqueue_meta_full_write_probability"
+    )]
+    pub vqueue_meta_full_write_probability: f64,
 }
 
 impl StorageOptions {
@@ -1053,6 +1069,8 @@ impl Default for StorageOptions {
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
             rocksdb_max_open_files: None,
             rocksdb_max_successive_merges: DEFAULT_MAX_SUCCESSIVE_MERGES,
+            vqueue_meta_full_write_probability:
+                serde_helpers::default_vqueue_meta_full_write_probability(),
         }
     }
 }
@@ -1233,6 +1251,14 @@ mod serde_helpers {
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
         *v == default_compact_on_deletions_min_sst_file_size()
+    }
+
+    pub const fn default_vqueue_meta_full_write_probability() -> f64 {
+        0.01
+    }
+
+    pub fn is_default_vqueue_meta_full_write_probability(v: &f64) -> bool {
+        *v == default_vqueue_meta_full_write_probability()
     }
 }
 
