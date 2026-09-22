@@ -31,12 +31,11 @@ define_secondary_index!(
     }
 );
 
-// Timestamp predicates remain residual until logical time ranges can be bound
-// safely to the descending full-HLC field. The physical schema still includes it.
 crate::keys::macros::define_index_key_filter!(
     InvocationByServiceStageKey; [InvocationByService];
     service_name: ServiceName,
     stage: Stage,
+    transitioned_at: Reverse<UniqueTimestamp>,
     invocation_id: InvocationId,
 );
 

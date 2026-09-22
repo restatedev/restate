@@ -6,19 +6,19 @@
 
 The experimental SQL table `_idx_invocation_by_service` exposes persisted invocation
 secondary-index entries. Its columns are `partition_id`, `service_name`, `stage`,
-`transitioned_at`, `transitioned_at_hlc`, `invocation_id`, and `partition_key`.
+`transitioned_at`, `invocation_id`, and `partition_key`.
 
-Service, VQueue-stage, and invocation-ID predicates can filter native index scans.
-Other predicates, including timestamp comparisons, are evaluated on the returned rows.
-`transitioned_at` has millisecond precision; `transitioned_at_hlc` includes the internal
-logical counter for ordering transitions within the same millisecond. Use `ORDER BY`
-for ordered SQL results.
+Service, VQueue-stage, invocation-ID, and millisecond timestamp predicates can filter
+native index scans. `transitioned_at` uses Unix timestamps at millisecond precision;
+timestamp predicates are translated to the corresponding internal clock ranges.
+Other predicates are evaluated on the returned rows. Use `ORDER BY` for ordered SQL
+results; transitions within the same millisecond have equal timestamps.
 
 ```sql
 SELECT invocation_id, transitioned_at
 FROM _idx_invocation_by_service
 WHERE service_name = 'MyService' AND stage = 'inbox'
-ORDER BY transitioned_at_hlc DESC
+ORDER BY transitioned_at DESC
 LIMIT 20;
 ```
 

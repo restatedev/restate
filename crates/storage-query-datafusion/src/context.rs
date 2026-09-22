@@ -305,7 +305,7 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::invocation_index::register_self(
+        crate::index::invocation_by_service::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),
@@ -511,7 +511,7 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::invocation_index::register_self(
+        crate::index::invocation_by_service::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),

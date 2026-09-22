@@ -28,7 +28,8 @@ use super::{InvocationByServiceStage, InvocationByServiceStageKey};
 impl PartitionStore {
     /// Scans persisted invocation-index entries within the requested and owned key range.
     ///
-    /// Service, stage, and invocation predicates use the shared ordered-key cursor.
+    /// Service, stage, invocation, and millisecond timestamp predicates use the
+    /// shared ordered-key cursor. Timestamp bounds include all HLC logical counters.
     /// The filter is prepared synchronously; the returned future does not borrow it.
     /// Callback errors fail the scan and `Break(Ok(()))` stops it successfully.
     ///
