@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mocks::*;
-use crate::row;
-
 use datafusion::arrow::array::{LargeStringArray, TimestampMillisecondArray, UInt32Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -19,13 +16,16 @@ use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryKind, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
-    stats::EntryStatistics,
+    EntryContext, EntryId, EntryKey, EntryKind, EntryMetadata, EntryStateRef, EntryValue, Stage,
+    Status, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{Seq, VQueueId};
+use restate_types::vqueues::{EntryTargetRef, Seq, VQueueId};
 use restate_util_string::ToReString;
+
+use crate::mocks::*;
+use crate::row;
 
 async fn select_entry_ids(engine: &mut MockQueryEngine, query: &str) -> Vec<String> {
     let batches = engine
@@ -258,13 +258,16 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
         if index < 4 {
             // Point lookups must use the status index; these rows are absent
             // from the stage table so a stage scan cannot satisfy the query.
-            tx.put_vqueue_entry_status(
-                &qid,
-                stage,
-                &key,
-                &value.metadata,
-                value.stats,
-                value.status,
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service: "test",
+                        handler: "handler",
+                    },
+                },
+                EntryStateRef::from_value(stage, &key, &value),
             );
         } else {
             // NOT IN must retain the stage-scan path; these rows are absent

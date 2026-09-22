@@ -21,6 +21,7 @@ use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::{PatchDeploymentId, ResumeInvocationResponse};
 use restate_types::schema::deployment::DeploymentResolver;
+use restate_types::vqueues::EntryTargetExt;
 
 use crate::partition::processor::{FsmAccess, ProcessorContext};
 use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
@@ -152,7 +153,12 @@ where
                     // entry was actually waiting (Inbox/Suspended/Paused); a running attempt is a
                     // no-op.
                     let was_waiting = ctx
-                        .vqueue_reschedule_invocation(&invocation_id, run_at, resolved)
+                        .vqueue_reschedule_invocation(
+                            &invocation_id,
+                            run_at,
+                            &metadata.invocation_target.entry_target_ref(),
+                            resolved,
+                        )
                         .await?;
 
                     if let Some(new_pinned_deployment_id) = resolved {
