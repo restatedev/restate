@@ -843,6 +843,11 @@ experimental! {
     ///
     /// Since v1.8.0
     invocation_source_ingestion,
+
+    /// # [WIP] Service and Deployment Stats and Basic Indexes
+    ///
+    /// Since v1.8.0
+    indexes_v1,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
