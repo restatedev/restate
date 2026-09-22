@@ -22,12 +22,12 @@
 //! does not depend on ADC discovery or external network. The
 //! google-cloud-auth crate is exercised in its own test suite.
 
+use std::assert_matches;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::Duration;
 
 use base64::Engine;
 use bytes::Bytes;
@@ -39,7 +39,9 @@ use hyper::service::service_fn;
 use hyper::{Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use restate_service_client::test_util::{override_gcp_mint_failure, override_gcp_token};
-use restate_service_client::{Endpoint, Method as ClientMethod, Parts, ServiceClient};
+use restate_service_client::{
+    Endpoint, GcpAuthError, Method as ClientMethod, Parts, ServiceClient, ServiceClientError,
+};
 use restate_types::config::ServiceClientOptions;
 use restate_types::deployment::{GoogleIdTokenAuth, HttpAuth};
 use tokio::net::TcpListener;
@@ -164,10 +166,9 @@ async fn bearer_attached_with_persisted_audience() {
     let token = fake_jwt_with_audience(&expected_audience);
     let _token_override = override_gcp_token(None, &expected_audience, token.clone());
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from(expected_audience.clone()),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from(expected_audience.clone()), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -211,10 +212,9 @@ async fn customer_authorization_passes_through_alongside_minted_xsa() {
         hyper::http::HeaderValue::from_static("Bearer user-supplied-token"),
     );
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from(expected_audience.clone()),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from(expected_audience.clone()), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -248,10 +248,9 @@ async fn bearer_uses_explicit_audience_when_provided() {
     let token = fake_jwt_with_audience(explicit_audience);
     let _token_override = override_gcp_token(None, explicit_audience, token);
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from_static(explicit_audience),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from_static(explicit_audience), None, None).unwrap(),
+    );
     let response = dispatch(
         &client,
         Endpoint::Http(upstream_uri, None, Some(auth)),
@@ -276,10 +275,10 @@ async fn mint_failure_does_not_send_unauthenticated_request() {
     let _failure_override =
         override_gcp_mint_failure(None, "https://example.test", "simulated ADC failure");
 
-    let auth = HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-        ByteString::from_static("https://example.test"),
-        None,
-    ));
+    let auth = HttpAuth::GoogleIdToken(
+        GoogleIdTokenAuth::new(ByteString::from_static("https://example.test"), None, None)
+            .unwrap(),
+    );
 
     let parts = Parts::new(
         ClientMethod::Post,
@@ -296,12 +295,50 @@ async fn mint_failure_does_not_send_unauthenticated_request() {
         "dispatch must return Err when mint fails, got Ok"
     );
 
-    // Give the upstream server a moment in case a wayward request was sent.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // `call` returns before any connection is attempted, so nothing can still be in flight.
     let captured = recorded.lock().unwrap();
     assert!(
         captured.is_empty(),
         "upstream must NOT receive any request when mint fails, got headers: {captured:?}"
+    );
+}
+
+#[tokio::test]
+async fn persisted_provider_without_impersonation_fails_closed() {
+    let (upstream_addr, recorded) = upstream_recorder().await;
+    let upstream_uri: hyper::Uri = format!("http://{upstream_addr}/").parse().unwrap();
+    let auth: GoogleIdTokenAuth = serde_json::from_value(serde_json::json!({
+        "audience": "https://example.test",
+        "workload_identity_provider": "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/pool/providers/provider"
+    }))
+    .expect("persisted records deserialize without constructor validation");
+
+    let parts = Parts::new(
+        ClientMethod::Post,
+        Endpoint::Http(upstream_uri, None, Some(HttpAuth::GoogleIdToken(auth))),
+        hyper::http::uri::PathAndQuery::from_static("/discover"),
+        hyper::HeaderMap::new(),
+    );
+    let result = build_service_client()
+        .call(restate_service_client::Request::new(
+            parts,
+            Full::new(Bytes::new()),
+        ))
+        .await;
+    let error = match result {
+        Err(error) => error,
+        Ok(_) => panic!("invalid persisted auth must fail before dispatch"),
+    };
+
+    assert_matches!(
+        &error,
+        ServiceClientError::GcpAuth(_, GcpAuthError::Build { message, .. })
+            if message.contains("impersonate_service_account")
+    );
+    assert!(!error.is_retryable());
+    assert!(
+        recorded.lock().unwrap().is_empty(),
+        "invalid persisted auth must not reach the upstream"
     );
 }
 
