@@ -168,6 +168,68 @@ impl PreparedIndexPredicate {
     }
 }
 
+/// A union of non-empty inclusive encoded intervals, sorted and coalesced.
+/// Used when one logical value covers several physical values (e.g. a millisecond
+/// covers every HLC logical counter), including disjoint IN-list intervals.
+pub(crate) struct PreparedIndexRanges {
+    ranges: Vec<(LiteralSpan, LiteralSpan)>,
+}
+
+impl PreparedIndexRanges {
+    pub(crate) fn new<V: IndexFieldEncode>(
+        ranges: impl IntoIterator<Item = (V, V)>,
+        literals: &mut Vec<u8>,
+    ) -> Option<Self> {
+        let mut ranges: Vec<_> = ranges
+            .into_iter()
+            .filter_map(|(lower, upper)| {
+                let lower = encode(&lower, literals);
+                let upper = encode(&upper, literals);
+                (lower.get(literals) <= upper.get(literals)).then_some((lower, upper))
+            })
+            .collect();
+        ranges.sort_unstable_by(|(a, _), (b, _)| a.get(literals).cmp(b.get(literals)));
+        let mut count = 0;
+        for index in 0..ranges.len() {
+            let (lower, upper) = ranges[index];
+            if count > 0 && lower.get(literals) <= ranges[count - 1].1.get(literals) {
+                if upper.get(literals) > ranges[count - 1].1.get(literals) {
+                    ranges[count - 1].1 = upper;
+                }
+            } else {
+                ranges[count] = (lower, upper);
+                count += 1;
+            }
+        }
+        ranges.truncate(count);
+        (!ranges.is_empty()).then_some(Self { ranges })
+    }
+
+    pub(super) fn matches(&self, literals: &[u8], encoded: &[u8]) -> bool {
+        let next = self
+            .ranges
+            .partition_point(|(_, upper)| upper.get(literals) < encoded);
+        self.ranges
+            .get(next)
+            .is_some_and(|(lower, _)| lower.get(literals) <= encoded)
+    }
+
+    pub(super) fn bounds<'a>(&self, literals: &'a [u8]) -> (Bound<&'a [u8]>, Bound<&'a [u8]>) {
+        (
+            Bound::Included(self.ranges[0].0.get(literals)),
+            Bound::Included(self.ranges.last().unwrap().1.get(literals)),
+        )
+    }
+
+    /// First interval start strictly after this value. Called for a value in a gap.
+    pub(super) fn next_start<'a>(&self, literals: &'a [u8], encoded: &[u8]) -> Option<&'a [u8]> {
+        let next = self
+            .ranges
+            .partition_point(|(lower, _)| lower.get(literals) <= encoded);
+        self.ranges.get(next).map(|(lower, _)| lower.get(literals))
+    }
+}
+
 /// Appends one index-encoded value and returns its byte range.
 fn encode<V: IndexFieldEncode>(value: &V, literals: &mut Vec<u8>) -> LiteralSpan {
     let start = literals.len();
