@@ -9045,13 +9045,16 @@ dependencies = [
  "bytes",
  "bytestring",
  "compact_str",
+ "criterion",
  "hashbrown 0.16.1",
  "metrics",
  "opentelemetry",
+ "prost",
  "restate-util-string",
  "restate-workspace-hack",
  "serde_core",
  "serde_json",
+ "zerocopy",
 ]
 
 [[package]]
