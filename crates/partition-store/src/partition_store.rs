@@ -55,7 +55,6 @@ use crate::fsm_table::seal_partition;
 use crate::fsm_table::{
     get_locally_durable_lsn, get_min_restate_version_from_partition_db,
     get_storage_features_from_partition_db, get_storage_version_from_partition_db,
-    is_jc_orphan_cleanup_done, put_jc_orphan_cleanup_done,
 };
 use crate::keys::{EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::migrations::MigrationError;
@@ -694,19 +693,6 @@ impl PartitionStore {
 
     pub async fn seal(&mut self, seal: &PartitionSeal) -> Result<()> {
         seal_partition(self, seal).await
-    }
-
-    /// Returns `true` if the one-time cleanup of orphaned `jc` index entries has not yet been
-    /// performed on this partition store.
-    pub async fn needs_jc_orphan_cleanup(&mut self) -> Result<bool> {
-        is_jc_orphan_cleanup_done(self, self.partition_id())
-            .await
-            .map(|done| !done)
-    }
-
-    /// Marks the one-time `jc` orphan cleanup as complete so it won't run again.
-    pub async fn mark_jc_orphan_cleanup_done(&mut self) -> Result<()> {
-        put_jc_orphan_cleanup_done(self, self.partition_id()).await
     }
 
     #[instrument(level = "info", skip_all, fields(partition_id = %self.partition().id()))]

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod jc_orphan_cleanup;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -89,9 +90,17 @@ storage_features! {
     ///
     /// *Since v1.7.10*
     pub VqueueMetadataCleanupV1,
+    /// A one-time sweep of orphaned journal completion-id index entries has completed.
+    ///
+    /// *Since v1.8.0*
+    pub JcOrphanCleanup,
 }
 
 trait StorageFeature: Sized + 'static {
+    /// Run `enable` even when no log records have been applied, for example to retire
+    /// legacy metadata. Otherwise, empty stores only record the feature and its version floor.
+    const RUN_ON_EMPTY_STORE: bool = false;
+
     fn persisted_name() -> &'static ReString;
     fn min_required_version() -> &'static SemanticRestateVersion;
     fn should_enable(
@@ -108,8 +117,7 @@ trait StorageFeature: Sized + 'static {
     /// Implementors of this function must ensure that it's crash-proof by either batching
     /// all changes into a single write batch or by performing idempotent operations.
     ///
-    /// Note that `enable` will not be called if the partition-store is empty
-    /// (no LSNs have been applied).
+    /// Skipped for empty stores (no applied LSN) unless `RUN_ON_EMPTY_STORE` is true.
     async fn enable(
         storage: &mut PartitionStore,
         cancel: &CancellationToken,
@@ -331,7 +339,7 @@ async fn enable_helper<F: StorageFeature>(
     let partition_id = storage.partition_id();
     let mut finalization = WriteBatch::default();
 
-    if !is_store_empty {
+    if !is_store_empty || F::RUN_ON_EMPTY_STORE {
         F::enable(storage, cancel, config, &mut finalization).await?;
     }
 
@@ -588,7 +596,89 @@ use storage_features;
 
 #[cfg(test)]
 mod tests {
+    use restate_rocksdb::RocksDbManager;
+    use restate_types::RESTATE_VERSION_1_7_10;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
+
     use super::*;
+    use crate::PartitionStoreManager;
+    use crate::fsm_table::get_storage_features_from_partition_db;
+
+    #[restate_core::test]
+    async fn empty_store_records_feature_without_running_enable_by_default() {
+        struct RequiresData;
+
+        impl StorageFeature for RequiresData {
+            fn persisted_name() -> &'static ReString {
+                static NAME: ReString = ReString::from_static("test-requires-data");
+                &NAME
+            }
+
+            fn min_required_version() -> &'static SemanticRestateVersion {
+                &RESTATE_VERSION_1_7_10
+            }
+
+            fn should_enable(_: &Configuration, _: &SemanticRestateVersion, _: bool) -> bool {
+                true
+            }
+
+            fn is_enabled(_: &StorageFeatures) -> bool {
+                false
+            }
+
+            fn set_enabled(_: &mut StorageFeatures) {}
+
+            async fn enable(
+                _: &mut PartitionStore,
+                _: &CancellationToken,
+                _: &Configuration,
+                _: &mut WriteBatch,
+            ) -> Result<(), MigrationError> {
+                panic!("enable must be skipped on empty stores by default");
+            }
+        }
+
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(
+                &Partition::new(PartitionId::MIN, KeyRange::new(10, 20)),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut storage_version = StorageVersion::V1_5;
+        let mut min_version = SemanticRestateVersion::default();
+        let mut features = LoadedStorageFeatures::default();
+        enable_helper::<RequiresData>(
+            &mut store,
+            &RESTATE_VERSION_1_7_10,
+            &mut min_version,
+            &mut storage_version,
+            true,
+            &CancellationToken::new(),
+            &Configuration::default(),
+            &mut features,
+        )
+        .await
+        .unwrap();
+        let persisted = get_storage_features_from_partition_db(store.partition_db())
+            .unwrap()
+            .unwrap();
+        assert!(
+            persisted
+                .features
+                .contains_key(RequiresData::persisted_name())
+        );
+        assert_eq!(
+            persisted.get_required_min_version(),
+            Some((*RESTATE_VERSION_1_7_10).clone())
+        );
+        assert_eq!(min_version, *RESTATE_VERSION_1_7_10);
+        RocksDbManager::get().shutdown().await;
+    }
 
     #[test]
     fn unknown_features_raise_the_barrier_and_survive_updates() {
@@ -664,7 +754,10 @@ mod tests {
 
         assert_eq!(
             features.automatic_changes(&config, &current_version, false),
-            [KnownStorageFeature::VqueueMetadataCleanupV1]
+            [
+                KnownStorageFeature::VqueueMetadataCleanupV1,
+                KnownStorageFeature::JcOrphanCleanup,
+            ]
         );
         assert_eq!(
             features.automatic_changes(&config, &current_version, true),
@@ -673,6 +766,7 @@ mod tests {
                 KnownStorageFeature::MigratedToScopedStateTable,
                 KnownStorageFeature::MigratedToScopedPromiseTable,
                 KnownStorageFeature::VqueueMetadataCleanupV1,
+                KnownStorageFeature::JcOrphanCleanup,
             ]
         );
     }

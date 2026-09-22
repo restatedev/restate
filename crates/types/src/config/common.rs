@@ -837,6 +837,18 @@ experimental! {
     /// Since v1.7.10
     vqueue_obsolete_cleanup,
 
+    /// # Enable one-time cleanup of orphaned journal completion-id index entries
+    ///
+    /// Partition startup waits for cleanup to finish. Completed stores require
+    /// Restate v1.7.10 or newer. Enable this gradually and wait for each node's
+    /// assigned partitions to catch up before restarting the next node.
+    ///
+    /// The cleanup is enabled unconditionally from v1.9.0. Changes take effect
+    /// when a partition processor starts, not while it is running.
+    ///
+    /// Since v1.8.0
+    jc_orphan_cleanup,
+
     /// # Enables the new invocation::Source::Ingestion
     ///
     /// This new source can be set by the ingestion API.

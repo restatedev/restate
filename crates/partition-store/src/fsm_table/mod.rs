@@ -84,12 +84,8 @@ pub(crate) mod fsm_variable {
     /// *Since v1.6*
     pub(crate) const PARTITION_CONFIG_STATE: u64 = 7;
 
-    /// Set to 1 once the one-time cleanup of orphaned `jc` index entries has completed.
-    /// These orphans were caused by a bug in `delete_journal` that used the wrong scan
-    /// prefix when deleting `JournalCompletionIdToCommandIndex` entries.
-    ///
-    /// Can be removed in v1.8 once we are confident this cleanup has been executed on all
-    /// deployments.
+    /// Legacy orphaned `jc` cleanup marker, superseded by the local storage feature.
+    /// Retained only to delete historical markers. Keep this key number reserved.
     /// *Since v1.7.0*
     pub(crate) const JC_ORPHAN_CLEANUP_DONE: u64 = 8;
 
@@ -320,24 +316,13 @@ pub(crate) fn append_min_restate_version_to_wb(
     Ok(())
 }
 
-pub(crate) async fn is_jc_orphan_cleanup_done<S: StorageAccess>(
-    storage: &mut S,
+pub(crate) fn append_jc_orphan_cleanup_marker_deletion_to_wb(
+    cf_handle: &std::sync::Arc<rocksdb::BoundColumnFamily<'_>>,
+    wb: &mut rocksdb::WriteBatch,
     partition_id: PartitionId,
-) -> Result<bool> {
-    get::<SequenceNumber, _>(storage, partition_id, fsm_variable::JC_ORPHAN_CLEANUP_DONE)
-        .map(|opt| opt.is_some())
-}
-
-pub(crate) async fn put_jc_orphan_cleanup_done<S: StorageAccess>(
-    storage: &mut S,
-    partition_id: PartitionId,
-) -> Result<()> {
-    put(
-        storage,
-        partition_id,
-        fsm_variable::JC_ORPHAN_CLEANUP_DONE,
-        &SequenceNumber::from(1u64),
-    )
+) {
+    let key = create_key(partition_id, fsm_variable::JC_ORPHAN_CLEANUP_DONE);
+    wb.delete_cf(cf_handle, key.to_bytes());
 }
 
 pub(crate) async fn get_partition_seal<S: StorageAccess>(
