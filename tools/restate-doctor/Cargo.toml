@@ -65,6 +65,7 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ulid = { workspace = true }
 url = { workspace = true }
+zerocopy = { workspace = true }
 
 [build-dependencies]
 vergen = { workspace = true, default-features = false, features = [

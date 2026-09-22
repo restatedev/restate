@@ -32,6 +32,7 @@ use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
 use restate_util_bytecount::ByteCount;
 
+use crate::compaction_filter::PartitionCompactionFactory;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
@@ -672,6 +673,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(
             crate::DB_PREFIX_LENGTH,
         ));
+        cf_options.set_compaction_filter_factory(PartitionCompactionFactory);
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(true);
         cf_options.set_num_levels(7);
