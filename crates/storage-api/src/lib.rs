@@ -13,6 +13,8 @@ use std::future::Future;
 use restate_memory::{NonZeroByteCount, OutOfMemory, OutOfMemoryKind};
 use restate_types::partitions::UnknownStorageVersion;
 
+pub use table::PrimaryKey;
+
 /// Storage error
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
@@ -66,6 +68,7 @@ pub mod deduplication_table;
 pub mod filter;
 pub mod fsm_table;
 pub mod inbox_table;
+pub mod index;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;

@@ -18,13 +18,13 @@ use comfy_table::{Color, Table};
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
-use restate_partition_store::keys::KeyKind;
+use restate_partition_store::keys::{IndexKeyPrefix, KeyKind};
 use restate_partition_store::stats::StatKeyPrefix;
 use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
-use crate::util::decode_key::decode_aggregated_stat_key;
+use crate::util::decode_key::{decode_aggregated_stat_key, decode_secondary_index_key};
 use crate::util::rocksdb::{
     DbInfo, extract_file_number, open_partition_store_db, resolve_partition_store_path,
 };
@@ -336,9 +336,13 @@ fn print_key_details(key: &[u8]) {
             .unwrap_or_else(|| format!("Unknown({:02x}{:02x})", key[0], key[1]));
         info.add_kv_row("Table:", kind_str);
 
-        // Decode partition key/id. Aggregated statistics use a custom compact header.
+        // Stats and secondary indexes use compact physical-partition headers.
         if kind == Some(KeyKind::Stats) {
             if let Ok((prefix, _)) = StatKeyPrefix::decode_prefix(key) {
+                info.add_kv_row("Partition:", prefix.partition_id());
+            }
+        } else if kind == Some(KeyKind::SecondaryIndex) {
+            if let Ok((prefix, _)) = IndexKeyPrefix::decode_prefix(key) {
                 info.add_kv_row("Partition:", prefix.partition_id());
             }
         } else if key.len() >= 10 {
@@ -455,6 +459,7 @@ fn decode_key_details(kind: KeyKind, key: &[u8]) -> Option<String> {
             }
         }
         KeyKind::Stats => return decode_aggregated_stat_key(key),
+        KeyKind::SecondaryIndex => return decode_secondary_index_key(key),
         _ => {}
     }
     None
