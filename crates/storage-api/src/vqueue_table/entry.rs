@@ -12,7 +12,8 @@ use std::num::NonZeroU16;
 
 use restate_clock::RoughTimestamp;
 use restate_memory::NonZeroByteCount;
-use restate_types::vqueues::{EntryId, EntryKind, Seq};
+use restate_sharding::PartitionKey;
+use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq};
 use restate_util_string::ReString;
 
 use super::Status;
@@ -118,6 +119,10 @@ impl EntryKey {
     #[inline]
     pub const fn entry_id(&self) -> &EntryId {
         &self.entry_id
+    }
+
+    pub const fn to_canonical_entry_id(self, partition_key: PartitionKey) -> CanonicalEntryId {
+        CanonicalEntryId::new(self.entry_id.to_base_id(partition_key), self.seq)
     }
 
     /// Returns whether this key represents an entry that currently holds a lock.
