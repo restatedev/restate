@@ -147,12 +147,6 @@ impl BaseEntryId {
     }
 }
 
-impl AsRef<EntryId> for BaseEntryId {
-    fn as_ref(&self) -> &EntryId {
-        &self.id
-    }
-}
-
 static_assertions::assert_eq_size!(BaseEntryId, [u8; BaseEntryId::RAW_BYTES_LEN]);
 static_assertions::assert_eq_align!(BaseEntryId, u8);
 
