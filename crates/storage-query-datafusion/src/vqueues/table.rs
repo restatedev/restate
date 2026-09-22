@@ -20,8 +20,7 @@ use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, Stage,
 };
-use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{CanonicalEntryId, VQueueId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
@@ -72,7 +71,7 @@ struct VQueuesScanner;
 
 enum VQueueRow<'a> {
     Stage(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-    Status(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>),
+    Status(&'a CanonicalEntryId, &'a RawStatusHeaderRef<'a>),
 }
 
 impl ScanLocalPartition for VQueuesScanner {
@@ -104,7 +103,8 @@ impl ScanLocalPartition for VQueuesScanner {
                             return ControlFlow::Continue(());
                         }
 
-                        f(VQueueRow::Status(id, header)).map_break(Result::unwrap)
+                        let canonical_id = id.canonicalize(header.seq);
+                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
                     },
                 )
                 .map(FutureExt::boxed);

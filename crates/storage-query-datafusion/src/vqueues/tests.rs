@@ -24,30 +24,33 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{Seq, VQueueId};
 use restate_util_string::ToReString;
 
 async fn select_entry_ids(engine: &mut MockQueryEngine, query: &str) -> Vec<String> {
-    let records = engine
+    let batches = engine
         .execute(query.to_owned())
         .await
         .unwrap()
         .stream
         .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
-        .await
-        .remove(0)
-        .unwrap();
+        .await;
 
-    let mut ids = records
-        .column_by_name("entry_id")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<LargeStringArray>()
-        .unwrap()
-        .iter()
-        .flatten()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let mut ids = Vec::new();
+    for records in batches {
+        let records = records.unwrap();
+        ids.extend(
+            records
+                .column_by_name("entry_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(str::to_string),
+        );
+    }
     ids.sort();
     ids
 }
@@ -275,7 +278,7 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
 
     let entry_ids = keys
         .iter()
-        .map(|key| key.entry_id().display(qid.partition_key()).to_string())
+        .map(|key| key.to_canonical_entry_id(qid.partition_key()).to_string())
         .collect::<Vec<_>>();
     let got = select_entry_ids(
         &mut engine,
@@ -289,6 +292,18 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
     let mut expected = vec![entry_ids[0].clone(), entry_ids[1].clone()];
     expected.sort();
     assert_eq!(got, expected);
+
+    let wrong_sequence = keys[0]
+        .to_canonical_entry_id(qid.partition_key())
+        .with_seq(Seq::MAX);
+    assert!(
+        select_entry_ids(
+            &mut engine,
+            &format!("SELECT entry_id FROM sys_vqueues WHERE entry_id = '{wrong_sequence}'"),
+        )
+        .await
+        .is_empty()
+    );
 
     let excluded = entry_ids[0..4]
         .iter()
