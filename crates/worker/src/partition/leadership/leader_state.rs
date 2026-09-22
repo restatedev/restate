@@ -11,14 +11,14 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::future::Future;
-use std::ops::RangeBounds;
+use std::ops::{ControlFlow, RangeBounds};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
-use futures::{FutureExt, StreamExt, stream};
+use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use metrics::counter;
 use tokio::time::Instant;
@@ -30,6 +30,7 @@ use restate_core::network::{Oneshot, Reciprocal};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
+use restate_memory::PollMemoryPool;
 use restate_partition_store::PartitionDb;
 use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::identifiers::{
@@ -64,7 +65,7 @@ use crate::partition::cleaner::{CleanerEffect, CleanerHandle};
 use crate::partition::leadership::fencing::FencingTokens;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::leadership::{
-    Error, InvokerStream, LeaderEvent, NetworkServiceEvent, RpcReciprocal, TimerService,
+    Error, InvokerStream, NetworkServiceEvent, RpcReciprocal, TimerService,
 };
 use crate::partition::processor::{FsmAccess, Processor};
 use crate::partition::rpc::{ReplyOn, RpcProposal};
@@ -75,8 +76,10 @@ use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
+use super::self_proposer_scheduler::{
+    SchedulerDecision, SelfProposerScheduler, SelfProposerSchedulerFlow,
+};
 
-const BATCH_READY_UP_TO: usize = 10;
 const NETWORK_EVENTS_BUFFER_SIZE: usize = 1;
 
 pub struct LeaderState {
@@ -117,6 +120,8 @@ pub struct LeaderState {
     // Unregisters the leader-query registry entry on drop. Must live as long as
     // the partition processor's select! is willing to serve scheduler queries.
     _leader_query_guard: LeaderQueryGuard,
+    self_proposer_capacity: PollMemoryPool,
+    self_proposer_scheduler: SelfProposerScheduler,
 }
 
 impl LeaderState {
@@ -159,6 +164,7 @@ impl LeaderState {
             scheduler,
             invoker_handle,
             invoker_task_handle: Some(invoker_task_handle),
+            self_proposer_capacity: self_proposer.capacity_poller(),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
             awaiting_rpc_self_propose: Default::default(),
@@ -169,6 +175,7 @@ impl LeaderState {
             network_events_tx,
             network_events_stream: ReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
+            self_proposer_scheduler: SelfProposerScheduler::new(),
         }
     }
 
@@ -188,7 +195,7 @@ impl LeaderState {
             awaiting_rpc_self_propose: &mut self.awaiting_rpc_self_propose,
             fencing_tokens: &mut self.fencing_tokens,
         };
-        effect.handle(&mut state)
+        effect.handle(&mut state).map(|_| ())
     }
 
     #[cfg(test)]
@@ -264,105 +271,51 @@ impl LeaderState {
             cleaner_handle,
             durability_tracker,
             network_events_stream,
+            self_proposer_capacity,
+            self_proposer_scheduler,
             ..
         } = self;
-        let partition_key_range = *partition_key_range;
+        std::future::poll_fn(|cx| {
+            // watch the shuffle task in case it crashed
+            if let Poll::Ready(result) =
+                shuffle_task_handle.as_mut().expect("is set").poll_unpin(cx)
+            {
+                // it's not possible to await the shuffler handle
+                // if it returns an error. Hence we take it here.
+                // run() should then never be called again.
+                shuffle_task_handle.take();
+                return Poll::Ready(match result {
+                    Ok(Ok(_)) => Err(Error::task_terminated_unexpectedly("shuffle")),
+                    Ok(Err(err)) => Err(Error::task_failed("shuffle", err)),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                });
+            }
 
-        let timer_stream = std::pin::pin!(stream::unfold(timer_service, |timer_service| async {
-            let timer_value = timer_service.as_mut().next_timer().await;
-            Some((LeaderEvent::Timer(timer_value), timer_service))
-        }));
-        let vqueue_metas = ctx.vqueues();
+            if let Poll::Ready(result) =
+                invoker_task_handle.as_mut().expect("is set").poll_unpin(cx)
+            {
+                invoker_task_handle.take();
+                return Poll::Ready(match result {
+                    Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
+                    Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                });
+            }
 
-        // todo(asoli): consider adding the scheduler pick_next() directly to the tokio::select!
-        // if we have problems with latency
-        let scheduler_stream = std::pin::pin!(stream::unfold(scheduler, |scheduler| async {
-            let result = scheduler.schedule_next(vqueue_metas).await;
-            Some((LeaderEvent::Scheduler(result), scheduler))
-        }));
+            if let Poll::Ready(result) = std::pin::pin!(self_proposer.join_on_err()).poll_unpin(cx)
+            {
+                return Poll::Ready(Err(result.expect_err("never should never be returned")));
+            }
 
-        let schema_stream = schema_stream.filter_map(|_| {
-            // only upsert schema iff version is newer than current version
-            let current_version = ctx.fsm().schema_version();
+            // Join the inflight commit notification futures
+            while let Poll::Ready(Some(_)) = awaiting_rpc_self_propose.next().poll_unpin(cx) {}
 
-            std::future::ready(
-                Some(Metadata::with_current(|m| m.schema()))
-                    .filter(|schema| schema.version() > current_version)
-                    .map(|schema| LeaderEvent::UpsertSchema(schema.clone())),
-            )
-        });
+            if self_proposer_capacity.poll_available(cx).is_pending() {
+                return Poll::Pending;
+            }
 
-        let rule_book_stream = rule_book_stream.filter_map(|book| {
-            // Only propose iff the cache holds a rule book that's
-            // newer than the partition's current in-memory book.
-            let current_version = ctx.fsm().rule_book().version();
-            std::future::ready(
-                (book.version() > current_version).then(|| LeaderEvent::UpsertRuleBook(book)),
-            )
-        });
+            let partition_key_range = *partition_key_range;
+            let vqueue_metas = ctx.vqueues();
 
-        let invoker_stream = invoker_stream.map(LeaderEvent::Invoker);
-        let shuffle_stream = shuffle_stream
-            .filter_map(|shuffle| std::future::ready(shuffle.map(LeaderEvent::Shuffle)));
-        let cleaner_stream = cleaner_handle.effects().map(LeaderEvent::Cleaner);
-
-        let dur_tracker_stream = durability_tracker.map(LeaderEvent::PartitionMaintenance);
-        let network_events_stream = network_events_stream.map(LeaderEvent::NetworkService);
-
-        let mut all_streams = futures::stream_select!(
-            scheduler_stream,
-            invoker_stream,
-            shuffle_stream,
-            timer_stream,
-            cleaner_stream,
-            dur_tracker_stream,
-            schema_stream,
-            rule_book_stream,
-            network_events_stream
-        );
-
-        let event = loop {
-            let event = tokio::select! {
-                // watch the shuffle task in case it crashed
-                result = &mut *shuffle_task_handle.as_mut().expect("is set") => {
-                    // it's not possible to await the shuffler handle
-                    // if it returns an error. Hence we take it here.
-                    // run() should then never be called again.
-                    shuffle_task_handle.take();
-                    return match result {
-                        Ok(Ok(_)) => Err(Error::task_terminated_unexpectedly("shuffle")),
-                        Ok(Err(err)) => Err(Error::task_failed("shuffle", err)),
-                        Err(shutdown_error) => Err(Error::Shutdown(shutdown_error))
-                    }
-                }
-                result = &mut *invoker_task_handle.as_mut().expect("is set") => {
-                    invoker_task_handle.take();
-                    return match result {
-                        Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
-                        Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
-                    }
-                }
-                Some(event) = all_streams.next(), if self_proposer.has_capacity() => {
-                    event
-                },
-                _ = self_proposer.wait_for_capacity(), if !self_proposer.has_capacity() => {
-                    continue;
-                },
-                // Joining the inflight commit notification futures
-                Some(_) = awaiting_rpc_self_propose.next() => {
-                    continue;
-                },
-                result = self_proposer.join_on_err() => {
-                    return Err(result.expect_err("never should never be returned"))
-                }
-            };
-            break event;
-        };
-
-        let mut handled_so_far = 0;
-        let mut loop_event = Some(event);
-        // Let's greedly handle ready events as long as we have capacity to self-propose.
-        while let Some(event) = loop_event {
             let mut state = LeaderEventHandlerState {
                 partition_key_range,
                 self_proposer,
@@ -371,14 +324,108 @@ impl LeaderState {
                 fencing_tokens,
             };
 
-            handle_event(event, &mut state)?;
-            handled_so_far += 1;
-            if handled_so_far >= BATCH_READY_UP_TO || !self_proposer.has_capacity() {
-                break;
+            fn dispatch(
+                poll: Poll<Option<impl LeaderEventHandler>>,
+                state: &mut LeaderEventHandlerState<'_>,
+                decision: SchedulerDecision<'_>,
+            ) -> ControlFlow<Result<(), Error>> {
+                if let Poll::Ready(Some(handler)) = poll {
+                    let res = handler.handle(state);
+                    match res {
+                        Ok(bytes_written) => {
+                            decision.on_proposal_enqueued(bytes_written);
+                            ControlFlow::Break(Ok(()))
+                        }
+                        Err(e) => {
+                            decision.on_error();
+                            ControlFlow::Break(Err(e))
+                        }
+                    }
+                } else {
+                    decision.on_pending();
+                    ControlFlow::Continue(())
+                }
             }
-            loop_event = all_streams.next().now_or_never().flatten();
-        }
-        Ok(())
+
+            while let Some(decision) = self_proposer_scheduler.poll_next_ready(cx) {
+                // Override the waker for every flow so that it notifies the scheduler when it's ready.
+                let flow = decision.flow;
+                let cx = &mut Context::from_waker(decision.waker);
+                let res = match flow {
+                    SelfProposerSchedulerFlow::Invoker => {
+                        dispatch(invoker_stream.poll_next_unpin(cx), &mut state, decision)
+                    }
+                    SelfProposerSchedulerFlow::Timer => dispatch(
+                        timer_service.as_mut().poll_next_timer(cx).map(Some),
+                        &mut state,
+                        decision,
+                    ),
+                    SelfProposerSchedulerFlow::Shuffle => {
+                        dispatch(shuffle_stream.poll_next_unpin(cx), &mut state, decision)
+                    }
+                    SelfProposerSchedulerFlow::Cleaner => dispatch(
+                        cleaner_handle.effects().poll_next_unpin(cx),
+                        &mut state,
+                        decision,
+                    ),
+                    SelfProposerSchedulerFlow::UpsertSchema => {
+                        dispatch(
+                            schema_stream.poll_next_unpin(cx).map(|new_version| {
+                                let new_version = new_version?;
+                                let current_version = ctx.fsm().schema_version();
+                                // only upsert schema iff version is newer than current version
+                                if current_version < new_version {
+                                    Some(Some(Metadata::with_current(|m| m.schema()).clone()))
+                                } else {
+                                    // The stream was ready, so report a zero-byte action to keep the
+                                    // flow eligible for polling; reporting pending could lose readiness signal.
+                                    Some(None)
+                                }
+                            }),
+                            &mut state,
+                            decision,
+                        )
+                    }
+                    SelfProposerSchedulerFlow::UpsertRuleBook => dispatch(
+                        rule_book_stream.poll_next_unpin(cx).map(|new_book| {
+                            let new_book = new_book?;
+                            let current_version = ctx.fsm().rule_book().version();
+                            if current_version < new_book.version() {
+                                Some(Some(new_book))
+                            } else {
+                                // The stream was ready, so report a zero-byte action to keep the
+                                // flow eligible for polling; reporting pending could lose readiness signal.
+                                Some(None)
+                            }
+                        }),
+                        &mut state,
+                        decision,
+                    ),
+                    SelfProposerSchedulerFlow::NetworkService => dispatch(
+                        network_events_stream.poll_next_unpin(cx),
+                        &mut state,
+                        decision,
+                    ),
+                    SelfProposerSchedulerFlow::PartitionMaintenance => {
+                        dispatch(durability_tracker.poll_next_unpin(cx), &mut state, decision)
+                    }
+                    SelfProposerSchedulerFlow::Scheduler => dispatch(
+                        scheduler
+                            .poll_schedule_next(vqueue_metas, cx)
+                            .map(|decisions| Some(decisions.map_err(Error::from))),
+                        &mut state,
+                        decision,
+                    ),
+                };
+                match res {
+                    ControlFlow::Continue(()) => continue,
+                    ControlFlow::Break(res) => return Poll::Ready(res),
+                }
+            }
+
+            Poll::Pending
+        })
+        .await
     }
 
     /// Stops all leader relevant tasks.
@@ -471,7 +518,7 @@ struct LeaderEventHandlerState<'a> {
 }
 
 impl LeaderEventHandlerState<'_> {
-    fn handle_rpc_proposal(&mut self, proposal: RpcProposal, reciprocal: RpcReciprocal) {
+    fn handle_rpc_proposal(&mut self, proposal: RpcProposal, reciprocal: RpcReciprocal) -> usize {
         let (keys, cmd, reply_on) = proposal.into_parts();
 
         match reply_on {
@@ -496,7 +543,7 @@ impl LeaderEventHandlerState<'_> {
         >,
         keys: Keys,
         cmd: ErasedCommand,
-    ) {
+    ) -> usize {
         match self.awaiting_rpc_actions.entry(request_id) {
             Entry::Occupied(mut o) => {
                 // In this case, someone already proposed this command,
@@ -506,13 +553,19 @@ impl LeaderEventHandlerState<'_> {
                 old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
                     "retried".to_string(),
                 )));
+                0
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
-                if let Err(e) = self.self_proposer.self_propose_erased(keys, cmd) {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                } else {
-                    v.insert(reciprocal);
+                match self.self_proposer.self_propose_erased(keys, cmd) {
+                    Err(e) => {
+                        reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                        0
+                    }
+                    Ok(bytes_written) => {
+                        v.insert(reciprocal);
+                        bytes_written
+                    }
                 }
             }
         }
@@ -538,11 +591,10 @@ impl LeaderEventHandlerState<'_> {
         invocation_id: InvocationId,
         keys: Keys,
         cmd: impl Into<ErasedCommand>,
-    ) {
+    ) -> usize {
         let cmd = cmd.into();
         debug_assert!(keys == Keys::Single(invocation_id.partition_key()));
         debug_assert!(cmd.kind() == CommandKind::PauseInvocation);
-
         match self.awaiting_rpc_actions.entry(request_id) {
             Entry::Occupied(mut o) => {
                 // Retry of an already-proposed pause: replace the reciprocal and fail the old one.
@@ -553,17 +605,23 @@ impl LeaderEventHandlerState<'_> {
                 old_reciprocal.send(Err(PartitionProcessorRpcError::Internal(
                     "retried".to_string(),
                 )));
+                0
             }
             Entry::Vacant(v) => {
-                if let Err(e) = self
+                match self
                     .self_proposer
                     .self_propose_erased(Keys::Single(invocation_id.partition_key()), cmd)
                 {
-                    reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                } else {
-                    v.insert(reciprocal);
-                    // Clear ONLY here -- after the append succeeded. See the method doc.
-                    self.fencing_tokens.clear(&invocation_id);
+                    Err(e) => {
+                        reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                        0
+                    }
+                    Ok(bytes_written) => {
+                        v.insert(reciprocal);
+                        // Clear ONLY here -- after the append succeeded. See the method doc.
+                        self.fencing_tokens.clear(&invocation_id);
+                        bytes_written
+                    }
                 }
             }
         }
@@ -580,17 +638,21 @@ impl LeaderEventHandlerState<'_> {
         cmd: ErasedCommand,
         reciprocal: RpcReciprocal,
         success_response: PartitionProcessorRpcResponse,
-    ) {
+    ) -> usize {
         match self.self_proposer.append_with_notification(keys, cmd) {
-            Ok(result) => {
+            Ok(res) => {
                 self.awaiting_rpc_self_propose.push(SelfAppendFuture::new(
-                    result.commit_token,
+                    res.commit_token,
                     |result: Result<(), PartitionProcessorRpcError>| {
                         reciprocal.send(result.map(|_| success_response));
                     },
                 ));
+                res.bytes_written
             }
-            Err(e) => reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+            Err(e) => {
+                reciprocal.send(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                0
+            }
         }
     }
 
@@ -598,39 +660,52 @@ impl LeaderEventHandlerState<'_> {
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         callback: F,
-    ) where
+    ) -> usize
+    where
         F: FnOnce(Result<(), PartitionProcessorRpcError>) + Send + Sync + 'static,
     {
         match self.self_proposer.forward_many_with_notification(records) {
-            Ok(result) => {
+            Ok(res) => {
                 self.awaiting_rpc_self_propose
-                    .push(SelfAppendFuture::new(result.commit_token, callback));
+                    .push(SelfAppendFuture::new(res.commit_token, callback));
+                res.bytes_written
             }
-            Err(e) => callback(Err(PartitionProcessorRpcError::Internal(e.to_string()))),
+            Err(e) => {
+                callback(Err(PartitionProcessorRpcError::Internal(e.to_string())));
+                0
+            }
         }
     }
 }
 
 trait LeaderEventHandler {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error>;
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error>;
 }
 
-fn handle_event(event: LeaderEvent, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
-    match event {
-        LeaderEvent::Scheduler(event) => event?.handle(state),
-        LeaderEvent::PartitionMaintenance(event) => event.handle(state),
-        LeaderEvent::Invoker(event) => event.handle(state),
-        LeaderEvent::Shuffle(event) => event.handle(state),
-        LeaderEvent::Timer(event) => event.handle(state),
-        LeaderEvent::Cleaner(event) => event.handle(state),
-        LeaderEvent::UpsertSchema(event) => event.handle(state),
-        LeaderEvent::UpsertRuleBook(event) => event.handle(state),
-        LeaderEvent::NetworkService(event) => event.handle(state),
+impl<T> LeaderEventHandler for Option<T>
+where
+    T: LeaderEventHandler,
+{
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+        if let Some(handler) = self {
+            handler.handle(state)
+        } else {
+            Ok(0)
+        }
+    }
+}
+
+impl<T> LeaderEventHandler for Result<T, Error>
+where
+    T: LeaderEventHandler,
+{
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+        self?.handle(state)
     }
 }
 
 impl LeaderEventHandler for Decisions {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         let Decisions {
             qids,
             num_run,
@@ -658,27 +733,26 @@ impl LeaderEventHandler for Decisions {
             // Unfortunately chunk_by cannot generate an ExactSizeIterator.
             // I'm hoping that this is a temporary measure until SelfProposer is redesigned.
             .collect();
-        state
+        let bytes_written = state
             .self_proposer
             .self_propose_many(commands.into_iter())?;
-        Ok(())
+        Ok(bytes_written)
     }
 }
 
 impl LeaderEventHandler for UpdatePartitionDurabilityCommand {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         // based on configuration, whether to consider partition-local durability in
         // the replica-set as a sufficient source of durability, or only snapshots.
         state.self_proposer.self_propose(BodyWithKeys::new(
             self,
             Keys::RangeInclusive(state.partition_key_range.into()),
-        ))?;
-        Ok(())
+        ))
     }
 }
 
 impl LeaderEventHandler for InvokerEffect {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         let invocation_id = self.effect.invocation_id;
         // Fence stale effects at write time: only self-propose if the effect carries
         // the token of the invocation's *current* attempt. A mismatch (or a missing
@@ -694,46 +768,42 @@ impl LeaderEventHandler for InvokerEffect {
             if self.effect.kind.is_terminal() {
                 state.fencing_tokens.clear(&invocation_id);
             }
-
             state
                 .self_proposer
-                .self_propose(commands::InvokerEffectCommand::from(*self.effect))?;
+                .self_propose(commands::InvokerEffectCommand::from(*self.effect))
         } else {
             debug!(
                 restate.invocation.id = %invocation_id,
                 "Dropping stale invoker effect at write time (fencing token mismatch)"
             );
+            Ok(0)
         }
-        Ok(())
     }
 }
 
 impl LeaderEventHandler for shuffle::OutboxTruncation {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
         //  specific destination messages that are identified by a partition_id
-
         state.self_proposer.self_propose(BodyWithKeys::new(
             commands::TruncateOutboxCommand {
                 index: self.index(),
             },
             Keys::RangeInclusive(state.partition_key_range.into()),
-        ))?;
-        Ok(())
+        ))
     }
 }
 
 impl LeaderEventHandler for TimerKeyValue {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         state
             .self_proposer
-            .self_propose(commands::TimerCommand::from(self))?;
-        Ok(())
+            .self_propose(commands::TimerCommand::from(self))
     }
 }
 
 impl LeaderEventHandler for CleanerEffect {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         match self {
             CleanerEffect::PurgeJournal(invocation_id) => {
                 state
@@ -743,7 +813,7 @@ impl LeaderEventHandler for CleanerEffect {
                             invocation_id,
                             response_sink: None,
                         },
-                    ))?;
+                    ))
             }
             CleanerEffect::PurgeInvocation(invocation_id) => {
                 state
@@ -753,43 +823,40 @@ impl LeaderEventHandler for CleanerEffect {
                             invocation_id,
                             response_sink: None,
                         },
-                    ))?;
+                    ))
             }
         }
-
-        Ok(())
     }
 }
 
 impl LeaderEventHandler for Schema {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0) {
             state
                 .self_proposer
                 .self_propose(commands::UpsertSchemaCommand {
                     partition_key_range: Keys::RangeInclusive(state.partition_key_range.into()),
                     schema: self,
-                })?;
+                })
+        } else {
+            Ok(0)
         }
-        Ok(())
     }
 }
 
 impl LeaderEventHandler for Arc<RuleBook> {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         let cmd = restate_wal_protocol::control::UpsertRuleBookCommand { rule_book: self };
-
         state.self_proposer.self_propose(BodyWithKeys::new(
             cmd,
             Keys::RangeInclusive(state.partition_key_range.into()),
-        ))?;
-        Ok(())
+        ))
     }
 }
 
 impl LeaderEventHandler for NetworkServiceEvent {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<(), Error> {
-        match self {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+        Ok(match self {
             NetworkServiceEvent::RpcProposal {
                 proposal,
                 reciprocal,
@@ -797,26 +864,23 @@ impl LeaderEventHandler for NetworkServiceEvent {
             NetworkServiceEvent::IngestRecords {
                 records,
                 reciprocal,
-            } => {
-                state.forward_many_and_respond_on_commit(
-                    records.into_iter(),
-                    move |result: Result<(), PartitionProcessorRpcError>| {
-                        let status = match result {
-                            Ok(()) => ResponseStatus::Ack,
-                            Err(
-                                PartitionProcessorRpcError::NotLeader(id)
-                                | PartitionProcessorRpcError::LostLeadership(id),
-                            ) => ResponseStatus::NotLeader { of: id },
-                            Err(PartitionProcessorRpcError::Internal(msg)) => {
-                                ResponseStatus::Internal { msg }
-                            }
-                        };
-                        reciprocal.send(status.into());
-                    },
-                );
-            }
-        }
-        Ok(())
+            } => state.forward_many_and_respond_on_commit(
+                records.into_iter(),
+                move |result: Result<(), PartitionProcessorRpcError>| {
+                    let status = match result {
+                        Ok(()) => ResponseStatus::Ack,
+                        Err(
+                            PartitionProcessorRpcError::NotLeader(id)
+                            | PartitionProcessorRpcError::LostLeadership(id),
+                        ) => ResponseStatus::NotLeader { of: id },
+                        Err(PartitionProcessorRpcError::Internal(msg)) => {
+                            ResponseStatus::Internal { msg }
+                        }
+                    };
+                    reciprocal.send(status.into());
+                },
+            ),
+        })
     }
 }
 

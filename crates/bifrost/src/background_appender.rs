@@ -13,12 +13,12 @@ use std::num::NonZeroUsize;
 use bytes::BytesMut;
 use futures::FutureExt;
 use pin_project::pin_project;
-use restate_memory::{MemoryLease, MemoryPool, NonZeroByteCount};
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
 use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
+use restate_memory::{MemoryLease, MemoryPool, NonZeroByteCount, PollMemoryPool};
 use restate_types::logs::Record;
 use restate_types::storage::StorageEncode;
 
@@ -310,15 +310,11 @@ pub struct LogSender<T> {
 }
 
 impl<T: StorageEncode> LogSender<T> {
-    /// Returns whether the next record or batch can be admitted.
-    pub fn has_capacity(&self) -> bool {
-        self.mem_pool.available() > 0
-    }
-
-    /// Waits until the next record or batch can be admitted.
-    pub fn wait_for_capacity(&self) -> impl std::future::Future<Output = ()> + 'static {
-        let mem_pool = self.mem_pool.clone();
-        async move { mem_pool.wait_until_available().await }
+    /// Returns a poll-style watcher over the appender's memory-pool capacity,
+    /// for use in manual [`std::future::Future::poll`] implementations. Waker
+    /// registration survives across polls.
+    pub fn capacity_poller(&self) -> PollMemoryPool {
+        PollMemoryPool::new(self.mem_pool.clone())
     }
 
     fn admit<E>(&self, payload: E) -> Result<E, EnqueueError<E>> {
