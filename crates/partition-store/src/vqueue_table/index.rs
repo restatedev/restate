@@ -16,8 +16,9 @@ use crate::PartitionStoreTransaction;
 use crate::index::InvocationByServiceStageKey;
 
 /// Maintains the invocation index alongside the source entry's lifecycle writes.
-/// This alone does not establish index completeness for pre-existing stores;
-/// query access must wait for a separate activation/backfill step.
+/// This alone does not establish index completeness for pre-existing stores.
+/// Raw index inspection is possible, but using the index as an authoritative
+/// query access path requires a separate activation/backfill step.
 pub(super) fn on_entry_change(
     storage: &mut PartitionStoreTransaction<'_>,
     context: &EntryContext<'_>,

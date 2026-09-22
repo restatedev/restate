@@ -19,6 +19,7 @@ use crate::keys::{EncodeIndexKey, IndexKeyPrefix};
 mod invocation;
 mod macros;
 mod maintenance;
+mod scan;
 
 pub use invocation::{InvocationByServiceStage, InvocationByServiceStageKey};
 

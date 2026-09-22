@@ -11,6 +11,7 @@
 use std::cmp::Reverse;
 
 use restate_clock::UniqueTimestamp;
+use restate_storage_api::index::InvocationByService;
 use restate_storage_api::invocation_status_table::InvocationStatusTable;
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::ServiceName;
@@ -28,6 +29,15 @@ define_secondary_index!(
         transitioned_at: Reverse<UniqueTimestamp>,
         invocation_id: InvocationId (primary_key),
     }
+);
+
+// Timestamp predicates remain residual until logical time ranges can be bound
+// safely to the descending full-HLC field. The physical schema still includes it.
+crate::keys::macros::define_index_key_filter!(
+    InvocationByServiceStageKey; [InvocationByService];
+    service_name: ServiceName,
+    stage: Stage,
+    invocation_id: InvocationId,
 );
 
 #[cfg(test)]

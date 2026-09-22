@@ -16,6 +16,7 @@ pub mod bifrost_read_stream;
 pub mod config;
 mod deployment;
 mod inbox;
+mod invocation_index;
 mod invocation_state;
 mod invocation_status;
 mod journal;

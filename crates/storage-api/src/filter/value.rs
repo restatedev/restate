@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_types::identifiers::InvocationId;
 use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
 
@@ -81,6 +82,21 @@ impl FilterValue for EntryKind {
             _ => Err(LiteralConversionError::Unsupported),
         }
     }
+}
+
+impl FilterValue for InvocationId {
+    fn from_literal(literal: FilterLiteral<'_>) -> Result<Self, LiteralConversionError> {
+        match literal {
+            FilterLiteral::String(value) => value
+                .parse()
+                .map_err(|_| LiteralConversionError::Unrepresentable),
+            FilterLiteral::Null => Err(LiteralConversionError::Unrepresentable),
+            _ => Err(LiteralConversionError::Unsupported),
+        }
+    }
+
+    // ID string order differs from the persisted binary key order. Ordered SQL
+    // comparisons must remain residual even though equality and IN are supported.
 }
 
 impl FilterValue for u64 {
