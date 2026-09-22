@@ -463,20 +463,9 @@ impl PartitionStore {
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
-        Ok(async {
-            match rx.await {
-                Ok(storage_err) => Err(storage_err),
-                Err(_recv_err) => {
-                    // iterator was dropped without sending an error; this is actually a success condition
-                    Ok(())
-                }
-            }
-        })
+        self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
     }
 
     pub fn run_iterator<K: EncodeTableKey, O: Send + 'static>(
@@ -490,7 +479,7 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -505,19 +494,40 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
-    fn run_iterator_internal<K: EncodeTableKeyPrefix>(
+    /// Starts an iterator from already-encoded bounds without re-encoding them.
+    pub(crate) fn iterator_for_each_physical(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        opts: ReadOptions,
+        scan: PhysicalScan<Bytes>,
+        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+        let on_iter = Self::iterator_step_for_each(tx, f);
+        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+
+        Ok(async {
+            match rx.await {
+                Ok(storage_err) => Err(storage_err),
+                // The iterator completed without reporting a storage error.
+                Err(_recv_err) => Ok(()),
+            }
+        })
+    }
+
+    fn run_iterator_internal(
         &self,
         name: &'static str,
         priority: Priority,
         mut opts: ReadOptions,
-        scan: TableScan<K>,
+        scan: PhysicalScan<Bytes>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
-        let scan: PhysicalScan<Bytes> = scan.into();
         match scan {
             PhysicalScan::Prefix(table, prefix) => {
                 assert!(table.has_key_kind(&prefix));

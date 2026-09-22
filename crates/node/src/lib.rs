@@ -47,6 +47,7 @@ use restate_metadata_server::{
 };
 use restate_metadata_store::{ReadWriteError, WriteError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
+use restate_service_client::initialize_gcp_federation_config;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::cluster_marker::{ClusterMarker, ClusterValidationError};
 use restate_types::config::{CommonOptions, Configuration};
@@ -136,6 +137,10 @@ pub enum BuildError {
     #[error("building metadata store failed: {0}")]
     #[code(unknown)]
     MetadataStore(#[from] anyhow::Error),
+
+    #[error("invalid GCP federation configuration: {0}")]
+    #[code(unknown)]
+    GcpFederationConfig(String),
 }
 
 pub struct Node {
@@ -165,6 +170,11 @@ impl Node {
         metric_definitions::describe_metrics();
         let mut server_builder = NetworkServerBuilder::new(&mut address_book);
         let config = updateable_config.pinned();
+
+        initialize_gcp_federation_config(
+            config.worker.invoker.service_client.gcp_federation.clone(),
+        )
+        .map_err(BuildError::GcpFederationConfig)?;
 
         let metadata_builder = MetadataBuilder::default();
         let metadata = metadata_builder.to_metadata();

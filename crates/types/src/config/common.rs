@@ -757,6 +757,15 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
+    /// # AWS-to-GCP workload identity federation
+    ///
+    /// Allows registering deployments that authenticate through a Google workload identity
+    /// provider. Deployment metadata written while this is enabled is not understood by Restate
+    /// v1.7, so enabling it makes rollback to v1.7 unsafe.
+    ///
+    /// Since v1.8.0
+    gcp_workload_identity_federation,
+
     /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
@@ -1555,6 +1564,20 @@ mod tests {
         assert!(!serialized.contains("[networking.tls]"));
         let deserialized: CommonOptions = toml::from_str(&serialized).unwrap();
         assert!(deserialized.tls.is_some());
+    }
+
+    #[test]
+    fn gcp_federation_feature_uses_the_advertised_name() {
+        let mut experimental = Experimental::default();
+        assert!(!experimental.is_gcp_workload_identity_federation_enabled());
+
+        experimental.set_gcp_workload_identity_federation(true);
+        assert_eq!(
+            experimental
+                .features()
+                .get("gcp_workload_identity_federation"),
+            Some(&true)
+        );
     }
 
     #[test]
