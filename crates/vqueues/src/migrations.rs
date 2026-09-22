@@ -36,7 +36,7 @@ use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::{PartitionId, WithPartitionKey};
 use restate_types::storage::StorageCodec;
-use restate_types::vqueues::EntryId;
+use restate_types::vqueues::{EntryId, EntryTargetExt};
 use restate_types::{LimitKey, LockName, ServiceName};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
@@ -204,6 +204,7 @@ async fn migrate_inboxes(
                     UniqueTimestamp::from_unix_millis_unchecked(
                         inboxed.metadata.timestamps.creation_time(),
                     ),
+                    &inboxed.metadata.invocation_target.entry_target_ref(),
                     // We use the original inbox sequence number to preserve ordering as best we
                     // can. One can formulate scenarios where this might diverge from the original
                     // inbox ordering in particular if the leader clock went backwards after restart
@@ -451,6 +452,7 @@ async fn migrate_scheduled_invocation(
     let seq = 0;
     vqueue.enqueue_new(
         entry_created_at,
+        &scheduled.metadata.invocation_target.entry_target_ref(),
         seq,
         scheduled.metadata.execution_time,
         EntryId::from(invocation_id),
