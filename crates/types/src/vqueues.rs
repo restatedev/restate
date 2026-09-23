@@ -18,7 +18,7 @@ mod seq;
 mod vqueue_id;
 
 pub use crate::identifiers::CanonicalEntryId;
-pub use entry_id::{EntryId, EntryIdDisplay, EntryKind, VQueueEntryId};
+pub use entry_id::{EntryId, EntryIdDisplay, EntryKind};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 
