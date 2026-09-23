@@ -132,8 +132,29 @@ fn unfiltered_keys_decode_owned_and_progressively() {
     assert_eq!(datum.encoded(), &18_u64.to_be_bytes());
     assert_eq!(datum.decode().unwrap(), 18);
 
+    let view: DemoKeyView<'_> = KeyDecoder::<DemoKey>::from_payload(&scratch)
+        .take_all()
+        .unwrap();
+    assert_eq!(view.stage.as_bytes().as_ptr(), scratch.as_ptr());
+    assert_eq!(view.stage.decode().unwrap(), Stage::Inbox);
+    assert_eq!(view.service_name1.decode().unwrap(), "Timo");
+    assert_eq!(view.service_name2.decode().unwrap(), "Kimo");
+    assert_eq!(view.datum.decode().unwrap(), 18);
+    for len in 0..scratch.len() {
+        assert!(
+            KeyDecoder::<DemoKey>::from_payload(&scratch[..len])
+                .take_all()
+                .is_err()
+        );
+    }
+
     let mut trailing = scratch.to_vec();
     trailing.push(0);
+    assert!(
+        KeyDecoder::<DemoKey>::from_payload(&trailing)
+            .take_all()
+            .is_err()
+    );
     let decoder = KeyDecoder::<DemoKey>::from_payload(&trailing);
     let (_, decoder) = decoder.decode_stage().unwrap();
     let (_, decoder) = decoder.decode_service_name1().unwrap();
@@ -145,6 +166,23 @@ fn unfiltered_keys_decode_owned_and_progressively() {
     let (_, decoder) = decoder.take_service_name1().unwrap();
     let (_, decoder) = decoder.take_service_name2().unwrap();
     assert!(decoder.take_datum().is_err());
+
+    // Taking a view validates boundaries, leaving semantic checks until decode.
+    scratch.clear();
+    RecordKey::borrowed(7, None::<&str>, "", EntryKind::Invocation).encode(&mut scratch);
+    let view = KeyDecoder::<RecordKey>::from_payload(&scratch)
+        .take_all()
+        .unwrap();
+    assert_eq!(view.sequence.decode().unwrap(), 7);
+    assert_eq!(view.category.decode().unwrap(), None);
+    assert!(view.name.decode().is_err());
+    assert_eq!(view.kind.decode().unwrap(), EntryKind::Invocation);
+    scratch.clear();
+    NameKey::borrowed("svc").encode(&mut scratch);
+    let view = KeyDecoder::<NameKey>::from_payload(&scratch)
+        .take_all()
+        .unwrap();
+    assert_eq!(view.name.decode().unwrap().as_str(), "svc");
 }
 
 #[test]

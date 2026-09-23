@@ -14,21 +14,27 @@ use std::time::Duration;
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_partition_store::PartitionStore;
 use restate_partition_store::index::{
-    EntryByServiceStageKey, EntryByStageKey, EntryNextAtByStageKey, SecondaryIndexKey,
+    BusyVQueueKey, EntryByStageKey, EntryByStageServiceKey, EntryByVirtualObjectStageKey,
+    EntryNextAtByStageKey, EntryNextAtByStageServiceKey, EntryNextAtByVirtualObjectStageKey,
+    IndexId, SecondaryIndexKey,
 };
-use restate_partition_store::keys::KeyKind;
+use restate_partition_store::keys::{IndexKeyPrefix, KeyKind};
+use restate_partition_store::stats::StatValueCodec;
+use restate_partition_store::stats::aggregated::StageCounts;
 use restate_storage_api::Transaction;
-use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
+use restate_storage_api::vqueue_table::metadata::{
+    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
+};
 use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, ReadVQueueTable,
-    Stage, Status, WriteVQueueTable,
+    Stage, Status, VQueueDisposition, WriteVQueueTable,
 };
-use restate_types::LimitKey;
 use restate_types::config::Configuration;
 use restate_types::identifiers::CanonicalEntryId;
 use restate_types::sharding::PartitionId;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
+use restate_types::{LimitKey, Scope};
 
 use crate::{VQueue, VQueueEvent, VQueuesMetaCache, YieldReason};
 
@@ -42,7 +48,7 @@ fn target(case: u8) -> EntryTargetRef<'static> {
             handler: "handle",
         },
         1 => EntryTargetRef::VirtualObject {
-            scope: None,
+            scope: Some("tenant"),
             service: "vo",
             key: "key",
             handler: HandlerRef::UserHandler("handle"),
@@ -70,6 +76,10 @@ fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
     iterator.seek(prefix);
     let mut keys = Vec::new();
     while let Some(key) = iterator.key().filter(|key| key.starts_with(prefix)) {
+        if IndexKeyPrefix::decode_prefix(key).unwrap().0.index_id() == Some(IndexId::BusyVQueue) {
+            iterator.next();
+            continue;
+        }
         assert!(iterator.value().unwrap().is_empty());
         keys.push(key.to_vec());
         iterator.next();
@@ -80,21 +90,272 @@ fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
 
 fn expected_keys(
     partition: PartitionId,
-    service: &str,
+    target: &EntryTargetRef<'_>,
     stage: Stage,
     transitioned_at: UniqueTimestamp,
     next_at: RoughTimestamp,
-    status: Status,
     id: CanonicalEntryId,
 ) -> Vec<Vec<u8>> {
-    let mut keys = vec![Vec::new(); 3];
-    EntryByServiceStageKey::borrowed(service, stage, Reverse(transitioned_at), id)
+    let mut keys = vec![Vec::new(); 4];
+    EntryByStageServiceKey::borrowed(stage, target.service(), Reverse(transitioned_at), id)
         .encode_key(partition, &mut keys[0]);
-    EntryByStageKey::borrowed(stage, Reverse(transitioned_at), status, id)
+    EntryByStageKey::borrowed(stage, Reverse(transitioned_at), id)
         .encode_key(partition, &mut keys[1]);
-    EntryNextAtByStageKey::borrowed(stage, next_at, id.seq(), status, id)
+    EntryNextAtByStageKey::borrowed(stage, next_at, id.seq(), id)
         .encode_key(partition, &mut keys[2]);
+    EntryNextAtByStageServiceKey::borrowed(stage, target.service(), next_at, id.seq(), id)
+        .encode_key(partition, &mut keys[3]);
+    if let Some(key) = target.virtual_object_key() {
+        let mut transitioned = Vec::new();
+        EntryByVirtualObjectStageKey::borrowed(
+            target.service(),
+            target.scope(),
+            key,
+            stage,
+            Reverse(transitioned_at),
+            id,
+        )
+        .encode_key(partition, &mut transitioned);
+        keys.push(transitioned);
+        let mut next = Vec::new();
+        EntryNextAtByVirtualObjectStageKey::borrowed(
+            target.service(),
+            target.scope(),
+            key,
+            stage,
+            next_at,
+            id.seq(),
+            id,
+        )
+        .encode_key(partition, &mut next);
+        keys.push(next);
+    }
+    keys.sort();
     keys
+}
+
+fn busy_vqueue_rows(store: &PartitionStore) -> Vec<(BusyVQueueKey, StageCounts)> {
+    let mut prefix = Vec::new();
+    BusyVQueueKey::prefix(store.partition_id(), &mut prefix);
+    let db = store.partition_db().rocksdb().inner().as_raw_db();
+    let cf = db.cf_handle(store.partition().cf_name().as_ref()).unwrap();
+    let mut iterator = db.raw_iterator_cf(&cf);
+    iterator.seek(&prefix);
+    let mut rows = Vec::new();
+    while let Some(key) = iterator.key().filter(|key| key.starts_with(&prefix)) {
+        let (_, payload) = IndexKeyPrefix::decode_prefix(key).unwrap();
+        rows.push((
+            payload
+                .into_decoder::<BusyVQueueKey>()
+                .decode_all()
+                .unwrap(),
+            StageCounts::deserialize_from(iterator.value().unwrap()).unwrap(),
+        ));
+        iterator.next();
+    }
+    iterator.status().unwrap();
+    rows
+}
+
+#[restate_core::test]
+async fn busy_vqueue_index_covers_counts_and_tracks_metadata_lifetime() {
+    let mut store = storage_test_environment().await;
+    let qid = VQueueId::custom(3337, "busy-index");
+    let at = |logical| UniqueTimestamp::try_from_parts(100, logical).unwrap();
+    let new_meta = || {
+        VQueueMeta::new(
+            at(0),
+            Some(Scope::try_non_interned("tenant").unwrap()),
+            LimitKey::None,
+            VQueueLink::None,
+        )
+    };
+    let mut meta = new_meta();
+
+    // Feature-disabled lifecycle writes must not create index entries.
+    let mut tx = store.transaction();
+    tx.create_vqueue(&qid, &meta);
+    tx.delete_vqueue(&qid, &meta);
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert!(busy_vqueue_rows(&store).is_empty());
+
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    store
+        .verify_and_run_migrations(Default::default(), &config)
+        .await
+        .unwrap();
+    let observer = store.clone();
+    let assert_row = |meta: &VQueueMeta, expected: &[(Stage, u64)]| {
+        let rows = busy_vqueue_rows(&observer);
+        assert_eq!(rows.len(), 1, "exactly one entry, with no stale keys");
+        let (key, counts) = &rows[0];
+        assert_eq!(key.vqueue_id, qid);
+        assert_eq!(key.scope.as_deref(), Some("tenant"));
+        assert_eq!(key.total_non_completed.0, meta.len());
+        assert_eq!(key.last_modified.0, meta.stats().last_modified_at());
+        assert_eq!(counts.iter().collect::<Vec<_>>(), expected);
+    };
+    let mut tx = store.transaction();
+    tx.create_vqueue(&qid, &meta);
+    assert!(busy_vqueue_rows(&observer).is_empty());
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert_row(&meta, &[]);
+
+    let move_to = |prev_stage, next_stage, ts| {
+        Update::new(
+            ts,
+            Action::Move {
+                prev_stage,
+                next_stage,
+                metrics: MoveMetrics {
+                    last_transition_at: at(0),
+                    has_started: true,
+                    first_runnable_at: at(0).to_unix_millis(),
+                    scheduler_wait_stats: None,
+                },
+            },
+        )
+    };
+    for (previous, next, ts) in [
+        (None, Stage::Inbox, at(1)),
+        (Some(Stage::Inbox), Stage::Running, at(2)),
+        (Some(Stage::Running), Stage::Suspended, at(3)),
+    ] {
+        let mut tx = store.transaction();
+        assert_eq!(
+            tx.update_vqueue(&qid, &mut meta, &move_to(previous, next, ts)),
+            VQueueDisposition::Retained
+        );
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_row(&meta, &[(next, 1)]);
+    }
+
+    // Counts change at the same key, repeatedly in one batch. Each replacement
+    // must start a new Put/SingleDelete lifetime, even without a timestamp change.
+    let rocksdb = observer.partition_db().rocksdb().clone();
+    rocksdb.clone().flush_all().await.unwrap();
+    let timestamp = meta.stats().last_modified_at();
+    let mut tx = store.transaction();
+    for (previous, next) in [
+        (Stage::Suspended, Stage::Paused),
+        (Stage::Paused, Stage::Suspended),
+        (Stage::Suspended, Stage::Paused),
+    ] {
+        assert_eq!(
+            tx.update_vqueue(&qid, &mut meta, &move_to(Some(previous), next, at(4))),
+            VQueueDisposition::Retained
+        );
+        assert_eq!(meta.stats().last_modified_at(), timestamp);
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+    rocksdb.clone().flush_all().await.unwrap();
+    rocksdb
+        .clone()
+        .compact_all(Default::default())
+        .await
+        .unwrap();
+    assert_row(&meta, &[(Stage::Paused, 1)]);
+
+    // Pausing the queue changes no projected fields: only metadata is written.
+    let db = observer.partition_db().rocksdb().inner().as_raw_db();
+    let sequence = db.latest_sequence_number();
+    let mut tx = store.transaction();
+    assert_eq!(
+        tx.update_vqueue(&qid, &mut meta, &Update::new(at(5), Action::PauseVQueue {})),
+        VQueueDisposition::Retained
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert_eq!(db.latest_sequence_number(), sequence + 1);
+    assert_row(&meta, &[(Stage::Paused, 1)]);
+
+    // Rolling back the transaction also rolls back covering-value changes.
+    let mut uncommitted = meta.clone();
+    let mut tx = store.transaction();
+    let _ = tx.update_vqueue(
+        &qid,
+        &mut uncommitted,
+        &move_to(Some(Stage::Paused), Stage::Finished, at(6)),
+    );
+    drop(tx);
+    assert_row(&meta, &[(Stage::Paused, 1)]);
+
+    let mut tx = store.transaction();
+    assert_eq!(
+        tx.update_vqueue(
+            &qid,
+            &mut meta,
+            &move_to(Some(Stage::Paused), Stage::Finished, at(6))
+        ),
+        VQueueDisposition::Retained
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert_eq!(meta.len(), 0);
+    assert_row(&meta, &[(Stage::Finished, 1)]);
+
+    // A paused empty queue remains indexed; resuming it purges metadata and index.
+    let mut tx = store.transaction();
+    assert_eq!(
+        tx.update_vqueue(
+            &qid,
+            &mut meta,
+            &Update::new(
+                at(7),
+                Action::RemoveEntry {
+                    stage: Stage::Finished
+                }
+            )
+        ),
+        VQueueDisposition::Retained
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert_row(&meta, &[]);
+    let mut tx = store.transaction();
+    assert_eq!(
+        tx.update_vqueue(
+            &qid,
+            &mut meta,
+            &Update::new(at(8), Action::ResumeVQueue {})
+        ),
+        VQueueDisposition::Purged
+    );
+    assert!(tx.get_vqueue(&qid).await.unwrap().is_none());
+    tx.commit().await.unwrap();
+    drop(tx);
+    assert!(busy_vqueue_rows(&store).is_empty());
+
+    // Both cached and uncached explicit deletion paths have the previous metadata.
+    // Recreating and deleting the same key in that batch must leave no stale row.
+    for cached in [false, true] {
+        let meta = new_meta();
+        let mut cache = VQueuesMetaCache::new_empty(16);
+        let mut tx = store.transaction();
+        tx.create_vqueue(&qid, &meta);
+        if cached {
+            assert!(
+                VQueue::<VQueueEvent, _>::get(&qid, &mut tx, &mut cache, None)
+                    .await
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        assert!(cache.purge_meta_if_obsolete(&mut tx, &qid).await.unwrap());
+        tx.create_vqueue(&qid, &meta);
+        tx.delete_vqueue(&qid, &meta);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert!(busy_vqueue_rows(&store).is_empty());
+    }
+    rocksdb.clone().flush_all().await.unwrap();
+    rocksdb.compact_all(Default::default()).await.unwrap();
+    assert!(busy_vqueue_rows(&store).is_empty());
 }
 
 #[restate_core::test]
@@ -106,147 +367,176 @@ async fn entry_indexes_track_sequence_schedule_and_status_independently() {
         .verify_and_run_migrations(Default::default(), &config)
         .await
         .unwrap();
+    for case in [0, 1] {
+        let qid = VQueueId::custom(3337, "incarnations");
+        let target = target(case);
+        let context = EntryContext {
+            qid: &qid,
+            target: &target,
+        };
+        let id = EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]);
+        let at = UniqueTimestamp::try_from_parts(100, 1).unwrap();
+        let keys = [Seq::new(0), Seq::new(1), Seq::MAX]
+            .map(|seq| EntryKey::new(false, RoughTimestamp::new(0), seq, id));
+        let metadata = EntryMetadata::default();
+        let stats = EntryStatistics::new(at, keys[0].run_at());
+        let states = keys.each_ref().map(|entry_key| EntryStateRef {
+            stage: Stage::Inbox,
+            status: Status::New,
+            entry_key,
+            metadata: &metadata,
+            stats: &stats,
+        });
+        let encoded = keys.map(|key| {
+            expected_keys(
+                store.partition_id(),
+                &target,
+                Stage::Inbox,
+                at,
+                key.run_at(),
+                key.to_canonical_entry_id(qid.partition_key()),
+            )
+        });
 
-    let qid = VQueueId::custom(3337, "incarnations");
-    let target = target(0);
-    let context = EntryContext {
-        qid: &qid,
-        target: &target,
-    };
-    let id = EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]);
-    let at = UniqueTimestamp::try_from_parts(100, 1).unwrap();
-    let keys = [Seq::new(0), Seq::new(1), Seq::MAX]
-        .map(|seq| EntryKey::new(false, RoughTimestamp::new(0), seq, id));
-    let metadata = EntryMetadata::default();
-    let stats = EntryStatistics::new(at, keys[0].run_at());
-    let states = keys.each_ref().map(|entry_key| EntryStateRef {
-        stage: Stage::Inbox,
-        status: Status::New,
-        entry_key,
-        metadata: &metadata,
-        stats: &stats,
-    });
-    let encoded = keys.map(|key| {
-        expected_keys(
-            store.partition_id(),
-            target.service(),
-            Stage::Inbox,
-            at,
-            key.run_at(),
-            Status::New,
-            key.to_canonical_entry_id(qid.partition_key()),
-        )
-    });
+        let mut tx = store.transaction();
+        tx.create_vqueue_entry_status(&context, states[0]);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(index_keys(&store), encoded[0]);
 
-    let mut tx = store.transaction();
-    tx.create_vqueue_entry_status(&context, states[0]);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert_eq!(index_keys(&store), encoded[0]);
+        // Neither stage nor transition timestamp changes. Each update must remove
+        // the preceding incarnation, including the intermediate uncommitted one.
+        let mut tx = store.transaction();
+        tx.update_vqueue_entry_status(&context, states[0], states[1]);
+        tx.update_vqueue_entry_status(&context, states[1], states[2]);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(index_keys(&store), encoded[2]);
+        let header = store
+            .transaction()
+            .get_vqueue_entry_status(&id.to_base_id(qid.partition_key()))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            header.canonical_entry_id(),
+            keys[2].to_canonical_entry_id(qid.partition_key())
+        );
 
-    // Neither stage nor transition timestamp changes. Each update must remove
-    // the preceding incarnation, including the intermediate uncommitted one.
-    let mut tx = store.transaction();
-    tx.update_vqueue_entry_status(&context, states[0], states[1]);
-    tx.update_vqueue_entry_status(&context, states[1], states[2]);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert_eq!(index_keys(&store), encoded[2]);
-    let header = store
-        .transaction()
-        .get_vqueue_entry_status(&id.to_base_id(qid.partition_key()))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        header.canonical_entry_id(),
-        keys[2].to_canonical_entry_id(qid.partition_key())
-    );
-
-    // An identical projection writes only the source status, not a second index Put.
-    let sequence = store
-        .partition_db()
-        .rocksdb()
-        .inner()
-        .as_raw_db()
-        .latest_sequence_number();
-    let mut tx = store.transaction();
-    tx.update_vqueue_entry_status(&context, states[2], states[2]);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert_eq!(
-        store
+        // An identical projection writes only the source status, not a second index Put.
+        let sequence = store
             .partition_db()
             .rocksdb()
             .inner()
             .as_raw_db()
-            .latest_sequence_number(),
-        sequence + 1
-    );
-    assert_eq!(index_keys(&store), encoded[2]);
+            .latest_sequence_number();
+        let mut tx = store.transaction();
+        tx.update_vqueue_entry_status(&context, states[2], states[2]);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(
+            store
+                .partition_db()
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .latest_sequence_number(),
+            sequence + 1
+        );
+        assert_eq!(index_keys(&store), encoded[2]);
 
-    // A schedule-only change rewrites just the next-at index (delete + put)
-    // and the source status. In particular, the unchanged service index must
-    // not gate maintenance of the other indexes.
-    let rescheduled_key = keys[2].set_run_at(Some(RoughTimestamp::MAX));
-    let rescheduled = EntryStateRef {
-        entry_key: &rescheduled_key,
-        ..states[2]
-    };
-    let mut tx = store.transaction();
-    tx.update_vqueue_entry_status(&context, states[2], rescheduled);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert_eq!(
-        store
-            .partition_db()
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .latest_sequence_number(),
-        sequence + 4
-    );
-    let expected = |status| {
-        expected_keys(
+        // A schedule-only change rewrites only the next-at indexes and source status.
+        let schedule_writes = if target.virtual_object_key().is_some() {
+            7
+        } else {
+            5
+        };
+        let rescheduled_key = keys[2].set_run_at(Some(RoughTimestamp::MAX));
+        let rescheduled = EntryStateRef {
+            entry_key: &rescheduled_key,
+            ..states[2]
+        };
+        let mut tx = store.transaction();
+        tx.update_vqueue_entry_status(&context, states[2], rescheduled);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(
+            store
+                .partition_db()
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .latest_sequence_number(),
+            sequence + 1 + schedule_writes
+        );
+        let rescheduled_keys = expected_keys(
             store.partition_id(),
-            target.service(),
+            &target,
             Stage::Inbox,
             at,
             RoughTimestamp::MAX,
-            status,
             rescheduled_key.to_canonical_entry_id(qid.partition_key()),
-        )
-    };
-    let rescheduled_keys = expected(Status::New);
-    let scheduled_keys = expected(Status::Scheduled);
-    assert_eq!(index_keys(&store), rescheduled_keys);
+        );
+        assert_eq!(index_keys(&store), rescheduled_keys);
 
-    // A status-only change rewrites both status-bearing indexes, leaving the
-    // service index alone. It also writes the source and updates service stats.
-    let scheduled = EntryStateRef {
-        status: Status::Scheduled,
-        ..rescheduled
-    };
-    let mut tx = store.transaction();
-    tx.update_vqueue_entry_status(&context, rescheduled, scheduled);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert_eq!(
-        store
-            .partition_db()
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .latest_sequence_number(),
-        sequence + 10
-    );
-    assert_eq!(index_keys(&store), scheduled_keys);
+        // Status is not an index dimension: only source status and service stats change.
+        let scheduled = EntryStateRef {
+            status: Status::Scheduled,
+            ..rescheduled
+        };
+        let mut tx = store.transaction();
+        tx.update_vqueue_entry_status(&context, rescheduled, scheduled);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(
+            store
+                .partition_db()
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .latest_sequence_number(),
+            sequence + 1 + schedule_writes + 2
+        );
+        assert_eq!(index_keys(&store), rescheduled_keys);
 
-    let mut tx = store.transaction();
-    tx.delete_vqueue_entry_status(&context, scheduled);
-    tx.commit().await.unwrap();
-    drop(tx);
-    assert!(index_keys(&store).is_empty());
+        // A transition-time-only change rewrites only the newest-transition indexes.
+        let mut later_stats = stats.clone();
+        later_stats.transitioned_at = UniqueTimestamp::try_from_parts(101, 1).unwrap();
+        let later = EntryStateRef {
+            stats: &later_stats,
+            ..scheduled
+        };
+        let mut tx = store.transaction();
+        tx.update_vqueue_entry_status(&context, scheduled, later);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert_eq!(
+            index_keys(&store),
+            expected_keys(
+                store.partition_id(),
+                &target,
+                Stage::Inbox,
+                later_stats.transitioned_at,
+                RoughTimestamp::MAX,
+                rescheduled_key.to_canonical_entry_id(qid.partition_key()),
+            )
+        );
+        assert_eq!(
+            store
+                .partition_db()
+                .rocksdb()
+                .inner()
+                .as_raw_db()
+                .latest_sequence_number(),
+            sequence + 1 + schedule_writes + 2 + schedule_writes
+        );
+
+        let mut tx = store.transaction();
+        tx.delete_vqueue_entry_status(&context, later);
+        tx.commit().await.unwrap();
+        drop(tx);
+        assert!(index_keys(&store).is_empty());
+    }
 }
 
 #[restate_core::test]
@@ -274,14 +564,13 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
         let base_id = entry_id.to_base_id(qid.partition_key());
         let partition = store.partition_id();
         let initial_run_at = RoughTimestamp::from(at(0));
-        let expected = |stage, timestamp, status, next_at| -> Vec<Vec<u8>> {
+        let expected = |stage, timestamp, next_at| -> Vec<Vec<u8>> {
             expected_keys(
                 partition,
-                target(case).service(),
+                &target(case),
                 stage,
                 timestamp,
                 next_at,
-                status,
                 base_id.canonicalize(Seq::new(1)),
             )
         };
@@ -304,7 +593,7 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
         drop(tx);
         assert_eq!(
             index_keys(&store),
-            expected(Stage::Inbox, at(0), Status::New, initial_run_at)
+            expected(Stage::Inbox, at(0), initial_run_at)
         );
 
         // Only the source status record is written: metadata changes must not
@@ -337,11 +626,10 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
         );
         assert_eq!(
             index_keys(&store),
-            expected(Stage::Inbox, at(0), Status::New, initial_run_at)
+            expected(Stage::Inbox, at(0), initial_run_at)
         );
 
-        // Both updates write the source and one stats merge. A status-only update
-        // also rewrites the two status-bearing indexes, but not the service index.
+        // Both updates write the source and one stats merge, leaving every index unchanged.
         for status_only in [true, false] {
             let sequence = store
                 .partition_db()
@@ -382,11 +670,11 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
                     .inner()
                     .as_raw_db()
                     .latest_sequence_number(),
-                sequence + if status_only { 6 } else { 2 }
+                sequence + 2
             );
             assert_eq!(
                 index_keys(&store),
-                expected(Stage::Inbox, at(0), Status::Started, initial_run_at)
+                expected(Stage::Inbox, at(0), initial_run_at)
             );
         }
 
@@ -409,7 +697,7 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
             drop(tx);
             assert_eq!(
                 index_keys(&store),
-                expected(Stage::Inbox, at(1), Status::Yielded, initial_run_at)
+                expected(Stage::Inbox, at(1), initial_run_at)
             );
 
             let mut tx = store.transaction();
@@ -423,7 +711,7 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
             drop(tx);
             assert_eq!(
                 index_keys(&store),
-                expected(Stage::Running, at(2), Status::Started, initial_run_at)
+                expected(Stage::Running, at(2), initial_run_at)
             );
         }
 
@@ -465,7 +753,6 @@ async fn entry_index_follows_vqueue_transitions_and_all_deletion_paths() {
                 expected(
                     Stage::Finished,
                     at(3),
-                    Status::Succeeded,
                     RoughTimestamp::from(at(3).to_unix_millis() + Duration::from_secs(1))
                 )
             );

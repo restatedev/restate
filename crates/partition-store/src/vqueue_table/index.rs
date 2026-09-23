@@ -10,16 +10,81 @@
 
 use std::cmp::Reverse;
 
+use restate_clock::UniqueTimestamp;
+use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryChange, EntryContext, EntryStateRef};
+use restate_types::vqueues::VQueueId;
 
-use crate::PartitionStoreTransaction;
 use crate::index::{
-    EntryByServiceStageKey, EntryByStageKey, EntryNextAtByStageKey, SecondaryIndexKey,
+    BusyVQueueKey, EntryByStageKey, EntryByStageServiceKey, EntryByVirtualObjectStageKey,
+    EntryNextAtByStageKey, EntryNextAtByStageServiceKey, EntryNextAtByVirtualObjectStageKey,
+    SecondaryIndexKey,
 };
+use crate::stats::StatValueCodec;
+use crate::stats::aggregated::StageCounts;
+use crate::{PartitionStoreTransaction, StorageAccess};
+
+/// Snapshot only the indexed fields before mutating metadata. Scope and identity
+/// are unchanged by metadata updates and can be borrowed when constructing keys.
+#[derive(PartialEq, Eq)]
+pub(super) struct VQueueIndexState {
+    total_non_completed: u64,
+    last_modified: UniqueTimestamp,
+    counts: StageCounts,
+}
+
+impl VQueueIndexState {
+    pub(super) fn new(meta: &VQueueMeta) -> Self {
+        Self {
+            total_non_completed: meta.len(),
+            last_modified: meta.stats().last_modified_at(),
+            counts: meta.stats().into(),
+        }
+    }
+}
+
+pub(super) fn on_vqueue_change(
+    storage: &mut PartitionStoreTransaction<'_>,
+    qid: &VQueueId,
+    meta: &VQueueMeta,
+    old: Option<&VQueueIndexState>,
+    new: Option<&VQueueIndexState>,
+) {
+    if old == new {
+        return;
+    }
+    let old_len = old.map_or(0, |state| state.counts.serialized_len());
+    let new_len = new.map_or(0, |state| state.counts.serialized_len());
+    let values = {
+        let buffer = storage.cleared_value_buffer_mut(old_len + new_len);
+        if let Some(old) = old {
+            old.counts.serialize_to(buffer);
+        }
+        if let Some(new) = new {
+            new.counts.serialize_to(buffer);
+        }
+        buffer.split()
+    };
+    let key = |state: &VQueueIndexState| {
+        BusyVQueueKey::borrowed(
+            Reverse(state.total_non_completed),
+            Reverse(state.last_modified),
+            meta.scope().as_ref().map(|scope| scope.as_str()),
+            qid.clone(),
+        )
+    };
+    let old = old.map(key);
+    let new = new.map(key);
+    storage.update_covering_secondary_index(
+        old.as_ref().map(|key| (key, &values[..old_len])),
+        new.as_ref().map(|key| (key, &values[old_len..])),
+    );
+}
 
 /// Maintains the entry indexes alongside the source entry's lifecycle writes.
-/// This alone does not establish index completeness for pre-existing stores;
-/// query access must wait for a separate activation/backfill step.
+/// This alone does not establish index completeness for pre-existing stores.
+/// Raw index inspection is possible, but using the index as an authoritative
+/// query access path requires a separate activation/backfill step.
 pub(super) fn on_entry_change(
     storage: &mut PartitionStoreTransaction<'_>,
     context: &EntryContext<'_>,
@@ -30,46 +95,50 @@ pub(super) fn on_entry_change(
             .entry_key
             .to_canonical_entry_id(context.qid.partition_key())
     };
-    update_index(
-        storage,
-        change,
-        |entry| {
-            (
-                entry.stage,
-                Reverse(entry.stats.transitioned_at),
-                canonical_id(entry),
+    let transitioned = |entry: &EntryStateRef<'_>| {
+        (
+            entry.stage,
+            Reverse(entry.stats.transitioned_at),
+            canonical_id(entry),
+        )
+    };
+    let next_at =
+        |entry: &EntryStateRef<'_>| (entry.stage, entry.entry_key.run_at(), canonical_id(entry));
+    update_index(storage, change, transitioned, |(stage, at, id)| {
+        EntryByStageServiceKey::borrowed(stage, context.target.service(), at, id)
+    });
+    update_index(storage, change, transitioned, |(stage, at, id)| {
+        EntryByStageKey::borrowed(stage, at, id)
+    });
+    update_index(storage, change, next_at, |(stage, at, id)| {
+        EntryNextAtByStageKey::borrowed(stage, at, id.seq(), id)
+    });
+    update_index(storage, change, next_at, |(stage, at, id)| {
+        EntryNextAtByStageServiceKey::borrowed(stage, context.target.service(), at, id.seq(), id)
+    });
+    if let Some(key) = context.target.virtual_object_key() {
+        update_index(storage, change, transitioned, |(stage, at, id)| {
+            EntryByVirtualObjectStageKey::borrowed(
+                context.target.service(),
+                context.target.scope(),
+                key,
+                stage,
+                at,
+                id,
             )
-        },
-        |(stage, at, id)| EntryByServiceStageKey::borrowed(context.target.service(), stage, at, id),
-    );
-    update_index(
-        storage,
-        change,
-        |entry| {
-            (
-                entry.stage,
-                Reverse(entry.stats.transitioned_at),
-                entry.status,
-                canonical_id(entry),
+        });
+        update_index(storage, change, next_at, |(stage, at, id)| {
+            EntryNextAtByVirtualObjectStageKey::borrowed(
+                context.target.service(),
+                context.target.scope(),
+                key,
+                stage,
+                at,
+                id.seq(),
+                id,
             )
-        },
-        |(stage, at, status, id)| EntryByStageKey::borrowed(stage, at, status, id),
-    );
-    update_index(
-        storage,
-        change,
-        |entry| {
-            (
-                entry.stage,
-                entry.entry_key.run_at(),
-                entry.status,
-                canonical_id(entry),
-            )
-        },
-        |(stage, next_at, status, id)| {
-            EntryNextAtByStageKey::borrowed(stage, next_at, id.seq(), status, id)
-        },
-    );
+        });
+    }
 }
 
 /// Compare each index's projection independently before allocating or encoding keys.
