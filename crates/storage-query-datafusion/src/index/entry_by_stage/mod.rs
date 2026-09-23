@@ -8,9 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-pub(crate) mod entry_by_service;
-pub(crate) mod entry_by_stage;
-pub(crate) mod entry_next_at_by_stage;
+pub(crate) mod schema;
+mod table;
 
-#[cfg(test)]
-mod tests;
+pub(crate) use table::register_self;

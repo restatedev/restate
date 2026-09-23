@@ -16,14 +16,18 @@ use zerocopy::IntoBytes;
 use restate_rocksdb::{IterAction, Priority};
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
-use restate_storage_api::index::EntryByService;
+use restate_storage_api::index::{EntryByService, EntryByStage, EntryNextAtByStage};
+use restate_types::identifiers::CanonicalEntryId;
 use restate_types::sharding::KeyRange;
 
-use crate::keys::IndexKeyPrefix;
-use crate::keys::filter::KeyMatch;
+use crate::keys::filter::{IndexKeySchema, KeyMatch, PreparedKeyFilter};
+use crate::keys::{DecodeIndexKey, IndexKeyPrefix};
 use crate::{PartitionStore, Result, break_on_err};
 
-use super::{EntryByServiceStage, EntryByServiceStageKey};
+use super::{
+    EntryByServiceStageKey, EntryByStageKey, EntryNextAtByStageKey, SecondaryIndex,
+    SecondaryIndexKey,
+};
 
 impl PartitionStore {
     /// Scans persisted entry-index records within the requested and owned key range.
@@ -41,17 +45,71 @@ impl PartitionStore {
         range: KeyRange,
         filter: &Filter<EntryByService>,
         metrics: Option<restate_rocksdb::IteratorMetrics>,
-        mut f: F,
+        f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
         F: FnMut(EntryByServiceStageKey) -> ControlFlow<Result<()>> + Send + 'static,
     {
-        let prefix = IndexKeyPrefix::of::<EntryByServiceStage>(self.partition_id());
+        self.scan_entry_index(
+            range,
+            EntryByServiceStageKey::prepare_filter(filter)?,
+            metrics,
+            f,
+        )
+    }
+
+    /// Scans the stage/transition-time index, including native status and ID filtering.
+    /// As with `scan_entry_by_service`, this inspects persisted index contents only.
+    pub fn scan_entry_by_stage<F>(
+        &self,
+        range: KeyRange,
+        filter: &Filter<EntryByStage>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
+    where
+        F: FnMut(EntryByStageKey) -> ControlFlow<Result<()>> + Send + 'static,
+    {
+        self.scan_entry_index(range, EntryByStageKey::prepare_filter(filter)?, metrics, f)
+    }
+
+    /// Scans the stage/next-at index. Millisecond bounds are translated to the
+    /// stored whole-second timestamps without rounding equality matches.
+    pub fn scan_entry_next_at_by_stage<F>(
+        &self,
+        range: KeyRange,
+        filter: &Filter<EntryNextAtByStage>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
+        f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
+    where
+        F: FnMut(EntryNextAtByStageKey) -> ControlFlow<Result<()>> + Send + 'static,
+    {
+        self.scan_entry_index(
+            range,
+            EntryNextAtByStageKey::prepare_filter(filter)?,
+            metrics,
+            f,
+        )
+    }
+
+    fn scan_entry_index<K, F>(
+        &self,
+        range: KeyRange,
+        filter: PreparedKeyFilter<K>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, K, F>>
+    where
+        K: SecondaryIndexKey + DecodeIndexKey + IndexKeySchema + 'static,
+        K::Index: SecondaryIndex<PrimaryKey = CanonicalEntryId>,
+        F: FnMut(K) -> ControlFlow<Result<()>> + Send + 'static,
+    {
+        let prefix = IndexKeyPrefix::of::<K::Index>(self.partition_id());
         if let Some(metrics) = &metrics {
             metrics.mark_supported();
         }
-        let cursor =
-            EntryByServiceStageKey::prepare_filter(filter)?.into_cursor(prefix.as_bytes())?;
+        let cursor = filter.into_cursor(prefix.as_bytes())?;
         let range = range.intersect(&self.partition_key_range());
         let future = range
             .zip(cursor)
@@ -77,12 +135,8 @@ impl PartitionStore {
                             return ControlFlow::Break(Err(StorageError::DataIntegrityError));
                         }
                         let (_, payload) = break_on_err(IndexKeyPrefix::decode_prefix(key))?;
-                        let key = break_on_err(
-                            payload
-                                .into_decoder::<EntryByServiceStageKey>()
-                                .decode_all(),
-                        )?;
-                        if !range.contains(&key.canonical_id.partition_key()) {
+                        let key = break_on_err(payload.into_decoder::<K>().decode_all())?;
+                        if !range.contains(&key.primary_key().partition_key()) {
                             return ControlFlow::Continue(IterAction::Next);
                         }
                         f(key).map_continue(|()| IterAction::Next)
