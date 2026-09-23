@@ -19,12 +19,14 @@ use crate::keys::{EncodeIndexKey, IndexKeyPrefix};
 mod entry;
 mod macros;
 mod maintenance;
+mod scan;
 mod virtual_object;
 mod vqueue;
 
 pub use entry::{
-    EntryByStage, EntryByStageKey, EntryByStageService, EntryByStageServiceKey, EntryNextAtByStage,
-    EntryNextAtByStageKey, EntryNextAtByStageService, EntryNextAtByStageServiceKey,
+    EntryByStage, EntryByStageKey, EntryByStageService, EntryByStageServiceKey,
+    EntryByStageServiceKeyView, EntryNextAtByStage, EntryNextAtByStageKey,
+    EntryNextAtByStageService, EntryNextAtByStageServiceKey,
 };
 pub use virtual_object::{
     EntryByVirtualObjectStage, EntryByVirtualObjectStageKey, EntryNextAtByVirtualObjectStage,

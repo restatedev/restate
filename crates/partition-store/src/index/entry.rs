@@ -11,6 +11,7 @@
 use std::cmp::Reverse;
 
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
+use restate_storage_api::index::EntryByService;
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::ServiceName;
 use restate_types::identifiers::CanonicalEntryId;
@@ -81,6 +82,14 @@ define_secondary_index!(
         seq: Seq,
         canonical_id: CanonicalEntryId (primary_key),
     }
+);
+
+crate::keys::macros::define_index_key_filter!(
+    EntryByStageServiceKey; [EntryByService];
+    stage: Stage,
+    service_name: ServiceName,
+    transitioned_at: Reverse<UniqueTimestamp>,
+    canonical_id: CanonicalEntryId,
 );
 
 #[cfg(test)]
