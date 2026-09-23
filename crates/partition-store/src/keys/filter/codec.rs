@@ -10,7 +10,7 @@
 
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::ValuePredicate;
-use restate_storage_api::vqueue_table::Stage;
+use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_types::ServiceName;
 use restate_types::identifiers::CanonicalEntryId;
 use restate_types::vqueues::EntryKind;
@@ -99,6 +99,12 @@ impl IndexFilterCodec for u64 {
 impl IndexFilterCodec for Stage {
     // Stage keys use the mem-comparable encoding of their names. Arbitrary
     // strings are valid bounds even if they do not name a stage.
+    type Value = ReString;
+    const PREFIX_NULLABLE: Option<bool> = Some(false);
+}
+
+impl IndexFilterCodec for Status {
+    // Like stages, status fields sort by their encoded names rather than enum values.
     type Value = ReString;
     const PREFIX_NULLABLE: Option<bool> = Some(false);
 }

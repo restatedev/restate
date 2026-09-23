@@ -21,6 +21,8 @@ use crate::{
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     index::entry_by_service::schema::TABLE_DOCS,
+    index::entry_by_stage::schema::TABLE_DOCS,
+    index::entry_next_at_by_stage::schema::TABLE_DOCS,
     deployment::schema::TABLE_DOCS,
     stats::deployment_stats::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,

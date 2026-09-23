@@ -60,6 +60,22 @@ crate::keys::macros::define_index_key_filter!(
     canonical_id: CanonicalEntryId,
 );
 
+crate::keys::macros::define_index_key_filter!(
+    EntryByStageKey; [restate_storage_api::index::EntryByStage];
+    stage: Stage,
+    transitioned_at: Reverse<UniqueTimestamp>,
+    status: Status,
+    canonical_id: CanonicalEntryId,
+);
+
+crate::keys::macros::define_index_key_filter!(
+    EntryNextAtByStageKey; [restate_storage_api::index::EntryNextAtByStage];
+    stage: Stage,
+    next_at: RoughTimestamp,
+    status: Status,
+    canonical_id: CanonicalEntryId,
+);
+
 #[cfg(test)]
 mod tests {
     use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid, PartitionKey};

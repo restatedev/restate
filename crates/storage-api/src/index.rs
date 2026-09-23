@@ -30,3 +30,39 @@ crate::define_filter! {
         canonical_id: CanonicalEntryId,
     }
 }
+
+crate::define_table! {
+    /// Persisted entry-index records ordered by stage and newest transition first.
+    pub EntryByStage;
+}
+
+crate::define_filter! {
+    pub EntryByStage {
+        /// The VQueue stage, compared by its string representation.
+        stage: ReString => starts_with,
+        /// The entry's last stage transition as a Unix timestamp in milliseconds.
+        transitioned_at: MillisSinceEpoch,
+        /// The entry's processing status, compared by its string representation.
+        status: ReString => starts_with,
+        /// The indexed entry's incarnation identity.
+        canonical_id: CanonicalEntryId,
+    }
+}
+
+crate::define_table! {
+    /// Persisted entry-index records ordered by stage and next transition time.
+    pub EntryNextAtByStage;
+}
+
+crate::define_filter! {
+    pub EntryNextAtByStage {
+        /// The VQueue stage, compared by its string representation.
+        stage: ReString => starts_with,
+        /// The entry's scheduled transition time as a Unix timestamp in milliseconds.
+        next_at: MillisSinceEpoch,
+        /// The entry's processing status, compared by its string representation.
+        status: ReString => starts_with,
+        /// The indexed entry's incarnation identity.
+        canonical_id: CanonicalEntryId,
+    }
+}
