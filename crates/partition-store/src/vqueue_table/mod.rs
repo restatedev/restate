@@ -218,6 +218,15 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                None,
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
     }
 
     fn update_vqueue(
@@ -235,11 +244,25 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
+        let old_index_state = self
+            .storage_features()
+            .is_indexes_v1
+            .then(|| index::VQueueIndexState::new(meta));
         let was_active_before = meta.is_active();
         let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();
+
+        if let Some(old) = old_index_state {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&old),
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
 
         // Update active queue index
         match (was_active_before, is_active_now) {
@@ -253,7 +276,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
 
         if meta.is_obsolete() {
-            self.delete_vqueue(qid);
+            self.delete_vqueue(qid, meta);
             VQueueDisposition::Purged
         } else {
             let key_buffer = MetaKey::from(qid).to_bytes();
@@ -280,7 +303,16 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
     }
 
-    fn delete_vqueue(&mut self, qid: &VQueueId) {
+    fn delete_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta) {
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&index::VQueueIndexState::new(meta)),
+                None,
+            );
+        }
         // Cannot use single delete: the meta key is written once with put and
         // updated many times with merge afterwards.
         self.raw_delete_cf(KeyKind::VQueueMeta, MetaKey::from(qid).to_bytes());

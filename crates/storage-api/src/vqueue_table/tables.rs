@@ -165,7 +165,9 @@ pub trait WriteVQueueTable {
     /// Must only be used on obsolete vqueues (see
     /// [`super::metadata::VQueueMeta::is_obsolete`]); the metadata merge
     /// operator cannot apply updates to a deleted vqueue.
-    fn delete_vqueue(&mut self, qid: &VQueueId);
+    /// `meta` must describe the stored metadata, including earlier changes in
+    /// this transaction, so its secondary-index entry can be removed.
+    fn delete_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta);
 
     /// Places an entry onto an inbox stage
     fn put_vqueue_inbox(
