@@ -58,6 +58,27 @@ define_secondary_index!(
     }
 );
 
+crate::keys::macros::define_index_key_filter!(
+    EntryByVirtualObjectStageKey; [restate_storage_api::index::EntryByVirtualObject];
+    service_name: ServiceName,
+    scope: Option<ReString>,
+    key: ReString,
+    stage: Stage,
+    transitioned_at: Reverse<UniqueTimestamp>,
+    canonical_id: CanonicalEntryId,
+);
+
+crate::keys::macros::define_index_key_filter!(
+    EntryNextAtByVirtualObjectStageKey; [restate_storage_api::index::EntryNextAtByVirtualObject];
+    service_name: ServiceName,
+    scope: Option<ReString>,
+    key: ReString,
+    stage: Stage,
+    next_at: RoughTimestamp,
+    seq: Seq,
+    canonical_id: CanonicalEntryId,
+);
+
 #[cfg(test)]
 mod tests {
     use restate_types::identifiers::BaseEntryId;

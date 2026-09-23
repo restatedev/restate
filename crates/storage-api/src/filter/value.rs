@@ -102,6 +102,20 @@ impl FilterValue for CanonicalEntryId {
     // comparisons must remain residual even though equality and IN are supported.
 }
 
+impl FilterValue for restate_types::vqueues::VQueueId {
+    fn from_literal(literal: FilterLiteral<'_>) -> Result<Self, LiteralConversionError> {
+        match literal {
+            FilterLiteral::String(value) => value
+                .parse()
+                .map_err(|_| LiteralConversionError::Unrepresentable),
+            FilterLiteral::Null => Err(LiteralConversionError::Unrepresentable),
+            _ => Err(LiteralConversionError::Unsupported),
+        }
+    }
+
+    // Like canonical IDs, ordered string comparisons must remain residual.
+}
+
 impl FilterValue for MillisSinceEpoch {
     fn from_literal(literal: FilterLiteral<'_>) -> Result<Self, LiteralConversionError> {
         match literal {

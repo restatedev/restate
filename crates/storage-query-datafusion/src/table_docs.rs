@@ -11,15 +11,21 @@
 use std::borrow::Cow;
 
 use crate::{
-    deployment, inbox, invocation_state, invocation_status, journal, journal_events, promise,
-    rules, scheduler_status, service, state, stats, user_limits, vqueue_entry_status, vqueue_meta,
-    vqueues,
+    deployment, inbox, index, invocation_state, invocation_status, journal, journal_events,
+    promise, rules, scheduler_status, service, state, stats, user_limits, vqueue_entry_status,
+    vqueue_meta, vqueues,
 };
 
 /// List of available table docs. Whenever you add a new table, add its table docs to
 /// this array. This will ensure that the table docs will be included in the automatic
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
+    index::by_virtual_object::schema::TABLE_DOCS,
+    index::entry_next_at_by_service::schema::TABLE_DOCS,
+    index::entry_next_at_by_virtual_object::schema::TABLE_DOCS,
+    index::busy_vqueue::schema::TABLE_DOCS,
+    index::entry_by_stage::schema::TABLE_DOCS,
+    index::entry_next_at_by_stage::schema::TABLE_DOCS,
     deployment::schema::TABLE_DOCS,
     stats::deployment_stats::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,
