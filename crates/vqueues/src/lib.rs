@@ -135,14 +135,13 @@ where
         self.cache.get(self.handle).unwrap().meta()
     }
 
-    fn update_vqueue(&mut self, update: &metadata::Update, entry_metadata: Option<&EntryMetadata>) {
+    fn update_vqueue(&mut self, update: &metadata::Update) {
         let (vqueue_id, disposition) = {
             let slot = self.cache.get_mut(self.handle).unwrap();
             let (vqueue_id, meta) = slot.split_mut();
             (
                 vqueue_id,
-                self.storage
-                    .update_vqueue(vqueue_id, meta, update, entry_metadata),
+                self.storage.update_vqueue(vqueue_id, meta, update),
             )
         };
 
@@ -320,7 +319,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -397,7 +396,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -502,7 +501,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -750,7 +749,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         let stats = match next_stage {
             Stage::Paused => Self::mark_pause(at, header.stats()),
@@ -813,7 +812,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -983,7 +982,7 @@ where
             after,
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let meta = self.cache.get(self.handle).unwrap();
@@ -1047,7 +1046,7 @@ where
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
-        self.update_vqueue(&update, Some(before.metadata));
+        self.update_vqueue(&update);
     }
 
     /// A specialized version of run designed for inline execution of an entry.
@@ -1084,7 +1083,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
         // Move to finish
@@ -1099,7 +1098,7 @@ where
 
         let stats = Self::mark_transition(at, &stats);
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // Move the entry to Finished stage
         // for future: Use this to set the deletion time.
@@ -1157,7 +1156,7 @@ where
         debug!(qid = %slot.vqueue_id(), "Pausing vqueue");
         let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
 
-        self.update_vqueue(&update, None);
+        self.update_vqueue(&update);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
@@ -1177,7 +1176,7 @@ where
         debug!(qid = %slot.vqueue_id(), "Resuming vqueue");
         let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
 
-        self.update_vqueue(&update, None);
+        self.update_vqueue(&update);
 
         if self.meta().is_active()
             && let Some(collector) = self.action_collector.as_deref_mut()
@@ -1363,7 +1362,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -1475,7 +1474,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -1587,7 +1586,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -1795,11 +1794,11 @@ mod tests {
             },
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &add_finished),
             VQueueDisposition::Retained
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &add_finished),
             VQueueDisposition::Retained
         );
 
@@ -1810,12 +1809,12 @@ mod tests {
             },
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &remove_finished),
             VQueueDisposition::Retained
         );
         assert!(txn.get_vqueue(&qid).await.unwrap().is_some());
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &remove_finished),
             VQueueDisposition::Purged
         );
         assert!(txn.get_vqueue(&qid).await.unwrap().is_none());
