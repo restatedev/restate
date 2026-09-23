@@ -12,28 +12,38 @@
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
 
-use std::mem;
-
-use anyhow::anyhow;
-use bytes::{Buf, BufMut, Bytes, BytesMut};
-use bytestring::ByteString;
-use prost::encoding::encoded_len_varint;
-use restate_types::ServiceName;
-use restate_util_string::ReString;
-use rocksdb::MergeOperands;
-use strum::EnumIter;
-use tracing::{error, trace};
-
-use restate_types::clock::UniqueTimestamp;
-
+pub(crate) mod filter;
+mod index;
+mod index_key_codec;
+pub(crate) mod macros;
 mod mem_comparable_string;
+pub(crate) mod predicate;
 
+// Re-exports
+pub use index::{
+    DecodeIndexKey, EncodeIndexKey, FieldDecoder, IndexFieldDecode, IndexFieldEncode,
+    IndexFieldView, IntoIndexFieldRef,
+};
 #[doc(hidden)]
 pub use restate_util_string::decode_str_into;
 pub use restate_util_string::{
     EncodedMemCmpStr, MemCmpStr, MemCmpString, MemCmpTarget, decode_str_with,
     decode_str_with_unchecked,
 };
+
+use std::mem;
+
+use anyhow::anyhow;
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytestring::ByteString;
+use prost::encoding::encoded_len_varint;
+use rocksdb::MergeOperands;
+use strum::EnumIter;
+use tracing::{error, trace};
+
+use restate_types::ServiceName;
+use restate_types::clock::UniqueTimestamp;
+use restate_util_string::ReString;
 
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
@@ -92,6 +102,13 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
+
+    /// Secondary indexes
+    /// All secondary indexes are stored under a single key kind.
+    SecondaryIndex,
+
+    /// Stats and partition-level aggregates
+    Stats,
 }
 
 impl KeyKind {
@@ -155,6 +172,13 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
+
+            // ZI prefix for secondary indexes
+            KeyKind::SecondaryIndex => b"ZI",
+
+            // ZS prefix for partition-level counters and statistics. Those statistics
+            // will need to be reconstructed on partition split.
+            KeyKind::Stats => b"ZS",
         }
     }
 
@@ -198,6 +222,8 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"ZI" => Some(KeyKind::SecondaryIndex),
+            b"ZS" => Some(KeyKind::Stats),
             _ => None,
         }
     }
@@ -236,6 +262,7 @@ impl KeyKind {
 
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
             _ => None,
         }
     }
@@ -243,14 +270,31 @@ impl KeyKind {
     // Rocksdb merge operator function (partial merge)
     #[inline]
     pub fn partial_merge(
-        _key: &[u8],
+        key: &[u8],
         _unused: Option<&[u8]>,
-        _operands: &MergeOperands,
+        operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        // Currently, we have no partial merge operator for any key. Change this
-        // if/when this is needed.
-        None
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply merge operator; {e}");
+                return None;
+            }
+        };
+
+        trace!(?kind, "partial merge {} operands", operands.len());
+        match kind {
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
+            _ => None,
+        }
     }
+}
+
+/// A progressive and lazy key decoder.
+pub struct KeyDecoder<'a, C, const FIELD: usize = 0> {
+    pub remaining: &'a [u8],
+    pub _marker: std::marker::PhantomData<C>,
 }
 
 /// Types that can be encoded to a full table key in partition store.
