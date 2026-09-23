@@ -73,7 +73,7 @@ async fn scanned_service_names(store: &PartitionStore, predicate: Expr) -> Vec<S
     let filter =
         <ServiceStatsScanner as ScanLocalPartition>::Filter::new(KeyRange::FULL, Some(predicate));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    ServiceStatsScanner::for_each_row(store, filter, move |(decoder, _)| {
+    ServiceStatsScanner::for_each_row(store, filter, None, move |(decoder, _)| {
         let key = decoder.try_full_decode::<ServiceLoad>().unwrap();
         tx.send(key.service_name.to_string()).unwrap();
         ControlFlow::Continue(())
@@ -291,16 +291,17 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
     tx.commit().await.unwrap();
     drop(tx);
 
-    let error = ServiceStatsScanner::for_each_row(engine.partition_store(), Filter::All, |_| {
-        ControlFlow::Break(Err(ConversionError::invalid_data(
-            StorageError::DataIntegrityError,
-        )))
-    })
-    .unwrap()
-    .await
-    .unwrap_err();
+    let error =
+        ServiceStatsScanner::for_each_row(engine.partition_store(), Filter::All, None, |_| {
+            ControlFlow::Break(Err(ConversionError::invalid_data(
+                StorageError::DataIntegrityError,
+            )))
+        })
+        .unwrap()
+        .await
+        .unwrap_err();
     assert!(matches!(error, StorageError::Conversion(_)));
-    ServiceStatsScanner::for_each_row(engine.partition_store(), Filter::All, |_| {
+    ServiceStatsScanner::for_each_row(engine.partition_store(), Filter::All, None, |_| {
         ControlFlow::Break(Ok(()))
     })
     .unwrap()
@@ -413,7 +414,7 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
         let seen = visits.clone();
         engine
             .partition_store()
-            .scan_deployment_load(&filter, move |_, _| {
+            .scan_deployment_load(&filter, None, move |_, _| {
                 seen.fetch_add(1, Ordering::Relaxed);
                 ControlFlow::Continue(())
             })
@@ -443,7 +444,7 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
         let seen = visits.clone();
         engine
             .partition_store()
-            .scan_virtual_object_load(&filter, move |_, _| {
+            .scan_virtual_object_load(&filter, None, move |_, _| {
                 seen.fetch_add(1, Ordering::Relaxed);
                 ControlFlow::Continue(())
             })

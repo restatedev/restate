@@ -20,7 +20,7 @@ use crate::{
 /// this array. This will ensure that the table docs will be included in the automatic
 /// table docs generation process.
 pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
-    index::invocation_by_service::schema::TABLE_DOCS,
+    index::entry_by_service::schema::TABLE_DOCS,
     deployment::schema::TABLE_DOCS,
     stats::deployment_stats::schema::TABLE_DOCS,
     inbox::schema::TABLE_DOCS,

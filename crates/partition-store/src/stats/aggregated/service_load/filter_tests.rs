@@ -336,7 +336,7 @@ async fn scan_keys(store: &PartitionStore, filter: &Filter<Target>) -> crate::Re
     let partition = store.partition_id();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     store
-        .scan_service_load(filter, move |key, counts| {
+        .scan_service_load(filter, None, move |key, counts| {
             assert_eq!(counts.iter().map(|(_, count)| count).sum::<u64>(), 1);
             let key = key.try_full_decode::<ServiceLoad>().unwrap();
             let mut encoded = Vec::new();
@@ -480,6 +480,7 @@ async fn service_load_filters_run_before_value_materialization() {
             Priority::Low,
             ReadOptions::default(),
             scan.clone(),
+            None,
             move |(key, _)| {
                 sender.send(key.to_vec()).unwrap();
                 match crate::break_on_err(cursor.evaluate(key))? {
@@ -512,6 +513,7 @@ async fn service_load_filters_run_before_value_materialization() {
                 Priority::Low,
                 ReadOptions::default(),
                 scan.clone(),
+                None,
                 move |_| ControlFlow::Continue(IterAction::Seek(target.clone().into())),
             )
             .unwrap()

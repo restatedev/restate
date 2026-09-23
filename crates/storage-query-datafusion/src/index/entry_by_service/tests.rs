@@ -12,7 +12,9 @@ use std::cmp::Reverse;
 use std::ops::ControlFlow;
 
 use async_trait::async_trait;
-use datafusion::arrow::array::{Int64Array, LargeStringArray, TimestampMillisecondArray};
+use datafusion::arrow::array::{
+    Int64Array, LargeStringArray, StringArray, TimestampMillisecondArray,
+};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::execution::TaskContext;
@@ -180,6 +182,42 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
             .is_empty()
     );
     let entries = populate(&mut engine).await;
+    for (predicate, visits) in [
+        ("service_name = 'alpha' AND stage = 'running'", 1),
+        ("service_name = 'missing'", 0),
+    ] {
+        let batches = select(
+            &engine,
+            &format!(
+                "EXPLAIN ANALYZE SELECT canonical_id FROM _idx_entry_by_service WHERE {predicate}"
+            ),
+        )
+        .await;
+        let plans = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("plan")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for metric in [
+            format!("storage_keys_visited={visits}"),
+            "storage_iterators=1".into(),
+            "storage_iterators_completed=1".into(),
+            "storage_seek_count=1".into(),
+            "storage_scans_reported=1".into(),
+            "storage_scans_completed=1".into(),
+        ] {
+            assert!(plans.contains(&metric), "missing {metric}: {plans}");
+        }
+    }
     assert_eq!(
         IdxEntryByServiceBuilder::schema()
             .fields()
@@ -455,7 +493,7 @@ async fn native_constraints_survive_remote_predicates_and_skip_unselected_keys()
     for predicate in [predicate, remote] {
         let filter = EntryIndexFilter::new(KeyRange::FULL, Some(predicate));
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
-        EntryIndexScanner::for_each_row(engine.partition_store(), filter, move |(_, key)| {
+        EntryIndexScanner::for_each_row(engine.partition_store(), filter, None, move |(_, key)| {
             sender.send(key.canonical_id).unwrap();
             ControlFlow::Continue(())
         })

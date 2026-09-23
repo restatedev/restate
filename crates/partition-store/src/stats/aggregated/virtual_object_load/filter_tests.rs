@@ -144,7 +144,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         // Exercise the public stats path, including value decoding and callbacks.
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_virtual_object_load(&filter, move |key, _| {
+            .scan_virtual_object_load(&filter, None, move |key, _| {
                 let key = key.try_full_decode::<VirtualObjectLoad>().unwrap();
                 let mut bytes = Vec::new();
                 VirtualObjectLoad::encode_key(partition, key, &mut bytes);
@@ -176,6 +176,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
                 Priority::Low,
                 ReadOptions::default(),
                 cursor.scan().clone(),
+                None,
                 move |(key, _)| {
                     sender.send(key.to_vec()).unwrap();
                     match crate::break_on_err(cursor.evaluate(key))? {

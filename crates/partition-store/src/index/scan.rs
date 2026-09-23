@@ -32,6 +32,7 @@ impl PartitionStore {
     /// shared ordered-key cursor. Timestamp bounds include all HLC logical counters.
     /// The filter is prepared synchronously; the returned future does not borrow it.
     /// Callback errors fail the scan and `Break(Ok(()))` stops it successfully.
+    /// Optional metrics account only for this scan, including empty scan plans.
     ///
     /// This reads the index itself, without primary lookups or a completeness claim.
     /// Entries predating index activation are not currently backfilled.
@@ -39,12 +40,16 @@ impl PartitionStore {
         &self,
         range: KeyRange,
         filter: &Filter<EntryByService>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
         F: FnMut(EntryByServiceStageKey) -> ControlFlow<Result<()>> + Send + 'static,
     {
         let prefix = IndexKeyPrefix::of::<EntryByServiceStage>(self.partition_id());
+        if let Some(metrics) = &metrics {
+            metrics.mark_supported();
+        }
         let cursor =
             EntryByServiceStageKey::prepare_filter(filter)?.into_cursor(prefix.as_bytes())?;
         let range = range.intersect(&self.partition_key_range());
@@ -59,6 +64,7 @@ impl PartitionStore {
                     Priority::Low,
                     opts,
                     scan,
+                    metrics,
                     move |(key, value)| {
                         match break_on_err(cursor.evaluate(key))? {
                             KeyMatch::Match => {}
@@ -122,7 +128,7 @@ mod tests {
     ) -> Result<Vec<CanonicalEntryId>> {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(range, &filter, move |key| {
+            .scan_entry_by_service(range, &filter, None, move |key| {
                 sender.send(key.canonical_id).unwrap();
                 ControlFlow::Continue(())
             })?
@@ -209,7 +215,7 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, move |_| {
+            .scan_entry_by_service(KeyRange::FULL, &Filter::All, None, move |_| {
                 sender.send(()).unwrap();
                 ControlFlow::Break(Ok(()))
             })
@@ -219,12 +225,44 @@ mod tests {
         assert_eq!(receiver.recv().await, Some(()));
         assert_eq!(receiver.recv().await, None);
         let error = store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, |_| {
+            .scan_entry_by_service(KeyRange::FULL, &Filter::All, None, |_| {
                 ControlFlow::Break(Err(StorageError::DataIntegrityError))
             })
             .unwrap()
             .await
             .unwrap_err();
         assert!(matches!(error, StorageError::DataIntegrityError));
+
+        // Accounting belongs to each operation, even when scans share a store.
+        let empty_metrics = restate_rocksdb::IteratorMetrics::default();
+        let stopped_metrics = restate_rocksdb::IteratorMetrics::default();
+        let empty = store
+            .scan_entry_by_service(
+                KeyRange::FULL,
+                &Filter::Empty,
+                Some(empty_metrics.clone()),
+                |_| panic!("empty scan produced a row"),
+            )
+            .unwrap();
+        let stopped = store
+            .scan_entry_by_service(
+                KeyRange::FULL,
+                &Filter::All,
+                Some(stopped_metrics.clone()),
+                |_| ControlFlow::Break(Ok(())),
+            )
+            .unwrap();
+        let (empty, stopped) = tokio::join!(empty, stopped);
+        empty.unwrap();
+        stopped.unwrap();
+        let empty = empty_metrics.snapshot();
+        assert!(empty.supported);
+        assert_eq!(empty.iterators, 0);
+        let stopped = stopped_metrics.snapshot();
+        assert_eq!(stopped.iterators, 1);
+        assert_eq!(stopped.completed_iterators, 1);
+        assert_eq!(stopped.keys_visited, 2); // Foreign key 90, then owned key 110.
+        assert_eq!(stopped.seeks, 1);
+        assert_eq!(stopped.nexts, 1);
     }
 }
