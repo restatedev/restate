@@ -62,6 +62,11 @@ pub struct RemoteQueryScannerOpen {
     /// todo: make required in v1.8
     #[bilrost(tag(8))]
     pub scanner_id: Option<ScannerId>,
+    /// Requests progress snapshots and the richer completion reply. Absent for
+    /// older clients, which continue to receive NoMoreRecords.
+    #[bilrost(tag(9))]
+    #[serde(default)]
+    pub collect_metrics: bool,
 }
 
 fn default_batch_size() -> u64 {
@@ -114,6 +119,9 @@ pub struct ScannerBatch {
     pub scanner_id: ScannerId,
     #[bilrost(tag(2), encoding(plainbytes))]
     pub record_batch: Vec<u8>,
+    #[bilrost(tag(3))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<ScannerMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
@@ -122,6 +130,59 @@ pub struct ScannerFailure {
     pub scanner_id: ScannerId,
     #[bilrost(2)]
     pub message: String,
+    #[bilrost(tag(3))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metrics: Option<ScannerMetrics>,
+}
+
+/// Cumulative, unsampled accounting for one scanner, not process-wide metrics.
+/// Missing reports mean unavailable, not zero work. Progress may lag batched
+/// iterator publication; complete reports include all work before scanner EOF.
+#[derive(
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+)]
+#[serde(default)]
+pub struct ScannerMetrics {
+    #[bilrost(1)]
+    pub iterators: u64,
+    #[bilrost(2)]
+    pub completed_iterators: u64,
+    #[bilrost(3)]
+    pub keys_visited: u64,
+    #[bilrost(4)]
+    pub seeks: u64,
+    #[bilrost(5)]
+    pub nexts: u64,
+    #[bilrost(6)]
+    pub prevs: u64,
+    /// Bytes presented by iterators, not disk bytes.
+    #[bilrost(7)]
+    pub bytes_visited: u64,
+    #[bilrost(8)]
+    pub wall_time_ns: u64,
+    /// Native records delivered for Arrow conversion; one may produce several rows.
+    #[bilrost(9)]
+    pub records_emitted: u64,
+    #[bilrost(10)]
+    pub available: bool,
+    #[bilrost(11)]
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+pub struct ScannerCompleted {
+    #[bilrost(1)]
+    pub scanner_id: ScannerId,
+    #[bilrost(2)]
+    pub metrics: ScannerMetrics,
 }
 
 #[derive(
@@ -144,6 +205,9 @@ pub enum RemoteQueryScannerNextResult {
     NoMoreRecords(ScannerId),
     #[bilrost(4)]
     NoSuchScanner(ScannerId),
+    /// Sent only to clients that requested metrics when opening the scanner.
+    #[bilrost(5)]
+    Completed(ScannerCompleted),
 }
 
 // ----- close scanner -----
@@ -191,7 +255,8 @@ bilrost_wire_codec!(RemoteQueryScannerClosed);
 #[cfg(test)]
 mod test {
 
-    use serde::Deserialize;
+    use bilrost::{Message, OwnedMessage};
+    use serde::{Deserialize, Serialize};
 
     use crate::{
         GenerationalNodeId,
@@ -199,7 +264,7 @@ mod test {
     };
 
     // V1/flexbuffers scanner next result type.
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize)]
     #[allow(dead_code)]
     pub enum RemoteQueryScannerNextResult {
         NextBatch {
@@ -221,6 +286,7 @@ mod test {
         let v2 = super::RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
             scanner_id,
             record_batch: batch.clone(),
+            metrics: None,
         });
 
         let bytes = flexbuffers::to_vec(&v2).expect("to serialize");
@@ -235,6 +301,7 @@ mod test {
         let v2 = super::RemoteQueryScannerNextResult::Failure(ScannerFailure {
             scanner_id,
             message: "scanner failed successfully!".to_string(),
+            metrics: None,
         });
 
         let bytes = flexbuffers::to_vec(&v2).expect("to serialize");
@@ -244,6 +311,46 @@ mod test {
 
         assert!(
             matches!(v1, RemoteQueryScannerNextResult::Failure { scanner_id: id, message} if id == scanner_id && message == "scanner failed successfully!" )
-        )
+        );
+
+        // New clients can consume legacy responses without interpreting absent
+        // accounting as a completed zero-work scan.
+        let old = RemoteQueryScannerNextResult::NextBatch {
+            scanner_id,
+            record_batch: batch.clone(),
+        };
+        let decoded: super::RemoteQueryScannerNextResult =
+            flexbuffers::from_slice(&flexbuffers::to_vec(&old).unwrap()).unwrap();
+        assert!(matches!(
+            decoded,
+            super::RemoteQueryScannerNextResult::NextBatch(ScannerBatch { metrics: None, .. })
+        ));
+
+        let metrics = super::ScannerMetrics {
+            available: true,
+            complete: true,
+            keys_visited: 100,
+            ..Default::default()
+        };
+        let current = super::RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+            scanner_id,
+            record_batch: batch.clone(),
+            metrics: Some(metrics),
+        });
+        let old: RemoteQueryScannerNextResult =
+            flexbuffers::from_slice(&flexbuffers::to_vec(&current).unwrap()).unwrap();
+        assert!(
+            matches!(old, RemoteQueryScannerNextResult::NextBatch { record_batch, .. } if record_batch == batch)
+        );
+        let completed = super::RemoteQueryScannerNextResult::Completed(super::ScannerCompleted {
+            scanner_id,
+            metrics,
+        });
+        assert_eq!(
+            super::RemoteQueryScannerNextResult::decode(completed.encode_to_bytes()).unwrap(),
+            completed
+        );
+        let request = super::RemoteQueryScannerOpen::new_empty();
+        assert!(!request.collect_metrics);
     }
 }

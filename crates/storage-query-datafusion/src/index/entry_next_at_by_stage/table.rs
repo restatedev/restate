@@ -86,6 +86,7 @@ impl ScanLocalPartition for EntryNextAtByStageScanner {
     fn for_each_row<F>(
         partition_store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<restate_partition_store::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
     where
@@ -94,7 +95,7 @@ impl ScanLocalPartition for EntryNextAtByStageScanner {
             + Sync
             + 'static,
     {
-        partition_store.scan_entry_next_at_by_stage(filter.range, &filter.predicate, f)
+        partition_store.scan_entry_next_at_by_stage(filter.range, &filter.predicate, metrics, f)
     }
 
     fn append_row<'a>(

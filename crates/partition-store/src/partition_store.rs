@@ -425,37 +425,47 @@ impl PartitionStore {
         tx: oneshot::Sender<StorageError>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
-        let mut tx = Some(tx);
-        move |item| {
-            let mut must_send = |v| match tx.take() {
-                Some(tx) => tx.send(v),
-                None => panic!("Iterator continued after IterAction::Stop"),
-            };
+        // RocksIterator publishes final metrics before dropping its callback.
+        // Returning Stop alone is not completion: notifying from inside this
+        // callback would let the consumer observe metrics before they are final.
+        struct Completion {
+            tx: Option<oneshot::Sender<StorageError>>,
+            error: Option<StorageError>,
+        }
 
-            match item {
-                // apply the caller's function
-                Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(action) => match &mut tx {
-                        Some(tx_inner) if tx_inner.is_closed() => {
-                            tx = None;
-                            IterAction::Stop
-                        }
-                        // the channel is not closed yet, keep iterating
-                        Some(_) => action,
-                        None => panic!("Iterator continued after IterAction::Stop"),
-                    },
-                    ControlFlow::Break(Ok(())) => {
-                        // function doesn't need any more items
-                        tx = None;
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                if let (Some(tx), Some(error)) = (self.tx.take(), self.error.take()) {
+                    let _ = tx.send(error);
+                }
+                // Without an error, dropping the sender reports successful completion.
+            }
+        }
+
+        let mut completion = Completion {
+            tx: Some(tx),
+            error: None,
+        };
+        move |item| {
+            let action = match item {
+                Ok((key, value)) => f((key, value)),
+                Err(e) => ControlFlow::Break(Err(StorageError::Generic(e.into()))),
+            };
+            match action {
+                ControlFlow::Continue(action) => {
+                    if completion
+                        .tx
+                        .as_ref()
+                        .is_none_or(oneshot::Sender::is_closed)
+                    {
                         IterAction::Stop
+                    } else {
+                        action
                     }
-                    ControlFlow::Break(Err(e)) => {
-                        let _ = must_send(e);
-                        IterAction::Stop
-                    }
-                },
-                Err(e) => {
-                    let _ = must_send(StorageError::Generic(e.into()));
+                }
+                ControlFlow::Break(Ok(())) => IterAction::Stop,
+                ControlFlow::Break(Err(error)) => {
+                    completion.error = Some(error);
                     IterAction::Stop
                 }
             }
@@ -485,7 +495,7 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), None, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -500,7 +510,7 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), None, on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
@@ -513,7 +523,7 @@ impl PartitionStore {
         scan: PhysicalScan<Bytes>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
-        self.iterator_controlled_physical(name, priority, opts, scan, move |item| {
+        self.iterator_controlled_physical(name, priority, opts, scan, None, move |item| {
             f(item).map_continue(|()| IterAction::Next)
         })
     }
@@ -527,6 +537,7 @@ impl PartitionStore {
         priority: Priority,
         opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
@@ -542,7 +553,7 @@ impl PartitionStore {
             }
             action
         });
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan, metrics, on_iter)?;
 
         Ok(async {
             match rx.await {
@@ -559,6 +570,7 @@ impl PartitionStore {
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         match scan {
@@ -572,6 +584,7 @@ impl PartitionStore {
                     priority,
                     IterAction::Seek(prefix),
                     opts,
+                    metrics,
                     on_iter,
                 )?;
             }
@@ -584,6 +597,7 @@ impl PartitionStore {
                     priority,
                     IterAction::Seek(start),
                     opts,
+                    metrics,
                     on_iter,
                 )?;
             }
@@ -1512,9 +1526,12 @@ pub(crate) trait StorageAccess {
 
 #[cfg(test)]
 mod tests {
-    use bytes::{Buf, BufMut};
+    use std::ops::ControlFlow;
 
-    use restate_rocksdb::RocksDbManager;
+    use bytes::{Buf, BufMut};
+    use tokio::sync::oneshot;
+
+    use restate_rocksdb::{IterAction, RocksDbManager, RocksError};
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::Lsn;
@@ -1523,7 +1540,46 @@ mod tests {
 
     use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind};
     use crate::partition_store::StorageAccess;
-    use crate::{PartitionSeal, PartitionStoreManager, TableKind};
+    use crate::{PartitionSeal, PartitionStore, PartitionStoreManager, TableKind};
+
+    #[test]
+    fn iterator_completion_waits_for_callback_teardown() {
+        for case in 0..3 {
+            let (tx, mut rx) = oneshot::channel();
+            let mut callback = PartitionStore::iterator_step_for_each(tx, move |_| {
+                assert_ne!(case, 2, "storage errors must not call the row callback");
+                ControlFlow::Break(if case == 0 {
+                    Ok(())
+                } else {
+                    Err(StorageError::DataIntegrityError)
+                })
+            });
+            let item = if case == 2 {
+                Err(RocksError::UnknownColumnFamily("missing".into()))
+            } else {
+                Ok((&b"key"[..], &b"value"[..]))
+            };
+            assert!(matches!(callback(item), IterAction::Stop));
+            // The iterator has not processed Stop and published its final metrics yet.
+            assert!(matches!(
+                rx.try_recv(),
+                Err(oneshot::error::TryRecvError::Empty)
+            ));
+            drop(callback);
+            match case {
+                0 => assert!(matches!(
+                    rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Closed)
+                )),
+                1 => assert!(matches!(
+                    rx.try_recv(),
+                    Ok(StorageError::DataIntegrityError)
+                )),
+                2 => assert!(matches!(rx.try_recv(), Ok(StorageError::Generic(_)))),
+                _ => unreachable!(),
+            }
+        }
+    }
 
     impl EncodeTableKey for String {
         const TABLE: TableKind = TableKind::State;

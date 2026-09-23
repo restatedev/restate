@@ -25,6 +25,7 @@ use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
+use crate::scan_metrics::ScanMetrics;
 use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
@@ -44,6 +45,9 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type ConversionError;
     type Filter: ScanLocalPartitionFilter + Send + Sync + 'static;
 
+    /// Metrics are scoped to this call. Implementations pass the optional probe
+    /// to instrumented native scans; unsupported paths leave it unmarked so their
+    /// zero counters are not mistaken for measured zero work.
     fn for_each_row<
         F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
             + Send
@@ -52,6 +56,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     >(
         partition_store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<restate_partition_store::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>;
 
@@ -95,13 +100,14 @@ where
         access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        elapsed_compute: Time,
+        metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let filter = S::Filter::new(range, access_predicate);
         let partition_store_manager = self.partition_store_manager.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
 
+        let producer_metrics = metrics.clone();
         let background_task = async move {
             let partition_store = partition_store_manager.get_partition_store(partition_id).await.ok_or_else(|| {
                 // make sure that the consumer of this stream to learn about the fact that this node does not have
@@ -112,27 +118,35 @@ where
             })?;
 
             // timer starts on first row, stops on scanner drop
-            let mut elapsed_compute = ElapsedCompute::new(elapsed_compute);
+            let mut elapsed_compute = ElapsedCompute::new(producer_metrics.elapsed_compute.clone());
 
             let mut batch_sender =
                 BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
 
-            S::for_each_row(&partition_store, filter, move |row| {
-                elapsed_compute.start();
-                match S::append_row(batch_sender.builder_mut(), row) {
-                    Ok(()) => {}
-                    err => return ControlFlow::Break(err),
-                }
-                batch_sender.send_if_needed().map_break(Ok)
-            })
+            let row_metrics = producer_metrics.clone();
+            S::for_each_row(
+                &partition_store,
+                filter,
+                Some(producer_metrics.iterator_metrics()),
+                move |row| {
+                    elapsed_compute.start();
+                    row_metrics.record_emitted();
+                    match S::append_row(batch_sender.builder_mut(), row) {
+                        Ok(()) => {}
+                        err => return ControlFlow::Break(err),
+                    }
+                    batch_sender.send_if_needed().map_break(Ok)
+                },
+            )
             .map_err(|err| DataFusionError::External(err.into()))?
             .await
             .map_err(|err| DataFusionError::External(err.into()))?;
 
+            producer_metrics.finish();
             Ok(())
         };
         stream_builder.spawn(background_task);
-        Ok(stream_builder.build())
+        Ok(metrics.observe(stream_builder.build()))
     }
 }
 
@@ -150,7 +164,7 @@ where
         access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        elapsed_compute: Time,
+        metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         self.scan_partition(
             partition_id,
@@ -160,7 +174,7 @@ where
             access_predicate,
             batch_size,
             limit,
-            elapsed_compute,
+            metrics,
         )
     }
 }

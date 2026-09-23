@@ -468,6 +468,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
                 None, // predicate is applied locally after combining
                 batch_size,
                 self.limit,
+                None, // Node-level scans do not perform partition-store iteration.
             );
 
             Box::pin(

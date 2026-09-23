@@ -85,6 +85,7 @@ impl ScanLocalPartition for StatusScanner {
     >(
         partition_store: &PartitionStore,
         filter: InvocationIdFilter,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = Result<(), StorageError>> + Send, StorageError> {
         partition_store.for_each_invocation_status_lazy(filter.into(), f)

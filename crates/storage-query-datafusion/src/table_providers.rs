@@ -24,9 +24,7 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::filter_pushdown::{
     FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
 };
-use datafusion::physical_plan::metrics::{
-    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet, Time,
-};
+use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
@@ -40,6 +38,7 @@ use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
+use crate::scan_metrics::ScanMetrics;
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
@@ -60,7 +59,7 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        elapsed_compute: Time,
+        metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream>;
 }
 
@@ -376,17 +375,24 @@ where
                 let predicate = self.predicate.clone();
                 let batch_size = context.session_config().batch_size();
                 let elapsed_compute = baseline_metrics.elapsed_compute().clone();
-                move |(partition_id, partition)| {
+                let metrics = self.metrics.clone();
+                move |(partition_id, physical_partition)| {
+                    let scan_metrics = ScanMetrics::new(
+                        &metrics,
+                        partition,
+                        partition_id,
+                        elapsed_compute.clone(),
+                    );
                     scanner
                         .scan_partition(
                             partition_id,
-                            partition.key_range,
+                            physical_partition.key_range,
                             schema.clone(),
                             predicate.clone(),
                             predicate.clone(),
                             batch_size,
                             limit,
-                            elapsed_compute.clone(),
+                            scan_metrics,
                         )
                         .map_err(|e| DataFusionError::External(e.into()))
                 }

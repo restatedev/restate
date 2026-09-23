@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{
-    Int64Array, LargeStringArray, TimestampMillisecondArray, UInt64Array,
+    Int64Array, LargeStringArray, StringArray, TimestampMillisecondArray, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::ScalarValue;
@@ -339,6 +339,29 @@ async fn stage_tables_project_filter_and_follow_lifecycle_updates() {
             timestamp,
             (ms + if time == "next_at" { 1000 } else { 0 }) as i64
         );
+
+        let explain = select(&engine, &format!("EXPLAIN ANALYZE SELECT canonical_id FROM {table} WHERE stage = 'inbox' AND canonical_id = '{}'", ids[1])).await;
+        let plan = explain
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("plan")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        for metric in [
+            "storage_scans_reported=1",
+            "storage_scans_completed=1",
+            "storage_iterators=1",
+        ] {
+            assert!(plan.contains(metric), "{table}: missing {metric}: {plan}");
+        }
     }
     assert_ids(
         &engine,
@@ -488,7 +511,7 @@ async fn stage_index_native_filters_survive_transport_and_skip_timestamp_gaps() 
                 if next_at {
                     let filter = Filter::<EntryNextAtByStage>::new(range, Some(predicate.clone()));
                     store
-                        .scan_entry_next_at_by_stage(range, &filter, move |key| {
+                        .scan_entry_next_at_by_stage(range, &filter, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -498,7 +521,7 @@ async fn stage_index_native_filters_survive_transport_and_skip_timestamp_gaps() 
                 } else {
                     let filter = Filter::<EntryByStage>::new(range, Some(predicate.clone()));
                     store
-                        .scan_entry_by_stage(range, &filter, move |key| {
+                        .scan_entry_by_stage(range, &filter, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -703,7 +726,7 @@ async fn new_entry_tables_filter_scopes_sequences_and_follow_lifecycle() {
                     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                     engine
                         .partition_store()
-                        .$scan(range, &filter, move |key| {
+                        .$scan(range, &filter, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -966,7 +989,7 @@ async fn busy_queue_table_covers_counts_and_translates_descending_filters() {
                 let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                 engine
                     .partition_store()
-                    .scan_busy_vqueues(range, &filter, move |key, _| {
+                    .scan_busy_vqueues(range, &filter, None, move |key, _| {
                         sender
                             .send(key.vqueue_id.decode().unwrap().to_string())
                             .unwrap();

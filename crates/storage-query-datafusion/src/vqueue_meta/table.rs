@@ -80,6 +80,7 @@ impl ScanLocalPartition for VQueuesMetaScanner {
     >(
         partition_store: &PartitionStore,
         filter: VQueueMetaFilter,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store
