@@ -22,7 +22,7 @@ use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use metrics::counter;
 use tokio::time::Instant;
-use tokio_stream::wrappers::{ReceiverStream, WatchStream};
+use tokio_stream::wrappers::{UnboundedReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::CommitToken;
@@ -81,8 +81,6 @@ use super::self_proposer_scheduler::{
     SchedulerDecision, SelfProposerScheduler, SelfProposerSchedulerFlow,
 };
 
-const NETWORK_EVENTS_BUFFER_SIZE: usize = 1;
-
 // An arbitrary small number to be used when there is nothing to propose.
 const NOOP_BYTES_WRITTEN: usize = 1024; // 1KiB
 
@@ -119,8 +117,8 @@ pub struct LeaderState {
     cleaner_handle: CleanerHandle,
     trimmer_task_id: TaskId,
     durability_tracker: DurabilityTracker,
-    network_events_tx: tokio::sync::mpsc::Sender<NetworkServiceEvent>,
-    network_events_stream: ReceiverStream<NetworkServiceEvent>,
+    network_events_tx: tokio::sync::mpsc::UnboundedSender<NetworkServiceEvent>,
+    network_events_stream: UnboundedReceiverStream<NetworkServiceEvent>,
     // Unregisters the leader-query registry entry on drop. Must live as long as
     // the partition processor's select! is willing to serve scheduler queries.
     _leader_query_guard: LeaderQueryGuard,
@@ -149,8 +147,7 @@ impl LeaderState {
         leader_query_guard: LeaderQueryGuard,
         rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
     ) -> Self {
-        let (network_events_tx, network_events_rx) =
-            tokio::sync::mpsc::channel(NETWORK_EVENTS_BUFFER_SIZE);
+        let (network_events_tx, network_events_rx) = tokio::sync::mpsc::unbounded_channel();
         LeaderState {
             at: Instant::now(),
             partition_id,
@@ -177,7 +174,7 @@ impl LeaderState {
             shuffle_stream: WatchStream::new(shuffle_rx),
             durability_tracker,
             network_events_tx,
-            network_events_stream: ReceiverStream::new(network_events_rx),
+            network_events_stream: UnboundedReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
             self_proposer_scheduler: SelfProposerScheduler::new(),
         }
@@ -247,10 +244,10 @@ impl LeaderState {
         self.scheduler.scan_user_limit_counters(keys.start())
     }
 
-    pub(super) fn try_reserve_network_event_permit(
+    pub(super) fn network_events_tx(
         &self,
-    ) -> Option<tokio::sync::mpsc::OwnedPermit<NetworkServiceEvent>> {
-        self.network_events_tx.clone().try_reserve_owned().ok()
+    ) -> &tokio::sync::mpsc::UnboundedSender<NetworkServiceEvent> {
+        &self.network_events_tx
     }
 
     /// Runs the leader-specific task by awaiting events and monitoring unmanaged tasks.
@@ -524,25 +521,13 @@ impl LeaderState {
             fut.fail_with_lost_leadership(self.partition_id);
         }
         // Close the network events channel and drain it to respond to all pending requests.
-        // The drain must not await: the partition processor's main loop reserves a permit
-        // before its select! and holds it across the arm that calls stop(), and recv()
-        // doesn't return `None` while a permit is outstanding — awaiting here would
-        // deadlock. Since that loop is the only sender and processes one arm at a time,
-        // the outstanding permit is guaranteed unused and every sent event is already
-        // buffered, so a non-blocking drain loses nothing.
+        // These events were never proposed, so callers can retry against the new leader.
+        // The drain doesn't need to await: senders are only used from the partition
+        // processor's main loop, which is busy calling stop(), so every sent event is
+        // already buffered. Later sends fail and are rejected by the sender.
         self.network_events_stream.close();
         while let Some(Some(event)) = self.network_events_stream.next().now_or_never() {
-            match event {
-                NetworkServiceEvent::RpcProposal { reciprocal, .. } => reciprocal.send(Err(
-                    PartitionProcessorRpcError::LostLeadership(self.partition_id),
-                )),
-                NetworkServiceEvent::IngestRecords { reciprocal, .. } => reciprocal.send(
-                    ResponseStatus::NotLeader {
-                        of: self.partition_id,
-                    }
-                    .into(),
-                ),
-            }
+            event.reject_not_leader(self.partition_id);
         }
     }
 }
@@ -553,7 +538,7 @@ struct InputStreams<'a> {
     shuffle_stream: &'a mut WatchStream<Option<shuffle::OutboxTruncation>>,
     schema_stream: &'a mut WatchStream<Version>,
     rule_book_stream: &'a mut WatchStream<Arc<RuleBook>>,
-    network_events_stream: &'a mut ReceiverStream<NetworkServiceEvent>,
+    network_events_stream: &'a mut UnboundedReceiverStream<NetworkServiceEvent>,
     durability_tracker: &'a mut DurabilityTracker,
     scheduler: &'a mut SchedulerService<PartitionDb>,
     cleaner_handle: &'a mut CleanerHandle,
@@ -967,10 +952,12 @@ impl LeaderEventHandler for NetworkServiceEvent {
             NetworkServiceEvent::RpcProposal {
                 proposal,
                 reciprocal,
+                lease: _lease, // Release the network memory reservation now that we're proposing the command.
             } => state.handle_rpc_proposal(proposal, reciprocal),
             NetworkServiceEvent::IngestRecords {
                 records,
                 reciprocal,
+                lease: _lease, // Release the network memory reservation now that we're proposing the command.
             } => state.forward_many_and_respond_on_commit(
                 records.into_iter(),
                 move |result: Result<(), PartitionProcessorRpcError>| {
