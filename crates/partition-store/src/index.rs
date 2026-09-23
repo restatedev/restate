@@ -19,6 +19,7 @@ use crate::keys::{EncodeIndexKey, IndexKeyPrefix};
 mod entry;
 mod macros;
 mod maintenance;
+mod scan;
 
 pub use entry::{
     EntryByServiceStage, EntryByServiceStageKey, EntryByStage, EntryByStageKey, EntryNextAtByStage,
