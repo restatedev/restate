@@ -8,10 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! VQueue identifiers and sequence numbers.
+//!
+//! See the [identifier module](crate::identifiers) for the relationship between
+//! [`EntryId`], [`BaseEntryId`](crate::identifiers::BaseEntryId), and [`CanonicalEntryId`].
+
 mod entry_id;
 mod seq;
 mod vqueue_id;
 
+pub use crate::identifiers::CanonicalEntryId;
 pub use entry_id::{EntryId, EntryIdDisplay, EntryKind, VQueueEntryId};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
@@ -23,4 +29,6 @@ pub enum ParseError {
     Length,
     #[error("unknown entry kind: {0}")]
     UnknownEntryKind(u8),
+    #[error("malformed byte representation of a entry id")]
+    MalformedId,
 }
