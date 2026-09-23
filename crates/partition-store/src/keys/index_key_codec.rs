@@ -8,13 +8,169 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Reverse;
+
 use bytes::BufMut;
 
+use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{Stage, Status};
-use restate_types::vqueues::EntryKind;
+use restate_types::identifiers::{CanonicalEntryId, InvocationId, InvocationUuid, ResourceId};
+use restate_types::vqueues::{EntryKind, Seq};
 
 use super::{EncodedMemCmpStr, IndexFieldDecode, IndexFieldEncode};
+
+impl IndexFieldEncode for InvocationId {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(&self.to_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        Self::RAW_BYTES_LEN
+    }
+}
+
+impl IndexFieldDecode for InvocationId {
+    type Owned = Self;
+    type Encoded = [u8; Self::RAW_BYTES_LEN];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        // InvocationUuid::from_bytes asserts that the UUID is non-zero.
+        if encoded[Self::RAW_BYTES_LEN - InvocationUuid::RAW_BYTES_LEN..]
+            .iter()
+            .all(|byte| *byte == 0)
+        {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok((*encoded).into())
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        let Some((encoded, remaining)) = source.split_first_chunk() else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        *source = remaining;
+        Ok(encoded)
+    }
+}
+
+impl IndexFieldEncode for CanonicalEntryId {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        assert_ne!(
+            self.kind(),
+            EntryKind::Unknown,
+            "unknown entry kind cannot be encoded in an index key"
+        );
+        target.put_slice(self.as_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        Self::RAW_BYTES_LEN
+    }
+}
+
+impl IndexFieldDecode for CanonicalEntryId {
+    type Owned = Self;
+    type Encoded = [u8; Self::RAW_BYTES_LEN];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        let id = Self::try_from_bytes(encoded).map_err(|_| StorageError::DataIntegrityError)?;
+        if id.kind() == EntryKind::Unknown {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(*id)
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        let Some((encoded, remaining)) = source.split_first_chunk() else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        *source = remaining;
+        Ok(encoded)
+    }
+}
+
+impl IndexFieldEncode for Seq {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_u64(self.as_u64());
+    }
+
+    fn serialized_length(&self) -> usize {
+        size_of::<u64>()
+    }
+}
+
+impl IndexFieldDecode for Seq {
+    type Owned = Self;
+    type Encoded = [u8; size_of::<u64>()];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        Ok(Self::from_bytes(*encoded))
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        u64::take_encoded(source)
+    }
+}
+
+impl IndexFieldEncode for RoughTimestamp {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_u32(self.as_u32());
+    }
+
+    fn serialized_length(&self) -> usize {
+        size_of::<u32>()
+    }
+}
+
+impl IndexFieldDecode for RoughTimestamp {
+    type Owned = Self;
+    type Encoded = [u8; size_of::<u32>()];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        let seconds = u32::from_be_bytes(*encoded);
+        // The constructor clamps; reject the unrepresentable value on disk instead.
+        if seconds > Self::MAX.as_u32() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(Self::new(seconds))
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        let Some((encoded, remaining)) = source.split_first_chunk() else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        *source = remaining;
+        Ok(encoded)
+    }
+}
+
+/// Keeps all HLC bits while reversing their bytewise order. Logical predicate
+/// bounds must be reversed too before this codec can be used for filter binding.
+impl IndexFieldEncode for Reverse<UniqueTimestamp> {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_u64(!self.0.as_u64());
+    }
+
+    fn serialized_length(&self) -> usize {
+        size_of::<u64>()
+    }
+}
+
+impl IndexFieldDecode for Reverse<UniqueTimestamp> {
+    type Owned = Self;
+    type Encoded = [u8; size_of::<u64>()];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        UniqueTimestamp::try_from(!u64::from_be_bytes(*encoded))
+            .map(Reverse)
+            .map_err(|_| StorageError::DataIntegrityError)
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        u64::take_encoded(source)
+    }
+}
 
 impl IndexFieldEncode for EntryKind {
     fn encode_field<B: BufMut>(&self, target: &mut B) {
@@ -95,6 +251,37 @@ impl IndexFieldDecode for Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rough_timestamps_preserve_order_and_reject_invalid_encoding() {
+        let mut previous = None;
+        for timestamp in [
+            RoughTimestamp::RESTATE_EPOCH,
+            RoughTimestamp::new(255),
+            RoughTimestamp::new(256),
+            RoughTimestamp::MAX,
+        ] {
+            let mut bytes = Vec::new();
+            timestamp.encode_field(&mut bytes);
+            assert_eq!(bytes.len(), size_of::<u32>());
+            assert_eq!(bytes, timestamp.as_u32().to_be_bytes());
+            if let Some(previous) = previous {
+                assert!(previous < bytes);
+            }
+            previous = Some(bytes.clone());
+            bytes.push(42);
+            let mut remaining = bytes.as_slice();
+            assert_eq!(
+                RoughTimestamp::decode_field(&mut remaining).unwrap(),
+                timestamp
+            );
+            assert_eq!(remaining, [42]);
+        }
+        assert!(RoughTimestamp::decode_encoded(&u32::MAX.to_be_bytes()).is_err());
+        for len in 0..size_of::<u32>() {
+            assert!(RoughTimestamp::decode_field(&mut &[0; 4][..len]).is_err());
+        }
+    }
 
     #[test]
     fn stage_index_codec_matches_string_order_and_round_trips() {
