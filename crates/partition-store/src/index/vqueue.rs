@@ -32,3 +32,11 @@ define_secondary_index!(
         vqueue_id: VQueueId (primary_key),
     }
 );
+
+crate::keys::macros::define_index_key_filter!(
+    BusyVQueueKey; [restate_storage_api::index::BusyVQueue];
+    total_non_completed: Reverse<u64>,
+    last_modified: Reverse<UniqueTimestamp>,
+    scope: Option<ReString>,
+    vqueue_id: VQueueId,
+);
