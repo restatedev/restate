@@ -21,13 +21,14 @@ use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::{
-    EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
+    EntryContext, EntryStateRef, EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
 use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
 };
+use restate_types::vqueues::EntryTargetExt;
 use restate_vqueues::VQueue;
 
 use crate::partition::processor::ProcessorContext;
@@ -92,9 +93,11 @@ where
                     .expect("purging in a non-existent vqueue")
                     .delete(
                         at,
-                        vqueue_id,
-                        header.entry_key(),
-                        header.metadata(),
+                        &EntryContext {
+                            qid: vqueue_id,
+                            target: &invocation_target.entry_target_ref(),
+                        },
+                        EntryStateRef::from_header(&header),
                     );
                 }
 
