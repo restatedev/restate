@@ -101,6 +101,22 @@ impl ObjectStoreVersionRepository {
     }
 }
 
+/// Builds the tag for a stored object from the ETag and version the store reported.
+fn tag(e_tag: Option<String>, version: Option<String>) -> Result<Tag, VersionRepositoryError> {
+    let e_tag = e_tag.ok_or_else(|| {
+        VersionRepositoryError::UnexpectedCondition("expecting an ETag to be present".into())
+    })?;
+    Ok(Tag::new(e_tag, version))
+}
+
+/// The precondition for a conditional write, which must match `expected`.
+fn update_version(expected: &Tag) -> UpdateVersion {
+    UpdateVersion {
+        e_tag: Some(expected.e_tag().to_owned()),
+        version: expected.version().map(str::to_owned),
+    }
+}
+
 const EXISTS_HEADER: Bytes = Bytes::from_static(b"e");
 const DELETED_HEADER: Bytes = Bytes::from_static(b"d");
 
@@ -127,14 +143,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         debug!(%key, %path, size = content.bytes.len(), "calling put");
 
         match self.object_store.put_opts(&path, payload, opts).await {
-            Ok(res) => {
-                let etag = res.e_tag.ok_or_else(|| {
-                    VersionRepositoryError::UnexpectedCondition(
-                        "expecting an ETag to be present".into(),
-                    )
-                })?;
-                Ok(etag.into())
-            }
+            Ok(res) => tag(res.e_tag, res.version),
             Err(Error::AlreadyExists { .. }) => {
                 // a file with this name already exists.
                 // but it can be a deleted marker.
@@ -144,10 +153,10 @@ impl VersionRepository for ObjectStoreVersionRepository {
                     .get(&path)
                     .await
                     .map_err(|e| VersionRepositoryError::Network(e.into()))?;
-                let etag = get_result.meta.e_tag.as_ref().ok_or_else(|| {
-                    VersionRepositoryError::UnexpectedCondition("was expecting an etag".into())
-                })?;
-                let tag: Tag = etag.to_owned().into();
+                let tag = tag(
+                    get_result.meta.e_tag.clone(),
+                    get_result.meta.version.clone(),
+                )?;
                 let bytes = get_result
                     .bytes()
                     .await
@@ -177,12 +186,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
                     .transpose()?
                     .unwrap_or(ValueEncoding::Cbor);
 
-                let etag = res.meta.e_tag.as_ref().ok_or_else(|| {
-                    VersionRepositoryError::UnexpectedCondition(
-                        "expecting an ETag to be present".into(),
-                    )
-                })?;
-                let tag = etag.to_owned().into();
+                let tag = tag(res.meta.e_tag.clone(), res.meta.version.clone())?;
                 let mut buf = res
                     .bytes()
                     .await
@@ -209,14 +213,8 @@ impl VersionRepository for ObjectStoreVersionRepository {
         expected: Tag,
         new_content: Content,
     ) -> Result<Tag, VersionRepositoryError> {
-        let etag = expected.as_string();
-        let update_version = UpdateVersion {
-            e_tag: Some(etag),
-            version: None,
-        };
-
         let path = self.path(&key);
-        let mut put_options = PutOptions::from(PutMode::Update(update_version));
+        let mut put_options = PutOptions::from(PutMode::Update(update_version(&expected)));
         put_options
             .attributes
             .insert(Attribute::ContentEncoding, new_content.encoding.into());
@@ -238,13 +236,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             )
             .await
         {
-            Ok(res) => {
-                let etag = res.e_tag.ok_or_else(|| {
-                    VersionRepositoryError::UnexpectedCondition("expecting an etag".into())
-                })?;
-                let tag: Tag = etag.into();
-                Ok(tag)
-            }
+            Ok(res) => tag(res.e_tag, res.version),
             Err(Error::Precondition { .. }) => Err(VersionRepositoryError::PreconditionFailed),
             Err(e) => Err(VersionRepositoryError::Network(e.into())),
         }
@@ -273,13 +265,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             )
             .await
         {
-            Ok(res) => {
-                let etag = res.e_tag.ok_or_else(|| {
-                    VersionRepositoryError::UnexpectedCondition("expecting an etag".into())
-                })?;
-                let tag: Tag = etag.into();
-                Ok(tag)
-            }
+            Ok(res) => tag(res.e_tag, res.version),
             Err(e) => Err(VersionRepositoryError::Network(e.into())),
         }
     }
@@ -306,12 +292,6 @@ impl VersionRepository for ObjectStoreVersionRepository {
         key: ByteString,
         expected: Tag,
     ) -> Result<(), VersionRepositoryError> {
-        let etag = expected.as_string();
-        let update_version = UpdateVersion {
-            e_tag: Some(etag),
-            version: None,
-        };
-
         let path = self.path(&key);
 
         debug!(%key, %path, ?expected, "calling put with deleted tombstone");
@@ -321,7 +301,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             .put_opts(
                 &path,
                 PutPayload::from_bytes(DELETED_HEADER),
-                PutOptions::from(PutMode::Update(update_version)),
+                PutOptions::from(PutMode::Update(update_version(&expected))),
             )
             .await
         {
@@ -628,5 +608,74 @@ mod tests {
         let (_, mut content) = store.get(KEY_1).await.unwrap().into_inner();
 
         assert_eq!(content.bytes.get_u64(), 2048u64);
+    }
+
+    #[test]
+    fn conditional_writes_match_the_reported_version() {
+        let tag = tag(
+            Some("\"etag\"".to_owned()),
+            Some("1790175353568897".to_owned()),
+        )
+        .unwrap();
+        let precondition = update_version(&tag);
+
+        assert_eq!(precondition.e_tag.as_deref(), Some("\"etag\""));
+        assert_eq!(precondition.version.as_deref(), Some("1790175353568897"));
+    }
+
+    /// Runs the conditional-write sequence the metadata store relies on against a real
+    /// object store, e.g. `RESTATE_TEST_GCS_METADATA_PATH=gs://bucket/prefix` with credentials
+    /// in `GOOGLE_APPLICATION_CREDENTIALS`. The in-memory store only matches on ETags, so it
+    /// cannot catch a store-specific precondition such as GCS's object generation.
+    #[test_log::test(tokio::test)]
+    #[ignore = "needs RESTATE_TEST_GCS_METADATA_PATH and credentials for a real bucket"]
+    async fn gcs_conditional_writes() {
+        let path = std::env::var("RESTATE_TEST_GCS_METADATA_PATH")
+            .expect("RESTATE_TEST_GCS_METADATA_PATH must be set");
+        let store =
+            ObjectStoreVersionRepository::from_configuration(MetadataClientKind::ObjectStore {
+                path: format!(
+                    "{path}/{}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap()
+                        .as_nanos()
+                ),
+                object_store: Default::default(),
+                object_store_retry_policy: restate_types::retries::RetryPolicy::None,
+            })
+            .await
+            .unwrap();
+        let content = |bytes| Content {
+            encoding: ValueEncoding::Bilrost,
+            bytes,
+        };
+
+        let created = store.create(KEY_1, content(HELLO)).await.unwrap();
+        assert!(matches!(
+            store.create(KEY_1, content(HELLO)).await,
+            Err(VersionRepositoryError::AlreadyExists)
+        ));
+
+        let updated = store
+            .put_if_tag_matches(KEY_1, created.clone(), content(WORLD))
+            .await
+            .unwrap();
+        assert!(matches!(
+            store
+                .put_if_tag_matches(KEY_1, created, content(HELLO))
+                .await,
+            Err(VersionRepositoryError::PreconditionFailed)
+        ));
+        let current = store.get(KEY_1).await.unwrap();
+        assert_eq!(current.tag, updated);
+        assert_eq!(current.content.bytes, WORLD);
+
+        store.delete_if_tag_matches(KEY_1, updated).await.unwrap();
+        assert!(matches!(
+            store.get(KEY_1).await,
+            Err(VersionRepositoryError::NotFound)
+        ));
+        store.create(KEY_1, content(HELLO_WORLD)).await.unwrap();
     }
 }

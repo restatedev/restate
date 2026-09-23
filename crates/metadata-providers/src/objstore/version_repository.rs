@@ -32,18 +32,41 @@ pub enum VersionRepositoryError {
     Encoding(#[from] EncodingError),
 }
 
+/// The version of a stored value that conditional writes must match.
+///
+/// Object stores differ in what they match on: S3 compares the ETag, while GCS compares the
+/// object generation, which object_store exposes as the object's `version`. Both are kept
+/// when the store reports them.
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
-pub(crate) struct Tag(ByteString);
+pub(crate) struct Tag {
+    e_tag: ByteString,
+    version: Option<ByteString>,
+}
 
 impl From<String> for Tag {
-    fn from(value: String) -> Self {
-        Tag(value.into())
+    fn from(e_tag: String) -> Self {
+        Tag::new(e_tag, None)
     }
 }
 
 impl Tag {
+    pub(crate) fn new(e_tag: String, version: Option<String>) -> Self {
+        Tag {
+            e_tag: e_tag.into(),
+            version: version.map(Into::into),
+        }
+    }
+
+    pub(crate) fn e_tag(&self) -> &str {
+        &self.e_tag
+    }
+
+    pub(crate) fn version(&self) -> Option<&str> {
+        self.version.as_deref()
+    }
+
     pub(crate) fn as_string(&self) -> String {
-        self.0.to_string()
+        self.e_tag.to_string()
     }
 }
 
