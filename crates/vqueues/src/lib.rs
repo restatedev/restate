@@ -39,16 +39,15 @@ use restate_storage_api::lock_table::{LockState, WriteLockTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::stats::{EntryStatistics, WaitStats};
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, Stage, Status,
-    VQueueDisposition, WriteVQueueTable, metadata,
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue,
+    ReadVQueueTable, Stage, Status, VQueueDisposition, WriteVQueueTable, metadata,
 };
 use restate_storage_api::{StorageError, lock_table};
 use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey};
+use restate_types::identifiers::{BaseEntryId, DeploymentId, InvocationId, PartitionKey};
 use restate_types::invocation::{InvocationTarget, InvocationTargetType, VirtualObjectHandlerType};
-use restate_types::sharding::WithPartitionKey;
-use restate_types::vqueues::{EntryId, Seq, VQueueId};
+use restate_types::vqueues::{EntryId, EntryTargetExt, EntryTargetRef, Seq, VQueueId};
 use restate_types::{LockName, Scope};
 use restate_util_string::{ReString, ToReString};
 use restate_worker_api::invoker::YieldReason;
@@ -136,14 +135,13 @@ where
         self.cache.get(self.handle).unwrap().meta()
     }
 
-    fn update_vqueue(&mut self, update: &metadata::Update, entry_metadata: Option<&EntryMetadata>) {
+    fn update_vqueue(&mut self, update: &metadata::Update) {
         let (vqueue_id, disposition) = {
             let slot = self.cache.get_mut(self.handle).unwrap();
             let (vqueue_id, meta) = slot.split_mut();
             (
                 vqueue_id,
-                self.storage
-                    .update_vqueue(vqueue_id, meta, update, entry_metadata),
+                self.storage.update_vqueue(vqueue_id, meta, update),
             )
         };
 
@@ -285,6 +283,7 @@ where
     pub fn enqueue_new(
         &mut self,
         created_at: UniqueTimestamp,
+        target: &EntryTargetRef<'_>,
         seq: impl Into<Seq>,
         run_at: Option<MillisSinceEpoch>,
         entry_id: impl Into<EntryId>,
@@ -320,15 +319,15 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
             status,
-            stats: stats.clone(),
-            metadata: metadata.clone(),
+            stats,
+            metadata,
         };
 
         debug!(
@@ -341,13 +340,12 @@ where
         self.storage
             .put_vqueue_inbox(meta.vqueue_id(), Stage::Inbox, &key, &value);
 
-        self.storage.put_vqueue_entry_status(
-            meta.vqueue_id(),
-            Stage::Inbox,
-            &key,
-            &metadata,
-            stats,
-            status,
+        self.storage.create_vqueue_entry_status(
+            &EntryContext {
+                qid: meta.vqueue_id(),
+                target,
+            },
+            EntryStateRef::from_value(Stage::Inbox, &key, &value),
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
@@ -374,12 +372,13 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         wait_stats: WaitStats,
     ) -> EntryKey {
         let vqueue_id = header.vqueue_id();
-        let partition_key = vqueue_id.partition_key();
         assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
         assert!(matches!(header.stage(), Stage::Inbox));
+        let id = header.canonical_entry_id();
 
         // Remove from inbox and move to ready
         self.storage
@@ -397,7 +396,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -411,10 +410,7 @@ where
             // acquire lock
             let lock_state = LockState {
                 acquired_at: at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(
-                    partition_key,
-                    header.entry_id(),
-                ),
+                acquired_by: lock_table::AcquiredBy::from_entry(&id.to_base_entry_id()),
             };
 
             self.storage
@@ -440,27 +436,23 @@ where
             header.status(),
         );
 
-        self.storage.put_vqueue_inbox(
-            vqueue_id,
-            Stage::Running,
-            &modified_key,
-            &EntryValue {
-                status: new_status,
-                stats: stats.clone(),
-                // We pick metadata from EntryStatusHeader since it could have been updated
-                // while we were parked, or after the previous run.
-                metadata: header.metadata().clone(),
-            },
-        );
+        let value = EntryValue {
+            status: new_status,
+            stats,
+            // Metadata may have changed while parked, or after the previous run.
+            metadata: header.metadata().clone(),
+        };
+        self.storage
+            .put_vqueue_inbox(vqueue_id, Stage::Running, &modified_key, &value);
 
         // Update the entry state so we can track the new entry key and stage
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            Stage::Running,
-            &modified_key,
-            header.metadata(),
-            stats,
-            new_status,
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: vqueue_id,
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef::from_value(Stage::Running, &modified_key, &value),
         );
 
         modified_key
@@ -487,6 +479,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         run_at: Option<RoughTimestamp>,
         updated_metadata: Option<EntryMetadata>,
     ) {
@@ -508,7 +501,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -528,13 +521,19 @@ where
         );
 
         // Update the entry state so we can track the new entry key and stage
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            Stage::Inbox,
-            &modified_key,
-            &maybe_new_metadata,
-            stats.clone(),
-            header.status(),
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: vqueue_id,
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status: header.status(),
+                entry_key: &modified_key,
+                metadata: &maybe_new_metadata,
+                stats: &stats,
+            },
         );
 
         let value = EntryValue {
@@ -586,6 +585,7 @@ where
     pub fn reschedule(
         &mut self,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         run_at: RoughTimestamp,
         pinned_deployment: Option<DeploymentId>,
     ) {
@@ -633,13 +633,17 @@ where
         );
 
         // Update the entry state to track the new entry key
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            stage,
-            &modified_key,
-            &metadata,
-            stats.clone(),
-            header.status(),
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: vqueue_id,
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef {
+                entry_key: &modified_key,
+                metadata: &metadata,
+                ..EntryStateRef::from_header(header)
+            },
         );
 
         let value = EntryValue {
@@ -687,15 +691,25 @@ where
     /// Suspend an entry
     /// ? -> Suspended
     /// Returns `true` if the entry was found in the previous stage and parked correctly, `false` otherwise.
-    pub fn pause_entry(&mut self, at: UniqueTimestamp, header: &impl EntryStatusHeader)
+    pub fn pause_entry(
+        &mut self,
+        at: UniqueTimestamp,
+        header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
+    )
     // add new state
     {
-        self.park_entry(at, header, Stage::Paused)
+        self.park_entry(at, header, target, Stage::Paused)
     }
 
     /// Suspend an entry
-    pub fn suspend_entry(&mut self, at: UniqueTimestamp, header: &impl EntryStatusHeader) {
-        self.park_entry(at, header, Stage::Suspended)
+    pub fn suspend_entry(
+        &mut self,
+        at: UniqueTimestamp,
+        header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
+    ) {
+        self.park_entry(at, header, target, Stage::Suspended)
     }
 
     /// Private helper for park/suspend
@@ -706,6 +720,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         next_stage: Stage,
     ) {
         let vqueue_id = header.vqueue_id();
@@ -734,7 +749,7 @@ where
         );
 
         // Update vqueue meta in storage
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         let stats = match next_stage {
             Stage::Paused => Self::mark_pause(at, header.stats()),
@@ -742,26 +757,22 @@ where
             _ => unreachable!(),
         };
 
-        self.storage.put_vqueue_inbox(
-            vqueue_id,
-            next_stage,
-            header.entry_key(),
-            &EntryValue {
-                stats: stats.clone(),
-                metadata: header.metadata().clone(),
-                // When pausing, we keep the last status as is. This is to provide
-                // the ability to present the status prior to pausing to the user.
-                status: header.status(),
-            },
-        );
-
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            next_stage,
-            header.entry_key(),
-            header.metadata(),
+        let value = EntryValue {
             stats,
-            header.status(),
+            metadata: header.metadata().clone(),
+            // Preserve the status prior to pausing for presentation to the user.
+            status: header.status(),
+        };
+        self.storage
+            .put_vqueue_inbox(vqueue_id, next_stage, header.entry_key(), &value);
+
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: vqueue_id,
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef::from_value(next_stage, header.entry_key(), &value),
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut()
@@ -781,6 +792,7 @@ where
         &mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         run_at: Option<RoughTimestamp>,
         reason: YieldReason,
     ) {
@@ -800,7 +812,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // We can be asked to wake up but not run immediately (or get a lower run_at for priority
         // boosting). If that's the case, we mutate the entry key to reflect that.
@@ -854,13 +866,19 @@ where
             header.status(),
         );
 
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            Stage::Inbox,
-            &modified_key,
-            &metadata,
-            stats.clone(),
-            status,
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: vqueue_id,
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef {
+                stage: Stage::Inbox,
+                status,
+                entry_key: &modified_key,
+                metadata: &metadata,
+                stats: &stats,
+            },
         );
 
         let value = EntryValue {
@@ -899,6 +917,7 @@ where
         mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         new_status: Status,
         delete_after: Duration,
     ) {
@@ -943,7 +962,7 @@ where
         let stats = Self::mark_transition(at, header.stats());
 
         let value = EntryValue {
-            stats: stats.clone(),
+            stats,
             metadata: header.metadata().clone(),
             status: new_status,
         };
@@ -952,16 +971,18 @@ where
         self.storage
             .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
 
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            Stage::Finished,
-            &modified_key,
-            header.metadata(),
-            stats,
-            new_status,
+        let context = EntryContext {
+            qid: vqueue_id,
+            target,
+        };
+        let after = EntryStateRef::from_value(Stage::Finished, &modified_key, &value);
+        self.storage.update_vqueue_entry_status(
+            &context,
+            EntryStateRef::from_header(header),
+            after,
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let meta = self.cache.get(self.handle).unwrap();
@@ -986,32 +1007,27 @@ where
 
         if delete_after.is_zero() {
             // Delete immediately!
-            self.delete(
-                at,
-                vqueue_id,
-                header.entry_id(),
-                &modified_key,
-                header.metadata(),
-            );
+            self.delete(at, &context, after);
         }
     }
 
     /// The entry has completed execution and it needs to be removed from the vqueue.
     ///
-    /// It's the caller's responsibility to ensure that the entry is in the `Finished` stage
-    /// before calling this method.
+    /// `before` must be the actual Finished state, including earlier writes in this transaction.
     pub fn delete(
         mut self,
         at: UniqueTimestamp,
-        vqueue_id: &VQueueId,
-        entry_id: &EntryId,
-        entry_key: &EntryKey,
-        entry_metadata: &EntryMetadata,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
     ) {
+        assert_eq!(before.stage, Stage::Finished);
+        let vqueue_id = context.qid;
+        let entry_key = before.entry_key;
         assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
+        let id = entry_key.to_canonical_entry_id(vqueue_id.partition_key());
 
         debug!(
-            entry = %entry_id.display(vqueue_id.partition_key()),
+            entry = %id,
             qid = %vqueue_id,
             "{}->X",
             Stage::Finished,
@@ -1024,15 +1040,13 @@ where
             },
         );
 
-        self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), entry_id);
+        self.storage.delete_vqueue_entry_status(context, before);
         // delete the entry's input
-        self.storage
-            .delete_vqueue_input_payload(vqueue_id, entry_key.seq(), entry_id);
+        self.storage.delete_vqueue_input_payload(vqueue_id, &id);
         // delete the inbox entry
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Finished, entry_key);
-        self.update_vqueue(&update, Some(entry_metadata));
+        self.update_vqueue(&update);
     }
 
     /// A specialized version of run designed for inline execution of an entry.
@@ -1044,6 +1058,7 @@ where
         mut self,
         at: UniqueTimestamp,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         wait_stats: WaitStats,
         status: Status,
     ) {
@@ -1055,7 +1070,7 @@ where
         self.storage
             .delete_vqueue_inbox(vqueue_id, Stage::Inbox, header.entry_key());
 
-        // Fake run, for the same of completeness
+        // Fake run, for the sake of completeness
         let update = metadata::Update::new(
             at,
             metadata::Action::Move {
@@ -1068,7 +1083,7 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
         let stats = Self::mark_run_attempt(at, header.stats(), wait_stats);
 
         // Move to finish
@@ -1083,32 +1098,31 @@ where
 
         let stats = Self::mark_transition(at, &stats);
 
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.update_vqueue(&update);
 
         // Move the entry to Finished stage
         // for future: Use this to set the deletion time.
         let modified_key = header.entry_key().set_run_at(Some(RoughTimestamp::MAX));
         assert!(!modified_key.has_lock());
 
-        self.storage.put_vqueue_inbox(
-            vqueue_id,
-            Stage::Finished,
-            &modified_key,
-            &EntryValue {
-                stats: stats.clone(),
-                metadata: header.metadata().clone(),
-                status,
-            },
-        );
+        let value = EntryValue {
+            stats,
+            metadata: header.metadata().clone(),
+            status,
+        };
+        self.storage
+            .put_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key, &value);
 
         // Update the entry state so we can track the new entry key and stage
-        self.storage.put_vqueue_entry_status(
-            vqueue_id,
-            Stage::Finished,
-            &modified_key,
-            header.metadata(),
-            stats,
-            status,
+        let context = EntryContext {
+            qid: vqueue_id,
+            target,
+        };
+        let after = EntryStateRef::from_value(Stage::Finished, &modified_key, &value);
+        self.storage.update_vqueue_entry_status(
+            &context,
+            EntryStateRef::from_header(header),
+            after,
         );
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
@@ -1127,23 +1141,7 @@ where
         //
         // The end result would be that a finished vqueue item would expire after some time
         // and be deleted from the vqueue (or moved to archival key-prefix).
-        let update = metadata::Update::new(
-            at,
-            metadata::Action::RemoveEntry {
-                stage: Stage::Finished,
-            },
-        );
-
-        self.storage
-            .delete_vqueue_entry_status(vqueue_id.partition_key(), header.entry_id());
-        // delete the entry's input
-        self.storage
-            .delete_vqueue_input_payload(vqueue_id, header.seq(), header.entry_id());
-        // delete the inbox entry
-        self.storage
-            .delete_vqueue_inbox(vqueue_id, Stage::Finished, &modified_key);
-
-        self.update_vqueue(&update, Some(header.metadata()));
+        self.delete(at, &context, after);
     }
 
     /// Marks this vqueue as paused
@@ -1158,7 +1156,7 @@ where
         debug!(qid = %slot.vqueue_id(), "Pausing vqueue");
         let update = metadata::Update::new(at, metadata::Action::PauseVQueue {});
 
-        self.update_vqueue(&update, None);
+        self.update_vqueue(&update);
 
         if let Some(collector) = self.action_collector.as_deref_mut() {
             let mut event = VQueueEvent::new(self.handle);
@@ -1178,7 +1176,7 @@ where
         debug!(qid = %slot.vqueue_id(), "Resuming vqueue");
         let update = metadata::Update::new(at, metadata::Action::ResumeVQueue {});
 
-        self.update_vqueue(&update, None);
+        self.update_vqueue(&update);
 
         if self.meta().is_active()
             && let Some(collector) = self.action_collector.as_deref_mut()
@@ -1192,6 +1190,7 @@ where
     pub fn update_entry_metadata(
         &mut self,
         header: &impl EntryStatusHeader,
+        target: &EntryTargetRef<'_>,
         metadata: &EntryMetadata,
     ) {
         debug!(
@@ -1200,13 +1199,16 @@ where
             header.stage(),
         );
 
-        self.storage.put_vqueue_entry_status(
-            header.vqueue_id(),
-            header.stage(),
-            header.entry_key(),
-            metadata,
-            header.stats().clone(),
-            header.status(),
+        self.storage.update_vqueue_entry_status(
+            &EntryContext {
+                qid: header.vqueue_id(),
+                target,
+            },
+            EntryStateRef::from_header(header),
+            EntryStateRef {
+                metadata,
+                ..EntryStateRef::from_header(header)
+            },
         );
     }
 
@@ -1293,11 +1295,10 @@ where
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
         let seq = 0;
-        let entry_id = EntryId::from(invocation_id);
+        let entry_id = BaseEntryId::from(invocation_id);
         let stage = Stage::Running;
         let status = Status::Started;
 
-        let partition_key = invocation_id.partition_key();
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(invoked.timestamps.creation_time());
         let modified_at =
@@ -1333,7 +1334,7 @@ where
         if has_lock {
             let lock_state = LockState {
                 acquired_at: started_running_at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+                acquired_by: lock_table::AcquiredBy::from_entry(&entry_id),
             };
             let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
             self.storage.acquire_lock(&None, lock_name, &lock_state);
@@ -1361,27 +1362,26 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
             status,
-            stats: stats.clone(),
-            metadata: metadata.clone(),
+            stats,
+            metadata,
         };
 
         self.storage
             .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
 
-        self.storage.put_vqueue_entry_status(
-            meta.vqueue_id(),
-            stage,
-            &key,
-            &metadata,
-            stats,
-            status,
+        self.storage.create_vqueue_entry_status(
+            &EntryContext {
+                qid: meta.vqueue_id(),
+                target: &invoked.invocation_target.entry_target_ref(),
+            },
+            EntryStateRef::from_value(stage, &key, &value),
         );
     }
 
@@ -1474,27 +1474,26 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
             status,
-            stats: stats.clone(),
-            metadata: metadata.clone(),
+            stats,
+            metadata,
         };
 
         self.storage
             .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
 
-        self.storage.put_vqueue_entry_status(
-            meta.vqueue_id(),
-            stage,
-            &key,
-            &metadata,
-            stats,
-            status,
+        self.storage.create_vqueue_entry_status(
+            &EntryContext {
+                qid: meta.vqueue_id(),
+                target: &completed.invocation_target.entry_target_ref(),
+            },
+            EntryStateRef::from_value(stage, &key, &value),
         );
     }
 
@@ -1512,10 +1511,9 @@ where
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
         let seq = 0;
-        let entry_id = EntryId::from(invocation_id);
+        let entry_id = BaseEntryId::from(invocation_id);
         let status = Status::Started;
 
-        let partition_key = invocation_id.partition_key();
         let created_at =
             UniqueTimestamp::from_unix_millis_unchecked(parked.timestamps.creation_time());
 
@@ -1555,7 +1553,7 @@ where
                 // We try to use the last run timestamp if we have it, otherwise we fallback to the
                 // modification time.
                 acquired_at: may_have_ran_at,
-                acquired_by: lock_table::AcquiredBy::from_entry_id(partition_key, &entry_id),
+                acquired_by: lock_table::AcquiredBy::from_entry(&entry_id),
             };
             let lock_name = meta.meta().lock_name().expect("vo must have a lock link");
             self.storage.acquire_lock(&None, lock_name, &lock_state);
@@ -1588,33 +1586,34 @@ where
             },
         );
 
-        self.update_vqueue(&update, Some(&metadata));
+        self.update_vqueue(&update);
 
         let meta = self.cache.get(self.handle).unwrap();
 
         // We need to add the entry into the inbox vqueue.
         let value = EntryValue {
             status,
-            stats: stats.clone(),
-            metadata: metadata.clone(),
+            stats,
+            metadata,
         };
 
         self.storage
             .put_vqueue_inbox(meta.vqueue_id(), stage, &key, &value);
 
-        self.storage.put_vqueue_entry_status(
-            meta.vqueue_id(),
-            stage,
-            &key,
-            &metadata,
-            stats,
-            status,
+        self.storage.create_vqueue_entry_status(
+            &EntryContext {
+                qid: meta.vqueue_id(),
+                target: &parked.invocation_target.entry_target_ref(),
+            },
+            EntryStateRef::from_value(stage, &key, &value),
         );
     }
 }
 
 #[cfg(test)]
 mod tests {
+    mod index;
+
     use restate_core::TaskCenter;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -1670,6 +1669,11 @@ mod tests {
                 .unwrap();
         busy.enqueue_new(
             at,
+            &EntryTargetRef::Service {
+                scope: None,
+                service: "test",
+                handler: "handler",
+            },
             1u64,
             None,
             EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]),
@@ -1792,11 +1796,11 @@ mod tests {
             },
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &add_finished),
             VQueueDisposition::Retained
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &add_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &add_finished),
             VQueueDisposition::Retained
         );
 
@@ -1807,12 +1811,12 @@ mod tests {
             },
         );
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &remove_finished),
             VQueueDisposition::Retained
         );
         assert!(txn.get_vqueue(&qid).await.unwrap().is_some());
         assert_eq!(
-            txn.update_vqueue(&qid, &mut meta, &remove_finished, None),
+            txn.update_vqueue(&qid, &mut meta, &remove_finished),
             VQueueDisposition::Purged
         );
         assert!(txn.get_vqueue(&qid).await.unwrap().is_none());

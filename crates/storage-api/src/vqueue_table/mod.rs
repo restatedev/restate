@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod entry;
+mod entry_change;
 mod entry_status;
 pub mod filters;
 pub mod metadata;
@@ -18,6 +19,7 @@ mod store;
 mod tables;
 
 pub use entry::*;
+pub use entry_change::*;
 pub use entry_status::*;
 pub use restate_types::vqueues::{EntryId, EntryKind};
 pub use store::*;

@@ -9,44 +9,97 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::RoughTimestamp;
-use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
+use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
+use restate_util_string::{EncodedMemCmpStr, encoded_mem_cmp_str};
 
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
-#[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
+#[derive(
+    Debug,
+    strum::Display,
+    strum::EnumCount,
+    strum::FromRepr,
+    strum::VariantArray,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    bilrost::Enumeration,
+)]
+#[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Status {
     #[bilrost(0)]
-    Unknown,
+    Unknown = 0,
     #[bilrost(1)]
-    New,
+    New = 1,
     #[bilrost(2)]
-    Scheduled,
+    Scheduled = 2,
     /// Invocation has started running with at least one attempt.
     #[bilrost(3)]
-    Started,
+    Started = 3,
     /// Invocation has previously started but has been placed back on the inbox stage
     /// due to an attempt error.
     #[bilrost(4)]
-    BackingOff,
+    BackingOff = 4,
     /// Invocation has previously started but has been placed back on the inbox stage.
     /// This does not mean that the invocation attempt has failed, it just means that
     /// it has been evicted from the run queue and will be resumed later.
     #[bilrost(5)]
-    Yielded,
+    Yielded = 5,
     ///
     /// -- Terminal states, invocation cannot transition back to any of the previous
     /// statuses
     ///
     #[bilrost(6)]
-    Killed,
+    Killed = 6,
     #[bilrost(7)]
-    Cancelled,
+    Cancelled = 7,
     #[bilrost(8)]
-    Failed,
+    Failed = 8,
     #[bilrost(9)]
-    Succeeded,
+    Succeeded = 9,
+}
+
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::New => "new",
+            Status::Scheduled => "scheduled",
+            Status::Started => "started",
+            Status::BackingOff => "backing-off",
+            Status::Yielded => "yielded",
+            Status::Killed => "killed",
+            Status::Cancelled => "cancelled",
+            Status::Failed => "failed",
+            Status::Succeeded => "succeeded",
+        }
+    }
+
+    pub const fn as_mem_cmp_str(self) -> &'static EncodedMemCmpStr {
+        match self {
+            Status::Unknown => encoded_mem_cmp_str!("unknown"),
+            Status::New => encoded_mem_cmp_str!("new"),
+            Status::Scheduled => encoded_mem_cmp_str!("scheduled"),
+            Status::Started => encoded_mem_cmp_str!("started"),
+            Status::BackingOff => encoded_mem_cmp_str!("backing-off"),
+            Status::Yielded => encoded_mem_cmp_str!("yielded"),
+            Status::Killed => encoded_mem_cmp_str!("killed"),
+            Status::Cancelled => encoded_mem_cmp_str!("cancelled"),
+            Status::Failed => encoded_mem_cmp_str!("failed"),
+            Status::Succeeded => encoded_mem_cmp_str!("succeeded"),
+        }
+    }
+
+    #[inline]
+    pub fn from_mem_cmp_str(value: &EncodedMemCmpStr) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .find(|status| value == status.as_mem_cmp_str())
+            .copied()
+    }
 }
 
 /// Borrowing version of [`RawStatusHeader`].
@@ -127,6 +180,12 @@ impl OwnedEntryStatusHeader {
 }
 
 impl EntryStatusHeader for OwnedEntryStatusHeader {
+    #[inline]
+    fn canonical_entry_id(&self) -> CanonicalEntryId {
+        self.entry_key
+            .to_canonical_entry_id(self.qid.partition_key())
+    }
+
     #[inline]
     fn vqueue_id(&self) -> &VQueueId {
         &self.qid
@@ -237,6 +296,7 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn next_run_at(&self) -> RoughTimestamp;
     fn seq(&self) -> Seq;
     fn stats(&self) -> &EntryStatistics;
+    fn canonical_entry_id(&self) -> CanonicalEntryId;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
     /// Returns new if this entry has not started yet.
     fn has_started(&self) -> bool {

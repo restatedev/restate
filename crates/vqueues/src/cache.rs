@@ -154,7 +154,7 @@ impl VQueuesMetaCache {
             }
 
             debug!(qid = %slot.vqueue_id(), "Purging obsolete vqueue metadata");
-            storage.delete_vqueue(qid);
+            storage.delete_vqueue(qid, slot.meta());
             self.defer_purge(handle);
             return Ok(true);
         }
@@ -167,7 +167,7 @@ impl VQueuesMetaCache {
         }
 
         debug!(qid = %qid, "Purging obsolete vqueue metadata");
-        storage.delete_vqueue(qid);
+        storage.delete_vqueue(qid, &meta);
         Ok(true)
     }
 

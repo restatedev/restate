@@ -21,12 +21,13 @@ use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryKind, EntryMetadata, Stage, Status, WriteVQueueTable,
+    EntryContext, EntryId, EntryKey, EntryKind, EntryMetadata, EntryStateRef, Stage, Status,
+    WriteVQueueTable,
     stats::{EntryStatistics, WaitStats},
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{EntryTargetRef, Seq, VQueueId};
 use restate_util_string::ToReString;
 
 use crate::mocks::*;
@@ -49,9 +50,17 @@ async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
     };
 
     let mut ids = Vec::new();
+    let mut canonical_ids = Vec::new();
     let mut tx = engine.partition_store().transaction();
     for i in 1..=6u8 {
-        let entry_id = EntryId::new(EntryKind::Invocation, [i; 16]);
+        let entry_id = EntryId::new(
+            if i % 2 == 0 {
+                EntryKind::Invocation
+            } else {
+                EntryKind::StateMutation
+            },
+            [i; 16],
+        );
         let key = EntryKey::new(
             false,
             MillisSinceEpoch::new(1_744_010_000_000),
@@ -59,53 +68,82 @@ async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
             entry_id,
         );
         let stats = EntryStatistics::new(created_at, key.run_at());
-        tx.put_vqueue_entry_status(
-            &qid,
-            Stage::Running,
-            &key,
-            &metadata,
-            stats,
-            Status::Started,
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::Service {
+                    scope: None,
+                    service: "test",
+                    handler: "handler",
+                },
+            },
+            EntryStateRef {
+                stage: Stage::Running,
+                status: Status::Started,
+                entry_key: &key,
+                metadata: &metadata,
+                stats: &stats,
+            },
         );
         ids.push(key.entry_id().display(qid.partition_key()).to_string());
+        canonical_ids.push(key.to_canonical_entry_id(qid.partition_key()));
     }
     tx.commit().await.unwrap();
     drop(tx);
 
-    let excluded = ids[0..4]
+    let canonical_strings = canonical_ids
         .iter()
-        .map(|id| format!("'{id}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let records = engine
-        .execute(format!(
-            "SELECT entry_id FROM sys_vqueue_entry_status \
-             WHERE entry_id NOT IN ({excluded})"
-        ))
-        .await
-        .unwrap()
-        .stream
-        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
-        .await
-        .remove(0)
-        .unwrap();
-
-    let mut got: Vec<String> = records
-        .column_by_name("entry_id")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<LargeStringArray>()
-        .unwrap()
-        .iter()
-        .flatten()
-        .map(str::to_string)
-        .collect();
-    got.sort();
-
-    let mut expected = vec![ids[4].clone(), ids[5].clone()];
-    expected.sort();
-
-    assert_eq!(got, expected);
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    for (column, filter_ids) in [("entry_id", &ids), ("canonical_id", &canonical_strings)] {
+        let listed_ids = filter_ids[0..4]
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let wrong_sequence = canonical_ids[0].with_seq(Seq::MAX);
+        for (predicate, expected_ids) in [
+            (format!("{column} NOT IN ({listed_ids})"), &ids[4..]),
+            (format!("{column} IN ({listed_ids})"), &ids[..4]),
+            (format!("{column} = '{}'", filter_ids[0]), &ids[..1]),
+            (
+                format!(
+                    "{column} = '{}' AND canonical_id = '{wrong_sequence}'",
+                    filter_ids[0]
+                ),
+                &ids[..0],
+            ),
+        ] {
+            let batches = engine
+                .execute(format!(
+                    "SELECT entry_id FROM sys_vqueue_entry_status WHERE {predicate}"
+                ))
+                .await
+                .unwrap()
+                .stream
+                .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+                .await;
+            let mut got = Vec::new();
+            for records in batches {
+                let records = records.unwrap();
+                got.extend(
+                    records
+                        .column_by_name("entry_id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<LargeStringArray>()
+                        .unwrap()
+                        .iter()
+                        .flatten()
+                        .map(str::to_string),
+                );
+            }
+            got.sort();
+            let mut expected = expected_ids.to_vec();
+            expected.sort();
+            assert_eq!(got, expected, "{predicate}");
+        }
+    }
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -165,13 +203,22 @@ async fn get_vqueue_entry_status_header_fields() {
     let first_runnable_at = stats.first_runnable_at;
     let latest_attempt_wait_stats = stats.latest_attempt_wait_stats;
     let total_wait_stats = stats.total_wait_stats;
-    tx.put_vqueue_entry_status(
-        &qid,
-        Stage::Running,
-        &key,
-        &metadata,
-        stats,
-        Status::Started,
+    tx.create_vqueue_entry_status(
+        &EntryContext {
+            qid: &qid,
+            target: &EntryTargetRef::Service {
+                scope: None,
+                service: "test",
+                handler: "handler",
+            },
+        },
+        EntryStateRef {
+            stage: Stage::Running,
+            status: Status::Started,
+            entry_key: &key,
+            metadata: &metadata,
+            stats: &stats,
+        },
     );
     tx.commit().await.unwrap();
     drop(tx);
@@ -179,7 +226,7 @@ async fn get_vqueue_entry_status_header_fields() {
     let entry_id = key.entry_id().display(qid.partition_key()).to_string();
     let records = engine
         .execute(format!(
-            "SELECT entry_id, vqueue_id, stage, status, has_lock, next_at, sequence_number, \
+            "SELECT entry_id, canonical_id, vqueue_id, stage, status, has_lock, next_at, sequence_number, \
              entry_kind, created_at, transitioned_at, num_attempts, num_errors, num_pauses, \
              num_suspensions, num_yields, first_attempt_at, latest_attempt_at, \
              first_runnable_at, deployment, needed_memory, retry_attempts, \
@@ -208,6 +255,7 @@ async fn get_vqueue_entry_status_header_fields() {
             0,
             {
                 "entry_id" => LargeStringArray: eq(entry_id),
+                "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
                 "vqueue_id" => LargeStringArray: eq(qid.to_string()),
                 "stage" => LargeStringArray: eq("running"),
                 "status" => LargeStringArray: eq("started"),

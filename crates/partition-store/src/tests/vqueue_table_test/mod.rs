@@ -31,14 +31,15 @@ use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryValue, Options, Stage, Status, VQueueCursor, VQueueRunningCursor,
-    VQueueStore, WriteVQueueTable, stats::EntryStatistics,
+    EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue, Options,
+    ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor, VQueueStore,
+    WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{ScanVQueueEntries, ScanVQueueEntryStatusTable};
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
 use crate::PartitionStore;
 
@@ -52,7 +53,7 @@ fn entry_id(id: u8) -> EntryId {
 
 fn entry_id_from_u64(id: u64) -> EntryId {
     let mut remainder = [0; EntryId::REMAINDER_LEN];
-    remainder[8..].copy_from_slice(&id.to_be_bytes());
+    remainder[8..].copy_from_slice(&(id + 1).to_be_bytes());
     EntryId::new(EntryKind::Invocation, remainder)
 }
 
@@ -611,47 +612,56 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     {
         let mut txn = rocksdb.transaction();
         for index in 0..NUM_PRESENT_IDS {
-            let entry_id = entry_id_from_u64(index);
+            // Invocation UUIDs must be non-zero, including the first fixture.
+            let entry_id = entry_id_from_u64(index + 1);
             let entry_key = EntryKey::new(false, test_run_at(index), index, entry_id);
             let stats = EntryStatistics::new(
                 UniqueTimestamp::try_from(10_000u64 + index).unwrap(),
                 entry_key.run_at(),
             );
 
-            txn.put_vqueue_entry_status(
-                &qid,
-                Stage::Running,
-                &entry_key,
-                &EntryMetadata::default(),
-                stats,
-                Status::Started,
+            txn.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service: "test",
+                        handler: "handler",
+                    },
+                },
+                EntryStateRef {
+                    stage: Stage::Running,
+                    status: Status::Started,
+                    entry_key: &entry_key,
+                    metadata: &EntryMetadata::default(),
+                    stats: &stats,
+                },
             );
 
-            requested_ids.insert(VQueueEntryId::Invocation(
-                partition_key,
-                entry_id.to_remainder_bytes(),
-            ));
+            requested_ids.insert(entry_id.to_base_id(partition_key));
             expected_ids.push(entry_id);
         }
         txn.commit().await.expect("commit should succeed");
     }
 
     let missing_entry_id = entry_id_from_u64(10_000);
-    requested_ids.insert(VQueueEntryId::Invocation(
-        partition_key,
-        missing_entry_id.to_remainder_bytes(),
-    ));
+    requested_ids.insert(missing_entry_id.to_base_id(partition_key));
 
     let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let rows_for_scan = rows.clone();
     rocksdb
         .for_each_vqueue_entry_status(
             ScanEntryIdFilter::EntryIdSet(requested_ids),
-            move |partition_key, entry_id, header| {
+            move |id, header| {
                 rows_for_scan
                     .lock()
                     .expect("entry-status scan lock should not be poisoned")
-                    .push((partition_key, *entry_id, header.stage, header.status));
+                    .push((
+                        id.partition_key(),
+                        id.to_entry_id(),
+                        header.stage,
+                        header.status,
+                    ));
                 std::ops::ControlFlow::Continue(())
             },
         )
@@ -673,6 +683,69 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     assert!(rows.iter().all(|(pk, _, stage, status)| {
         *pk == partition_key && *stage == Stage::Running && *status == Status::Started
     }));
+}
+
+async fn entry_lifecycle_preserves_identity_and_transactional_state(rocksdb: &mut PartitionStore) {
+    let qid = VQueueId::custom(9_500, "entry-lifecycle");
+    let target = EntryTargetRef::Service {
+        scope: None,
+        service: "test",
+        handler: "handler",
+    };
+    let context = EntryContext {
+        qid: &qid,
+        target: &target,
+    };
+    let (key, value) = default_entry(1);
+    let initial = EntryStateRef::from_value(Stage::Inbox, &key, &value);
+    let id = initial.base_entry_id(&context);
+    let observer = rocksdb.clone();
+    let mut txn = rocksdb.transaction();
+    txn.create_vqueue_entry_status(&context, initial);
+    let before = txn.get_vqueue_entry_status(&id).await.unwrap().unwrap();
+    assert_eq!(before.stage(), Stage::Inbox);
+    assert_eq!(before.entry_key(), &key);
+    assert!(
+        observer
+            .clone()
+            .transaction()
+            .get_vqueue_entry_status(&id)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let finished_key = key.set_run_at(Some(restate_clock::RoughTimestamp::MAX));
+    let mut finished_stats = value.stats.clone();
+    finished_stats.transitioned_at = UniqueTimestamp::try_from_parts(20_000, 1).unwrap();
+    let finished = EntryStateRef {
+        stage: Stage::Finished,
+        status: Status::Succeeded,
+        entry_key: &finished_key,
+        stats: &finished_stats,
+        ..initial
+    };
+    txn.update_vqueue_entry_status(&context, EntryStateRef::from_header(&before), finished);
+    let before_delete = txn.get_vqueue_entry_status(&id).await.unwrap().unwrap();
+    assert_eq!(before_delete.entry_key(), &finished_key);
+    assert_eq!(before_delete.stage(), Stage::Finished);
+    assert_eq!(before_delete.status(), Status::Succeeded);
+    assert_eq!(
+        before_delete.stats().transitioned_at,
+        finished_stats.transitioned_at
+    );
+    txn.delete_vqueue_entry_status(&context, EntryStateRef::from_header(&before_delete));
+    assert!(txn.get_vqueue_entry_status(&id).await.unwrap().is_none());
+    txn.commit().await.unwrap();
+    drop(txn);
+    assert!(
+        rocksdb
+            .transaction()
+            .get_vqueue_entry_status(&id)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
 
 pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
@@ -704,6 +777,7 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
 
     stage_scan_is_filtered_by_stage(&mut rocksdb).await;
     entry_status_scan_batches_large_id_set(&mut rocksdb).await;
+    entry_lifecycle_preserves_identity_and_transactional_state(&mut rocksdb).await;
     // Snapshot-iterator tests — exercise the contract that a fresh reader
     // sees current storage and that an existing reader holds a fixed view.
     fresh_reader_sees_current_state(&mut rocksdb).await;

@@ -11,11 +11,13 @@
 mod entry;
 mod inbox;
 mod inbox_reader;
+mod index;
 mod input;
 mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
+mod stats;
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -38,17 +40,18 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
-    EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
-    Stage, Status, VQueueDisposition, WriteVQueueTable, stats::EntryStatistics,
+    EntryChange, EntryContext, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue,
+    ReadVQueueTable, ScanVQueueTable, Stage, VQueueDisposition, WriteVQueueTable,
 };
 use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
     ScanVQueueMetaTable,
 };
-use restate_types::sharding::{KeyRange, PartitionKey};
-use restate_types::vqueues::{EntryId, Seq, VQueueEntryId, VQueueId};
+use restate_types::identifiers::BaseEntryId;
+use restate_types::sharding::KeyRange;
+use restate_types::vqueues::{CanonicalEntryId, EntryId, Seq, VQueueId};
 
-use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
+use self::entry::entry_status_header_from_raw;
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
@@ -215,6 +218,15 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         };
 
         self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                None,
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
     }
 
     fn update_vqueue(
@@ -222,7 +234,6 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &restate_storage_api::vqueue_table::metadata::Update,
-        _entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition {
         // Vqueues that was touched more than 1 hour ago will always be fully written.
         const HOUR_MS: u64 = const { 60 * 60 * 1000 };
@@ -233,11 +244,25 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
             (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
+        let old_index_state = self
+            .storage_features()
+            .is_indexes_v1
+            .then(|| index::VQueueIndexState::new(meta));
         let was_active_before = meta.is_active();
         let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();
+
+        if let Some(old) = old_index_state {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&old),
+                Some(&index::VQueueIndexState::new(meta)),
+            );
+        }
 
         // Update active queue index
         match (was_active_before, is_active_now) {
@@ -251,7 +276,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
 
         if meta.is_obsolete() {
-            self.delete_vqueue(qid);
+            self.delete_vqueue(qid, meta);
             VQueueDisposition::Purged
         } else {
             let key_buffer = MetaKey::from(qid).to_bytes();
@@ -278,7 +303,16 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         }
     }
 
-    fn delete_vqueue(&mut self, qid: &VQueueId) {
+    fn delete_vqueue(&mut self, qid: &VQueueId, meta: &VQueueMeta) {
+        if self.storage_features().is_indexes_v1 {
+            index::on_vqueue_change(
+                self,
+                qid,
+                meta,
+                Some(&index::VQueueIndexState::new(meta)),
+                None,
+            );
+        }
         // Cannot use single delete: the meta key is written once with put and
         // updated many times with merge afterwards.
         self.raw_delete_cf(KeyKind::VQueueMeta, MetaKey::from(qid).to_bytes());
@@ -326,54 +360,30 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         );
     }
 
-    fn put_vqueue_entry_status(
-        &mut self,
-        qid: &VQueueId,
-        stage: Stage,
-        entry_key: &EntryKey,
-        metadata: &EntryMetadata,
-        stats: EntryStatistics,
-        status: Status,
-    ) {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKeyRef::builder()
-            .partition_key(&qid.partition_key())
-            .id(entry_key.entry_id())
-            .serialize_to(&mut key_buffer.as_mut());
-
-        let header = RawStatusHeaderRef {
-            qid: qid.into(),
-            stage,
-            has_lock: entry_key.has_lock(),
-            next_run_at: entry_key.run_at(),
-            seq: entry_key.seq(),
-            metadata: metadata.into(),
-            stats,
-            status,
-        };
-
-        let value_buf = {
-            let header_len = header.encoded_len();
-            let header_len = header_len + bilrost::encoding::encoded_len_varint(header_len as u64);
-
-            let value_buf = self.cleared_value_buffer_mut(header_len);
-            // unwrap is safe because we know the buffer is big enough.
-            header.encode_length_delimited(value_buf).unwrap();
-            value_buf.split()
-        };
-
-        self.raw_put_cf(KeyKind::VQueueEntryStatus, key_buffer, value_buf);
+    fn create_vqueue_entry_status(&mut self, context: &EntryContext<'_>, after: EntryStateRef<'_>) {
+        self.apply_entry_change(context, &EntryChange::Insert { after });
     }
 
-    fn delete_vqueue_entry_status(&mut self, partition_key: PartitionKey, id: &EntryId) {
-        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
-        EntryStatusKeyRef::builder()
-            .partition_key(&partition_key)
-            .id(id)
-            .serialize_to(&mut key_buffer.as_mut());
+    fn update_vqueue_entry_status(
+        &mut self,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+        after: EntryStateRef<'_>,
+    ) {
+        assert_eq!(
+            before.entry_key.entry_id(),
+            after.entry_key.entry_id(),
+            "entry identity cannot change"
+        );
+        self.apply_entry_change(context, &EntryChange::Update { before, after });
+    }
 
-        // Cannot use single delete because we constantly overwrite the same key on transitions
-        self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
+    fn delete_vqueue_entry_status(
+        &mut self,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+    ) {
+        self.apply_entry_change(context, &EntryChange::Delete { before });
     }
 
     fn put_vqueue_input_payload<E>(
@@ -402,10 +412,13 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_put_cf(KeyKind::VQueueInput, key_buffer, value);
     }
 
-    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, seq: impl Into<Seq>, id: &EntryId) {
+    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, id: &CanonicalEntryId) {
         let key_buf = {
-            let seq = seq.into();
-            let key = InputPayloadKeyRef::builder().qid(qid).seq(&seq).id(id);
+            let seq = id.seq();
+            let key = InputPayloadKeyRef::builder()
+                .qid(qid)
+                .seq(&seq)
+                .id(id.as_entry_id());
             let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
             key.serialize_to(key_buf);
             key_buf.split()
@@ -415,7 +428,51 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     }
 }
 
-impl ReadVQueueTable for PartitionStoreTransaction<'_> {
+impl PartitionStoreTransaction<'_> {
+    /// The single source-write boundary for entry lifecycle changes.
+    fn apply_entry_change(&mut self, context: &EntryContext<'_>, change: &EntryChange<'_>) {
+        let state = match change {
+            EntryChange::Insert { after } | EntryChange::Update { after, .. } => after,
+            EntryChange::Delete { before } => before,
+        };
+        let id = state.base_entry_id(context);
+        let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
+        EntryStatusKeyRef::builder()
+            .id(&id)
+            .serialize_to(&mut key_buffer.as_mut());
+
+        if let Some(after) = change.after() {
+            let header = RawStatusHeaderRef {
+                qid: context.qid.into(),
+                stage: after.stage,
+                has_lock: after.entry_key.has_lock(),
+                next_run_at: after.entry_key.run_at(),
+                seq: after.entry_key.seq(),
+                metadata: after.metadata.into(),
+                stats: after.stats.clone(),
+                status: after.status,
+            };
+            let header_len = header.encoded_len();
+            let value_buf = self.cleared_value_buffer_mut(
+                header_len + bilrost::encoding::encoded_len_varint(header_len as u64),
+            );
+            // The buffer has enough capacity for the length-delimited header.
+            header.encode_length_delimited(value_buf).unwrap();
+            let value_buf = value_buf.split();
+            self.raw_put_cf(KeyKind::VQueueEntryStatus, key_buffer, value_buf);
+        } else {
+            // The status key is overwritten on transitions, so SingleDelete is invalid.
+            self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
+        }
+
+        if self.storage_features().is_indexes_v1 {
+            index::on_entry_change(self, context, change);
+            stats::on_entry_change(self, context, change);
+        }
+    }
+}
+
+impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
     async fn get_vqueue(&self, qid: &VQueueId) -> Result<Option<VQueueMeta>, StorageError> {
         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
         MetaKeyRef::builder()
@@ -430,12 +487,10 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
 
     async fn get_vqueue_entry_status(
         &self,
-        partition_key: PartitionKey,
-        id: &EntryId,
-    ) -> Result<Option<impl EntryStatusHeader + 'static>> {
+        id: &BaseEntryId,
+    ) -> Result<Option<impl EntryStatusHeader + 'static + use<'txn>>> {
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
         EntryStatusKeyRef::builder()
-            .partition_key(&partition_key)
             .id(id)
             .serialize_to(&mut key_buffer.as_mut());
 
@@ -445,7 +500,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
 
         let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
 
-        Ok(Some(entry_status_header_from_raw(*id, header)))
+        Ok(Some(entry_status_header_from_raw(id, header)))
     }
 
     async fn get_vqueue_input_payload<E>(
@@ -634,11 +689,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(
-                PartitionKey,
-                &'a EntryId,
-                &'a RawStatusHeaderRef<'a>,
-            ) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static,
@@ -649,18 +700,11 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
 
         let scan = match filter {
             ScanEntryIdFilter::PartitionKey(range) => {
-                TableScan::ScanPartitionKeyRange::<EntryStatusKeyBuilder>(range)
+                TableScan::ScanPartitionKeyRange::<EntryStatusKey>(range)
             }
             ScanEntryIdFilter::EntryIdRange(range) => {
-                let start_partition_key = range.start.partition_key();
-                let end_partition_key = range.last.partition_key();
-                let start = EntryStatusKey::builder()
-                    .partition_key(start_partition_key)
-                    .id(range.start.into());
-
-                let end = EntryStatusKey::builder()
-                    .partition_key(end_partition_key)
-                    .id(range.last.into());
+                let start = EntryStatusKey::from(range.start);
+                let end = EntryStatusKey::from(range.last);
 
                 TableScan::RangeInclusive(start, end)
             }
@@ -674,13 +718,13 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                 scan,
                 move |(mut key, mut value)| {
                     let status_key = break_on_err(EntryStatusKey::deserialize_from(&mut key))?;
-                    let (partition_key, entry_id) = status_key.split();
+                    let (id,) = status_key.split();
                     let header = break_on_err(
                         RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                             .map_err(StorageError::BilrostDecode),
                     )?;
 
-                    f(partition_key, &entry_id, &header).map_break(Ok)
+                    f(&id, &header).map_break(Ok)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -694,15 +738,11 @@ const ENTRY_STATUS_MULTI_GET_BATCH_SIZE: usize = 500;
 
 fn multi_get_vqueue_entry_status<F>(
     store: &PartitionStore,
-    ids: BTreeSet<VQueueEntryId>,
+    ids: BTreeSet<BaseEntryId>,
     mut f: F,
 ) -> impl Future<Output = Result<()>> + Send
 where
-    F: for<'a> FnMut(
-            PartitionKey,
-            &'a EntryId,
-            &'a RawStatusHeaderRef<'a>,
-        ) -> std::ops::ControlFlow<()>
+    F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
         + Send
         + Sync
         + 'static,
@@ -742,13 +782,7 @@ where
                         batch_ids.clear();
 
                         for id in ids.by_ref().take(ENTRY_STATUS_MULTI_GET_BATCH_SIZE) {
-                            EncodeTableKey::serialize_to(
-                                &EntryStatusKey {
-                                    partition_key: id.partition_key(),
-                                    id: EntryId::from(id),
-                                },
-                                &mut key_buf,
-                            );
+                            EncodeTableKey::serialize_to(&EntryStatusKey::from(id), &mut key_buf);
                             batch_ids.push(id);
                         }
 
@@ -771,13 +805,12 @@ where
                                 continue;
                             };
 
-                            let entry_id = EntryId::from(*id);
                             let mut value = value.as_ref();
                             let header =
                                 RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                                     .map_err(StorageError::BilrostDecode)?;
 
-                            if f(id.partition_key(), &entry_id, &header).is_break() {
+                            if f(id, &header).is_break() {
                                 return Ok(());
                             }
                         }

@@ -9,9 +9,75 @@
 // by the Apache License, Version 2.0.
 
 //! Restate uses many identifiers to uniquely identify its services and entities.
+//!
+//! # VQueue entry identities
+//!
+//! VQueue entries can represent either an [`InvocationId`] or a [`StateMutationId`].
+//! Three types carry progressively more context for that resource:
+//!
+//! | Type | Components, in raw byte order | Raw size | Identifies |
+//! | --- | --- | --- | --- |
+//! | [`EntryId`](crate::vqueues::EntryId) | kind + 16-byte resource remainder | 17 bytes | A resource within an externally supplied partition key |
+//! | [`BaseEntryId`] | partition key + `EntryId` | 25 bytes | The resource, without distinguishing its incarnations |
+//! | [`CanonicalEntryId`] | partition key + sequence number + `EntryId` | 33 bytes | One incarnation of the resource |
+//!
+//! Use `EntryId` when the partition key is already carried by the surrounding
+//! context, such as a queue ID. `BaseEntryId` provides the same identity as the
+//! original resource ID, including its partition key and resource kind. Its
+//! display form is the resource ID (`inv_...` or `mut_...`). `CanonicalEntryId`
+//! additionally distinguishes incarnations with the same base identity; its
+//! display form appends `_` and the decimal sequence number.
+//!
+//! The caller must supply the correct partition key and assign distinct sequences
+//! when different incarnations of the same base ID must be distinguished.
+//! [`BaseEntryId::canonicalize`] combines those components; it does not generate
+//! a sequence or establish uniqueness. A retry or scheduling change does not by
+//! itself require a new canonical identity. None of these types includes queue
+//! membership, stage, lock ownership, or a run-at timestamp.
+//!
+//! Projecting a canonical ID to [`BaseEntryId`] deliberately discards its sequence.
+//! APIs that operate on base IDs therefore cannot distinguish incarnations.
+//! This projection uses [`CanonicalEntryId::to_base_entry_id`] explicitly, rather
+//! than an `AsRef`, `Borrow`, or `From` conversion that could hide the loss of
+//! identity. It reconstructs the base ID by value without allocating.
+//! [`CanonicalEntryId::as_entry_id`] borrows the local ID, dropping the partition key too.
+//!
+//! ```
+//! use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
+//! use restate_types::vqueues::Seq;
+//!
+//! let invocation = InvocationId::from_parts(7, InvocationUuid::from_u128(1));
+//! let base = BaseEntryId::from(invocation);
+//! let first = base.canonicalize(Seq::new(42));
+//! let second = base.canonicalize(Seq::new(43));
+//!
+//! assert_ne!(first, second);
+//! assert_eq!(first.to_base_entry_id(), second.to_base_entry_id());
+//! assert_eq!(base.to_invocation_id(), Some(invocation));
+//! assert_eq!(base.as_entry_id().to_base_id(7), base);
+//! ```
+//!
+//! The raw layouts are padding-free and byte-aligned; numeric fields are
+//! big-endian. Their ordering matches lexicographic raw-byte ordering. Canonical
+//! IDs compare partition keys, then sequences, then resource kinds and remainders,
+//! grouping creation sequences within each partition key for incarnation-owned
+//! storage. This is identity order, not queue scheduling order. These raw layouts
+//! are distinct from the Bilrost message encoding of `EntryId`.
+//!
+//! [`EntryId::new`](crate::vqueues::EntryId::new) debug-asserts that the resource
+//! remainder is nonzero. Raw decoding validates the layout and enum discriminants,
+//! not resource existence or resource-specific invariants. A zero invocation
+//! remainder can still be decoded but violates [`InvocationUuid`]'s nonzero
+//! constructor requirement. [`EntryKind::Unknown`](crate::vqueues::EntryKind::Unknown)
+//! is a decodable sentinel, not a usable queue entry; its `Unknown` display form
+//! is diagnostic and does not round-trip through resource-ID string parsing.
 
+mod base;
+mod canonical;
 mod partitioned;
 
+pub use base::BaseEntryId;
+pub use canonical::{CanonicalEntryId, CanonicalIdParseError};
 pub use partitioned::PartitionedResourceId;
 pub use restate_sharding::{PartitionKey, WithPartitionKey};
 
