@@ -26,6 +26,15 @@ use tracing::{error, trace};
 
 use restate_types::clock::UniqueTimestamp;
 
+mod mem_comparable_string;
+
+#[doc(hidden)]
+pub use restate_util_string::decode_str_into;
+pub use restate_util_string::{
+    EncodedMemCmpStr, MemCmpStr, MemCmpString, MemCmpTarget, decode_str_with,
+    decode_str_with_unchecked,
+};
+
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
 ///
