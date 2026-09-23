@@ -7,10 +7,10 @@
 The new `sys_service_stats`, `sys_deployment_stats`, and `sys_virtual_object_stats` SQL tables expose
 VQueue entry counts grouped by service, deployment, and virtual-object dimensions, respectively.
 `sys_service_stats` and `sys_deployment_stats` combine partition-local gauges into cluster-wide
-counts in `num_entries`; physical partition IDs are not part of those two public schemas.
+counts in `num_entries`; physical partition IDs are not part of any of these public schemas.
 
 `sys_virtual_object_stats` exposes one row per partition-local virtual-object/handler/operation-kind
-group, including its scope, `partition_id`, and `partition_key`. Its counters are `num_inbox`,
+group, including its scope and `partition_key`. Its counters are `num_inbox`,
 `num_running`, `num_suspended`, `num_paused`, and `num_finished`, with zero for absent stages.
 It has no `stage` or `num_entries` column; for example, use `num_running > 0` to find groups with
 running entries. It does not perform cross-partition aggregation, allowing limited queries to

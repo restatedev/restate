@@ -54,8 +54,8 @@ pub(super) fn on_entry_change(
             &mut stats,
             VirtualObjectLoadKey::borrowed(
                 target.service(),
-                key,
                 target.scope(),
+                key,
                 target.handler(),
                 kind,
                 context.qid.partition_key(),
@@ -205,8 +205,8 @@ mod tests {
             ServiceLoadKey::borrowed("counter", Some("increment"), EntryKind::Invocation);
         let object_key = VirtualObjectLoadKey::borrowed(
             "counter",
-            "a",
             Some("tenant"),
+            "a",
             Some("increment"),
             EntryKind::Invocation,
             qid.partition_key(),
