@@ -13,8 +13,8 @@ use std::ops::Bound::{self, Excluded, Included, Unbounded};
 
 use bytes::BufMut;
 
-use restate_clock::UniqueTimestamp;
 use restate_clock::time::MillisSinceEpoch;
+use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::filter::ValuePredicate;
 
 use crate::keys::IndexFieldEncode;
@@ -39,35 +39,95 @@ impl IndexFilterCodec for Reverse<UniqueTimestamp> {
         predicate: &ValuePredicate<MillisSinceEpoch>,
         literals: &mut Vec<u8>,
     ) -> crate::Result<PreparedFieldPredicate> {
-        let empty = |literals: &mut Vec<u8>| {
-            PreparedFieldPredicate::Value(PreparedIndexPredicate::new(
-                &ValuePredicate::<u64>::In(Vec::new()),
-                literals,
-            ))
-        };
-        let range = match predicate {
-            ValuePredicate::Equal(millis) => encoded_range(Included(millis), Included(millis)),
-            ValuePredicate::Range { lower, upper } => encoded_range(lower.as_ref(), upper.as_ref()),
-            ValuePredicate::In(values) => {
-                let ranges = values
-                    .iter()
-                    .filter_map(|millis| encoded_range(Included(millis), Included(millis)));
-                return Ok(PreparedIndexRanges::new(ranges, literals)
-                    .map(PreparedFieldPredicate::Ranges)
-                    .unwrap_or_else(|| empty(literals)));
-            }
-        };
-        Ok(match range {
-            Some((lower, upper)) => PreparedFieldPredicate::Value(PreparedIndexPredicate::new(
-                &ValuePredicate::Range {
-                    lower: Included(lower),
-                    upper: Included(upper),
-                },
-                literals,
-            )),
-            None => empty(literals),
-        })
+        Ok(prepare_timestamp_predicate(
+            predicate,
+            literals,
+            encoded_range,
+        ))
     }
+}
+
+impl IndexFilterCodec for RoughTimestamp {
+    type Value = MillisSinceEpoch;
+
+    fn prepare_value(
+        predicate: &ValuePredicate<MillisSinceEpoch>,
+        literals: &mut Vec<u8>,
+    ) -> crate::Result<PreparedFieldPredicate> {
+        Ok(prepare_timestamp_predicate(
+            predicate,
+            literals,
+            rough_range,
+        ))
+    }
+}
+
+fn prepare_timestamp_predicate<V: IndexFieldEncode>(
+    predicate: &ValuePredicate<MillisSinceEpoch>,
+    literals: &mut Vec<u8>,
+    encoded_range: impl Fn(Bound<&MillisSinceEpoch>, Bound<&MillisSinceEpoch>) -> Option<(V, V)>,
+) -> PreparedFieldPredicate {
+    let empty = |literals: &mut Vec<u8>| {
+        PreparedFieldPredicate::Value(PreparedIndexPredicate::new(
+            &ValuePredicate::<V>::In(Vec::new()),
+            literals,
+        ))
+    };
+    let range = match predicate {
+        ValuePredicate::Equal(millis) => encoded_range(Included(millis), Included(millis)),
+        ValuePredicate::Range { lower, upper } => encoded_range(lower.as_ref(), upper.as_ref()),
+        ValuePredicate::In(values) => {
+            let ranges = values
+                .iter()
+                .filter_map(|millis| encoded_range(Included(millis), Included(millis)));
+            return PreparedIndexRanges::new(ranges, literals)
+                .map(PreparedFieldPredicate::Ranges)
+                .unwrap_or_else(|| empty(literals));
+        }
+    };
+    match range {
+        Some((lower, upper)) => PreparedFieldPredicate::Value(PreparedIndexPredicate::new(
+            &ValuePredicate::Range {
+                lower: Included(lower),
+                upper: Included(upper),
+            },
+            literals,
+        )),
+        None => empty(literals),
+    }
+}
+
+/// Converts millisecond predicates to whole-second bounds without widening them.
+/// A fractional-second equality is empty; ranges round inward after clipping.
+fn rough_range(
+    lower: Bound<&MillisSinceEpoch>,
+    upper: Bound<&MillisSinceEpoch>,
+) -> Option<(RoughTimestamp, RoughTimestamp)> {
+    let min = RoughTimestamp::RESTATE_EPOCH.as_unix_millis().as_u64();
+    let max = RoughTimestamp::MAX.as_unix_millis().as_u64();
+    let first = match lower {
+        Included(millis) => millis.as_u64(),
+        Excluded(millis) => millis.as_u64().checked_add(1)?,
+        Unbounded => min,
+    }
+    .max(min);
+    let last = match upper {
+        Included(millis) => millis.as_u64(),
+        Excluded(millis) => millis.as_u64().checked_sub(1)?,
+        Unbounded => max,
+    }
+    .min(max);
+    if first > last {
+        return None;
+    }
+    let first = (first - min).div_ceil(1_000);
+    let last = (last - min) / 1_000;
+    (first <= last).then(|| {
+        (
+            RoughTimestamp::new(first as u32),
+            RoughTimestamp::new(last as u32),
+        )
+    })
 }
 
 /// Converts a logical millisecond interval into inclusive, descending HLC bounds.
@@ -113,6 +173,70 @@ mod tests {
     use std::ops::RangeBounds;
 
     use super::*;
+
+    #[test]
+    fn rough_timestamp_predicates_preserve_millisecond_boundaries() {
+        let min = RoughTimestamp::RESTATE_EPOCH.as_unix_millis().as_u64();
+        let max = RoughTimestamp::MAX.as_unix_millis().as_u64();
+        let timestamps = [
+            RoughTimestamp::RESTATE_EPOCH,
+            RoughTimestamp::new(1),
+            RoughTimestamp::new(2),
+            RoughTimestamp::new(u32::MAX - 2),
+            RoughTimestamp::MAX,
+        ];
+        let mut predicates = vec![ValuePredicate::In(Vec::new())];
+        let mut bounds = vec![Unbounded];
+        for ms in [
+            0,
+            min - 1,
+            min,
+            min + 1,
+            min + 999,
+            min + 1000,
+            min + 1001,
+            max - 1,
+            max,
+            max + 1,
+            u64::MAX,
+        ] {
+            let value = MillisSinceEpoch::new(ms);
+            bounds.extend([Included(value), Excluded(value)]);
+            predicates.push(ValuePredicate::Equal(value));
+            predicates.push(ValuePredicate::In(vec![
+                value,
+                MillisSinceEpoch::new(min + 1000),
+                value,
+            ]));
+        }
+        for lower in &bounds {
+            for upper in &bounds {
+                predicates.push(ValuePredicate::Range {
+                    lower: *lower,
+                    upper: *upper,
+                });
+            }
+        }
+        for (case, predicate) in predicates.into_iter().enumerate() {
+            let mut literals = Vec::new();
+            let prepared = RoughTimestamp::prepare_value(&predicate, &mut literals).unwrap();
+            for timestamp in timestamps {
+                let millis = timestamp.as_unix_millis();
+                let expected = match &predicate {
+                    ValuePredicate::Equal(value) => millis == *value,
+                    ValuePredicate::In(values) => values.contains(&millis),
+                    ValuePredicate::Range { lower, upper } => (*lower, *upper).contains(&millis),
+                };
+                let mut encoded = Vec::new();
+                timestamp.encode_field(&mut encoded);
+                assert_eq!(
+                    prepared.matches(&literals, &encoded).unwrap(),
+                    expected,
+                    "predicate {case}, {timestamp:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn millisecond_predicates_match_logical_time_across_counters_and_domain_edges() {

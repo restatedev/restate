@@ -17,7 +17,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::SendableRecordBatchStream;
-use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use strum::IntoDiscriminant;
 use tokio::sync::mpsc::Sender;
@@ -31,6 +30,7 @@ use restate_worker_api::{SchedulerStatusEntry, SchedulingStatus};
 use crate::context::{PartitionLeaderStatusHandle, QueryContext, SelectPartitions};
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::scan_metrics::ScanMetrics;
 use crate::scheduler_status::schema::{SysSchedulerBuilder, sys_scheduler_sort_order};
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -115,7 +115,7 @@ where
         _access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        _elapsed_compute: Time,
+        _metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         let status = self.status_handle.clone();
         let partition_store_manager = self.partition_store_manager.clone();
