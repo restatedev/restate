@@ -8,30 +8,32 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use restate_partition_store::keys::KeyDecoder;
-use restate_partition_store::stats::aggregated::{StageCounts, VirtualObjectLoadKey};
+use datafusion::physical_plan::PhysicalExpr;
+
+use restate_partition_store::index::EntryByServiceStageKey;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
-use restate_storage_api::stats::virtual_object_load::VirtualObjectLoad;
+use restate_storage_api::index::EntryByService;
 use restate_types::errors::ConversionError;
-use restate_types::sharding::PartitionId;
+use restate_types::sharding::{KeyRange, PartitionId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
-use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
+use crate::partition_store_scanner::{
+    LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
+};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-use super::row::append_virtual_object_stats_row;
-use super::schema::SysVirtualObjectStatsBuilder;
+use super::row::append_row;
+use super::schema::IdxEntryByServiceBuilder;
 
-const NAME: &str = "sys_virtual_object_stats";
+pub(super) const NAME: &str = "_idx_entry_by_service";
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
@@ -41,67 +43,78 @@ pub(crate) fn register_self(
 ) -> datafusion::common::Result<()> {
     let local_scanner = Arc::new(LocalPartitionsScanner::new(
         partition_store_manager,
-        VirtualObjectStatsScanner,
+        EntryIndexScanner,
     )) as Arc<dyn ScanPartition>;
-
-    let schema = SysVirtualObjectStatsBuilder::schema();
+    let schema = IdxEntryByServiceBuilder::schema();
     let statistics = TableStatisticsBuilder::new(schema.clone())
         .with_num_rows_estimate(RowEstimate::Large)
         .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
-
     let table = PartitionedTableProvider::new(
         partition_selector,
         schema,
+        // A logical scan may concatenate multiple physical partitions. Do not
+        // advertise their local secondary-key order as a global SQL ordering.
         Vec::new(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        // The typed filter applies the entire predicate rather than each point-read
-        // range, so selected keys must share one scan per physical partition.
-        FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition),
+        FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
+            .with_grouped_vqueue_entry_id("canonical_id")
+            .with_grouped_vqueue_entry_id("entry_id"),
     )
     .with_statistics(statistics.build());
-
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }
 
 #[derive(Debug, Clone)]
-struct VirtualObjectStatsScanner;
+pub(super) struct EntryIndexScanner;
 
-impl ScanLocalPartition for VirtualObjectStatsScanner {
-    type Builder = SysVirtualObjectStatsBuilder;
-    type Item<'a> = (
-        PartitionId,
-        KeyDecoder<'a, VirtualObjectLoadKey>,
-        StageCounts,
-    );
+pub(super) struct EntryIndexFilter {
+    range: KeyRange,
+    predicate: Filter<EntryByService>,
+}
+
+impl ScanLocalPartitionFilter for EntryIndexFilter {
+    fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        Self {
+            range,
+            predicate: Filter::new(range, access_predicate),
+        }
+    }
+}
+
+impl ScanLocalPartition for EntryIndexScanner {
+    type Builder = IdxEntryByServiceBuilder;
+    type Item<'a> = (PartitionId, EntryByServiceStageKey);
     type ConversionError = ConversionError;
-    type Filter = Filter<VirtualObjectLoad>;
+    type Filter = EntryIndexFilter;
 
-    fn for_each_row<
-        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
-            + Send
-            + Sync
-            + 'static,
-    >(
+    fn for_each_row<F>(
         partition_store: &PartitionStore,
         filter: Self::Filter,
         metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
-    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+    ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
+    where
+        F: for<'a> FnMut(Self::Item<'a>) -> ControlFlow<Result<(), Self::ConversionError>>
+            + Send
+            + Sync
+            + 'static,
+    {
         let partition_id = partition_store.partition_id();
-        partition_store.scan_virtual_object_load(&filter, metrics, move |key_decoder, value| {
-            f((partition_id, key_decoder, value))
-                .map_break(|result| result.map_err(StorageError::from))
-        })
+        partition_store.scan_entry_by_service(
+            filter.range,
+            &filter.predicate,
+            metrics,
+            move |key| {
+                f((partition_id, key)).map_break(|result| result.map_err(StorageError::from))
+            },
+        )
     }
 
     fn append_row<'a>(
-        row_builder: &mut Self::Builder,
-        (partition_id, key_decoder, value): Self::Item<'a>,
+        builder: &mut Self::Builder,
+        (partition_id, key): Self::Item<'a>,
     ) -> Result<(), Self::ConversionError> {
-        let key = key_decoder
-            .try_full_decode::<VirtualObjectLoad>()
-            .map_err(ConversionError::invalid_data)?;
-        append_virtual_object_stats_row(row_builder, partition_id, key, value);
+        append_row(builder, partition_id, key);
         Ok(())
     }
 }

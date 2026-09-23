@@ -305,7 +305,19 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::index::invocation_by_service::register_self(
+        crate::index::entry_by_service::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::index::entry_by_stage::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::index::entry_next_at_by_stage::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),
@@ -511,7 +523,19 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::index::invocation_by_service::register_self(
+        crate::index::entry_by_service::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::index::entry_by_stage::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::index::entry_next_at_by_stage::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),

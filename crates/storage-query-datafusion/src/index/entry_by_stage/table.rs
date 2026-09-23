@@ -13,11 +13,11 @@ use std::sync::Arc;
 
 use datafusion::physical_plan::PhysicalExpr;
 
-use restate_partition_store::index::EntryByServiceStageKey;
+use restate_partition_store::index::EntryByStageKey;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
-use restate_storage_api::index::EntryByService;
+use restate_storage_api::index::EntryByStage;
 use restate_types::errors::ConversionError;
 use restate_types::sharding::{KeyRange, PartitionId};
 
@@ -27,13 +27,12 @@ use crate::partition_store_scanner::{
     LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
 };
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
+use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-use super::row::append_row;
-use super::schema::IdxEntryByServiceBuilder;
+use super::schema::IdxEntryByStageBuilder;
 
-pub(super) const NAME: &str = "_idx_entry_by_service";
+const NAME: &str = "_idx_entry_by_stage";
 
 pub(crate) fn register_self(
     ctx: &QueryContext,
@@ -41,21 +40,19 @@ pub(crate) fn register_self(
     partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
+    let scanner = Arc::new(LocalPartitionsScanner::new(
         partition_store_manager,
-        EntryIndexScanner,
+        EntryByStageScanner,
     )) as Arc<dyn ScanPartition>;
-    let schema = IdxEntryByServiceBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Large)
-        .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
+    let schema = IdxEntryByStageBuilder::schema();
+    let statistics =
+        TableStatisticsBuilder::new(schema.clone()).with_num_rows_estimate(RowEstimate::Large);
     let table = PartitionedTableProvider::new(
         partition_selector,
         schema,
-        // A logical scan may concatenate multiple physical partitions. Do not
-        // advertise their local secondary-key order as a global SQL ordering.
+        // Local index order is not global order across physical partitions.
         Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME, scanner),
         FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
             .with_grouped_vqueue_entry_id("canonical_id")
             .with_grouped_vqueue_entry_id("entry_id"),
@@ -65,14 +62,14 @@ pub(crate) fn register_self(
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct EntryIndexScanner;
+struct EntryByStageScanner;
 
-pub(super) struct EntryIndexFilter {
+struct EntryByStageFilter {
     range: KeyRange,
-    predicate: Filter<EntryByService>,
+    predicate: Filter<EntryByStage>,
 }
 
-impl ScanLocalPartitionFilter for EntryIndexFilter {
+impl ScanLocalPartitionFilter for EntryByStageFilter {
     fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         Self {
             range,
@@ -81,15 +78,16 @@ impl ScanLocalPartitionFilter for EntryIndexFilter {
     }
 }
 
-impl ScanLocalPartition for EntryIndexScanner {
-    type Builder = IdxEntryByServiceBuilder;
-    type Item<'a> = (PartitionId, EntryByServiceStageKey);
+impl ScanLocalPartition for EntryByStageScanner {
+    type Builder = IdxEntryByStageBuilder;
+    type Item<'a> = (PartitionId, EntryByStageKey);
     type ConversionError = ConversionError;
-    type Filter = EntryIndexFilter;
+    type Filter = EntryByStageFilter;
 
     fn for_each_row<F>(
         partition_store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
     where
@@ -99,7 +97,7 @@ impl ScanLocalPartition for EntryIndexScanner {
             + 'static,
     {
         let partition_id = partition_store.partition_id();
-        partition_store.scan_entry_by_service(filter.range, &filter.predicate, move |key| {
+        partition_store.scan_entry_by_stage(filter.range, &filter.predicate, metrics, move |key| {
             f((partition_id, key)).map_break(|result| result.map_err(StorageError::from))
         })
     }
@@ -108,7 +106,18 @@ impl ScanLocalPartition for EntryIndexScanner {
         builder: &mut Self::Builder,
         (partition_id, key): Self::Item<'a>,
     ) -> Result<(), Self::ConversionError> {
-        append_row(builder, partition_id, key);
+        let mut row = builder.row();
+        row.partition_id(partition_id.into());
+        row.stage(key.stage.as_str());
+        row.transitioned_at(key.transitioned_at.0.to_unix_millis().as_u64() as i64);
+        row.status(key.status.as_str());
+        if row.is_canonical_id_defined() {
+            row.fmt_canonical_id(key.canonical_id);
+        }
+        if row.is_entry_id_defined() {
+            row.fmt_entry_id(key.canonical_id.as_base_entry_id());
+        }
+        row.partition_key(key.canonical_id.partition_key());
         Ok(())
     }
 }
