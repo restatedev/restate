@@ -21,7 +21,7 @@ jobs:
       GITHUB_USER: "Restate bot"
       GITHUB_EMAIL: "code+bot@restate.dev"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           repository: "restatedev/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
