@@ -536,6 +536,38 @@ impl PollMemoryPool {
             }
         }
     }
+
+    /// Waits until the pool has any available budget, registering `cx` for
+    /// wakeup while it is exhausted.
+    ///
+    /// Like [`MemoryPool::wait_until_available`], there is no guarantee that
+    /// the budget is still available by the time the caller acts on it.
+    pub fn poll_available(&mut self, cx: &mut std::task::Context<'_>) -> Poll<()> {
+        loop {
+            if self.pool.available() > 0 {
+                self.notified = None;
+                return Poll::Ready(());
+            }
+
+            match self.notified {
+                Some(ref mut notified) => {
+                    std::task::ready!(notified.as_mut().poll(cx));
+                    // We got notified — discard the consumed future and loop
+                    // to re-check availability.
+                    self.notified = None;
+                }
+                // Create the notified future, then loop to re-check availability
+                // so we don't miss a concurrent `return_memory()` notification.
+                None => {
+                    self.notified = Some(Box::pin(
+                        self.pool
+                            .availability_notified_owned()
+                            .expect("bounded pool must provide notified"),
+                    ));
+                }
+            }
+        }
+    }
 }
 
 const _: () = {
