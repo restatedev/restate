@@ -722,6 +722,7 @@ where
             let cleaner = Cleaner::new(
                 partition_store.clone(),
                 processor.partition_id(),
+                processor.key_range(),
                 config.worker.cleanup_interval(),
             );
 
