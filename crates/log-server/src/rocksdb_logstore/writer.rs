@@ -427,7 +427,9 @@ impl LogStoreWriter<'_> {
                 IoSlice::new(value_bytes.first_ref()),
                 IoSlice::new(value_bytes.last_ref()),
             ];
-            write_batch.put_cf_vectored(data_cf, &[IoSlice::new(&key_bytes)], &dst);
+            write_batch
+                .put_cf_vectored(data_cf, &[IoSlice::new(&key_bytes)], &dst)
+                .expect("write batch has no byte limit and slice counts are tiny");
             // advance the offset for the next record
             offset = offset.next();
         }

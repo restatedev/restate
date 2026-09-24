@@ -22,7 +22,8 @@ use restate_util_bytecount::ByteCount;
 
 use crate::app::GlobalOpts;
 use crate::util::rocksdb::{
-    DEFAULT_CF, extract_file_number, open_partition_store_db, resolve_partition_store_path,
+    DEFAULT_CF, extract_file_number, non_empty_key, open_partition_store_db,
+    resolve_partition_store_path,
 };
 
 use super::PartitionStoreOpts;
@@ -120,21 +121,19 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
             None => continue,
         };
 
-        let cf_meta = db_info.db.get_column_family_metadata_cf(&cf_handle);
-
         let mut levels = Vec::new();
-        for level_ref in cf_meta.levels() {
+        for level_ref in db_info.cf_levels(&cf_handle) {
             let mut files = Vec::new();
             if cmd.extra {
-                for file_ref in level_ref.files() {
+                for file_ref in level_ref.sst_files() {
                     let filename = file_ref.relative_filename();
                     // Look up live file info for tombstone/entry counts
                     let live_info = db_info.get_live_file_info(&filename);
                     files.push(FileStats {
                         filename,
                         size: file_ref.size(),
-                        smallest_key: file_ref.smallest_key(),
-                        largest_key: file_ref.largest_key(),
+                        smallest_key: non_empty_key(file_ref.smallest_key()),
+                        largest_key: non_empty_key(file_ref.largest_key()),
                         num_entries: live_info.map(|i| i.num_entries),
                         num_deletions: live_info.map(|i| i.num_deletions),
                     });
@@ -148,16 +147,16 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
             });
         }
 
-        let total_size = cf_meta.size();
-        let file_count = cf_meta.file_count();
+        let total_size: u64 = levels.iter().map(|l| l.size).sum();
+        let file_count: usize = levels.iter().map(|l| l.file_count).sum();
         grand_total_size += total_size;
         grand_total_files += file_count;
 
         all_stats.push(CfStats {
-            name: cf_meta.name(),
+            name: cf_name.to_string(),
             total_size,
             file_count,
-            level_count: cf_meta.level_count(),
+            level_count: levels.len(),
             levels,
         });
     }

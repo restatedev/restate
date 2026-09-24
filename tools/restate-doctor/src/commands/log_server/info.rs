@@ -66,7 +66,9 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
             None => continue,
         };
 
-        let cf_meta = db_info.db.get_column_family_metadata_cf(&cf_handle);
+        let levels = db_info.cf_levels(&cf_handle);
+        let cf_size: u64 = levels.iter().map(|l| l.size()).sum();
+        let cf_files: usize = levels.iter().map(|l| l.file_count()).sum();
 
         let cf_label = match *cf_name {
             DATA_CF => "Data CF (log records)",
@@ -78,16 +80,16 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
 
         let mut summary = Table::new_styled();
         summary.add_kv_row("Column Family:", *cf_name);
-        summary.add_kv_row("Total Size:", ByteCount::from(cf_meta.size()).to_string());
-        summary.add_kv_row("Total Files:", cf_meta.file_count());
-        summary.add_kv_row("Levels:", cf_meta.level_count());
+        summary.add_kv_row("Total Size:", ByteCount::from(cf_size).to_string());
+        summary.add_kv_row("Total Files:", cf_files);
+        summary.add_kv_row("Levels:", levels.len());
         c_println!("{summary}");
 
-        grand_total_size += cf_meta.size();
-        grand_total_files += cf_meta.file_count();
+        grand_total_size += cf_size;
+        grand_total_files += cf_files;
 
         // Level breakdown
-        if cf_meta.level_count() > 0 {
+        if !levels.is_empty() {
             c_println!();
             let mut level_table = Table::new_styled();
             level_table.set_styled_header(vec![
@@ -98,9 +100,9 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
                 "% OF CF",
             ]);
 
-            for level_ref in cf_meta.levels() {
-                let percentage = if cf_meta.size() > 0 {
-                    (level_ref.size() as f64 / cf_meta.size() as f64) * 100.0
+            for level_ref in &levels {
+                let percentage = if cf_size > 0 {
+                    (level_ref.size() as f64 / cf_size as f64) * 100.0
                 } else {
                     0.0
                 };
@@ -127,7 +129,7 @@ pub async fn run_info(global_opts: &GlobalOpts, cmd: &Info) -> Result<()> {
 
                 // Per-file listing
                 if cmd.extra {
-                    for file_ref in level_ref.files() {
+                    for file_ref in level_ref.sst_files() {
                         let filename = file_ref.relative_filename();
                         let live_info = db_info.get_live_file_info(&filename);
                         let entries = live_info
