@@ -1,5 +1,8 @@
 [env]
 RUST_TEST_THREADS = "1"
+# Fall back to placeholder VERGEN_GIT_* values when the source tree has no git
+# metadata (e.g. Sapling checkouts, tarballs) instead of failing the build.
+VERGEN_DEFAULT_ON_ERROR = "1"
 
 [alias]
 xtask = "run --package xtask --"
