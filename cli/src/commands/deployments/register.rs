@@ -14,28 +14,30 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use cling::prelude::*;
-use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
-use indoc::indoc;
+use serde_json::Value;
 
 use restate_admin_rest_model::deployments::{
     DetailedDeploymentResponse, GoogleIdTokenAuth, HttpAuth, RegisterDeploymentRequest,
     RegisterDeploymentResponse,
 };
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::CliContext;
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, Deployment, MetasClientError};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::ui::deployments::render_deployment_url;
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 use crate::ui::service_handlers::{
-    create_service_handlers_table, create_service_handlers_table_diff, icon_for_service_type,
+    create_service_handlers_table, create_service_handlers_table_diff, service_type_label,
+    service_type_machine,
 };
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -48,6 +50,9 @@ pub struct Register {
 
     /// Force overwriting the deployment if it already exists or if incompatible changes were
     /// detected during discovery. When set, implies `--breaking`.
+    ///
+    /// Without it, registering an endpoint that is already registered is a no-op
+    /// (registration is idempotent), and the existing deployment is left untouched.
     #[clap(long)]
     force: bool,
 
@@ -118,6 +123,9 @@ pub struct Register {
     #[cfg(feature = "cloud")]
     #[clap(long = "tunnel-name")]
     tunnel_name: Option<String>,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 #[derive(Clone)]
@@ -267,15 +275,14 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         client.is_experimental_feature_enabled("gcp_workload_identity_federation"),
     )?;
 
-    if discover_opts.breaking && client.admin_api_version < AdminApiVersion::V3 {
-        bail!("--breaking is only supported when interacting with Restate >= 1.6");
+    if client.admin_api_version < AdminApiVersion::V3 {
+        bail!(
+            "Registering deployments with this CLI requires Restate server >= 1.6 (admin API \
+             v3); the server at {} is older. Upgrade the server, or use an older `restate` CLI",
+            client.base_url
+        );
     }
-    if !metadata.is_empty() && client.admin_api_version < AdminApiVersion::V3 {
-        bail!("--metadata is only supported when interacting with Restate >= 1.6");
-    }
-    if client.admin_api_version >= AdminApiVersion::V3 {
-        infer_deployment_metadata_from_environment(&mut metadata);
-    }
+    infer_deployment_metadata_from_environment(&mut metadata);
 
     let id_token_auth = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
@@ -420,16 +427,10 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
         },
     };
 
-    if client.admin_api_version >= AdminApiVersion::V3 {
-        register_v3_admin_api(discover_opts, client, mk_request_body).await?;
-    } else {
-        register_v2_admin_api(discover_opts, client, mk_request_body).await?;
-    }
-
-    Ok(())
+    register(discover_opts, client, mk_request_body).await
 }
 
-async fn register_v3_admin_api(
+async fn register(
     discover_opts: &Register,
     client: AdminClient,
     mk_request_body: impl Fn(bool, bool, bool) -> RegisterDeploymentRequest,
@@ -458,43 +459,48 @@ async fn register_v3_admin_api(
     if dry_run_result.status_code() == StatusCode::CONFLICT {
         progress.finish_and_clear();
         let api_error = dry_run_result.into_api_error().await?;
-        c_println!(
-            indoc! {
-                "{}
-                {}
-
-            ❯ To register a deployment containing breaking changes for a service, use:
-                restate deployment register {} --breaking"
-            },
-            Styled(Style::Danger, "❯ Breaking changes detected:"),
-            Styled(Style::Warn, api_error.body),
+        bail!(
+            "Breaking changes detected: {}. To register a deployment containing breaking \
+             changes, re-run with: restate deployments register {} --breaking",
+            api_error.body,
             discover_opts.deployment.cli_parameter_display()
         );
-        bail!("Registration failed");
     }
     if dry_run_result.status_code() == StatusCode::OK && !discover_opts.force {
         progress.finish_and_clear();
         // Admin API V3 returns OK if the deployment already exists and force = false.
         let dry_run_result = dry_run_result.into_body().await?;
-        c_println!(
-            indoc! {
-                "❯ Deployment already exists with id {}
-                   No changes will be made.
-
-            ❯ To overwrite this deployment during development, use:
-                restate deployment register {} --force
-
-            ❯ To modify connection parameters, use the UI"
-            },
-            Styled(Style::Info, &dry_run_result.id),
-            discover_opts.deployment.cli_parameter_display(),
+        let mut f = Formatter::new();
+        f.detail(
+            "deployment",
+            [(
+                "deployment_id",
+                Field::styled(dry_run_result.id.to_string(), Style::Info),
+            )],
         );
-        return Ok(());
+        f.table("changes", &CHANGE_HEADERS, &[] as &[Vec<Field>]);
+        f.value("note", Field::new(ALREADY_REGISTERED_NOTE));
+        f.next_step(
+            &format!("restate deployments describe {}", dry_run_result.id),
+            "see the existing deployment",
+        );
+        // Not read-only, but overwriting in place is the usual loop during development.
+        f.next_step(
+            &format!(
+                "restate deployments register {} --force",
+                discover_opts.deployment.cli_parameter_display()
+            ),
+            "overwrite this deployment during development",
+        );
+        return f.finish();
     }
     // At this point, if the deployment exists, StatusCode == OK and force = true
     let deployment_exists = dry_run_result.status_code() == StatusCode::OK;
 
-    let dry_run_response = dry_run_result.into_body().await?;
+    let dry_run_response = dry_run_result
+        .into_body()
+        .await
+        .with_context(|| discovery_failed(&discover_opts.deployment))?;
 
     progress.finish_and_clear();
 
@@ -526,116 +532,12 @@ async fn register_v3_admin_api(
         c_eprintln!();
     }
 
-    print_registration_changes(&client, dry_run_response, existing_deployment).await?;
-
-    confirm_or_exit("Are you sure you want to apply those changes?")?;
-
-    let progress = ProgressBar::new_spinner();
-    progress
-        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
-    progress.enable_steady_tick(std::time::Duration::from_millis(120));
-
-    progress.set_message(format!(
-        "Asking restate server {} to confirm this deployment (at {})",
-        client.base_url, discover_opts.deployment
-    ));
-
-    let registration_result = client
-        .discover_deployment(mk_request_body(
-            discover_opts.breaking,
-            discover_opts.force,
-            /* dry_run = */ false,
-        ))
-        .await?
-        .into_body()
-        .await?;
-
-    progress.finish_and_clear();
-    // print the result of the discovery
-    c_success!("DEPLOYMENT:");
-    c_println!(
-        "Deployment ID:  {}",
-        Styled(Style::Info, &registration_result.id)
-    );
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in registration_result.services {
-        table.add_row(vec![svc.name, svc.revision.to_string()]);
-    }
-    c_println!("{}", table);
-
-    Ok(())
-}
-
-async fn register_v2_admin_api(
-    discover_opts: &Register,
-    client: AdminClient,
-    mk_request_body: impl Fn(bool, bool, bool) -> RegisterDeploymentRequest,
-) -> Result<()> {
-    let progress = ProgressBar::new_spinner();
-    progress
-        .set_style(indicatif::ProgressStyle::with_template("{spinner} [{elapsed}] {msg}").unwrap());
-    progress.enable_steady_tick(std::time::Duration::from_millis(120));
-
-    progress.set_message(format!(
-        "Asking restate server at {} for a dry-run discovery of {}",
-        client.base_url, discover_opts.deployment
-    ));
-
-    // This fails if the endpoint exists and --force is not set.
-    let dry_run_result = client
-        // We use force in the dry-run to make sure we get the result of the discovery
-        // even if there is it's an existing endpoint
-        .discover_deployment(mk_request_body(
-            /* breaking */ true, /* force = */ true, /* dry_run = */ true,
-        ))
-        .await?
-        .into_body()
-        .await?;
-
-    progress.finish_and_clear();
-
-    // Is this an existing deployment?
-    let existing_deployment = match client
-        .get_deployment(&dry_run_result.id.to_string())
-        .await?
-        .into_body()
-        .await
-    {
-        Ok(existing_deployment) => {
-            // Appears to be an existing endpoint.
-            Some(existing_deployment)
-        }
-        Err(MetasClientError::Api(err)) if err.http_status_code == StatusCode::NOT_FOUND => None,
-        // We cannot get existing deployment details. This is a problem.
-        Err(err) => return Err(err.into()),
-    };
-
-    if let Some(ref existing_deployment) = existing_deployment {
-        if !discover_opts.force {
-            bail!(
-                "A deployment already exists that uses this endpoint (ID: {}). Use --force to overwrite it.",
-                existing_deployment.id(),
-            )
-        } else {
-            c_eprintln!();
-            c_warn!(
-                "This deployment is already known to the server under the ID \"{}\". \
-                Confirming this operation will overwrite services defined by the existing \
-                deployment. Inflight invocations to this deployment might move to an unrecoverable \
-                failure state afterwards!.\
-                \n\nThis is a DANGEROUS operation! \n
-                In production, we recommend creating a new deployment with a unique endpoint while \
-                keeping the old one active until the old deployment is drained.",
-                existing_deployment.id()
-            );
-            c_eprintln!();
-        }
-    }
-
-    print_registration_changes(&client, dry_run_result, existing_deployment).await?;
-
-    confirm_or_exit("Are you sure you want to apply those changes?")?;
+    let mut f = Formatter::new();
+    print_registration_changes(&mut f, &client, dry_run_response, existing_deployment).await?;
+    f.confirm(
+        &discover_opts.dry_run,
+        "Are you sure you want to apply those changes?",
+    )?;
 
     let progress = ProgressBar::new_spinner();
     progress
@@ -658,23 +560,56 @@ async fn register_v2_admin_api(
         .await?;
 
     progress.finish_and_clear();
-    // print the result of the discovery
-    c_success!("DEPLOYMENT:");
-    c_println!(
-        "Deployment ID:  {}",
-        Styled(Style::Info, &registration_result.id)
-    );
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in registration_result.services {
-        table.add_row(vec![svc.name, svc.revision.to_string()]);
-    }
-    c_println!("{}", table);
-
-    Ok(())
+    print_registration_result(f, registration_result)
 }
 
+/// Print the outcome of a successful registration, pointing at read-only follow-ups.
+fn print_registration_result(mut f: Formatter, result: RegisterDeploymentResponse) -> Result<()> {
+    if !CliContext::get().json_output() {
+        c_success!("DEPLOYMENT:");
+    }
+    f.detail(
+        "deployment",
+        &[(
+            "deployment_id",
+            Field::styled(result.id.to_string(), Style::Info),
+        )],
+    );
+    let rows: Vec<Vec<Field>> = result
+        .services
+        .into_iter()
+        .map(|svc| vec![Field::new(svc.name), Field::new(svc.revision)])
+        .collect();
+    f.table("services", &["service", "revision"], &rows);
+    f.next_step(
+        &format!("restate deployments describe {}", result.id),
+        "see the registered deployment's details",
+    );
+    f.next_step("restate services list", "see all registered services");
+    f.finish()
+}
+
+/// Columns of the `changes` plan table (one row per affected service).
+const CHANGE_HEADERS: [&str; 5] = ["service", "change", "revision", "service_type", "handlers"];
+
+/// Why re-registering an already registered endpoint changes nothing.
+const ALREADY_REGISTERED_NOTE: &str = "This endpoint is already registered and registration is \
+    idempotent, so nothing was changed.";
+
+/// Context for a failed discovery: the most common cause is an endpoint the server
+/// can't reach.
+fn discovery_failed(deployment: &DeploymentEndpoint) -> String {
+    format!(
+        "Discovery of {deployment} failed. Make sure the service is running and reachable \
+         from the Restate server: addresses like `localhost` are resolved on the server's \
+         host, not on this machine"
+    )
+}
+
+/// Show the services a registration will add, update, or remove. Human output renders
+/// detailed per-handler diffs; JSON gets the `deployment` and `changes` plan sections.
 async fn print_registration_changes(
+    f: &mut Formatter,
     client: &AdminClient,
     dry_run_result: RegisterDeploymentResponse,
     existing_deployment: Option<DetailedDeploymentResponse>,
@@ -684,6 +619,57 @@ async fn print_registration_changes(
         .iter()
         .map(|service| service.name.clone())
         .collect::<HashSet<_>>();
+
+    if CliContext::get().json_output() {
+        // A new deployment's id is only assigned on apply (the dry-run one is
+        // throwaway), so the plan names a deployment only when it overwrites one.
+        if let Some(existing) = &existing_deployment {
+            f.detail(
+                "deployment",
+                [(
+                    "overwrites_deployment_id",
+                    Field::new(existing.id().to_string()),
+                )],
+            );
+        }
+
+        let mut rows: Vec<Vec<Field>> = dry_run_result
+            .services
+            .iter()
+            .map(|svc| {
+                let change = if svc.revision == 1 { "add" } else { "update" };
+                let mut handlers: Vec<&str> =
+                    svc.handlers.values().map(|h| h.name.as_str()).collect();
+                handlers.sort_unstable();
+                vec![
+                    Field::new(svc.name.clone()),
+                    Field::new(change),
+                    Field::new(svc.revision),
+                    Field::new(service_type_machine(&svc.ty)),
+                    Field::new(handlers),
+                ]
+            })
+            .collect();
+        if let Some(existing) = existing_deployment {
+            let (_, _, services) = Deployment::from_detailed_deployment_response(existing);
+            rows.extend(
+                services
+                    .into_iter()
+                    .filter(|svc| !discovered_service_names.contains(&svc.name))
+                    .map(|svc| {
+                        vec![
+                            Field::new(svc.name),
+                            Field::new("remove"),
+                            Field::new(Value::Null),
+                            Field::new(Value::Null),
+                            Field::new(Value::Null),
+                        ]
+                    }),
+            );
+        }
+        f.table("changes", &CHANGE_HEADERS, &rows);
+        return Ok(());
+    }
 
     // Services found in this discovery
     let (added, updated): (Vec<_>, Vec<_>) = dry_run_result
@@ -700,12 +686,7 @@ async fn print_registration_changes(
         );
         for service in added {
             c_indentln!(1, "- {}", Styled(Style::Success, &service.name),);
-            c_indentln!(
-                2,
-                "Type: {:?} {}",
-                service.ty,
-                icon_for_service_type(&service.ty),
-            );
+            c_indentln!(2, "Type: {}", service_type_label(&service.ty));
 
             c_indent_table!(2, create_service_handlers_table(service.handlers.values()));
             c_println!();
@@ -757,7 +738,7 @@ async fn print_registration_changes(
         );
         for svc in updated {
             c_indentln!(1, "- {}", Styled(Style::Info, &svc.name),);
-            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_service_type(&svc.ty),);
+            c_indentln!(2, "Type: {}", service_type_label(&svc.ty));
 
             if let Some(existing_svc) = existing_services.get(&svc.name) {
                 c_indentln!(

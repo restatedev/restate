@@ -87,16 +87,20 @@ c_warn!(
 
 #### Tips (Subtle, Helpful)
 ```rust
-c_tip!(
-    "Use 'restate services describe {}' to see handler details",
-    service_name
-);
+c_tip!("Invocations pinned to a deployment cannot move to newer deployments automatically.");
 ```
 
+Use `c_tip!` for explanatory, human-only notes. To point at a follow-up *command*, use
+the formatter's `next_step` instead (see [Structured Output](#structured-output---json)).
+
 #### Section Titles
+
+Titles are plain underlined text — pass an empty icon (decorative emoji are not used
+to encode meaning, so output stays clean for humans and parseable for scripts/agents):
+
 ```rust
-c_title!("📜", "Service Information");
-c_title!("🔌", "Handlers");
+c_title!("", "Service Information");
+c_title!("", "Handlers");
 ```
 
 #### Indented Output
@@ -226,6 +230,12 @@ Core output primitives that handle broken pipes gracefully (unlike `println!`).
 | `c_indentln!` | stdout | Indented line |
 | `c_indent_table!` | stdout | Indented table |
 
+### `ui::fmt` - Output Formatter
+
+The `OutputFormatter` abstraction (`formatter()`, `Field`) that renders a command's
+primary output as either human tables or a JSON document, and owns coloring. See
+[Structured Output](#structured-output---json) above.
+
 ### `ui::stylesheet` - Visual Constants
 
 Defines the visual language: icons, styles, and table formatting.
@@ -268,7 +278,11 @@ Override with `CLICOLOR_FORCE=1` to force colors even in pipes.
 
 5. **Be concise** - CLI output should be scannable; use tables and indentation to organize information.
 
-6. **Confirm destructive actions** - Use `confirm()` or `c_warn!()` before irreversible operations.
+6. **Confirm destructive actions** - In the `restate` CLI, commands that change state flatten
+   `DryRun` (`--dry-run`) into their options, write the planned changes to the output formatter
+   (a `changes` section), then call `f.confirm(&opts.dry_run, prompt)?` before applying. That one
+   call handles `--dry-run` (preview, exit 0), `--yes`, interactive prompts, and `--json` without
+   `--yes` (plan document with `apply_command`, exit 3). Use `c_warn!()` for extra caution.
 
 ## Global Options
 
@@ -277,8 +291,60 @@ These options are available to all commands via `CommonOpts`:
 | Option | Description |
 |--------|-------------|
 | `-v`, `-vv`, `-vvv` | Increase verbosity (logging) |
+| `--json` | Print output as JSON instead of tables (for scripting/CI/agents) |
+| `--color` | `auto` (default), `always`, or `never` |
 | `-y`, `--yes` | Auto-confirm prompts |
+| `--non-interactive` | Never prompt; fail fast instead of waiting for input |
 | `--table-style` | `compact` (default) or `borders` |
 | `--time-format` | `human` (default), `iso8601`, or `rfc2822` |
 | `--connect-timeout` | Connection timeout in ms |
 | `--request-timeout` | Request timeout in ms |
+
+`--non-interactive` is also implied by `--json` (a prompt would corrupt the JSON
+stream), when stdin is not a terminal, or when the `CI` environment variable is set.
+`--color` takes precedence over `NO_COLOR` / `CLICOLOR_FORCE` / `TERM` / TTY detection.
+
+## Structured Output (`--json`)
+
+Commands render their primary output through an [`OutputFormatter`](src/ui/fmt.rs)
+rather than building tables inline. A command describes *what* to emit with semantic
+building blocks — a `title`, a key-value `detail` view, a `table`, or a scalar
+`value` — and the formatter decides *how*: styled human tables, or a single JSON
+document under `--json`. The formatter also owns coloring: attach a semantic `Style`
+to a `Field` and only the human formatter renders it.
+
+```rust
+use restate_cli_util::ui::fmt::{formatter, Field};
+use restate_cli_util::ui::stylesheet::Style;
+
+let mut f = formatter(); // human or JSON, based on --json
+f.title("Service Information");
+f.detail("service", &[
+    ("name", Field::new(&svc.name)),
+    ("status", Field::styled("running", Style::Success)),
+    ("revision", Field::new(svc.revision)),
+]);
+f.next_step(&format!("restate services status {}", svc.name), "see its activity");
+f.finish()?;
+```
+
+`next_step(command, description)` suggests a follow-up: humans get one tip at `finish`
+("Run `<command>` to <description>."), JSON gets a top-level `next_steps` array of
+`{"command", "description"}` objects with ` --json` appended to `command` (the key is
+omitted when empty and reserved as a section name). Only suggest read-only commands,
+with real ids filled in so they run as-is.
+
+## Exit Codes
+
+Failures map to a small, stable taxonomy (see [`exit`](src/exit.rs)) so scripts can
+branch on the failure class:
+
+| Code | Meaning |
+|------|---------|
+| `0` | Success |
+| `1` | Unclassified error |
+| `2` | Invalid usage (from clap) |
+| `4` | Not found (reserved) |
+| `5` | Network / connection error (reserved) |
+| `6` | Authentication / authorization error (reserved) |
+| `7` | User aborted, or a prompt was refused in non-interactive mode |

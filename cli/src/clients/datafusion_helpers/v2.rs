@@ -21,24 +21,60 @@ use serde::Deserialize;
 use serde_with::serde_as;
 
 use restate_types::identifiers::DeploymentId;
-use restate_types::identifiers::{AwakeableIdentifier, InvocationId, ServiceId};
+use restate_types::identifiers::ServiceId;
+use restate_types::journal_events::Event;
 
 use super::{
-    HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntry,
-    JournalEntryTypeV1, JournalEntryV1, JournalEntryV2, LockedKeyInfo, OutgoingInvoke,
-    ServiceHandlerLockedKeysMap, ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
+    HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntryRow,
+    JournalEventRow, JournalFetch, ServiceHandlerUsage, ServiceStatusMap, SimpleInvocation,
+    event_failure,
 };
 
 use crate::clients::DataFusionHttpClient;
-
-static JOURNAL_QUERY_LIMIT: usize = 100;
 
 pub async fn find_active_invocations_simple(
     client: &DataFusionHttpClient,
     filter: &str,
 ) -> Result<Vec<SimpleInvocation>> {
-    let query = format!("SELECT id, target FROM sys_invocation_status WHERE {filter}");
-    Ok(client.run_json_query::<SimpleInvocation>(query).await?)
+    let query = format!("SELECT id, target, status FROM sys_invocation_status WHERE {filter}");
+    let mut invocations = client.run_json_query::<SimpleInvocation>(query).await?;
+
+    // Refine the raw `invoked` into the status shown elsewhere (`ready`, `running`,
+    // `backing-off`, ...): one point-read on `sys_invocation` plus the VQueue overlay.
+    let invoked: Vec<&str> = invocations
+        .iter()
+        .filter(|inv| inv.status == "invoked")
+        .map(|inv| inv.id.as_str())
+        .collect();
+    if invoked.is_empty() {
+        return Ok(invocations);
+    }
+    #[derive(Deserialize)]
+    struct StatusRow {
+        id: String,
+        status: String,
+    }
+    let query = format!(
+        "SELECT id, status FROM sys_invocation WHERE id IN ({})",
+        sql_id_list(invoked.iter().copied())
+    );
+    let mut statuses: HashMap<String, String> = client
+        .run_json_query::<StatusRow>(query)
+        .await?
+        .into_iter()
+        .map(|row| (row.id, row.status))
+        .collect();
+    for (id, row) in vqueue_entry_statuses(client, invoked.into_iter()).await? {
+        if row.is_backing_off() {
+            statuses.insert(id, InvocationState::BackingOff.to_string());
+        }
+    }
+    for inv in &mut invocations {
+        if let Some(status) = statuses.remove(&inv.id) {
+            inv.status = status;
+        }
+    }
+    Ok(invocations)
 }
 
 pub async fn count_deployment_active_inv(
@@ -94,167 +130,33 @@ pub async fn get_service_status(
             .collect::<Vec<_>>()
             .join(",")
     );
-    // Inbox analysis (pending invocations)....
-    {
-        let query = format!(
-            "SELECT
-                target_service_name,
-                target_handler_name,
-                'pending' as status,
-                COUNT(1) as num_invocations,
-                MIN(created_at) as oldest_at,
-                FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
-             FROM sys_invocation_status
-             WHERE status == 'inboxed' AND target_service_name IN {query_filter}
-             GROUP BY target_service_name, target_handler_name"
+    // `sys_invocation` already reports inboxed invocations as `pending`.
+    let query = format!(
+        "SELECT
+            target_service_name,
+            target_handler_name,
+            status,
+            COUNT(1) as num_invocations,
+            MIN(created_at) as oldest_at,
+            FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
+        FROM sys_invocation
+        WHERE status != 'completed' AND target_service_name IN {query_filter}
+        GROUP BY target_service_name, target_handler_name, status
+        ORDER BY target_handler_name"
+    );
+    let rows = client
+        .run_json_query::<ServiceStatusQueryResult>(query)
+        .await?;
+    for row in rows {
+        status_map.set_handler_stats(
+            &row.target_service_name,
+            &row.target_handler_name,
+            row.status,
+            row.stats,
         );
-        let rows = client
-            .run_json_query::<ServiceStatusQueryResult>(query)
-            .await?;
-        for row in rows {
-            status_map.set_handler_stats(
-                &row.target_service_name,
-                &row.target_handler_name,
-                row.status,
-                row.stats,
-            );
-        }
-    }
-
-    // Active invocations analysis
-    {
-        let query = format!(
-            "
-            SELECT
-                target_service_name,
-                target_handler_name,
-                status,
-                COUNT(1) as num_invocations,
-                MIN(created_at) as oldest_at,
-                FIRST_VALUE(id ORDER BY created_at ASC) as oldest_invocation
-            FROM sys_invocation
-            WHERE target_service_name IN {query_filter}
-            GROUP BY target_service_name, target_handler_name, status
-            ORDER BY target_handler_name"
-        );
-        let rows = client
-            .run_json_query::<ServiceStatusQueryResult>(query)
-            .await?;
-        for row in rows {
-            status_map.set_handler_stats(
-                &row.target_service_name,
-                &row.target_handler_name,
-                row.status,
-                row.stats,
-            );
-        }
     }
 
     Ok(status_map)
-}
-
-#[derive(Deserialize)]
-struct LockedKeysQueryResult {
-    service_name: String,
-    service_key: String,
-    modified_at: Option<DateTime<Local>>,
-    last_start_at: Option<DateTime<Local>>,
-    #[serde(flatten)]
-    info: LockedKeyInfo,
-}
-
-pub async fn get_locked_keys_status(
-    client: &DataFusionHttpClient,
-    services_filter: impl IntoIterator<Item = impl AsRef<str>>,
-) -> Result<ServiceHandlerLockedKeysMap> {
-    let mut key_map = ServiceHandlerLockedKeysMap::default();
-    let quoted_service_names = services_filter
-        .into_iter()
-        .map(|x| format!("'{}'", x.as_ref()))
-        .collect::<Vec<_>>();
-    if quoted_service_names.is_empty() {
-        return Ok(key_map);
-    }
-
-    let query_filter = format!("({})", quoted_service_names.join(","));
-
-    // Inbox analysis (pending invocations)....
-    {
-        let query = format!(
-            "SELECT
-                service_name,
-                service_key,
-                COUNT(1) as num_pending
-             FROM sys_inbox
-             WHERE service_name IN {query_filter}
-             GROUP BY service_name, service_key
-             ORDER BY num_pending DESC"
-        );
-        let rows = client
-            .run_json_query::<LockedKeysQueryResult>(query)
-            .await?;
-        for row in rows {
-            key_map.insert(&row.service_name, row.service_key, row.info);
-        }
-    }
-
-    // Active invocations analysis
-    {
-        let query = format!(
-            "
-            SELECT
-                target_service_name as service_name,
-                target_service_key as service_key,
-                status as invocation_status,
-                first_value(id) as invocation_holding_lock,
-                first_value(target_handler_name) as invocation_method_holding_lock,
-                first_value(created_at) as invocation_created_at,
-                first_value(modified_at) as modified_at,
-                first_value(pinned_deployment_id) as pinned_deployment_id,
-                first_value(last_attempt_deployment_id) as last_attempt_deployment_id,
-                first_value(last_failure) as last_failure_message,
-                first_value(next_retry_at) as next_retry_at,
-                first_value(last_start_at) as last_start_at,
-                0 as num_pending,
-                sum(retry_count) as num_retries
-            FROM sys_invocation
-            WHERE status != 'pending' AND target_service_name IN {query_filter}
-            GROUP BY target_service_name, target_service_key, status"
-        );
-
-        let rows = client
-            .run_json_query::<LockedKeysQueryResult>(query)
-            .await?;
-        for row in rows {
-            let info = key_map.locked_key_info_mut(&row.service_name, &row.service_key);
-
-            info.invocation_status = row.info.invocation_status;
-            info.invocation_holding_lock = row.info.invocation_holding_lock;
-            info.invocation_method_holding_lock = row.info.invocation_method_holding_lock;
-            info.invocation_created_at = row.info.invocation_created_at;
-
-            // Running duration
-            if row.info.invocation_status == Some(InvocationState::Running) {
-                info.invocation_attempt_duration = row
-                    .last_start_at
-                    .map(|last_start| Local::now().signed_duration_since(last_start));
-            }
-
-            // State duration
-            info.invocation_state_duration = row
-                .modified_at
-                .map(|last_modified| Local::now().signed_duration_since(last_modified));
-
-            // Retries
-            info.num_retries = row.info.num_retries;
-            info.next_retry_at = row.info.next_retry_at;
-            info.pinned_deployment_id = row.info.pinned_deployment_id;
-            info.last_failure_message = row.info.last_failure_message;
-            info.last_attempt_deployment_id = row.info.last_attempt_deployment_id;
-        }
-    }
-
-    Ok(key_map)
 }
 
 #[derive(Deserialize)]
@@ -379,15 +281,200 @@ pub async fn find_active_invocations(
     order: &str,
     limit: usize,
 ) -> Result<(Vec<Invocation>, bool)> {
-    if client
+    let (mut invocations, received_less_than_limit) = if client
         .server_version()
         // any 1.5.x including prereleases
         .is_equal_or_newer_than(&SemanticRestateVersion::new(1, 4, u64::MAX))
     {
-        find_active_invocations_post_1_5(client, filter, order, limit).await
+        find_active_invocations_post_1_5(client, filter, order, limit).await?
     } else {
-        find_active_invocations_pre_1_5(client, filter, order, limit).await
+        find_active_invocations_pre_1_5(client, filter, order, limit).await?
+    };
+    apply_vqueue_overlay(client, &mut invocations).await?;
+    apply_last_failure_events(client, &mut invocations).await?;
+    Ok((invocations, received_less_than_limit))
+}
+
+/// Quoted, comma-separated SQL list of `ids`, for `IN (...)`.
+fn sql_id_list<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
+    ids.into_iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Ids of invocations backing off in their VQueue (Restate 1.7+), for status filters.
+const VQUEUE_BACKING_OFF_IDS: &str =
+    "SELECT entry_id FROM sys_vqueues WHERE stage = 'inbox' AND status = 'backing-off'";
+
+/// SQL predicate on `sys_invocation inv` matching `statuses`.
+///
+/// Mirrors the web UI (restate-web-ui `convertFilters.ts` `vqueueStatusClause`): on
+/// VQueue-backed servers `sys_invocation` reports a backing-off invocation as `ready`,
+/// so `backing-off` and `ready` are refined through `sys_vqueues`.
+pub async fn invocation_status_filter(
+    client: &DataFusionHttpClient,
+    statuses: &[InvocationState],
+) -> Result<String> {
+    let refine = (statuses.contains(&InvocationState::BackingOff)
+        != statuses.contains(&InvocationState::Ready))
+        && client
+            .check_columns_exists("sys_vqueues", &["entry_id", "stage", "status"])
+            .await?;
+    let clauses: Vec<String> = statuses
+        .iter()
+        .map(|status| match status {
+            InvocationState::BackingOff if refine => format!(
+                "(inv.status = 'backing-off' OR (inv.status = 'ready' AND inv.id IN ({VQUEUE_BACKING_OFF_IDS})))"
+            ),
+            InvocationState::Ready if refine => {
+                format!("(inv.status = 'ready' AND inv.id NOT IN ({VQUEUE_BACKING_OFF_IDS}))")
+            }
+            status => format!("inv.status = '{status}'"),
+        })
+        .collect();
+    Ok(format!("({})", clauses.join(" OR ")))
+}
+
+#[derive(Deserialize)]
+struct VqueueEntryStatusRow {
+    entry_id: String,
+    stage: String,
+    status: String,
+    next_at: Option<DateTime<Local>>,
+    latest_attempt_at: Option<DateTime<Local>>,
+    retry_count_since_last_stored_command: Option<u64>,
+}
+
+impl VqueueEntryStatusRow {
+    fn is_backing_off(&self) -> bool {
+        self.stage == "inbox" && self.status == "backing-off"
     }
+}
+
+/// Point-read the live VQueue entry status (Restate 1.7+) of `ids`, keyed by id. Empty
+/// on servers without VQueues.
+async fn vqueue_entry_statuses<'a>(
+    client: &DataFusionHttpClient,
+    ids: impl ExactSizeIterator<Item = &'a str>,
+) -> Result<HashMap<String, VqueueEntryStatusRow>> {
+    if ids.len() == 0
+        || !client
+            .check_columns_exists(
+                "sys_vqueue_entry_status",
+                &[
+                    "entry_id",
+                    "entry_kind",
+                    "stage",
+                    "status",
+                    "next_at",
+                    "latest_attempt_at",
+                    "retry_count_since_last_stored_command",
+                ],
+            )
+            .await?
+    {
+        return Ok(HashMap::new());
+    }
+    let query = format!(
+        "SELECT entry_id, stage, status, next_at, latest_attempt_at, retry_count_since_last_stored_command
+         FROM sys_vqueue_entry_status
+         WHERE entry_kind = 'invocation' AND entry_id IN ({})",
+        sql_id_list(ids)
+    );
+    Ok(client
+        .run_json_query::<VqueueEntryStatusRow>(query)
+        .await?
+        .into_iter()
+        .map(|row| (row.entry_id.clone(), row))
+        .collect())
+}
+
+/// Overlay the live VQueue entry status, like the web UI does (restate-web-ui
+/// `convertInvocation.ts` `applyVqueueOverlay`): on VQueue-backed servers
+/// `sys_invocation` shows a retrying invocation as `ready` and leaves the retry columns
+/// null. This is the only source of retry count / next retry. One point-read for the
+/// whole page.
+async fn apply_vqueue_overlay(
+    client: &DataFusionHttpClient,
+    invocations: &mut [Invocation],
+) -> Result<()> {
+    let rows = vqueue_entry_statuses(client, invocations.iter().map(|inv| inv.id.as_str())).await?;
+    for inv in invocations.iter_mut() {
+        let Some(row) = rows.get(&inv.id) else {
+            continue;
+        };
+        if row.is_backing_off() {
+            inv.status = InvocationState::BackingOff;
+            inv.next_retry_at = row.next_at;
+            inv.last_attempt_started_at = row.latest_attempt_at.or(inv.last_attempt_started_at);
+        }
+        inv.num_retries = row.retry_count_since_last_stored_command;
+    }
+    Ok(())
+}
+
+#[derive(Deserialize)]
+struct LastFailureEventRow {
+    id: String,
+    event_json: Option<String>,
+}
+
+/// Fill the last failure of backing-off and paused invocations from their latest
+/// `TransientError` / `Paused` journal event (the only source of failures), like the web
+/// UI (restate-web-ui `convertInvocation.ts` `applyTransientError`, `getPausedError.ts`).
+/// One aggregate query for the whole page.
+async fn apply_last_failure_events(
+    client: &DataFusionHttpClient,
+    invocations: &mut [Invocation],
+) -> Result<()> {
+    let ids: Vec<&str> = invocations
+        .iter()
+        .filter(|inv| {
+            matches!(
+                inv.status,
+                InvocationState::BackingOff | InvocationState::Paused
+            )
+        })
+        .map(|inv| inv.id.as_str())
+        .collect();
+    if ids.is_empty()
+        || !client
+            .check_columns_exists(
+                "sys_journal_events",
+                &["id", "appended_at", "event_type", "event_json"],
+            )
+            .await?
+    {
+        return Ok(());
+    }
+    let query = format!(
+        "SELECT id, LAST_VALUE(event_json ORDER BY appended_at) AS event_json
+         FROM sys_journal_events
+         WHERE id IN ({}) AND event_type IN ('TransientError', 'Paused')
+         GROUP BY id",
+        sql_id_list(ids)
+    );
+    let events: HashMap<String, Event> = client
+        .run_json_query::<LastFailureEventRow>(query)
+        .await?
+        .into_iter()
+        .filter_map(|row| Some((row.id, serde_json::from_str(&row.event_json?).ok()?)))
+        .collect();
+
+    for inv in invocations.iter_mut() {
+        let Some(failure) = events.get(&inv.id).and_then(event_failure) else {
+            continue;
+        };
+        inv.last_failure_message = Some(format!(
+            "[{}] {}",
+            u16::from(failure.error_code),
+            failure.error_message
+        ));
+        inv.last_failure_entry_name = failure.related_command_name.clone();
+        inv.last_failure_entry_ty = failure.related_command_type.map(|ty| ty.to_string());
+    }
+    Ok(())
 }
 
 async fn find_active_invocations_pre_1_5(
@@ -415,15 +502,10 @@ async fn find_active_invocations_pre_1_5(
             inv.status,
             inv.created_at,
             inv.modified_at as state_modified_at,
+            inv.modified_at,
             inv.pinned_deployment_id,
-            inv.retry_count as num_retries,
-            inv.last_failure as last_failure_message,
-            inv.last_failure_related_entry_index as last_failure_entry_index,
-            inv.last_failure_related_entry_name as last_failure_entry_name,
-            inv.last_failure_related_entry_type as last_failure_entry_ty,
             inv.last_attempt_deployment_id,
             inv.last_attempt_server,
-            inv.next_retry_at,
             inv.last_start_at,
             inv.invoked_by_id,
             inv.invoked_by_target,
@@ -523,20 +605,19 @@ async fn describe_invocations_post_1_5(
             inv.created_at,
             inv.modified_at as state_modified_at,
             inv.pinned_deployment_id,
-            inv.retry_count as num_retries,
-            inv.last_failure as last_failure_message,
-            inv.last_failure_related_entry_index as last_failure_entry_index,
-            inv.last_failure_related_entry_name as last_failure_entry_name,
-            inv.last_failure_related_entry_type as last_failure_entry_ty,
             inv.last_attempt_deployment_id,
             inv.last_attempt_server,
-            inv.next_retry_at,
             inv.last_start_at,
             inv.invoked_by_id,
             inv.invoked_by_target,
             inv.trace_id,
             inv.completion_result,
             inv.completion_failure,
+            inv.inboxed_at,
+            inv.scheduled_at,
+            inv.scheduled_start_at,
+            inv.running_at,
+            inv.completed_at,
             dp.id IS NOT NULL as pinned_deployment_exists
         FROM sys_invocation inv
         LEFT JOIN sys_deployment dp ON dp.id = inv.pinned_deployment_id
@@ -559,7 +640,7 @@ pub async fn get_service_invocations(
     Ok(find_active_invocations(
         client,
         &format!("WHERE inv.target_service_name = '{service}'"),
-        "ORDER BY inv.created_at DESC, inv.id",
+        "ORDER BY inv.modified_at DESC, inv.id",
         limit_active,
     )
     .await?
@@ -578,123 +659,197 @@ pub async fn get_invocation(
     )
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-struct JournalQueryResult {
+#[derive(Debug, Clone, Deserialize)]
+struct JournalRowQueryResult {
     index: u32,
     entry_type: String,
-    #[serde(default)]
-    completed: bool,
-    invoked_id: Option<String>,
-    invoked_target: Option<String>,
-    sleep_wakeup_at: Option<DateTime<Local>>,
     name: Option<String>,
-    promise_name: Option<String>,
-
-    // --- V2 columns
-    version: u32,
     appended_at: Option<DateTime<Local>>,
+    entry_lite_json: Option<String>,
     entry_json: Option<String>,
 }
 
-pub async fn get_invocation_journal(
+#[derive(Debug, Clone, Deserialize)]
+struct JournalStats {
+    max_index: Option<u32>,
+    #[serde(default)]
+    count: i64,
+}
+
+/// Number of entries in an invocation's journal.
+pub async fn get_journal_length(client: &DataFusionHttpClient, invocation_id: &str) -> Result<u64> {
+    Ok(u64::try_from(journal_stats(client, invocation_id).await?.count).unwrap_or(0))
+}
+
+async fn journal_stats(client: &DataFusionHttpClient, invocation_id: &str) -> Result<JournalStats> {
+    let query = format!(
+        "SELECT MAX(sj.index) AS max_index, COUNT(*) AS count \
+         FROM sys_journal sj WHERE sj.id = '{invocation_id}'"
+    );
+    Ok(client
+        .run_json_query::<JournalStats>(query)
+        .await?
+        .into_iter()
+        .next()
+        .unwrap_or(JournalStats {
+            max_index: None,
+            count: 0,
+        }))
+}
+
+/// Fetch a slice of an invocation's journal from `sys_journal`, defaulting to the
+/// lightweight `entry_lite_json` metadata projection; `include_payload` additionally
+/// pulls the full `entry_json`. Entries are returned ordered by ascending index.
+pub async fn get_journal(
     client: &DataFusionHttpClient,
     invocation_id: &str,
-) -> Result<Vec<JournalEntry>> {
-    let has_restate_1_1_promise_name_column = client
-        .check_columns_exists("sys_journal", &["promise_name"])
+    fetch: JournalFetch,
+    include_payload: bool,
+) -> Result<Vec<JournalEntryRow>> {
+    // Column-existence gating for backward compatibility with older servers.
+    let has_appended_at = client
+        .check_columns_exists("sys_journal", &["appended_at"])
         .await?;
-    let select_promise_column = if has_restate_1_1_promise_name_column {
-        "sj.promise_name"
+    let select_appended = if has_appended_at {
+        "sj.appended_at"
     } else {
-        "CAST(NULL as STRING) AS promise_name"
-    };
-    let has_restate_1_2_columns = client
-        .check_columns_exists("sys_journal", &["version", "entry_json", "appended_at"])
-        .await?;
-    let select_restate_1_2_columns = if has_restate_1_2_columns {
-        "sj.version, sj.entry_json, sj.appended_at"
-    } else {
-        "CAST(1 as INT UNSIGNED) AS version, CAST(NULL as STRING) AS entry_json, CAST(NULL as TIMESTAMP) AS appended_at"
+        "CAST(NULL as TIMESTAMP) AS appended_at"
     };
 
-    // We are only looking for one...
-    // Let's get journal details.
+    let has_entry_lite = client
+        .check_columns_exists("sys_journal", &["entry_lite_json"])
+        .await?;
+    let select_lite = if has_entry_lite {
+        "sj.entry_lite_json"
+    } else {
+        "CAST(NULL as STRING) AS entry_lite_json"
+    };
+
+    let has_entry_json = client
+        .check_columns_exists("sys_journal", &["entry_json"])
+        .await?;
+    // Only pull payloads when explicitly requested (they can be large).
+    let select_full = if include_payload && has_entry_json {
+        "sj.entry_json"
+    } else {
+        "CAST(NULL as STRING) AS entry_json"
+    };
+
+    let index_filter = match fetch {
+        JournalFetch::One(index) => format!(" AND sj.index = {index}"),
+        JournalFetch::Range(start, end) => {
+            let mut filter = String::new();
+            if let Some(start) = start {
+                filter.push_str(&format!(" AND sj.index >= {start}"));
+            }
+            if let Some(end) = end {
+                filter.push_str(&format!(" AND sj.index <= {end}"));
+            }
+            filter
+        }
+        JournalFetch::All => String::new(),
+        JournalFetch::Preview { head, tail } => {
+            let stats = journal_stats(client, invocation_id).await?;
+            let count = u64::try_from(stats.count).unwrap_or(0);
+            if count > u64::from(head) + u64::from(tail) {
+                let max_index = stats.max_index.unwrap_or(0);
+                let tail_start = (max_index + 1).saturating_sub(tail);
+                format!(" AND (sj.index < {head} OR sj.index >= {tail_start})")
+            } else {
+                // Small journal: fetch everything, no elision needed.
+                String::new()
+            }
+        }
+    };
+
     let query = format!(
         "SELECT
             sj.index,
             sj.entry_type,
-            sj.completed,
-            sj.invoked_id,
-            sj.invoked_target,
-            sj.sleep_wakeup_at,
             sj.name,
-            {select_promise_column},
-            {select_restate_1_2_columns}
+            {select_appended},
+            {select_lite},
+            {select_full}
         FROM sys_journal sj
-        WHERE
-            sj.id = '{invocation_id}'
-        ORDER BY index DESC
-        LIMIT {JOURNAL_QUERY_LIMIT}",
+        WHERE sj.id = '{invocation_id}'{index_filter}
+        ORDER BY sj.index ASC",
     );
 
-    let my_invocation_id: InvocationId = invocation_id.parse().expect("Invocation ID is not valid");
-
-    let mut journal: Vec<_> = client
-        .run_json_query::<JournalQueryResult>(query)
+    let entries = client
+        .run_json_query::<JournalRowQueryResult>(query)
         .await?
         .into_iter()
-        .map(|row| {
-            if row.version == 1 {
-                let entry_type = match row.entry_type.as_str() {
-                    "Sleep" => JournalEntryTypeV1::Sleep {
-                        wakeup_at: row.sleep_wakeup_at,
-                    },
-                    "Call" => JournalEntryTypeV1::Call(OutgoingInvoke {
-                        invocation_id: row.invoked_id,
-                        invoked_target: row.invoked_target,
-                    }),
-                    "OneWayCall" => JournalEntryTypeV1::OneWayCall(OutgoingInvoke {
-                        invocation_id: row.invoked_id,
-                        invoked_target: row.invoked_target,
-                    }),
-                    "Awakeable" => JournalEntryTypeV1::Awakeable(AwakeableIdentifier::new(
-                        my_invocation_id,
-                        row.index,
-                    )),
-                    "GetState" => JournalEntryTypeV1::GetState,
-                    "SetState" => JournalEntryTypeV1::SetState,
-                    "ClearState" => JournalEntryTypeV1::ClearState,
-                    "Run" => JournalEntryTypeV1::Run,
-                    "GetPromise" => JournalEntryTypeV1::GetPromise(row.promise_name),
-                    t => JournalEntryTypeV1::Other(t.to_owned()),
-                };
-
-                Ok(JournalEntry::V1(JournalEntryV1 {
-                    seq: row.index,
-                    entry_type,
-                    completed: row.completed,
-                    name: row.name,
-                }))
-            } else if row.version == 2 {
-                Ok(JournalEntry::V2(JournalEntryV2 {
-                    seq: row.index,
-                    entry_type: row.entry_type,
-                    name: row.name,
-                    entry: row.entry_json.and_then(|j| serde_json::from_str(&j).ok()),
-                    appended_at: row.appended_at,
-                }))
-            } else {
-                anyhow::bail!(
-                    "The row version is unknown, cannot parse the journal: {}",
-                    row.version
-                )
-            }
+        .map(|row| JournalEntryRow {
+            index: row.index,
+            entry_type: row.entry_type,
+            name: row.name,
+            appended_at: row.appended_at,
+            lite: row
+                .entry_lite_json
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+            full: row
+                .entry_json
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
         })
-        .collect::<Result<Vec<_>, _>>()?;
+        .collect();
 
-    // Sort by seq.
-    journal.reverse();
-    Ok(journal)
+    Ok(entries)
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct JournalEventQueryResult {
+    after_journal_entry_index: u32,
+    appended_at: Option<DateTime<Local>>,
+    event_type: String,
+    event_json: Option<String>,
+}
+
+/// Fetch the most recent journal events for an invocation from `sys_journal_events`,
+/// returned oldest-first. Empty when the server predates the table.
+pub async fn get_journal_events(
+    client: &DataFusionHttpClient,
+    invocation_id: &str,
+    limit: usize,
+) -> Result<Vec<JournalEventRow>> {
+    // The table only exists on newer servers; skip gracefully otherwise.
+    let has_events = client
+        .check_columns_exists(
+            "sys_journal_events",
+            &[
+                "after_journal_entry_index",
+                "appended_at",
+                "event_type",
+                "event_json",
+            ],
+        )
+        .await?;
+    if !has_events {
+        return Ok(Vec::new());
+    }
+
+    let query = format!(
+        "SELECT sje.after_journal_entry_index, sje.appended_at, sje.event_type, sje.event_json \
+         FROM sys_journal_events sje WHERE sje.id = '{invocation_id}' \
+         ORDER BY sje.appended_at DESC, sje.after_journal_entry_index DESC LIMIT {limit}"
+    );
+
+    let mut events: Vec<JournalEventRow> = client
+        .run_json_query::<JournalEventQueryResult>(query)
+        .await?
+        .into_iter()
+        .map(|row| JournalEventRow {
+            after_journal_entry_index: row.after_journal_entry_index,
+            appended_at: row.appended_at,
+            event_type: row.event_type,
+            event: row
+                .event_json
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()),
+        })
+        .collect();
+
+    // Return oldest-first for display.
+    events.reverse();
+    Ok(events)
 }
 
 #[serde_as]

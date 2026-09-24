@@ -21,6 +21,14 @@ pub struct ApiErrorBody {
     pub message: String,
 }
 
+impl ApiErrorBody {
+    /// The server's JSON error body, or its raw text when it isn't JSON (e.g. a plain
+    /// `Cannot parse deployment …` 400).
+    pub fn parse(body: String) -> Self {
+        serde_json::from_str(&body).unwrap_or_else(|_| Self::from(body.trim().to_owned()))
+    }
+}
+
 impl From<String> for ApiErrorBody {
     fn from(message: String) -> Self {
         Self {
@@ -37,11 +45,34 @@ pub struct ApiError {
     pub body: ApiErrorBody,
 }
 
+/// Where a Restate error code (e.g. `META0003`) is documented. The page's anchors are
+/// lowercase.
+pub fn error_docs_url(code: &str) -> String {
+    format!(
+        "https://docs.restate.dev/references/errors#{}",
+        code.to_lowercase()
+    )
+}
+
 impl std::fmt::Display for ApiErrorBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let code = self.restate_code.as_deref().unwrap_or("<UNKNOWN>");
-        write!(f, "{} {}", Styled(Style::Warn, code), self.message)?;
-        Ok(())
+        match &self.restate_code {
+            Some(code) => {
+                // The server's message may repeat the code as `[CODE] ` prefixes (once
+                // per error layer); the docs link below already names it.
+                let tag = format!("[{code}] ");
+                let mut message = self.message.as_str();
+                while let Some(rest) = message.strip_prefix(&tag) {
+                    message = rest;
+                }
+                write!(
+                    f,
+                    "{message}\n  -> See {}",
+                    Styled(Style::Info, error_docs_url(code))
+                )
+            }
+            None => write!(f, "{}", self.message),
+        }
     }
 }
 

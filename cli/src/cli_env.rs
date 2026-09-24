@@ -13,7 +13,7 @@
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use figment::providers::{Format, Serialized, Toml};
 use figment::{Figment, Profile};
 use serde::{Deserialize, Serialize};
@@ -228,13 +228,28 @@ impl CliEnv {
         Ok(figment)
     }
 
-    pub fn open_default_editor(&self, path: &Path) -> anyhow::Result<()> {
+    /// Opens `path` in the user's editor. In non-interactive mode it fails instead,
+    /// suggesting `alternative` (e.g. the matching `patch` command).
+    pub fn open_default_editor(&self, path: &Path, alternative: &str) -> anyhow::Result<()> {
+        if !restate_cli_util::CliContext::get().is_interactive() {
+            return Err(restate_cli_util::exit::BadInput(format!(
+                "cannot open an editor in non-interactive mode; {alternative}"
+            ))
+            .into());
+        }
+
         // if nothing else is defined, we use vim.
         let editor = self.editor.as_deref().unwrap_or("vi").to_owned();
 
         let mut child = std::process::Command::new(editor.clone())
             .arg(path)
-            .spawn()?;
+            .spawn()
+            .with_context(|| {
+                format!(
+                    "could not start the editor '{editor}'; set the {EDITOR_ENV}, VISUAL or \
+                     EDITOR env variable to the editor to use, e.g. EDITOR=nano"
+                )
+            })?;
 
         let status = child.wait()?;
 

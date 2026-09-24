@@ -95,6 +95,7 @@ zip = { version = "8.0" }
 restate-cli-util = { workspace = true, features = ["test-util"] }
 
 [build-dependencies]
+restate-storage-query-datafusion = { workspace = true, features = ["table_docs"] }
 vergen-gitcl = { workspace = true }
 
 [lib]

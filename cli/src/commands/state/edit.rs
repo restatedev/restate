@@ -53,7 +53,7 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     let current_state_json = as_json(current_state, opts.binary)?;
     write_json_file(&edit_file, current_state_json)?;
     let modified_state_json = loop {
-        env.open_default_editor(&edit_file)?;
+        env.open_default_editor(&edit_file, "use `restate state patch` instead")?;
         match read_json_file(&edit_file) {
             Ok(json) => break json,
             Err(err) => {

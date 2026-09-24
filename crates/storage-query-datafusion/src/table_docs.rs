@@ -77,6 +77,27 @@ pub struct OwnedTableDocs {
     pub columns: Vec<TableColumn>,
 }
 
+impl From<&StaticTableDocs> for OwnedTableDocs {
+    fn from(value: &StaticTableDocs) -> Self {
+        OwnedTableDocs {
+            name: Cow::Borrowed(value.name),
+            description: Cow::Borrowed(value.description),
+            columns: value.columns.to_vec(),
+        }
+    }
+}
+
+/// Returns every table's docs as owned values: all entries of [`ALL_TABLE_DOCS`]
+/// followed by the synthesized `sys_invocation` view. This is the single source
+/// of truth consumed by the docs generator and the CLI's embedded reference.
+pub fn all_table_docs() -> Vec<OwnedTableDocs> {
+    ALL_TABLE_DOCS
+        .iter()
+        .map(OwnedTableDocs::from)
+        .chain(std::iter::once(sys_invocation_table_docs()))
+        .collect()
+}
+
 impl TableDocs for OwnedTableDocs {
     fn name(&self) -> &str {
         self.name.as_ref()

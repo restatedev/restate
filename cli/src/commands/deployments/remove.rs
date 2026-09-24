@@ -12,11 +12,11 @@ use std::collections::HashMap;
 
 use anyhow::{Result, bail};
 use cling::prelude::*;
-use comfy_table::Table;
 use indoc::indoc;
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::CliContext;
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indentln, c_success};
 use restate_types::schema::service::ServiceMetadata;
@@ -26,23 +26,25 @@ use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::ui::deployments::{
-    add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
-    render_deployment_status,
+    active_invocations_field, calculate_deployment_status, deployment_info_fields,
+    deployment_status_field,
 };
-use crate::ui::service_handlers::icon_for_service_type;
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::service_handlers::{service_type_label, service_type_machine};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]
 #[cling(run = "run_remove")]
 pub struct Remove {
-    /// Force removal of a deployment if it's not drained. This is dangeous and will
+    /// Force removal of a deployment if it's not drained. This is dangerous and will
     /// break in-flight invocations pinned to this deployment.
     #[clap(long)]
     force: bool,
-    // TODO: Support inference of endpoint or ID, but this require the deployment
-    // ID to follow a more constrained format
-    /// Deployment ID
+    /// Deployment ID, or the endpoint URL / Lambda ARN it was registered with
     deployment_id: String,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
@@ -51,7 +53,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     let deployment = client
-        .get_deployment(&opts.deployment_id)
+        .get_deployment(&super::resolve_deployment_id(&client, &opts.deployment_id).await?)
         .await?
         .into_body()
         .await?;
@@ -83,14 +85,21 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         &latest_services,
     );
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("ID:", deployment_id);
+    let json = CliContext::get().json_output();
+    let mut deployment_fields = vec![("id".to_owned(), Field::new(deployment_id.to_string()))];
+    deployment_fields.extend(deployment_info_fields(&deployment));
+    deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
+    deployment_fields.push((
+        "invocations".to_owned(),
+        active_invocations_field(total_active_inv),
+    ));
+    let mut f = Formatter::new();
+    f.detail("deployment", &deployment_fields);
 
-    add_deployment_to_kv_table(&deployment, &mut table);
-    table.add_kv_row("Status:", render_deployment_status(status));
-    table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
-    c_println!("{}", table);
-    c_println!("{}", Styled(Style::Info, "Services:"));
+    if !json {
+        c_println!("{}", Styled(Style::Info, "Services:"));
+    }
+    let mut service_rows = Vec::new();
     for service in deployment_services {
         let Some(latest_service) = latest_services.get(&service.name) else {
             // if we can't find this service in the latest set of service, something is off. A
@@ -102,13 +111,18 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             );
             continue;
         };
+        if json {
+            service_rows.push(vec![
+                Field::new(service.name),
+                Field::new(service_type_machine(&service.ty)),
+                Field::new(service.revision),
+                Field::new(latest_service.revision),
+                Field::new(latest_service.deployment_id.to_string()),
+            ]);
+            continue;
+        }
         c_indentln!(1, "- {}", Styled(Style::Info, &service.name));
-        c_indentln!(
-            2,
-            "Type: {:?} {}",
-            service.ty,
-            icon_for_service_type(&service.ty),
-        );
+        c_indentln!(2, "Type: {}", service_type_label(&service.ty));
         let latest_revision_message = if service.revision == latest_service.revision {
             // We are latest.
             format!("[{}]", Styled(Style::Success, "Latest"))
@@ -127,7 +141,29 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             latest_revision_message
         );
     }
-    c_println!();
+    if json {
+        f.table(
+            "services",
+            &[
+                "service",
+                "service_type",
+                "revision",
+                "latest_revision",
+                "latest_deployment_id",
+            ],
+            &service_rows,
+        );
+        f.table(
+            "changes",
+            &["deployment_id", "change"],
+            &[vec![
+                Field::new(deployment_id.to_string()),
+                Field::new("delete"),
+            ]],
+        );
+    } else {
+        c_println!();
+    }
 
     // Now, if this is a drained deployment, it's safe to remove. If not, we ask the user to use
     // --force.
@@ -161,7 +197,9 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         }
         crate::ui::deployments::DeploymentStatus::Drained => {
             // safe to remove
-            c_success!("The deployment is fully drained and is safe to remove");
+            if !json {
+                c_success!("The deployment is fully drained and is safe to remove");
+            }
             true
         }
     };
@@ -174,18 +212,24 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         );
     }
 
-    confirm_or_exit("Are you sure you want to remove this deployment?")?;
+    f.confirm(
+        &opts.dry_run,
+        "Are you sure you want to remove this deployment?",
+    )?;
 
     let result = client
         .remove_deployment(
-            &opts.deployment_id,
+            &deployment_id.to_string(),
             //TODO: Use opts.force when the server implements the false + validation case!
             true,
         )
         .await?;
     let _ = result.success_or_error()?;
 
-    c_println!();
-    c_success!("Deployment {} removed successfully", &opts.deployment_id);
-    Ok(())
+    if !json {
+        c_println!();
+        c_success!("Deployment {deployment_id} removed successfully");
+    }
+    f.next_step("restate deployments list", "see the remaining deployments");
+    f.finish()
 }

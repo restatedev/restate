@@ -73,7 +73,7 @@ pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
     std::fs::write(&path, format!("{prelude}{body}"))
         .context("failed to write the editor template")?;
 
-    env.open_default_editor(&path)?;
+    env.open_default_editor(&path, "use `restate kafka-clusters patch` instead")?;
 
     let edited_text = std::fs::read_to_string(&path).context("failed to read the edited file")?;
     let edited = parse_librdkafka_properties(&edited_text)?;

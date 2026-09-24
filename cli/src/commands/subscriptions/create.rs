@@ -170,7 +170,10 @@ fn edit_template(env: &CliEnv) -> Result<(String, String, HashMap<String, String
     )
     .context("failed to write the editor template")?;
 
-    env.open_default_editor(&path)?;
+    env.open_default_editor(
+        &path,
+        "pass source, sink and options as arguments or via --from-file instead",
+    )?;
 
     let edited_text = std::fs::read_to_string(&path).context("failed to read the edited file")?;
     let mut full = parse_librdkafka_properties(&edited_text)?;
