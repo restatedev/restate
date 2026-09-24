@@ -702,7 +702,7 @@ where
                     // which are required by the scheduler when applying the scheduler events.
                     self.ctx.vqueues_mut().try_compact();
                 },
-                result = self.leadership_state.run(&mut self.ctx) => {
+                result = self.leadership_state.run(&mut self.ctx, config) => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
                         "leadership_state.run",
