@@ -19,16 +19,25 @@ use convert_case::{Case, Casing};
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
-use restate_cli_util::ui::console::input;
-use restate_cli_util::ui::stylesheet::Style;
+use serde_json::{Value, json};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-use crate::console::{Styled, c_println, choose};
+use restate_cli_util::CliContext;
+use restate_cli_util::ui::console::input;
+use restate_cli_util::ui::stylesheet::Style;
+
+use crate::console::{Styled, c_println, c_title, choose};
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
 pub struct Examples {
+    /// List the available examples (grouped by language) without downloading anything.
+    /// Combine with --json for machine-readable output.
+    #[arg(long, short = 'l')]
+    list: bool,
+
     /// Output directory.
     #[arg(long, alias = "out")]
     output_directory: Option<PathBuf>,
@@ -58,6 +67,12 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
 
     // ai-examples repo might not have releases yet, treat as empty
     let ai_examples_assets = ai_examples_release.map(|r| r.assets).unwrap_or_default();
+
+    // List-only mode: print the catalog without downloading anything.
+    if example_opts.list {
+        let languages = parse_available_examples(examples_assets, ai_examples_assets);
+        return list_examples(languages);
+    }
 
     let (selected_example, selected_repo) = if let Some(example) = &example_opts.name {
         // Check if the example exists, prefer examples repo if found in both
@@ -148,10 +163,70 @@ enum ExampleRepo {
     AiExamples,
 }
 
+impl ExampleRepo {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExampleRepo::Examples => "examples",
+            ExampleRepo::AiExamples => "ai-examples",
+        }
+    }
+}
+
 struct Example {
     display_name: String,
     asset: Asset,
     repo: ExampleRepo,
+}
+
+impl Example {
+    /// The identifier passed to `restate example <name>` (the asset name, no `.zip`).
+    fn id(&self) -> &str {
+        self.asset.name.trim_end_matches(".zip")
+    }
+}
+
+/// List the available examples grouped by language, honoring `--json`.
+fn list_examples(mut languages: Vec<Language>) -> Result<()> {
+    languages.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+
+    let mut f = Formatter::new();
+    if let Some(example) = languages.iter().flat_map(|l| &l.examples).next() {
+        f.next_step(
+            &format!("restate example {}", example.id()),
+            "download that example (swap in any other listed name)",
+        );
+    }
+
+    if CliContext::get().json_output() {
+        let languages_json: Vec<Value> = languages
+            .iter()
+            .map(|language| {
+                let examples: Vec<Value> = language
+                    .examples
+                    .iter()
+                    .map(|example| {
+                        json!({
+                            "name": example.id(),
+                            "display_name": example.display_name,
+                            "repo": example.repo.as_str(),
+                        })
+                    })
+                    .collect();
+                json!({ "language": language.display_name, "examples": examples })
+            })
+            .collect();
+        f.value("templates", Field::json(Value::Array(languages_json)));
+        return f.finish();
+    }
+
+    for language in &languages {
+        c_title!("📦", &language.display_name);
+        for example in &language.examples {
+            c_println!("  {}  —  {}", example.id(), example.display_name);
+        }
+        c_println!();
+    }
+    f.finish()
 }
 
 impl fmt::Display for Example {

@@ -10,14 +10,14 @@
 
 use anyhow::{Result, bail};
 use cling::prelude::*;
-use comfy_table::Table;
 
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_println, c_success, c_warn};
+use restate_cli_util::{CliContext, c_success, c_warn};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_delete")]
@@ -30,6 +30,9 @@ pub struct Delete {
     /// subscriptions will be orphaned and will stop consuming.
     #[clap(long)]
     force: bool,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> {
@@ -41,10 +44,15 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
         .into_body()
         .await?;
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("Name:", cluster.name.as_str());
-    table.add_kv_row("Subscriptions:", cluster.subscriptions.len());
-    c_println!("{table}");
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    f.detail(
+        "kafka_cluster",
+        &[
+            ("name", Field::new(cluster.name.as_str())),
+            ("subscriptions", Field::new(cluster.subscriptions.len())),
+        ],
+    );
 
     if !cluster.subscriptions.is_empty() && !opts.force {
         bail!(
@@ -62,16 +70,32 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
         );
     }
 
-    confirm_or_exit(&format!(
-        "Are you sure you want to delete Kafka cluster {}?",
-        opts.name
-    ))?;
+    if json {
+        f.table(
+            "changes",
+            &["kafka_cluster", "change"],
+            &[vec![Field::new(opts.name.as_str()), Field::new("delete")]],
+        );
+    }
+    f.confirm(
+        &opts.dry_run,
+        &format!(
+            "Are you sure you want to delete Kafka cluster {}?",
+            opts.name
+        ),
+    )?;
 
     client
         .delete_kafka_cluster(&opts.name, opts.force)
         .await?
         .success_or_error()?;
 
-    c_success!("Kafka cluster {} deleted", &opts.name);
-    Ok(())
+    if !json {
+        c_success!("Kafka cluster {} deleted", &opts.name);
+    }
+    f.next_step(
+        "restate kafka-clusters list",
+        "see the remaining Kafka clusters",
+    );
+    f.finish()
 }

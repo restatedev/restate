@@ -8,20 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Result;
+use cling::prelude::*;
+
+use restate_cli_util::ui::stylesheet::Style;
+
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
-use crate::ui::invocations::render_simple_invocation_list;
-
 use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use anyhow::{Result, anyhow, bail};
-use cling::prelude::*;
-use comfy_table::{Attribute, Cell, Color, Table};
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::invocations::{
+    finish_invocation_results, no_invocations_to_change, print_invocation_changes,
+    print_invocation_results,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_restart_as_new")]
@@ -39,6 +42,8 @@ pub struct RestartAsNew {
     /// Limit the number of fetched invocations
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) -> Result<()> {
@@ -47,74 +52,56 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
 
     let filter = format!(
         "{} AND status = 'completed' LIMIT {}",
-        create_query_filter(&opts.query),
+        create_query_filter(&opts.query)?,
         opts.limit
     );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
-        bail!(
+        return no_invocations_to_change(format!(
             "No invocations found for query {}! Note that the restart command only works on completed invocations.",
             opts.query
-        );
+        ));
     };
 
-    render_simple_invocation_list(
+    let mut f = Formatter::new();
+    print_invocation_changes(
+        &mut f,
         &invocations,
+        "restart",
         DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
-    );
+    )?;
+    f.confirm(
+        &opts.dry_run,
+        "Are you sure you want to restart these invocations?",
+    )?;
 
-    // Get the invocation and confirm
-    confirm_or_exit("Are you sure you want to restart these invocations?")?;
+    let (succeeded, failed) = batch_execute(client, invocations, |client, invocation| async move {
+        let envelope = client
+            .restart_invocation(&invocation.id)
+            .await
+            .map_err(anyhow::Error::from)?;
+        let response = envelope.into_body().await.map_err(anyhow::Error::from)?;
+        Ok(response.new_invocation_id)
+    })
+    .await;
 
-    // Restart invocations
-    let (restarted, failed_to_restart) =
-        batch_execute(client, invocations, |client, invocation| async move {
-            let envelope = client
-                .restart_invocation(&invocation.id)
-                .await
-                .map_err(anyhow::Error::from)?;
-            let response = envelope.into_body().await.map_err(anyhow::Error::from)?;
-            Ok(response.new_invocation_id)
+    print_invocation_results(&mut f, "Restarted", &succeeded, &failed);
+    let rows: Vec<Vec<Field>> = succeeded
+        .iter()
+        .map(|(old, new_id)| {
+            vec![
+                Field::new(old.id.clone()),
+                Field::styled(new_id.to_string(), Style::Info),
+            ]
         })
-        .await;
-    let succeeded_count = restarted.len();
-    let failed_count = failed_to_restart.len();
-
-    c_println!();
-    c_success!("Restarted {} invocations:", succeeded_count);
-
-    // Print success
-    let mut invocations_table = Table::new_styled();
-    invocations_table.set_styled_header(vec!["OLD ID", "NEW ID"]);
-    for (old_inv, restart_as_new_response) in restarted {
-        invocations_table.add_row(vec![
-            Cell::new(&old_inv.id),
-            Cell::new(restart_as_new_response).add_attribute(Attribute::Bold),
-        ]);
+        .collect();
+    f.table("restarted", &["invocation_id", "new_invocation_id"], &rows);
+    if let [(_, new_id)] = succeeded.as_slice() {
+        f.next_step(
+            &format!("restate invocations describe {new_id}"),
+            "check the new invocation's status",
+        );
     }
-    c_indent_table!(0, invocations_table);
-
-    // Print failed ones, if any
-    if !failed_to_restart.is_empty() {
-        c_println!();
-        c_warn!("Failed to restart:");
-        let mut failed_to_restart_table = Table::new_styled();
-        failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
-        for (inv, reason) in failed_to_restart {
-            failed_to_restart_table.add_row(vec![
-                Cell::new(&inv.id),
-                Cell::new(reason).fg(Color::DarkRed),
-            ]);
-        }
-        c_indent_table!(0, failed_to_restart_table);
-
-        return Err(anyhow!(
-            "Failed to restart {} invocations out of {}",
-            failed_count,
-            failed_count + succeeded_count
-        ));
-    }
-
-    Ok(())
+    finish_invocation_results(f, "restart", succeeded.len(), failed)
 }

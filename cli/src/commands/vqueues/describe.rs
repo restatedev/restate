@@ -11,17 +11,18 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 use serde::Deserialize;
+use serde_json::Value;
 
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::CliContext;
+use restate_cli_util::c_eprintln;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_eprintln, c_println, c_title};
 use restate_types::vqueues::VQueueId;
 
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
 use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -76,84 +77,111 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         ))
         .await?;
 
-    let mut info = Table::new_styled();
-    info.add_kv_row("ID:", &queue.id);
-    info.add_kv_row("Service:", queue.service_name.as_deref().unwrap_or("-"));
-    info.add_kv_row("Scope:", queue.scope.as_deref().unwrap_or("-"));
-    info.add_kv_row("Limit key:", queue.limit_key.as_deref().unwrap_or("-"));
-    info.add_kv_row("Lock:", queue.lock_name.as_deref().unwrap_or("-"));
-    info.add_kv_row("Active:", queue.is_active);
-    info.add_kv_row("Paused:", queue.queue_is_paused);
-    info.add_kv_row("Created at:", queue.created_at.display());
-    info.add_kv_row(
-        "Last enqueued at:",
-        display_optional(queue.last_enqueued_at),
-    );
-    info.add_kv_row("Last started at:", display_optional(queue.last_start_at));
-    info.add_kv_row(
-        "Last attempted at:",
-        display_optional(queue.last_attempt_at),
-    );
-    info.add_kv_row("Last finished at:", display_optional(queue.last_finish_at));
-
-    c_title!("📜", "Virtual Queue Information");
-    c_println!("{info}");
-    c_println!();
-
-    let mut counts = Table::new_styled();
-    counts.set_styled_header(vec!["INBOX", "RUNNING", "SUSPENDED", "PAUSED", "FINISHED"]);
-    counts.add_row(vec![
-        Cell::new(queue.num_inbox),
-        Cell::new(queue.num_running),
-        Cell::new(queue.num_suspended),
-        Cell::new(queue.num_paused),
-        Cell::new(queue.num_finished),
-    ]);
-    c_title!("📊", "Entry Counts");
-    c_println!("{counts}");
-    c_println!();
-
-    c_title!("📥", "Entries");
-    if entries.is_empty() {
-        c_println!("No entries found.");
-    } else {
-        let mut entries_table = Table::new_styled();
-        entries_table.set_styled_header(vec![
-            "ENTRY ID",
-            "KIND",
-            "STAGE",
-            "STATUS",
-            "HAS LOCK",
-            "ATTEMPTS",
-            "CREATED-AT",
-            "DEPLOYMENT",
-        ]);
-        for entry in &entries {
-            entries_table.add_row(vec![
-                Cell::new(&entry.entry_id),
-                Cell::new(&entry.entry_kind),
-                Cell::new(&entry.stage),
-                Cell::new(&entry.status),
-                Cell::new(entry.has_lock),
-                Cell::new(entry.num_attempts),
-                Cell::new(entry.created_at.display()),
-                Cell::new(entry.deployment.as_deref().unwrap_or("-")),
-            ]);
-        }
-        c_println!("{entries_table}");
-    }
-
+    let json = CliContext::get().json_output();
     let total_entries = queue.num_inbox
         + queue.num_running
         + queue.num_suspended
         + queue.num_paused
         + queue.num_finished;
-    c_eprintln!("Showing {}/{} entries.", entries.len(), total_entries);
+
+    let mut f = Formatter::new();
+
+    f.title("📜", "Virtual Queue Information");
+    f.detail(
+        "vqueue",
+        &[
+            ("id", Field::new(queue.id)),
+            ("service_name", optional(queue.service_name)),
+            ("scope", optional(queue.scope)),
+            ("limit_key", optional(queue.limit_key)),
+            ("lock_name", optional(queue.lock_name)),
+            ("active", Field::new(queue.is_active)),
+            ("queue_paused", Field::new(queue.queue_is_paused)),
+            ("created_at", datetime(queue.created_at)),
+            (
+                "last_enqueued_at",
+                optional_datetime(queue.last_enqueued_at),
+            ),
+            ("last_start_at", optional_datetime(queue.last_start_at)),
+            ("last_attempt_at", optional_datetime(queue.last_attempt_at)),
+            ("last_finish_at", optional_datetime(queue.last_finish_at)),
+        ],
+    );
+
+    f.title("📊", "Entry Counts");
+    f.detail(
+        "entry_counts",
+        &[
+            ("inbox", Field::new(queue.num_inbox)),
+            ("running", Field::new(queue.num_running)),
+            ("suspended", Field::new(queue.num_suspended)),
+            ("paused_entries", Field::new(queue.num_paused)),
+            ("finished", Field::new(queue.num_finished)),
+        ],
+    );
+
+    let entry_headers = [
+        "entry_id",
+        "kind",
+        "stage",
+        "status",
+        "has_lock",
+        "attempts",
+        "created_at",
+        "deployment",
+    ];
+    let shown = entries.len();
+    let entry_rows: Vec<Vec<Field>> = entries
+        .into_iter()
+        .map(|entry| {
+            vec![
+                Field::new(entry.entry_id),
+                Field::new(entry.entry_kind),
+                Field::new(entry.stage),
+                Field::new(entry.status),
+                Field::new(entry.has_lock),
+                Field::new(entry.num_attempts),
+                datetime(entry.created_at),
+                optional(entry.deployment),
+            ]
+        })
+        .collect();
+
+    f.title("📥", "Entries");
+    if entry_rows.is_empty() && !json {
+        c_eprintln!("No entries found.");
+    } else {
+        f.table("entries", &entry_headers, &entry_rows);
+    }
+
+    f.finish()?;
+
+    if !json {
+        c_eprintln!("Showing {}/{} entries.", shown, total_entries);
+    }
+
     Ok(())
 }
 
-fn display_optional(value: Option<DateTime<Local>>) -> String {
-    value
-        .map(|value| value.display())
-        .unwrap_or_else(|| "-".to_owned())
+/// An optional string: the real value in JSON (`null` when absent), a `-` placeholder
+/// for humans.
+fn optional(value: Option<String>) -> Field {
+    match value {
+        Some(v) => Field::new(v),
+        None => Field::with_display(Value::Null, "-"),
+    }
+}
+
+/// A timestamp: machine-readable RFC 3339 in JSON, the friendly local rendering for
+/// humans.
+fn datetime(value: DateTime<Local>) -> Field {
+    Field::with_display(value.to_rfc3339(), value.display())
+}
+
+/// An optional timestamp, rendering a `-` placeholder (and `null` in JSON) when absent.
+fn optional_datetime(value: Option<DateTime<Local>>) -> Field {
+    match value {
+        Some(dt) => datetime(dt),
+        None => Field::with_display(Value::Null, "-"),
+    }
 }

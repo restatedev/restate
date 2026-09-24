@@ -8,21 +8,23 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::{Result, bail};
+use cling::prelude::*;
+
+use restate_admin_rest_model::version::AdminApiVersion;
+
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::find_active_invocations_simple;
 use crate::clients::{self, AdminClientInterface, batch_execute};
-use crate::ui::invocations::render_simple_invocation_list;
-
 use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use anyhow::{Result, anyhow, bail};
-use cling::prelude::*;
-use comfy_table::{Cell, Color, Table};
-use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
+use crate::ui::fmt::{DryRun, Formatter, OutputFormatter};
+use crate::ui::invocations::{
+    finish_invocation_results, no_invocations_to_change, print_invocation_changes,
+    print_invocation_results,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_pause")]
@@ -39,6 +41,8 @@ pub struct Pause {
     /// Limit the number of fetched invocations
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
@@ -53,60 +57,44 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
     // Pause only applies to in-flight invocations (running, backing-off, or suspended).
     let filter = format!(
         "{} AND status IN ('invoked', 'suspended') LIMIT {}",
-        create_query_filter(&opts.query),
+        create_query_filter(&opts.query)?,
         opts.limit
     );
 
     let invocations = find_active_invocations_simple(&sql_client, &filter).await?;
     if invocations.is_empty() {
-        bail!(
+        return no_invocations_to_change(format!(
             "No invocations found for query {}! Note that the pause command only works on invocations either 'running', 'backing-off' or 'suspended'.",
             opts.query
-        );
+        ));
     };
 
-    render_simple_invocation_list(
+    let mut f = Formatter::new();
+    print_invocation_changes(
+        &mut f,
         &invocations,
+        "pause",
         DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
-    );
+    )?;
+    f.confirm(
+        &opts.dry_run,
+        "Are you sure you want to pause these invocations?",
+    )?;
 
-    // Get the invocation and confirm
-    confirm_or_exit("Are you sure you want to pause these invocations?")?;
+    let (succeeded, failed) = batch_execute(client, invocations, |client, invocation| async move {
+        client
+            .pause_invocation(&invocation.id)
+            .await
+            .map_err(anyhow::Error::from)
+    })
+    .await;
 
-    // Pause invocations
-    let (paused, failed_to_pause) =
-        batch_execute(client, invocations, |client, invocation| async move {
-            client
-                .pause_invocation(&invocation.id)
-                .await
-                .map_err(anyhow::Error::from)
-        })
-        .await;
-    let succeeded_count = paused.len();
-    let failed_count = failed_to_pause.len();
-
-    c_println!();
-    c_success!("Paused {} invocations", succeeded_count);
-
-    // Print failed ones, if any
-    if !failed_to_pause.is_empty() {
-        c_warn!("Failed to pause:");
-        let mut failed_to_restart_table = Table::new_styled();
-        failed_to_restart_table.set_styled_header(vec!["ID", "REASON"]);
-        for (inv, reason) in failed_to_pause {
-            failed_to_restart_table.add_row(vec![
-                Cell::new(&inv.id),
-                Cell::new(reason).fg(Color::DarkRed),
-            ]);
-        }
-        c_indent_table!(0, failed_to_restart_table);
-
-        return Err(anyhow!(
-            "Failed to pause {} invocations out of {}",
-            failed_count,
-            failed_count + succeeded_count
-        ));
+    print_invocation_results(&mut f, "Paused", &succeeded, &failed);
+    if let [(inv, _)] = succeeded.as_slice() {
+        f.next_step(
+            &format!("restate invocations describe {}", inv.id),
+            "check the invocation's status",
+        );
     }
-
-    Ok(())
+    finish_invocation_results(f, "pause", succeeded.len(), failed)
 }

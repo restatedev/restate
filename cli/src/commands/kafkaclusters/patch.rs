@@ -15,16 +15,16 @@ use anyhow::{Result, bail};
 use cling::prelude::*;
 
 use restate_admin_rest_model::kafka_clusters::UpdateKafkaClusterRequest;
-use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{CliContext, c_println, c_success};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 use crate::util::properties::{
     collect_kv_pairs, parse_kv_arg, parse_properties_file, redacted_keys,
 };
 
-use super::utils::render_diff_table;
+use super::utils::{property_diff, property_diff_rows};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_patch")]
@@ -45,6 +45,9 @@ pub struct Patch {
     /// server-side properties are used as the baseline.
     #[clap(short = 'f', long = "from-file", value_name = "FILE")]
     from_file: Option<PathBuf>,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
@@ -96,7 +99,14 @@ pub async fn run_patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
         );
     }
 
-    apply_kafka_cluster_update(&client, &opts.name, &visible_baseline, new_props).await
+    apply_kafka_cluster_update(
+        &client,
+        &opts.name,
+        &visible_baseline,
+        new_props,
+        &opts.dry_run,
+    )
+    .await
 }
 
 /// Renders the diff, asks for confirmation and submits the PATCH. Used both
@@ -106,14 +116,52 @@ pub(super) async fn apply_kafka_cluster_update(
     name: &str,
     visible_baseline: &HashMap<String, String>,
     new_props: HashMap<String, String>,
+    dry_run: &DryRun,
 ) -> Result<()> {
-    let diff = render_diff_table(visible_baseline, &new_props);
-    if diff.row_count() == 0 {
-        c_println!("No changes detected. Aborting.");
-        return Ok(());
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    let diff = property_diff(visible_baseline, &new_props);
+    if json {
+        let rows: Vec<Vec<Field>> = diff
+            .iter()
+            .map(|(key, old, new)| {
+                vec![
+                    Field::new(name),
+                    Field::new("update"),
+                    Field::new(*key),
+                    Field::new(*old),
+                    Field::new(*new),
+                ]
+            })
+            .collect();
+        f.table(
+            "changes",
+            &[
+                "kafka_cluster",
+                "change",
+                "property",
+                "old_value",
+                "new_value",
+            ],
+            &rows,
+        );
+    } else if !diff.is_empty() {
+        f.table(
+            "changes",
+            &["property", "old", "new"],
+            property_diff_rows(&diff),
+        );
     }
-    c_println!("{diff}");
-    confirm_or_exit(&format!("Apply these changes to Kafka cluster {name}?"))?;
+    if diff.is_empty() {
+        if !json {
+            c_println!("No changes detected. Aborting.");
+        }
+        return f.finish();
+    }
+    f.confirm(
+        dry_run,
+        &format!("Apply these changes to Kafka cluster {name}?"),
+    )?;
 
     let _ = client
         .update_kafka_cluster(
@@ -126,6 +174,12 @@ pub(super) async fn apply_kafka_cluster_update(
         .into_body()
         .await?;
 
-    c_success!("Kafka cluster {name} updated");
-    Ok(())
+    if !json {
+        c_success!("Kafka cluster {name} updated");
+    }
+    f.next_step(
+        &format!("restate kafka-clusters describe {name}"),
+        "see the updated Kafka cluster",
+    );
+    f.finish()
 }

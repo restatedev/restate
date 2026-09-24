@@ -10,14 +10,14 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::c_println;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
+use restate_cli_util::{CliContext, exit};
 
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{as_json, get_current_state, pretty_print_json_object};
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_get")]
@@ -46,32 +46,42 @@ pub async fn run_get(State(env): State<CliEnv>, opts: &Get) -> Result<()> {
 
 async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
     let current_state = get_current_state(env, &opts.service, &opts.key, true).await?;
+    if current_state.is_empty() {
+        return Err(
+            exit::NotFound(format!("State not found for {}/{}", opts.service, opts.key)).into(),
+        );
+    }
     let current_state_json = as_json(current_state, opts.binary)?;
 
+    // `--plain` prints the raw JSON document as-is, regardless of `--json`.
     if opts.plain {
         c_println!("{current_state_json}");
         return Ok(());
     }
 
-    c_title!("🤖", "State");
+    let mut f = Formatter::new();
+    f.title("🤖", "State");
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
-    table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
-
-    c_println!("{table}");
-    c_println!();
-
-    let pretty_json = pretty_print_json_object(&current_state_json)?;
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["KEY", "VALUE"]);
-    for (k, v) in pretty_json {
-        table.add_row(vec![Cell::new(k), Cell::new(v)]);
+    if CliContext::get().json_output() {
+        // Humans typed the service and key; scripts get them echoed back.
+        f.detail(
+            "info",
+            &[
+                ("service", Field::new(opts.service.as_str())),
+                ("key", Field::new(opts.key.as_str())),
+            ],
+        );
+        // Emit the real, structured state value so scripts get native JSON.
+        f.value("state", Field::json(current_state_json));
+    } else {
+        // Human output keeps the familiar KEY / VALUE table with pretty-printed values.
+        let pretty_json = pretty_print_json_object(&current_state_json)?;
+        let rows: Vec<Vec<Field>> = pretty_json
+            .into_iter()
+            .map(|(k, v)| vec![Field::new(k), Field::new(v)])
+            .collect();
+        f.table("state", &["key", "value"], &rows);
     }
 
-    c_println!("{table}");
-    c_println!();
-
-    Ok(())
+    f.finish()
 }

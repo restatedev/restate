@@ -39,9 +39,10 @@ pub struct ApiError {
 
 impl std::fmt::Display for ApiErrorBody {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let code = self.restate_code.as_deref().unwrap_or("<UNKNOWN>");
-        write!(f, "{} {}", Styled(Style::Warn, code), self.message)?;
-        Ok(())
+        match &self.restate_code {
+            Some(code) => write!(f, "{} {}", Styled(Style::Warn, code), self.message),
+            None => write!(f, "{}", self.message),
+        }
     }
 }
 

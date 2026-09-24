@@ -14,17 +14,18 @@ use std::str::FromStr;
 
 use anyhow::{Context, Result, bail};
 use cling::prelude::*;
-use comfy_table::Table;
 use http::{HeaderName, HeaderValue, StatusCode, Uri};
 use indicatif::ProgressBar;
 use indoc::indoc;
+use serde_json::Value;
 
 use restate_admin_rest_model::deployments::{
     DetailedDeploymentResponse, GoogleIdTokenAuth, HttpAuth, RegisterDeploymentRequest,
     RegisterDeploymentResponse,
 };
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::CliContext;
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
 use restate_types::identifiers::LambdaARN;
@@ -34,8 +35,9 @@ use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment, MetasClientError};
 use crate::console::c_println;
 use crate::ui::deployments::render_deployment_url;
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 use crate::ui::service_handlers::{
-    create_service_handlers_table, create_service_handlers_table_diff, icon_for_service_type,
+    create_service_handlers_table, create_service_handlers_table_diff, service_type_label,
 };
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -118,6 +120,9 @@ pub struct Register {
     #[cfg(feature = "cloud")]
     #[clap(long = "tunnel-name")]
     tunnel_name: Option<String>,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 #[derive(Clone)]
@@ -458,6 +463,13 @@ async fn register_v3_admin_api(
     if dry_run_result.status_code() == StatusCode::CONFLICT {
         progress.finish_and_clear();
         let api_error = dry_run_result.into_api_error().await?;
+        if CliContext::get().json_output() {
+            bail!(
+                "Breaking changes detected: {}. To register a deployment containing breaking \
+                 changes, re-run with --breaking",
+                api_error.body
+            );
+        }
         c_println!(
             indoc! {
                 "{}
@@ -476,6 +488,22 @@ async fn register_v3_admin_api(
         progress.finish_and_clear();
         // Admin API V3 returns OK if the deployment already exists and force = false.
         let dry_run_result = dry_run_result.into_body().await?;
+        if CliContext::get().json_output() {
+            let mut f = Formatter::new();
+            f.detail(
+                "deployment",
+                &[
+                    ("deployment_id", Field::new(dry_run_result.id.to_string())),
+                    ("already_exists", Field::new(true)),
+                ],
+            );
+            f.table("changes", &CHANGE_HEADERS, &[] as &[Vec<Field>]);
+            f.next_step(
+                &format!("restate deployments describe {}", dry_run_result.id),
+                "see the existing deployment",
+            );
+            return f.finish();
+        }
         c_println!(
             indoc! {
                 "❯ Deployment already exists with id {}
@@ -526,9 +554,12 @@ async fn register_v3_admin_api(
         c_eprintln!();
     }
 
-    print_registration_changes(&client, dry_run_response, existing_deployment).await?;
-
-    confirm_or_exit("Are you sure you want to apply those changes?")?;
+    let mut f = Formatter::new();
+    print_registration_changes(&mut f, &client, dry_run_response, existing_deployment).await?;
+    f.confirm(
+        &discover_opts.dry_run,
+        "Are you sure you want to apply those changes?",
+    )?;
 
     let progress = ProgressBar::new_spinner();
     progress
@@ -551,20 +582,7 @@ async fn register_v3_admin_api(
         .await?;
 
     progress.finish_and_clear();
-    // print the result of the discovery
-    c_success!("DEPLOYMENT:");
-    c_println!(
-        "Deployment ID:  {}",
-        Styled(Style::Info, &registration_result.id)
-    );
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in registration_result.services {
-        table.add_row(vec![svc.name, svc.revision.to_string()]);
-    }
-    c_println!("{}", table);
-
-    Ok(())
+    print_registration_result(f, registration_result)
 }
 
 async fn register_v2_admin_api(
@@ -633,9 +651,12 @@ async fn register_v2_admin_api(
         }
     }
 
-    print_registration_changes(&client, dry_run_result, existing_deployment).await?;
-
-    confirm_or_exit("Are you sure you want to apply those changes?")?;
+    let mut f = Formatter::new();
+    print_registration_changes(&mut f, &client, dry_run_result, existing_deployment).await?;
+    f.confirm(
+        &discover_opts.dry_run,
+        "Are you sure you want to apply those changes?",
+    )?;
 
     let progress = ProgressBar::new_spinner();
     progress
@@ -658,23 +679,42 @@ async fn register_v2_admin_api(
         .await?;
 
     progress.finish_and_clear();
-    // print the result of the discovery
-    c_success!("DEPLOYMENT:");
-    c_println!(
-        "Deployment ID:  {}",
-        Styled(Style::Info, &registration_result.id)
-    );
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE", "REV"]);
-    for svc in registration_result.services {
-        table.add_row(vec![svc.name, svc.revision.to_string()]);
-    }
-    c_println!("{}", table);
-
-    Ok(())
+    print_registration_result(f, registration_result)
 }
 
+/// Print the outcome of a successful registration, pointing at read-only follow-ups.
+fn print_registration_result(mut f: Formatter, result: RegisterDeploymentResponse) -> Result<()> {
+    if !CliContext::get().json_output() {
+        c_success!("DEPLOYMENT:");
+    }
+    f.detail(
+        "deployment",
+        &[(
+            "deployment_id",
+            Field::styled(result.id.to_string(), Style::Info),
+        )],
+    );
+    let rows: Vec<Vec<Field>> = result
+        .services
+        .into_iter()
+        .map(|svc| vec![Field::new(svc.name), Field::new(svc.revision)])
+        .collect();
+    f.table("services", &["service", "revision"], &rows);
+    f.next_step(
+        &format!("restate deployments describe {}", result.id),
+        "see the registered deployment's details",
+    );
+    f.next_step("restate services list", "see all registered services");
+    f.finish()
+}
+
+/// Columns of the `changes` plan table (one row per affected service).
+const CHANGE_HEADERS: [&str; 3] = ["service", "change", "revision"];
+
+/// Show the services a registration will add, update, or remove. Human output renders
+/// detailed per-handler diffs; JSON gets the `deployment` and `changes` plan sections.
 async fn print_registration_changes(
+    f: &mut Formatter,
     client: &AdminClient,
     dry_run_result: RegisterDeploymentResponse,
     existing_deployment: Option<DetailedDeploymentResponse>,
@@ -684,6 +724,47 @@ async fn print_registration_changes(
         .iter()
         .map(|service| service.name.clone())
         .collect::<HashSet<_>>();
+
+    if CliContext::get().json_output() {
+        let mut deployment = vec![("deployment_id", Field::new(dry_run_result.id.to_string()))];
+        if let Some(existing) = &existing_deployment {
+            deployment.push((
+                "overwrites_deployment_id",
+                Field::new(existing.id().to_string()),
+            ));
+        }
+        f.detail("deployment", &deployment);
+
+        let mut rows: Vec<Vec<Field>> = dry_run_result
+            .services
+            .iter()
+            .map(|svc| {
+                let change = if svc.revision == 1 { "add" } else { "update" };
+                vec![
+                    Field::new(svc.name.clone()),
+                    Field::new(change),
+                    Field::new(svc.revision),
+                ]
+            })
+            .collect();
+        if let Some(existing) = existing_deployment {
+            let (_, _, services) = Deployment::from_detailed_deployment_response(existing);
+            rows.extend(
+                services
+                    .into_iter()
+                    .filter(|svc| !discovered_service_names.contains(&svc.name))
+                    .map(|svc| {
+                        vec![
+                            Field::new(svc.name),
+                            Field::new("remove"),
+                            Field::new(Value::Null),
+                        ]
+                    }),
+            );
+        }
+        f.table("changes", &CHANGE_HEADERS, &rows);
+        return Ok(());
+    }
 
     // Services found in this discovery
     let (added, updated): (Vec<_>, Vec<_>) = dry_run_result
@@ -700,12 +781,7 @@ async fn print_registration_changes(
         );
         for service in added {
             c_indentln!(1, "- {}", Styled(Style::Success, &service.name),);
-            c_indentln!(
-                2,
-                "Type: {:?} {}",
-                service.ty,
-                icon_for_service_type(&service.ty),
-            );
+            c_indentln!(2, "Type: {}", service_type_label(&service.ty));
 
             c_indent_table!(2, create_service_handlers_table(service.handlers.values()));
             c_println!();
@@ -757,7 +833,7 @@ async fn print_registration_changes(
         );
         for svc in updated {
             c_indentln!(1, "- {}", Styled(Style::Info, &svc.name),);
-            c_indentln!(2, "Type: {:?} {}", svc.ty, icon_for_service_type(&svc.ty),);
+            c_indentln!(2, "Type: {}", service_type_label(&svc.ty));
 
             if let Some(existing_svc) = existing_services.get(&svc.name) {
                 c_indentln!(

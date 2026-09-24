@@ -13,18 +13,17 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use cling::prelude::*;
-use comfy_table::Table;
 use http::Uri;
 use tempfile::tempdir;
 
 use restate_admin_rest_model::kafka_clusters::KafkaClusterResponse;
 use restate_admin_rest_model::subscriptions::CreateSubscriptionRequest;
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{CliContext, c_println, c_success};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
 use crate::commands::kafkaclusters::utils as kc_shared;
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 use crate::util::properties::{
     collect_kv_pairs, parse_kv_arg, parse_librdkafka_properties, parse_properties_file,
 };
@@ -53,8 +52,11 @@ pub struct Create {
     edit: bool,
 
     /// `key=value` options (e.g. `group.id=my-group`).
-    #[clap(value_name = "KEY=VALUE", value_parser = parse_kv_arg, trailing_var_arg = true, num_args = 0..)]
+    #[clap(value_name = "KEY=VALUE", value_parser = parse_kv_arg, num_args = 0..)]
     options: Vec<(String, String)>,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> {
@@ -105,8 +107,21 @@ pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> 
         .parse()
         .with_context(|| format!("invalid sink URI `{sink}`"))?;
 
-    print_summary(&source, &sink, &options, None);
-    confirm_or_exit("Create this subscription?")?;
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    print_summary(&mut f, &source, &sink, &options, None);
+    if json {
+        f.table(
+            "changes",
+            &["source", "sink", "change"],
+            &[vec![
+                Field::new(source.as_str()),
+                Field::new(sink.as_str()),
+                Field::new("create"),
+            ]],
+        );
+    }
+    f.confirm(&opts.dry_run, "Create this subscription?")?;
 
     let response = client
         .create_subscription(CreateSubscriptionRequest {
@@ -122,32 +137,49 @@ pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> 
         .into_body()
         .await?;
 
-    c_success!("Subscription {} created", response.id);
-    Ok(())
+    if json {
+        f.detail(
+            "subscription",
+            &[("id", Field::new(response.id.to_string()))],
+        );
+    } else {
+        c_success!("Subscription {} created", response.id);
+    }
+    f.next_step(
+        &format!("restate subscriptions describe {}", response.id),
+        "see the new subscription",
+    );
+    f.finish()
 }
 
 fn print_summary(
+    f: &mut Formatter,
     source: &str,
     sink: &str,
     options: &HashMap<String, String>,
     cluster: Option<&KafkaClusterResponse>,
 ) {
-    let mut table = Table::new_styled();
-    table.add_kv_row("Source:", source);
-    table.add_kv_row("Sink:", sink);
+    let mut summary = vec![("source", Field::new(source)), ("sink", Field::new(sink))];
     if let Some(c) = cluster
         && let Some(brokers) = kc_shared::brokers_property(&c.properties)
     {
-        table.add_kv_row("Kafka brokers:", brokers);
+        summary.push(("kafka_brokers", Field::new(brokers)));
     }
-    c_println!("{table}");
+    f.detail("subscription", &summary);
 
-    if options.is_empty() {
+    let json = CliContext::get().json_output();
+    if !json && options.is_empty() {
         c_println!("Options: (none)");
-    } else {
-        c_println!("Options:");
-        c_println!("{}", kc_shared::render_properties_table(options));
+        return;
     }
+    if !json {
+        c_println!("Options:");
+    }
+    f.table(
+        "options",
+        &["key", "value"],
+        kc_shared::properties_rows(options),
+    );
 }
 
 fn edit_template(env: &CliEnv) -> Result<(String, String, HashMap<String, String>)> {

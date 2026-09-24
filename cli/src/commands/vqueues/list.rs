@@ -10,15 +10,17 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::CliContext;
+use restate_cli_util::c_eprintln;
+use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use super::{VQUEUE_COLUMNS, VQueueRow};
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
+use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::invocations::short_ago;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
@@ -40,49 +42,75 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let client = DataFusionHttpClient::new(env).await?;
     let rows: Vec<VQueueRow> = client
         .run_json_query(format!(
-            "SELECT {VQUEUE_COLUMNS} FROM sys_vqueue_meta LIMIT {}",
+            "SELECT {VQUEUE_COLUMNS} FROM sys_vqueue_meta ORDER BY created_at DESC, id LIMIT {}",
             opts.limit
         ))
         .await?;
 
-    if rows.is_empty() {
-        c_println!("No virtual queues found.");
+    if rows.is_empty() && !CliContext::get().json_output() {
+        c_eprintln!("No virtual queues found.");
         return Ok(());
     }
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec![
-        "ID",
-        "SERVICE",
-        "SCOPE",
-        "LIMIT-KEY",
-        "LOCK",
-        "QUEUE-PAUSED",
-        "INBOX",
-        "RUNNING",
-        "SUSPENDED",
-        "PAUSED ENTRIES",
-        "FINISHED",
-    ]);
+    let mut f = Formatter::new();
+    f.list("vqueues", &rows)?;
+    f.finish()
+}
 
-    for row in rows {
-        let service_name = row.service_name.as_deref().unwrap_or("-");
-        let scope = row.scope.as_deref().unwrap_or("-");
-        table.add_row(vec![
-            Cell::new(row.id),
-            Cell::new(service_name),
-            Cell::new(scope),
-            Cell::new(row.limit_key.as_deref().unwrap_or("-")),
-            Cell::new(row.lock_name.as_deref().unwrap_or("-")),
-            Cell::new(row.queue_is_paused),
-            Cell::new(row.num_inbox),
-            Cell::new(row.num_running),
-            Cell::new(row.num_suspended),
-            Cell::new(row.num_paused),
-            Cell::new(row.num_finished),
-        ]);
+impl ListItem for VQueueRow {
+    const HEADERS: &'static [&'static str] = &[
+        "vqueue",
+        "status",
+        "inbox",
+        "running",
+        "suspended",
+        "paused_entries",
+        "finished",
+    ];
+
+    fn columns(&self) -> Vec<Field> {
+        let target = self
+            .lock_name
+            .as_deref()
+            .or(self.service_name.as_deref())
+            .unwrap_or("-");
+        let status = if self.queue_is_paused {
+            Field::styled("paused", Style::Warn)
+        } else if self.is_active {
+            Field::styled("active", Style::Success)
+        } else {
+            Field::new("inactive")
+        };
+        vec![
+            Field::new(format!("[{}] {target}", self.id)),
+            status,
+            Field::new(self.num_inbox),
+            Field::new(self.num_running),
+            Field::new(self.num_suspended),
+            Field::new(self.num_paused),
+            Field::new(self.num_finished),
+        ]
     }
 
-    c_println!("{table}");
-    Ok(())
+    fn details(&self) -> Vec<String> {
+        let mut times = vec![format!("created {}", short_ago(self.created_at))];
+        for (label, at) in [
+            ("enqueued", self.last_enqueued_at),
+            ("started", self.last_start_at),
+            ("finished", self.last_finish_at),
+        ] {
+            if let Some(at) = at {
+                times.push(format!("{label} {}", short_ago(at)));
+            }
+        }
+        let mut lines = vec![times.join(" · ")];
+        let scope = [("scope", &self.scope), ("limit key", &self.limit_key)]
+            .into_iter()
+            .filter_map(|(label, value)| value.as_ref().map(|v| format!("{label} {v}")))
+            .collect::<Vec<_>>();
+        if !scope.is_empty() {
+            lines.push(scope.join(" · "));
+        }
+        lines
+    }
 }

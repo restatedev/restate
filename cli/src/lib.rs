@@ -16,10 +16,12 @@ mod app;
 mod cli_env;
 mod clients;
 mod commands;
+mod error_report;
 mod ui;
 mod util;
 
-pub use app::CliApp;
+pub use app::{CliApp, Command};
+pub use error_report::report_error;
 pub(crate) use restate_cli_util::ui::console;
 
 pub static EXIT_HANDLER: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =

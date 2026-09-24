@@ -50,19 +50,17 @@ pub(crate) async fn get_current_state(
     // 0. require that this is a keyed service
     //
     let client = AdminClient::new(env).await?;
-    match client.get_service(service).await?.into_body().await {
+    let missing_service = match client.get_service(service).await?.into_body().await {
         Ok(service_meta) => match service_meta.ty {
-            ServiceType::VirtualObject | ServiceType::Workflow => {}
+            ServiceType::VirtualObject | ServiceType::Workflow => None,
             ServiceType::Service => bail!("Only virtual objects and workflows support state"),
         },
+        // continue as it is reasonable to get state for a deleted service
         Err(MetasClientError::Api(err)) if allow_missing_service && err.http_status_code == 404 => {
-            // continue as it is reasonable to get state for a deleted service
-            c_warn!(
-                "This service does not exist in the registry; it may have been deleted, or never existed"
-            )
+            Some(err)
         }
         Err(err) => return Err(err.into()),
-    }
+    };
 
     //
     // 1. get the key-value pairs
@@ -81,6 +79,16 @@ pub(crate) async fn get_current_state(
     let mut user_state = HashMap::new();
     for row in query_result_iter {
         user_state.insert(row.key.expect("key"), row.value.expect("value").into());
+    }
+
+    if let Some(err) = missing_service {
+        // Without any leftover state, the unknown service is the actual failure.
+        if user_state.is_empty() {
+            return Err(MetasClientError::Api(err).into());
+        }
+        c_warn!(
+            "This service does not exist in the registry; it may have been deleted, or never existed"
+        )
     }
 
     Ok(user_state)

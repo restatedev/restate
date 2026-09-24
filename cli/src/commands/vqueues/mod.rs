@@ -16,7 +16,7 @@ mod resume;
 use chrono::{DateTime, Local};
 use cling::prelude::*;
 use restate_types::vqueues::VQueueId;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::clients::DataFusionHttpClient;
 
@@ -38,10 +38,12 @@ pub enum VQueues {
     Resume(resume::Resume),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A `sys_vqueue_meta` row. Serialized (for `vqueues list --json`) with shorter keys.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 struct VQueueRow {
     id: String,
     is_active: bool,
+    #[serde(rename(serialize = "queue_paused"))]
     queue_is_paused: bool,
     service_name: Option<String>,
     scope: Option<String>,
@@ -52,10 +54,15 @@ struct VQueueRow {
     last_start_at: Option<DateTime<Local>>,
     last_attempt_at: Option<DateTime<Local>>,
     last_finish_at: Option<DateTime<Local>>,
+    #[serde(rename(serialize = "inbox"))]
     num_inbox: u64,
+    #[serde(rename(serialize = "running"))]
     num_running: u64,
+    #[serde(rename(serialize = "suspended"))]
     num_suspended: u64,
+    #[serde(rename(serialize = "paused_entries"))]
     num_paused: u64,
+    #[serde(rename(serialize = "finished"))]
     num_finished: u64,
 }
 

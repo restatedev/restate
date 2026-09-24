@@ -10,6 +10,7 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::DryRun;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use restate_admin_rest_model::services::ModifyServiceRequest;
@@ -54,8 +55,14 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     )
     .context("Cannot parse the edited config file")?;
 
-    super::patch::apply_service_configuration_patch(&opts.service, admin_client, modify_request)
-        .await
+    // Interactive (the user already reviewed the changes in the editor): no `--dry-run`.
+    super::patch::apply_service_configuration_patch(
+        &opts.service,
+        admin_client,
+        modify_request,
+        &DryRun::default(),
+    )
+    .await
 }
 
 // TODO generate this file from the JsonSchema

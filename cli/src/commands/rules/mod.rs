@@ -20,7 +20,7 @@ use std::str::FromStr;
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Local};
 use cling::prelude::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use restate_admin_rest_model::rules::{RuleResponse, UpsertRuleRequest};
 use restate_cli_util::{c_println, c_success};
@@ -47,7 +47,7 @@ pub enum Rules {
 }
 
 /// A single rule as projected by the `sys_rules` introspection table.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct RuleRow {
     pub pattern: String,
     #[serde(default)]

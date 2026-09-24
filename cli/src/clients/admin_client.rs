@@ -189,17 +189,17 @@ impl AdminClient {
         // we couldn't validate the admin API. This could mean that the server is not running or
         // runs an old version which does not support version information. Query the health endpoint
         // to see whether the server is reachable and fail if not.
-        if client
+        // Keep the cause so the failure is classified (network vs. auth) for exit codes.
+        if let Err(err) = client
             .health()
             .await
-            .map_err(Into::into)
+            .map_err(Error::from)
             .and_then(|r| r.success_or_error())
-            .is_err()
         {
-            bail!(
-                "Unable to connect to the Restate server '{}'. Please make sure that it is running and reachable.",
+            return Err(anyhow::Error::new(err).context(format!(
+                "Unable to connect to the Restate server '{}'; make sure that it is running and reachable",
                 client.base_url
-            );
+            )));
         }
 
         c_warn!(

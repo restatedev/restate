@@ -12,11 +12,9 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use comfy_table::{Cell, Table};
-
-use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 
+use crate::ui::fmt::Field;
 use crate::util::properties::REDACTION_PLACEHOLDER;
 
 /// Returns `bootstrap.servers`, falling back to `metadata.broker.list`. Returns
@@ -33,61 +31,70 @@ pub fn brokers_property(properties: &HashMap<String, String>) -> Option<&str> {
     None
 }
 
-/// Renders a properties map for `describe`-style output. Sensitive properties
-/// (those whose value is the redaction placeholder) are styled in `Warn` so
-/// they're visually distinguishable from regular values.
-pub fn render_properties_table(properties: &HashMap<String, String>) -> Table {
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["KEY", "VALUE"]);
-
+/// Rows (`key`, `value`) of a properties map for a formatter table, sorted by key.
+/// Sensitive properties (those whose value is the redaction placeholder) are styled
+/// in `Warn` so they're visually distinguishable from regular values.
+pub fn properties_rows(properties: &HashMap<String, String>) -> Vec<Vec<Field>> {
     let mut keys: Vec<&String> = properties.keys().collect();
     keys.sort();
-    for k in keys {
-        let v = &properties[k];
-        let cell = if v == REDACTION_PLACEHOLDER {
-            Cell::new(format!("{}", Styled(Style::Warn, REDACTION_PLACEHOLDER)))
-        } else {
-            Cell::new(v)
-        };
-        table.add_row(vec![Cell::new(k), cell]);
-    }
-    table
+    keys.into_iter()
+        .map(|k| {
+            let v = &properties[k];
+            let value = if v == REDACTION_PLACEHOLDER {
+                Field::styled(v.as_str(), Style::Warn)
+            } else {
+                Field::new(v.as_str())
+            };
+            vec![Field::new(k.as_str()), value]
+        })
+        .collect()
 }
 
-/// Renders a property diff between two maps, with rows sorted by key. Values
-/// equal to [`REDACTION_PLACEHOLDER`] are rendered as `***` so the user can
-/// see that a server-redacted field is being preserved or replaced.
-pub fn render_diff_table(old: &HashMap<String, String>, new: &HashMap<String, String>) -> Table {
-    let mut keys: BTreeSet<&String> = BTreeSet::new();
-    keys.extend(old.keys());
-    keys.extend(new.keys());
+/// A changed property: `(key, old, new)`, `None` meaning unset.
+pub type PropertyChange<'a> = (&'a str, Option<&'a str>, Option<&'a str>);
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["PROPERTY", "OLD", "NEW"]);
+/// The properties that differ between two maps, sorted by key.
+pub fn property_diff<'a>(
+    old: &'a HashMap<String, String>,
+    new: &'a HashMap<String, String>,
+) -> Vec<PropertyChange<'a>> {
+    let keys: BTreeSet<&String> = old.keys().chain(new.keys()).collect();
+    keys.into_iter()
+        .filter_map(|k| {
+            let (old_v, new_v) = (old.get(k), new.get(k));
+            (old_v != new_v).then(|| {
+                (
+                    k.as_str(),
+                    old_v.map(String::as_str),
+                    new_v.map(String::as_str),
+                )
+            })
+        })
+        .collect()
+}
 
-    for k in keys {
-        let old_v = old.get(k);
-        let new_v = new.get(k);
-        if old_v == new_v {
-            continue;
-        }
-        let (old_cell, new_cell) = match (old_v, new_v) {
-            (None, Some(v)) => (
-                Cell::new(format!("{}", Styled(Style::Notice, "(unset)"))),
-                Cell::new(format!("{}", Styled(Style::Success, v))),
-            ),
-            (Some(v), None) => (
-                Cell::new(format!("{}", Styled(Style::Danger, v))),
-                Cell::new(format!("{}", Styled(Style::Notice, "(removed)"))),
-            ),
-            (Some(o), Some(n)) => (
-                Cell::new(format!("{}", Styled(Style::Danger, o))),
-                Cell::new(format!("{}", Styled(Style::Success, n))),
-            ),
-            (None, None) => unreachable!(),
-        };
-        table.add_row(vec![Cell::new(k), old_cell, new_cell]);
-    }
-
-    table
+/// Human rows (`property`, `old`, `new`) of a property diff. Values equal to
+/// [`REDACTION_PLACEHOLDER`] are rendered as `***` so the user can see that a
+/// server-redacted field is being preserved or replaced.
+pub fn property_diff_rows(diff: &[PropertyChange<'_>]) -> Vec<Vec<Field>> {
+    diff.iter()
+        .map(|(k, old_v, new_v)| {
+            let (old_field, new_field) = match (old_v, new_v) {
+                (None, Some(v)) => (
+                    Field::styled("(unset)", Style::Notice),
+                    Field::styled(*v, Style::Success),
+                ),
+                (Some(v), None) => (
+                    Field::styled(*v, Style::Danger),
+                    Field::styled("(removed)", Style::Notice),
+                ),
+                (Some(o), Some(n)) => (
+                    Field::styled(*o, Style::Danger),
+                    Field::styled(*n, Style::Success),
+                ),
+                (None, None) => unreachable!(),
+            };
+            vec![Field::new(*k), old_field, new_field]
+        })
+        .collect()
 }

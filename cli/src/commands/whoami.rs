@@ -8,171 +8,175 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::io::Write;
+
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
 use figment::Profile;
 use itertools::Itertools;
+use serde_json::Value;
 use strum::IntoEnumIterator;
 
 use restate_admin_rest_model::version::AdminApiVersion;
-use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success};
+use restate_cli_util::_unicode_width::UnicodeWidthStr;
+use restate_cli_util::ui::stylesheet::SUCCESS_ICON;
+use restate_cli_util::{CliContext, c_eprintln, c_error, c_println, c_success, exit};
 use restate_types::art::render_restate_logo;
 
 use crate::build_info;
 use crate::cli_env::{CliEnv, EnvironmentType};
 use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]
 pub struct WhoAmI {}
 
-pub async fn run(State(env): State<CliEnv>) {
-    c_println!(
-        "{}",
-        render_restate_logo(CliContext::get().colors_enabled())
-    );
-    c_println!("            Restate");
-    c_println!("       https://restate.dev/");
-    c_println!();
-    let mut table = Table::new();
-    table.load_style(comfy_table::presets::NOTHING);
-    table.add_row(vec![
-        "Ingress base URL",
-        env.ingress_base_url()
-            .map(|u| u.to_string())
-            .as_deref()
-            .unwrap_or("(NONE)"),
-    ]);
+pub async fn run(State(env): State<CliEnv>) -> Result<()> {
+    let json_output = CliContext::get().json_output();
 
-    table.add_row(vec![
-        "Admin base URL",
-        env.admin_base_url()
-            .map(|u| u.to_string())
-            .as_deref()
-            .unwrap_or("(NONE)"),
-    ]);
-
-    if env.config.bearer_token.is_some() {
-        table.add_row(vec!["Authentication Token", "(set)"]);
+    // Human-only preamble: the logo and the project banner never belong in the
+    // structured JSON document.
+    if !json_output {
+        c_println!(
+            "{}",
+            render_restate_logo(CliContext::get().colors_enabled())
+        );
+        c_println!("            Restate");
+        c_println!("       https://restate.dev/");
     }
 
-    c_println!("{}", table);
+    let mut f = Formatter::new();
 
-    c_println!();
-    c_println!("Local Environment");
-    let mut table = Table::new();
-    table.load_style(comfy_table::presets::NOTHING);
-    table.add_row(vec![
-        "Config Dir",
-        &format!(
-            "{} {}",
-            env.config_home.display(),
-            if env.config_home.exists() {
-                "(exists)"
-            } else {
-                "(does not exist)"
-            }
+    // Connection.
+    let url_field = |url: Option<String>| match url {
+        Some(u) => Field::new(u),
+        None => Field::with_display(Value::Null, "(NONE)"),
+    };
+    let token_set = env.config.bearer_token.is_some();
+    let mut connection = vec![
+        (
+            "ingress_base_url",
+            url_field(env.ingress_base_url().map(|u| u.to_string()).ok()),
         ),
-    ]);
-
-    table.add_row(vec![
-        "Environment File",
-        &format!(
-            "{} {}",
-            env.environment_file.display(),
-            if env.environment_file.exists() {
-                "(exists)"
-            } else {
-                "(does not exist)"
-            }
+        (
+            "admin_base_url",
+            url_field(env.admin_base_url().map(|u| u.to_string()).ok()),
         ),
-    ]);
-
-    if env.environment == Profile::Default {
-        table.add_row(vec!["Environment", "default"]);
-    } else {
-        table.add_row(vec![
-            "Environment",
-            &format!("{} (source: {})", env.environment, env.environment_source),
-        ]);
+    ];
+    if json_output {
+        connection.push(("authentication_token_set", Field::new(token_set)));
+    } else if token_set {
+        connection.push(("authentication_token", Field::with_display(true, "(set)")));
     }
+    f.title("🔗", "Connection");
+    f.detail("connection", &connection);
 
-    table.add_row(vec![
-        "Config File",
-        &format!(
-            "{} {}",
-            env.config_file.display(),
-            if env.config_file.exists() {
-                "(exists)"
-            } else {
-                "(does not exist)"
-            }
-        ),
-    ]);
+    // Local environment.
+    let annotate_path = |path: &std::path::Path| -> Field {
+        let annotation = if path.exists() {
+            "(exists)"
+        } else {
+            "(does not exist)"
+        };
+        Field::with_display(
+            path.display().to_string(),
+            format!("{} {annotation}", path.display()),
+        )
+    };
 
-    table.add_row(vec![
-        "Loaded .env file",
-        &CliContext::get()
-            .loaded_dotenv()
-            .map(|x| x.display().to_string())
-            .unwrap_or_else(|| "(NONE)".to_string()),
-    ]);
-    c_println!("{}", table);
-
-    c_println!();
-    c_println!("Restate CLI Build Information");
-    let mut table = Table::new();
-    table.load_style(comfy_table::presets::NOTHING);
-    table.add_row(vec!["Version", build_info::RESTATE_CLI_VERSION]);
-    table.add_row(vec!["Target", build_info::RESTATE_CLI_TARGET_TRIPLE]);
-    table.add_row(vec!["Debug Build?", &format!("{}", build_info::is_debug())]);
-    table.add_row(vec!["Build Time", build_info::RESTATE_CLI_BUILD_TIME]);
-    table.add_row(vec![
-        "Build Features",
-        build_info::RESTATE_CLI_BUILD_FEATURES,
-    ]);
-    if MIN_ADMIN_API_VERSION == MAX_ADMIN_API_VERSION {
-        table.add_row(vec![
-            "Supported admin API",
-            &format!("{}", MIN_ADMIN_API_VERSION.as_repr()),
-        ]);
+    let mut environment: Vec<(&str, Field)> = Vec::new();
+    environment.push(("config_dir", annotate_path(&env.config_home)));
+    if json_output {
+        environment.push(("config_dir_exists", Field::new(env.config_home.exists())));
+    }
+    environment.push(("environment_file", annotate_path(&env.environment_file)));
+    if json_output {
+        environment.push((
+            "environment_file_exists",
+            Field::new(env.environment_file.exists()),
+        ));
+    }
+    let environment_field = if env.environment == Profile::Default {
+        Field::with_display(env.environment.to_string(), "default")
     } else {
-        let versions = AdminApiVersion::iter()
+        Field::with_display(
+            env.environment.to_string(),
+            format!("{} (source: {})", env.environment, env.environment_source),
+        )
+    };
+    environment.push(("environment", environment_field));
+    if json_output {
+        environment.push((
+            "environment_source",
+            Field::new(env.environment_source.to_string()),
+        ));
+    }
+    environment.push(("config_file", annotate_path(&env.config_file)));
+    if json_output {
+        environment.push(("config_file_exists", Field::new(env.config_file.exists())));
+    }
+    let loaded_dotenv = CliContext::get()
+        .loaded_dotenv()
+        .map(|p| p.display().to_string());
+    environment.push((
+        "loaded_dotenv",
+        match loaded_dotenv {
+            Some(p) => Field::new(p),
+            None => Field::with_display(Value::Null, "(NONE)"),
+        },
+    ));
+    f.title("🏠", "Local Environment");
+    f.detail("environment", &environment);
+
+    // Build information.
+    let supported_admin_api = if MIN_ADMIN_API_VERSION == MAX_ADMIN_API_VERSION {
+        Field::new(MIN_ADMIN_API_VERSION.as_repr())
+    } else {
+        let reprs: Vec<u16> = AdminApiVersion::iter()
             .skip_while(|value| *value < MIN_ADMIN_API_VERSION)
             .take_while(|value| *value <= MAX_ADMIN_API_VERSION)
             .map(|value| value.as_repr())
-            .join(",");
-        table.add_row(vec!["Supported admin API", &format!("[{versions}]")]);
-    }
+            .collect();
+        let display = format!("[{}]", reprs.iter().join(","));
+        Field::with_display(Value::from(reprs), display)
+    };
+    let build = vec![
+        ("version", Field::new(build_info::RESTATE_CLI_VERSION)),
+        ("target", Field::new(build_info::RESTATE_CLI_TARGET_TRIPLE)),
+        ("debug_build", Field::new(build_info::is_debug())),
+        ("build_time", Field::new(build_info::RESTATE_CLI_BUILD_TIME)),
+        (
+            "build_features",
+            Field::new(build_info::RESTATE_CLI_BUILD_FEATURES),
+        ),
+        ("supported_admin_api", supported_admin_api),
+        ("git_sha", Field::new(build_info::RESTATE_CLI_COMMIT_SHA)),
+        (
+            "git_commit_date",
+            Field::new(build_info::RESTATE_CLI_COMMIT_DATE),
+        ),
+        ("git_branch", Field::new(build_info::RESTATE_CLI_BRANCH)),
+    ];
+    f.title("🔧", "Restate CLI Build Information");
+    f.detail("build", &build);
 
-    table.add_row(vec!["Git SHA", build_info::RESTATE_CLI_COMMIT_SHA]);
-    table.add_row(vec!["Git Commit Date", build_info::RESTATE_CLI_COMMIT_DATE]);
-    table.add_row(vec!["Git Commit Branch", build_info::RESTATE_CLI_BRANCH]);
-    c_println!("{}", table);
-
+    // Cloud.
     match env.config.environment_type {
         EnvironmentType::Default => {}
         #[cfg(feature = "cloud")]
         EnvironmentType::Cloud => {
-            c_println!();
-            c_println!("Cloud");
-            let mut table = Table::new();
-
             let (account_id, environment_id) = match &env.config.cloud.environment_info {
                 Some(environment_info) => (
-                    environment_info.account_id.as_str(),
-                    environment_info.environment_id.as_str(),
+                    Some(environment_info.account_id.as_str().to_owned()),
+                    Some(environment_info.environment_id.as_str().to_owned()),
                 ),
-                None => ("(NONE)", "(NONE)"),
+                None => (None, None),
             };
 
-            table.load_style(comfy_table::presets::NOTHING);
-            table.add_row(vec!["Account ID", account_id]);
-            table.add_row(vec!["Environment ID", environment_id]);
-
-            if let Some(credentials) = &env.config.cloud.credentials {
-                match credentials.expiry() {
+            let (logged_in, logged_in_status) = match &env.config.cloud.credentials {
+                Some(credentials) => match credentials.expiry() {
                     Ok(expiry) => {
                         let delta = expiry.signed_duration_since(chrono::Utc::now());
                         if delta > chrono::TimeDelta::zero() {
@@ -180,57 +184,153 @@ pub async fn run(State(env): State<CliEnv>) {
                                 delta,
                                 chrono_humanize::Tense::Present,
                             );
-                            table.add_row(vec!["Logged in?", &format!("true (expires in {left})")]);
+                            (true, format!("expires in {left}"))
                         } else {
-                            table.add_row(vec!["Logged in?", "false (token expired)"]);
+                            (false, "token expired".to_string())
                         }
                     }
-                    Err(_) => {
-                        table.add_row(vec!["Logged in?", "false (invalid token)"]);
-                    }
-                }
-            } else {
-                table.add_row(vec!["Logged in?", "false (no token)"]);
-            }
+                    Err(_) => (false, "invalid token".to_string()),
+                },
+                None => (false, "no token".to_string()),
+            };
+            let logged_in_display = format!("{logged_in} ({logged_in_status})");
 
-            c_println!("{}", table);
+            let mut cloud = vec![
+                (
+                    "account_id",
+                    match account_id {
+                        Some(id) => Field::new(id),
+                        None => Field::with_display(Value::Null, "(NONE)"),
+                    },
+                ),
+                (
+                    "environment_id",
+                    match environment_id {
+                        Some(id) => Field::new(id),
+                        None => Field::with_display(Value::Null, "(NONE)"),
+                    },
+                ),
+                (
+                    "logged_in",
+                    Field::with_display(logged_in, logged_in_display),
+                ),
+            ];
+            if json_output {
+                cloud.push(("logged_in_status", Field::new(logged_in_status)));
+            }
+            f.title("☁️", "Cloud");
+            f.detail("cloud", &cloud);
         }
     }
 
-    c_println!();
-    // Get admin client, don't fail completely if we can't get one!
+    // Admin service health. Never fails the command: a failed probe is reported as
+    // unhealthy in the output. Human mode keeps the styled success/error messages;
+    // JSON mode carries a structured `admin_health` result.
+    f.title("🩺", "Admin Service Health");
+    // Non-zero exit when the admin probe fails, so automation gets a liveness signal.
+    let mut health_exit_code: Option<u8> = None;
     match crate::clients::AdminClient::new(&env).await {
         Ok(client) => match client.health().await {
             Ok(envelope) if envelope.status_code().is_success() => {
-                c_success!("Admin Service '{}' is healthy!", client.base_url);
-                if let Some(advertised_ingress_address) = client.advertised_ingress_address {
-                    let mut table = Table::new();
-                    table.load_style(comfy_table::presets::NOTHING);
-                    table.add_row(vec![
-                        "Advertised ingress address",
-                        &advertised_ingress_address,
-                    ]);
-                    c_println!("{}", table);
+                let server_version = client.restate_server_version.to_string();
+                if json_output {
+                    let mut health = vec![
+                        ("healthy", Field::new(true)),
+                        ("base_url", Field::new(client.base_url.to_string())),
+                        ("server_version", Field::new(server_version)),
+                    ];
+                    if let Some(advertised_ingress_address) = &client.advertised_ingress_address {
+                        health.push((
+                            "advertised_ingress_address",
+                            Field::new(advertised_ingress_address.clone()),
+                        ));
+                    }
+                    f.detail("admin_health", &health);
+                } else {
+                    c_success!(
+                        "Admin Service '{}' is healthy! (server version {})",
+                        client.base_url,
+                        server_version
+                    );
+                    if let Some(advertised_ingress_address) = client.advertised_ingress_address {
+                        // Align with the text after the (color-dependent) success icon.
+                        let indent = SUCCESS_ICON.to_string().width() + 1;
+                        c_println!(
+                            "{:indent$}Advertised ingress address: {advertised_ingress_address}",
+                            ""
+                        );
+                    }
                 }
             }
             Ok(envelope) => {
-                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
+                health_exit_code = Some(exit::SERVER);
                 let url = envelope.url().clone();
                 let status_code = envelope.status_code();
                 let body = envelope.into_text().await;
-                c_eprintln!("   >> [{}] from '{}'", status_code.to_string(), url);
-                c_eprintln!("   >> {}", body.unwrap_or_default());
+                if json_output {
+                    f.detail(
+                        "admin_health",
+                        &[
+                            ("healthy", Field::new(false)),
+                            ("base_url", Field::new(client.base_url.to_string())),
+                            ("status_code", Field::new(status_code.to_string())),
+                            ("url", Field::new(url.to_string())),
+                            ("error", Field::new(body.unwrap_or_default())),
+                        ],
+                    );
+                } else {
+                    c_error!("Admin Service '{}' is unhealthy:", client.base_url);
+                    c_eprintln!("   >> [{}] from '{}'", status_code.to_string(), url);
+                    c_eprintln!("   >> {}", body.unwrap_or_default());
+                }
             }
             Err(e) => {
-                c_error!("Admin Service '{}' is unhealthy:", client.base_url);
-                c_eprintln!("   >> {}", e);
+                health_exit_code = Some(exit::NETWORK);
+                if json_output {
+                    f.detail(
+                        "admin_health",
+                        &[
+                            ("healthy", Field::new(false)),
+                            ("base_url", Field::new(client.base_url.to_string())),
+                            ("error", Field::new(e.to_string())),
+                        ],
+                    );
+                } else {
+                    c_error!("Admin Service '{}' is unhealthy:", client.base_url);
+                    c_eprintln!("   >> {}", e);
+                }
             }
         },
         Err(e) => {
-            c_error!("Could not connect to Admin Service:");
-            c_eprintln!("   >> {}", e);
+            health_exit_code = Some(exit::NETWORK);
+            if json_output {
+                f.detail(
+                    "admin_health",
+                    &[
+                        ("healthy", Field::new(false)),
+                        ("error", Field::new(e.to_string())),
+                    ],
+                );
+            } else {
+                c_error!("Could not connect to Admin Service:");
+                c_eprintln!("   >> {}", e);
+            }
         }
     }
 
-    c_println!();
+    if !json_output {
+        c_println!();
+    }
+
+    f.finish()?;
+
+    // Output is already written; signal admin-probe failure via the exit code without
+    // letting the error reporter print a second (duplicate) message.
+    if let Some(code) = health_exit_code {
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(i32::from(code));
+    }
+
+    Ok(())
 }

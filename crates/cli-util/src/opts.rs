@@ -34,6 +34,18 @@ pub enum TableStyle {
 
 #[derive(ValueEnum, Clone, Copy, Eq, PartialEq, Default, Debug)]
 #[clap(rename_all = "kebab-case")]
+pub enum ColorMode {
+    /// Colorize when stdout is a terminal (honors NO_COLOR / CLICOLOR_FORCE / TERM)
+    #[default]
+    Auto,
+    /// Always colorize, even when piped
+    Always,
+    /// Never colorize
+    Never,
+}
+
+#[derive(ValueEnum, Clone, Copy, Eq, PartialEq, Default, Debug)]
+#[clap(rename_all = "kebab-case")]
 pub enum TimeFormat {
     /// Human friendly timestamps and durations
     #[default]
@@ -57,7 +69,7 @@ impl LogLevel for Quiet {
     }
 
     fn quiet_help() -> Option<&'static str> {
-        None
+        Some("Decrease logging verbosity")
     }
 
     fn quiet_long_help() -> Option<&'static str> {
@@ -71,6 +83,7 @@ pub(crate) struct UiOpts {
     #[arg(long, default_value = "compact", global = true)]
     pub table_style: TableStyle,
 
+    /// How timestamps and durations are rendered
     #[arg(long, default_value = "human", global = true)]
     pub time_format: TimeFormat,
 }
@@ -81,6 +94,23 @@ pub(crate) struct ConfirmMode {
     /// Default to `false`, unless running on ci (when env variable 'CI' is set).
     #[arg(name = "yes", long, short, global = true)]
     pub yes: bool,
+
+    /// Never prompt for interactive input; fail instead of waiting.
+    /// Implied when stdin is not a terminal or when the 'CI' env variable is set.
+    #[arg(long, global = true)]
+    pub non_interactive: bool,
+}
+
+#[derive(Args, Clone, Default)]
+pub(crate) struct OutputOpts {
+    /// Print output as JSON instead of human-readable tables. Intended for scripting,
+    /// CI, and automation. Diagnostics are still written to stderr.
+    #[arg(long, global = true)]
+    pub json: bool,
+
+    /// When to colorize output.
+    #[arg(long, value_enum, default_value = "auto", global = true)]
+    pub color: ColorMode,
 }
 
 #[derive(Args, Clone)]
@@ -146,6 +176,8 @@ pub struct CommonOpts {
     pub(crate) verbose: clap_verbosity_flag::Verbosity<Quiet>,
     #[clap(flatten)]
     pub(crate) ui: UiOpts,
+    #[clap(flatten)]
+    pub(crate) output: OutputOpts,
     #[clap(flatten)]
     pub(crate) confirm: ConfirmMode,
     #[clap(flatten)]

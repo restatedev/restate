@@ -12,11 +12,13 @@ mod agg_status;
 mod detailed_status;
 
 use anyhow::Result;
+use chrono::{DateTime, Local};
 use chrono_humanize::Tense;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
-
 use itertools::Itertools;
+use serde_json::{Value, json};
+
 use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
@@ -27,10 +29,100 @@ use restate_types::schema::service::ServiceMetadata;
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClient;
 use crate::clients::datafusion_helpers::{
-    InvocationState, ServiceHandlerLockedKeysMap, ServiceStatus, ServiceStatusMap,
+    InvocationState, LockedKey, LockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
 use crate::ui::invocations::invocation_status;
-use crate::ui::service_handlers::icon_for_service_type;
+use crate::ui::service_handlers::{service_type_label, service_type_machine};
+
+/// Invocation states reported per handler in `services status`, with their JSON keys.
+const REPORTED_STATES: &[(InvocationState, &str)] = &[
+    (InvocationState::Pending, "pending"),
+    (InvocationState::Scheduled, "scheduled"),
+    (InvocationState::Ready, "ready"),
+    (InvocationState::Running, "running"),
+    (InvocationState::BackingOff, "backing_off"),
+    (InvocationState::Suspended, "suspended"),
+    (InvocationState::Paused, "paused"),
+];
+
+/// JSON for the per-handler invocation-state counts of the given services.
+pub(super) fn services_status_json(
+    services: &[ServiceMetadata],
+    status_map: &ServiceStatusMap,
+) -> Value {
+    let empty = ServiceStatus::default();
+    let services: Vec<Value> = services
+        .iter()
+        .map(|svc| {
+            let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
+
+            let mut handlers: Vec<_> = svc.handlers.values().collect();
+            handlers.sort_by(|a, b| a.name.cmp(&b.name));
+            let handlers: Vec<Value> = handlers
+                .into_iter()
+                .map(|handler| {
+                    let states: serde_json::Map<String, Value> = REPORTED_STATES
+                        .iter()
+                        .map(|(state, key)| {
+                            let count = svc_status
+                                .get_handler_stats(*state, &handler.name)
+                                .map(|stats| stats.num_invocations)
+                                .unwrap_or(0);
+                            ((*key).to_owned(), json!(count))
+                        })
+                        .collect();
+                    let oldest = svc_status
+                        .get_handler(&handler.name)
+                        .and_then(|info| info.oldest_non_suspended_invocation_state())
+                        .map(|(state, stats)| {
+                            json!({
+                                "state": state.to_string(),
+                                "at": stats.oldest_at.to_rfc3339(),
+                                "invocation": stats.oldest_invocation,
+                            })
+                        });
+                    json!({
+                        "handler": handler.name,
+                        "states": Value::Object(states),
+                        "oldest_non_suspended": oldest,
+                    })
+                })
+                .collect();
+
+            json!({
+                "name": svc.name,
+                "service_type": service_type_machine(&svc.ty),
+                "handlers": handlers,
+            })
+        })
+        .collect();
+    Value::Array(services)
+}
+
+/// JSON for active (locked) keys of keyed services.
+pub(super) fn locked_keys_json(locked_keys: &LockedKeysMap) -> Value {
+    let services: Vec<Value> = locked_keys
+        .iter()
+        .map(|(service, keys)| {
+            let keys: Vec<Value> = keys
+                .iter()
+                .map(|k| {
+                    json!({
+                        "key": k.key,
+                        "scope": k.scope,
+                        "pending": k.num_queued,
+                        "invocation_holding_lock": k.acquired_by,
+                        "invocation_method_holding_lock": k.handler,
+                        "invocation_status": k.status.map(|s| s.to_string()),
+                        "lock_acquired_at": k.acquired_at.map(|at| at.to_rfc3339()),
+                    })
+                })
+                .collect();
+            json!({ "service": service, "keys": keys })
+        })
+        .collect();
+    Value::Array(services)
+}
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
@@ -80,12 +172,13 @@ async fn render_services_status(
         "RUNNING",
         "BACKING-OFF",
         "SUSPENDED",
+        "PAUSED",
         "OLDEST-NON-SUSPENDED-INVOCATION",
     ]);
     for svc in services {
         let svc_status = status_map.get_service_status(&svc.name).unwrap_or(&empty);
         // Service title
-        let flavor = icon_for_service_type(&svc.ty);
+        let flavor = service_type_label(&svc.ty);
         let svc_title = format!("{} {}", svc.name, flavor);
         table.add_row(vec![
             Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold),
@@ -114,6 +207,7 @@ fn render_handler_state_stats(
             InvocationState::Running if state_stats.num_invocations > 0 => Color::Green,
             InvocationState::BackingOff if state_stats.num_invocations > 5 => Color::Red,
             InvocationState::BackingOff if state_stats.num_invocations > 0 => Color::Yellow,
+            InvocationState::Paused if state_stats.num_invocations > 0 => Color::Red,
             _ => comfy_table::Color::Reset,
         };
         cell.fg(color)
@@ -132,48 +226,12 @@ async fn render_handlers_status(
         .values()
         .sorted_unstable_by(|a, b| a.name.cmp(&b.name))
     {
-        let mut row = vec![];
-        row.push(Cell::new(format!("  {}", handler.name)));
-        // Pending
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::Pending,
-        ));
-
-        // Scheduled
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::Scheduled,
-        ));
-
-        // Ready
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::Ready,
-        ));
-
-        // Running
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::Running,
-        ));
-
-        // Backing-off
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::BackingOff,
-        ));
-
-        row.push(render_handler_state_stats(
-            svc_status,
-            &handler.name,
-            InvocationState::Suspended,
-        ));
+        let mut row = vec![Cell::new(format!("  {}", handler.name))];
+        row.extend(
+            REPORTED_STATES
+                .iter()
+                .map(|(state, _)| render_handler_state_stats(svc_status, &handler.name, *state)),
+        );
 
         let oldest_cell = if let Some(current_handler) = svc_status.get_handler(&handler.name) {
             if let Some((oldest_state, oldest_stats)) =
@@ -209,145 +267,101 @@ async fn render_handlers_status(
 
     Ok(())
 }
-async fn render_locked_keys(
-    locked_keys: ServiceHandlerLockedKeysMap,
+/// Renders the locked keys, at most `limit_per_service` per service.
+fn render_locked_keys(
+    locked_keys: &LockedKeysMap,
     limit_per_service: usize,
     held_threshold_second: i64,
-) -> Result<()> {
-    let locked_keys = locked_keys.into_inner();
-    if locked_keys.is_empty() {
-        return Ok(());
-    }
-
+) {
+    let now = Local::now();
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["", "QUEUE", "LOCKED-BY", "HANDLER", "NOTES"]);
-    for (svc_name, locked_keys) in locked_keys {
-        let mut keys: Vec<_> = locked_keys.into_iter().collect();
-        keys.sort_by_key(|(_, b)| std::cmp::Reverse(b.num_pending));
-
-        let svc_title = format!("{} ({} active keys)", svc_name, keys.len());
+    for (svc_name, keys) in locked_keys {
+        let svc_title = if keys.len() > limit_per_service {
+            format!(
+                "{svc_name} ({} active keys, showing {limit_per_service}, see --locked-keys-limit)",
+                keys.len()
+            )
+        } else {
+            format!("{svc_name} ({} active keys)", keys.len())
+        };
         table.add_row(vec![
             Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold),
         ]);
 
-        // Truncate to fit the limit
-        keys.truncate(limit_per_service);
-
-        for (key, key_info) in keys {
-            let mut row = vec![];
-            // Key
-            row.push(Cell::new(format!("  {}", key)));
-
-            // Queue
-            let queue_color = if key_info.num_pending > 10 {
-                comfy_table::Color::Red
-            } else if key_info.num_pending > 0 {
-                comfy_table::Color::Yellow
-            } else {
-                comfy_table::Color::Reset
+        for key in keys.iter().take(limit_per_service) {
+            let label = match &key.scope {
+                Some(scope) => format!("  {} [scope {scope}]", key.key),
+                None => format!("  {}", key.key),
             };
-
-            row.push(Cell::new(key_info.num_pending).fg(queue_color));
-
-            // Holding invocation
-            if let Some(invocation) = &key_info.invocation_holding_lock {
-                row.push(Cell::new(format!(
-                    "{} ({})",
-                    invocation,
-                    invocation_status(
-                        key_info
-                            .invocation_status
-                            .unwrap_or(InvocationState::Unknown)
-                    )
-                )));
-            } else {
-                row.push(Cell::new("-"));
-            }
-
-            // Holding method
-            if let Some(method) = &key_info.invocation_method_holding_lock {
-                row.push(Cell::new(method));
-            } else {
-                row.push(Cell::new("-"));
-            }
-
-            let mut notes = Cell::new("");
-            // Notes
-            if let Some(invocation_status) = key_info.invocation_status {
-                match invocation_status {
-                    // Heuristic for issues, it's not accurate since we don't have the full picture
-                    // in the CLI. Ideally, we should get metrics like "total flight duration" and
-                    // "total suspension duration", "time_of_first_attempt", etc.
-                    InvocationState::Running => {
-                        // Check for duration...,
-                        if let Some(run_duration) = key_info.invocation_attempt_duration {
-                            let lock_held_period_msg = if let Some(state_duration) =
-                                key_info.invocation_state_duration
-                            {
-                                format!(
-                                    "It's been holding the lock for {}",
-                                    Styled(
-                                        Style::Danger,
-                                        duration_to_human_precise(state_duration, Tense::Present)
-                                    )
-                                )
-                            } else {
-                                String::new()
-                            };
-                            if run_duration.num_seconds() > held_threshold_second {
-                                // too long...
-                                notes = Cell::new(format!(
-                                    "Current attempt has been in-flight for {}. {}",
-                                    Styled(
-                                        Style::Danger,
-                                        duration_to_human_precise(run_duration, Tense::Present)
-                                    ),
-                                    lock_held_period_msg,
-                                ));
-                            }
-                        }
-                    }
-                    InvocationState::Suspended => {
-                        if let Some(suspend_duration) = key_info.invocation_state_duration
-                            && suspend_duration.num_seconds() > held_threshold_second
-                        {
-                            // too long...
-                            notes = Cell::new(format!(
-                                "Suspended for {}. The lock will not be \
-                                    released until this invocation is complete",
-                                Styled(
-                                    Style::Danger,
-                                    duration_to_human_precise(suspend_duration, Tense::Present)
-                                )
-                            ));
-                        }
-                    }
-                    InvocationState::BackingOff => {
-                        // Important to note,
-                        let next_retry = key_info.next_retry_at.expect("No scheduled retry!");
-                        let next_retry = next_retry.signed_duration_since(chrono::Local::now());
-                        let next_retry = duration_to_human_precise(next_retry, Tense::Future);
-
-                        let num_retries = key_info.num_retries.expect("No retries");
-                        let num_retries = if num_retries > 10 {
-                            Styled(Style::Danger, num_retries)
-                        } else {
-                            Styled(Style::Notice, num_retries)
-                        };
-                        notes = Cell::new(format!(
-                            "Retried {num_retries} time(s). Next retry {next_retry}.",
-                        ));
-                    }
-                    _ => {}
-                }
-            }
-
-            row.push(notes);
-
-            table.add_row(row);
+            let queue_color = match key.num_queued {
+                0 => comfy_table::Color::Reset,
+                1..=10 => comfy_table::Color::Yellow,
+                _ => comfy_table::Color::Red,
+            };
+            let holder = match (&key.acquired_by, key.status) {
+                (Some(holder), Some(status)) => format!("{holder} ({})", invocation_status(status)),
+                (Some(holder), None) => holder.clone(),
+                (None, _) => "-".to_owned(),
+            };
+            table.add_row(vec![
+                Cell::new(label),
+                Cell::new(key.num_queued).fg(queue_color),
+                Cell::new(holder),
+                Cell::new(key.handler.as_deref().unwrap_or("-")),
+                Cell::new(lock_note(key, now, held_threshold_second).unwrap_or_default()),
+            ]);
         }
         table.add_row(vec![""]);
     }
     c_println!("{}", table);
-    Ok(())
+}
+
+/// Heuristic hint on why a key has been locked for long.
+fn lock_note(key: &LockedKey, now: DateTime<Local>, held_threshold_second: i64) -> Option<String> {
+    let since = |at: Option<DateTime<Local>>| at.map(|at| now.signed_duration_since(at));
+    let danger = |d| Styled(Style::Danger, duration_to_human_precise(d, Tense::Present));
+    let over_threshold = |d: &chrono::Duration| d.num_seconds() > held_threshold_second;
+    let held = since(key.acquired_at)
+        .map(|d| format!(" Holding the lock for {}.", danger(d)))
+        .unwrap_or_default();
+
+    Some(match key.status? {
+        InvocationState::Running => {
+            let attempt = since(key.last_start_at).filter(over_threshold)?;
+            format!(
+                "Current attempt has been in-flight for {}.{held}",
+                danger(attempt)
+            )
+        }
+        InvocationState::Suspended => {
+            let suspended = since(key.modified_at).filter(over_threshold)?;
+            format!(
+                "Suspended for {}. The lock will not be released until this invocation is complete.",
+                danger(suspended)
+            )
+        }
+        InvocationState::Paused => format!(
+            "Paused. The lock will not be released until this invocation is resumed or killed.{held}"
+        ),
+        InvocationState::BackingOff => {
+            let retries = key.retry_count.unwrap_or_default();
+            let retries = if retries > 10 {
+                Styled(Style::Danger, retries)
+            } else {
+                Styled(Style::Notice, retries)
+            };
+            let next_retry = key
+                .next_retry_at
+                .map(|at| {
+                    format!(
+                        " Next retry {}.",
+                        duration_to_human_precise(at.signed_duration_since(now), Tense::Future)
+                    )
+                })
+                .unwrap_or_default();
+            format!("Retried {retries} time(s).{next_retry}")
+        }
+        _ => return None,
+    })
 }

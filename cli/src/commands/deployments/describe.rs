@@ -13,22 +13,25 @@ use std::collections::HashMap;
 use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::{Cell, Table};
+use serde_json::{Value, json};
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
+use restate_cli_util::CliContext;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_eprintln, c_indent_table, c_indentln, c_println, c_title};
+use restate_cli_util::{c_eprintln, c_indent_table, c_println, c_title};
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
-    add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
-    render_deployment_status,
+    active_invocations_field, calculate_deployment_status, deployment_info_fields,
+    deployment_status_field,
 };
-use crate::ui::service_handlers::icon_for_service_type;
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::service_handlers::{handler_description, service_type_label, service_type_machine};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -70,11 +73,6 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let (deployment_id, deployment, services) =
         Deployment::from_detailed_deployment_response(deployment);
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("ID:", deployment_id);
-
-    add_deployment_to_kv_table(&deployment, &mut table);
-
     let active_inv = if opts.extra {
         let sql_client = crate::clients::DataFusionHttpClient::from(client);
         let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
@@ -82,6 +80,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     } else {
         None
     };
+
+    // Deployment header fields.
+    let mut deployment_fields: Vec<(String, Field)> =
+        vec![("id".to_owned(), Field::new(deployment_id.to_string()))];
+    deployment_fields.extend(deployment_info_fields(&deployment));
 
     if opts.extra {
         let total_active_inv = active_inv.iter().flatten().map(|x| x.inv_count).sum();
@@ -101,16 +104,34 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             &latest_services,
         );
 
-        table.add_kv_row("Status:", render_deployment_status(status));
-        table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
+        deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
+        deployment_fields.push((
+            "invocations".to_owned(),
+            active_invocations_field(total_active_inv),
+        ));
     }
 
-    c_title!("📜", "Deployment Information");
-    c_println!("{}", table);
+    let mut f = Formatter::new();
+    f.title("📜", "Deployment Information");
+    f.detail("deployment", &deployment_fields);
 
-    // Services and methods.
+    if CliContext::get().json_output() {
+        // Services carry nested handlers, which the flat formatter can't model, so
+        // emit them as a nested JSON value.
+        f.value(
+            "services",
+            Field::json(services_json(
+                &services,
+                &latest_services,
+                active_inv.as_deref(),
+                opts.extra,
+            )),
+        );
+        return f.finish();
+    }
+
+    // Human: rich, indented per-service rendering.
     c_println!();
-
     c_title!("🤖", "Services");
     let mut methods_header = vec!["HANDLER", "INPUT", "OUTPUT"];
     if opts.extra {
@@ -129,13 +150,9 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             continue;
         };
 
-        c_indentln!(1, "- {}", Styled(Style::Info, &service.name));
-        c_indentln!(
-            2,
-            "Type: {:?} {}",
-            service.ty,
-            icon_for_service_type(&service.ty),
-        );
+        // Indented like the key/value rows of the detail table above.
+        c_println!(" - {}", Styled(Style::Info, &service.name));
+        c_println!("   Type: {}", service_type_label(&service.ty));
 
         let latest_revision_message = if service.revision == latest_service.revision {
             // We are latest.
@@ -148,17 +165,23 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
                 latest_service.deployment_id
             )
         };
-        c_indentln!(
-            2,
-            "Revision: {} {}",
+        c_println!(
+            "   Revision: {} {}",
             service.revision,
             latest_revision_message
         );
         let mut methods_table = Table::new_styled();
 
-        methods_table.set_styled_header(methods_header.clone());
+        let mut handlers: Vec<_> = service.handlers.values().collect();
+        handlers.sort_by(|a, b| a.name.cmp(&b.name));
+        let with_description = handlers.iter().any(|h| handler_description(h).is_some());
+        let mut header = methods_header.clone();
+        if with_description {
+            header.push("DESCRIPTION");
+        }
+        methods_table.set_styled_header(header);
 
-        for handler in service.handlers.values() {
+        for handler in handlers {
             let mut row = vec![
                 Cell::new(&handler.name),
                 Cell::new(&handler.input_description),
@@ -175,14 +198,74 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
                     .next()
                     .unwrap_or(0);
 
-                row.push(render_active_invocations(active_inv));
+                row.push(crate::ui::deployments::render_active_invocations(
+                    active_inv,
+                ));
+            }
+            if with_description {
+                row.push(Cell::new(handler_description(handler).unwrap_or_default()));
             }
 
             methods_table.add_row(row);
         }
-        c_indent_table!(2, methods_table);
+        c_indent_table!(1, methods_table);
         c_println!();
     }
 
-    Ok(())
+    f.finish()
+}
+
+/// Nested `services` value for `--json`: an array of services, each with its handlers.
+fn services_json(
+    services: &[ServiceMetadata],
+    latest_services: &HashMap<String, ServiceMetadata>,
+    active_inv: Option<&[crate::clients::datafusion_helpers::ServiceHandlerUsage]>,
+    extra: bool,
+) -> Value {
+    let mut out = Vec::with_capacity(services.len());
+    for service in services {
+        let Some(latest_service) = latest_services.get(&service.name) else {
+            continue;
+        };
+        let is_latest = service.revision == latest_service.revision;
+
+        let mut service_handlers: Vec<_> = service.handlers.values().collect();
+        service_handlers.sort_by(|a, b| a.name.cmp(&b.name));
+        let handlers: Vec<Value> = service_handlers
+            .into_iter()
+            .map(|handler| {
+                let mut handler_json = json!({
+                    "handler": handler.name,
+                    "input": handler.input_description,
+                    "output": handler.output_description,
+                    "description": handler_description(handler),
+                });
+                if extra {
+                    let count = active_inv
+                        .into_iter()
+                        .flatten()
+                        .filter(|x| x.service == service.name && x.handler == handler.name)
+                        .map(|x| x.inv_count)
+                        .next()
+                        .unwrap_or(0);
+                    handler_json["active_invocations"] = json!(count);
+                }
+                handler_json
+            })
+            .collect();
+
+        let mut service_json = json!({
+            "name": service.name,
+            "service_type": service_type_machine(&service.ty),
+            "revision": service.revision,
+            "latest": is_latest,
+            "handlers": handlers,
+        });
+        if !is_latest {
+            service_json["latest_revision"] = json!(latest_service.revision);
+            service_json["latest_deployment_id"] = json!(latest_service.deployment_id.to_string());
+        }
+        out.push(service_json);
+    }
+    Value::Array(out)
 }
