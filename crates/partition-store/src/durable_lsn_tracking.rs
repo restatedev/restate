@@ -97,10 +97,10 @@ impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
     type Collector = AppliedLsnCollector;
 
     fn create(
-        &mut self,
+        &self,
         _context: rocksdb::table_properties::TablePropertiesCollectorContext,
-    ) -> AppliedLsnCollector {
-        AppliedLsnCollector::default()
+    ) -> Option<AppliedLsnCollector> {
+        Some(AppliedLsnCollector::default())
     }
 
     fn name(&self) -> &CStr {
