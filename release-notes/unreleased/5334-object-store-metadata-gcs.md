@@ -13,14 +13,30 @@ type = "object-store"
 path = "gs://<bucket>/<prefix>"
 ```
 
-Credentials come from the environment: Application Default Credentials via
-`GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_SERVICE_ACCOUNT`, or the instance metadata server when
-running on Google Cloud. The `aws-*` object store options apply to `s3://` only.
+Credentials come from the environment, in this order:
+
+- a service account key file named by `GOOGLE_SERVICE_ACCOUNT`, or its JSON contents in
+  `GOOGLE_SERVICE_ACCOUNT_KEY`
+- an Application Default Credentials file named by `GOOGLE_APPLICATION_CREDENTIALS`, or else the
+  file `gcloud auth application-default login` writes
+- the instance metadata server, when running on Google Cloud, including GKE Workload Identity
+
+Credentials files must be service account keys or `gcloud` user credentials. Workload identity
+federation configuration files (`"type": "external_account"`) are not supported, and Restate
+fails to start with them. The `aws-*` object store options apply to `s3://` only, and the
+`GOOGLE_*` variables apply to every `gs://` client in the process, including snapshots.
 
 GCS object store clients now also use the configured retry policy, such as
 `metadata-client.object-store-retry-policy` or `worker.snapshots.object-store-retry-policy`, where
 they previously used the object store library's defaults. With Restate's default policy, retries
 are no longer bounded by the library's 3-minute retry timeout.
+
+### Maturity
+
+The GCS backend passes Restate's Jepsen fault-injection tests: 40 five-minute runs against a real
+bucket, with network partitions, process kills and pauses, found no linearizability violations.
+It has not yet been proven in production, though. If you adopt it early, start with clusters
+where you can tolerate problems, and please report anything unexpected.
 
 ### Impact on Users
 

@@ -1242,9 +1242,12 @@ pub enum MetadataClientKind {
         ///
         /// Examples: `s3://bucket/prefix`, `gs://bucket/prefix`
         ///
-        /// For `gs://`, credentials come from the environment: Application Default
-        /// Credentials via `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_SERVICE_ACCOUNT`, or
-        /// the instance metadata server. The `aws-*` options apply to `s3://` only.
+        /// For `gs://`, credentials come from the environment: a service account key named by
+        /// `GOOGLE_SERVICE_ACCOUNT` or given inline in `GOOGLE_SERVICE_ACCOUNT_KEY`, else
+        /// Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS` or the `gcloud`
+        /// default file), else the instance metadata server. Workload identity federation
+        /// (`external_account`) credential files are not supported. The `aws-*` options apply
+        /// to `s3://` only.
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         path: String,
 
