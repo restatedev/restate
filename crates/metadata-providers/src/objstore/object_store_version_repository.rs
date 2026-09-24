@@ -15,7 +15,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use object_store::path::{Path, PathPart};
 use object_store::{
-    Attribute, Error, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
+    Attribute, Error, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload,
 };
 use tracing::{debug, info, instrument};
 use url::Url;
@@ -25,14 +25,6 @@ use restate_types::config::MetadataClientKind;
 
 use super::version_repository::{Tag, TaggedValue, VersionRepository, VersionRepositoryError};
 use crate::objstore::version_repository::{Content, ValueEncoding};
-
-/// Metadata object-store backends must provide atomic conditional writes for the
-/// optimistic concurrency the metadata store relies on (`PutMode::Create` plus
-/// `PutMode::Update` on the current tag). S3 and GCS both provide these via their
-/// native APIs; anything else is rejected up front with a clear error.
-fn is_supported_metadata_scheme(scheme: &str) -> bool {
-    matches!(scheme, "s3" | "gs")
-}
 
 #[derive(Debug)]
 pub(crate) struct ObjectStoreVersionRepository {
@@ -59,10 +51,10 @@ impl ObjectStoreVersionRepository {
             .inspect(|params| info!("Metadata path parameters ignored: {params}"));
         url.set_query(None);
 
-        if !is_supported_metadata_scheme(url.scheme()) {
+        // Other schemes may also support conditional writes, but only these are tested.
+        if !matches!(url.scheme(), "s3" | "gs") {
             anyhow::bail!(
-                "Only the `s3://` and `gs://` protocols are supported for the metadata path, got `{}`",
-                url.scheme()
+                "Only the `s3://` and `gs://` protocols are supported for the metadata path, got `{url}`"
             );
         }
         let prefix = Path::from(url.path());
@@ -70,10 +62,10 @@ impl ObjectStoreVersionRepository {
         let object_store =
             create_object_store_client(url, &object_store, &object_store_retry_policy)
                 .await
+                // Restate reports this error with `{}`, so the cause must be part of the message.
                 .map_err(|e| {
                     anyhow::anyhow!(
-                        "Unable to build an object store client for the metadata path: {}",
-                        e
+                        "Unable to build an object store client for the metadata path: {e}"
                     )
                 })?;
 
@@ -85,9 +77,8 @@ impl ObjectStoreVersionRepository {
 
     #[cfg(test)]
     pub(crate) fn new_for_testing() -> Self {
-        let store = object_store::memory::InMemory::new();
         Self {
-            object_store: Box::new(store),
+            object_store: Box::new(tests::VersionMatchingStore::default()),
             prefix: Default::default(),
         }
     }
@@ -98,22 +89,6 @@ impl ObjectStoreVersionRepository {
         self.prefix
             .clone()
             .join(PathPart::from(<ByteString as AsRef<str>>::as_ref(key)))
-    }
-}
-
-/// Builds the tag for a stored object from the ETag and version the store reported.
-fn tag(e_tag: Option<String>, version: Option<String>) -> Result<Tag, VersionRepositoryError> {
-    let e_tag = e_tag.ok_or_else(|| {
-        VersionRepositoryError::UnexpectedCondition("expecting an ETag to be present".into())
-    })?;
-    Ok(Tag::new(e_tag, version))
-}
-
-/// The precondition for a conditional write, which must match `expected`.
-fn update_version(expected: &Tag) -> UpdateVersion {
-    UpdateVersion {
-        e_tag: Some(expected.e_tag().to_owned()),
-        version: expected.version().map(str::to_owned),
     }
 }
 
@@ -143,7 +118,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
         debug!(%key, %path, size = content.bytes.len(), "calling put");
 
         match self.object_store.put_opts(&path, payload, opts).await {
-            Ok(res) => tag(res.e_tag, res.version),
+            Ok(res) => Tag::from_reported(res.e_tag, res.version),
             Err(Error::AlreadyExists { .. }) => {
                 // a file with this name already exists.
                 // but it can be a deleted marker.
@@ -153,7 +128,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
                     .get(&path)
                     .await
                     .map_err(|e| VersionRepositoryError::Network(e.into()))?;
-                let tag = tag(
+                let tag = Tag::from_reported(
                     get_result.meta.e_tag.clone(),
                     get_result.meta.version.clone(),
                 )?;
@@ -186,7 +161,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
                     .transpose()?
                     .unwrap_or(ValueEncoding::Cbor);
 
-                let tag = tag(res.meta.e_tag.clone(), res.meta.version.clone())?;
+                let tag = Tag::from_reported(res.meta.e_tag.clone(), res.meta.version.clone())?;
                 let mut buf = res
                     .bytes()
                     .await
@@ -214,10 +189,6 @@ impl VersionRepository for ObjectStoreVersionRepository {
         new_content: Content,
     ) -> Result<Tag, VersionRepositoryError> {
         let path = self.path(&key);
-        let mut put_options = PutOptions::from(PutMode::Update(update_version(&expected)));
-        put_options
-            .attributes
-            .insert(Attribute::ContentEncoding, new_content.encoding.into());
 
         debug!(
             %key,
@@ -226,6 +197,11 @@ impl VersionRepository for ObjectStoreVersionRepository {
             size = new_content.bytes.len(),
             "calling put"
         );
+
+        let mut put_options = PutOptions::from(PutMode::Update(expected.into()));
+        put_options
+            .attributes
+            .insert(Attribute::ContentEncoding, new_content.encoding.into());
 
         match self
             .object_store
@@ -236,7 +212,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             )
             .await
         {
-            Ok(res) => tag(res.e_tag, res.version),
+            Ok(res) => Tag::from_reported(res.e_tag, res.version),
             Err(Error::Precondition { .. }) => Err(VersionRepositoryError::PreconditionFailed),
             Err(e) => Err(VersionRepositoryError::Network(e.into())),
         }
@@ -265,7 +241,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             )
             .await
         {
-            Ok(res) => tag(res.e_tag, res.version),
+            Ok(res) => Tag::from_reported(res.e_tag, res.version),
             Err(e) => Err(VersionRepositoryError::Network(e.into())),
         }
     }
@@ -301,7 +277,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
             .put_opts(
                 &path,
                 PutPayload::from_bytes(DELETED_HEADER),
-                PutOptions::from(PutMode::Update(update_version(&expected))),
+                PutOptions::from(PutMode::Update(expected.into())),
             )
             .await
         {
@@ -320,6 +296,12 @@ mod tests {
 
     use bytes::{Buf, Bytes};
     use bytestring::ByteString;
+    use futures::stream::BoxStream;
+    use object_store::memory::InMemory;
+    use object_store::{
+        CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+        PutMultipartOptions, PutResult, UpdateVersion,
+    };
 
     use std::sync::Arc;
     use tokio::task::JoinSet;
@@ -329,14 +311,6 @@ mod tests {
 
     const HELLO: Bytes = Bytes::from_static(b"hello");
     const WORLD: Bytes = Bytes::from_static(b"world");
-
-    #[test]
-    fn supported_metadata_schemes() {
-        assert!(is_supported_metadata_scheme("s3"));
-        assert!(is_supported_metadata_scheme("gs"));
-        assert!(!is_supported_metadata_scheme("az"));
-        assert!(!is_supported_metadata_scheme("http"));
-    }
 
     #[test_log::test(tokio::test)]
     async fn simple_usage() {
@@ -610,39 +584,32 @@ mod tests {
         assert_eq!(content.bytes.get_u64(), 2048u64);
     }
 
-    #[test]
-    fn conditional_writes_match_the_reported_version() {
-        let tag = tag(
-            Some("\"etag\"".to_owned()),
-            Some("1790175353568897".to_owned()),
-        )
-        .unwrap();
-        let precondition = update_version(&tag);
+    #[tokio::test]
+    async fn rejects_unsupported_metadata_scheme() {
+        let err =
+            ObjectStoreVersionRepository::from_configuration(MetadataClientKind::ObjectStore {
+                path: "az://bucket/prefix".into(),
+                object_store: Default::default(),
+                object_store_retry_policy: Default::default(),
+            })
+            .await
+            .unwrap_err();
 
-        assert_eq!(precondition.e_tag.as_deref(), Some("\"etag\""));
-        assert_eq!(precondition.version.as_deref(), Some("1790175353568897"));
+        assert!(err.to_string().contains("`s3://` and `gs://`"));
     }
 
-    /// Runs the conditional-write sequence the metadata store relies on against a real
-    /// object store, e.g. `RESTATE_TEST_GCS_METADATA_PATH=gs://bucket/prefix` with credentials
-    /// in `GOOGLE_APPLICATION_CREDENTIALS`. The in-memory store only matches on ETags, so it
-    /// cannot catch a store-specific precondition such as GCS's object generation.
+    /// Runs the conditional-write sequence the metadata store relies on against a real object
+    /// store, such as `gs://bucket/prefix` with credentials in `GOOGLE_APPLICATION_CREDENTIALS`.
+    #[ignore = "requires RESTATE_METADATA_TEST_OBJECT_STORE_PATH and credentials for it"]
     #[test_log::test(tokio::test)]
-    #[ignore = "needs RESTATE_TEST_GCS_METADATA_PATH and credentials for a real bucket"]
-    async fn gcs_conditional_writes() {
-        let path = std::env::var("RESTATE_TEST_GCS_METADATA_PATH")
-            .expect("RESTATE_TEST_GCS_METADATA_PATH must be set");
+    async fn conditional_writes_against_real_object_store() {
+        let path = std::env::var("RESTATE_METADATA_TEST_OBJECT_STORE_PATH")
+            .expect("RESTATE_METADATA_TEST_OBJECT_STORE_PATH must be set");
         let store =
             ObjectStoreVersionRepository::from_configuration(MetadataClientKind::ObjectStore {
-                path: format!(
-                    "{path}/{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap()
-                        .as_nanos()
-                ),
+                path: format!("{path}/{}", rand::random::<u64>()),
                 object_store: Default::default(),
-                object_store_retry_policy: restate_types::retries::RetryPolicy::None,
+                object_store_retry_policy: Default::default(),
             })
             .await
             .unwrap();
@@ -663,7 +630,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             store
-                .put_if_tag_matches(KEY_1, created, content(HELLO))
+                .put_if_tag_matches(KEY_1, created.clone(), content(HELLO))
                 .await,
             Err(VersionRepositoryError::PreconditionFailed)
         ));
@@ -671,11 +638,109 @@ mod tests {
         assert_eq!(current.tag, updated);
         assert_eq!(current.content.bytes, WORLD);
 
+        assert!(matches!(
+            store.delete_if_tag_matches(KEY_1, created).await,
+            Err(VersionRepositoryError::PreconditionFailed)
+        ));
         store.delete_if_tag_matches(KEY_1, updated).await.unwrap();
         assert!(matches!(
             store.get(KEY_1).await,
             Err(VersionRepositoryError::NotFound)
         ));
         store.create(KEY_1, content(HELLO_WORLD)).await.unwrap();
+
+        store
+            .object_store
+            .delete(&store.path(&KEY_1))
+            .await
+            .unwrap();
+    }
+
+    /// An in-memory store that, like GCS, matches conditional updates on the object version
+    /// alone and rejects them without one, so tests catch a tag that loses the version.
+    #[derive(Debug, Default)]
+    pub(super) struct VersionMatchingStore(InMemory);
+
+    impl std::fmt::Display for VersionMatchingStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "VersionMatchingStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for VersionMatchingStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            mut opts: PutOptions,
+        ) -> object_store::Result<PutResult> {
+            if let PutMode::Update(UpdateVersion { version, .. }) = &opts.mode {
+                let Some(version) = version.clone() else {
+                    return Err(Error::Generic {
+                        store: "VersionMatchingStore",
+                        source: "conditional update without a version".into(),
+                    });
+                };
+                // The in-memory store matches on the ETag, which doubles as the version here.
+                opts.mode = PutMode::Update(UpdateVersion {
+                    e_tag: Some(version),
+                    version: None,
+                });
+            }
+            let result = self.0.put_opts(location, payload, opts).await?;
+            Ok(PutResult {
+                version: result.e_tag.clone(),
+                ..result
+            })
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            opts: PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn MultipartUpload>> {
+            self.0.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &Path,
+            options: GetOptions,
+        ) -> object_store::Result<GetResult> {
+            let mut result = self.0.get_opts(location, options).await?;
+            result.meta.version = result.meta.e_tag.clone();
+            Ok(result)
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, object_store::Result<Path>>,
+        ) -> BoxStream<'static, object_store::Result<Path>> {
+            self.0.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&Path>,
+        ) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
+            self.0.list(prefix)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&Path>,
+        ) -> object_store::Result<ListResult> {
+            self.0.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &Path,
+            to: &Path,
+            options: CopyOptions,
+        ) -> object_store::Result<()> {
+            self.0.copy_opts(from, to, options).await
+        }
     }
 }
