@@ -11,7 +11,7 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, Cache, SliceTransform};
+use rocksdb::{BlockBasedOptions, Cache, SliceTransform, SstPartitionerFactory};
 use tracing::{info, warn};
 
 use restate_core::ShutdownError;
@@ -474,11 +474,15 @@ fn cf_data_options(
     ) {
         (true, _) => {
             // loglet always wins
-            opts.set_sst_partitioner_fixed_prefix(KeyPrefix::size());
+            opts.set_sst_partitioner_factory(&SstPartitionerFactory::fixed_prefix(
+                KeyPrefix::size(),
+            ));
         }
         (_, true) => {
             // Keep all loglets for the same log together.
-            opts.set_sst_partitioner_fixed_prefix(size_of::<KeyPrefixKind>() + size_of::<LogId>())
+            opts.set_sst_partitioner_factory(&SstPartitionerFactory::fixed_prefix(
+                size_of::<KeyPrefixKind>() + size_of::<LogId>(),
+            ));
         }
         _ => {
             // Do not partition SST files
