@@ -1108,16 +1108,17 @@ pub enum RocksDbWriteRateLimiterMode {
     /// # Auto-tuned
     ///
     /// Rocksdb adjusts the rate to the recent background IO demand, between 1/20 of
-    /// `rocksdb-max-write-rate-per-second` and the full value, in steps of 5% every 10
-    /// seconds. After a quiet period, a sudden write burst starts at the lower bound and
-    /// takes minutes to reach the full rate.
+    /// `rocksdb-max-write-rate-per-second` and the full value. Under sustained demand the
+    /// rate can increase by 5% roughly every 10 seconds, so after a quiet period a sudden
+    /// write burst can start near the lower bound and take minutes to reach the full rate.
     #[default]
     AutoTuned,
     /// # Fixed
     ///
-    /// Flushes and compactions always share the full `rocksdb-max-write-rate-per-second`.
-    /// Use it when write bursts arrive faster than the auto-tuner ramps up, and set the
-    /// maximum to what the storage device can sustain.
+    /// Flushes and compactions share a fixed aggregate limit of
+    /// `rocksdb-max-write-rate-per-second`, with no ramp-up. It does not guarantee throughput
+    /// or reserve bandwidth for flushes. Use it when write bursts arrive faster than the
+    /// auto-tuner ramps up, and set the limit to what the storage device can sustain.
     Fixed,
 }
 
