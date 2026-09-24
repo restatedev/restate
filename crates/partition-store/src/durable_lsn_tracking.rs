@@ -30,7 +30,7 @@ use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
 use crate::keys::EncodeTableKey;
 use crate::keys::{DecodeTableKey, KeyKind};
 
-const APPLIED_LSNS_PROPERTY_PREFIX: &str = "p:";
+const APPLIED_LSNS_PROPERTY_PREFIX: &CStr = c"p:";
 
 #[derive(Default)]
 pub(crate) struct AppliedLsnCollector {
@@ -72,9 +72,10 @@ impl TablePropertiesCollector for AppliedLsnCollector {
     }
 
     fn finish(&mut self) -> Result<impl IntoIterator<Item = &(CString, CString)>, CollectorError> {
+        let prefix = APPLIED_LSNS_PROPERTY_PREFIX.to_str().unwrap();
         for (partition_id, lsn) in &self.applied_lsns {
             self.properties.push((
-                CString::new(format!("{APPLIED_LSNS_PROPERTY_PREFIX}{partition_id}")).unwrap(),
+                CString::new(format!("{prefix}{partition_id}")).unwrap(),
                 CString::new(lsn.to_string()).unwrap(),
             ));
         }
@@ -135,7 +136,7 @@ impl EventListener for DurableLsnEventListener {
         };
 
         for key in flush_job_info.get_user_collected_property_keys(APPLIED_LSNS_PROPERTY_PREFIX) {
-            let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.len()..]
+            let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.to_bytes().len()..]
                 .to_string_lossy()
                 .parse::<u16>()
                 .map(PartitionId::from);
