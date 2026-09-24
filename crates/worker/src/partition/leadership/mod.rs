@@ -12,13 +12,13 @@ mod durability_tracker;
 mod fencing;
 mod leader_state;
 mod self_proposer;
+mod self_proposer_scheduler;
 pub mod trim_queue;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
@@ -57,11 +57,8 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
-use restate_vqueues::scheduler::{self};
 use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
-use restate_wal_protocol::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
-};
+use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{Envelope, Raw};
 use restate_worker_api::{
@@ -71,7 +68,7 @@ use restate_worker_api::{
 use self::durability_tracker::DurabilityTracker;
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
-use crate::partition::cleaner::{self, Cleaner};
+use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -137,20 +134,6 @@ pub(crate) enum TaskTermination {
     Unexpected,
     #[display("{}", _0)]
     Failure(GenericError),
-}
-
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum LeaderEvent {
-    Scheduler(Result<scheduler::Decisions, StorageError>),
-    Invoker(InvokerEffect),
-    Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerKeyValue),
-    Cleaner(cleaner::CleanerEffect),
-    PartitionMaintenance(UpdatePartitionDurabilityCommand),
-    UpsertSchema(Schema),
-    UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    NetworkService(NetworkServiceEvent),
 }
 
 #[derive(derive_more::Debug)]
@@ -838,7 +821,11 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await events and monitor appender task
-    pub async fn run(&mut self, ctx: impl Processor + HasVQueues) -> Result<(), Error> {
+    pub async fn run(
+        &mut self,
+        ctx: impl Processor + HasVQueues,
+        config: &Configuration,
+    ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower => futures::future::pending().await,
             State::Candidate { self_proposer, .. }
@@ -848,7 +835,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run(ctx).await,
+            State::Leader(leader_state) => leader_state.run(ctx, config).await,
         }
     }
 }
