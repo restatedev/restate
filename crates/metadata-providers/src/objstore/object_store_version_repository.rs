@@ -15,7 +15,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use object_store::path::{Path, PathPart};
 use object_store::{
-    Attribute, Error, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload,
+    Attribute, Error, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, PutResult,
 };
 use tracing::{debug, info, instrument};
 use url::Url;
@@ -90,6 +90,49 @@ impl ObjectStoreVersionRepository {
             .clone()
             .join(PathPart::from(<ByteString as AsRef<str>>::as_ref(key)))
     }
+
+    /// Writes `content` to the object for `key`, or a tombstone if `content` is `None`, under
+    /// the given write mode.
+    async fn write(
+        &self,
+        key: &ByteString,
+        mode: PutMode,
+        content: Option<Content>,
+    ) -> Result<PutResult, VersionRepositoryError> {
+        let path = self.path(key);
+        let is_create = matches!(mode, PutMode::Create);
+        let is_conditional_update = matches!(mode, PutMode::Update(_));
+        let tombstone = content.is_none();
+        let mut opts = PutOptions::from(mode);
+        let payload = match content {
+            Some(Content { encoding, bytes }) => {
+                opts.attributes
+                    .insert(Attribute::ContentEncoding, encoding.into());
+                PutPayload::from_iter([EXISTS_HEADER, bytes])
+            }
+            None => PutPayload::from_bytes(DELETED_HEADER),
+        };
+
+        debug!(
+            %key,
+            %path,
+            mode = ?opts.mode,
+            tombstone,
+            payload_size = payload.content_length(),
+            "calling put"
+        );
+
+        self.object_store
+            .put_opts(&path, payload, opts)
+            .await
+            .map_err(|e| match e {
+                Error::AlreadyExists { .. } if is_create => VersionRepositoryError::AlreadyExists,
+                Error::Precondition { .. } if is_conditional_update => {
+                    VersionRepositoryError::PreconditionFailed
+                }
+                e => VersionRepositoryError::Network(e.into()),
+            })
+    }
 }
 
 const EXISTS_HEADER: Bytes = Bytes::from_static(b"e");
@@ -103,29 +146,17 @@ impl VersionRepository for ObjectStoreVersionRepository {
         key: ByteString,
         content: Content,
     ) -> Result<Tag, VersionRepositoryError> {
-        let path = self.path(&key);
-
-        let mut opts = PutOptions {
-            mode: PutMode::Create,
-            ..Default::default()
-        };
-
-        opts.attributes
-            .insert(Attribute::ContentEncoding, content.encoding.into());
-
-        let payload = PutPayload::from_iter([EXISTS_HEADER, content.bytes.clone()]);
-
-        debug!(%key, %path, size = content.bytes.len(), "calling put");
-
-        match self.object_store.put_opts(&path, payload, opts).await {
+        match self
+            .write(&key, PutMode::Create, Some(content.clone()))
+            .await
+        {
             Ok(res) => Tag::from_reported(res.e_tag, res.version),
-            Err(Error::AlreadyExists { .. }) => {
-                // a file with this name already exists.
-                // but it can be a deleted marker.
-                // so let's find out what's inside
+            Err(VersionRepositoryError::AlreadyExists) => {
+                // The object exists, but it may be a deletion tombstone, which we can
+                // overwrite if it is still the current version.
                 let get_result = self
                     .object_store
-                    .get(&path)
+                    .get(&self.path(&key))
                     .await
                     .map_err(|e| VersionRepositoryError::Network(e.into()))?;
                 let tag = Tag::from_reported(
@@ -142,7 +173,7 @@ impl VersionRepository for ObjectStoreVersionRepository {
                 assert_eq!(bytes, DELETED_HEADER);
                 self.put_if_tag_matches(key, tag, content).await
             }
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
+            Err(e) => Err(e),
         }
     }
 
@@ -188,34 +219,10 @@ impl VersionRepository for ObjectStoreVersionRepository {
         expected: Tag,
         new_content: Content,
     ) -> Result<Tag, VersionRepositoryError> {
-        let path = self.path(&key);
-
-        debug!(
-            %key,
-            %path,
-            ?expected,
-            size = new_content.bytes.len(),
-            "calling put"
-        );
-
-        let mut put_options = PutOptions::from(PutMode::Update(expected.into()));
-        put_options
-            .attributes
-            .insert(Attribute::ContentEncoding, new_content.encoding.into());
-
-        match self
-            .object_store
-            .put_opts(
-                &path,
-                PutPayload::from_iter([EXISTS_HEADER, new_content.bytes]),
-                put_options,
-            )
-            .await
-        {
-            Ok(res) => Tag::from_reported(res.e_tag, res.version),
-            Err(Error::Precondition { .. }) => Err(VersionRepositoryError::PreconditionFailed),
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
-        }
+        let res = self
+            .write(&key, PutMode::Update(expected.into()), Some(new_content))
+            .await?;
+        Tag::from_reported(res.e_tag, res.version)
     }
 
     #[instrument(level = "debug", skip(self, new_content), err(level = "debug"))]
@@ -224,42 +231,15 @@ impl VersionRepository for ObjectStoreVersionRepository {
         key: ByteString,
         new_content: Content,
     ) -> Result<Tag, VersionRepositoryError> {
-        let path = self.path(&key);
-        let mut put_options = PutOptions::default();
-        put_options
-            .attributes
-            .insert(Attribute::ContentEncoding, new_content.encoding.into());
-
-        debug!(%key, %path, size = new_content.bytes.len(), "calling put");
-
-        match self
-            .object_store
-            .put_opts(
-                &path,
-                PutPayload::from_iter([EXISTS_HEADER, new_content.bytes]),
-                put_options,
-            )
-            .await
-        {
-            Ok(res) => Tag::from_reported(res.e_tag, res.version),
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
-        }
+        let res = self
+            .write(&key, PutMode::Overwrite, Some(new_content))
+            .await?;
+        Tag::from_reported(res.e_tag, res.version)
     }
 
     #[instrument(level = "debug", skip(self), err(level = "debug"))]
     async fn delete(&self, key: ByteString) -> Result<(), VersionRepositoryError> {
-        let path = self.path(&key);
-
-        debug!(%key, %path, "calling put with deleted tombstone");
-
-        match self
-            .object_store
-            .put(&path, PutPayload::from_bytes(DELETED_HEADER))
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
-        }
+        self.write(&key, PutMode::Overwrite, None).await.map(|_| ())
     }
 
     #[instrument(level = "debug", skip(self), err(level = "debug"))]
@@ -268,23 +248,9 @@ impl VersionRepository for ObjectStoreVersionRepository {
         key: ByteString,
         expected: Tag,
     ) -> Result<(), VersionRepositoryError> {
-        let path = self.path(&key);
-
-        debug!(%key, %path, ?expected, "calling put with deleted tombstone");
-
-        match self
-            .object_store
-            .put_opts(
-                &path,
-                PutPayload::from_bytes(DELETED_HEADER),
-                PutOptions::from(PutMode::Update(expected.into())),
-            )
+        self.write(&key, PutMode::Update(expected.into()), None)
             .await
-        {
-            Ok(_) => Ok(()),
-            Err(Error::Precondition { .. }) => Err(VersionRepositoryError::PreconditionFailed),
-            Err(e) => Err(VersionRepositoryError::Network(e.into())),
-        }
+            .map(|_| ())
     }
 }
 
