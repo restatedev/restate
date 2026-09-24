@@ -129,6 +129,8 @@ jobs:
       platforms: linux/amd64
       # additional features added for CI validation builds only
       features: metadata-api
+      # faster-linking profile for PRs; main and release builds keep `release` (and its image tags)
+      profile: ${{ github.event_name == 'pull_request' && 'release-lite' || 'release' }}
 
   sdk-java:
     name: Run SDK-Java integration tests
