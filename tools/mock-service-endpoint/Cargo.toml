@@ -13,7 +13,6 @@ restate-workspace-hack = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["message-codec", "entry-codec"] }
 restate-types = { workspace = true }
 
-assert2 = { workspace = true }
 async-stream = "0.3.5"
 bytes = { workspace = true }
 futures = { workspace = true }

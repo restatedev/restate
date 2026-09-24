@@ -69,7 +69,7 @@ pub fn generate_vqueue_id(
         LimitKey::L2(l1, l2) => {
             hasher.update(((l1.len() + l2.len()) as u32).to_le_bytes());
             hasher.update(l1.as_bytes());
-            hasher.update([b'/']);
+            hasher.update(*b"/");
             hasher.update(l2.as_bytes());
         }
     }

@@ -109,12 +109,12 @@ mod tests {
     use std::assert_matches;
     use std::future::ready;
 
-    use assert2::let_assert;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation,
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
+    use restate_test_util::assert;
     use restate_types::journal_v2::UnresolvedFuture;
     use restate_types::sharding::WithPartitionKey;
     use rstest::rstest;
@@ -189,7 +189,7 @@ mod tests {
         let (_, resume_invocation_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::ResumeInvocationCommand>();
 
-        let_assert!(ReplyOn::Apply { .. } = reply_on);
+        assert!(let ReplyOn::Apply { .. } = reply_on);
         let request: ResumeInvocationRequest = resume_invocation_command.into();
         assert_eq!(request.invocation_id, invocation_id);
     }
@@ -227,7 +227,7 @@ mod tests {
         let (_, resume_invocation_command, reply_on) =
             decision.extract_as_rpc_proposal::<commands::ResumeInvocationCommand>();
 
-        let_assert!(
+        assert!(let
             ReplyOn::Apply {
                 request_id: actual_request_id
             } = reply_on

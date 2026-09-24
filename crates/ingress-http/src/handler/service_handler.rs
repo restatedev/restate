@@ -186,7 +186,7 @@ where
             )
             && idempotency_key.is_none()
         {
-            idempotency_key = Some(Ulid::new().to_string().into());
+            idempotency_key = Some(Ulid::generate().to_string().into());
         }
 
         // Compute retention values
@@ -353,14 +353,7 @@ where
                     invocation_id,
                     execution_time: response
                         .execution_time
-                        .and_then(|m| {
-                            if m == MillisSinceEpoch::UNIX_EPOCH {
-                                // Ignore
-                                None
-                            } else {
-                                Some(m)
-                            }
-                        })
+                        .filter(|&m| m != MillisSinceEpoch::UNIX_EPOCH)
                         .map(SystemTime::from)
                         .map(Into::into),
                     status: if response.is_new_invocation {

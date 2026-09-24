@@ -41,7 +41,7 @@ use tonic::Status;
 
 use restate_ingestion_client::test::{MockIngestHandler, MockIngestionClient};
 use restate_ingestion_client::{CancelledError, IngestionError, RecordCommit};
-use restate_test_util::{assert, assert_eq, let_assert};
+use restate_test_util::{assert, assert_eq};
 use restate_types::identifiers::DeploymentId;
 use restate_types::invocation::{InvocationTargetType, ServiceInvocation, WorkflowHandlerType};
 use restate_types::live::Live;
@@ -139,10 +139,7 @@ impl TestStream {
     /// `(increment_bytes, last_committed)`.
     async fn next_window_update(&mut self) -> (u32, Option<u64>) {
         let response = self.next_response().await;
-        let_assert!(
-            Some(ingestion_response::Response::WindowUpdate(update)) = response.response,
-            "expected a window update"
-        );
+        assert!(let Some(ingestion_response::Response::WindowUpdate(update)) = response.response,);
         (update.increment_bytes, response.last_committed)
     }
 
@@ -150,10 +147,7 @@ impl TestStream {
     /// `last_committed`.
     async fn next_error(&mut self) -> (proto::Error, Option<u64>) {
         let response = self.next_response().await;
-        let_assert!(
-            Some(ingestion_response::Response::Error(error)) = response.response,
-            "expected an error"
-        );
+        assert!(let Some(ingestion_response::Response::Error(error)) = response.response);
         (error, response.last_committed)
     }
 

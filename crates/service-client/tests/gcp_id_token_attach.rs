@@ -330,9 +330,12 @@ async fn persisted_provider_without_impersonation_fails_closed() {
         Ok(_) => panic!("invalid persisted auth must fail before dispatch"),
     };
 
+    let ServiceClientError::GcpAuth(auth_error) = &error else {
+        panic!("expected GcpAuth, got {error:?}");
+    };
     assert_matches!(
-        &error,
-        ServiceClientError::GcpAuth(_, GcpAuthError::Build { message, .. })
+        &auth_error.source,
+        GcpAuthError::Build { message, .. }
             if message.contains("impersonate_service_account")
     );
     assert!(!error.is_retryable());

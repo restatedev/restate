@@ -21,7 +21,6 @@ restate-types = { workspace = true }
 restate-util-string = { workspace = true, features = ["bilrost", "bytes"] }
 restate-util-bytecount = { workspace = true, features = ["bilrost"] }
 
-ahash = { workspace = true }
 anyhow = { workspace = true }
 bilrost = { workspace = true }
 bytes = { workspace = true }
@@ -32,7 +31,6 @@ opentelemetry = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
-static_assertions = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
 

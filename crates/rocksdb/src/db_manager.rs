@@ -313,7 +313,7 @@ impl RocksDbManager {
         }
 
         // Best effort normal shutdown
-        for (_, db) in guard.iter() {
+        for db in guard.values() {
             let Some(db) = db.upgrade() else {
                 continue;
             };

@@ -130,7 +130,7 @@ impl RestateCode {
                 None => {
                     // We should never end up here,
                     // as we enforce all restate error codes to have a description thanks to the macro in helper.rs
-                    write!(f, "{}", &code.code().to_string())
+                    write!(f, "{}", code.code())
                 }
                 Some(description) => {
                     write!(

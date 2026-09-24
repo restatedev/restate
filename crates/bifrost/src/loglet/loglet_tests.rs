@@ -21,7 +21,6 @@ use tracing::info;
 
 use restate_core::{TaskCenter, TaskCenterFutureExt, TaskHandle, TaskKind};
 use restate_metadata_store::retry_on_retryable_error;
-use restate_test_util::let_assert;
 use restate_types::logs::metadata::{LogletConfig, SegmentIndex};
 use restate_types::logs::{KeyFilter, Lsn, SequenceNumber, TailState};
 use restate_types::retries::RetryPolicy;
@@ -85,7 +84,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     }
 
     // read record 1 (reading from OLDEST)
-    let_assert!(Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
+    restate_test_util::assert!(let Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
     let offset = record.sequence_number();
     assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
     assert!(record.is_data_record());
@@ -95,7 +94,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     );
 
     // read record 2
-    let_assert!(Some(record) = loglet.read_opt(offset.next()).await?);
+    restate_test_util::assert!(let Some(record) = loglet.read_opt(offset.next()).await?);
     let offset = record.sequence_number();
     assert_that!(record.sequence_number(), eq(Lsn::new(2)));
     assert!(record.is_data_record());
@@ -105,7 +104,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
     );
 
     // read record 3
-    let_assert!(Some(record) = loglet.read_opt(offset.next()).await?);
+    restate_test_util::assert!(let Some(record) = loglet.read_opt(offset.next()).await?);
     assert_that!(record.sequence_number(), eq(Lsn::new(3)));
     assert!(record.is_data_record());
     assert_that!(
@@ -209,12 +208,12 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         assert!(!tail.is_sealed());
     }
 
-    let_assert!(Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
+    restate_test_util::assert!(let Some(record) = loglet.read_opt(Lsn::OLDEST).await?);
     assert_that!(record.sequence_number(), eq(Lsn::OLDEST));
     assert!(record.is_trim_gap());
     assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(3))));
 
-    let_assert!(Some(record) = loglet.read_opt(Lsn::from(4)).await?);
+    restate_test_util::assert!(let Some(record) = loglet.read_opt(Lsn::from(4)).await?);
     assert_that!(record.sequence_number(), eq(Lsn::new(4)));
     assert!(record.is_data_record());
     assert_that!(

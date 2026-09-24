@@ -40,7 +40,7 @@ impl Telemetry {
             Self::Disabled
         } else {
             let client = HttpClient::from_options(&config.worker.invoker.service_client.http);
-            let session_id = ulid::Ulid::new().to_string();
+            let session_id = ulid::Ulid::generate().to_string();
 
             Self::Enabled(Box::new(TelemetryEnabled {
                 client,

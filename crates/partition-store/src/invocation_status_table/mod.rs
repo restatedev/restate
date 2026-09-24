@@ -122,9 +122,12 @@ where
                             break;
                         }
 
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(remainder.is_empty(), "Each serialized InvocationStatusKey should have KEY_LEN");
+
                         let results = raw_db.batched_multi_get_cf_opt(
                             &cf,
-                            key_buf.chunks_exact(KEY_LEN),
+                            keys,
                             true,
                             &readopts,
                         );
@@ -345,7 +348,7 @@ impl ScanInvocationStatusTable for PartitionStore {
         Ok(new_status_keys.boxed())
     }
 
-    fn filter_map_invocation_status_lazy<
+    fn filter_map_invocation_status_ranged_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -356,6 +359,7 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
+        key_range: KeyRange,
         mut f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send> {
         let new_status_keys = self
@@ -363,7 +367,7 @@ impl ScanInvocationStatusTable for PartitionStore {
                 "df-filter-map-invocation-status",
                 Priority::Low,
                 TableScan::ScanPartitionKeyRange::<InvocationStatusKey>(
-                    self.partition_key_range(),
+                    key_range,
                 ),
                 {
                     move |(mut key, mut value)| {

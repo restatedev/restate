@@ -47,7 +47,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                     // Not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end = end.freeze();
                 // RocksDB requires the exclusive upper bound to share the seek prefix when
@@ -79,7 +79,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                     // not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end_bytes = end_bytes.freeze();
                 PhysicalScan::RangeExclusive(K::TABLE, ScanMode::TotalOrder, start_bytes, end_bytes)

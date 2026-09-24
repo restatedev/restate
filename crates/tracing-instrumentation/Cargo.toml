@@ -35,7 +35,8 @@ opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", 
 opentelemetry-otlp = { workspace = true, features = ["http-json", "http-proto", "reqwest-client", "tls", "tls-roots", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
-reqwest = { workspace = true }
+# OpenTelemetry 0.31's HttpClient implementation requires Reqwest 0.12.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
 tonic = { workspace = true, features = ["tls-native-roots"]}

@@ -183,7 +183,7 @@ impl ProcessorState {
                         {
                             // our processor, which is supposed to be the leader, has observed a newer leader epoch --> try to obtain a higher one
                             debug!(old_leader_epoch = %leader_epoch, "Need a higher leader epoch to retake leadership.");
-                            let leader_epoch_token = LeaderEpochToken::new();
+                            let leader_epoch_token = LeaderEpochToken::generate();
                             *leader_state = LeaderState::AwaitingLeaderEpoch(leader_epoch_token);
                             Some(leader_epoch_token)
                         } else {
@@ -198,7 +198,7 @@ impl ProcessorState {
                     }
                     LeaderState::Follower => {
                         debug!("Need a leader epoch to become a leader.");
-                        let leader_epoch_token = LeaderEpochToken::new();
+                        let leader_epoch_token = LeaderEpochToken::generate();
                         *leader_state = LeaderState::AwaitingLeaderEpoch(leader_epoch_token);
                         Some(leader_epoch_token)
                     }
