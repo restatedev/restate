@@ -541,9 +541,9 @@ pub struct CommonOptions {
     /// # Rocksdb global disk write rate limiter
     ///
     /// This lets Rocksdb calibrates its IO operations to make the best use out of
-    /// the available IO bandwidth of the underlying storage device. Rocksdb will
-    /// auto-tune the rate according to the actual background IO workload and will
-    /// use this value as an upper bound.
+    /// the available IO bandwidth of the underlying storage device. By default, Rocksdb
+    /// auto-tunes the rate according to the actual background IO workload and uses this
+    /// value as an upper bound; see `rocksdb-write-rate-limiter-mode`.
     ///
     /// You can use a tool like `fio` to measure the actual IO bandwidth of your storage
     /// device (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
@@ -559,6 +559,15 @@ pub struct CommonOptions {
     ///
     /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).
     pub rocksdb_max_write_rate_per_second: NonZeroByteCount,
+
+    /// # Rocksdb write rate limiter mode
+    ///
+    /// How the global write rate limiter applies `rocksdb-max-write-rate-per-second`.
+    ///
+    /// Takes effect on restart.
+    ///
+    /// Since v1.8.0
+    pub rocksdb_write_rate_limiter_mode: RocksDbWriteRateLimiterMode,
 
     /// # Total memory limit for rocksdb caches and memtables.
     ///
@@ -1066,6 +1075,7 @@ impl Default for CommonOptions {
             process_total_memory_size: None,
             rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
                 .unwrap(),
+            rocksdb_write_rate_limiter_mode: RocksDbWriteRateLimiterMode::default(),
             rocksdb_total_memory_size: NonZeroByteCount::try_from(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_low_priority_threads: None,
@@ -1088,6 +1098,27 @@ impl Default for CommonOptions {
             experimental: Experimental::default(),
         }
     }
+}
+
+/// # Rocksdb write rate limiter mode
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum RocksDbWriteRateLimiterMode {
+    /// # Auto-tuned
+    ///
+    /// Rocksdb adjusts the rate to the recent background IO demand, between 1/20 of
+    /// `rocksdb-max-write-rate-per-second` and the full value, in steps of 5% every 10
+    /// seconds. After a quiet period, a sudden write burst starts at the lower bound and
+    /// takes minutes to reach the full rate.
+    #[default]
+    AutoTuned,
+    /// # Fixed
+    ///
+    /// Flushes and compactions always share the full `rocksdb-max-write-rate-per-second`.
+    /// Use it when write bursts arrive faster than the auto-tuner ramps up, and set the
+    /// maximum to what the storage device can sustain.
+    Fixed,
 }
 
 /// # Log format
@@ -1556,6 +1587,24 @@ mod tests {
         assert!(!serialized.contains("[networking.tls]"));
         let deserialized: CommonOptions = toml::from_str(&serialized).unwrap();
         assert!(deserialized.tls.is_some());
+    }
+
+    #[test]
+    fn rocksdb_write_rate_limiter_mode() {
+        let defaults = CommonOptions::default();
+        assert_eq!(
+            defaults.rocksdb_write_rate_limiter_mode,
+            RocksDbWriteRateLimiterMode::AutoTuned
+        );
+        let serialized = toml::to_string(&defaults).unwrap();
+        assert!(serialized.contains(r#"rocksdb-write-rate-limiter-mode = "auto-tuned""#));
+
+        let fixed: CommonOptions =
+            toml::from_str(&serialized.replace(r#""auto-tuned""#, r#""fixed""#)).unwrap();
+        assert_eq!(
+            fixed.rocksdb_write_rate_limiter_mode,
+            RocksDbWriteRateLimiterMode::Fixed
+        );
     }
 
     #[test]
