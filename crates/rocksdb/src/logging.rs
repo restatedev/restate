@@ -270,6 +270,7 @@ impl FriendlyReason for DBFlushReason {
             DBFlushReason::KErrorRecoveryRetryFlush => "error-recovery-retry-flush",
             DBFlushReason::KWalFull => "wal-full",
             DBFlushReason::KCatchUpAfterErrorRecovery => "catch-up-after-error-recovery",
+            DBFlushReason::KMemtableMaxRangeDeletions => "memtable-max-range-deletions",
         }
     }
 }
@@ -301,6 +302,7 @@ impl FriendlyReason for DBCompactionReason {
             DBCompactionReason::KForcedBlobGc => "forced-blob-gc",
             DBCompactionReason::KRoundRobinTtl => "round-robin-ttl",
             DBCompactionReason::KRefitLevel => "refit-level",
+            DBCompactionReason::KReadTriggered => "read-triggered",
             DBCompactionReason::KNumOfReasons => "num-of-reasons",
         }
     }

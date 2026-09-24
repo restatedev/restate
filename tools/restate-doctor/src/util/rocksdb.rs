@@ -17,7 +17,10 @@ use anyhow::{Context, Result, bail};
 use restate_cli_util::c_warn;
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_partition_store::keys::KeyKind;
-use rocksdb::{ColumnFamilyDescriptor, DB, LiveFile, Options};
+use rocksdb::{
+    AsColumnFamilyRef, ColumnFamilyDescriptor, ColumnFamilyMetaDataOptions, DB, LevelMetaData,
+    LiveFile, Options,
+};
 
 /// Mode for opening the database.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -90,6 +93,12 @@ impl DbInfo {
         self.live_files.get(filename)
     }
 
+    /// LSM levels of a column family, empty levels included.
+    pub fn cf_levels(&self, cf: &impl AsColumnFamilyRef) -> Vec<LevelMetaData> {
+        self.db
+            .get_column_family_metadata_cf_with_options(cf, &ColumnFamilyMetaDataOptions::new())
+    }
+
     /// Find a file by its number (e.g., 12345), returns (filename, info) if found
     #[allow(dead_code)] // Used by sst command
     pub fn find_file_by_number(&self, file_num: u64) -> Option<(&str, &LiveFileInfo)> {
@@ -100,6 +109,11 @@ impl DbInfo {
                 .map(|_| (name.as_str(), info))
         })
     }
+}
+
+/// Maps an empty SST boundary key, which RocksDB reports for a file without one, to `None`.
+pub fn non_empty_key(key: Vec<u8>) -> Option<Vec<u8>> {
+    (!key.is_empty()).then_some(key)
 }
 
 /// Extract the file number from an SST filename (e.g., "012345.sst" -> 12345)
