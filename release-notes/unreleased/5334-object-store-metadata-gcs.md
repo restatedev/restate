@@ -33,10 +33,10 @@ are no longer bounded by the library's 3-minute retry timeout.
 
 ### Maturity
 
-The GCS backend passes Restate's Jepsen fault-injection tests: 40 five-minute runs against a real
-bucket, with network partitions, process kills and pauses, found no linearizability violations.
-It has not yet been proven in production, though. If you adopt it early, start with clusters
-where you can tolerate problems, and please report anything unexpected.
+The GCS backend passes Restate's Jepsen linearizability tests running against a real
+bucket, with network partitions, process kills and pauses, and found no violations.
+While we are confident in the implementation, be aware that we do not yet have extensive
+production experience with this feature.
 
 ### Impact on Users
 
