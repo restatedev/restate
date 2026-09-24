@@ -149,7 +149,7 @@ impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND);
 #[derive(Debug, thiserror::Error)]
 #[error("Error when routing the request internally. Reason: {0}")]
 pub(crate) struct InvocationClientError(
-    #[from] pub(crate) restate_types::invocation::client::InvocationClientError,
+    #[from] pub(crate) restate_types::partition_processor::client::PartitionProcessorClientError,
 );
 impl_meta_api_error!(InvocationClientError: SERVICE_UNAVAILABLE "Error when routing the request within restate.");
 

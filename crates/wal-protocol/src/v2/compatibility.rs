@@ -21,6 +21,11 @@ use crate::{
     v2::{self, Envelope, commands::TruncateOutboxCommand},
 };
 
+// TODO: Backward compatibility only. Do not add new commands to v1; all new
+// commands must be added to v2 only.
+//
+// This conversion can be removed once no v1 records can exist anymore, i.e. once
+// every log that ever contained v1 records has been trimmed past them.
 impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
     type Error = anyhow::Error;
 
@@ -121,17 +126,9 @@ impl TryFrom<v1::Envelope> for v2::Envelope<Raw> {
             v1::Command::Timer(payload) => {
                 Envelope::new(dedup, commands::TimerCommand::from(payload)).into_raw()
             }
-            v1::Command::TruncateOutbox(payload) => Envelope::new(
-                dedup,
-                TruncateOutboxCommand {
-                    index: payload,
-                    // this actually should be a key-range but v1 unfortunately
-                    // only hold the "start" of the range.
-                    // will be fixed in v2
-                    partition_key_range: Keys::Single(partition_key),
-                },
-            )
-            .into_raw(),
+            v1::Command::TruncateOutbox(payload) => {
+                Envelope::new(dedup, TruncateOutboxCommand { index: payload }).into_raw()
+            }
             v1::Command::UpdatePartitionDurability(payload) => {
                 Envelope::new(dedup, payload).into_raw()
             }

@@ -118,6 +118,10 @@ pub enum TaskKind {
     LogTrimmer,
     MetadataServer,
     Background,
+    /// Credential construction and cache maintenance. Failures surface through token minting and
+    /// are retried or rebuilt on later requests; housekeeping failure only delays cache cleanup.
+    #[strum(props(OnCancel = "abort", runtime = "default", OnError = "log"))]
+    Credentials,
     // -- Bifrost Tasks
     #[strum(props(runtime = "default"))]
     BifrostWatchdog,

@@ -54,7 +54,7 @@ impl<T: prost::Message + 'static> StorageEncode for ProtobufStorageWrapper<T> {
 
 impl<T: prost::Message + Default> StorageDecode for ProtobufStorageWrapper<T> {
     fn decode<B: Buf>(
-        buf: &mut B,
+        buf: B,
         kind: restate_types::storage::StorageCodecKind,
     ) -> Result<Self, StorageDecodeError>
     where
@@ -143,6 +143,7 @@ pub mod v1 {
             PreFlightInvocationArgument, PreFlightInvocationInput, PreFlightInvocationJournal,
         };
         use crate::protobuf_types::ConversionError;
+        use crate::protobuf_types::v1::source::IngestionSource;
         use crate::protobuf_types::v1::{
             Future, NotificationEntryIndex, NotificationResultVariant,
         };
@@ -1529,6 +1530,7 @@ pub mod v1 {
                         )
                     }
                     source::Source::Internal(_) => restate_types::invocation::Source::Internal,
+                    source::Source::Ingestion(_) => restate_types::invocation::Source::Ingestion,
                 };
 
                 Ok(source)
@@ -1561,6 +1563,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
+                    }
                 };
 
                 Source {
@@ -1595,6 +1600,9 @@ pub mod v1 {
                         })
                     }
                     restate_types::invocation::Source::Internal => source::Source::Internal(()),
+                    restate_types::invocation::Source::Ingestion => {
+                        source::Source::Ingestion(IngestionSource::default())
+                    }
                 };
 
                 Source {
@@ -3597,6 +3605,30 @@ pub mod v1 {
                     outbox_message::OutboxMessage::NotifySignal(notify_signal) => {
                         crate::outbox_table::OutboxMessage::NotifySignal(notify_signal.try_into()?)
                     }
+                    outbox_message::OutboxMessage::Opaque(opaque) => {
+                        let msg = crate::outbox_table::OpaqueMessage {
+                            partition_key: opaque.partition_key,
+                            codec: u8::try_from(opaque.codec)
+                                .map_err(|_| {
+                                    ConversionError::InvalidData(anyhow!(
+                                        "codec value does not fit u8"
+                                    ))
+                                })?
+                                .try_into()
+                                .map_err(|_| {
+                                    ConversionError::UnexpectedEnumVariant(
+                                        "codec",
+                                        opaque.codec as i32,
+                                    )
+                                })?,
+                            kind: u16::try_from(opaque.kind).map_err(|_| {
+                                ConversionError::UnexpectedEnumVariant("kind", opaque.kind as i32)
+                            })?,
+                            message: opaque.message,
+                        };
+
+                        crate::outbox_table::OutboxMessage::Opaque(msg)
+                    }
                 };
 
                 Ok(result)
@@ -3659,6 +3691,14 @@ pub mod v1 {
                     ),
                     crate::outbox_table::OutboxMessage::NotifySignal(notify_signal) => {
                         outbox_message::OutboxMessage::NotifySignal(notify_signal.into())
+                    }
+                    crate::outbox_table::OutboxMessage::Opaque(opaque) => {
+                        outbox_message::OutboxMessage::Opaque(outbox_message::Opaque {
+                            partition_key: opaque.partition_key,
+                            kind: opaque.kind as u32,
+                            codec: u8::from(opaque.codec).into(),
+                            message: opaque.message,
+                        })
                     }
                 };
 

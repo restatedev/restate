@@ -10,6 +10,8 @@
 
 //! A wrapper client for admin HTTP service.
 
+use std::borrow::Cow;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::bail;
@@ -32,7 +34,7 @@ use super::errors::ApiError;
 
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
-pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V4;
+pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
 
 #[derive(Error, Debug)]
 #[error(transparent)]
@@ -132,6 +134,7 @@ pub struct AdminClient {
     pub(crate) admin_api_version: AdminApiVersion,
     pub(crate) restate_server_version: SemanticRestateVersion,
     pub(crate) advertised_ingress_address: Option<String>,
+    pub(crate) experimental_features: HashMap<Cow<'static, str>, bool>,
 }
 
 impl AdminClient {
@@ -171,6 +174,7 @@ impl AdminClient {
             admin_api_version: AdminApiVersion::Unknown,
             restate_server_version: SemanticRestateVersion::unknown(),
             advertised_ingress_address: None,
+            experimental_features: HashMap::new(),
         };
 
         if let Ok(envelope) = client.version().await {
@@ -219,10 +223,18 @@ impl AdminClient {
                 AdminApiVersion::V2 => segments.push("v2").extend(path),
                 AdminApiVersion::V3 => segments.push("v3").extend(path),
                 AdminApiVersion::V4 => segments.push("v4").extend(path),
+                AdminApiVersion::V5 => segments.push("v5").extend(path),
             };
         }
 
         url
+    }
+
+    pub(crate) fn is_experimental_feature_enabled(&self, feature: &str) -> bool {
+        self.experimental_features
+            .get(feature)
+            .copied()
+            .unwrap_or(false)
     }
 
     fn choose_api_version(
@@ -247,6 +259,7 @@ impl AdminClient {
             client.admin_api_version = admin_api_version;
             client.advertised_ingress_address =
                 version_information.ingress_endpoint.map(|u| u.to_string());
+            client.experimental_features = version_information.features;
             Ok(client)
         } else {
             bail!(

@@ -26,14 +26,9 @@ pub enum TableScan<K> {
     RangeInclusive(K, K),
 }
 
-pub(crate) enum PhysicalScan<B> {
-    Prefix(TableKind, B),
-    RangeExclusive(TableKind, ScanMode, B, B),
-}
-
-impl PhysicalScan<Bytes> {
-    pub fn from<K: EncodeTableKeyPrefix>(scan: TableScan<K>, arena: &mut BytesMut) -> Self {
-        match scan {
+impl<K: EncodeTableKeyPrefix> TableScan<K> {
+    pub(crate) fn encode(self, arena: &mut BytesMut) -> PhysicalScan<Bytes> {
+        match self {
             Prefix(key) => {
                 key.serialize_to(arena);
                 PhysicalScan::Prefix(K::TABLE, arena.split().freeze())
@@ -52,7 +47,7 @@ impl PhysicalScan<Bytes> {
                     // Not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end = end.freeze();
                 // RocksDB requires the exclusive upper bound to share the seek prefix when
@@ -84,7 +79,7 @@ impl PhysicalScan<Bytes> {
                     // not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end_bytes = end_bytes.freeze();
                 PhysicalScan::RangeExclusive(K::TABLE, ScanMode::TotalOrder, start_bytes, end_bytes)
@@ -93,10 +88,15 @@ impl PhysicalScan<Bytes> {
     }
 }
 
+pub(crate) enum PhysicalScan<B> {
+    Prefix(TableKind, B),
+    RangeExclusive(TableKind, ScanMode, B, B),
+}
+
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();
-        PhysicalScan::from(scan, &mut arena)
+        scan.encode(&mut arena)
     }
 }
 

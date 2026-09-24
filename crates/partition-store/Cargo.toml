@@ -24,6 +24,7 @@ restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-random = { workspace = true }
 restate-util-time = { workspace = true }
 
 ahash = { workspace = true }
@@ -70,7 +71,7 @@ restate-storage-api = { workspace = true, features = ["test-util"] }
 
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
-num-bigint = "0.4"
+num-bigint = "0.5.1"
 rand = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }

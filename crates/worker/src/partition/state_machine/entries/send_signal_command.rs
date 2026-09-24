@@ -9,10 +9,11 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_types::invocation::NotifySignalRequest;
 use restate_types::journal_v2::{SendSignalCommand, Signal};
+use restate_wal_protocol::v2::commands;
 
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
@@ -27,7 +28,7 @@ where
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
-        ctx.do_enqueue_into_outbox(OutboxMessage::NotifySignal(NotifySignalRequest {
+        ctx.do_enqueue_into_outbox(commands::NotifySignalCommand::from(NotifySignalRequest {
             invocation_id: self.entry.target_invocation_id,
             signal: Signal::new(self.entry.signal_id, self.entry.result),
         }))?;

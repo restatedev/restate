@@ -55,7 +55,7 @@ impl_downcast!(sync StorageEncode);
 /// To support codec evolution, this trait implementation needs to be able to decode values encoded
 /// with any previously used codec.
 pub trait StorageDecode {
-    fn decode<B: Buf>(buf: &mut B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+    fn decode<B: Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized;
 }
@@ -88,6 +88,8 @@ pub enum StorageCodecKind {
     /// it is up to your implementation to decide how (or if) to use them, and how the final
     /// byte representation is constructed.
     Custom = 7,
+    /// Zstd compressed bilrost (no length-prefixed) using default compression.
+    ZstdBilrostDefault = 8,
 }
 
 #[cfg(feature = "bilrost")]
@@ -150,6 +152,7 @@ impl TryFrom<u8> for StorageCodecKind {
             5 => Ok(Self::Json),
             6 => Ok(Self::Bilrost),
             7 => Ok(Self::Custom),
+            8 => Ok(Self::ZstdBilrostDefault),
             value => Err(StorageDecodeError::ReadingCodec(format_restring!(
                 "unknown discriminant '{value}'"
             ))),
@@ -186,7 +189,7 @@ impl StorageEncode for String {
 }
 impl StorageDecode for String {
     fn decode<B: ::bytes::Buf>(
-        buf: &mut B,
+        mut buf: B,
         kind: StorageCodecKind,
     ) -> Result<Self, StorageDecodeError>
     where

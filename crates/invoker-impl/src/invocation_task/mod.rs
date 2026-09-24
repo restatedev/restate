@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 mod retry_after;
-mod service_protocol_runner;
 mod service_protocol_runner_v4;
 
+use std::cmp;
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 use std::pin::Pin;
@@ -37,25 +37,24 @@ use restate_types::LimitKey;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::{FencingToken, InvocationTarget};
-use restate_types::journal::EntryIndex;
-use restate_types::journal::enriched::EnrichedRawEntry;
 use restate_types::journal_v2::raw::RawNotification;
 use restate_types::journal_v2::{self, CommandIndex, NotificationId, UnresolvedFuture};
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::schema::invocation_target::{
+    InvocationAttemptOptions, InvocationTargetResolver, StatePreloadPolicy,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
+use restate_worker_api::invoker::InvocationReaderError;
 use restate_worker_api::invoker::invocation_reader::{
-    EagerState, InvocationReader, InvocationReaderTransaction, JournalKind,
+    EagerState, InvocationReader, InvocationReaderTransaction,
 };
-use restate_worker_api::invoker::{EntryEnricher, InvocationReaderError};
 
 use super::Notification;
 use crate::TokenBucket;
 use crate::error::{InvocationMemoryExhausted, InvokerError};
-use crate::invocation_task::service_protocol_runner::ServiceProtocolRunner;
 use crate::metric_definitions::{INVOKER_EAGER_STATE_TRUNCATED, INVOKER_TASK_DURATION};
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -91,14 +90,11 @@ const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
-/// Collects state entries from an [`EagerState`] stream, respecting a size limit.
+/// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
 ///
-/// Returns a tuple of `(is_partial, entries, memory_lease)` where:
-/// - `is_partial` is true if the state was already partial or if collection stopped due to size limit
-/// - `entries` contains the collected and mapped key-value bytes
-/// - `memory_lease` represents the memory that entries occupy
-///
-/// If the first entry already exceeds the size limit, then an empty entries [`Vec`] is returned.
+/// Returns `(is_partial, entries, memory_lease)`. `is_partial` is true if the source was already
+/// partial or the size limit truncated collection. If the first entry alone exceeds the limit,
+/// `entries` is empty.
 async fn collect_eager_state<S, E, T>(
     state: Option<EagerState<S>>,
     size_limit: usize,
@@ -163,16 +159,6 @@ pub(super) enum InvocationTaskOutputInner {
     // `has_changed` indicates if we believe this is a freshly selected endpoint or not.
     PinnedDeployment(PinnedDeployment, /* has_changed: */ bool),
     ServerHeaderReceived(String),
-    NewEntry {
-        entry_index: EntryIndex,
-        entry: Box<EnrichedRawEntry>,
-        /// If true, the SDK requested to be notified when the entry is correctly stored.
-        ///
-        /// When reading the entry from the storage this flag will always be false, as we never need to send acks for entries sent during a journal replay.
-        ///
-        /// See https://github.com/restatedev/service-protocol/blob/main/service-invocation-protocol.md#acknowledgment-of-stored-entries
-        requires_ack: bool,
-    },
     NewCommand {
         command_index: CommandIndex,
         command: journal_v2::raw::RawCommand,
@@ -196,7 +182,6 @@ pub(super) enum InvocationTaskOutputInner {
         unresolved_future: UnresolvedFuture,
     },
     Closed,
-    Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     SuspendedV3(UnresolvedFuture),
     Failed(InvokerError, LocalMemoryPool),
@@ -254,7 +239,7 @@ fn new_invoker_body(
 }
 
 /// Represents an open invocation stream
-pub(super) struct InvocationTask<EE, DMR> {
+pub(super) struct InvocationTask<DMR> {
     // Shared client
     client: ServiceClient,
 
@@ -273,22 +258,18 @@ pub(super) struct InvocationTask<EE, DMR> {
     max_awaited_future_depth: usize,
 
     // Invoker tx/rx
-    entry_enricher: EE,
     schemas: Live<DMR>,
     invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
-
-    allow_protocol_v7: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
 enum TerminalLoopState<T> {
     Continue(T),
     Closed,
-    Suspended(HashSet<EntryIndex>),
     SuspendedV2(HashSet<NotificationId>),
     SuspendedV3(UnresolvedFuture),
     Failed(InvokerError),
@@ -302,7 +283,7 @@ impl<T> TerminalLoopState<T> {
     }
 
     fn is_suspend(&self) -> bool {
-        matches!(self, Self::Suspended(_) | Self::SuspendedV2(_))
+        matches!(self, Self::SuspendedV2(_) | Self::SuspendedV3(_))
     }
 }
 
@@ -328,7 +309,6 @@ macro_rules! shortcircuit {
         match TerminalLoopState::from($value) {
             TerminalLoopState::Continue(v) => v,
             TerminalLoopState::Closed => return TerminalLoopState::Closed,
-            TerminalLoopState::Suspended(v) => return TerminalLoopState::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => return TerminalLoopState::SuspendedV2(v),
             TerminalLoopState::SuspendedV3(v) => return TerminalLoopState::SuspendedV3(v),
             TerminalLoopState::ShouldYield(oom) => return TerminalLoopState::ShouldYield(oom),
@@ -337,9 +317,8 @@ macro_rules! shortcircuit {
     };
 }
 
-impl<EE, Schemas> InvocationTask<EE, Schemas>
+impl<Schemas> InvocationTask<Schemas>
 where
-    EE: EntryEnricher,
     Schemas: DeploymentResolver + InvocationTargetResolver,
 {
     #[allow(clippy::too_many_arguments)]
@@ -354,14 +333,12 @@ where
         message_size_warning: NonZeroUsize,
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
-        entry_enricher: EE,
         deployment_metadata_resolver: Live<Schemas>,
         invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
-        allow_protocol_v7: bool,
         max_awaited_future_depth: usize,
     ) -> Self {
         Self {
@@ -371,8 +348,8 @@ where
             invocation_target,
             inactivity_timeout: default_inactivity_timeout,
             abort_timeout: default_abort_timeout,
-            eager_state_size_limit,
-            entry_enricher,
+            // Make sure eager_state_size_limit is capped to message size limit
+            eager_state_size_limit: cmp::min(eager_state_size_limit, message_size_limit.get()),
             schemas: deployment_metadata_resolver,
             invoker_tx,
             invoker_rx,
@@ -380,7 +357,6 @@ where
             message_size_warning,
             retry_count_since_last_stored_entry,
             action_token_bucket,
-            allow_protocol_v7,
             limit_key,
             idempotency_key,
             max_awaited_future_depth,
@@ -420,7 +396,6 @@ where
                 unreachable!("This is not supposed to happen. This is a runtime bug")
             }
             TerminalLoopState::Closed => InvocationTaskOutputInner::Closed,
-            TerminalLoopState::Suspended(v) => InvocationTaskOutputInner::Suspended(v),
             TerminalLoopState::SuspendedV2(v) => InvocationTaskOutputInner::SuspendedV2(v),
             TerminalLoopState::SuspendedV3(v) => InvocationTaskOutputInner::SuspendedV3(v),
             TerminalLoopState::Failed(e) => {
@@ -512,16 +487,13 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(
-                        &deployment.supported_protocol_versions,
-                        self.allow_protocol_v7
-                    )
-                    .ok_or_else(|| {
-                        InvokerError::IncompatibleServiceEndpoint(
-                            deployment.id,
-                            deployment.supported_protocol_versions.clone(),
-                        )
-                    })
+                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions)
+                        .ok_or_else(|| {
+                            InvokerError::IncompatibleServiceEndpoint(
+                                deployment.id,
+                                deployment.supported_protocol_versions.clone(),
+                            )
+                        })
                 );
 
                 (
@@ -537,7 +509,11 @@ where
                 self.invocation_target.service_name(),
                 self.invocation_target.handler_name(),
             )
-            .unwrap_or_default();
+            .unwrap_or(InvocationAttemptOptions {
+                abort_timeout: None,
+                inactivity_timeout: None,
+                state_preload_policy: StatePreloadPolicy::All,
+            });
 
         // Override the inactivity timeout and abort timeout, if available
         if let Some(inactivity_timeout) = invocation_attempt_options.inactivity_timeout {
@@ -547,9 +523,7 @@ where
             self.abort_timeout = abort_timeout;
         }
 
-        if chosen_service_protocol_version < ServiceProtocolVersion::V4
-            && journal_metadata.journal_kind == JournalKind::V2
-        {
+        if chosen_service_protocol_version < ServiceProtocolVersion::V4 {
             // We don't support migrating from journal v2 to journal v1!
             shortcircuit!(Err(InvokerError::DeploymentDeprecated(
                 self.invocation_target.service_name().to_string(),
@@ -557,65 +531,40 @@ where
             )));
         }
 
-        // Resolve the effective eager state size limit:
-        // Per-handler/service override takes precedence over server-level config.
-        // 0 means "disable eager state", non-zero values are clamped to the message size limit.
-        if let Some(limit) = invocation_attempt_options.eager_state_size_limit {
-            let limit = limit.as_usize();
-            self.eager_state_size_limit = limit.min(self.message_size_limit.get());
-        }
-
-        // Determine if we need to read state (0 means lazy state / no eager state)
-        let keyed_service_id = if self.invocation_target.as_keyed_service_id().is_some()
-            && self.eager_state_size_limit > 0
-        {
-            self.invocation_target.as_keyed_service_id()
-        } else {
-            None
-        };
+        // The eager state size limit (a memory safety cap) always applies and comes solely from
+        // the server config; the per-handler/service config only carries the eager/lazy *policy*.
+        let state_preload_policy = invocation_attempt_options.state_preload_policy;
 
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
             deployment_changed,
         ));
 
-        if chosen_service_protocol_version <= ServiceProtocolVersion::V3 {
-            // Protocol runner for service protocol <= v3
-            let service_protocol_runner =
-                ServiceProtocolRunner::new(self, chosen_service_protocol_version);
-            service_protocol_runner
-                .run(
-                    txn,
-                    journal_metadata,
-                    keyed_service_id,
-                    deployment,
-                    reader_for_bidi,
-                    invocation_budget,
-                )
-                .await
-        } else {
-            // Protocol runner for service protocol v4+
-            let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
-                self,
-                chosen_service_protocol_version,
-                &deployment.ty,
-                self.max_awaited_future_depth,
-            );
-            service_protocol_runner
-                .run(
-                    txn,
-                    journal_metadata,
-                    keyed_service_id,
-                    deployment,
-                    reader_for_bidi,
-                    invocation_budget,
-                )
-                .await
-        }
+        // Protocol runner for service protocol v4+. Preload state upfront only when the policy asks
+        // for it and the memory cap allows it.
+        let state_read = (state_preload_policy.preload_any_state()
+            && self.eager_state_size_limit > 0)
+            .then_some(state_preload_policy);
+        let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
+            self,
+            chosen_service_protocol_version,
+            &deployment.ty,
+            self.max_awaited_future_depth,
+        );
+        service_protocol_runner
+            .run(
+                txn,
+                journal_metadata,
+                state_read,
+                deployment,
+                reader_for_bidi,
+                invocation_budget,
+            )
+            .await
     }
 }
 
-impl<EE, Schemas> InvocationTask<EE, Schemas> {
+impl<Schemas> InvocationTask<Schemas> {
     /// Send a non-terminal message to the invoker main loop.
     pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
         let _ = self.invoker_tx.send(InvocationTaskOutput {

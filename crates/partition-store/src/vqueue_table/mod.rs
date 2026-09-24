@@ -39,7 +39,7 @@ use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilt
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, ReadVQueueTable, ScanVQueueTable,
-    Stage, Status, WriteVQueueTable, stats::EntryStatistics,
+    Stage, Status, VQueueDisposition, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
@@ -223,17 +223,19 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         meta: &mut VQueueMeta,
         update: &restate_storage_api::vqueue_table::metadata::Update,
         _entry_metadata: Option<&EntryMetadata>,
-    ) {
-        let key_buffer = MetaKey::from(qid).to_bytes();
-        self.raw_merge_cf(
-            KeyKind::VQueueMeta,
-            key_buffer,
-            update.encode_contiguous().into_vec(),
-        );
+    ) -> VQueueDisposition {
+        // Vqueues that was touched more than 1 hour ago will always be fully written.
+        const HOUR_MS: u64 = const { 60 * 60 * 1000 };
+
+        // Otherwise, full writes are sampled with the configured probability
+        // rather than merged.
+        let full_write_threshold =
+            (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
         let was_active_before = meta.is_active();
-        // mutate in-place
+        let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
+            || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();
 
@@ -246,6 +248,33 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
                 self.mark_vqueue_as_dormant(qid);
             }
             (_, _) => {}
+        }
+
+        if meta.is_obsolete() {
+            self.delete_vqueue(qid);
+            VQueueDisposition::Purged
+        } else {
+            let key_buffer = MetaKey::from(qid).to_bytes();
+            // Rarely modified vqueues will not otherwise get full writes. Collapse
+            // their merge chain when the metadata has not been touched for an hour.
+            if should_write_full {
+                // full write
+                let value_buf = {
+                    let value_buf = self.cleared_value_buffer_mut(meta.encoded_len());
+                    // unwrap is safe because we know the buffer is big enough.
+                    meta.encode(value_buf).unwrap();
+                    value_buf.split()
+                };
+                self.raw_put_cf(KeyKind::VQueueMeta, key_buffer, value_buf);
+            } else {
+                self.raw_merge_cf(
+                    KeyKind::VQueueMeta,
+                    key_buffer,
+                    update.encode_contiguous().into_vec(),
+                );
+            }
+
+            VQueueDisposition::Retained
         }
     }
 
@@ -562,12 +591,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized MetaKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
@@ -726,12 +756,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized EntryStatusKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =

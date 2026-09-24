@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod commands;
+mod compatibility;
+mod markers;
+
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -16,6 +20,7 @@ use bilrost::{Message, OwnedMessage};
 use bytes::{BufMut, Bytes, BytesMut};
 
 use restate_encoding::U128;
+use restate_types::errors::ConversionError;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::logs::{BodyWithKeys, HasRecordKeys, Keys};
 use restate_types::storage::{
@@ -25,9 +30,7 @@ use restate_types::storage::{
 use restate_util_string::ReString;
 
 use crate::v1;
-
-pub mod commands;
-mod compatibility;
+pub use markers::OutboxMessage;
 
 mod sealed {
     pub trait Sealed {}
@@ -154,10 +157,7 @@ impl<C: Send + Sync + 'static> StorageEncode for Envelope<C> {
 pub struct Raw;
 
 impl StorageDecode for Envelope<Raw> {
-    fn decode<B: bytes::Buf>(
-        buf: &mut B,
-        kind: StorageCodecKind,
-    ) -> Result<Self, StorageDecodeError>
+    fn decode<B: bytes::Buf>(mut buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
     where
         Self: Sized,
     {
@@ -167,7 +167,7 @@ impl StorageDecode for Envelope<Raw> {
                 Self::try_from(envelope).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
             }
             StorageCodecKind::Custom => {
-                let header = Header::decode_length_delimited(&mut *buf)
+                let header = Header::decode_length_delimited(&mut buf)
                     .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
                 Ok(Self {
@@ -201,6 +201,26 @@ impl Envelope<Raw> {
                 codec: Some(codec),
             },
             payload: PolyBytes::Bytes(bytes),
+            _p: PhantomData,
+        }
+    }
+
+    /// Constructs a raw envelope from a type-erased command.
+    ///
+    /// The command kind is taken from the [`ErasedCommand`] and the codec from the
+    /// command's own `default_codec`, so the resulting header is always consistent with
+    /// the payload. The payload is kept in its typed form and is only encoded when the
+    /// envelope is serialized.
+    pub fn from_erased_command(dedup: Dedup, erased: ErasedCommand) -> Self {
+        let ErasedCommand { kind, command } = erased;
+
+        Self {
+            header: Header {
+                dedup,
+                kind,
+                codec: Some(command.default_codec()),
+            },
+            payload: PolyBytes::Typed(command),
             _p: PhantomData,
         }
     }
@@ -318,6 +338,9 @@ pub enum CommandKind {
     /// Truncate the message outbox up to, and including, the specified index.
     TruncateOutbox = 9,
     /// Proxy a service invocation through this partition processor, to reuse the deduplication id map.
+    ///
+    // Drop in v1.9.0 it's not used at the moment and is only here
+    // for backward compatibility with V1.
     ProxyThrough = 10,
     /// Attach to an existing invocation
     AttachInvocation = 11,
@@ -372,6 +395,54 @@ pub enum CommandKind {
     /// payload is bilrost encoded [`vqueues::PurgeVQueueMetaCommand`]
     /// *Since v1.7.9
     PurgeVQueueMeta = 26,
+}
+
+impl From<CommandKind> for u16 {
+    fn from(value: CommandKind) -> Self {
+        value as u16
+    }
+}
+
+impl TryFrom<u16> for CommandKind {
+    type Error = ConversionError;
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        let v = match value {
+            0 => Self::Unknown,
+            1 => Self::AnnounceLeader,
+            2 => Self::VersionBarrier,
+            3 => Self::UpdatePartitionDurability,
+            4 => Self::PatchState,
+            5 => Self::TerminateInvocation,
+            6 => Self::PurgeInvocation,
+            7 => Self::PurgeJournal,
+            8 => Self::Invoke,
+            9 => Self::TruncateOutbox,
+            10 => Self::ProxyThrough,
+            11 => Self::AttachInvocation,
+            12 => Self::ResumeInvocation,
+            13 => Self::RestartAsNewInvocation,
+            14 => Self::InvokerEffect,
+            15 => Self::Timer,
+            16 => Self::ScheduleTimer,
+            17 => Self::InvocationResponse,
+            18 => Self::NotifyGetInvocationOutputResponse,
+            19 => Self::NotifySignal,
+            20 => Self::UpsertSchema,
+            21 => Self::UpsertRuleBook,
+            22 => Self::VQSchedulerDecisions,
+            23 => Self::VQueuesPause,
+            24 => Self::VQueuesResume,
+            25 => Self::PauseInvocation,
+            other => {
+                return Err(ConversionError::unexpected_enum_variant(
+                    "CommandKind",
+                    i32::from(other),
+                ));
+            }
+        };
+
+        Ok(v)
+    }
 }
 
 mod bilrost_encoding {
@@ -510,6 +581,50 @@ where
 
     fn inner(self) -> C {
         BodyWithKeys::into_inner(self)
+    }
+}
+
+/// A [`Command`] with its concrete type erased, tagged with its [`CommandKind`].
+///
+/// This allows commands of different types to be stored and passed around in a single
+/// (cheaply cloneable) value, for instance when queueing proposals that are turned into
+/// envelopes later via [`Envelope::from_erased_command`].
+///
+/// The original type is recoverable with [`ErasedCommand::downcast_arc`], and
+/// [`ErasedCommand::kind`] allows dispatching on the command kind without downcasting.
+#[derive(derive_more::Debug, Clone)]
+pub struct ErasedCommand {
+    kind: CommandKind,
+    #[debug(skip)]
+    command: Arc<dyn StorageEncode>,
+}
+
+impl ErasedCommand {
+    /// Erases the type of `cmd`, remembering its [`Command::KIND`].
+    pub fn new<C: Command>(cmd: C) -> Self {
+        Self {
+            kind: C::KIND,
+            command: Arc::new(cmd),
+        }
+    }
+
+    /// Recovers the original command, or `None` if `C` is not the erased type.
+    pub fn downcast_arc<C: Command>(self) -> Option<Arc<C>> {
+        self.command.downcast_arc::<C>().ok()
+    }
+
+    /// The kind of the erased command.
+    pub fn kind(&self) -> CommandKind {
+        self.kind
+    }
+}
+
+impl<C> From<C> for ErasedCommand
+where
+    C: Command,
+{
+    fn from(value: C) -> Self {
+        Self::new(value)
     }
 }
 

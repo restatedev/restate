@@ -109,6 +109,31 @@ impl VQueueStatistics {
         }
     }
 
+    fn is_fully_empty(&self) -> bool {
+        self.num_inbox == 0
+            && self.num_running == 0
+            && self.num_paused == 0
+            && self.num_suspended == 0
+            && self.num_finished == 0
+    }
+
+    /// Returns the last timestamp that the vqueue was created, enqueued, started, attempted,
+    /// or finished.
+    pub fn last_modified_at(&self) -> UniqueTimestamp {
+        [
+            Some(self.created_at),
+            self.last_enqueued_at,
+            self.last_start_at,
+            self.last_finish_at,
+            self.last_attempt_at,
+        ]
+        .into_iter()
+        .flatten()
+        .max()
+        // Safe because created_at is always present
+        .unwrap()
+    }
+
     fn update_avg_queue_duration(&mut self, latency_ms: u64) {
         self.avg_queue_duration_ms = Self::ema(self.avg_queue_duration_ms, latency_ms);
     }
@@ -261,6 +286,12 @@ pub struct VQueueMetaRef<'a> {
 }
 
 impl<'a> VQueueMetaRef<'a> {
+    /// A vqueue is obsolete when it is unpaused and holds no entries in any stage,
+    /// including `Finished`. Obsolete vqueue metadata records can be purged from storage.
+    pub fn is_obsolete(&self) -> bool {
+        !self.queue_is_paused && self.stats.is_fully_empty()
+    }
+
     /// A vqueue is considered active when it's of interest to the scheduler.
     ///
     /// The scheduler cares about vqueues that have entries that are already running or that are waiting
@@ -362,10 +393,10 @@ impl VQueueMeta {
         self.len() == 0
     }
 
-    /// A vqueue is obsolete when it holds no entries in any stage, including
-    /// `Finished`. Obsolete vqueue metadata records can be purged from storage.
+    /// A vqueue is obsolete when it is unpaused and holds no entries in any stage,
+    /// including `Finished`. Obsolete vqueue metadata records can be purged from storage.
     pub fn is_obsolete(&self) -> bool {
-        self.is_empty() && self.stats.num_finished == 0
+        !self.queue_is_paused && self.stats.is_fully_empty()
     }
 
     pub fn total_waiting(&self) -> u64 {
@@ -544,9 +575,9 @@ pub enum Action {
 #[derive(Debug, Clone, bilrost::Message)]
 pub struct Update {
     #[bilrost(tag(1), encoding(fixed))]
-    pub(super) ts: UniqueTimestamp,
+    pub ts: UniqueTimestamp,
     #[bilrost(oneof(2, 3, 4, 5))]
-    pub(super) action: Action,
+    pub action: Action,
 }
 
 impl Update {
@@ -599,6 +630,19 @@ mod tests {
     }
 
     #[test]
+    fn paused_empty_vqueue_is_not_obsolete() {
+        let at = ts(BASE_TS_MS);
+        let mut meta = VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+        assert!(meta.is_obsolete());
+
+        meta.apply_update(&Update::new(at, Action::PauseVQueue {}));
+        assert!(!meta.is_obsolete());
+
+        meta.apply_update(&Update::new(at, Action::ResumeVQueue {}));
+        assert!(meta.is_obsolete());
+    }
+
+    #[test]
     fn avg_queue_duration_tracks_first_attempt_wait() {
         let created_at = ts(BASE_TS_MS + 10_000);
         let mut meta = VQueueMeta::new(created_at, None, LimitKey::None, VQueueLink::None);
@@ -606,13 +650,14 @@ mod tests {
         // Enqueue: caller has already computed
         // first_runnable_at = max(created_at, original_run_at).
         meta.apply_update(&Update::new(
-            created_at,
+            ts(BASE_TS_MS + 11_000),
             Action::Move {
                 prev_stage: None,
                 next_stage: Stage::Inbox,
                 metrics: metrics(BASE_TS_MS + 10_000, BASE_TS_MS + 12_000, false),
             },
         ));
+        assert_eq!(meta.stats.last_modified_at(), ts(BASE_TS_MS + 11_000));
 
         // First transition to Running: first-attempt wait is
         // now(14_000) - first_runnable_at(12_000) = 2_000 ms.
@@ -644,6 +689,7 @@ mod tests {
         assert_eq!(meta.stats.avg_queue_duration_ms, 2_000);
         assert_eq!(meta.stats.last_start_at, Some(ts(BASE_TS_MS + 14_000)));
         assert_eq!(meta.stats.last_attempt_at, Some(ts(BASE_TS_MS + 15_000)));
+        assert_eq!(meta.stats.last_modified_at(), ts(BASE_TS_MS + 15_000));
     }
 
     #[test]
@@ -915,5 +961,6 @@ mod tests {
         );
         assert_eq!(borrowed.stats.num_inbox(), owned.stats.num_inbox());
         assert_eq!(borrowed.is_active(), owned.is_active());
+        assert_eq!(borrowed.is_obsolete(), owned.is_obsolete());
     }
 }

@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use std::num::{NonZeroU32, NonZeroUsize};
+use std::time::Duration;
 
 use restate_memory::NonZeroByteCount;
+use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
@@ -20,8 +22,71 @@ use crate::net::listener::AddressBook;
 
 use super::{CommonOptions, KafkaClusterOptions, ListenerOptions};
 
+/// # Ingestion API options
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct IngestionApiOptions {
+    /// # Disable the gRPC ingestion API
+    ///
+    /// Disable the experimental gRPC ingestion API on the ingress endpoint.
+    ///
+    /// Since v1.8.0
+    pub disable: bool,
+
+    /// # Maximum ingestion window size
+    ///
+    /// Maximum number of bytes an ingestion stream may have in flight before the server
+    /// applies back pressure.
+    ///
+    /// Values below 32KiB, the minimum window defined by the ingestion
+    /// protocol, are rounded up to 32KiB
+    ///
+    /// Value is clipped at [`u32::MAX`]
+    ///
+    /// Since v1.8.0
+    max_window_size: NonZeroByteCount,
+
+    /// # Maximum concurrent streams
+    ///
+    /// Maximum number of ingestion streams may have in flight before the server
+    /// start rejecting them
+    ///
+    /// Since v1.8.0
+    max_concurrent_streams: NonZeroUsize,
+}
+
+impl IngestionApiOptions {
+    pub fn max_window_size(&self) -> NonZeroU32 {
+        // 32KiB is the min window defined by the protocol.
+        let value = self
+            .max_window_size
+            .as_u64()
+            .max(32 * 1024)
+            .min(u32::MAX as u64) as u32;
+        NonZeroU32::new(value).expect("byte count is non-zero")
+    }
+
+    pub fn max_concurrent_streams(&self) -> usize {
+        self.max_concurrent_streams
+            .get()
+            .min(Semaphore::MAX_PERMITS - 1)
+    }
+}
+
+impl Default for IngestionApiOptions {
+    fn default() -> Self {
+        Self {
+            disable: false,
+            max_window_size: NonZeroByteCount::new(NonZeroUsize::new(128 * 1024).unwrap()),
+            max_concurrent_streams: NonZeroUsize::new(1000).unwrap(),
+        }
+    }
+}
+
 /// # Ingress options
-#[derive(Debug, Default, Clone, Serialize, Deserialize, derive_builder::Builder)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "schemars", schemars(rename = "IngressOptions"))]
 #[cfg_attr(feature = "schemars", schemars(default))]
@@ -48,6 +113,26 @@ pub struct IngressOptions {
     /// Since v1.7.0
     #[serde(skip_serializing_if = "Option::is_none")]
     http2_max_concurrent_streams: Option<NonZeroU32>,
+
+    /// # HTTP/2 Keep-alive interval
+    ///
+    /// Interval at which HTTP/2 PING frames are sent on inbound ingress connections, to keep
+    /// them alive and to detect clients that have become unreachable.
+    ///
+    /// `0` disables keep-alive pings entirely.
+    ///
+    /// Since v1.8.0
+    http2_keep_alive_interval: FriendlyDuration,
+
+    /// # HTTP/2 Keep-alive timeout
+    ///
+    /// How long to wait for a client to acknowledge a keep-alive PING. If the acknowledgement
+    /// does not arrive within this timeout, the connection is closed.
+    ///
+    /// Only meaningful when `http2-keep-alive-interval` is not zero.
+    ///
+    /// Since v1.8.0
+    http2_keep_alive_timeout: NonZeroFriendlyDuration,
 
     /// # Kafka clusters
     ///
@@ -79,6 +164,11 @@ pub struct IngressOptions {
     /// Settings for the ingestion client
     /// Currently only used by the Kafka ingress and the admin API.
     pub ingestion: IngestionOptions,
+
+    /// # Ingestion API options
+    ///
+    /// Settings for the experimental gRPC ingestion API.
+    pub ingestion_api: IngestionApiOptions,
 }
 
 impl IngressOptions {
@@ -131,6 +221,15 @@ impl IngressOptions {
         self.http2_max_concurrent_streams
     }
 
+    /// Returns `None` if keep-alive pings are disabled.
+    pub fn http2_keep_alive_interval(&self) -> Option<Duration> {
+        self.http2_keep_alive_interval.to_non_zero_std()
+    }
+
+    pub fn http2_keep_alive_timeout(&self) -> Duration {
+        self.http2_keep_alive_timeout.into()
+    }
+
     /// set derived values if they are not configured to reduce verbose configurations
     pub fn set_derived_values(&mut self, common: &CommonOptions, networking: &NetworkingOptions) {
         self.ingress_listener_options
@@ -145,5 +244,22 @@ impl IngressOptions {
                 .map(|limit| limit.min(opts.message_size_limit))
                 .unwrap_or(opts.message_size_limit),
         );
+    }
+}
+
+impl Default for IngressOptions {
+    fn default() -> Self {
+        Self {
+            ingress_listener_options: ListenerOptions::default(),
+            concurrent_api_requests_limit: None,
+            http2_max_concurrent_streams: None,
+            http2_keep_alive_interval: FriendlyDuration::from_secs(40),
+            http2_keep_alive_timeout: NonZeroFriendlyDuration::from_secs_unchecked(20),
+            kafka_clusters: Vec::default(),
+            advertised_ingress_endpoint: None,
+            request_size_limit: None,
+            ingestion: IngestionOptions::default(),
+            ingestion_api: IngestionApiOptions::default(),
+        }
     }
 }

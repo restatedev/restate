@@ -127,13 +127,13 @@ mod tests {
     use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use crate::partition::types::InvokerEffectKind;
-    use assert2::assert;
     use googletest::prelude::*;
     use restate_storage_api::invocation_status_table::{
         InvocationStatus, ReadInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2;
     use restate_storage_api::outbox_table::ReadOutboxTable;
+    use restate_test_util::assert;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::errors::CANCELED_INVOCATION_ERROR;
     use restate_types::identifiers::{DeploymentId, InvocationId, PartitionProcessorRpcRequestId};

@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use ahash::HashSet;
+use metrics::counter;
 use opentelemetry::trace::Span;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -37,6 +38,9 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, Notif
 use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
+use crate::metric_definitions::{
+    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+};
 use crate::partition::processor::*;
 use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
@@ -144,6 +148,19 @@ where
                 break;
             };
 
+            if ctx.is_leader {
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                    "entry" => entry.ty().prometheus_label(),
+                )
+                .increment(1);
+                counter!(
+                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                    "entry" => entry.ty().prometheus_label(),
+                )
+                .increment(entry.inner.serialized_length() as u64);
+            }
+
             match entry.ty() {
                 EntryType::Command(_) => {
                     // If it's a command, figure out the completion ids and add them to the list of missing completions
@@ -200,6 +217,18 @@ where
                 && let NotificationId::CompletionId(completion_id) = notification.id()
                 && missing_completions.remove(&completion_id)
             {
+                if ctx.is_leader {
+                    counter!(
+                        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+                        "entry" => entry.ty().prometheus_label(),
+                    )
+                    .increment(1);
+                    counter!(
+                        USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+                        "entry" => entry.ty().prometheus_label(),
+                    )
+                    .increment(entry.inner.serialized_length() as u64);
+                }
                 // Copy over this notification
                 journal_table_v2::WriteJournalTable::put_journal_entry(
                     ctx.storage,
@@ -477,15 +506,12 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(new_id)),
-                contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::Ok {
-                        new_invocation_id: new_id
-                    })
-                }))
-            )
+            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(RestartAsNewInvocationResponse::Ok {
+                    new_invocation_id: new_id
+                })
+            }))
         );
 
         assert_that!(
@@ -552,15 +578,12 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(new_id)),
-                contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::Ok {
-                        new_invocation_id: new_id
-                    })
-                }))
-            )
+            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+                request_id: eq(request_id),
+                response: eq(RestartAsNewInvocationResponse::Ok {
+                    new_invocation_id: new_id
+                })
+            }))
         );
 
         assert_that!(

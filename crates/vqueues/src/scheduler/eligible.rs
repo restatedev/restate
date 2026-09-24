@@ -159,7 +159,13 @@ impl EligibilityTracker {
                 continue;
             };
 
-            let slot = metas.get(handle).unwrap();
+            let Some(slot) = metas.get(handle) else {
+                // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
+                // due to items being removed externally (killed, etc.)
+                self.remove(handle);
+                self.ready_ring.pop_front();
+                continue;
+            };
 
             match current_state {
                 State::NeedsPoll => {

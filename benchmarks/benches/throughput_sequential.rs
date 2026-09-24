@@ -14,7 +14,6 @@
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use http::Uri;
 use http::header::CONTENT_TYPE;
-use pprof::criterion::{Output, PProfProfiler};
 use restate_rocksdb::RocksDbManager;
 use tokio::runtime::Builder;
 use tracing_subscriber::layer::SubscriberExt;
@@ -74,9 +73,5 @@ async fn send_sequential_counter_requests(client: &reqwest::Client, num_requests
     }
 }
 
-criterion_group!(
-    name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(restate_benchmarks::flamegraph_options()))));
-    targets = throughput_benchmark
-);
+criterion_group!(benches, throughput_benchmark);
 criterion_main!(benches);

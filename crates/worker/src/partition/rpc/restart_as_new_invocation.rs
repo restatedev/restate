@@ -10,7 +10,7 @@
 
 use super::*;
 
-use assert2::let_assert;
+use assert2::assert;
 use opentelemetry::trace::Span;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
@@ -30,6 +30,7 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
 use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
+use restate_wal_protocol::v2::commands;
 
 pub(super) struct Request {
     pub(super) request_id: PartitionProcessorRpcRequestId,
@@ -171,7 +172,7 @@ where
                     return Ok(None);
                 }
 
-                let_assert!(
+                assert!(let
                     journal_v1::Entry::Input(journal_v1::InputEntry { value, headers }) = entry
                         .deserialize_entry_ref::<OldProtocolEntryCodec>()
                         .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
@@ -231,17 +232,16 @@ where
             );
 
             // Propose the usual Invoke command
-            let cmd = Command::Invoke(Box::new(service_invocation));
+            let cmd = commands::InvokeCommand::from(service_invocation);
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
-            return Decision::Propose(RpcProposal {
-                partition_key: invocation_id.partition_key(),
+            return Decision::Propose(RpcProposal::new(
                 cmd,
-                reply_on: ReplyOn::Commit {
+                ReplyOn::Commit {
                     response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }.into(),
                 },
-            });
+            ));
         }
 
         // For Restart from prefix, the PP will actually execute the operation,
@@ -359,7 +359,7 @@ where
         }
 
         // Pass the ball to the state machine, the PP will reply to the RPC request.
-        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+        let cmd = commands::RestartAsNewInvocationCommand::from(RestartAsNewInvocationRequest {
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
@@ -368,11 +368,8 @@ where
                 IngressInvocationResponseSink { request_id },
             )),
         });
-        Decision::Propose(RpcProposal {
-            partition_key: invocation_id.partition_key(),
-            cmd,
-            reply_on: ReplyOn::Apply { request_id },
-        })
+
+        Decision::Propose(RpcProposal::new(cmd, ReplyOn::Apply { request_id }))
     }
 }
 
@@ -395,6 +392,7 @@ mod tests {
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
     use restate_storage_api::journal_table_v2::NotificationEntryIndex;
+    use restate_test_util::assert;
     use restate_test_util::rand;
     use restate_test_util::rand::bytestring;
     use restate_types::deployment::PinnedDeployment;
@@ -759,21 +757,16 @@ mod tests {
             },
         )
         .await;
-        let (service_invocation, response) = match decision {
-            Decision::Propose(RpcProposal {
-                cmd: Command::Invoke(service_invocation),
-                reply_on: ReplyOn::Commit { response },
-                ..
-            }) => (service_invocation, response),
-            Decision::Propose(RpcProposal { cmd, .. }) => panic!("unexpected proposal: {cmd:?}"),
-            Decision::Reply(reply) => panic!("unexpected reply: {reply:?}"),
-            Decision::NotifyInvokerAndReply { .. } => {
-                panic!("unexpected invoker notification")
-            }
-        };
+
+        let (_, service_invocation_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::InvokeCommand>();
+
+        assert!(let ReplyOn::Commit { response } = reply_on);
+        let service_invocation: ServiceInvocation = service_invocation_command.into();
+
         assert_that!(
             service_invocation,
-            points_to(all!(
+            all!(
                 field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
                 field!(ServiceInvocation.argument, eq(payload_clone)),
                 field!(ServiceInvocation.headers, eq(headers_clone)),
@@ -783,7 +776,7 @@ mod tests {
                 ),
                 field!(ServiceInvocation.response_sink, none()),
                 field!(ServiceInvocation.submit_notification_sink, none()),
-            ))
+            )
         );
         assert_that!(
             response,
@@ -984,14 +977,13 @@ mod tests {
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
         assert_eq!(request.patch_deployment_id, None);
     }
@@ -1029,14 +1021,13 @@ mod tests {
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
         assert_eq!(request.patch_deployment_id, None);
     }
@@ -1246,14 +1237,13 @@ mod tests {
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 1);
         assert_eq!(request.patch_deployment_id, None);
     }
@@ -1293,14 +1283,13 @@ mod tests {
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 1);
         assert_eq!(request.patch_deployment_id, Some(latest_id));
     }

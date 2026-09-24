@@ -11,12 +11,15 @@
 use super::*;
 use std::convert::Infallible;
 
+use bytestring::ByteString;
+
 use crate::Versioned;
 use crate::schema::deployment::DeploymentResolver;
 use crate::schema::deployment::ProtocolType;
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DEFAULT_IDEMPOTENCY_RETENTION, DEFAULT_WORKFLOW_COMPLETION_RETENTION, InvocationTargetResolver,
+    StatePreloadPolicy,
 };
 use crate::schema::service::ServiceMetadataResolver;
 use crate::service_protocol::{
@@ -48,6 +51,7 @@ fn greeter_service_greet_handler() -> endpoint_manifest::Handler {
         journal_retention: None,
         workflow_completion_retention: None,
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -71,6 +75,7 @@ fn greeter_workflow_greet_handler() -> endpoint_manifest::Handler {
         journal_retention: None,
         workflow_completion_retention: None,
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         ingress_private: None,
         retry_policy_on_max_attempts: None,
     }
@@ -93,6 +98,7 @@ fn greeter_service() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -125,6 +131,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            eager_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -133,6 +140,7 @@ fn greeter_virtual_object() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -154,6 +162,7 @@ fn greeter_workflow() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -186,6 +195,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            eager_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         }],
@@ -194,6 +204,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
         journal_retention: None,
         metadata: Default::default(),
         enable_lazy_state: None,
+        eager_state_keys_whitelist: vec![],
         retry_policy_on_max_attempts: None,
     }
 }
@@ -653,7 +664,7 @@ mod change_service_type {
             ..add_deployment_request(vec![greeter_virtual_object()])
         });
 
-        assert!(let &SchemaError::Service(
+        assert!(let SchemaError::Service(
                 ServiceError::DifferentType(_)
             ) = compute_result.unwrap_err());
     }
@@ -871,7 +882,7 @@ fn update_latest_deployment() {
         .unwrap()
         .1;
 
-    assert!(let &SchemaError::NotFound(_) = updater.update_deployment(
+    assert!(let SchemaError::NotFound(_) = updater.update_deployment(
             UpdateDeploymentRequest {
                 overwrite: Overwrite::Yes,
                 ..update_deployment_request(DeploymentId::new(), vec![])
@@ -1045,6 +1056,7 @@ fn update_latest_deployment_add_handler() {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            eager_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -1119,6 +1131,7 @@ fn update_draining_deployment_add_handler() {
             journal_retention: None,
             workflow_completion_retention: None,
             enable_lazy_state: None,
+            eager_state_keys_whitelist: vec![],
             ingress_private: None,
             retry_policy_on_max_attempts: None,
         });
@@ -2160,7 +2173,7 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(60)),
-                eager_state_size_limit: None,
+                state_preload_policy: StatePreloadPolicy::All,
             })
         )
     }
@@ -2185,8 +2198,27 @@ mod endpoint_manifest_options_propagation {
             eq(InvocationAttemptOptions {
                 abort_timeout: Some(Duration::from_secs(120)),
                 inactivity_timeout: Some(Duration::from_secs(30)),
-                eager_state_size_limit: None,
+                state_preload_policy: StatePreloadPolicy::All,
             })
+        )
+    }
+
+    #[test]
+    fn per_key_state_config_handler_overrides_service() {
+        let mut svc = greeter_virtual_object();
+        svc.enable_lazy_state = Some(true);
+        svc.eager_state_keys_whitelist = vec!["service-key".to_owned()];
+        svc.handlers[0].eager_state_keys_whitelist = vec!["handler-key".to_owned()];
+
+        let resolved = init_discover_and_resolve_timeouts(svc, GREETER_SERVICE_NAME, "greet");
+
+        // The handler-level always-eager list fully replaces the service-level one, under the
+        // resolved lazy default.
+        assert_that!(
+            resolved.state_preload_policy,
+            eq(StatePreloadPolicy::Partial(vec![ByteString::from_static(
+                "handler-key"
+            )]))
         )
     }
 
@@ -2929,12 +2961,9 @@ mod kafka_cluster {
         assert_eq!(subscriptions.len(), 1);
 
         let subscription = &subscriptions[0];
-        match subscription.source() {
-            Source::Kafka { cluster, topic } => {
-                assert_eq!(cluster, "my-cluster");
-                assert_eq!(topic, "my-topic");
-            }
-        }
+        let KafkaSource { cluster, topic } = subscription.source();
+        assert_eq!(cluster, "my-cluster");
+        assert_eq!(topic, "my-topic");
     }
 
     #[test]
@@ -3165,12 +3194,10 @@ mod kafka_cluster {
         assert_eq!(subscriptions.len(), 1);
         assert_eq!(subscriptions[0].id(), subscription_id);
 
-        match subscriptions[0].source() {
-            Source::Kafka { cluster, topic } => {
-                assert_eq!(cluster, "config-cluster");
-                assert_eq!(topic, "my-topic");
-            }
-        }
+        let KafkaSource { cluster, topic } = subscriptions[0].source();
+
+        assert_eq!(cluster, "config-cluster");
+        assert_eq!(topic, "my-topic");
 
         // get_kafka_cluster_and_subscriptions should work with config cluster
         let (cluster, subs) = schema

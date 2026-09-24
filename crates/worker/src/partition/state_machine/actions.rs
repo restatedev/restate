@@ -39,10 +39,6 @@ pub enum Action {
         invocation_target: InvocationTarget,
         idempotency_key: Option<ReString>,
     },
-    Invoke {
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-    },
     NewOutboxMessage {
         seq_number: MessageIndex,
         message: OutboxMessage,
@@ -56,10 +52,6 @@ pub enum Action {
     AckStoredCommand {
         invocation_id: InvocationId,
         command_index: CommandIndex,
-    },
-    ForwardCompletion {
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
     },
     ForwardNotification {
         invocation_id: InvocationId,

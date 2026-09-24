@@ -39,8 +39,7 @@ use restate_service_protocol_v4::proto_lite;
 use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
 use restate_types::errors::{GenericError, InvocationError};
-use restate_types::identifiers::InvocationId;
-use restate_types::identifiers::ServiceId;
+use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
     SpanRelation,
@@ -56,7 +55,9 @@ use restate_types::journal_v2::{
 };
 use restate_types::limit_key::LimitKey;
 use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
-use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
+use restate_types::schema::invocation_target::{
+    DeploymentStatus, InvocationTargetResolver, StatePreloadPolicy,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
@@ -93,8 +94,8 @@ const RATE_LIMITED_CODES: [StatusCode; 2] = [
 ];
 
 /// Runs the interaction between the server and the service endpoint.
-pub struct ServiceProtocolRunner<'a, EE, Schemas> {
-    invocation_task: &'a mut InvocationTask<EE, Schemas>,
+pub struct ServiceProtocolRunner<'a, Schemas> {
+    invocation_task: &'a mut InvocationTask<Schemas>,
 
     service_protocol_version: ServiceProtocolVersion,
 
@@ -109,12 +110,12 @@ pub struct ServiceProtocolRunner<'a, EE, Schemas> {
     max_awaited_future_depth: usize,
 }
 
-impl<'a, EE, Schemas> ServiceProtocolRunner<'a, EE, Schemas>
+impl<'a, Schemas> ServiceProtocolRunner<'a, Schemas>
 where
     Schemas: InvocationTargetResolver,
 {
     pub fn new(
-        invocation_task: &'a mut InvocationTask<EE, Schemas>,
+        invocation_task: &'a mut InvocationTask<Schemas>,
         service_protocol_version: ServiceProtocolVersion,
         deployment_type: &DeploymentType,
         max_awaited_future_depth: usize,
@@ -134,17 +135,13 @@ where
     /// How often to release excess outbound budget capacity during the bidi-stream phase.
     const BUDGET_RELEASE_INTERVAL: Duration = Duration::from_secs(5);
 
-    /// Run the service protocol interaction.
-    ///
-    /// # Arguments
-    /// * `keyed_service_id` - If `Some`, eager state loading is enabled and we'll read/send
-    ///   state for this service upfront. If `None`, lazy state is used (either because this
-    ///   isn't a keyed service, or lazy state is enabled, or eager state is disabled).
+    /// Run the service protocol interaction. `state_read` is `Some` to preload state upfront per
+    /// its config, or `None` for fully lazy state.
     pub async fn run<Txn, IR>(
         mut self,
         txn: Txn,
         journal_metadata: JournalMetadata,
-        keyed_service_id: Option<ServiceId>,
+        state_read: Option<StatePreloadPolicy>,
         deployment: Deployment,
         invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
@@ -222,7 +219,7 @@ where
                 txn,
                 protocol_type,
                 journal_metadata,
-                keyed_service_id,
+                state_read,
                 http_stream_tx,
                 &mut decoder_stream,
                 invocation_reader,
@@ -276,9 +273,8 @@ where
             TerminalLoopState::Closed => {
                 attempt_span.set_status(Status::Ok);
             }
-            TerminalLoopState::Suspended(_)
-            | TerminalLoopState::SuspendedV2(_)
-            | TerminalLoopState::SuspendedV3(_) => {
+
+            TerminalLoopState::SuspendedV2(_) | TerminalLoopState::SuspendedV3(_) => {
                 attempt_span.add_event(
                     restate_tracing_instrumentation::semconv::event::RESTATE_INVOCATION_LIFECYCLE_SUSPENDED,
                     vec![],
@@ -306,10 +302,10 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn run_inner<Txn, S, IR>(
         &mut self,
-        txn: Txn,
+        mut txn: Txn,
         protocol_type: ProtocolType,
         journal_metadata: JournalMetadata,
-        keyed_service_id: Option<ServiceId>,
+        state_read: Option<StatePreloadPolicy>,
         mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
         invocation_reader: IR,
@@ -324,20 +320,25 @@ where
         let journal_size = journal_metadata.length;
         // === Replay phase (transaction alive) ===
         {
-            // Read state if needed (state is collected for the START message).
-            // LocalMemoryPool-gated: each state entry acquires a lease from the outbound
-            // budget. The per-entry leases are merged into a single lease that
-            // accompanies the start message frame.
-            let state = if let Some(ref service_id) = keyed_service_id {
+            // Read state for the START message. `Eager` preloads the full state; a lazy default with
+            // a whitelist preloads only those keys. Both return the same `EagerState` stream type, so
+            // the collection (inside `write_start`) is uniform.
+            // Budget-gated: each entry takes a lease from the outbound budget.
+            // Only keyed targets have state to preload; resolve (and clone) the ServiceId here, and
+            // skip the read entirely when the target is not keyed.
+            let state = if let Some(policy) = &state_read
+                && let Some(service_id) =
+                    self.invocation_task.invocation_target.as_keyed_service_id()
+            {
                 Some(shortcircuit!(
-                    txn.read_state_budgeted(service_id, outbound_budget)
+                    txn.read_state_budgeted(&service_id, policy, outbound_budget)
                         .map_err(InvokerError::from_state_reader)
                 ))
             } else {
                 None
             };
 
-            // Send start message with state (leases are merged inside write_start)
+            // Send start message with the collected state (its merged lease travels with the frame)
             shortcircuit!(
                 self.write_start(
                     &mut http_stream_tx,
@@ -393,6 +394,7 @@ where
                     // by the time the bidi stream loop needs to read notifications from it.
                     // todo remove once we drop support for journal v1
                     JournalKind::V2,
+                    journal_size,
                     outbound_budget,
                     attempt_span
                 )
@@ -580,12 +582,14 @@ where
     }
 
     /// This loop concurrently reads the http response stream and journal completions from the invoker.
+    #[allow(clippy::too_many_arguments)]
     async fn bidi_stream_loop<S, IR>(
         &mut self,
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
         mut invocation_reader: IR,
         journal_kind: JournalKind,
+        replayed_journal_length: EntryIndex,
         outbound_budget: &mut LocalMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
@@ -601,6 +605,19 @@ where
             tokio::select! {
                 opt_completion = self.invocation_task.invoker_rx.recv() => {
                     match opt_completion {
+                        Some(Notification::Entry(entry_index)) if entry_index < replayed_journal_length => {
+                            // The entry was already part of the replayed journal prefix, sending it
+                            // again would deliver the same notification twice to the SDK.
+                            //
+                            // This happens because the invocation state machine starts forwarding
+                            // notifications as soon as the attempt is started, while this task reads
+                            // the journal metadata (and thus fixes the replay prefix) a bit later.
+                            // Any entry appended in between is both replayed and forwarded.
+                            debug!(
+                                restate.journal.index = entry_index,
+                                "Ignoring notification for an entry that was already replayed"
+                            );
+                        }
                         Some(Notification::Entry(entry_index)) => {
                             trace!(restate.journal.index = entry_index, "Reading entry from storage");
                             let (journal_entry, lease) = shortcircuit!(
@@ -628,9 +645,6 @@ where
                             trace!("Sending the entry to the wire");
                             shortcircuit!(self.write_entry_with_lease(&mut http_stream_tx, raw_entry, Some(lease)));
                         }
-                        Some(Notification::Completion(_)) => {
-                            panic!("We don't expect to receive Notification::Completion in v4+, this is an invoker bug.")
-                        },
                         Some(Notification::CommandAck(entry_index)) => {
                             trace!("Sending the ack to the wire");
                             shortcircuit!(self.write(&mut http_stream_tx, Message::new_command_ack(entry_index)));
@@ -1049,7 +1063,7 @@ where
                 // original bytes downstream to avoid a re-encode round trip.
                 let parsed = crate::shortcircuit!(
                     proto_lite::GetInvocationOutputCommandMessageLite::decode(cmd.as_ref())
-                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
+                        .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
                     shortcircuit!(Self::validate_target(target).map_err(|err| {
@@ -1072,7 +1086,7 @@ where
                 // See `Message::GetInvocationOutputCommand` above for why we decode-then-forward.
                 let parsed = shortcircuit!(
                     proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
-                        .map_err(|err| InvokerError::EncodingV2(GenericError::from(err).into()))
+                        .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
                 if let Some(target) = parsed.target.as_ref() {
                     shortcircuit!(Self::validate_target(target).map_err(|err| {
@@ -1435,7 +1449,7 @@ where
         let unresolved_future: UnresolvedFuture = shortcircuit!(
             awaiting_on
                 .try_into()
-                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+                .map_err(|e| InvokerError::Encoding(GenericError::from(e).into()))
         );
         self.invocation_task
             .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn { unresolved_future });
@@ -1462,7 +1476,7 @@ where
         let future: UnresolvedFuture = shortcircuit!(
             awaiting_on
                 .try_into()
-                .map_err(|e| InvokerError::EncodingV2(GenericError::from(e).into()))
+                .map_err(|e| InvokerError::Encoding(GenericError::from(e).into()))
         );
 
         // We currently don't support empty future set
@@ -1571,10 +1585,6 @@ fn resolve_call_request(
             )
         })?;
 
-    let experimental_config = &restate_types::config::Configuration::pinned()
-        .common
-        .experimental;
-
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
         return Err(CommandPreconditionError::DeploymentDeprecated(
             request.service_name.to_string(),
@@ -1609,9 +1619,6 @@ fn resolve_call_request(
         if let Some(scope) = request.scope
             && !scope.is_empty()
         {
-            if !experimental_config.is_vqueues_enabled() {
-                return Err(CommandPreconditionError::ScopeRequiresVQueues);
-            }
             Some(
                 Scope::try_new(&scope)
                     .map_err(|e| CommandPreconditionError::InvalidScope(scope, e))?,
@@ -1640,13 +1647,6 @@ fn resolve_call_request(
     // Validate invariant: limit_key requires scope
     if !limit_key.is_empty() && invocation_target.scope().is_none() {
         return Err(CommandPreconditionError::LimitKeyWithoutScope);
-    }
-
-    if invocation_target.scope().is_some()
-        && matches!(meta.target_ty, InvocationTargetType::VirtualObject(_))
-        && !experimental_config.is_scoped_virtual_objects_enabled()
-    {
-        return Err(CommandPreconditionError::ScopedVirtualObjectNotSupported);
     }
 
     let invocation_retention = meta.compute_retention(idempotency_key.is_some());

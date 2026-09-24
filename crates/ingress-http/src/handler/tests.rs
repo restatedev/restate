@@ -35,7 +35,6 @@ use crate::handler::error::X_RESTATE_ERROR_SOURCE;
 use crate::handler::responses::X_RESTATE_ID;
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
-use restate_types::config::{Configuration, set_current_config};
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::{IdempotencyId, InvocationId, ServiceId, WithInvocationId};
 use restate_types::invocation::client::{
@@ -108,6 +107,75 @@ async fn call_service() {
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
     assert_eq!(response_value.greeting, "Igal");
+}
+
+// Regression test for https://github.com/restatedev/restate/issues/4187:
+// client-supplied `x-restate-*` headers must not be forwarded to the service.
+// The namespace is reserved for the ingress, so a caller can neither inject
+// arbitrary `x-restate-*` headers nor override the ones the ingress sets.
+#[restate_core::test]
+#[traced_test]
+async fn ingress_overwrites_x_restate_headers() {
+    let greeting_req = GreetingRequest {
+        person: "Francesco".to_string(),
+    };
+
+    let req = hyper::Request::builder()
+        .uri("http://localhost/greeter.Greeter/greet")
+        .method(Method::POST)
+        .header("content-type", "application/json")
+        // Attempt to spoof the ingress-reserved path and inject an arbitrary
+        // `x-restate-*` header.
+        .header("x-restate-ingress-path", "/spoofed")
+        .header("x-restate-foo", "bar")
+        .header("my-header", "my-value")
+        .body(Full::new(Bytes::from(
+            serde_json::to_vec(&greeting_req).unwrap(),
+        )))
+        .unwrap();
+
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_call()
+        .return_once(|invocation_request| {
+            let headers = &invocation_request.header.headers;
+
+            // Regular user headers are still forwarded.
+            assert!(
+                headers
+                    .iter()
+                    .any(|h| &*h.name == "my-header" && &*h.value == "my-value")
+            );
+
+            // The arbitrary client `x-restate-*` header is dropped.
+            assert!(!headers.iter().any(|h| &*h.name == "x-restate-foo"));
+
+            // `x-restate-ingress-path` is set by the ingress, exactly once, with
+            // the real request path - not the client-supplied "/spoofed" value.
+            let ingress_paths: Vec<_> = headers
+                .iter()
+                .filter(|h| &*h.name == "x-restate-ingress-path")
+                .collect();
+            assert_eq!(ingress_paths.len(), 1);
+            assert_eq!(&*ingress_paths[0].value, "/greeter.Greeter/greet");
+
+            Box::pin(ready(Ok(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_request.invocation_id()),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("greeter.Greeter", "greet"),
+                    serde_json::to_vec(&GreetingResponse {
+                        greeting: "Igal".to_string(),
+                    })
+                    .unwrap()
+                    .into(),
+                ),
+            })))
+        });
+
+    let response = handle(req, mock_dispatcher).await;
+    assert_eq!(response.status(), StatusCode::OK);
 }
 
 #[restate_core::test]
@@ -1557,69 +1625,9 @@ async fn output_by_target_with_workflow() {
     assert_eq!(response_value.greeting, "done");
 }
 
-fn set_experimental_flags(vqueues: bool, scoped_virtual_objects: bool) {
-    let mut config = Configuration::default();
-    config.common.experimental.set_vqueues(vqueues);
-    config
-        .common
-        .experimental
-        .set_scoped_virtual_objects(scoped_virtual_objects);
-    set_current_config(config);
-}
-
 #[restate_core::test]
 #[traced_test]
-async fn scoped_virtual_object_rejected_when_flag_off() {
-    set_experimental_flags(true, false);
-
-    // Scoped VO call rejected
-    let response = handle(
-        hyper::Request::builder()
-            .uri("http://localhost/restate/scope/sc1/call/greeter.GreeterObject/my-key/greet")
-            .method(Method::POST)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from_static(b"{}")))
-            .unwrap(),
-        MockRequestDispatcher::default(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-    // Scoped service call passes through (not gated)
-    let mut mock_dispatcher = MockRequestDispatcher::default();
-    mock_dispatcher
-        .expect_call()
-        .return_once(|invocation_request| {
-            assert!(invocation_request.header.target.scope().is_some());
-            ready(Ok(InvocationOutput {
-                request_id: Default::default(),
-                invocation_id: Some(invocation_request.invocation_id()),
-                completion_expiry_time: None,
-                response: InvocationOutputResponse::Success(
-                    invocation_request.header.target.clone(),
-                    Bytes::new(),
-                ),
-            }))
-            .boxed()
-        });
-    let response = handle(
-        hyper::Request::builder()
-            .uri("http://localhost/restate/scope/sc1/call/greeter.Greeter/greet")
-            .method(Method::POST)
-            .header("content-type", "application/json")
-            .body(Full::new(Bytes::from_static(b"{}")))
-            .unwrap(),
-        mock_dispatcher,
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::OK);
-}
-
-#[restate_core::test]
-#[traced_test]
-async fn scoped_virtual_object_allowed_when_flag_on() {
-    set_experimental_flags(true, true);
-
+async fn scoped_virtual_object_allowed() {
     let mut mock_dispatcher = MockRequestDispatcher::default();
     mock_dispatcher
         .expect_call()

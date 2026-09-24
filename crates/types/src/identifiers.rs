@@ -40,7 +40,7 @@ use crate::id_util::{IdDecoder, IdEncoder};
 use crate::invocation::{InvocationTarget, InvocationTargetType, WorkflowHandlerType};
 use crate::journal_v2::SignalId;
 use crate::time::MillisSinceEpoch;
-use restate_encoding::{BilrostNewType, NetSerde};
+use restate_encoding::{BilrostNewType, NetSerde, bilrost_as_display_from_str};
 
 thread_local! {
     // a thread-local xxh3 hashing state to reuse its allocation since its internal buffer is quite
@@ -354,7 +354,7 @@ impl InvocationUuid {
             }
             (_, _) => {
                 // Regular invocation
-                Ulid::new().into()
+                Ulid::generate().into()
             }
         };
 
@@ -909,6 +909,20 @@ pub struct LambdaARN {
     region: std::ops::Range<u32>,
 }
 
+// This is only needed for the bilrost implementation below
+// but it creates an invalid LambdaARN that should not be used
+// as a value.
+// todo(azmy): Drop the default implementation
+impl Default for LambdaARN {
+    fn default() -> Self {
+        Self {
+            arn: Arc::from(""),
+            region: 0..0,
+        }
+    }
+}
+bilrost_as_display_from_str!(LambdaARN);
+
 impl LambdaARN {
     pub fn region(&self) -> &str {
         &self.arn[(self.region.start as usize)..(self.region.end as usize)]
@@ -1141,7 +1155,7 @@ macro_rules! ulid_backed_id {
 
             impl [< $res_name Id >] {
                 pub fn new() -> Self {
-                    Self(Ulid::new())
+                    Self(Ulid::generate())
                 }
 
                 pub const fn from_parts(timestamp_ms: u64, random: u128) -> Self {

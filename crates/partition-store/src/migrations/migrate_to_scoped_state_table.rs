@@ -17,7 +17,7 @@ use restate_storage_api::StorageError;
 use restate_types::sharding::PartitionKey;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyKind};
-use crate::scan::{PhysicalScan, TableScan};
+use crate::scan::TableScan;
 use crate::state_table::StateKey;
 
 use super::{MigrationContext, MigrationError};
@@ -35,10 +35,7 @@ pub fn migrate_to_scoped_state_table(ctx: &mut MigrationContext<'_>) -> Result<(
     let mut counter = 0;
 
     let mut iterator = ctx.partition_db.scan(
-        PhysicalScan::from(
-            TableScan::ScanPartitionKeyRange::<StateKey>(key_range),
-            &mut ctx.arena,
-        ),
+        TableScan::ScanPartitionKeyRange::<StateKey>(key_range).encode(&mut ctx.arena),
         rocksdb::ReadOptions::default(),
     )?;
     iterator.seek_to_first();

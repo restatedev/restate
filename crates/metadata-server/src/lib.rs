@@ -17,7 +17,7 @@ pub mod raft;
 use std::fmt::{Display, Formatter};
 use std::sync::Arc;
 
-use assert2::let_assert;
+use assert2::assert;
 use bytes::Bytes;
 use bytestring::ByteString;
 use prost::Message;
@@ -223,7 +223,7 @@ pub async fn create_metadata_server_and_client(
         .map(|server| {
             let metadata_client_options = config.common.metadata_client.clone();
             let backoff_policy = metadata_client_options.backoff_policy.clone();
-            let_assert!(
+            assert!(let
                 MetadataClientKind::Replicated { mut addresses } =
                     config.common.metadata_client.kind.clone()
             );
@@ -245,7 +245,7 @@ pub async fn create_metadata_server_and_client(
 
 impl MetadataStoreRequest {
     fn into_request(self) -> (Request, ClusterIdentity) {
-        let request_id = Ulid::new();
+        let request_id = Ulid::generate();
 
         match self {
             MetadataStoreRequest::Get {
@@ -355,7 +355,7 @@ impl Callback {
     }
 
     fn complete_put(self, result: Result<(), RequestError>) {
-        let_assert!(
+        assert!(let
             CallbackKind::Put { result_tx } = self.kind,
             "expected 'Put' callback"
         );
@@ -364,7 +364,7 @@ impl Callback {
     }
 
     fn complete_delete(self, result: Result<(), RequestError>) {
-        let_assert!(
+        assert!(let
             CallbackKind::Delete { result_tx } = self.kind,
             "expected 'Delete' callback"
         );

@@ -26,36 +26,70 @@ use std::sync::Arc;
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
-use restate_types::identifiers::{
-    InvocationId, PartitionId, PartitionKey, PartitionProcessorRpcRequestId,
-};
+use restate_types::identifiers::{InvocationId, PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationRequest;
+use restate_types::logs::Keys;
 use restate_types::net::partition_processor::{
     AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
     PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
 };
 use restate_types::schema::deployment::DeploymentResolver;
-use restate_wal_protocol::Command;
+use restate_wal_protocol::v2::{Command, CommandWithKeys, ErasedCommand};
 
-#[derive(Debug, Clone)]
+#[derive(Clone, derive_more::Debug)]
 pub(crate) struct RpcProposal {
-    pub(crate) partition_key: PartitionKey,
-    pub(crate) cmd: Command,
-    pub(crate) reply_on: ReplyOn,
+    keys: Keys,
+    cmd: ErasedCommand,
+    reply_on: ReplyOn,
 }
 
-#[derive(Debug)]
+impl RpcProposal {
+    pub(crate) fn new<C: Command>(cmd: impl CommandWithKeys<C>, reply_on: ReplyOn) -> Self {
+        let keys = cmd.keys();
+        let cmd = cmd.inner();
+        Self {
+            keys,
+            cmd: ErasedCommand::new(cmd),
+            reply_on,
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> (Keys, ErasedCommand, ReplyOn) {
+        let Self {
+            keys,
+            cmd,
+            reply_on,
+        } = self;
+
+        (keys, cmd, reply_on)
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
+#[derive(Debug)]
 pub(crate) enum Decision {
     Propose(RpcProposal),
     /// Reply immediately; nothing is proposed.
     Reply(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>),
-    /// Legacy invoker-owned paths only: poke the invoker, then reply immediately.
-    /// TODO: remove this once the non-vqueues support is dropped.
-    NotifyInvokerAndReply {
-        notification: InvokerNotification,
-        reply: PartitionProcessorRpcResponse,
-    },
+}
+
+impl Decision {
+    #[cfg(test)]
+    fn extract_as_rpc_proposal<C: Command>(self) -> (Keys, C, ReplyOn) {
+        let Self::Propose(proposal) = self else {
+            panic!("Invalid Decision variant, expecting Decision::Propose");
+        };
+
+        let Some(inner) = proposal.cmd.downcast_arc::<C>() else {
+            panic!("Command type is not match '{}'", C::KIND);
+        };
+
+        (
+            proposal.keys,
+            Arc::into_inner(inner).expect("only owner"),
+            proposal.reply_on,
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,12 +108,6 @@ pub(crate) enum ReplyOn {
         request_id: PartitionProcessorRpcRequestId,
         invocation_id: InvocationId,
     },
-}
-
-#[derive(Debug)]
-pub(crate) enum InvokerNotification {
-    RetryNow(InvocationId), // resume legacy path, resume_invocation.rs:92
-    Pause(InvocationId),    // pause legacy path,  pause_invocation.rs:93
 }
 
 pub(super) struct RpcContext<'a, Schemas, Storage> {

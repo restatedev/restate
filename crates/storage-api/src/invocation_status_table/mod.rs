@@ -885,7 +885,7 @@ pub trait ScanInvocationStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
-    fn filter_map_invocation_status_lazy<
+    fn filter_map_invocation_status_ranged_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -896,13 +896,9 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
+        key_range: KeyRange,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
-
-    /// Legacy invoked invocations are those that have not been migrated to vqueues
-    fn scan_legacy_invoked_invocations(
-        &self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
 pub trait WriteInvocationStatusTable {

@@ -18,6 +18,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use datafusion::catalog::TableProvider;
+use datafusion::common::TableReference;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
@@ -25,7 +26,6 @@ use datafusion::execution::context::SQLOptions;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
 use datafusion::prelude::{SessionConfig, SessionContext};
-use datafusion::sql::TableReference;
 
 use restate_core::{Metadata, TaskCenter};
 use restate_limiter::rule_book::RuleBookObserver;
@@ -262,12 +262,6 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
-        crate::keyed_service_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
         crate::locks::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -446,12 +440,6 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::invocation_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::keyed_service_status::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),

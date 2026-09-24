@@ -135,12 +135,20 @@ message Source {
 
   message RestartAsNew { InvocationId invocation_id = 1; }
 
+  message IngestionSource {
+    // Intentionally empty
+    // but allows adding fields in the
+    // future when needed.
+  }
+
   oneof source {
     Ingress ingress = 9;
     Service service = 10;
     google.protobuf.Empty internal = 11;
     Subscription subscription = 12;
     RestartAsNew restart_as_new = 13;
+    // Since v1.8.0
+    IngestionSource ingestion = 14;
   }
 }
 
@@ -710,6 +718,13 @@ message OutboxMessage {
     }
   }
 
+  message Opaque {
+    uint64 partition_key = 1;
+    uint32 kind = 2;
+    uint32 codec = 3;
+    bytes message = 4;
+  }
+
   oneof outbox_message {
     OutboxServiceInvocation service_invocation_case = 1;
     OutboxServiceInvocationResponse service_invocation_response = 2;
@@ -717,6 +732,7 @@ message OutboxMessage {
     OutboxCancel cancel = 5;
     AttachInvocationRequest attach_invocation_request = 6;
     NotifySignal notify_signal = 7;
+    Opaque opaque = 8;
   }
 }
 

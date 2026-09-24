@@ -8,19 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use zerocopy::big_endian::{self};
+
 use crate::logs::Lsn;
 
 /// Sequence number used by vqueue entries.
-///
-/// `Seq` is intentionally limited to 56 bits to allow future keys to stores its
-/// sequence component in 7 bytes (the remaining byte in a `u64` is not encoded).
-///
-/// Construction wraps to the low 56 bits (`value & ((1 << 56) - 1)`), so callers should
-/// treat `Seq::new` as a lossy conversion from `u64`.
-///
-/// Current limitations:
-/// - values larger than [`Seq::MAX`] are wrapped, not rejected;
-/// - `0` is currently a valid value.
 #[derive(
     Debug,
     Clone,
@@ -33,25 +25,40 @@ use crate::logs::Lsn;
     derive_more::Deref,
     derive_more::Into,
     derive_more::Display,
+    zerocopy::Immutable,
+    zerocopy::KnownLayout,
+    zerocopy::IntoBytes,
+    zerocopy::FromZeros,
+    zerocopy::Unaligned,
 )]
 #[repr(transparent)]
-pub struct Seq(u64);
+pub struct Seq(big_endian::U64);
 
 impl Seq {
-    /// Maximum representable sequence value (56 bits set).
-    pub const MAX: Self = Seq((1u64 << 56) - 1);
+    /// Maximum representable sequence value
+    pub const MAX: Self = Seq(big_endian::U64::MAX_VALUE);
     /// Minimum representable sequence value. Use when deduplication is done externally
     /// or if the order doesn't matter (e.g. migration from old data).
-    pub const MIN: Self = Seq(0);
+    pub const MIN: Self = Seq(big_endian::U64::ZERO);
 
-    /// Creates a [`Seq`] by keeping only the low 56 bits of `seq`.
+    /// Creates a [`Seq`] value.
     pub const fn new(seq: u64) -> Self {
-        Self(seq & Self::MAX.0)
+        Self(big_endian::U64::new(seq))
     }
 
     /// Returns this sequence as a primitive `u64`.
     pub const fn as_u64(self) -> u64 {
-        self.0
+        self.0.get()
+    }
+
+    /// Encodes into 8 bytes (big-endian)
+    pub const fn to_bytes(self) -> [u8; 8] {
+        zerocopy::transmute!(self)
+    }
+
+    /// Decodes from raw byte representation (big-endian)
+    pub const fn from_bytes(bytes: [u8; 8]) -> Self {
+        Seq(big_endian::U64::from_bytes(bytes))
     }
 }
 
@@ -135,13 +142,6 @@ mod bilrost_encoding {
 #[cfg(test)]
 mod tests {
     use super::Seq;
-
-    #[test]
-    fn new_wraps_to_56_bits() {
-        assert_eq!(Seq::new(Seq::MAX.as_u64()).as_u64(), Seq::MAX.as_u64());
-        assert_eq!(Seq::new(1u64 << 56).as_u64(), 0);
-        assert_eq!(Seq::new((1u64 << 56) + 7).as_u64(), 7);
-    }
 
     #[test]
     fn fixed_encoding_round_trips() {

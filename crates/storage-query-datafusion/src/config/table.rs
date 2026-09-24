@@ -213,7 +213,10 @@ mod tests {
                 },
             ]
         });
-        let mut iter = flatten_json(&json);
+        // Object key order depends on serde_json's preserve_order feature.
+        let mut entries: Vec<_> = flatten_json(&json).collect();
+        entries.sort_unstable();
+        let mut iter = entries.into_iter();
         assert_eq!(
             iter.next(),
             Some(("arr".to_string(), "[\"i\",\"j\"]".to_string()))

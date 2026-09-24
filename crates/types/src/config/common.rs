@@ -672,16 +672,6 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub experimental: Experimental,
-
-    /// # Explicitly disable the `controlled-idempotent-sharding`
-    ///
-    /// TODO: Removed in Restate v1.8. This is a stopgap solution to
-    /// fix e2e forward compatibility tests.
-    ///
-    /// Since v1.7
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub disable_controlled_idempotent_sharding: bool,
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -767,32 +757,14 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
-    /// Current in heavy development, do not enable this feature unless you are a contributor
-    vqueues,
-
-    /// When enabled, invocations that exhaust their memory budget will yield back to
-    /// the scheduler instead of consuming retry attempts. Requires all nodes in the
-    /// cluster to be running v1.7.0 or later because it introduces a new WAL variant.
+    /// # AWS-to-GCP workload identity federation
     ///
-    /// Since v1.7.0
-    invoker_yield,
-
-    /// # Enables service protocol v7
+    /// Allows registering deployments that authenticate through a Google workload identity
+    /// provider. Deployment metadata written while this is enabled is not understood by Restate
+    /// v1.7, so enabling it makes rollback to v1.7 unsafe.
     ///
-    /// Introduced in Restate v1.7
-    ///
-    /// Set to `true` to enable the experimental service protocol v7
-    ///
-    /// Once enabled, you **cannot** rollback back to previous versions
-    /// where v7 is not supported < v1.7
-    protocol_v7,
-
-    /// # Enables unique random seeds
-    ///
-    /// When enabled, invocations get a unique random seed assigned.
-    ///
-    /// Since v1.7.0
-    unique_random_seeds,
+    /// Since v1.8.0
+    gcp_workload_identity_federation,
 
     /// # Migrate the unscoped promise table into its scoped variant
     ///
@@ -820,37 +792,14 @@ experimental! {
     /// Since v1.7.9
     scoped_state_table_migration,
 
-    /// # Allow scope on Virtual Object targets
-    ///
-    /// Scoped Virtual Objects are not officially supported in v1.7. Requires
-    /// `vqueues` to be enabled as well.
-    ///
-    /// Since v1.7.0
-    scoped_virtual_objects,
-
     /// # Enables Kafka header support for scoped invocations
     ///
     /// When enabled, Kafka subscriptions read `x-restate-scope` and
     /// `x-restate-limit-key` record headers to drive vqueue scope and
-    /// hierarchical limit-key routing. Requires `vqueues` to also be enabled.
+    /// hierarchical limit-key routing.
     ///
     /// Since v1.7.0
     kafka_scope,
-
-    /// # Skip completed invocations during the vqueues migration
-    ///
-    /// When enabled, the vqueues migration does not migrate completed
-    /// invocations into their vqueue's `Finished` stage. Completed invocations
-    /// keep their existing status and are still cleaned up by their
-    /// `CleanInvocationStatus` timer, but they will not appear in vqueue
-    /// introspection. This can significantly speed up the migration on stores
-    /// with a large completion-retention backlog. Requires `vqueues` to also be
-    /// enabled.
-    ///
-    /// By default, all invocations (including completed ones) are migrated.
-    ///
-    /// Since v1.7.5
-    vqueues_migration_skip_completed,
 
     /// Apply completion and journal retention when terminating a preflight invocation.
     ///
@@ -864,6 +813,36 @@ experimental! {
     ///
     /// Since v1.7.9
     vqueues_async_refill,
+
+    /// # Use bilrost encoding for schemas
+    ///
+    /// When enabled, will use zstd compressed bilrost encoding
+    /// encoding instead of the default flexbuffers
+    ///
+    /// This will be default from v1.9.0
+    ///
+    /// NOTE: Hot change of this config has no effect. A change
+    /// will only take effect on restart.
+    ///
+    /// Since v1.8.0
+    schema_bilrost_encoding,
+
+    /// # Enable cleanup of obsolete VQueue metadata
+    ///
+    /// Enabling this is safe and is recommended if the cluster nodes run
+    /// restate >= v1.7.10.
+    ///
+    /// The cleanup is enabled unconditionally from v1.9.0.
+    ///
+    /// Since v1.7.10
+    vqueue_obsolete_cleanup,
+
+    /// # Enables the new invocation::Source::Ingestion
+    ///
+    /// This new source can be set by the ingestion API.
+    ///
+    /// Since v1.8.0
+    invocation_source_ingestion,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -1107,7 +1086,6 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
-            disable_controlled_idempotent_sharding: false,
         }
     }
 }
@@ -1578,6 +1556,20 @@ mod tests {
         assert!(!serialized.contains("[networking.tls]"));
         let deserialized: CommonOptions = toml::from_str(&serialized).unwrap();
         assert!(deserialized.tls.is_some());
+    }
+
+    #[test]
+    fn gcp_federation_feature_uses_the_advertised_name() {
+        let mut experimental = Experimental::default();
+        assert!(!experimental.is_gcp_workload_identity_federation_enabled());
+
+        experimental.set_gcp_workload_identity_federation(true);
+        assert_eq!(
+            experimental
+                .features()
+                .get("gcp_workload_identity_federation"),
+            Some(&true)
+        );
     }
 
     #[test]

@@ -18,21 +18,20 @@ use opentelemetry::trace::{Span, SpanContext, TraceContextExt};
 use opentelemetry_sdk::propagation::TraceContextPropagator;
 use rdkafka::Message;
 use rdkafka::message::BorrowedMessage;
+use rdkafka::message::Headers;
 use tracing::{info_span, trace};
 
-use rdkafka::message::Headers;
-
-use restate_storage_api::deduplication_table::DedupInformation;
 use restate_types::Scope;
-use restate_types::identifiers::{InvocationId, WithPartitionKey, partitioner};
+use restate_types::identifiers::{InvocationId, partitioner};
 use restate_types::invocation::{Header, InvocationTarget, ServiceInvocation, SpanRelation};
 use restate_types::limit_key::LimitKey;
 use restate_types::live::Live;
 use restate_types::schema::Schema;
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Subscription};
+use restate_types::sharding::{PartitionKey, WithPartitionKey};
 use restate_util_string::{ReString, RestateString, RestrictedValueError};
-use restate_wal_protocol::{Command, Destination, Envelope, Source};
+use restate_wal_protocol::v2::{Dedup, Envelope, commands};
 
 use crate::Error;
 
@@ -62,7 +61,7 @@ impl EnvelopeBuilder {
         producer_id: u128,
         consumer_group_id: &str,
         msg: BorrowedMessage<'_>,
-    ) -> Result<Envelope, Error> {
+    ) -> Result<(PartitionKey, Envelope<commands::InvokeCommand>), Error> {
         // Prepare ingress span
         let ingress_span = info_span!(
             "kafka_ingress_consume",
@@ -106,7 +105,11 @@ impl EnvelopeBuilder {
             (None, LimitKey::None)
         };
 
-        let dedup = DedupInformation::producer(producer_id, msg.offset() as u64);
+        let dedup = Dedup::Arbitrary {
+            prefix: None,
+            producer_id: producer_id.into(),
+            seq: msg.offset() as u64,
+        };
 
         let invocation = InvocationBuilder::create(
             &self.subscription,
@@ -130,23 +133,11 @@ impl EnvelopeBuilder {
             cause,
         })?;
 
-        Ok(self.wrap_service_invocation_in_envelope(invocation, dedup))
-    }
-
-    fn wrap_service_invocation_in_envelope(
-        &self,
-        service_invocation: Box<ServiceInvocation>,
-        dedup_information: DedupInformation,
-    ) -> Envelope {
-        let header = restate_wal_protocol::Header {
-            source: Source::Ingress {},
-            dest: Destination::Processor {
-                partition_key: service_invocation.partition_key(),
-                dedup: Some(dedup_information),
-            },
-        };
-
-        Envelope::new(header, Command::Invoke(service_invocation))
+        let partition_key = invocation.partition_key();
+        Ok((
+            partition_key,
+            Envelope::new(dedup, commands::InvokeCommand::from(invocation)),
+        ))
     }
 
     fn generate_events_attributes(msg: &impl Message, subscription_id: &str) -> Vec<Header> {
@@ -225,12 +216,15 @@ impl InvocationBuilder {
         topic: &str,
         partition: i32,
         offset: i64,
-    ) -> Result<Box<ServiceInvocation>, anyhow::Error> {
-        let Sink::Invocation {
+    ) -> Result<ServiceInvocation, anyhow::Error> {
+        let Sink {
             event_invocation_target_template,
         } = subscription.sink();
 
         let invocation_target = match event_invocation_target_template {
+            EventInvocationTargetTemplate::Unknown => {
+                bail!("invalid invocation target template");
+            }
             EventInvocationTargetTemplate::Service { name, handler } => {
                 InvocationTarget::service(name.clone(), handler.clone())
             }
@@ -260,27 +254,6 @@ impl InvocationBuilder {
             ),
         }
         .with_scope(scope);
-
-        // Validate: scoped invocations require vqueues to be enabled
-        if invocation_target.scope().is_some()
-            && !restate_types::config::Configuration::pinned()
-                .common
-                .experimental
-                .is_vqueues_enabled()
-        {
-            bail!("Scoped invocations require experimental vqueues to be enabled");
-        }
-
-        // Validate: scoped Virtual Objects are gated behind an experimental flag
-        if invocation_target.scope().is_some()
-            && matches!(invocation_target, InvocationTarget::VirtualObject { .. })
-            && !restate_types::config::Configuration::pinned()
-                .common
-                .experimental
-                .is_scoped_virtual_objects_enabled()
-        {
-            bail!("scope is not supported for Virtual Object targets");
-        }
 
         // Validate: limit_key requires scope
         if !limit_key.is_empty() && invocation_target.scope().is_none() {
@@ -325,11 +298,11 @@ impl InvocationBuilder {
         );
 
         // Finally generate service invocation
-        let mut service_invocation = Box::new(ServiceInvocation::initialize(
+        let mut service_invocation = ServiceInvocation::initialize(
             invocation_id,
             invocation_target,
             restate_types::invocation::Source::Subscription(subscription.id()),
-        ));
+        );
         service_invocation.with_related_span(SpanRelation::parent(ingress_span_context));
         service_invocation.argument = payload;
         service_invocation.headers = headers;

@@ -42,13 +42,23 @@ use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[cfg_attr(feature = "utoipa-schema", derive(utoipa::ToSchema))]
 pub enum ServiceType {
-    Service,
-    VirtualObject,
-    Workflow,
+    Service = 0,
+    VirtualObject = 1,
+    Workflow = 2,
 }
 
 impl ServiceType {
@@ -68,13 +78,22 @@ impl fmt::Display for ServiceType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum VirtualObjectHandlerType {
     #[default]
-    Exclusive,
-    Shared,
+    Exclusive = 0,
+    Shared = 1,
 }
 
 impl fmt::Display for VirtualObjectHandlerType {
@@ -84,13 +103,22 @@ impl fmt::Display for VirtualObjectHandlerType {
 }
 
 #[derive(
-    Eq, Hash, PartialEq, Clone, Copy, Debug, Default, serde::Serialize, serde::Deserialize,
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Enumeration,
 )]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum WorkflowHandlerType {
     #[default]
-    Workflow,
-    Shared,
+    Workflow = 0,
+    Shared = 1,
 }
 
 impl fmt::Display for WorkflowHandlerType {
@@ -99,11 +127,29 @@ impl fmt::Display for WorkflowHandlerType {
     }
 }
 
-#[derive(Eq, Hash, PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Eq,
+    Hash,
+    PartialEq,
+    Clone,
+    Copy,
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    bilrost::Message,
+    bilrost::Oneof,
+)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+// NOTE: Do not add a variant to InvocationTargetType without skipping a
+// version first. This is a `bilrost::Oneof`, and a node running an older
+// version decodes an unrecognized tag as `Self::Service` instead of
+// failing, so it would silently treat the new target type as a plain
+// service.
 pub enum InvocationTargetType {
     Service,
+    #[bilrost(tag = 1)]
     VirtualObject(VirtualObjectHandlerType),
+    #[bilrost(tag = 2)]
     Workflow(WorkflowHandlerType),
 }
 
@@ -804,6 +850,8 @@ pub enum Source {
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     RestartAsNew(InvocationId),
+    // Since v1.8.0
+    Ingestion,
     /// Internal calls for the non-deterministic built-in services
     Internal,
 }
@@ -839,18 +887,16 @@ impl ServiceInvocationSpanContext {
         }
     }
 
-    /// Create a [`SpanContext`] for this invocation, a [`Span`] which will be created
-    /// when the invocation completes.
+    /// Create a [`SpanContext`] for this invocation.
+    ///
+    /// Valid unsampled contexts are retained for propagation without enabling recording.
     ///
     /// This function is **deterministic**.
     pub fn start(
         invocation_id: &InvocationId,
         related_span: SpanRelation,
     ) -> ServiceInvocationSpanContext {
-        if !related_span.is_sampled() {
-            // don't waste any time or storage space on unsampled traces
-            // sampling based on parent is default otel behaviour; we do the same for the
-            // non-parent background invoke relationship
+        if !related_span.is_valid() {
             return ServiceInvocationSpanContext::empty();
         }
 
@@ -1052,11 +1098,11 @@ impl SpanRelation {
         Self::Linked(ctx.into())
     }
 
-    fn is_sampled(&self) -> bool {
+    fn is_valid(&self) -> bool {
         match self {
             SpanRelation::None => false,
-            SpanRelation::Parent(span_context) => span_context.is_sampled(),
-            SpanRelation::Linked(span_context) => span_context.is_sampled(),
+            SpanRelation::Parent(span_context) => span_context.is_valid(),
+            SpanRelation::Linked(span_context) => span_context.is_valid(),
         }
     }
 }
@@ -1237,10 +1283,6 @@ impl SpanContextDef {
 
     pub fn into_trace_state(self) -> TraceStateDef {
         self.trace_state
-    }
-
-    fn is_sampled(&self) -> bool {
-        self.trace_flags().is_sampled()
     }
 }
 
@@ -1557,6 +1599,7 @@ mod serde_hacks {
         Subscription(SubscriptionId),
         Service(InvocationId, InvocationTarget),
         RestartAsNew(InvocationId),
+        Ingestion,
         /// Internal calls for the non-deterministic built-in services
         Internal,
     }
@@ -1601,6 +1644,7 @@ mod serde_hacks {
                     Source::Subscription(sid) => super::Source::Subscription(sid),
                     Source::Service(id, target) => super::Source::Service(id, target),
                     Source::RestartAsNew(id) => super::Source::RestartAsNew(id),
+                    Source::Ingestion => super::Source::Ingestion,
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
@@ -1654,6 +1698,7 @@ mod serde_hacks {
                     super::Source::Service(id, target) => Source::Service(id, target),
                     super::Source::Internal => Source::Internal,
                     super::Source::RestartAsNew(id) => Source::RestartAsNew(id),
+                    super::Source::Ingestion => Source::Ingestion,
                 },
             }
         }

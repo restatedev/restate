@@ -11,6 +11,7 @@
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
+mod vqueue_meta_cleanup;
 
 use std::collections::BTreeMap;
 
@@ -81,6 +82,13 @@ storage_features! {
     /// In short:
     /// * unscoped `promise_table` -> scoped `promise_table` (with `scope = None`)
     pub MigratedToScopedPromiseTable,
+    /// The first one-time cleanup of obsolete vqueue metadata has completed on
+    /// this partition store.
+    ///
+    /// This records one sweep rather than requiring repeated startup scans.
+    ///
+    /// *Since v1.7.10*
+    pub VqueueMetadataCleanupV1,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -102,7 +110,7 @@ trait StorageFeature: Sized + 'static {
     ///
     /// Note that `enable` will not be called if the partition-store is empty
     /// (no LSNs have been applied).
-    fn enable(
+    async fn enable(
         storage: &mut PartitionStore,
         cancel: &CancellationToken,
         config: &Configuration,
@@ -324,7 +332,7 @@ async fn enable_helper<F: StorageFeature>(
     let mut finalization = WriteBatch::default();
 
     if !is_store_empty {
-        F::enable(storage, cancel, config, &mut finalization)?;
+        F::enable(storage, cancel, config, &mut finalization).await?;
     }
 
     if cancel.is_cancelled() {
@@ -654,10 +662,9 @@ mod tests {
             LoadedStorageFeatures::load(None, StorageVersion::V1_5, &current_version).unwrap();
         let config = Configuration::default();
 
-        assert!(
-            features
-                .automatic_changes(&config, &current_version, false)
-                .is_empty()
+        assert_eq!(
+            features.automatic_changes(&config, &current_version, false),
+            [KnownStorageFeature::VqueueMetadataCleanupV1]
         );
         assert_eq!(
             features.automatic_changes(&config, &current_version, true),
@@ -665,6 +672,7 @@ mod tests {
                 KnownStorageFeature::MigratedToScopedPromiseAndStateTables,
                 KnownStorageFeature::MigratedToScopedStateTable,
                 KnownStorageFeature::MigratedToScopedPromiseTable,
+                KnownStorageFeature::VqueueMetadataCleanupV1,
             ]
         );
     }

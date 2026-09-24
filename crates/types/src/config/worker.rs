@@ -26,8 +26,8 @@ use super::{
 };
 use crate::config::throttling::ThrottlingOptions;
 use crate::config::{
-    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, HttpOptions,
-    IngestionOptions,
+    AwsLambdaOptions, DeprecatedAwsLambdaOptions, DeprecatedHttpOptions, GcpFederationOptions,
+    HttpOptions, IngestionOptions,
 };
 use crate::identifiers::PartitionId;
 use crate::net::connect_opts::MESSAGE_SIZE_OVERHEAD;
@@ -39,7 +39,9 @@ const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
-const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 5000;
+// Max successive merges are disabled by default to reduce the CPU during
+// writes/flushes.
+const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 0;
 
 /// # Worker options
 #[serde_as]
@@ -61,7 +63,10 @@ pub struct WorkerOptions {
     ///
     /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or workflows,
     /// Restate periodically scans among the completed invocations to check whether they need to be removed or not.
-    /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
+    /// This interval sets the expected full sweep cycle of the cleaner. Internally, the cleaner divides this interval
+    /// into smaller sweeps each scanning a subset of the database.
+    ///
+    /// Default: 1 hour.
     cleanup_interval: NonZeroFriendlyDuration,
 
     pub storage: StorageOptions,
@@ -376,22 +381,13 @@ pub struct InvokerOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     message_size_limit: Option<NonZeroByteCount>,
 
-    /// # Temporary directory
-    ///
-    /// Temporary directory to use for the invoker temporary files.
-    /// If empty, the system temporary directory will be used instead.
-    tmp_dir: Option<PathBuf>,
-
-    /// # Spill invocations to disk
-    ///
-    /// Defines the threshold after which queues invocations will spill to disk at
-    /// the path defined in `tmp-dir`. In other words, this is the number of invocations
-    /// that can be kept in memory before spilling to disk. This is a per-partition limit.
-    in_memory_queue_length_limit: NonZeroUsize,
-
     /// # Limit number of concurrent invocations from this node
     ///
-    /// Number of concurrent invocations that can be processed by the invoker.
+    /// Number of invocations that can be concurrently processed by this node.
+    ///
+    /// Note: Default has been increased from 1000 to 24000 since v1.8.0. This value
+    /// sets the limit on per restate-server node level. In prior versions, the limit
+    /// was applied per-partition.
     concurrent_invocations_limit: Option<NonZeroUsize>,
 
     /// # Eager state size limit (since v1.7.0)
@@ -507,18 +503,8 @@ pub struct InvokerOptions {
 }
 
 impl InvokerOptions {
-    pub fn gen_tmp_dir(&self) -> PathBuf {
-        self.tmp_dir.clone().unwrap_or_else(|| {
-            std::env::temp_dir().join(format!("{}-{}", "invoker", ulid::Ulid::new()))
-        })
-    }
-
     pub fn concurrent_invocations_limit(&self) -> Option<NonZeroUsize> {
         self.concurrent_invocations_limit
-    }
-
-    pub fn in_memory_queue_length_limit(&self) -> usize {
-        self.in_memory_queue_length_limit.into()
     }
 
     pub fn message_size_limit(&self) -> NonZeroUsize {
@@ -619,15 +605,13 @@ impl InvokerOptions {
 impl Default for InvokerOptions {
     fn default() -> Self {
         Self {
-            in_memory_queue_length_limit: NonZeroUsize::new(66_049).unwrap(),
             inactivity_timeout: FriendlyDuration::new(DEFAULT_INACTIVITY_TIMEOUT),
             abort_timeout: FriendlyDuration::new(DEFAULT_ABORT_TIMEOUT),
             message_size_warning: NonZeroByteCount::new(
                 NonZeroUsize::new(10 * 1024 * 1024).unwrap(),
             ),
             message_size_limit: None,
-            tmp_dir: None,
-            concurrent_invocations_limit: Some(NonZeroUsize::new(1000).expect("is non zero")),
+            concurrent_invocations_limit: Some(NonZeroUsize::new(24000).expect("is non zero")),
             eager_state_size_limit: None,
             disable_eager_state: false,
             invocation_throttling: None,
@@ -689,6 +673,18 @@ pub struct ServiceClientOptions {
     /// Defaults to `x-restate-cluster-name: <cluster name>`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub additional_request_headers: Option<SerdeableHeaderHashMap>,
+
+    /// # GCP workload identity federation
+    ///
+    /// Enables minting Google ID tokens for deployments that set `workload_identity_provider` in
+    /// their `auth` block, using an operator-configured AWS federation role. New federated
+    /// registrations also require `experimental-enable-gcp-workload-identity-federation = true`.
+    /// Unset by default: deployments requesting this authentication fail registration and mint
+    /// with an actionable error until this block is configured.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gcp_federation: Option<GcpFederationOptions>,
 }
 
 const DEFAULT_REQUEST_IDENTITY_EXPIRATION: NonZeroFriendlyDuration =
@@ -702,6 +698,7 @@ impl Default for ServiceClientOptions {
             request_identity_private_key_pem_file: None,
             request_identity_expiration: DEFAULT_REQUEST_IDENTITY_EXPIRATION,
             additional_request_headers: None,
+            gcp_federation: None,
         }
     }
 }
@@ -958,8 +955,27 @@ pub struct StorageOptions {
     ///
     /// Since v1.7.8
     #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(default, skip_serializing_if = "is_default_max_successive_merges")]
+    #[serde(
+        default = "default_max_successive_merges",
+        skip_serializing_if = "is_default_max_successive_merges"
+    )]
     pub rocksdb_max_successive_merges: u16,
+
+    /// # VQueue metadata full-write probability
+    ///
+    /// VQueue metadata updates are written as RocksDB merge operands. With this probability, an
+    /// update is instead written as a full value put instead.
+    ///
+    /// Valid range is [0.0, 1.0]. `0.0` never samples full writes (metadata untouched for over
+    /// an hour is still fully written), `1.0` always writes full values and disables merges.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        default = "serde_helpers::default_vqueue_meta_full_write_probability",
+        skip_serializing_if = "serde_helpers::is_default_vqueue_meta_full_write_probability"
+    )]
+    pub vqueue_meta_full_write_probability: f64,
 }
 
 impl StorageOptions {
@@ -1056,8 +1072,14 @@ impl Default for StorageOptions {
             rocksdb_l0_num_compaction_trigger: NonZeroU32::new(2).unwrap(),
             rocksdb_max_open_files: None,
             rocksdb_max_successive_merges: DEFAULT_MAX_SUCCESSIVE_MERGES,
+            vqueue_meta_full_write_probability:
+                serde_helpers::default_vqueue_meta_full_write_probability(),
         }
     }
+}
+
+fn default_max_successive_merges() -> u16 {
+    DEFAULT_MAX_SUCCESSIVE_MERGES
 }
 
 fn is_default_max_successive_merges(i: &u16) -> bool {
@@ -1232,6 +1254,14 @@ mod serde_helpers {
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
         *v == default_compact_on_deletions_min_sst_file_size()
+    }
+
+    pub const fn default_vqueue_meta_full_write_probability() -> f64 {
+        1.0
+    }
+
+    pub fn is_default_vqueue_meta_full_write_probability(v: &f64) -> bool {
+        *v == default_vqueue_meta_full_write_probability()
     }
 }
 

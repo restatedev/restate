@@ -10,8 +10,6 @@
 
 use super::{fixtures, matchers, *};
 
-use assert2::assert;
-use assert2::let_assert;
 use googletest::any;
 use prost::Message;
 use restate_storage_api::journal_table;
@@ -19,6 +17,7 @@ use restate_storage_api::journal_table::WriteJournalTable;
 use restate_storage_api::timer_table::{
     ReadTimerTable, Timer, TimerKey, TimerKeyKind, WriteTimerTable,
 };
+use restate_test_util::assert;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::EntryIndex;
 use restate_types::invocation::{IngressInvocationResponseSink, TerminationFlavor};
@@ -304,11 +303,12 @@ async fn kill_call_tree() -> anyhow::Result<()> {
 
     // Inbox should have been popped
     assert_that!(
-        actions,
-        contains(matchers::actions::invoke_for_id_and_target(
-            enqueued_invocation_id_on_same_target,
-            invocation_target.clone(),
-        ))
+        test_env
+            .storage
+            .get_invocation_status(&enqueued_invocation_id_on_same_target)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Invocation should be finally gone
@@ -348,131 +348,6 @@ async fn kill_call_tree() -> anyhow::Result<()> {
         .await
         .unwrap()
         .is_none()
-    );
-
-    test_env.shutdown().await;
-    Ok(())
-}
-
-#[test(restate_core::test)]
-async fn cancel_invoked_invocation() -> Result<(), Error> {
-    let mut test_env = TestEnv::create().await;
-
-    let call_invocation_id = InvocationId::mock_random();
-    let background_call_invocation_id = InvocationId::mock_random();
-    let finished_call_invocation_id = InvocationId::mock_random();
-
-    let invocation_target = InvocationTarget::mock_workflow();
-    let invocation_id = InvocationId::mock_generate(&invocation_target);
-
-    let _ = test_env
-        .apply_multiple([
-            commands::InvokeCommand::test_envelope(ServiceInvocation {
-                invocation_id,
-                invocation_target: invocation_target.clone(),
-                ..ServiceInvocation::mock()
-            }),
-            commands::InvokerEffectCommand::test_envelope(Effect {
-                invocation_id,
-                kind: InvokerEffectKind::PinnedDeployment(PinnedDeployment {
-                    deployment_id: Default::default(),
-                    service_protocol_version: ServiceProtocolVersion::V3,
-                }),
-            }),
-        ])
-        .await;
-
-    // Let's add some journal entries
-    let mut tx = test_env.storage.transaction();
-    let journal = create_termination_journal(
-        call_invocation_id,
-        background_call_invocation_id,
-        finished_call_invocation_id,
-    );
-    let journal_length = journal.len();
-    let (sleep_entry_idx, _) = journal
-        .iter()
-        .enumerate()
-        .find(|(_, j)| {
-            if let JournalEntry::Entry(e) = j {
-                e.header().as_entry_type() == EntryType::Sleep
-            } else {
-                false
-            }
-        })
-        .unwrap();
-    for (idx, entry) in journal.into_iter().enumerate() {
-        tx.put_journal_entry(&invocation_id, (idx + 1) as u32, &entry)?;
-    }
-    // Update journal length
-    let mut invocation_status = tx.get_invocation_status(&invocation_id).await?;
-    invocation_status.get_journal_metadata_mut().unwrap().length =
-        (journal_length + 1) as EntryIndex;
-    tx.put_invocation_status(&invocation_id, &invocation_status)?;
-    // Add timer
-    tx.put_timer(
-        &TimerKey {
-            timestamp: 1337,
-            kind: TimerKeyKind::CompleteJournalEntry {
-                invocation_uuid: invocation_id.invocation_uuid(),
-                journal_index: (sleep_entry_idx + 1) as u32,
-            },
-        },
-        &Timer::CompleteJournalEntry(invocation_id, (sleep_entry_idx + 1) as u32),
-    )?;
-    tx.commit().await?;
-    drop(tx);
-
-    let actions = test_env
-        .apply(commands::TerminateInvocationCommand::test_envelope(
-            InvocationTermination {
-                invocation_id,
-                flavor: TerminationFlavor::Cancel,
-                response_sink: None,
-            },
-        ))
-        .await;
-
-    // Invocation shouldn't be gone
-    assert_that!(
-        test_env
-            .storage
-            .get_invocation_status(&invocation_id)
-            .await?,
-        pat!(InvocationStatus::Invoked { .. })
-    );
-
-    // Timer is gone
-    assert_that!(
-        test_env
-            .storage
-            .next_timers_greater_than(None, usize::MAX)
-            .unwrap()
-            .try_collect::<Vec<_>>()
-            .await?,
-        empty()
-    );
-
-    // Entries are completed
-    for idx in 4..=9 {
-        assert_entry_completed(&mut test_env, invocation_id, idx).await;
-    }
-
-    assert_that!(
-        actions,
-        all!(
-            contains(matchers::actions::terminate_invocation(
-                call_invocation_id,
-                TerminationFlavor::Cancel
-            )),
-            contains(matchers::actions::forward_canceled_completion(4)),
-            contains(matchers::actions::forward_canceled_completion(5)),
-            contains(matchers::actions::forward_canceled_completion(6)),
-            contains(matchers::actions::forward_canceled_completion(7)),
-            contains(matchers::actions::forward_canceled_completion(8)),
-            contains(matchers::actions::forward_canceled_completion(9)),
-            contains(matchers::actions::delete_sleep_timer(5)),
-        )
     );
 
     test_env.shutdown().await;
@@ -531,7 +406,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     }
     // Update journal length and suspend invocation
     let invocation_status = tx.get_invocation_status(&invocation_id).await?;
-    let_assert!(InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
+    assert!(let InvocationStatus::Invoked(mut in_flight_meta) = invocation_status);
     in_flight_meta.journal_metadata.length = (journal_length + 1) as EntryIndex;
 
     tx.put_invocation_status(
@@ -612,11 +487,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
                 call_invocation_id,
                 TerminationFlavor::Cancel
             )),
-            contains(matchers::actions::delete_sleep_timer(5)),
-            contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-                invocation_target: eq(invocation_target)
-            }))
+            contains(matchers::actions::delete_sleep_timer(5))
         )
     );
     test_env.shutdown().await;

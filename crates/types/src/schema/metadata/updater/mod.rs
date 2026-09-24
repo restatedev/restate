@@ -25,15 +25,19 @@ use crate::schema::Redaction;
 use crate::schema::deployment::DeploymentType;
 use crate::schema::invocation_target::{
     BadInputContentType, InputRules, InputValidationRule, OnMaxAttempts, OutputContentTypeRule,
-    OutputRules,
+    OutputRules, StatePreloadPolicy,
 };
 use crate::schema::kafka::{KafkaClusterName, KafkaClusterResolver};
 use crate::schema::registry::{DeploymentConnectionParameters, DiscoveryResponse};
-use crate::schema::subscriptions::{EventInvocationTargetTemplate, Sink, Source, Subscription};
+use crate::schema::subscriptions::{
+    EventInvocationTargetTemplate, KafkaSource, Sink, Subscription,
+};
 use crate::time::MillisSinceEpoch;
 use crate::{deployment, endpoint_manifest, identifiers};
 use bilrost::encoding::Collection;
+use bytestring::ByteString;
 use http::{HeaderValue, Uri};
+use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
@@ -43,6 +47,8 @@ use std::ops::{Deref, Not, RangeInclusive};
 use std::sync::Arc;
 use std::time::Duration;
 use tracing::{debug, info, warn};
+
+const EAGER_STATE_KEYS_WHITELIST_LIMIT: usize = 32 * 1024;
 
 /// Whether to allow breaking schema changes between the existing service revision and the new service revision.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -147,6 +153,13 @@ pub(in crate::schema) enum ServiceError {
     #[error("modifying retention time for service type {0} is unsupported")]
     #[code(unknown)]
     CannotModifyRetentionTime(ServiceType),
+    #[error("the eager state keys whitelist for '{target}' the limit: {size} > {limit}")]
+    #[code(unknown)]
+    EagerStateKeysWhitelistLimit {
+        target: String,
+        size: usize,
+        limit: usize,
+    },
 }
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -375,7 +388,7 @@ impl SchemaUpdater {
                     if !proposed_services.contains_key(&service.name) {
                         warn!(
                             restate.deployment.id = %existing_deployment_id,
-                            restate.deployment.address = %existing_deployment.ty.address_display(),
+                            restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                             "Going to remove service {} due to a forced deployment update",
                             service.name
                         );
@@ -435,10 +448,10 @@ impl SchemaUpdater {
             deployment_id,
             Deployment {
                 id: deployment_id,
-                ty: Self::create_deployment_ty(
+                ty: Some(Self::create_deployment_ty(
                     deployment_address,
                     discovery_response.deployment_type_parameters,
-                ),
+                )),
                 delivery_options: DeliveryOptions::new(additional_headers),
                 supported_protocol_versions: discovery_response.supported_protocol_versions,
                 sdk_version: discovery_response.sdk_version,
@@ -614,6 +627,31 @@ impl SchemaUpdater {
             })
             .collect::<Result<HashMap<_, _>, SchemaError>>()?;
 
+        if let whitelist_size = service
+            .eager_state_keys_whitelist
+            .iter()
+            .map(|s| s.len())
+            .sum()
+            && whitelist_size > EAGER_STATE_KEYS_WHITELIST_LIMIT
+        {
+            return Err(SchemaError::Service(
+                ServiceError::EagerStateKeysWhitelistLimit {
+                    target: service.name.to_string(),
+                    size: whitelist_size,
+                    limit: EAGER_STATE_KEYS_WHITELIST_LIMIT,
+                },
+            ));
+        }
+
+        // Drop empty keys and deduplicate, keeping first-occurrence order.
+        let eager_state_keys_whitelist: Vec<ByteString> = service
+            .eager_state_keys_whitelist
+            .into_iter()
+            .filter(|k| !k.is_empty())
+            .map(ByteString::from)
+            .unique()
+            .collect();
+
         Ok(ServiceRevision {
             name: service_name.to_string(),
             handlers,
@@ -628,6 +666,10 @@ impl SchemaUpdater {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: service.enable_lazy_state,
+            state_preload_policy: state_preload_policy_discovery(
+                service.enable_lazy_state,
+                eager_state_keys_whitelist,
+            ),
             retry_policy_initial_interval,
             retry_policy_exponentiation_factor,
             retry_policy_max_attempts,
@@ -674,10 +716,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update only these 3 fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     sdk_version: discovery_response.sdk_version,
 
@@ -715,7 +757,7 @@ impl SchemaUpdater {
                 if !proposed_services.contains_key(&service.name) {
                     warn!(
                         restate.deployment.id = %deployment_id,
-                        restate.deployment.address = %existing_deployment.ty.address_display(),
+                        restate.deployment.address = %existing_deployment.ty.as_ref().expect("required field").address_display(),
                         "Going to remove service {} due to a forced deployment update",
                         service.name
                     );
@@ -781,10 +823,10 @@ impl SchemaUpdater {
                 deployment_id,
                 Deployment {
                     // We update all these fields
-                    ty: Self::create_deployment_ty(
+                    ty: Some(Self::create_deployment_ty(
                         deployment_address,
                         discovery_response.deployment_type_parameters,
-                    ),
+                    )),
                     delivery_options: DeliveryOptions::new(additional_headers),
                     supported_protocol_versions: discovery_response.supported_protocol_versions,
                     sdk_version: discovery_response.sdk_version,
@@ -856,7 +898,7 @@ impl SchemaUpdater {
                     })?
                     .as_str();
                 let topic_name = &source.path()[1..];
-                Source::Kafka {
+                KafkaSource {
                     cluster: cluster_name.to_string(),
                     topic: topic_name.to_string(),
                 }
@@ -867,7 +909,7 @@ impl SchemaUpdater {
                 ));
             }
         };
-        let Source::Kafka { cluster, .. } = &source;
+        let KafkaSource { cluster, .. } = &source;
 
         // Parse sink
         let sink = match sink.scheme_str() {
@@ -902,7 +944,7 @@ impl SchemaUpdater {
                         ))
                     })?;
 
-                Sink::Invocation {
+                Sink {
                     event_invocation_target_template: match handler_schemas.target_ty {
                         InvocationTargetType::Service => EventInvocationTargetTemplate::Service {
                             name: service_name.to_owned(),
@@ -1057,7 +1099,7 @@ impl SchemaUpdater {
             .subscriptions
             .values()
             .filter(|s| {
-                let Source::Kafka { cluster, .. } = s.source();
+                let KafkaSource { cluster, .. } = s.source();
                 cluster == kafka_cluster_name
             })
             .map(|s| s.id())
@@ -1272,6 +1314,29 @@ impl Handler {
             });
         }
 
+        if let whitelist_size = handler
+            .eager_state_keys_whitelist
+            .iter()
+            .map(|s| s.len())
+            .sum()
+            && whitelist_size > EAGER_STATE_KEYS_WHITELIST_LIMIT
+        {
+            return Err(ServiceError::EagerStateKeysWhitelistLimit {
+                target: format!("{}/{}", service_name, handler.name.as_str()),
+                size: whitelist_size,
+                limit: EAGER_STATE_KEYS_WHITELIST_LIMIT,
+            });
+        }
+
+        // Drop empty keys and deduplicate, keeping first-occurrence order.
+        let eager_state_keys_whitelist: Vec<ByteString> = handler
+            .eager_state_keys_whitelist
+            .into_iter()
+            .filter(|k| !k.is_empty())
+            .map(ByteString::from)
+            .unique()
+            .collect();
+
         Ok(Self {
             name: handler.name.to_string(),
             target_ty: ty,
@@ -1301,6 +1366,10 @@ impl Handler {
             inactivity_timeout,
             abort_timeout,
             enable_lazy_state: handler.enable_lazy_state,
+            state_preload_policy: state_preload_policy_discovery(
+                handler.enable_lazy_state,
+                eager_state_keys_whitelist,
+            ),
             public: handler.ingress_private.map(bool::not),
             retry_policy_on_max_attempts,
         })
@@ -1379,7 +1448,7 @@ impl Handler {
             OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_str(&ct)
-                        .map_err(|e| ServiceError::BadOutputContentType(ct, e))?,
+                        .map_err(|e| ServiceError::BadOutputContentType(ct.to_owned(), e))?,
                     set_content_type_if_empty: schema.set_content_type_if_empty.unwrap_or(false),
                     has_json_schema: schema.json_schema.is_some(),
                 },
@@ -1441,6 +1510,20 @@ impl jsonschema::Retrieve for UnsupportedExternalRefRetriever {
         uri: &jsonschema::Uri<String>,
     ) -> Result<Value, Box<dyn Error + Send + Sync>> {
         Err(UnsupportedExternalRefRetrieveError(uri.to_string()).into())
+    }
+}
+
+fn state_preload_policy_discovery(
+    enable_lazy_state: Option<bool>,
+    eager_state_keys: Vec<ByteString>,
+) -> Option<StatePreloadPolicy> {
+    match enable_lazy_state {
+        // Eager: everything is preloaded, so the eager-keys list is irrelevant.
+        Some(false) => Some(StatePreloadPolicy::All),
+        Some(true) => Some(StatePreloadPolicy::Partial(eager_state_keys)),
+        // A whitelist without an explicit flag still expresses selective preloading.
+        None if !eager_state_keys.is_empty() => Some(StatePreloadPolicy::Partial(eager_state_keys)),
+        None => None,
     }
 }
 
