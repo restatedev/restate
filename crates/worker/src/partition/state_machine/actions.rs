@@ -15,18 +15,30 @@ use restate_storage_api::vqueue_table::EntryKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
-    PauseInvocationResponse, PurgeInvocationResponse, RestartAsNewInvocationResponse,
-    ResumeInvocationResponse,
+    CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PauseInvocationResponse,
+    PurgeInvocationResponse, RestartAsNewInvocationResponse, ResumeInvocationResponse,
+    SubmittedInvocationNotification,
 };
 use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::message::MessageIndex;
-use restate_types::time::MillisSinceEpoch;
 use restate_util_string::ReString;
 use restate_vqueues::{VQueueEvent, VQueueHandle};
 use restate_wal_protocol::timer::TimerKeyValue;
 
 pub type ActionCollector = Vec<Action>;
+
+#[derive(derive_more::Debug)]
+pub enum RpcReply {
+    Output(InvocationOutput),
+    Submitted(SubmittedInvocationNotification),
+    KillInvocation(KillInvocationResponse),
+    CancelInvocation(CancelInvocationResponse),
+    PurgeInvocation(PurgeInvocationResponse),
+    PurgeJournal(PurgeInvocationResponse),
+    ResumeInvocation(ResumeInvocationResponse),
+    PauseInvocation(PauseInvocationResponse),
+    RestartAsNewInvocation(RestartAsNewInvocationResponse),
+}
 
 #[derive(derive_more::Debug, strum::IntoStaticStr)]
 pub enum Action {
@@ -61,47 +73,11 @@ pub enum Action {
     AbortInvocation {
         invocation_id: InvocationId,
     },
-    IngressResponse {
+    ReplyRpc {
         request_id: PartitionProcessorRpcRequestId,
-        invocation_id: Option<InvocationId>,
-        completion_expiry_time: Option<MillisSinceEpoch>,
-        response: InvocationOutputResponse,
+        reply: RpcReply,
     },
-    IngressSubmitNotification {
-        request_id: PartitionProcessorRpcRequestId,
-        execution_time: Option<MillisSinceEpoch>,
-        /// If true, this request_id created a "fresh invocation",
-        /// otherwise the invocation was previously submitted.
-        is_new_invocation: bool,
-    },
-    ForwardKillResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: KillInvocationResponse,
-    },
-    ForwardCancelResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: CancelInvocationResponse,
-    },
-    ForwardPurgeInvocationResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: PurgeInvocationResponse,
-    },
-    ForwardPurgeJournalResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: PurgeInvocationResponse,
-    },
-    ForwardResumeInvocationResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: ResumeInvocationResponse,
-    },
-    ForwardPauseInvocationResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: PauseInvocationResponse,
-    },
-    ForwardRestartAsNewInvocationResponse {
-        request_id: PartitionProcessorRpcRequestId,
-        response: RestartAsNewInvocationResponse,
-    },
+
     /// Forward a batch of rule-book diff entries to the leader's
     /// `UserLimiter` via the resource-manager mpsc. Emitted by
     /// `Command::UpsertRuleBook` apply when the rule book version
@@ -117,8 +93,29 @@ impl From<VQueueEvent> for Action {
     }
 }
 
+impl RpcReply {
+    /// The names of the per-reply actions that [`Action::ReplyRpc`] replaced. They are kept to
+    /// preserve the `action` metric labels.
+    fn name(&self) -> &'static str {
+        match self {
+            RpcReply::Output(_) => "IngressResponse",
+            RpcReply::Submitted(_) => "IngressSubmitNotification",
+            RpcReply::KillInvocation(_) => "ForwardKillResponse",
+            RpcReply::CancelInvocation(_) => "ForwardCancelResponse",
+            RpcReply::PurgeInvocation(_) => "ForwardPurgeInvocationResponse",
+            RpcReply::PurgeJournal(_) => "ForwardPurgeJournalResponse",
+            RpcReply::ResumeInvocation(_) => "ForwardResumeInvocationResponse",
+            RpcReply::PauseInvocation(_) => "ForwardPauseInvocationResponse",
+            RpcReply::RestartAsNewInvocation(_) => "ForwardRestartAsNewInvocationResponse",
+        }
+    }
+}
+
 impl Action {
     pub fn name(&self) -> &'static str {
-        self.into()
+        match self {
+            Action::ReplyRpc { reply, .. } => reply.name(),
+            _ => self.into(),
+        }
     }
 }
