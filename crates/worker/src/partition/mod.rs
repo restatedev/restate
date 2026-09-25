@@ -53,6 +53,7 @@ use restate_core::network::{
 };
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
+use restate_memory::MemoryLease;
 use restate_partition_store::{
     PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
@@ -91,7 +92,7 @@ use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::RpcProcessingPermit;
+use self::leadership::RpcProposalSender;
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -574,8 +575,7 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
-            let network_processing_permit =
-                self.leadership_state.try_reserve_rpc_processing_permit();
+            let rpc_proposal_sender = self.leadership_state.rpc_proposal_sender();
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
@@ -597,13 +597,13 @@ where
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
-                Some(msg) = self.network_leader_svc_rx.next(), if network_processing_permit.is_some() => {
+                Some(msg) = self.network_leader_svc_rx.next(), if rpc_proposal_sender.is_some() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
                         "network_leader_svc_rx",
                     );
                     // todo: replace the live schema with the leader's consistent schema
-                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, network_processing_permit.expect("guarded with is_some")).await;
+                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, rpc_proposal_sender.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
@@ -702,7 +702,7 @@ where
                     // which are required by the scheduler when applying the scheduler events.
                     self.ctx.vqueues_mut().try_compact();
                 },
-                result = self.leadership_state.run(&mut self.ctx) => {
+                result = self.leadership_state.run(&mut self.ctx, config) => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
                         "leadership_state.run",
@@ -757,7 +757,8 @@ where
         >,
         body: PartitionProcessorRpcRequest,
         schemas: &Schema,
-        permit: RpcProcessingPermit,
+        lease: MemoryLease,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
@@ -771,7 +772,9 @@ where
         // possibly without decoding the payload.
 
         match decision {
-            rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
+            rpc::Decision::Propose(proposal) => {
+                rpc_proposal_sender.send_rpc_proposal(proposal, response_tx, lease)
+            }
             rpc::Decision::Reply(reply) => response_tx.send(reply),
         }
     }
@@ -812,14 +815,14 @@ where
         msg: ServiceMessage<PartitionLeaderService>,
         schemas: &Schema,
         last_applied_lsn_watch: &watch::Receiver<Lsn>,
-        permit: RpcProcessingPermit,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
                 let dequeued_at = MillisSinceEpoch::now();
                 let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
                 // note: split() decodes the payload
-                let (response_tx, body) = msg.split();
+                let (response_tx, body, lease) = msg.split_with_reservation();
                 if let Some(sent_at) = body.sent_at
                     && dequeued_at.duration_since(sent_at) > HIGH_RPC_QUEUE_LATENCY_THRESHOLD
                 {
@@ -831,11 +834,11 @@ where
                         sent_at.elapsed().friendly()
                     );
                 }
-                self.on_pp_rpc_request(response_tx, body, schemas, permit)
+                self.on_pp_rpc_request(response_tx, body, schemas, lease, rpc_proposal_sender)
                     .await;
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
-                self.on_pp_ingest_request(msg.into_typed(), permit);
+                self.on_pp_ingest_request(msg.into_typed(), rpc_proposal_sender);
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == DedupSequenceNrQueryRequest::TYPE => {
                 self.wait_for_tail_then(
@@ -937,10 +940,10 @@ where
     fn on_pp_ingest_request(
         &mut self,
         msg: Incoming<Rpc<ReceivedIngestRequest>>,
-        permit: RpcProcessingPermit,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
-        let (reciprocal, request) = msg.split();
-        permit.buffer_forwarded_records(request.records, reciprocal);
+        let (reciprocal, request, lease) = msg.split_with_reservation();
+        rpc_proposal_sender.send_forwarded_records(request.records, reciprocal, lease);
     }
 
     // --- Apply new commands/records

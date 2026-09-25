@@ -13,6 +13,8 @@ mod glue;
 mod in_memory_version_repository;
 mod object_store_version_repository;
 mod optimistic_store;
+#[cfg(test)]
+mod version_matching_store;
 mod version_repository;
 
 use restate_core::{TaskCenter, TaskKind};

@@ -8282,6 +8282,7 @@ dependencies = [
  "const_format",
  "derive_more",
  "etcd-client",
+ "futures",
  "indexmap 2.14.2",
  "object_store 0.14.2",
  "parking_lot",
@@ -9158,8 +9159,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.29"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.29#46695a0e3829488afafbf200f26e416fdbcd5836"
+version = "1.0.31"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.31#6afd67d81b257be50cd504ff1cbf31248e434187"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -9178,6 +9179,7 @@ dependencies = [
  "bytestring",
  "codederror",
  "derive_more",
+ "enum-map",
  "futures",
  "googletest",
  "itertools 0.15.0",
