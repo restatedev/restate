@@ -32,6 +32,9 @@ use crate::metric_definitions::{
 
 use super::node_state::{Node, NodeState};
 
+#[cfg(test)]
+use super::node_state::FailureDetectorTransitionCause;
+
 const GOSSIP_ATTEMPT_LIMIT: usize = 20;
 
 #[derive(thiserror::Error, Debug)]
@@ -248,12 +251,31 @@ impl FdState {
     }
 
     pub fn detect_peer_failures(&mut self, opts: &GossipOptions) {
+        self.detect_peer_failures_where(opts, |_| false);
+    }
+
+    #[cfg(test)]
+    pub(super) fn detect_peer_failures_holding_age_expiry(&mut self, opts: &GossipOptions) {
+        self.detect_peer_failures_where(opts, |node| {
+            node.failure_detector_transition_cause(opts)
+                == FailureDetectorTransitionCause::AgeExpired
+        });
+    }
+
+    fn detect_peer_failures_where(
+        &mut self,
+        opts: &GossipOptions,
+        hold_transition: impl Fn(&Node) -> bool,
+    ) {
         let is_standalone = self.node_states.len() == 1;
 
         let changed: Vec<_> = self
             .node_states
             .values_mut()
             .filter_map(|node| {
+                if hold_transition(node) {
+                    return None;
+                }
                 let maybe_updated_state =
                     if node.gen_node_id.as_plain() == self.my_node_id.as_plain() {
                         node.maybe_update_state(opts, self.my_node_id, is_standalone)
@@ -704,66 +726,5 @@ impl FdState {
 }
 
 #[cfg(test)]
-mod tests {
-    use restate_types::cluster_state::ClusterState;
-    use restate_types::net::address::AdvertisedAddress;
-    use restate_types::nodes_config::{NodeConfig, NodesConfiguration, Role};
-    use restate_types::{GenerationalNodeId, RestateVersion};
-
-    use super::*;
-
-    const A: GenerationalNodeId = GenerationalNodeId::new(1, 1);
-    const B: GenerationalNodeId = GenerationalNodeId::new(2, 1);
-
-    #[tokio::test(start_paused = true)]
-    async fn resetting_gossip_timing_excludes_startup_time() {
-        let opts = GossipOptions::default();
-        let cluster_state = ClusterState::default();
-        let mut state = FdState::new(
-            A,
-            &nodes_config(),
-            PartitionReplicaSetStates::default(),
-            cluster_state.updater(),
-        );
-        state.num_gossip_received = opts.gossip_fd_stability_threshold.get() as usize;
-        for node in state.node_states.values_mut() {
-            node.gossip_age = 0;
-            node.state = NodeState::Alive;
-        }
-
-        tokio::time::advance(
-            *opts.gossip_tick_interval * (opts.gossip_loneliness_threshold.get() + 1),
-        )
-        .await;
-        assert!(state.is_lonely(&opts));
-
-        state.reset_gossip_timing();
-
-        assert!(!state.is_lonely(&opts));
-        assert!(!state.gossip_tick(&opts));
-        state.detect_peer_failures(&opts);
-        assert_eq!(state.node_states[&B.as_plain()].gossip_age, 0);
-        assert_eq!(state.node_states[&B.as_plain()].state, NodeState::Alive);
-
-        tokio::time::advance(*opts.gossip_tick_interval).await;
-        assert!(state.gossip_tick(&opts));
-        assert_eq!(state.node_states[&B.as_plain()].gossip_age, 1);
-        assert!(!state.is_lonely(&opts));
-    }
-
-    fn nodes_config() -> NodesConfiguration {
-        let mut nodes_config = NodesConfiguration::new_for_testing();
-        for node_id in [A, B] {
-            nodes_config.upsert_node(
-                NodeConfig::builder()
-                    .name(format!("node-{node_id}"))
-                    .current_generation(node_id)
-                    .address(AdvertisedAddress::default())
-                    .roles(Role::Admin | Role::Worker)
-                    .binary_version(RestateVersion::current())
-                    .build(),
-            );
-        }
-        nodes_config
-    }
-}
+#[path = "fd_state/tests.rs"]
+mod tests;
