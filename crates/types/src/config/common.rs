@@ -1387,28 +1387,19 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     feature = "schemars",
     schemars(title = "Tracing", description = "Options for tracing")
 )]
+#[derive(Default)]
 pub struct TracingOptions {
     /// # Tracing Endpoint
     ///
-    /// This is a shortcut to set both [`Self::tracing_runtime_endpoint`], and [`Self::tracing_services_endpoint`].
+    /// Default endpoint for user-invocation traces. Overridden by
+    /// [`Self::tracing_services_endpoint`].
     ///
-    /// Specify the tracing endpoint to send runtime traces to.
+    /// Specify the tracing endpoint to send user-invocation traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     ///
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
     pub tracing_endpoint: Option<String>,
-
-    /// # Runtime Tracing Endpoint
-    ///
-    /// Overrides [`Self::tracing_endpoint`] for runtime traces
-    ///
-    /// Specify the tracing endpoint to send runtime traces to.
-    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
-    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
-    ///
-    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-    pub tracing_runtime_endpoint: Option<String>,
 
     /// # Services Tracing Endpoint
     ///
@@ -1421,24 +1412,6 @@ pub struct TracingOptions {
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
     pub tracing_services_endpoint: Option<String>,
 
-    /// # Distributed Tracing JSON Export Path
-    ///
-    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
-    /// Each trace file will start with the `trace` prefix.
-    ///
-    /// If unset, no traces will be written to file.
-    ///
-    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
-    ///
-    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
-    pub tracing_json_path: Option<String>,
-
-    /// # Tracing Filter
-    ///
-    /// Distributed tracing exporter filter.
-    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    pub tracing_filter: String,
-
     /// # Additional tracing headers
     ///
     /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
@@ -1446,19 +1419,6 @@ pub struct TracingOptions {
     #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
     #[serde(default)]
     pub tracing_headers: SerdeableHeaderHashMap,
-}
-
-impl Default for TracingOptions {
-    fn default() -> Self {
-        Self {
-            tracing_endpoint: None,
-            tracing_runtime_endpoint: None,
-            tracing_services_endpoint: None,
-            tracing_json_path: None,
-            tracing_filter: "info".to_owned(),
-            tracing_headers: SerdeableHeaderHashMap::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
