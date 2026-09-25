@@ -13,7 +13,6 @@ use std::fmt;
 use std::sync::Arc;
 
 use metrics::counter;
-use tracing::trace;
 
 use restate_core::ShutdownError;
 use restate_core::network::ConnectError;
@@ -21,26 +20,17 @@ use restate_core::network::{NetworkSender, RpcReplyError, Swimlane};
 use restate_core::network::{Networking, TransportConnect};
 use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
-use restate_types::identifiers::{
-    EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
-};
-use restate_types::invocation::client::{
-    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
-    GetInvocationStatusResponse, InvocationClient, InvocationOutput, KillInvocationResponse,
-    PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
-};
-use restate_types::invocation::{InvocationQuery, InvocationRequest, InvocationResponse};
-use restate_types::journal_v2::Signal;
+use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::live::Live;
 use restate_types::net::codec::EncodeError;
 use restate_types::net::partition_processor::{
-    AppendInvocationReplyOn, GetInvocationOutputResponseMode, PartitionProcessorRpcError,
-    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestHeader,
 };
-use restate_types::partition_processor::client::PartitionProcessorClientError;
+use restate_types::partition_processor::client::{
+    PartitionProcessorClient, PartitionProcessorClientError, PartitionProcessorRpc,
+    WireResponseError,
+};
 use restate_types::partition_table::{FindPartition, PartitionTable, PartitionTableError};
-use restate_types::time::MillisSinceEpoch;
 
 use crate::metric_definitions::{
     INVOCATION_CLIENT_REQUESTS, STATUS_COMPLETED, STATUS_INTERNAL_ERROR, STATUS_OVERLOADED_ERROR,
@@ -76,6 +66,8 @@ pub enum RpcErrorKind {
     Encode(#[from] EncodeError),
     Reply(#[from] RpcReplyError),
     Processor(#[from] PartitionProcessorRpcError),
+    /// The partition processor replied with a variant the request never expects.
+    UnexpectedResponse,
 }
 
 // Note: Those are customer facing errors (e.g. in http invocation response errors), so try to keep
@@ -105,6 +97,9 @@ impl fmt::Display for RpcErrorKind {
             }
             RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(msg)) => {
                 write!(f, "internal error: {msg}")
+            }
+            RpcErrorKind::UnexpectedResponse => {
+                f.write_str("internal error: unexpected response from partition processor")
             }
         }
     }
@@ -162,12 +157,22 @@ impl RpcErrorKind {
                 | RpcReplyError::ServiceNotReady,
             ) => STATUS_UNAVAILABLE_ERROR,
             RpcErrorKind::Encode(_)
+            | RpcErrorKind::UnexpectedResponse
             | RpcErrorKind::Reply(RpcReplyError::Unknown(_) | RpcReplyError::MessageUnrecognized) => {
                 STATUS_PROTOCOL_ERROR
             }
             RpcErrorKind::Processor(PartitionProcessorRpcError::Internal(_)) => {
                 STATUS_INTERNAL_ERROR
             }
+        }
+    }
+}
+
+impl From<WireResponseError> for RpcErrorKind {
+    fn from(err: WireResponseError) -> Self {
+        match err {
+            WireResponseError::Processor(err) => Self::Processor(err),
+            WireResponseError::UnexpectedResponse => Self::UnexpectedResponse,
         }
     }
 }
@@ -195,7 +200,9 @@ impl RpcError {
             RpcErrorKind::Processor(
                 PartitionProcessorRpcError::LostLeadership(_)
                 | PartitionProcessorRpcError::Internal(_),
-            ) => false,
+            )
+            // The request may have been applied already.
+            | RpcErrorKind::UnexpectedResponse => false,
         }
     }
 }
@@ -251,15 +258,15 @@ impl<C> PartitionProcessorRpcClient<C>
 where
     C: TransportConnect,
 {
-    async fn resolve_partition_id_and_send(
+    async fn resolve_partition_id_and_send<R: PartitionProcessorRpc>(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        inner_request: PartitionProcessorRpcRequestInner,
-    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
+        request: R,
+    ) -> Result<R::Response, PartitionProcessorRpcClientError> {
         let partition_id = self
             .partition_table
             .pinned()
-            .find_partition_id(inner_request.partition_key());
+            .find_partition_id(request.partition_key());
         let partition_id_label: metrics::SharedString = match partition_id.as_ref() {
             Ok(partition_id) => match self.partition_id_labels.get(partition_id) {
                 Some(label) => label.clone().into(),
@@ -270,7 +277,7 @@ where
 
         let res = match partition_id {
             Ok(partition_id) => {
-                self.send_to_partition(request_id, partition_id, inner_request)
+                self.send_to_partition(request_id, partition_id, request)
                     .await
             }
             Err(err) => Err(err.into()),
@@ -289,12 +296,12 @@ where
         res
     }
 
-    async fn send_to_partition(
+    async fn send_to_partition<R: PartitionProcessorRpc>(
         &self,
         request_id: PartitionProcessorRpcRequestId,
         partition_id: PartitionId,
-        inner_request: PartitionProcessorRpcRequestInner,
-    ) -> Result<PartitionProcessorRpcResponse, PartitionProcessorRpcClientError> {
+        request: R,
+    ) -> Result<R::Response, PartitionProcessorRpcClientError> {
         let node_id = NodeId::from(
             self.partition_routing
                 .get_node_by_partition(partition_id)
@@ -315,374 +322,49 @@ where
                 RpcErrorKind::ConnectionClosedBeforeSend,
             )
         })?;
-        let rpc_result = permit
-            .send_rpc(
-                PartitionProcessorRpcRequest {
-                    request_id,
-                    partition_id,
-                    sent_at: Some(MillisSinceEpoch::now()),
-                    inner: inner_request,
-                },
-                Some(*partition_id as u64),
-            )
-            .map_err(|err| RpcError::from_err(partition_id, node_id, err))?
-            .await
-            .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
+        let header = PartitionProcessorRpcRequestHeader::new(request_id);
 
-        if rpc_result.is_err() && rpc_result.as_ref().unwrap_err().likely_stale_route() {
-            trace!(
-                %partition_id,
-                %node_id,
-                %request_id,
-                "Received Partition Processor error indicating possible stale route"
-            );
-        }
+        // TODO(mbassem): Implement decision logic
+        let should_use_dedicated = false;
 
-        Ok(rpc_result.map_err(|err| RpcError::from_err(partition_id, node_id, err))?)
+        let res = if should_use_dedicated || !R::HAS_LEGACY_WIRE {
+            let request = request.into_wire(header);
+            let response = permit
+                .send_rpc(request, Some(*partition_id as u64))
+                .map_err(|err| RpcError::from_err(partition_id, node_id, err))?
+                .await
+                .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
+            R::from_wire(header.request_id, response)
+        } else {
+            let request = request
+                .into_legacy_wire()
+                .expect("RPCs with HAS_LEGACY_WIRE set must have a legacy wire format");
+            let response = permit
+                .send_rpc(
+                    PartitionProcessorRpcRequest::with_header(header, partition_id, request),
+                    Some(*partition_id as u64),
+                )
+                .map_err(|err| RpcError::from_err(partition_id, node_id, err))?
+                .await
+                .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
+            R::from_legacy_response(header.request_id, response)
+        };
+
+        Ok(res.map_err(|err| RpcError::from_err(partition_id, node_id, err))?)
     }
 }
 
-impl<C> InvocationClient for PartitionProcessorRpcClient<C>
+impl<C> PartitionProcessorClient for PartitionProcessorRpcClient<C>
 where
     C: TransportConnect,
 {
-    /// Append the invocation to the log, waiting for the submit notification emitted by the PartitionProcessor.
-    async fn append_invocation_and_wait_submit_notification(
+    async fn send<R: PartitionProcessorRpc>(
         &self,
         request_id: PartitionProcessorRpcRequestId,
-        invocation_request: Arc<InvocationRequest>,
-    ) -> Result<SubmittedInvocationNotification, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::AppendInvocation(
-                    invocation_request,
-                    AppendInvocationReplyOn::Submitted,
-                ),
-            )
-            .await?;
-
-        let PartitionProcessorRpcResponse::Submitted(submit_notification) = response else {
-            panic!("Expecting PartitionProcessorRpcResponse::Submitted");
-        };
-        debug_assert_eq!(
-            request_id, submit_notification.request_id,
-            "Conflicting submit notification received"
-        );
-
-        Ok(submit_notification)
-    }
-    /// Append the invocation and wait for its output.
-    async fn append_invocation_and_wait_output(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_request: Arc<InvocationRequest>,
-    ) -> Result<InvocationOutput, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::AppendInvocation(
-                    invocation_request,
-                    AppendInvocationReplyOn::Output,
-                ),
-            )
-            .await?;
-
-        let PartitionProcessorRpcResponse::Output(invocation_output) = response else {
-            panic!("Expecting PartitionProcessorRpcResponse::Output");
-        };
-        debug_assert_eq!(
-            request_id, invocation_output.request_id,
-            "Conflicting invocation output received"
-        );
-
-        Ok(invocation_output)
-    }
-    async fn attach_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_query: InvocationQuery,
-    ) -> Result<AttachInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::GetInvocationOutput(
-                    invocation_query,
-                    GetInvocationOutputResponseMode::BlockWhenNotReady,
-                ),
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::NotFound => AttachInvocationResponse::NotFound,
-            PartitionProcessorRpcResponse::NotSupported => AttachInvocationResponse::NotSupported,
-            PartitionProcessorRpcResponse::Output(output) => {
-                AttachInvocationResponse::Ready(output)
-            }
-            _ => {
-                panic!(
-                    "Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported"
-                )
-            }
-        })
-    }
-
-    async fn get_invocation_output(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_query: InvocationQuery,
-    ) -> Result<GetInvocationOutputResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::GetInvocationOutput(
-                    invocation_query,
-                    GetInvocationOutputResponseMode::ReplyIfNotReady,
-                ),
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::NotFound => GetInvocationOutputResponse::NotFound,
-            PartitionProcessorRpcResponse::NotSupported => {
-                GetInvocationOutputResponse::NotSupported
-            }
-            PartitionProcessorRpcResponse::NotReady => GetInvocationOutputResponse::NotReady,
-            PartitionProcessorRpcResponse::Output(output) => {
-                GetInvocationOutputResponse::Ready(output)
-            }
-            _ => {
-                panic!(
-                    "Expecting either PartitionProcessorRpcResponse::Output or PartitionProcessorRpcResponse::NotFound or PartitionProcessorRpcResponse::NotSupported or PartitionProcessorRpcResponse::NotReady"
-                )
-            }
-        })
-    }
-
-    async fn get_invocation_status(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<GetInvocationStatusResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::NotFound => GetInvocationStatusResponse::NotFound,
-            PartitionProcessorRpcResponse::Status(output) => {
-                GetInvocationStatusResponse::Status(output)
-            }
-            _ => {
-                panic!(
-                    "Expecting either PartitionProcessorRpcResponse::Status or PartitionProcessorRpcResponse::NotFound"
-                )
-            }
-        })
-    }
-
-    async fn append_invocation_response(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_response: InvocationResponse,
-    ) -> Result<(), PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response),
-            )
-            .await?;
-
-        let PartitionProcessorRpcResponse::Appended = response else {
-            panic!("Expecting PartitionProcessorRpcResponse::Appended");
-        };
-
-        Ok(())
-    }
-    async fn append_signal(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-        signal: Signal,
-    ) -> Result<(), PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal),
-            )
-            .await?;
-
-        let PartitionProcessorRpcResponse::Appended = response else {
-            panic!("Expecting PartitionProcessorRpcResponse::Appended");
-        };
-
-        Ok(())
-    }
-
-    async fn cancel_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<CancelInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::CancelInvocation(cancel_invocation_response) => {
-                cancel_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting CancelInvocation rpc response")
-            }
-        })
-    }
-
-    async fn kill_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<KillInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::KillInvocation { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::KillInvocation(kill_invocation_response) => {
-                kill_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting KillInvocation rpc response")
-            }
-        })
-    }
-
-    async fn purge_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<PurgeInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::PurgeInvocation(purge_invocation_response) => {
-                purge_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting PurgeInvocation rpc response")
-            }
-        })
-    }
-
-    async fn purge_journal(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<PurgeInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::PurgeJournal(purge_invocation_response) => {
-                purge_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting PurgeInvocation rpc response")
-            }
-        })
-    }
-
-    async fn restart_as_new_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-        copy_prefix_up_to_index_included: EntryIndex,
-        patch_deployment_id: PatchDeploymentId,
-    ) -> Result<RestartAsNewInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::RestartAsNewInvocation {
-                    invocation_id,
-                    copy_prefix_up_to_index_included,
-                    patch_deployment_id,
-                },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                restart_as_new_invocation_response,
-            ) => restart_as_new_invocation_response.into(),
-            _ => {
-                panic!("Expecting RestartAsNewInvocation rpc response")
-            }
-        })
-    }
-
-    async fn resume_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-        deployment_id: PatchDeploymentId,
-    ) -> Result<ResumeInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::ResumeInvocation {
-                    invocation_id,
-                    deployment_id,
-                },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::ResumeInvocation(resume_invocation_response) => {
-                resume_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting ResumeInvocation rpc response")
-            }
-        })
-    }
-
-    async fn pause_invocation(
-        &self,
-        request_id: PartitionProcessorRpcRequestId,
-        invocation_id: InvocationId,
-    ) -> Result<PauseInvocationResponse, PartitionProcessorClientError> {
-        let response = self
-            .resolve_partition_id_and_send(
-                request_id,
-                PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id },
-            )
-            .await?;
-
-        Ok(match response {
-            PartitionProcessorRpcResponse::PauseInvocation(pause_invocation_response) => {
-                pause_invocation_response.into()
-            }
-            _ => {
-                panic!("Expecting PauseInvocation rpc response")
-            }
-        })
+        request: R,
+    ) -> Result<R::Response, PartitionProcessorClientError> {
+        Ok(self
+            .resolve_partition_id_and_send(request_id, request)
+            .await?)
     }
 }
