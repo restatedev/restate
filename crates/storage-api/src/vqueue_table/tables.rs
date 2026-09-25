@@ -208,6 +208,18 @@ pub trait ReadVQueueTable {
         id: &EntryId,
     ) -> impl Future<Output = Result<Option<impl EntryStatusHeader + 'static>>>;
 
+    /// Finds the key of the state mutation in the inbox of `qid` that has the same position
+    /// (`has_lock`, `run_at` and `seq`) as `key`, ignoring the entry id.
+    ///
+    /// Before v1.8.0, every replica generated a random entry id for a state mutation (#5416),
+    /// so a scheduler decision can carry an id that doesn't exist on this replica. The position
+    /// is the same on all replicas, so this lets the replica find its own copy of the entry.
+    fn find_inbox_state_mutation_key(
+        &self,
+        qid: &VQueueId,
+        key: &EntryKey,
+    ) -> impl Future<Output = Result<Option<EntryKey>>>;
+
     // /// Get the entry state for a vqueue entry by id
     // fn get_vqueue_entry_status_lazy<'a>(
     //     &'a self,
