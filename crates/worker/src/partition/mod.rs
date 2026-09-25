@@ -72,8 +72,12 @@ use restate_types::net::ingest::{
     ResponseStatus,
 };
 use restate_types::net::partition_processor::{
-    PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorWireRpc,
+    AppendInvocationResponseRpcRequest, AppendInvocationRpcRequest, AppendSignalRpcRequest,
+    CancelInvocationRpcRequest, GetInvocationOutputRpcRequest, GetInvocationStatusRpcRequest,
+    KillInvocationRpcRequest, PartitionLeaderService, PartitionProcessorRpcError,
+    PartitionProcessorRpcRequest, PartitionProcessorWireRpc, PauseInvocationRpcRequest,
+    PurgeInvocationRpcRequest, PurgeJournalRpcRequest, RestartAsNewInvocationRpcRequest,
+    ResumeInvocationRpcRequest,
 };
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
@@ -757,7 +761,7 @@ where
     ) where
         Request: PartitionProcessorWireRpc,
         Request::Ok: FromRpcReply,
-        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request, Request::Ok>,
+        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request>,
     {
         let msg = msg.into_typed::<Request>();
         let dequeued_at = MillisSinceEpoch::now();
@@ -835,6 +839,98 @@ where
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
                 self.on_pp_rpc_request::<PartitionProcessorRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == AppendInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<AppendInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == GetInvocationOutputRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<GetInvocationOutputRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == GetInvocationStatusRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<GetInvocationStatusRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg)
+                if msg.msg_type() == AppendInvocationResponseRpcRequest::TYPE =>
+            {
+                self.on_pp_rpc_request::<AppendInvocationResponseRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == AppendSignalRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<AppendSignalRpcRequest>(msg, schemas, rpc_proposal_sender)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == CancelInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<CancelInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == KillInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<KillInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PurgeInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PurgeInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PurgeJournalRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PurgeJournalRpcRequest>(msg, schemas, rpc_proposal_sender)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg)
+                if msg.msg_type() == RestartAsNewInvocationRpcRequest::TYPE =>
+            {
+                self.on_pp_rpc_request::<RestartAsNewInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == ResumeInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<ResumeInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PauseInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PauseInvocationRpcRequest>(
                     msg,
                     schemas,
                     rpc_proposal_sender,

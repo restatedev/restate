@@ -8,26 +8,27 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::invocation::InvocationResponse;
-use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
+use restate_types::net::partition_processor::{
+    AppendInvocationResponseRpcRequest, AppendInvocationResponseRpcResponse,
+};
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) invocation_response: InvocationResponse,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<AppendInvocationResponseRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        Request {
+        AppendInvocationResponseRpcRequest {
             invocation_response,
-        }: Request,
-    ) -> Decision {
+            ..
+        }: AppendInvocationResponseRpcRequest,
+    ) -> Decision<AppendInvocationResponseRpcResponse> {
         Decision::Propose(RpcProposal::new(
             commands::InvocationResponseCommand::from(invocation_response),
             ReplyOn::Commit {
-                response: PartitionProcessorRpcResponse::Appended,
+                response: AppendInvocationResponseRpcResponse,
             },
         ))
     }
