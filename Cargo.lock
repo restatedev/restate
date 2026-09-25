@@ -8282,6 +8282,7 @@ dependencies = [
  "const_format",
  "derive_more",
  "etcd-client",
+ "futures",
  "indexmap 2.14.2",
  "object_store 0.14.2",
  "parking_lot",

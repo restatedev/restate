@@ -180,6 +180,7 @@ pub async fn create_object_store_client(
         ObjectStoreScheme::GoogleCloudStorage => Arc::new(
             GoogleCloudStorageBuilder::from_env()
                 .with_url(url)
+                .with_retry(from_retry_policy(retry_policy))
                 .build()?,
         ),
         #[cfg(any(test, feature = "test-util"))]

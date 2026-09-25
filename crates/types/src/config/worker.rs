@@ -1101,8 +1101,9 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
 pub struct SnapshotsOptions {
     /// # Snapshot destination URL
     ///
-    /// Base URL for cluster snapshots. Currently only supports the `s3://` protocol scheme.
-    /// S3-compatible object stores must support ETag-based conditional writes.
+    /// Base URL for cluster snapshots, using the `s3://`, `gs://` or `az://` protocol scheme.
+    /// S3-compatible object stores must support ETag-based conditional writes. For `gs://`,
+    /// credentials come from the environment, as for a `gs://` metadata path.
     ///
     /// Default: `None`
     pub destination: Option<String>,
