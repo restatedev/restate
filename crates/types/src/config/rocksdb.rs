@@ -85,24 +85,30 @@ pub struct RocksDbOptions {
 
     /// # RocksDB log level
     ///
-    /// Verbosity of the LOG.
-    ///
-    /// Default: "error"
+    /// **Deprecated in 1.8**: RocksDB's info log is emitted through the `rocksdb` tracing target
+    /// and controlled by `log-filter` (e.g. `rocksdb=info`). This option has no effect.
+    #[deprecated(
+        since = "1.8.0",
+        note = "Use `log-filter` with the `rocksdb` target instead"
+    )]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_log_level: Option<RocksDbLogLevel>,
 
     /// # RocksDB log keep file num
     ///
-    /// Number of info LOG files to keep
-    ///
-    /// Default: 1
+    /// **Deprecated in 1.8**: RocksDB no longer writes `LOG` files. This option has no effect.
+    #[deprecated(since = "1.8.0", note = "RocksDB no longer writes LOG files")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_log_keep_file_num: Option<usize>,
 
     /// # RocksDB log max file size
     ///
-    /// Max size of info LOG file
-    ///
-    /// Default: 64MB
-    #[cfg_attr(feature = "schemars", schemars(with = "Option<NonZeroByteCount>"))]
+    /// **Deprecated in 1.8**: RocksDB no longer writes `LOG` files. This option has no effect.
+    #[deprecated(since = "1.8.0", note = "RocksDB no longer writes LOG files")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "schemars", schemars(skip))]
     rocksdb_log_max_file_size: Option<NonZeroByteCount>,
 
     /// # RocksDB block size
@@ -137,7 +143,7 @@ pub struct RocksDbOptions {
     rocksdb_disable_l0_l1_compression: Option<bool>,
 }
 
-/// Verbosity of the LOG.
+/// Verbosity of the RocksDB info log. Only kept for the deprecated `rocksdb-log-level` option.
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
 #[derive(Debug, Clone, Copy, Hash, Default, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -182,15 +188,6 @@ impl RocksDbOptions {
         if self.rocksdb_statistics_level.is_none() {
             self.rocksdb_statistics_level = Some(common.rocksdb_statistics_level());
         }
-        if self.rocksdb_log_level.is_none() {
-            self.rocksdb_log_level = Some(common.rocksdb_log_level());
-        }
-        if self.rocksdb_log_keep_file_num.is_none() {
-            self.rocksdb_log_keep_file_num = Some(common.rocksdb_log_keep_file_num());
-        }
-        if self.rocksdb_log_max_file_size.is_none() {
-            self.rocksdb_log_max_file_size = Some(common.rocksdb_log_max_file_size());
-        }
         if self.rocksdb_block_size.is_none() {
             self.rocksdb_block_size = Some(common.rocksdb_block_size());
         }
@@ -232,21 +229,6 @@ impl RocksDbOptions {
     pub fn rocksdb_statistics_level(&self) -> StatisticsLevel {
         self.rocksdb_statistics_level
             .unwrap_or(StatisticsLevel::ExceptTimers)
-    }
-
-    pub fn rocksdb_log_level(&self) -> RocksDbLogLevel {
-        self.rocksdb_log_level.unwrap_or_default()
-    }
-
-    pub fn rocksdb_log_keep_file_num(&self) -> usize {
-        self.rocksdb_log_keep_file_num.unwrap_or(1)
-    }
-
-    pub fn rocksdb_log_max_file_size(&self) -> NonZeroByteCount {
-        self.rocksdb_log_max_file_size
-            .unwrap_or(NonZeroByteCount::new(
-                NonZeroUsize::new(64_000_000).expect("is valid size"),
-            ))
     }
 
     pub fn rocksdb_block_size(&self) -> NonZeroUsize {
