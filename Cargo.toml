@@ -208,10 +208,10 @@ octocrab = { version = "0.54.2", default-features = false, features = [
     "follow-redirect", "retry", "rustls", "timeout", "tracing", "default-client",
     "rustls-ring", "jwt-aws-lc-rs",
 ] }
-opentelemetry = { version = "0.31" }
-opentelemetry-otlp = { version = "0.31" }
-opentelemetry-semantic-conventions = { version = "0.31" }
-opentelemetry_sdk = { version = "0.31" }
+opentelemetry = { version = "0.33" }
+opentelemetry-otlp = { version = "0.33", default-features = false }
+opentelemetry-semantic-conventions = { version = "0.33" }
+opentelemetry_sdk = { version = "0.33" }
 parking_lot = { version = "0.12" }
 paste = "1.0"
 pin-project = "1.1"
