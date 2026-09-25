@@ -25,10 +25,12 @@ use bytestring::ByteString;
 use futures::{StreamExt, TryStreamExt};
 use googletest::{all, assert_that, pat};
 use test_log::test;
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use tracing_subscriber::fmt::format::FmtSpan;
 
 use restate_core::TaskCenter;
+use restate_partition_store::migrations::MigrationContext;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
@@ -49,7 +51,7 @@ use restate_storage_api::vqueue_table::scheduler::{
 };
 use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_test_util::matchers::*;
-use restate_types::config::StorageOptions;
+use restate_types::config::{Configuration, StorageOptions};
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
 use restate_types::identifiers::{
     AwakeableIdentifier, InvocationId, PartitionId, PartitionProcessorRpcRequestId, ServiceId,
@@ -577,6 +579,19 @@ fn patch_state(mutation: ExternalStateMutation) -> v2::Envelope<v2::Raw> {
     commands::PatchStateCommand::test_envelope(mutation)
 }
 
+/// A scheduler decision to run the entry with `key` in `qid`.
+fn run_decision(qid: &VQueueId, key: EntryKey) -> v2::Envelope<v2::Raw> {
+    commands::SchedulerDecisionsCommand::test_envelope(SchedulerDecisionsCommand {
+        qids: vec![(
+            qid.clone(),
+            vec![SchedulerAction::Run(RunAction {
+                key,
+                wait_stats: WaitStats::default(),
+            })],
+        )],
+    })
+}
+
 /// Returns the stage, key and vqueue of the state mutation's entry.
 async fn get_entry_status(
     test_env: &mut TestEnv,
@@ -686,20 +701,8 @@ async fn run_state_mutation_with_different_entry_id() -> TestResult {
             EntryId::from(StateMutationId::generate(partition_key)),
         )
     };
-    let run = |key: EntryKey| {
-        commands::SchedulerDecisionsCommand::test_envelope(SchedulerDecisionsCommand {
-            qids: vec![(
-                qid.clone(),
-                vec![SchedulerAction::Run(RunAction {
-                    key,
-                    wait_stats: WaitStats::default(),
-                })],
-            )],
-        })
-    };
-
     // A decision for the position of the local entry runs it
-    test_env.apply(run(leader_key(10))).await;
+    test_env.apply(run_decision(&qid, leader_key(10))).await;
     std::assert!(get_entry_status(&mut test_env, &local_id).await.is_none());
     let states: HashMap<_, _> = test_env
         .storage
@@ -709,6 +712,102 @@ async fn run_state_mutation_with_different_entry_id() -> TestResult {
     assert_eq!(
         states,
         HashMap::from([(Bytes::from_static(b"key"), Bytes::from_static(b"value"))])
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Removing inconsistent state mutations removes all pending ones. Afterwards, decisions are only
+/// matched by their exact id.
+#[test(restate_core::test)]
+async fn inconsistent_state_mutation_removal() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let service_id = ServiceId::new(None, "MySvc", "my-key");
+    let partition_key = service_id.partition_key();
+    let created_at = MillisSinceEpoch::now();
+
+    test_env
+        .apply_at(
+            patch_state(state_mutation(&service_id)),
+            created_at,
+            Lsn::new(10),
+        )
+        .await;
+    let assigned = state_mutation(&service_id).with_generated_id();
+    let assigned_id = assigned.id().unwrap();
+    test_env
+        .apply_at(patch_state(assigned), created_at, Lsn::new(11))
+        .await;
+    let derived_id = StateMutationId::from_parts(partition_key, created_at.as_u64(), 10);
+    let (_, _, qid) = get_entry_status(&mut test_env, &derived_id).await.unwrap();
+
+    let partition_db = test_env.storage.partition_db().clone();
+    let removed = restate_vqueues::migrations::remove_pending_state_mutations(
+        &MigrationContext::new(
+            &Configuration::pinned(),
+            &partition_db,
+            KeyRange::FULL,
+            CancellationToken::new(),
+        ),
+        test_env.processor.vqueues_mut(),
+        UniqueTimestamp::from_unix_millis_unchecked(created_at),
+    )
+    .await?;
+
+    assert_eq!(removed, 2);
+    std::assert!(get_entry_status(&mut test_env, &derived_id).await.is_none());
+    std::assert!(
+        get_entry_status(&mut test_env, &assigned_id)
+            .await
+            .is_none()
+    );
+    let txn = test_env.storage.transaction();
+    std::assert!(
+        txn.get_vqueue(&qid)
+            .await?
+            .is_none_or(|meta| meta.is_inbox_empty())
+    );
+    drop(txn);
+
+    // With the cleanup enabled, a decision with a different id no longer runs the local entry
+    test_env.set_enabled_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+        PartitionFeatureChange::EnableInconsistentStateMutationRemoval,
+    ]));
+    test_env
+        .apply_at(
+            patch_state(state_mutation(&service_id)),
+            created_at,
+            Lsn::new(20),
+        )
+        .await;
+    let local_id = StateMutationId::from_parts(partition_key, created_at.as_u64(), 20);
+    let (_, local_key, _) = get_entry_status(&mut test_env, &local_id).await.unwrap();
+    test_env
+        .apply(run_decision(
+            &qid,
+            EntryKey::new(
+                local_key.has_lock(),
+                local_key.run_at(),
+                local_key.seq(),
+                EntryId::from(StateMutationId::generate(partition_key)),
+            ),
+        ))
+        .await;
+    std::assert!(get_entry_status(&mut test_env, &local_id).await.is_some());
+    assert_eq!(
+        test_env
+            .storage
+            .get_all_user_states_for_service(&service_id)?
+            .count()
+            .await,
+        0
     );
 
     test_env.shutdown().await;

@@ -3022,8 +3022,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 // State mutations enqueued before v1.8.0 got a random id on every replica (see
                 // #5416), so the id in the decision may not match the local one. In this case, we
                 // look the entry up by its position in the inbox, which is the same on all
-                // replicas.
-                let entry_key = if state_header.is_none()
+                // replicas. This isn't needed anymore once these state mutations were cleaned up.
+                let entry_key = if !self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_inconsistent_state_mutation_removal_enabled()
+                    && state_header.is_none()
                     && let Some(key) = self
                         .storage
                         .find_inbox_state_mutation_key(qid, entry_key)

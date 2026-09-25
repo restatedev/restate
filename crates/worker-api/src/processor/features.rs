@@ -49,6 +49,14 @@ pub trait PartitionFeatures {
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention)
     }
+
+    /// Whether pending state mutations from before v1.8.0 have been removed, so that all
+    /// replicas store state mutations under the same ids.
+    ///
+    /// *Since v1.8.0*
+    fn is_inconsistent_state_mutation_removal_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnableInconsistentStateMutationRemoval)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -61,6 +69,9 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnableVqueuesSkipCompleted => self.vqueues_skip_completed,
             PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {
                 self.preflight_invocation_termination_retention
+            }
+            PartitionFeatureChange::EnableInconsistentStateMutationRemoval => {
+                self.inconsistent_state_mutation_removal
             }
         }
     }

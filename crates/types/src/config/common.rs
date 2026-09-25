@@ -843,6 +843,17 @@ experimental! {
     ///
     /// Since v1.8.0
     invocation_source_ingestion,
+
+    /// # Remove state mutations with inconsistent ids
+    ///
+    /// Before v1.8.0, replicas could store the same state mutation under different ids. When
+    /// enabled, partitions remove all state mutations that are still pending, so that all
+    /// replicas store state mutations under the same ids again.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.0.
+    ///
+    /// Since v1.8.0
+    inconsistent_state_mutation_removal,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

@@ -188,6 +188,29 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                     // `to_random_seed()` fallback in `invoker_storage_reader.rs`.
                     PartitionFeatureChange::EnableUniqueRandomSeeds => {}
                     PartitionFeatureChange::EnablePreflightInvocationTerminationRetention => {}
+                    // Replicas could store state mutations enqueued before v1.8.0 under different
+                    // ids (#5416). Removing all pending ones at this log position leaves every
+                    // replica with the same entries. The cleanup commits the removals itself; the
+                    // feature flag below is only set once all of them are removed.
+                    PartitionFeatureChange::EnableInconsistentStateMutationRemoval => {
+                        let config = self.node_ctx.config.live_load();
+                        let ctx = MigrationContext::new(
+                            config,
+                            &self.partition_db,
+                            self.processor.key_range(),
+                            cancellation_token(),
+                        );
+                        let removed = restate_vqueues::migrations::remove_pending_state_mutations(
+                            &ctx,
+                            self.processor.vqueues_mut(),
+                            UniqueTimestamp::from_unix_millis_unchecked(created_at.into()),
+                        )
+                        .await?;
+                        info!(
+                            partition_id = %self.processor.partition_id(),
+                            "Removed {removed} pending state mutations",
+                        );
+                    }
                 }
             }
         }
