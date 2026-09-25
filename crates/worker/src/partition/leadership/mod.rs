@@ -48,9 +48,9 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcError, PartitionProcessorWireEnvelope,
 };
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
@@ -62,12 +62,14 @@ use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
 use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::v2::{Envelope, Raw};
+use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
 use self::durability_tracker::DurabilityTracker;
+use self::rpc::PendingReply;
+pub(crate) use self::rpc::{CommitCallback, RpcReciprocal};
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::Cleaner;
@@ -81,13 +83,11 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
-use super::{processor::*, rpc as partition_rpc};
+use super::processor::*;
+use super::rpc::RpcProposal;
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
-type RpcReciprocal =
-    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
-type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -139,34 +139,35 @@ pub(crate) enum TaskTermination {
 }
 
 #[derive(derive_more::Debug)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetworkServiceEvent {
+    /// Propose a single command; `reply` decides when and how the caller is answered.
     RpcProposal {
-        proposal: partition_rpc::RpcProposal,
-        #[debug(skip)]
-        reciprocal: RpcReciprocal,
+        keys: Keys,
+        cmd: ErasedCommand,
+        reply: PendingReply,
         lease: MemoryLease,
     },
+    /// Forward already-built records; the caller is answered on commit.
     IngestRecords {
         records: Vec<IngestRecord>,
         #[debug(skip)]
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
         lease: MemoryLease,
     },
 }
 
 impl NetworkServiceEvent {
+    fn fail(self, error: PartitionProcessorRpcError) {
+        match self {
+            NetworkServiceEvent::RpcProposal { reply, .. } => reply.fail(error),
+            NetworkServiceEvent::IngestRecords { on_commit, .. } => on_commit.call(Err(error)),
+        }
+    }
+
     /// Replies to the caller with a NotLeader error. Only valid for events that were never
     /// proposed, so the caller can safely retry against the new leader.
     fn reject_not_leader(self, partition_id: PartitionId) {
-        match self {
-            NetworkServiceEvent::RpcProposal { reciprocal, .. } => {
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
-            }
-            NetworkServiceEvent::IngestRecords { reciprocal, .. } => {
-                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into())
-            }
-        }
+        self.fail(PartitionProcessorRpcError::NotLeader(partition_id))
     }
 }
 
@@ -936,15 +937,20 @@ pub(super) struct RpcProposalSender {
 }
 
 impl RpcProposalSender {
-    pub fn send_rpc_proposal(
+    pub fn send_rpc_proposal<W>(
         self,
-        proposal: partition_rpc::RpcProposal,
-        reciprocal: RpcReciprocal,
+        proposal: RpcProposal<W::Ok>,
+        reciprocal: Reciprocal<Oneshot<W>>,
         lease: MemoryLease,
-    ) {
+    ) where
+        W: PartitionProcessorWireEnvelope,
+        RpcReciprocal: From<Reciprocal<Oneshot<W>>>,
+    {
+        let (keys, cmd, reply_on) = proposal.into_parts();
         self.send(NetworkServiceEvent::RpcProposal {
-            proposal,
-            reciprocal,
+            keys,
+            cmd,
+            reply: PendingReply::new(reply_on, reciprocal),
             lease,
         });
     }
@@ -952,12 +958,12 @@ impl RpcProposalSender {
     pub fn send_forwarded_records(
         self,
         records: Vec<IngestRecord>,
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
         lease: MemoryLease,
     ) {
         self.send(NetworkServiceEvent::IngestRecords {
             records,
-            reciprocal,
+            on_commit,
             lease,
         });
     }
@@ -981,7 +987,7 @@ mod tests {
     use tokio_stream::StreamExt;
 
     use restate_bifrost::Bifrost;
-    use restate_core::network::Reciprocal;
+    use restate_core::network::{Oneshot, Reciprocal};
     use restate_core::partitions::PartitionRouting;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -994,6 +1000,9 @@ mod tests {
     };
     use restate_types::invocation::FencingToken;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::net::partition_processor::{
+        PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    };
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
@@ -1252,13 +1261,21 @@ mod tests {
 
         // Pause: append the PauseInvocation command and clear the token (after the append).
         let request_id = PartitionProcessorRpcRequestId::new();
-        let (reciprocal, _rx) = Reciprocal::mock();
+        let (reciprocal, _rx): (
+            Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>,
+            _,
+        ) = Reciprocal::mock();
         let pause_cmd = PauseInvocationCommand {
             invocation_id,
             request_id: Some(request_id),
         };
 
-        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
+        leader_state.propose_pause_and_fence(
+            request_id,
+            reciprocal.into(),
+            invocation_id,
+            pause_cmd,
+        );
         // The pause cleared the token, so attempt 1's token is no longer accepted.
         assert!(
             !leader_state
