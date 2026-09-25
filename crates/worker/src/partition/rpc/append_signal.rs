@@ -8,33 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::InvocationId;
 use restate_types::invocation::NotifySignalRequest;
 use restate_types::journal_v2::Signal;
-use restate_types::net::partition_processor::PartitionProcessorRpcResponse;
+use restate_types::net::partition_processor::{AppendSignalRpcRequest, AppendSignalRpcResponse};
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) invocation_id: InvocationId,
-    pub(super) signal: Signal,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<AppendSignalRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        Request {
+        AppendSignalRpcRequest {
             invocation_id,
-            signal,
-        }: Request,
-    ) -> Decision {
+            signal_id,
+            result,
+            ..
+        }: AppendSignalRpcRequest,
+    ) -> Decision<AppendSignalRpcResponse> {
+        let (Some(signal_id), Some(result)) = (signal_id, result) else {
+            return Decision::Reply(Err(PartitionProcessorRpcError::Internal(
+                "append signal request is missing the signal id or result".to_owned(),
+            )));
+        };
+
         Decision::Propose(RpcProposal::new(
             commands::NotifySignalCommand::from(NotifySignalRequest {
                 invocation_id,
-                signal,
+                signal: Signal::new(signal_id.into(), result.into()),
             }),
             ReplyOn::Commit {
-                response: PartitionProcessorRpcResponse::Appended,
+                response: AppendSignalRpcResponse,
             },
         ))
     }
