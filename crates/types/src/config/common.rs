@@ -843,6 +843,14 @@ experimental! {
     ///
     /// Since v1.8.0
     invocation_source_ingestion,
+
+    /// # Use dedicated partition processor RPC messages
+    ///
+    /// When enabled, clients use dedicated partition processor RPC messages when the peer
+    /// supports network protocol V4. Otherwise, they use the legacy RPC envelope.
+    ///
+    /// Since v1.8.0
+    partition_processor_dedicated_messages,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
