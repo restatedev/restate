@@ -71,9 +71,6 @@ impl From<Infallible> for WireResponseError {
 /// is the wire payload itself, or has a `From`/`TryFrom` impl for it, only implements
 /// [`Self::into_wire`]. Requests without a legacy form leave the legacy methods at their defaults.
 pub trait PartitionProcessorRpc: WithPartitionKey + Sized + Send + 'static {
-    /// Whether this RPC has a legacy wire implementation or not.
-    const HAS_LEGACY_WIRE: bool = false;
-
     /// The wire message sent over the network.
     type Wire: PartitionProcessorWireRpc;
 

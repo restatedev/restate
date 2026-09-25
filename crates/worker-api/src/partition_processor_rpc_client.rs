@@ -22,6 +22,7 @@ use restate_core::partitions::PartitionRouting;
 use restate_types::NodeId;
 use restate_types::identifiers::{PartitionId, PartitionProcessorRpcRequestId};
 use restate_types::live::Live;
+use restate_types::net::ProtocolVersion;
 use restate_types::net::codec::EncodeError;
 use restate_types::net::partition_processor::{
     PartitionProcessorRpcError, PartitionProcessorRpcRequest, PartitionProcessorRpcRequestHeader,
@@ -322,12 +323,9 @@ where
                 RpcErrorKind::ConnectionClosedBeforeSend,
             )
         })?;
+
         let header = PartitionProcessorRpcRequestHeader::new(request_id);
-
-        // TODO(mbassem): Implement decision logic
-        let should_use_dedicated = false;
-
-        let res = if should_use_dedicated || !R::HAS_LEGACY_WIRE {
+        let res = if connection.protocol_version() >= ProtocolVersion::V4 {
             let request = request.into_wire(header);
             let response = permit
                 .send_rpc(request, Some(*partition_id as u64))
@@ -336,9 +334,17 @@ where
                 .map_err(|err| RpcError::from_err(partition_id, node_id, err))?;
             R::from_wire(header.request_id, response)
         } else {
-            let request = request
-                .into_legacy_wire()
-                .expect("RPCs with HAS_LEGACY_WIRE set must have a legacy wire format");
+            let request = request.into_legacy_wire().ok_or_else(|| {
+                RpcError::from_err(
+                    partition_id,
+                    node_id,
+                    RpcErrorKind::Encode(EncodeError::IncompatibleVersion {
+                        type_tag: std::any::type_name::<R>(),
+                        min_required: ProtocolVersion::V4,
+                        actual: connection.protocol_version(),
+                    }),
+                )
+            })?;
             let response = permit
                 .send_rpc(
                     PartitionProcessorRpcRequest::with_header(header, partition_id, request),
