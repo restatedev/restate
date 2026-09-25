@@ -810,6 +810,8 @@ pub struct StorageOptions {
     /// for compaction.
     ///
     /// Larger windows detect sparser deletion patterns but increase scanning overhead.
+    ///
+    /// Default is 50000
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_window",
@@ -820,8 +822,12 @@ pub struct StorageOptions {
     /// # Compact-on-deletion tombstone count trigger
     ///
     /// Minimum number of tombstones within the sliding window that triggers compaction.
-    /// With default values (window=1000, count=100), compaction triggers when at least 10%
-    /// of keys in any window are tombstones.
+    /// With default values (window=50000, count=30000), compaction triggers when roughly 60%
+    /// of keys in any window are tombstones. The effective window is the configured size rounded
+    /// up to a multiple of 128. Set the count higher than this effective window to disable the
+    /// sliding-window trigger.
+    ///
+    /// Default is 30000
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_count",
@@ -837,6 +843,8 @@ pub struct StorageOptions {
     ///
     /// Valid range is (0.0, 1.0]. Values outside this range disable ratio-based triggering,
     /// relying solely on the sliding window.
+    ///
+    /// Default is 0.5
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_ratio",
@@ -850,7 +858,10 @@ pub struct StorageOptions {
     /// marking the file for compaction. Files smaller than this threshold are ignored even if
     /// they exceed the deletion count or ratio triggers.
     ///
-    /// Set to 0 to disable the minimum file size check (default).
+    /// Set to 0 to disable the minimum file size check.
+    ///
+    /// Default is 32 MiB (half of the default `rocksdb-max-file-size`) to reduce compaction churn
+    /// triggered by small files in non-bottom-most levels.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_min_sst_file_size",
@@ -1224,8 +1235,8 @@ mod serde_helpers {
     use restate_util_bytecount::ByteCount;
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
-        // SAFETY: 1000 is non-zero
-        unsafe { NonZeroUsize::new_unchecked(1000) }
+        // SAFETY: 50_000 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(50_000) }
     }
 
     pub fn is_default_compact_on_deletions_window(v: &NonZeroUsize) -> bool {
@@ -1233,8 +1244,8 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_count() -> NonZeroUsize {
-        // SAFETY: 100 is non-zero
-        unsafe { NonZeroUsize::new_unchecked(100) }
+        // SAFETY: 30_000 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(30_000) }
     }
 
     pub fn is_default_compact_on_deletions_count(v: &NonZeroUsize) -> bool {
@@ -1242,7 +1253,7 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_ratio() -> f64 {
-        0.25
+        0.5
     }
 
     pub fn is_default_compact_on_deletions_ratio(v: &f64) -> bool {
@@ -1250,7 +1261,7 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_min_sst_file_size() -> ByteCount {
-        ByteCount::<true>::new(0)
+        ByteCount::<true>::new(32 * 1024 * 1024)
     }
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {
