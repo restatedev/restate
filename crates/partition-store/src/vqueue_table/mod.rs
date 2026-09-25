@@ -46,10 +46,12 @@ use restate_storage_api::vqueue_table::{
     ScanVQueueMetaTable,
 };
 use restate_types::sharding::{KeyRange, PartitionKey};
-use restate_types::vqueues::{EntryId, Seq, VQueueEntryId, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueEntryId, VQueueId};
 
 use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
-use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use self::inbox::InboxKeyRef;
+use self::key_codec::HasLock;
+use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
@@ -446,6 +448,37 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
 
         Ok(Some(entry_status_header_from_raw(*id, header)))
+    }
+
+    async fn find_inbox_state_mutation_key(
+        &self,
+        qid: &VQueueId,
+        key: &EntryKey,
+    ) -> Result<Option<EntryKey>> {
+        let has_lock = HasLock::new(key.has_lock());
+        let run_at = key.run_at();
+        let seq = key.seq();
+        let prefix = InboxKeyRef::builder()
+            .qid(qid)
+            .has_lock(&has_lock)
+            .run_at(&run_at)
+            .seq(&seq);
+
+        // The seq of a state mutation is the lsn of its command. Other inbox entries with this seq
+        // can't exist: invocations enqueued by the state machine use the lsn of their own command,
+        // and migrated invocations use seq numbers from before the migration, which are smaller
+        // than any lsn after it.
+        let iterator = self.iterator_from(TableScan::Prefix(prefix))?;
+        let Some(raw_key) = iterator.key() else {
+            iterator
+                .status()
+                .map_err(|err| StorageError::Generic(err.into()))?;
+            return Ok(None);
+        };
+        let entry_key =
+            <EntryKey as KeyDecode>::decode(&mut &raw_key[InboxKey::offset_of_entry_key()..])?;
+
+        Ok((entry_key.kind() == EntryKind::StateMutation).then_some(entry_key))
     }
 
     async fn get_vqueue_input_payload<E>(

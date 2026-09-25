@@ -36,11 +36,11 @@ async fn get_inbox() {
     .unwrap();
     tx.put_inbox_entry(
         1,
-        &InboxEntry::StateMutation(ExternalStateMutation {
-            service_id: service_id.clone(),
-            version: None,
-            state: Default::default(),
-        }),
+        &InboxEntry::StateMutation(ExternalStateMutation::new(
+            service_id.clone(),
+            None,
+            Default::default(),
+        )),
     )
     .unwrap();
     let invocation_id_2 = InvocationId::mock_generate(&invocation_target);

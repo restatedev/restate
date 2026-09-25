@@ -244,11 +244,8 @@ where
         .collect();
 
     let partition_key = service_id.partition_key();
-    let patch_state = ExternalStateMutation {
-        service_id,
-        version,
-        state: new_state,
-    };
+    let patch_state =
+        ExternalStateMutation::new(service_id, version, new_state).with_generated_id();
 
     let envelope = Envelope::new(
         create_envelope_header(partition_key),
