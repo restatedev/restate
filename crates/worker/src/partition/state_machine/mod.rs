@@ -580,6 +580,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         .copy_prefix_up_to_index_included,
                     response_sink: restart_as_new_invocation_request.response_sink,
                     patch_deployment_id: restart_as_new_invocation_request.patch_deployment_id,
+                    span_context: restart_as_new_invocation_request.span_context,
                 }
                 .apply(self)
                 .await?;
