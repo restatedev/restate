@@ -58,7 +58,6 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),
         (name = "vqueue", description = "Virtual queue management"),
-        (name = "cluster_health", description = "Cluster health"),
         (name = "health", description = "Admin API health"),
         (name = "version", description = "API Version"),
         (name = "introspection", description = "System introspection"),

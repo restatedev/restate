@@ -8,16 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::cmp::max_by_key;
-
 use anyhow::Context;
 use bytes::BytesMut;
 use tokio::sync::oneshot;
 use tonic::codec::CompressionEncoding;
 use tonic::{Request, Response, Status};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use restate_metadata_server_grpc::grpc::new_metadata_server_client;
 use restate_metadata_store::protobuf::metadata_proxy_svc::metadata_proxy_svc_server::{
     MetadataProxySvc, MetadataProxySvcServer,
 };
@@ -26,24 +23,21 @@ use restate_metadata_store::protobuf::metadata_proxy_svc::{
 };
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
-use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
 use restate_core::protobuf::node_ctl_svc::node_ctl_svc_server::{NodeCtlSvc, NodeCtlSvcServer};
 use restate_core::protobuf::node_ctl_svc::{
-    ClusterHealthResponse, DatabaseCompactionResult, EmbeddedMetadataClusterHealth,
-    GetMetadataRequest, GetMetadataResponse, IdentResponse, ProvisionClusterRequest,
-    ProvisionClusterResponse, TriggerCompactionRequest, TriggerCompactionResponse,
-    cluster_features_from_proto,
+    DatabaseCompactionResult, GetMetadataRequest, GetMetadataResponse, IdentResponse,
+    ProvisionClusterRequest, ProvisionClusterResponse, TriggerCompactionRequest,
+    TriggerCompactionResponse, cluster_features_from_proto,
 };
 use restate_core::{Identification, MetadataWriter, TaskCenter, TaskKind};
 use restate_core::{Metadata, MetadataKind};
 use restate_metadata_store::{MetadataStoreClient, ReadError, WriteError};
 use restate_rocksdb::RocksDbManager;
-use restate_types::Version;
 use restate_types::config::{Configuration, NetworkingOptions};
 use restate_types::errors::{ConversionError, MaybeRetryableError};
 use restate_types::logs::metadata::{NodeSetSize, ProviderConfiguration};
 use restate_types::metadata::VersionedValue;
-use restate_types::nodes_config::{ClusterFeature, Role};
+use restate_types::nodes_config::ClusterFeature;
 use restate_types::protobuf::cluster::ClusterConfiguration as ProtoClusterConfiguration;
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::replication::ReplicationProperty;
@@ -205,71 +199,6 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
             ProtoClusterConfiguration::from(cluster_configuration),
             features,
         )))
-    }
-
-    async fn cluster_health(
-        &self,
-        _request: Request<()>,
-    ) -> Result<Response<ClusterHealthResponse>, Status> {
-        if Metadata::with_current(|m| m.my_node_id_opt()).is_none() {
-            return Err(Status::unavailable(
-                "The cluster does not seem to be provisioned yet. Try again later.",
-            ));
-        }
-
-        let nodes_configuration = Metadata::with_current(|m| m.nodes_config_ref());
-        let cluster_name = nodes_configuration.cluster_name().to_string();
-
-        let mut max_metadata_cluster_configuration = None;
-
-        for (node_id, node_config) in nodes_configuration.iter_role(Role::MetadataServer) {
-            let mut metadata_server_client = new_metadata_server_client(
-                create_tonic_channel(
-                    node_config.address.clone(),
-                    &Configuration::pinned().networking,
-                    DNSResolution::Gai,
-                ),
-                &Configuration::pinned().networking,
-            );
-
-            let response = match metadata_server_client.status(()).await {
-                Ok(response) => response.into_inner(),
-                Err(err) => {
-                    debug!("Failed retrieving metadata server status from '{node_id}': {err}");
-                    continue;
-                }
-            };
-
-            if let Some(configuration) = response.configuration {
-                if let Some(max_configuration) = max_metadata_cluster_configuration {
-                    max_metadata_cluster_configuration =
-                        Some(max_by_key(max_configuration, configuration, |config| {
-                            config.version.map(Version::from)
-                        }))
-                } else {
-                    max_metadata_cluster_configuration = Some(configuration);
-                }
-            }
-        }
-
-        let metadata_cluster_health = max_metadata_cluster_configuration.map(|configuration| {
-            let members = configuration
-                .members
-                .into_keys()
-                .map(|plain_node_id| restate_types::protobuf::common::NodeId {
-                    id: plain_node_id,
-                    generation: None,
-                })
-                .collect();
-            EmbeddedMetadataClusterHealth { members }
-        });
-
-        let cluster_state_response = ClusterHealthResponse {
-            cluster_name,
-            metadata_cluster_health,
-        };
-
-        Ok(Response::new(cluster_state_response))
     }
 
     async fn trigger_compaction(

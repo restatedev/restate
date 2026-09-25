@@ -26,10 +26,6 @@ service NodeCtlSvc {
   rpc ProvisionCluster(ProvisionClusterRequest)
       returns (ProvisionClusterResponse);
 
-  // todo: Remove in v1.7.0 once the REST endpoint /cluster-health is removed
-  // Returns the cluster health from the point of view of this node.
-  rpc ClusterHealth(google.protobuf.Empty) returns (ClusterHealthResponse);
-
   // Trigger manual compaction of RocksDB databases on this node.
   rpc TriggerCompaction(TriggerCompactionRequest)
       returns (TriggerCompactionResponse);
@@ -114,17 +110,6 @@ message GetMetadataRequest {
 message GetMetadataResponse {
   // polymorphic. The value depends on the MetadataKind requested
   bytes encoded = 1;
-}
-
-message ClusterHealthResponse {
-  string cluster_name = 1;
-  // Some value if the cluster has been configured to use the embedded metadata
-  // store
-  optional EmbeddedMetadataClusterHealth metadata_cluster_health = 2;
-}
-
-message EmbeddedMetadataClusterHealth {
-  repeated restate.common.NodeId members = 1;
 }
 
 message TriggerCompactionRequest {
