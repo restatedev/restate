@@ -42,7 +42,9 @@ use crate::metric_definitions::{
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::*;
-use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{
+    Action, CommandHandler, Error, RpcReply, StateMachineApplyContext,
+};
 
 pub struct OnRestartAsNewInvocationCommand {
     pub invocation_id: InvocationId,
@@ -65,11 +67,10 @@ impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
                 sink.request_id,
                 response
             );
-            self.action_collector
-                .push(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: sink.request_id,
-                    response,
-                })
+            self.action_collector.push(Action::ReplyRpc {
+                request_id: sink.request_id,
+                reply: RpcReply::RestartAsNewInvocation(response),
+            })
         }
     }
 }
@@ -446,12 +447,12 @@ mod tests {
         // Didn't happen, because previous invocation was not retained!
         assert_that!(
             actions,
-            all!(contains(pat!(
-                Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
-                }
-            )))
+            all!(contains(pat!(Action::ReplyRpc {
+                request_id: eq(request_id),
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::JournalIndexOutOfRange
+                )))
+            })))
         );
 
         test_env.shutdown().await;
@@ -506,11 +507,13 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::Ok {
-                    new_invocation_id: new_id
-                })
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::Ok {
+                        new_invocation_id: new_id
+                    }
+                )))
             }))
         );
 
@@ -578,11 +581,13 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::Ok {
-                    new_invocation_id: new_id
-                })
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::Ok {
+                        new_invocation_id: new_id
+                    }
+                )))
             }))
         );
 
@@ -946,9 +951,11 @@ mod tests {
 
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::JournalIndexOutOfRange
+                )))
             }))
         );
 

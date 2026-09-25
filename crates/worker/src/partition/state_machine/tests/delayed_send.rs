@@ -54,10 +54,12 @@ async fn run_send_with_delay(features: PersistedFeatures) {
         actions,
         all!(
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true)
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true)
+                })))
             }))
         )
     );
@@ -71,10 +73,12 @@ async fn run_send_with_delay(features: PersistedFeatures) {
 
     assert_that!(
         actions,
-        not(contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id),
-            execution_time: some(eq(wake_up_time)),
-            is_new_invocation: eq(true),
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
+            })))
         })))
     );
     assert_that!(
@@ -112,10 +116,12 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
         actions,
         all!(
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true)
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true)
+                })))
             }))
         )
     );
@@ -134,10 +140,12 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
 
     assert_that!(
         actions,
-        not(contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id),
-            execution_time: some(eq(wake_up_time)),
-            is_new_invocation: eq(true),
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
+            })))
         })))
     );
     assert_that!(
@@ -181,10 +189,12 @@ async fn send_with_delay_to_locked_virtual_object() {
         actions,
         all!(
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true),
+                })))
             }))
         )
     );
@@ -208,10 +218,12 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     assert_that!(
         actions,
-        not(contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id),
-            execution_time: some(eq(wake_up_time)),
-            is_new_invocation: eq(true),
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id),
+                execution_time: some(eq(wake_up_time)),
+                is_new_invocation: eq(true),
+            })))
         })))
     );
     assert_that!(
@@ -266,10 +278,12 @@ async fn send_with_delay_and_idempotency_key() {
         actions,
         all!(
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id_1),
-                execution_time: eq(execution_time),
-                is_new_invocation: eq(true),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id_1),
+                    execution_time: eq(execution_time),
+                    is_new_invocation: eq(true),
+                })))
             }))
         )
     );
@@ -293,10 +307,12 @@ async fn send_with_delay_and_idempotency_key() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressSubmitNotification {
-            request_id: eq(request_id_2),
-            execution_time: eq(execution_time),
-            is_new_invocation: eq(false),
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                request_id: eq(request_id_2),
+                execution_time: eq(execution_time),
+                is_new_invocation: eq(false),
+            })))
         }))
     );
     test_env.shutdown().await;
