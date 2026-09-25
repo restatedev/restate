@@ -174,9 +174,12 @@ pub async fn create_object_store_client(
 
             Arc::new(builder.build()?)
         }
-        ObjectStoreScheme::MicrosoftAzure => {
-            Arc::new(MicrosoftAzureBuilder::from_env().with_url(url).build()?)
-        }
+        ObjectStoreScheme::MicrosoftAzure => Arc::new(
+            MicrosoftAzureBuilder::from_env()
+                .with_url(url)
+                .with_retry(from_retry_policy(retry_policy))
+                .build()?,
+        ),
         ObjectStoreScheme::GoogleCloudStorage => Arc::new(
             GoogleCloudStorageBuilder::from_env()
                 .with_url(url)
