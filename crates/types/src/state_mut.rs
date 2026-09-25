@@ -16,7 +16,7 @@ use bytes::Bytes;
 use serde_with::serde_as;
 use sha2::{Digest, Sha256};
 
-use crate::identifiers::ServiceId;
+use crate::identifiers::{ServiceId, StateMutationId, WithPartitionKey};
 
 #[serde_as]
 /// ExternalStateMutation
@@ -32,6 +32,82 @@ pub struct ExternalStateMutation {
     pub version: Option<String>,
     // flexbuffers only supports string-keyed maps :-( --> so we store it as vector of kv pairs
     #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    #[bilrost(3)]
+    #[debug("<hidden>")]
+    pub state: HashMap<Bytes, Bytes>,
+    /// Id of the state mutation without its partition key, which comes from `service_id`. If not
+    /// set, the partition processor derives the id from the position of the command in the log.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(4), encoding(plainbytes))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id_remainder: Option<[u8; 16]>,
+}
+
+impl ExternalStateMutation {
+    /// Creates a state mutation without an id.
+    pub fn new(
+        service_id: ServiceId,
+        version: Option<String>,
+        state: HashMap<Bytes, Bytes>,
+    ) -> Self {
+        Self {
+            service_id,
+            version,
+            state,
+            id_remainder: None,
+        }
+    }
+
+    /// Assigns a new random id to the state mutation.
+    pub fn with_generated_id(mut self) -> Self {
+        self.id_remainder =
+            Some(StateMutationId::generate(self.service_id.partition_key()).to_remainder_bytes());
+        self
+    }
+
+    /// Returns the id of the state mutation if one was assigned.
+    pub fn id(&self) -> Option<StateMutationId> {
+        self.id_remainder.map(|remainder| {
+            StateMutationId::from_partition_key_and_bytes(
+                self.service_id.partition_key(),
+                remainder,
+            )
+        })
+    }
+
+    /// Splits the mutation into its id and the input that gets stored for it.
+    pub fn into_parts(self) -> (Option<StateMutationId>, StateMutationInput) {
+        let id = self.id();
+        let Self {
+            service_id,
+            version,
+            state,
+            id_remainder: _,
+        } = self;
+        (
+            id,
+            StateMutationInput {
+                service_id,
+                version,
+                state,
+            },
+        )
+    }
+}
+
+/// A state mutation as stored in the vqueue input table. Its id is part of the entry key.
+///
+/// Uses the same bilrost tags as [`ExternalStateMutation`], so both types can decode each
+/// other's encoding.
+///
+/// *Since v1.8.0*
+#[derive(derive_more::Debug, Clone, Eq, PartialEq, bilrost::Message)]
+pub struct StateMutationInput {
+    #[bilrost(1)]
+    pub service_id: ServiceId,
+    #[bilrost(2)]
+    pub version: Option<String>,
     #[bilrost(3)]
     #[debug("<hidden>")]
     pub state: HashMap<Bytes, Bytes>,
@@ -84,7 +160,37 @@ impl Display for StateMutationVersion {
 
 #[cfg(test)]
 mod tests {
+    use bilrost::{Message, OwnedMessage};
+
     use super::*;
+
+    /// Stored vqueue inputs must stay readable by nodes that decode them as
+    /// [`ExternalStateMutation`] (e.g. after a rollback) and vice versa.
+    #[test]
+    fn state_mutation_input_is_wire_compatible() {
+        let mutation = ExternalStateMutation::new(
+            ServiceId::new(None, "MySvc", "my-key"),
+            Some("v1".to_owned()),
+            [(Bytes::from("key"), Bytes::from("value"))].into(),
+        )
+        .with_generated_id();
+
+        // The id takes its partition key from the service id
+        let (id, parts_input) = mutation.clone().into_parts();
+        assert_eq!(
+            id.unwrap().partition_key(),
+            mutation.service_id.partition_key()
+        );
+
+        let input = StateMutationInput::decode(mutation.encode_to_bytes()).expect("decodes");
+        assert_eq!(input, parts_input);
+
+        let decoded = ExternalStateMutation::decode(input.encode_to_bytes()).expect("decodes");
+        assert_eq!(
+            decoded,
+            ExternalStateMutation::new(mutation.service_id, mutation.version, mutation.state)
+        );
+    }
 
     #[test]
     fn example_usage() {

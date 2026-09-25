@@ -196,11 +196,7 @@ fn generate_patch_state(rng: &mut StdRng, spec: &WorkloadSpec) -> Envelope<Raw> 
 
     Envelope::new(
         Dedup::None,
-        commands::PatchStateCommand::from(ExternalStateMutation {
-            service_id,
-            version: None,
-            state,
-        }),
+        commands::PatchStateCommand::from(ExternalStateMutation::new(service_id, None, state)),
     )
     .into_raw()
 }

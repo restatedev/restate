@@ -36,7 +36,7 @@ use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryValue, RawStatusHeader};
 use restate_types::SemanticRestateVersion;
 use restate_types::partitions::features::PersistedFeatures;
-use restate_types::state_mut::ExternalStateMutation;
+use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::{StorageCodec, StorageCodecKind, StorageDecode};
 use restate_types::vqueues::EntryKind;
 
@@ -271,7 +271,7 @@ fn decode_vqueue_item(value: &[u8], key: &[u8]) -> DecodedValue {
 
     match key_kind {
         Some(EntryKind::Unknown) => DecodedValue::raw_bytes(value.len()),
-        Some(EntryKind::StateMutation) => decode_bilrost::<ExternalStateMutation>(value),
+        Some(EntryKind::StateMutation) => decode_bilrost::<StateMutationInput>(value),
         Some(EntryKind::Invocation) | None => {
             if value.is_empty() {
                 DecodedValue::empty()

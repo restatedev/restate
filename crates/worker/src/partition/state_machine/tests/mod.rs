@@ -44,6 +44,10 @@ use restate_storage_api::service_status_table::{
     ReadVirtualObjectStatusTable, VirtualObjectStatus, WriteVirtualObjectStatusTable,
 };
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
+use restate_storage_api::vqueue_table::scheduler::{
+    RunAction, SchedulerAction, SchedulerDecisionsCommand,
+};
+use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_test_util::matchers::*;
 use restate_types::config::StorageOptions;
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR, codes};
@@ -61,9 +65,10 @@ use restate_types::journal::{Entry, EntryType};
 use restate_types::journal_events::Event;
 use restate_types::journal_v2::raw::TryFromEntry;
 use restate_types::logs::{Keys, SequenceNumber};
-use restate_types::partitions::{Partition, PersistedFeatures};
+use restate_types::partitions::{Partition, PartitionFeatureChange, PersistedFeatures};
 use restate_types::sharding::KeyRange;
 use restate_types::state_mut::ExternalStateMutation;
+use restate_types::vqueues::Seq;
 use restate_wal_protocol::v2::Command;
 use restate_worker_api::invoker::{Effect, EffectKind};
 
@@ -138,14 +143,26 @@ impl TestEnv {
         }
     }
 
+    /// Applies the envelope with a fresh timestamp and the oldest LSN.
     pub async fn apply(&mut self, envelope: v2::Envelope<v2::Raw>) -> Vec<Action> {
+        self.apply_at(envelope, MillisSinceEpoch::now(), Lsn::OLDEST)
+            .await
+    }
+
+    /// Applies the envelope as if it was read from the log at `lsn` and created at `created_at`.
+    pub async fn apply_at(
+        &mut self,
+        envelope: v2::Envelope<v2::Raw>,
+        created_at: MillisSinceEpoch,
+        lsn: Lsn,
+    ) -> Vec<Action> {
         let mut transaction = self.storage.transaction();
         let mut action_collector = ActionCollector::default();
         let mut arena = BytesMut::new();
         StateMachine::apply(
             &mut self.processor,
             &mut transaction,
-            Self::record(envelope),
+            DataRecord::new(created_at.into(), Keys::None, lsn, envelope),
             &mut action_collector,
             true,
             &mut arena,
@@ -156,17 +173,6 @@ impl TestEnv {
         transaction.commit().await.unwrap();
 
         action_collector
-    }
-
-    /// Wraps a bare envelope into a `DataRecord` with a fresh timestamp and the
-    /// oldest LSN, matching what the processor feeds into `StateMachine::apply`.
-    fn record(envelope: v2::Envelope<v2::Raw>) -> DataRecord<v2::Envelope<v2::Raw>> {
-        DataRecord::new(
-            MillisSinceEpoch::now().into(),
-            Keys::None,
-            Lsn::OLDEST,
-            envelope,
-        )
     }
 
     pub async fn apply_multiple(
@@ -524,20 +530,16 @@ async fn mutate_state() -> anyhow::Result<()> {
 
     test_env
         .apply(commands::PatchStateCommand::test_envelope(
-            ExternalStateMutation {
-                service_id: keyed_service_id.clone(),
-                version: None,
-                state: first_state_mutation,
-            },
+            ExternalStateMutation::new(keyed_service_id.clone(), None, first_state_mutation),
         ))
         .await;
     test_env
         .apply(commands::PatchStateCommand::test_envelope(
-            ExternalStateMutation {
-                service_id: keyed_service_id.clone(),
-                version: None,
-                state: second_state_mutation.clone(),
-            },
+            ExternalStateMutation::new(
+                keyed_service_id.clone(),
+                None,
+                second_state_mutation.clone(),
+            ),
         ))
         .await;
 
@@ -558,6 +560,156 @@ async fn mutate_state() -> anyhow::Result<()> {
         .await?;
 
     assert_eq!(all_states, second_state_mutation);
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+fn state_mutation(service_id: &ServiceId) -> ExternalStateMutation {
+    ExternalStateMutation::new(
+        service_id.clone(),
+        None,
+        [(Bytes::from_static(b"key"), Bytes::from_static(b"value"))].into(),
+    )
+}
+
+fn patch_state(mutation: ExternalStateMutation) -> v2::Envelope<v2::Raw> {
+    commands::PatchStateCommand::test_envelope(mutation)
+}
+
+/// Returns the stage, key and vqueue of the state mutation's entry.
+async fn get_entry_status(
+    test_env: &mut TestEnv,
+    id: &StateMutationId,
+) -> Option<(Stage, EntryKey, VQueueId)> {
+    let entry_id = EntryId::from(id);
+    let transaction = test_env.storage.transaction();
+    let header = transaction
+        .get_vqueue_entry_status(id.partition_key(), &entry_id)
+        .await
+        .unwrap()?;
+    Some((
+        header.stage(),
+        *header.entry_key(),
+        header.vqueue_id().clone(),
+    ))
+}
+
+/// State mutations must be enqueued under the same id on all replicas (#5416).
+#[test(restate_core::test)]
+async fn state_mutation_ids_are_deterministic() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let service_id = ServiceId::new(None, "MySvc", "my-key");
+    let partition_key = service_id.partition_key();
+    let created_at = MillisSinceEpoch::now();
+
+    // Without an id, the id is derived from the command's position in the log
+    test_env
+        .apply_at(
+            patch_state(state_mutation(&service_id)),
+            created_at,
+            Lsn::new(10),
+        )
+        .await;
+    let derived_id = StateMutationId::from_parts(partition_key, created_at.as_u64(), 10);
+    let (stage, key, _) = get_entry_status(&mut test_env, &derived_id).await.unwrap();
+    assert_eq!(stage, Stage::Inbox);
+    assert_eq!(key.seq(), Seq::from(Lsn::new(10)));
+
+    // An id assigned by the admin api takes precedence
+    let mutation = state_mutation(&service_id).with_generated_id();
+    let assigned_id = mutation.id().unwrap();
+    test_env
+        .apply_at(patch_state(mutation.clone()), created_at, Lsn::new(11))
+        .await;
+    let (_, key, _) = get_entry_status(&mut test_env, &assigned_id).await.unwrap();
+    assert_eq!(key.seq(), Seq::from(Lsn::new(11)));
+
+    // A command with an already enqueued id is a duplicate and gets dropped
+    test_env
+        .apply_at(patch_state(mutation), created_at, Lsn::new(12))
+        .await;
+    let (_, key, qid) = get_entry_status(&mut test_env, &assigned_id).await.unwrap();
+    assert_eq!(key.seq(), Seq::from(Lsn::new(11)));
+    let duplicate_key = EntryKey::new(
+        key.has_lock(),
+        key.run_at(),
+        Lsn::new(12),
+        EntryId::from(StateMutationId::generate(partition_key)),
+    );
+    std::assert!(
+        test_env
+            .storage
+            .transaction()
+            .find_inbox_state_mutation_key(&qid, &duplicate_key)
+            .await?
+            .is_none()
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Replicas might store state mutations that were enqueued before #5416 was fixed under different
+/// ids. A decision to run them must still find the local entry.
+#[test(restate_core::test)]
+async fn run_state_mutation_with_different_entry_id() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let service_id = ServiceId::new(None, "MySvc", "my-key");
+    let partition_key = service_id.partition_key();
+    let created_at = MillisSinceEpoch::now();
+
+    test_env
+        .apply_at(
+            patch_state(state_mutation(&service_id)),
+            created_at,
+            Lsn::new(10),
+        )
+        .await;
+    let local_id = StateMutationId::from_parts(partition_key, created_at.as_u64(), 10);
+    let (_, local_key, qid) = get_entry_status(&mut test_env, &local_id).await.unwrap();
+
+    // The leader stored the same state mutation under a different id
+    let leader_key = |seq: u64| {
+        EntryKey::new(
+            local_key.has_lock(),
+            local_key.run_at(),
+            Lsn::new(seq),
+            EntryId::from(StateMutationId::generate(partition_key)),
+        )
+    };
+    let run = |key: EntryKey| {
+        commands::SchedulerDecisionsCommand::test_envelope(SchedulerDecisionsCommand {
+            qids: vec![(
+                qid.clone(),
+                vec![SchedulerAction::Run(RunAction {
+                    key,
+                    wait_stats: WaitStats::default(),
+                })],
+            )],
+        })
+    };
+
+    // A decision for the position of the local entry runs it
+    test_env.apply(run(leader_key(10))).await;
+    std::assert!(get_entry_status(&mut test_env, &local_id).await.is_none());
+    let states: HashMap<_, _> = test_env
+        .storage
+        .get_all_user_states_for_service(&service_id)?
+        .try_collect()
+        .await?;
+    assert_eq!(
+        states,
+        HashMap::from([(Bytes::from_static(b"key"), Bytes::from_static(b"value"))])
+    );
 
     test_env.shutdown().await;
     Ok(())
