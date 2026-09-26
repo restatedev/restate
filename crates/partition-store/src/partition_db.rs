@@ -638,11 +638,25 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
 
         let config = &Configuration::pinned().worker.storage;
-        let block_options = restate_rocksdb::configuration::create_default_block_options(
+        let mut block_options = restate_rocksdb::configuration::create_default_block_options(
             &config.rocksdb,
             // use global block cache
             Some(global_cache),
         );
+        // Currently, the negative search by missing invocation-ids to detect request
+        // duplication will always cause a block read at L6 unless it's cached in "page-cache".
+        //
+        // optimize-filters-for-hit=true means we skip building filters for L6 files to save
+        // memory (~11bits per key) and L6 is where most of the historical data lives.
+        cf_options.set_optimize_filters_for_hits(false);
+        // Therefore, to reduce memory usage of L6 filters we choose ribbon filters instead of bloom
+        // and let bloom handle the rest of levels like before.
+        //
+        // In internal write-heavy workloads, ribbon filter size was 28.9% smaller than bloom filters.
+        // For L6 240.4M entries, ribbon=237.8MiB vs. bloom=334.3MiB. The slightly higher CPU cost
+        // is justified at this level of saving in L6.
+        block_options.set_hybrid_ribbon_filter(10.0, 6);
+
         cf_options.set_block_based_table_factory(&block_options);
         cf_options.set_merge_operator(
             "PartitionMerge",
@@ -674,6 +688,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         ));
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(true);
+
         cf_options.set_num_levels(7);
         let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
             rocksdb::DBCompressionType::None
