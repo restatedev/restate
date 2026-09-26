@@ -38,11 +38,6 @@ use super::outbox::Outbox;
 use super::status::{HasStatus, HasStatusMut, Status};
 use super::{DedupAccess, DedupMut, Fsm, HasDedup, HasDedupMut};
 
-// Soft cap for the in-memory vqueue cache; once reached, inactive
-// entries are evicted at insert time. The cache will still grow past
-// this if compaction frees nothing.
-const VQUEUE_CACHE_CAPACITY: usize = 10_000;
-
 pub struct ProcessorRawContext {
     /// Metadata of the partition
     partition: Arc<Partition>,
@@ -63,6 +58,7 @@ impl ProcessorRawContext {
     pub async fn create(
         current_restate_version: &SemanticRestateVersion,
         partition_store: &mut PartitionStore,
+        vqueue_metadata_cache_capacity: usize,
     ) -> Result<Self, ProcessorError> {
         let partition = partition_store.partition().clone();
         let mut fsm_cache = Fsm::create(partition_store).await?;
@@ -106,7 +102,7 @@ impl ProcessorRawContext {
 
         let vqueues = VQueuesMetaCache::create(
             partition_store.partition_db().clone(),
-            VQUEUE_CACHE_CAPACITY,
+            vqueue_metadata_cache_capacity,
         )
         .await?;
 
@@ -133,7 +129,7 @@ impl ProcessorRawContext {
             dedup_cache: Dedup::new_empty(),
             outbox: Outbox::new_empty(),
             trim_queue: TrimQueue::default(),
-            vqueues: VQueuesMetaCache::new_empty(VQUEUE_CACHE_CAPACITY),
+            vqueues: VQueuesMetaCache::new_empty(10_000),
         }
     }
 
