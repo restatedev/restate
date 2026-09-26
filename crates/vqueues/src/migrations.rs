@@ -11,7 +11,8 @@
 use std::time::Duration;
 
 use anyhow::Context;
-use bytes::BytesMut;
+use bilrost::OwnedMessage;
+use bytes::{BufMut, BytesMut};
 use tokio::time::Instant;
 use tracing::{info, trace, warn};
 
@@ -20,6 +21,7 @@ use restate_partition_store::inbox_table::{self, InboxKey};
 use restate_partition_store::invocation_status_table::InvocationStatusKey;
 use restate_partition_store::keys::{DecodeTableKey, EncodeTableKeyPrefix};
 use restate_partition_store::migrations::MigrationContext;
+use restate_partition_store::vqueue_table::InputPayloadKey;
 use restate_partition_store::{PartitionStore, PartitionStoreTransaction, invocation_status_table};
 use restate_storage_api::inbox_table::{InboxEntry, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
@@ -30,13 +32,16 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::timer_table::{TimerKey, WriteTimerTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
-use restate_storage_api::vqueue_table::{EntryMetadata, Stage};
+use restate_storage_api::vqueue_table::{
+    EntryMetadata, ReadVQueueTable, Stage, Status, WriteVQueueTable,
+};
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::{PartitionId, WithPartitionKey};
+use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::StorageCodec;
-use restate_types::vqueues::EntryId;
+use restate_types::vqueues::{EntryId, EntryKind};
 use restate_types::{LimitKey, LockName, ServiceName};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
@@ -101,6 +106,98 @@ pub async fn migrate_to_vqueues(
     } else {
         MigrationResult::FullyMigrated
     })
+}
+
+/// Removes all pending state mutations in the context's key range and returns how many were
+/// removed.
+///
+/// Before v1.8.0, every replica generated its own id for a state mutation (#5416), so replicas
+/// could store the same state mutation under different ids. Removing all pending state mutations
+/// at the same log position on every replica leaves all replicas with the same entries again.
+///
+/// Only state mutations have an input payload, and it's deleted once they have run, so this only
+/// iterates over the vqueue input table. All removals are committed by this function, in parts
+/// whenever the transaction grows beyond [`MAX_TRANSACTION_SIZE`].
+pub async fn remove_pending_state_mutations(
+    ctx: &MigrationContext<'_>,
+    cache: &mut VQueuesMetaCache,
+    at: UniqueTimestamp,
+) -> Result<usize, StorageError> {
+    let mut readopts = rocksdb::ReadOptions::default();
+    readopts.set_total_order_seek(true);
+    readopts.set_verify_checksums(false);
+    readopts.fill_cache(false);
+
+    // A vqueue id starts with its partition key, so the key range bounds the input keys.
+    let mut start_key = BytesMut::new();
+    InputPayloadKey::serialize_key_kind(&mut start_key);
+    start_key.put_u64(ctx.key_range.start());
+    readopts.set_iterate_lower_bound(start_key);
+
+    let mut end_key = BytesMut::new();
+    InputPayloadKey::serialize_key_kind(&mut end_key);
+    end_key.put_u64(ctx.key_range.end());
+    // safe because we have no key kinds set to [0xff, 0xff]
+    increment_unchecked(&mut end_key);
+    readopts.set_iterate_upper_bound(end_key);
+
+    let mut partition_store = PartitionStore::from(ctx.partition_db.clone());
+
+    // The iterator reads a snapshot of the partition, so committing removals doesn't affect it.
+    let rocks = ctx.partition_db.rocksdb().clone();
+    let mut iterator = rocks
+        .inner()
+        .as_raw_db()
+        .raw_iterator_cf_opt(ctx.partition_db.cf_handle(), readopts);
+    iterator.seek_to_first();
+
+    let mut txn = partition_store.transaction();
+    let mut removed = 0;
+    while iterator.valid() {
+        // Allow tokio to cancel this task if the processor is being cancelled.
+        tokio::task::consume_budget().await;
+        let (mut key, value) = iterator.item().unwrap();
+        let (qid, seq, id) = InputPayloadKey::deserialize_from(&mut key)?.split();
+
+        if id.kind() == EntryKind::StateMutation {
+            let partition_key = qid.partition_key();
+            if let Ok(input) = StateMutationInput::decode(value) {
+                warn!(
+                    "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
+                    input.service_id,
+                );
+            }
+
+            if let Some(header) = txn.get_vqueue_entry_status(partition_key, &id).await? {
+                VQueue::<VQueueEvent, _>::get(&qid, &mut txn, cache, None)
+                    .await?
+                    .expect("vqueue of a pending state mutation must exist")
+                    .end(at, &header, Status::Killed, Duration::ZERO);
+            } else {
+                // Only the input payload is left
+                txn.delete_vqueue_input_payload(&qid, seq, &id);
+            }
+            removed += 1;
+
+            // Committing early is safe: every removal is complete within one commit, and if the
+            // barrier isn't fully applied, it's applied again after a restart and removes the
+            // rest.
+            if txn.estimated_size_in_bytes() >= MAX_TRANSACTION_SIZE {
+                txn.commit().await?;
+            }
+        }
+        iterator.next();
+    }
+
+    // ensures we didn't stop because of an iterator error
+    iterator
+        .status()
+        .context("iterating over vqueue inputs")
+        .map_err(StorageError::Generic)?;
+
+    txn.commit().await?;
+
+    Ok(removed)
 }
 
 /// Migrate inboxes

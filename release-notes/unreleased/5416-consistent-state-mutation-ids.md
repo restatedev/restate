@@ -29,6 +29,23 @@ If you used the state API on replicated partitions with vqueues enabled, re-subm
 affected Virtual Objects after upgrading (e.g. with `restate state edit`) to bring all replicas back
 in line.
 
+#### Optional: remove pending state changes from before the upgrade
+
+A new experimental option removes all state changes that are still waiting to be executed, so that
+state changes missed by a follower before the upgrade can no longer be executed later:
+
+```toml
+experimental-enable-inconsistent-state-mutation-removal = true
+```
+
+Or via the environment variable `RESTATE_EXPERIMENTAL_ENABLE_INCONSISTENT_STATE_MUTATION_REMOVAL=true`.
+
+- The cleanup runs once per partition when its next leader is elected. Every removed state change
+  is logged as a warning together with the affected Virtual Object; re-submit it if it should still
+  be applied.
+- Only enable it once all nodes run v1.8.0 or newer. Once a partition has been cleaned up, it
+  can't be rolled back to a version older than v1.8.0.
+
 ### Related Issues
 
 - Issue #5416: StateMutation EntryId is not consistent across replicas
