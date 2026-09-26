@@ -10,17 +10,17 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
 
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
 use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::util::properties::REDACTION_PLACEHOLDER;
 
-use super::utils::{brokers_property, render_properties_table};
+use super::utils::brokers_property;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -45,33 +45,61 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .into_body()
         .await?;
 
-    let mut summary = Table::new_styled();
-    summary.add_kv_row("Name:", cluster.name.as_str());
-    summary.add_kv_row(
-        "Brokers:",
-        brokers_property(&cluster.properties).unwrap_or("-"),
+    let brokers = match brokers_property(&cluster.properties) {
+        Some(b) => Field::new(b.to_string()),
+        None => Field::with_display(serde_json::Value::Null, "-"),
+    };
+    let created_at = &cluster.created_at;
+
+    let mut f = Formatter::new();
+
+    f.title("📜", "Kafka Cluster");
+    f.detail(
+        "kafka_cluster",
+        &[
+            ("name", Field::new(cluster.name.as_str())),
+            ("brokers", brokers),
+            ("properties", Field::new(cluster.properties.len())),
+            ("subscriptions", Field::new(cluster.subscriptions.len())),
+            (
+                "created_at",
+                Field::with_display(created_at.to_string(), created_at.display()),
+            ),
+        ],
     );
-    summary.add_kv_row("Properties:", cluster.properties.len());
-    summary.add_kv_row("Subscriptions:", cluster.subscriptions.len());
-    summary.add_kv_row("Created at:", cluster.created_at.display());
 
-    c_title!("📜", "Kafka Cluster");
-    c_println!("{summary}");
-    c_println!();
-
-    c_title!("⚙️", "Properties");
-    c_println!("{}", render_properties_table(&cluster.properties));
+    f.title("⚙️", "Properties");
+    let mut keys: Vec<&String> = cluster.properties.keys().collect();
+    keys.sort();
+    let property_rows: Vec<Vec<Field>> = keys
+        .into_iter()
+        .map(|k| {
+            let v = &cluster.properties[k];
+            let value = if v == REDACTION_PLACEHOLDER {
+                Field::styled(v.as_str(), Style::Warn)
+            } else {
+                Field::new(v.as_str())
+            };
+            vec![Field::new(k.as_str()), value]
+        })
+        .collect();
+    f.table("properties", &["key", "value"], &property_rows);
 
     if !cluster.subscriptions.is_empty() {
-        c_println!();
-        c_title!("📨", "Subscriptions");
-        let mut sub_table = Table::new_styled();
-        sub_table.set_styled_header(vec!["ID", "SOURCE", "SINK"]);
-        for sub in cluster.subscriptions {
-            sub_table.add_row(vec![sub.id.to_string(), sub.source, sub.sink]);
-        }
-        c_println!("{sub_table}");
+        f.title("📨", "Subscriptions");
+        let sub_rows: Vec<Vec<Field>> = cluster
+            .subscriptions
+            .into_iter()
+            .map(|sub| {
+                vec![
+                    Field::new(sub.id.to_string()),
+                    Field::new(sub.source),
+                    Field::new(sub.sink),
+                ]
+            })
+            .collect();
+        f.table("subscriptions", &["id", "source", "sink"], &sub_rows);
     }
 
-    Ok(())
+    f.finish()
 }

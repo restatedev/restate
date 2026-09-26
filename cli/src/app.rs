@@ -79,8 +79,8 @@ pub enum Command {
     Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
     Sql(sql::Sql),
-    /// Download one of Restate's examples in this directory.
-    #[clap(name = "example", alias = "examples")]
+    /// Download one of Restate's examples (aka templates), or `--list` them.
+    #[clap(name = "example", visible_aliases = ["examples", "template", "templates"])]
     Examples(examples::Examples),
 
     /// Manage service state

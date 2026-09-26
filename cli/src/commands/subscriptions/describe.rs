@@ -10,17 +10,17 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
 use tracing::debug;
 
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
 use crate::commands::kafkaclusters::utils as kc_shared;
 use crate::commands::subscriptions::kafka_cluster_from_source;
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::util::properties::REDACTION_PLACEHOLDER;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -41,10 +41,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = AdminClient::new(env).await?;
     let sub = client.get_subscription(&opts.id).await?.into_body().await?;
 
-    let mut summary = Table::new_styled();
-    summary.add_kv_row("ID:", sub.id.to_string());
-    summary.add_kv_row("Source:", &sub.source);
-    summary.add_kv_row("Sink:", &sub.sink);
+    let mut summary = vec![
+        ("id", Field::new(sub.id.to_string())),
+        ("source", Field::new(sub.source.as_str())),
+        ("sink", Field::new(sub.sink.as_str())),
+    ];
 
     // Best-effort cluster resolution. Failures are logged at debug only — we
     // never want describe to fail because the cluster lookup tripped.
@@ -57,7 +58,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             Ok(envelope) => match envelope.into_body().await {
                 Ok(cluster) => {
                     if let Some(brokers) = kc_shared::brokers_property(&cluster.properties) {
-                        summary.add_kv_row("Kafka brokers:", brokers);
+                        summary.push(("kafka_brokers", Field::new(brokers)));
                     }
                 }
                 Err(e) => debug!("could not load Kafka cluster {cluster_name}: {e}"),
@@ -66,14 +67,30 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         }
     }
 
-    c_title!("📜", "Subscription");
-    c_println!("{summary}");
+    let mut f = Formatter::new();
+
+    f.title("📜", "Subscription");
+    f.detail("subscription", &summary);
 
     if !sub.options.is_empty() {
-        c_println!();
-        c_title!("⚙️", "Options");
-        c_println!("{}", kc_shared::render_properties_table(&sub.options));
+        let mut keys: Vec<&String> = sub.options.keys().collect();
+        keys.sort();
+        let rows: Vec<Vec<Field>> = keys
+            .into_iter()
+            .map(|k| {
+                let v = &sub.options[k];
+                let value = if v == REDACTION_PLACEHOLDER {
+                    Field::styled(v.as_str(), Style::Warn)
+                } else {
+                    Field::new(v.as_str())
+                };
+                vec![Field::new(k.as_str()), value]
+            })
+            .collect();
+
+        f.title("⚙️", "Options");
+        f.table("options", &["key", "value"], &rows);
     }
 
-    Ok(())
+    f.finish()
 }

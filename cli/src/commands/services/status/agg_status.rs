@@ -11,11 +11,14 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_cli_util::{c_error, c_title};
+use restate_cli_util::{CliContext, c_error, c_title};
 
-use super::{Status, render_locked_keys, render_services_status};
-use crate::clients::datafusion_helpers::{get_locked_keys_status, get_service_status};
+use super::{
+    Status, locked_keys_json, render_locked_keys, render_services_status, services_status_json,
+};
+use crate::clients::datafusion_helpers::{get_locked_keys, get_service_status};
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 pub async fn run_aggregated_status(
     opts: &Status,
@@ -53,21 +56,35 @@ pub async fn run_aggregated_status(
 
     let status_map = get_service_status(&sql_client, all_service_names).await?;
 
-    let locked_keys = get_locked_keys_status(&sql_client, keyed.iter().map(|x| &x.name)).await?;
+    let locked_keys = get_locked_keys(&sql_client, keyed.iter().map(|x| &x.name))
+        .await?
+        .filter(|keys| !keys.is_empty());
     // Render UI
     progress.finish_and_clear();
+
+    if CliContext::get().json_output() {
+        let mut f = Formatter::new();
+        f.value(
+            "services",
+            Field::json(services_status_json(&services, &status_map)),
+        );
+        if let Some(locked_keys) = &locked_keys {
+            f.value("locked_keys", Field::json(locked_keys_json(locked_keys)));
+        }
+        return f.finish();
+    }
+
     // Render Status Table
     c_title!("📷", "Summary");
     render_services_status(services, status_map).await?;
     // Render Locked Keys
-    if !locked_keys.is_empty() {
+    if let Some(locked_keys) = &locked_keys {
         c_title!("📨", "Active Keys");
         render_locked_keys(
             locked_keys,
             opts.locked_keys_limit,
             opts.locked_key_held_threshold_second,
-        )
-        .await?;
+        );
     }
     Ok(())
 }

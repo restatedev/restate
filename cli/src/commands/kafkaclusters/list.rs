@@ -8,17 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::Result;
-use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use std::time::SystemTime;
 
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
+use anyhow::Result;
+use chrono::{DateTime, Local};
+use cling::prelude::*;
+use serde::Serialize;
+
+use restate_cli_util::CliContext;
+use restate_cli_util::c_error;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::invocations::short_ago;
 
 use super::utils::brokers_property;
 
@@ -43,26 +47,55 @@ async fn list(env: &CliEnv) -> Result<()> {
         .await?
         .clusters;
 
-    if clusters.is_empty() {
-        c_println!("No Kafka clusters registered.");
+    if clusters.is_empty() && !CliContext::get().json_output() {
+        c_error!("No Kafka clusters registered.");
         return Ok(());
     }
 
     clusters.sort_by(|a, b| a.name.as_str().cmp(b.name.as_str()));
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["NAME", "BROKERS", "PROPERTIES", "CREATED-AT"]);
-    for cluster in clusters {
-        let brokers = brokers_property(&cluster.properties)
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "-".to_string());
-        table.add_row(vec![
-            Cell::new(cluster.name.as_str()),
-            Cell::new(brokers),
-            Cell::new(cluster.properties.len()),
-            Cell::new(cluster.created_at.display()),
-        ]);
+    let items: Vec<KafkaClusterItem> = clusters
+        .into_iter()
+        .map(|cluster| KafkaClusterItem {
+            brokers: brokers_property(&cluster.properties).map(str::to_owned),
+            properties: cluster.properties.len(),
+            created_at: cluster.created_at.to_string(),
+            created: SystemTime::from(cluster.created_at).into(),
+            name: cluster.name.as_str().to_owned(),
+        })
+        .collect();
+
+    let mut f = Formatter::new();
+    f.list("kafka_clusters", &items)?;
+    f.finish()
+}
+
+/// A Kafka cluster row: `[name]` and its age, with brokers and properties as details.
+#[derive(Serialize)]
+struct KafkaClusterItem {
+    name: String,
+    brokers: Option<String>,
+    properties: usize,
+    created_at: String,
+    #[serde(skip)]
+    created: DateTime<Local>,
+}
+
+impl ListItem for KafkaClusterItem {
+    const HEADERS: &'static [&'static str] = &["cluster", "created"];
+
+    fn columns(&self) -> Vec<Field> {
+        vec![
+            Field::new(format!("[{}]", self.name)),
+            Field::new(short_ago(self.created)),
+        ]
     }
-    c_println!("{table}");
-    Ok(())
+
+    fn details(&self) -> Vec<String> {
+        vec![format!(
+            "brokers {} · {} properties",
+            self.brokers.as_deref().unwrap_or("-"),
+            self.properties
+        )]
+    }
 }

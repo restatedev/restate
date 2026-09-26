@@ -14,12 +14,13 @@ use comfy_table::Table;
 use const_format::concatcp;
 
 use restate_admin_rest_model::services::ModifyServiceRequest;
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{CliContext, c_println, c_success};
 use restate_util_time::{DurationExt, FriendlyDuration};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 
 pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using a human friendly \
     duration format (e.g. 5d 1h 30m 15s) or ISO8601.";
@@ -69,6 +70,9 @@ pub struct Patch {
 
     /// Service name
     service: String,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
@@ -88,60 +92,93 @@ async fn patch(env: &CliEnv, opts: &Patch) -> Result<()> {
         abort_timeout: opts.abort_timeout.map(FriendlyDuration::to_std),
     };
 
-    apply_service_configuration_patch(&opts.service, admin_client, modify_request).await
+    apply_service_configuration_patch(&opts.service, admin_client, modify_request, &opts.dry_run)
+        .await
 }
 
 pub(super) async fn apply_service_configuration_patch(
     service_name: &str,
     admin_client: AdminClient,
     modify_request: ModifyServiceRequest,
+    dry_run: &DryRun,
 ) -> Result<()> {
-    // Check if any change was made
-    if modify_request.public.is_none()
-        && modify_request.workflow_completion_retention.is_none()
-        && modify_request.idempotency_retention.is_none()
-        && modify_request.inactivity_timeout.is_none()
-        && modify_request.journal_retention.is_none()
-        && modify_request.abort_timeout.is_none()
-    {
-        c_println!("No changes requested");
-        return Ok(());
+    // (machine key, human label, new value, human display) of every requested change.
+    let duration_change = |key, label, value: &Option<std::time::Duration>| {
+        value.map(|d| {
+            let display = d.friendly().to_days_span().to_string();
+            (key, label, Field::new(display.clone()), display)
+        })
+    };
+    let changes: Vec<(&str, &str, Field, String)> = [
+        modify_request
+            .public
+            .map(|public| ("public", "Public:", Field::new(public), public.to_string())),
+        duration_change(
+            "idempotency_retention",
+            "Idempotent requests retention:",
+            &modify_request.idempotency_retention,
+        ),
+        duration_change(
+            "workflow_completion_retention",
+            "Workflow retention:",
+            &modify_request.workflow_completion_retention,
+        ),
+        duration_change(
+            "journal_retention",
+            "Journal retention:",
+            &modify_request.journal_retention,
+        ),
+        duration_change(
+            "inactivity_timeout",
+            "Inactivity timeout:",
+            &modify_request.inactivity_timeout,
+        ),
+        duration_change(
+            "abort_timeout",
+            "Abort timeout:",
+            &modify_request.abort_timeout,
+        ),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    if json {
+        let rows: Vec<Vec<Field>> = changes
+            .iter()
+            .map(|(key, _, value, _)| {
+                vec![
+                    Field::new(service_name),
+                    Field::new("update"),
+                    Field::new(*key),
+                    value.clone(),
+                ]
+            })
+            .collect();
+        f.table(
+            "changes",
+            &["service", "change", "field", "new_value"],
+            &rows,
+        );
+    }
+    if changes.is_empty() {
+        if !json {
+            c_println!("No changes requested");
+        }
+        return f.finish();
     }
 
     // Print requested changes, ask for confirmation
-    let mut table = Table::new_styled();
-    if let Some(public) = &modify_request.public {
-        table.add_kv_row("Public:", public);
+    if !json {
+        let mut table = Table::new_styled();
+        for (_, label, _, display) in &changes {
+            table.add_kv_row(label, display);
+        }
+        c_println!("{table}");
     }
-    if let Some(idempotency_retention) = &modify_request.idempotency_retention {
-        table.add_kv_row(
-            "Idempotent requests retention:",
-            idempotency_retention.friendly().to_days_span(),
-        );
-    }
-    if let Some(workflow_completion_retention) = &modify_request.workflow_completion_retention {
-        table.add_kv_row(
-            "Workflow retention:",
-            workflow_completion_retention.friendly().to_days_span(),
-        );
-    }
-    if let Some(journal_retention) = &modify_request.journal_retention {
-        table.add_kv_row(
-            "Journal retention:",
-            journal_retention.friendly().to_days_span(),
-        );
-    }
-    if let Some(inactivity_timeout) = &modify_request.inactivity_timeout {
-        table.add_kv_row(
-            "Inactivity timeout:",
-            inactivity_timeout.friendly().to_days_span(),
-        );
-    }
-    if let Some(abort_timeout) = &modify_request.abort_timeout {
-        table.add_kv_row("Abort timeout:", abort_timeout.friendly().to_days_span());
-    }
-    c_println!("{table}");
-    confirm_or_exit("Are you sure you want to apply these changes?")?;
+    f.confirm(dry_run, "Are you sure you want to apply these changes?")?;
 
     let _ = admin_client
         .patch_service(service_name, modify_request)
@@ -149,5 +186,12 @@ pub(super) async fn apply_service_configuration_patch(
         .into_body()
         .await?;
 
-    Ok(())
+    if !json {
+        c_success!("Service {service_name} configuration updated");
+    }
+    f.next_step(
+        &format!("restate services config view {service_name}"),
+        "see the updated service configuration",
+    );
+    f.finish()
 }

@@ -10,22 +10,24 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use serde::Serialize;
 
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::CliContext;
+use restate_cli_util::c_eprintln;
+use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use super::{RuleRow, render_concurrency};
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
-use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::invocations::short_ago;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
 #[clap(visible_alias = "ls")]
 pub struct List {
-    /// Show additional columns (description, version, last modified)
+    /// Show additional details (version, last modified)
     #[clap(long, short = 'x')]
     extra: bool,
 
@@ -47,46 +49,65 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         )
         .await?;
 
-    if rows.is_empty() {
-        c_println!("No rules defined.");
+    if rows.is_empty() && !CliContext::get().json_output() {
+        c_eprintln!("No rules defined.");
         return Ok(());
     }
 
-    let mut table = Table::new_styled();
-    if opts.extra {
-        table.set_styled_header(vec![
-            "PATTERN",
-            "CONCURRENCY",
-            "DISABLED",
-            "DESCRIPTION",
-            "VERSION",
-            "LAST MODIFIED",
-        ]);
-    } else {
-        table.set_styled_header(vec!["PATTERN", "CONCURRENCY", "DISABLED"]);
-    }
+    let items: Vec<RuleItem> = rows
+        .into_iter()
+        .map(|row| RuleItem {
+            row,
+            extra: opts.extra,
+        })
+        .collect();
 
-    for row in rows {
-        let disabled = if row.disabled { "yes" } else { "no" };
-        if opts.extra {
-            let last_modified = row.last_modified.map(|dt| dt.display()).unwrap_or_default();
-            table.add_row(vec![
-                Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.concurrency)),
-                Cell::new(disabled),
-                Cell::new(row.description.unwrap_or_default()),
-                Cell::new(row.version),
-                Cell::new(last_modified),
-            ]);
+    let mut f = Formatter::new();
+    f.list("rules", &items)?;
+    f.finish()
+}
+
+/// A rule row: `[pattern]`, its limit and whether it's enabled, with the description
+/// (and, with `--extra`, version and last modification) as details.
+#[derive(Serialize)]
+struct RuleItem {
+    #[serde(flatten)]
+    row: RuleRow,
+    #[serde(skip)]
+    extra: bool,
+}
+
+impl ListItem for RuleItem {
+    const HEADERS: &'static [&'static str] = &["rule", "limit", "enabled"];
+
+    fn columns(&self) -> Vec<Field> {
+        let enabled = if self.row.disabled {
+            Field::styled("no", Style::Warn)
         } else {
-            table.add_row(vec![
-                Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.concurrency)),
-                Cell::new(disabled),
-            ]);
-        }
+            Field::new("yes")
+        };
+        vec![
+            Field::new(format!("[{}]", self.row.pattern)),
+            Field::new(render_concurrency(self.row.concurrency)),
+            enabled,
+        ]
     }
 
-    c_println!("{table}");
-    Ok(())
+    fn details(&self) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .row
+            .description
+            .iter()
+            .filter(|d| !d.is_empty())
+            .cloned()
+            .collect();
+        if self.extra {
+            let mut line = format!("version {}", self.row.version);
+            if let Some(modified) = self.row.last_modified {
+                line.push_str(&format!(" · modified {}", short_ago(modified)));
+            }
+            lines.push(line);
+        }
+        lines
+    }
 }

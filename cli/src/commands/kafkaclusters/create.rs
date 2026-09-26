@@ -16,16 +16,16 @@ use cling::prelude::*;
 use tempfile::tempdir;
 
 use restate_admin_rest_model::kafka_clusters::CreateKafkaClusterRequest;
-use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{CliContext, c_success};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 use crate::util::properties::{
     collect_kv_pairs, parse_kv_arg, parse_librdkafka_properties, parse_properties_file,
 };
 
-use super::utils::render_properties_table;
+use super::utils::properties_rows;
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_create")]
@@ -46,8 +46,11 @@ pub struct Create {
     edit: bool,
 
     /// `key=value` properties (e.g. `bootstrap.servers=broker:9092`).
-    #[clap(value_name = "KEY=VALUE", value_parser = parse_kv_arg, trailing_var_arg = true, num_args = 0..)]
+    #[clap(value_name = "KEY=VALUE", value_parser = parse_kv_arg, num_args = 0..)]
     properties: Vec<(String, String)>,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> {
@@ -74,8 +77,24 @@ pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> 
 
     let client = AdminClient::new(&env).await?;
 
-    c_println!("{}", render_properties_table(&properties));
-    confirm_or_exit(&format!("Create Kafka cluster {}?", opts.name))?;
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    f.table(
+        "properties",
+        &["key", "value"],
+        properties_rows(&properties),
+    );
+    if json {
+        f.table(
+            "changes",
+            &["kafka_cluster", "change"],
+            &[vec![Field::new(opts.name.as_str()), Field::new("create")]],
+        );
+    }
+    f.confirm(
+        &opts.dry_run,
+        &format!("Create Kafka cluster {}?", opts.name),
+    )?;
 
     let cluster_name = opts
         .name
@@ -91,8 +110,14 @@ pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> 
         .into_body()
         .await?;
 
-    c_success!("Kafka cluster {} created", response.name.as_str());
-    Ok(())
+    if !json {
+        c_success!("Kafka cluster {} created", response.name.as_str());
+    }
+    f.next_step(
+        &format!("restate kafka-clusters describe {}", response.name.as_str()),
+        "see the new Kafka cluster",
+    );
+    f.finish()
 }
 
 fn edit_template_properties(env: &CliEnv, name: &str) -> Result<HashMap<String, String>> {

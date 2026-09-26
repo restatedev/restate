@@ -8,16 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
+
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use serde::Serialize;
 
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::CliContext;
+use restate_cli_util::c_error;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
@@ -41,30 +44,94 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 
 async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let client = AdminClient::new(env).await?;
-    let mut subs = client
+    let subs = client
         .list_subscriptions(opts.sink.as_deref(), opts.source.as_deref())
         .await?
         .into_body()
         .await?
         .subscriptions;
 
-    if subs.is_empty() {
-        c_println!("No subscriptions registered.");
+    if subs.is_empty() && !CliContext::get().json_output() {
+        c_error!("No subscriptions registered.");
         return Ok(());
     }
 
-    subs.sort_by_key(|a| a.id.to_string());
+    let mut subs: Vec<SubscriptionItem> = subs
+        .into_iter()
+        .map(|sub| SubscriptionItem {
+            id: sub.id.to_string(),
+            source: sub.source,
+            sink: sub.sink,
+            options: sub.options.into_iter().collect(),
+        })
+        .collect();
+    subs.sort_by(|a, b| a.id.cmp(&b.id));
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["ID", "SOURCE", "SINK", "OPTIONS"]);
-    for sub in subs {
-        table.add_row(vec![
-            Cell::new(sub.id.to_string()),
-            Cell::new(sub.source),
-            Cell::new(sub.sink),
-            Cell::new(sub.options.len()),
-        ]);
+    let mut f = Formatter::new();
+    f.list("subscriptions", &subs)?;
+    f.finish()
+}
+
+/// A subscription row: `[id] source → sink`, with its options as detail lines.
+#[derive(Serialize)]
+struct SubscriptionItem {
+    id: String,
+    source: String,
+    sink: String,
+    options: BTreeMap<String, String>,
+}
+
+impl ListItem for SubscriptionItem {
+    const HEADERS: &'static [&'static str] = &["subscription"];
+
+    fn columns(&self) -> Vec<Field> {
+        vec![Field::new(format!(
+            "[{}] {} → {}",
+            self.id, self.source, self.sink
+        ))]
     }
-    c_println!("{table}");
-    Ok(())
+
+    fn details(&self) -> Vec<String> {
+        self.options
+            .iter()
+            .map(|(k, v)| format!("{k} = {v}"))
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn item() -> SubscriptionItem {
+        SubscriptionItem {
+            id: "sub_1".to_owned(),
+            source: "kafka://c/orders".to_owned(),
+            sink: "service://Counter/count".to_owned(),
+            options: [("b", "2"), ("a", "1")]
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn json_keeps_fields_and_options() {
+        assert_eq!(
+            serde_json::to_value(item()).unwrap(),
+            json!({
+                "id": "sub_1",
+                "source": "kafka://c/orders",
+                "sink": "service://Counter/count",
+                "options": {"a": "1", "b": "2"},
+            })
+        );
+    }
+
+    #[test]
+    fn details_list_options_sorted() {
+        assert_eq!(item().details(), ["a = 1", "b = 2"]);
+    }
 }

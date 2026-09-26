@@ -18,6 +18,7 @@ use restate_cli_util::c_println;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::DryRun;
 use crate::util::properties::{
     REDACTION_PLACEHOLDER, parse_librdkafka_properties, redacted_keys,
     serialize_librdkafka_properties,
@@ -98,5 +99,13 @@ pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
         return Ok(());
     }
 
-    apply_kafka_cluster_update(&client, &opts.name, &baseline_visible, to_send).await
+    // Interactive (the user already reviewed the changes in the editor): no `--dry-run`.
+    apply_kafka_cluster_update(
+        &client,
+        &opts.name,
+        &baseline_visible,
+        to_send,
+        &DryRun::default(),
+    )
+    .await
 }

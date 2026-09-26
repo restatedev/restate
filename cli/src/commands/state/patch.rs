@@ -10,15 +10,16 @@
 
 use anyhow::{Context, Result};
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use serde_json::Value;
 
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_println, c_title};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{CliContext, c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
     as_json, compute_version, from_json, get_current_state, pretty_print_json, update_state,
 };
+use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "patch")]
@@ -40,6 +41,9 @@ pub struct Patch {
     /// JSON patch
     #[arg(short, long)]
     patch: String,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
@@ -49,33 +53,44 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     let current_state = get_current_state(&env, &opts.service, &opts.key, false).await?;
     let current_version = compute_version(&current_state);
 
-    let mut state = as_json(current_state, opts.binary)?;
+    let old_state = as_json(current_state, opts.binary)?;
+    let mut state = old_state.clone();
 
     json_patch::patch(&mut state, &patch).context("Patch failed")?;
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["", ""]);
-    table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
-    table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
-    table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
-    table.add_row(vec![Cell::new("Binary?"), Cell::new(opts.binary)]);
-
-    c_title!("ℹ️ ", "Patch State");
-    c_println!("{table}");
-    c_println!();
-
-    c_title!("ℹ️ ", "New State");
-    c_println!("{}", pretty_print_json(&state)?);
-    c_println!();
-
-    c_println!("About to submit the new state mutation to the system for processing.");
-    c_println!(
-        "If there are ongoing invocations for this key this mutation will be enqueued to be processed after them."
+    let json = CliContext::get().json_output();
+    let mut f = Formatter::new();
+    f.title("", "Patch State");
+    f.detail(
+        "state",
+        &[
+            ("service", Field::new(opts.service.clone())),
+            ("key", Field::new(opts.key.clone())),
+            ("force", Field::new(opts.force)),
+            ("binary", Field::new(opts.binary)),
+        ],
     );
-    c_println!();
-    confirm_or_exit("Are you sure?")?;
+    if !json {
+        c_title!("", "New State");
+        c_println!("{}", pretty_print_json(&state)?);
+        c_println!();
+    }
+    f.title("", "Changes");
+    f.table(
+        "changes",
+        &["state_key", "operation", "value"],
+        &state_changes(&old_state, &state)?,
+    );
 
-    c_println!();
+    if !json {
+        c_println!();
+        c_println!("About to submit the new state mutation to the system for processing.");
+        c_println!(
+            "If there are ongoing invocations for this key this mutation will be enqueued to be processed after them."
+        );
+        c_println!();
+    }
+    f.confirm(&opts.dry_run, "Are you sure?")?;
 
     let modified_state = from_json(state, opts.binary)?;
     let version = if opts.force {
@@ -85,8 +100,53 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     };
     update_state(&env, version, &opts.service, &opts.key, modified_state).await?;
 
-    c_println!();
-    c_println!("Successfully submitted state update.");
+    if !json {
+        c_println!();
+        c_println!("Successfully submitted state update.");
+    }
+    f.next_step(
+        &format!("restate state get {} {}", opts.service, opts.key),
+        "check the state once the mutation is processed",
+    );
+    f.finish()
+}
 
-    Ok(())
+/// The state keys a patch sets (with their new value) or removes, sorted by key.
+fn state_changes(old: &Value, new: &Value) -> Result<Vec<Vec<Field>>> {
+    let (Some(old), Some(new)) = (old.as_object(), new.as_object()) else {
+        anyhow::bail!("The patched state must be a JSON object");
+    };
+    let mut changes: Vec<(&String, Option<&Value>)> = new
+        .iter()
+        .filter(|(k, v)| old.get(*k) != Some(*v))
+        .map(|(k, v)| (k, Some(v)))
+        .chain(
+            old.keys()
+                .filter(|k| !new.contains_key(*k))
+                .map(|k| (k, None)),
+        )
+        .collect();
+    changes.sort_by_key(|(k, _)| *k);
+    changes
+        .into_iter()
+        .map(|(key, value)| {
+            let row = match value {
+                Some(value) => vec![
+                    Field::styled(key.clone(), Style::Info),
+                    Field::styled("set", Style::Success),
+                    Field::with_display(
+                        value.clone(),
+                        serde_json::to_string_pretty(value)
+                            .context("unable convert a value to JSON")?,
+                    ),
+                ],
+                None => vec![
+                    Field::styled(key.clone(), Style::Info),
+                    Field::styled("remove", Style::Danger),
+                    Field::new(Value::Null),
+                ],
+            };
+            Ok(row)
+        })
+        .collect()
 }

@@ -8,19 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroUsize;
+
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
-use crossterm::style::Stylize;
 use indoc::indoc;
+use serde::Serialize;
+use serde_json::Value;
 
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{c_println, c_tip};
 use restate_types::invocation::ServiceType;
+use restate_types::schema::invocation_target::OnMaxAttempts;
 use restate_util_time::DurationExt;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::service_handlers::service_type_field;
 
 // TODO we could infer this text from the OpenAPI docs!
 pub(super) const PUBLIC_DESCRIPTION: &str = indoc! {
@@ -94,187 +97,269 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     let client = AdminClient::new(env).await?;
     let service = client.get_service(&opts.service).await?.into_body().await?;
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("Name:", &service.name);
-    table.add_kv_row("Service type:", format!("{:?}", service.ty));
-    c_println!("{table}");
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_kv_row("Public:", service.public);
-    c_println!("{table}");
-    c_tip!("{}", PUBLIC_DESCRIPTION);
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Idempotent requests retention:",
-        service.idempotency_retention.friendly(),
+    let mut f = Formatter::new();
+    f.detail(
+        "service",
+        [
+            ("name", Field::new(service.name.as_str())),
+            ("service_type", service_type_field(&service.ty)),
+        ],
     );
-    c_println!("{table}");
-    c_tip!("{}", IDEMPOTENCY_RETENTION);
-    c_println!();
 
-    if service.ty == ServiceType::Workflow {
-        let mut table = Table::new_styled();
-        table.add_kv_row(
-            "Workflow retention time:",
-            service
-                .workflow_completion_retention
-                .expect("Workflows must have a well defined retention")
-                .friendly(),
-        );
-        c_println!("{table}");
-        c_tip!("{}", WORKFLOW_RETENTION);
-        c_println!();
+    let retry = &service.retry_policy;
+    let mut options = vec![
+        ConfigOption::new("public", "Public", service.public, PUBLIC_DESCRIPTION),
+        ConfigOption::new(
+            "idempotency_retention",
+            "Idempotent requests retention",
+            service.idempotency_retention.friendly().to_string(),
+            IDEMPOTENCY_RETENTION,
+        ),
+    ];
+    if service.ty == ServiceType::Workflow
+        && let Some(retention) = service.workflow_completion_retention
+    {
+        options.push(ConfigOption::new(
+            "workflow_completion_retention",
+            "Workflow retention time",
+            retention.friendly().to_string(),
+            WORKFLOW_RETENTION,
+        ));
     }
+    options.extend([
+        ConfigOption::new(
+            "journal_retention",
+            "Journal retention",
+            service.journal_retention.map(|d| d.friendly().to_string()),
+            JOURNAL_RETENTION,
+        ),
+        ConfigOption::new(
+            "inactivity_timeout",
+            "Inactivity timeout",
+            service.inactivity_timeout.friendly().to_string(),
+            INACTIVITY_TIMEOUT,
+        ),
+        ConfigOption::new(
+            "abort_timeout",
+            "Abort timeout",
+            service.abort_timeout.friendly().to_string(),
+            ABORT_TIMEOUT,
+        ),
+        ConfigOption::new(
+            "state_preload_policy",
+            "State preload policy",
+            service.state_preload_policy.to_string(),
+            STATE_PRELOAD_POLICY,
+        ),
+        ConfigOption {
+            option: "retry_policy",
+            value: serde_json::to_value(retry)?,
+            description: RETRY_POLICY,
+            label: "Retry policy",
+            display: retry_policy_summary(
+                retry.max_attempts.map(NonZeroUsize::get),
+                Some(retry.on_max_attempts),
+                Some(retry.initial_interval),
+                Some(retry.exponentiation_factor),
+                retry.max_interval,
+            ),
+        },
+    ]);
+    f.title("⚙️", "Options");
+    f.list("options", &options)?;
 
-    let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Journal retention:",
-        service
-            .journal_retention
-            .map(|d| d.friendly().to_string())
-            .unwrap_or_else(|| "<UNSET>".to_string()),
-    );
-    c_println!("{table}");
-    c_tip!("{}", JOURNAL_RETENTION);
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_kv_row("Inactivity timeout:", service.inactivity_timeout.friendly());
-    c_println!("{table}");
-    c_tip!("{}", INACTIVITY_TIMEOUT);
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_kv_row("Abort timeout:", service.abort_timeout.friendly());
-    c_println!("{table}");
-    c_tip!("{}", ABORT_TIMEOUT);
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_kv_row(
-        "State preload policy:",
-        service.state_preload_policy.to_string(),
-    );
-    c_println!("{table}");
-    c_tip!("{}", STATE_PRELOAD_POLICY);
-    c_println!();
-
-    let mut table = Table::new_styled();
-    table.add_row(vec!["Retry Policy:".bold()]);
-    table.add_kv_row(
-        "  Max attempts:",
-        service
-            .retry_policy
-            .max_attempts
-            .map(|v| v.to_string())
-            .unwrap_or_else(|| "<UNSET>".to_string()),
-    );
-    table.add_kv_row(
-        "  On max attempts:",
-        format!("{:?}", service.retry_policy.on_max_attempts),
-    );
-    table.add_kv_row(
-        "  Initial interval:",
-        service.retry_policy.initial_interval.friendly(),
-    );
-    table.add_kv_row(
-        "  Exponentiation factor:",
-        service.retry_policy.exponentiation_factor,
-    );
-    table.add_kv_row(
-        "  Max interval:",
-        service
-            .retry_policy
-            .max_interval
-            .map(|d| d.friendly().to_string())
-            .unwrap_or_else(|| "<UNSET>".to_string()),
-    );
-    c_println!("{table}");
-    c_tip!("{}", RETRY_POLICY);
-    c_println!();
-
-    // Show handler overrides
-    for (handler_name, handler) in service.handlers {
-        let has_overrides = handler.idempotency_retention.is_some()
-            || handler.journal_retention.is_some()
-            || handler.inactivity_timeout.is_some()
-            || handler.abort_timeout.is_some()
-            || handler.state_preload_policy.is_some()
-            || handler.public != service.public
-            || !is_retry_policy_empty(&handler.retry_policy);
-
-        if has_overrides {
-            let mut table = Table::new_styled();
-            table.add_row(vec![format!(
-                "Handler '{}' overrides:",
-                handler_name.bold()
-            )]);
-
-            if let Some(idempotency_retention) = handler.idempotency_retention {
-                table.add_kv_row(
-                    "  Idempotent requests retention:",
-                    idempotency_retention.friendly(),
-                );
-            }
-
-            if let Some(journal_retention) = handler.journal_retention {
-                table.add_kv_row("  Journal retention:", journal_retention.friendly());
-            }
-
-            if let Some(inactivity_timeout) = handler.inactivity_timeout {
-                table.add_kv_row("  Inactivity timeout:", inactivity_timeout.friendly());
-            }
-
-            if let Some(abort_timeout) = handler.abort_timeout {
-                table.add_kv_row("  Abort timeout:", abort_timeout.friendly());
-            }
-
-            if let Some(state_preload_policy) = &handler.state_preload_policy {
-                table.add_kv_row("  State preload policy:", state_preload_policy.to_string());
-            }
-
-            if handler.public != service.public {
-                table.add_kv_row("  Public:", handler.public);
-            }
-
-            c_println!("{table}");
-
-            // Show retry policy overrides if any
-            if !is_retry_policy_empty(&handler.retry_policy) {
-                let mut table = Table::new_styled();
-                table.add_row(vec!["  Retry Policy:".bold()]);
-
-                if let Some(max_attempts) = handler.retry_policy.max_attempts {
-                    table.add_kv_row("    Max attempts:", max_attempts);
-                }
-
-                if let Some(on_max_attempts) = &handler.retry_policy.on_max_attempts {
-                    table.add_kv_row("    On max attempts:", format!("{:?}", on_max_attempts));
-                }
-
-                if let Some(initial_interval) = handler.retry_policy.initial_interval {
-                    table.add_kv_row("    Initial interval:", initial_interval.friendly());
-                }
-
-                if let Some(exponentiation_factor) = handler.retry_policy.exponentiation_factor {
-                    table.add_kv_row("    Exponentiation factor:", exponentiation_factor);
-                }
-
-                if let Some(max_interval) = handler.retry_policy.max_interval {
-                    table.add_kv_row("    Max interval:", max_interval.friendly());
-                }
-
-                c_println!("{table}");
-            }
-
-            c_println!();
+    // Handler-level overrides of the options above.
+    let mut overrides = Vec::new();
+    let mut handlers: Vec<_> = service.handlers.values().collect();
+    handlers.sort_by(|a, b| a.name.cmp(&b.name));
+    for handler in handlers {
+        let mut add = |option, label, value: Value, display: String| {
+            overrides.push(HandlerOverride {
+                handler: handler.name.clone(),
+                option,
+                value,
+                label,
+                display,
+            })
+        };
+        if let Some(d) = handler.idempotency_retention {
+            let d = d.friendly().to_string();
+            add(
+                "idempotency_retention",
+                "Idempotent requests retention",
+                Value::from(d.clone()),
+                d,
+            );
+        }
+        if let Some(d) = handler.journal_retention {
+            let d = d.friendly().to_string();
+            add(
+                "journal_retention",
+                "Journal retention",
+                Value::from(d.clone()),
+                d,
+            );
+        }
+        if let Some(d) = handler.inactivity_timeout {
+            let d = d.friendly().to_string();
+            add(
+                "inactivity_timeout",
+                "Inactivity timeout",
+                Value::from(d.clone()),
+                d,
+            );
+        }
+        if let Some(d) = handler.abort_timeout {
+            let d = d.friendly().to_string();
+            add("abort_timeout", "Abort timeout", Value::from(d.clone()), d);
+        }
+        if let Some(policy) = &handler.state_preload_policy {
+            let policy = policy.to_string();
+            add(
+                "state_preload_policy",
+                "State preload policy",
+                Value::from(policy.clone()),
+                policy,
+            );
+        }
+        if handler.public != service.public {
+            add(
+                "public",
+                "Public",
+                Value::from(handler.public),
+                handler.public.to_string(),
+            );
+        }
+        let retry = &handler.retry_policy;
+        if !is_retry_policy_empty(retry) {
+            add(
+                "retry_policy",
+                "Retry policy",
+                serde_json::to_value(retry)?,
+                retry_policy_summary(
+                    retry.max_attempts.map(NonZeroUsize::get),
+                    retry.on_max_attempts,
+                    retry.initial_interval,
+                    retry.exponentiation_factor,
+                    retry.max_interval,
+                ),
+            );
         }
     }
+    if !overrides.is_empty() {
+        f.title("🔌", "Handler Overrides");
+    }
+    f.list("handler_overrides", &overrides)?;
+    f.finish()
+}
 
-    Ok(())
+/// A service configuration option: its value, and its documentation as detail lines.
+#[derive(Serialize)]
+struct ConfigOption {
+    option: &'static str,
+    value: Value,
+    description: &'static str,
+    #[serde(skip)]
+    label: &'static str,
+    #[serde(skip)]
+    display: String,
+}
+
+impl ConfigOption {
+    fn new(
+        option: &'static str,
+        label: &'static str,
+        value: impl Into<Value>,
+        description: &'static str,
+    ) -> Self {
+        let value = value.into();
+        let display = match &value {
+            Value::Null => "<UNSET>".to_owned(),
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        Self {
+            option,
+            value,
+            description,
+            label,
+            display,
+        }
+    }
+}
+
+impl ListItem for ConfigOption {
+    const HEADERS: &'static [&'static str] = &["option", "value"];
+
+    fn columns(&self) -> Vec<Field> {
+        vec![Field::new(self.label), Field::new(self.display.as_str())]
+    }
+
+    fn details(&self) -> Vec<String> {
+        self.description.lines().map(str::to_owned).collect()
+    }
+}
+
+/// A handler-level override of a service configuration option.
+#[derive(Serialize)]
+struct HandlerOverride {
+    handler: String,
+    option: &'static str,
+    value: Value,
+    #[serde(skip)]
+    label: &'static str,
+    #[serde(skip)]
+    display: String,
+}
+
+impl ListItem for HandlerOverride {
+    const HEADERS: &'static [&'static str] = &["handler", "option", "value"];
+
+    fn columns(&self) -> Vec<Field> {
+        vec![
+            Field::new(self.handler.as_str()),
+            Field::new(self.label),
+            Field::new(self.display.as_str()),
+        ]
+    }
+}
+
+/// A retry policy in one line, e.g. `70 attempts, then pause · 500ms × 2, up to 1m`.
+/// Unset parts are left out (handler overrides set only some).
+fn retry_policy_summary(
+    max_attempts: Option<usize>,
+    on_max_attempts: Option<OnMaxAttempts>,
+    initial_interval: Option<std::time::Duration>,
+    exponentiation_factor: Option<f32>,
+    max_interval: Option<std::time::Duration>,
+) -> String {
+    let mut attempts = Vec::new();
+    match max_attempts {
+        Some(n) => attempts.push(format!("{n} attempts")),
+        None => attempts.push("unlimited attempts".to_owned()),
+    }
+    if let Some(on_max) = on_max_attempts {
+        attempts.push(format!("then {}", format!("{on_max:?}").to_lowercase()));
+    }
+    let mut interval = Vec::new();
+    if let Some(initial) = initial_interval {
+        interval.push(initial.friendly().to_string());
+    }
+    if let Some(factor) = exponentiation_factor {
+        interval.push(format!("× {factor}"));
+    }
+    let mut interval = interval.join(" ");
+    if let Some(max) = max_interval {
+        if !interval.is_empty() {
+            interval.push_str(", ");
+        }
+        interval.push_str(&format!("up to {}", max.friendly()));
+    }
+    let mut parts = vec![attempts.join(", ")];
+    if !interval.is_empty() {
+        parts.push(interval);
+    }
+    parts.join(" · ")
 }
 
 fn is_retry_policy_empty(

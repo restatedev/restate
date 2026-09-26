@@ -10,15 +10,17 @@
 
 #![allow(clippy::large_futures)]
 
-use cling::prelude::*;
 use std::io::Write;
+use std::process::ExitCode;
 
+use cling::prelude::*;
 use crossterm::execute;
-use restate_cli::CliApp;
 use rustls::crypto::aws_lc_rs;
 
+use restate_cli::CliApp;
+
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> ClingFinished<CliApp> {
+async fn main() -> ExitCode {
     // We need to install a crypto provider explicitly because the workspace hack activates the
     // ring as well aws_lc_rs rustls features. Unfortunately, these features are not additive. See
     // https://github.com/rustls/rustls/issues/1877. We can remove this line of code once all our
@@ -48,5 +50,18 @@ async fn main() -> ClingFinished<CliApp> {
         }
     });
 
-    Cling::parse_and_run().await
+    // Parse outside cling (as `Cling::parse_and_run` does) to keep the failed command
+    // around: it refines the next steps suggested on error.
+    let app = match CliApp::try_parse() {
+        Ok(app) => app,
+        Err(err) => {
+            let err = err.format(&mut CliApp::command());
+            return restate_cli::report_error(err.into(), None);
+        }
+    };
+    let command = app.cmd.clone();
+    match Cling::new(app).run().await.result() {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => restate_cli::report_error(err, Some(&command)),
+    }
 }
