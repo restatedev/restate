@@ -135,6 +135,9 @@ pub fn create_default_cf_options(
     }
     cf_options.set_avoid_unnecessary_blocking_io(true);
     cf_options.set_optimize_filters_for_hits(true);
+    // Therefore, to reduce memory usage of L6 filters we choose ribbon filters instead of bloom
+    // and let bloom handle the rest of levels like before.
+    block_options.set_hybrid_ribbon_filter(10.0, 6);
 
     cf_options
 }
