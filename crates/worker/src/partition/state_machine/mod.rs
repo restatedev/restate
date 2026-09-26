@@ -106,8 +106,8 @@ use restate_types::journal_v2::{
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
+use restate_types::state_mut::{ExternalStateMutation, StateMutationInput};
 use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
@@ -1491,7 +1491,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
                         .await?;
                 }
-                VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, &mutation).await?,
+                VirtualObjectStatus::Unlocked => {
+                    Self::do_mutate_state(self, &mutation.into_parts().1).await?
+                }
             }
         }
 
@@ -3010,16 +3012,39 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.run_invocation(qid, entry_key, wait_stats).await?;
             }
             vqueues::EntryKind::StateMutation => {
+                let partition_key = qid.partition_key();
+                let local_key;
+                let mut state_header = self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, entry_key.entry_id())
+                    .await?;
+
+                // State mutations enqueued before v1.8.0 got a random id on every replica (see
+                // #5416), so the id in the decision may not match the local one. In this case, we
+                // look the entry up by its position in the inbox, which is the same on all
+                // replicas.
+                let entry_key = if state_header.is_none()
+                    && let Some(key) = self
+                        .storage
+                        .find_inbox_state_mutation_key(qid, entry_key)
+                        .await?
+                {
+                    local_key = key;
+                    state_header = self
+                        .storage
+                        .get_vqueue_entry_status(partition_key, local_key.entry_id())
+                        .await?;
+                    &local_key
+                } else {
+                    entry_key
+                };
+
                 let mutation_id = entry_key
                     .entry_id()
-                    .to_state_mutation_id(qid.partition_key())
+                    .to_state_mutation_id(partition_key)
                     .unwrap();
 
-                let Some(state_header) = self
-                    .storage
-                    .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
-                    .await?
-                else {
+                let Some(state_header) = state_header else {
                     info!(
                         "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
                     );
@@ -3050,7 +3075,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
                 let Some(state_mutation) = self
                     .storage
-                    .get_vqueue_input_payload::<ExternalStateMutation>(
+                    .get_vqueue_input_payload::<StateMutationInput>(
                         qid,
                         entry_key.seq(),
                         entry_key.entry_id(),
@@ -3308,7 +3333,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         return Ok(());
                     }
                     InboxEntry::StateMutation(state_mutation) => {
-                        self.mutate_state(&state_mutation).await?;
+                        self.mutate_state(&state_mutation.into_parts().1).await?;
                     }
                 }
             }
@@ -5064,7 +5089,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .push(Action::AbortInvocation { invocation_id });
     }
 
-    async fn do_mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> Result<(), Error>
+    async fn do_mutate_state(&mut self, state_mutation: &StateMutationInput) -> Result<(), Error>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5112,12 +5137,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     async fn mutate_state(
         &mut self,
-        state_mutation: &ExternalStateMutation,
+        state_mutation: &StateMutationInput,
     ) -> StorageResult<vqueue_table::Status>
     where
         S: ReadStateTable + WriteStateTable,
     {
-        let ExternalStateMutation {
+        let StateMutationInput {
             service_id,
             version,
             state,
@@ -5287,7 +5312,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + WriteFsmTable,
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let service_id = &state_mutation.service_id;
+        let (id, input) = state_mutation.into_parts();
+        let service_id = &input.service_id;
         // we don't pass the limit key here yet
         let limit_key = LimitKey::None;
 
@@ -5301,8 +5327,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             scope: service_id.scope.clone(),
         };
 
-        // todo: Make this a use-facing ID, generated at ingress.
-        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        // The id must be the same on all replicas (see #5416). Use the id assigned by the admin api
+        // if present or otherwise derive it from the position of the command in the log.
+        let partition_key = service_id.partition_key();
+        let mutation_id = match id {
+            Some(id) => {
+                if self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, &EntryId::from(&id))
+                    .await?
+                    .is_some()
+                {
+                    debug!("Ignoring duplicate state mutation {id} for {service_id}");
+                    return Ok(());
+                }
+                id
+            }
+            None => StateMutationId::from_parts(
+                partition_key,
+                0, // to make sure that future ids don't clash with this one as they are Ulids
+                u128::from(self.record_lsn.as_u64()),
+            ),
+        };
+        let entry_id = EntryId::from(mutation_id);
         let qid = VQueue::infer_vqueue_id_from_invocation(
             service_id.partition_key(),
             &target,
@@ -5329,7 +5376,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         self.storage
-            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, state_mutation);
+            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, input);
 
         Ok(())
     }

@@ -1879,11 +1879,16 @@ pub mod v1 {
                     .map(|kv| (kv.key, kv.value))
                     .collect();
 
-                Ok(restate_types::state_mut::ExternalStateMutation {
+                // This message only encodes state mutations in the legacy (pre-vqueues) inbox,
+                // which doesn't store an id. That's fine because the legacy inbox identifies
+                // entries by their inbox sequence number and never uses the id. State mutations
+                // from the legacy inbox are dropped during the vqueues migration, so they never
+                // become vqueue entries that would need an id.
+                Ok(restate_types::state_mut::ExternalStateMutation::new(
                     service_id,
-                    version: state_mutation.version,
+                    state_mutation.version,
                     state,
-                })
+                ))
             }
         }
 
