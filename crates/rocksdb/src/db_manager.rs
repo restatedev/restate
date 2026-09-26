@@ -14,7 +14,9 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-use rocksdb::{Cache, RateLimiter, RateLimiterMode, WriteBufferManager};
+#[cfg(target_os = "linux")]
+use rocksdb::MemoryAllocator;
+use rocksdb::{Cache, HyperClockCacheOptions, RateLimiter, RateLimiterMode, WriteBufferManager};
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
@@ -74,7 +76,27 @@ impl RocksDbManager {
         check_memory_limit(opts);
 
         // HCC is the newly recommended default for RocksDB.
-        let cache = Cache::new_hyper_clock_cache(opts.rocksdb_total_memory_size().as_usize(), 0);
+        let cache_opts =
+            HyperClockCacheOptions::new(opts.rocksdb_total_memory_size().as_usize(), 0);
+
+        // On Apple platforms jemalloc uses prefixed symbols, so RocksDB cannot use its
+        // jemalloc no-dump allocator.
+        #[cfg(target_os = "linux")]
+        let mut cache_opts = cache_opts;
+        #[cfg(target_os = "linux")]
+        {
+            match MemoryAllocator::new_jemalloc_nodump() {
+                Ok(allocator) => cache_opts.set_memory_allocator(&allocator),
+                Err(e) => {
+                    warn!(
+                        "RocksDB is not built with jemalloc no-dump support. Coredumps will include the full block cache: {e}",
+                    );
+                }
+            }
+        }
+
+        let cache = Cache::new_hyper_clock_cache_opts(&cache_opts);
+
         let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
             opts.rocksdb_total_memtables_size().as_usize(),
             false,
