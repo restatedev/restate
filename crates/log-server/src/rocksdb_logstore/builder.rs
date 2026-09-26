@@ -355,10 +355,10 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
                 &config.rocksdb,
                 Some(global_cache),
             );
-            cf_data_options(&mut cf_options, &block_options, config);
+            cf_data_options(&mut cf_options, block_options, config);
         } else if cf_name == METADATA_CF {
             let block_options = metadata_block_options(&config.rocksdb, global_cache);
-            cf_metadata_options(&mut cf_options, &block_options, config);
+            cf_metadata_options(&mut cf_options, block_options, config);
         }
 
         // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
@@ -387,10 +387,13 @@ fn metadata_block_options(
 
 fn cf_data_options(
     opts: &mut rocksdb::Options,
-    block_options: &BlockBasedOptions,
+    mut block_options: BlockBasedOptions,
     log_server_config: &LogServerOptions,
 ) {
-    opts.set_block_based_table_factory(block_options);
+    // To reduce memory usage of L6 filters we choose ribbon filters instead of bloom
+    // and let bloom handle the higher levels.
+    block_options.set_hybrid_ribbon_filter(10.0, 6);
+    opts.set_block_based_table_factory(&block_options);
 
     // Do not slow down on l0 number of files writes even if it hurts read
     // amplification.
@@ -492,10 +495,10 @@ fn cf_data_options(
 
 fn cf_metadata_options(
     opts: &mut rocksdb::Options,
-    block_options: &BlockBasedOptions,
+    block_options: BlockBasedOptions,
     log_server_config: &LogServerOptions,
 ) {
-    opts.set_block_based_table_factory(block_options);
+    opts.set_block_based_table_factory(&block_options);
 
     // The metadata CF uses the data CF's write_buffer_size so it never independently
     // triggers a flush (with atomic_flush, any CF triggering drags all CFs along).
