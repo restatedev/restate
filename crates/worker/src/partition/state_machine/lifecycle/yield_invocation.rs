@@ -16,9 +16,7 @@ use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_storage_api::vqueue_table::{
     EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
-use restate_types::identifiers::InvocationId;
-use restate_types::sharding::WithPartitionKey;
-use restate_types::vqueues::EntryId;
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
@@ -47,11 +45,10 @@ where
 
         // From scheduler's yield
         let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
-        let entry_id = EntryId::from(self.invocation_id);
 
         let Some(header) = ctx
             .storage
-            .get_vqueue_entry_status(self.invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(self.invocation_id))
             .await?
         else {
             // It could be that the invocation was killed and purged before the invoker yielded it.
