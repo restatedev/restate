@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::RoughTimestamp;
-use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
+use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId, VQueueIdRef};
 
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
@@ -128,6 +128,12 @@ impl OwnedEntryStatusHeader {
 
 impl EntryStatusHeader for OwnedEntryStatusHeader {
     #[inline]
+    fn canonical_entry_id(&self) -> CanonicalEntryId {
+        self.entry_key
+            .to_canonical_entry_id(self.qid.partition_key())
+    }
+
+    #[inline]
     fn vqueue_id(&self) -> &VQueueId {
         &self.qid
     }
@@ -237,6 +243,7 @@ pub trait EntryStatusHeader: std::fmt::Debug {
     fn next_run_at(&self) -> RoughTimestamp;
     fn seq(&self) -> Seq;
     fn stats(&self) -> &EntryStatistics;
+    fn canonical_entry_id(&self) -> CanonicalEntryId;
     fn display_entry_id(&self) -> impl std::fmt::Display + '_;
     /// Returns new if this entry has not started yet.
     fn has_started(&self) -> bool {
