@@ -97,7 +97,7 @@ fn main() -> anyhow::Result<()> {
     let task_center = tc.clone();
     let args = cli_args.clone();
     tc.block_on(async move {
-        let tracing_guard = init_tracing_and_logging(&config.common, "Bifrost benchpress")
+        let tracing_guard = init_tracing_and_logging(&config.common)
             .expect("failed to configure logging and tracing!");
 
         match args.command {

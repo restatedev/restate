@@ -100,7 +100,7 @@ fn main() -> anyhow::Result<()> {
     let args = cli_args.clone();
 
     tc.block_on(async move {
-        let tracing_guard = init_tracing_and_logging(&config.common, "logserver-bench")
+        let tracing_guard = init_tracing_and_logging(&config.common)
             .expect("failed to configure logging and tracing!");
 
         // Initialize CLI context without tracing — we already have a tracing subscriber

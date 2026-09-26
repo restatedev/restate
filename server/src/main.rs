@@ -177,7 +177,7 @@ fn main() {
             // Apply tracing config globally
             // We need to apply this first to log correctly
             let tracing_guard =
-                init_tracing_and_logging(&Configuration::pinned().common, "restate-server")
+                init_tracing_and_logging(&Configuration::pinned().common)
                     .expect("failed to configure logging and tracing");
 
             let mut address_book = AddressBook::new(data_dir);

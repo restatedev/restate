@@ -31,7 +31,6 @@ metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 nu-ansi-term = "0.50.3"
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
 opentelemetry-otlp = { workspace = true, features = ["http-json", "http-proto", "reqwest-client", "tls", "tls-roots", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
@@ -43,7 +42,6 @@ tonic = { workspace = true, features = ["tls-native-roots"]}
 tracing = { workspace = true }
 tracing-appender = { version = "0.2.3", features = ["parking_lot"] }
 tracing-core = { version = "0.1" }
-tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 
 [dev-dependencies]

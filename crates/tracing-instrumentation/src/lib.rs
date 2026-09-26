@@ -25,15 +25,11 @@ use opentelemetry::{
     trace::{Link, TraceContextExt, Tracer},
 };
 use opentelemetry::{InstrumentationScope, KeyValue, global};
-use opentelemetry_contrib::trace::exporter::jaeger_json::JaegerJsonExporter;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
 use opentelemetry_sdk::runtime;
-use opentelemetry_sdk::trace::{SdkTracerProvider, TraceError};
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use pretty::Pretty;
 use tracing::{Level, warn};
-use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
-use tracing_subscriber::filter::{Filtered, ParseError};
+use tracing_subscriber::filter::ParseError;
 use tracing_subscriber::fmt::time::SystemTime;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::layer::SubscriberExt;
@@ -90,9 +86,6 @@ pub mod semconv {
         /// NotificationId
         pub const RESTATE_JOURNAL_NOTIFICATION_ID: &str = "restate.journal.notification.id";
 
-        /// Used in links to indicate the link refers to a runtime internal span.
-        pub const RESTATE_RUNTIME: &str = "restate.runtime";
-
         pub const RESTATE_DEPLOYMENT_ID: &str = "restate.deployment.id";
 
         pub const RESTATE_DEPLOYMENT_ADDRESS: &str = "restate.deployment.address";
@@ -133,16 +126,8 @@ pub fn is_service_tracing_enabled() -> bool {
 #[derive(Debug, thiserror::Error)]
 #[error("could not initialize tracing {trace_error}")]
 pub enum Error {
-    #[error(
-        "could not initialize tracing: you must specify at least `tracing_endpoint` or `tracing_json_path`"
-    )]
-    InvalidTracingConfiguration,
-
     #[error("invalid tracing endpoint: {0}")]
     InvalidTracingEndpoint(#[from] EndpointError),
-
-    #[error("could not initialize tracing: {0}")]
-    Tracing(#[from] TraceError),
 
     #[error(
         "cannot parse log configuration {e} environment variable: {0}",
@@ -193,8 +178,6 @@ fn otel_resource_attributes_from_env() -> Vec<KeyValue> {
 /// collector expects on :4317. Whereas `otlp+http[s]://` will emit binary
 /// (protobuf) trace data over HTTP[s], which is typically what a collector
 ///  expects on :4318. See the code for all supported combinations.
-///
-/// This function ignores tracing-json-path and tracing-filter.
 fn install_opentelemetry_tracer_provider(
     common_opts: &CommonOptions,
 ) -> Result<Option<SdkTracerProvider>, Error> {
@@ -266,99 +249,13 @@ fn install_opentelemetry_tracer_provider(
     Ok(Some(provider))
 }
 
-#[allow(clippy::type_complexity, dead_code)]
-fn build_runtime_tracing_layer<S>(
-    common_opts: &CommonOptions,
-    service_name: String,
-) -> Result<
-    Option<Filtered<OpenTelemetryLayer<S, opentelemetry_sdk::trace::Tracer>, EnvFilter, S>>,
-    Error,
->
-where
-    S: tracing::Subscriber
-        + for<'span> tracing_subscriber::registry::LookupSpan<'span>
-        + Send
-        + Sync,
-{
-    let opts = &common_opts.tracing;
-
-    let endpoint = opts
-        .tracing_runtime_endpoint
-        .as_ref()
-        .or(opts.tracing_endpoint.as_ref());
-
-    // only enable tracing if endpoint or json file is set.
-    if endpoint.is_none() && common_opts.tracing.tracing_json_path.is_none() {
-        return Ok(None);
-    }
-
-    let resource = opentelemetry_sdk::Resource::builder_empty()
-        .with_attributes(otel_resource_attributes_from_env())
-        .with_service_name(format!("{}@{}", service_name, common_opts.node_name()))
-        .with_attributes(vec![
-            KeyValue::new(semconv::resource::SERVICE_NAMESPACE, "Restate"),
-            KeyValue::new(
-                semconv::resource::SERVICE_INSTANCE_ID,
-                format!("{}/{}", common_opts.cluster_name(), common_opts.node_name()),
-            ),
-            KeyValue::new(
-                semconv::resource::SERVICE_VERSION,
-                env!("CARGO_PKG_VERSION"),
-            ),
-        ])
-        .build();
-
-    let mut tracer_provider_builder =
-        opentelemetry_sdk::trace::TracerProviderBuilder::default().with_resource(resource);
-
-    if let Some(endpoint) = endpoint {
-        let exporter =
-            ExporterBuilder::new(endpoint, common_opts.tracing.tracing_headers.clone())?.build()?;
-
-        tracer_provider_builder = tracer_provider_builder.with_batch_exporter(exporter);
-    }
-
-    if let Some(path) = &common_opts.tracing.tracing_json_path {
-        let exporter = JaegerJsonExporter::new(
-            path.into(),
-            "trace".to_string(),
-            service_name,
-            opentelemetry_sdk::runtime::Tokio,
-        );
-
-        tracer_provider_builder = tracer_provider_builder.with_batch_exporter(exporter);
-    }
-
-    let provider = tracer_provider_builder.build();
-
-    let tracer = provider.tracer_with_scope(
-        InstrumentationScope::builder("restate")
-            .with_version(env!("CARGO_PKG_VERSION"))
-            .build(),
-    );
-
-    global::set_text_map_propagator(TraceContextPropagator::new());
-
-    Ok(Some(
-        tracing_opentelemetry::layer()
-            .with_location(false)
-            .with_threads(false)
-            .with_tracked_inactivity(false)
-            .with_tracer(tracer)
-            .with_filter(EnvFilter::try_new(&opts.tracing_filter)?),
-    ))
-}
-
 /// Instruments the process with logging and tracing. The method returns [`TracingGuard`] which
 /// unregisters the tracing when being shut down or dropped.
 ///
 /// # Panics
 /// This method will panic if there is already a global subscriber configured. Moreover, it will
 /// panic if it is executed outside of a Tokio runtime.
-pub fn init_tracing_and_logging(
-    common_opts: &CommonOptions,
-    _service_name: impl Display,
-) -> Result<TracingGuard, Error> {
+pub fn init_tracing_and_logging(common_opts: &CommonOptions) -> Result<TracingGuard, Error> {
     let layers = tracing_subscriber::registry();
 
     // Console subscriber layer
@@ -395,17 +292,6 @@ pub fn init_tracing_and_logging(
 
     // Service (user) tracing.
     let service_tracer_provider = install_opentelemetry_tracer_provider(common_opts)?;
-
-    // Runtime Distributed Tracing layer
-    // **
-    // TEMPORARILY DISABLED DUE TO SIGNIFICANT LOCK CONTENTION
-    // **
-    // let layers = layers.with(build_runtime_tracing_layer(
-    //     common_opts,
-    //     service_name.to_string(),
-    // )?);
-    //
-    // Note: when enabling this again we need to make sure it's integrated with the shutdown logic
 
     // Logging Layer
     let (stdout_writer, _stdout_guard) = tracing_appender::non_blocking(std::io::stdout());
@@ -511,9 +397,8 @@ impl Drop for TracingGuard {
     }
 }
 
-/// invocation_span macro create a span given invocation_id and invocation_target. The created span will show up
-/// mainly in services tracing. It will also show up in runtime traces but in relation to other runtime spans
-/// that are created normally with tracing::span!
+/// Creates a service OpenTelemetry span with the supplied invocation identity
+/// and causal relation, independently of the Rust tracing subscriber.
 ///
 /// level: [`Level`]
 /// prefix: static span name
@@ -566,11 +451,9 @@ macro_rules! invocation_span {
     };
     (level= $lvl:expr, relation=$relation:expr, name= $name:expr, attributes=$attributes:ident, fields=($($field:ident = $field_value:expr),*)) => {
         {
-            use ::opentelemetry::{KeyValue, Context, trace::{Tracer, Link, TracerProvider, TraceContextExt}};
-            use ::tracing_opentelemetry::OpenTelemetrySpanExt;
+            use ::opentelemetry::{Context, trace::{Tracer, Link, TracerProvider, TraceContextExt}};
 
             use ::restate_types::invocation::SpanRelation;
-            use $crate::semconv;
 
             let tracer = opentelemetry::global::tracer_provider().tracer_with_scope(opentelemetry::InstrumentationScope::builder("services").build());
 
@@ -579,23 +462,12 @@ macro_rules! invocation_span {
                 $(.$field($field_value))*
                 .with_attributes($attributes);
 
-            let mut links = vec![Link::with_context(
-                ::tracing::Span::current()
-                    .context()
-                    .span()
-                    .span_context()
-                    .clone(),
-            )];
-
             let span = match $relation {
-                SpanRelation::None => {
-                    builder.with_links(links).start(&tracer)
-                }
+                SpanRelation::None => builder.start(&tracer),
                 SpanRelation::Linked(ctx) => {
-                     links.push(Link::new(ctx.into(), vec![KeyValue::new(semconv::attribute::RESTATE_RUNTIME, true)], 0));
-                     builder.with_links(links).start(&tracer)
+                     builder.with_links(vec![Link::with_context(ctx.into())]).start(&tracer)
                 }
-                SpanRelation::Parent(ctx) => builder.with_links(links).start_with_context(&tracer,&Context::new().with_remote_span_context(ctx.into())),
+                SpanRelation::Parent(ctx) => builder.start_with_context(&tracer,&Context::new().with_remote_span_context(ctx.into())),
             };
 
             span
@@ -791,26 +663,12 @@ pub fn create_invocation_start_span(
             ),
         ]);
 
-    // Link to the runtime span, in case both runtime tracing and services tracing are enabled
-    let mut links = vec![Link::with_context(
-        ::tracing::Span::current()
-            .context()
-            .span()
-            .span_context()
-            .clone(),
-    )];
-
     match span_ctx.causing_span_relation() {
-        SpanRelation::None => builder.with_links(links).start(&tracer),
-        SpanRelation::Linked(ctx) => {
-            links.push(Link::new(
-                ctx.into(),
-                vec![KeyValue::new(semconv::attribute::RESTATE_RUNTIME, true)],
-                0,
-            ));
-            builder.with_links(links).start(&tracer)
-        }
-        SpanRelation::Parent(ctx) => builder.with_links(links).start_with_context(
+        SpanRelation::None => builder.start(&tracer),
+        SpanRelation::Linked(ctx) => builder
+            .with_links(vec![Link::with_context(ctx.into())])
+            .start(&tracer),
+        SpanRelation::Parent(ctx) => builder.start_with_context(
             &tracer,
             &Context::new().with_remote_span_context(ctx.into()),
         ),
@@ -868,14 +726,6 @@ pub fn create_invocation_attempt_span(
                 i64::from(service_protocol_version.as_repr()),
             ),
         ])
-        // Link to the runtime span, in case both runtime tracing and services tracing are enabled
-        .with_links(vec![Link::with_context(
-            ::tracing::Span::current()
-                .context()
-                .span()
-                .span_context()
-                .clone(),
-        )])
         .start_with_context(
             &tracer,
             &Context::new().with_remote_span_context(span_ctx.span_context().clone().into()),
@@ -916,13 +766,6 @@ pub fn create_invocation_end_span(
                 invocation_target.to_string(),
             ),
         ])
-        .with_links(vec![Link::with_context(
-            ::tracing::Span::current()
-                .context()
-                .span()
-                .span_context()
-                .clone(),
-        )])
         .start_with_context(
             &tracer,
             &Context::new().with_remote_span_context(start_span_ctx.span_context().clone().into()),
@@ -936,8 +779,118 @@ pub fn get_services_tracer() -> BoxedTracer {
 
 #[cfg(test)]
 mod test {
-    use opentelemetry::trace::SpanId;
+    use std::sync::{Arc, Mutex};
+
+    use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
+    use opentelemetry_sdk::error::OTelSdkResult;
+    use opentelemetry_sdk::trace::{Sampler, SpanData, SpanExporter};
+
     use restate_types::invocation::InvocationTarget;
+
+    use super::*;
+
+    #[derive(Debug, Clone, Default)]
+    struct TestExporter(Arc<Mutex<Vec<SpanData>>>);
+
+    impl SpanExporter for TestExporter {
+        async fn export(&self, spans: Vec<SpanData>) -> OTelSdkResult {
+            self.0.lock().unwrap().extend(spans);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn service_spans_preserve_parents_and_explicit_links_without_runtime_links() {
+        let exporter = TestExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_sampler(Sampler::AlwaysOn)
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let original_provider = global::tracer_provider();
+        global::set_tracer_provider(provider.clone());
+        let _ = SERVICE_TRACING_INITIALIZED.set(());
+        let remote = SpanContext::new(
+            TraceId::from(1),
+            SpanId::from(2),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let target = InvocationTarget::mock_virtual_object();
+        let id = InvocationId::generate(&target, None);
+
+        for (name, relation) in [
+            ("root", SpanRelation::None),
+            ("parent", SpanRelation::parent(remote.clone())),
+            ("linked", SpanRelation::linked(remote.clone())),
+        ] {
+            drop(info_invocation_span!(
+                relation = relation,
+                id = id,
+                name = name,
+                tags = ()
+            ));
+        }
+
+        let context =
+            ServiceInvocationSpanContext::start(&id, SpanRelation::parent(remote.clone()));
+        drop(create_invocation_start_span(
+            &id,
+            &target,
+            &context,
+            MillisSinceEpoch::UNIX_EPOCH,
+        ));
+        drop(create_invocation_attempt_span(
+            &id,
+            &target,
+            DeploymentId::new(),
+            &"http://localhost",
+            ServiceProtocolVersion::V5,
+            &context,
+        ));
+        drop(create_invocation_end_span(&id, &target, &context));
+        let linked_context =
+            ServiceInvocationSpanContext::start(&id, SpanRelation::linked(remote.clone()));
+        drop(create_invocation_start_span(
+            &id,
+            &target,
+            &linked_context,
+            MillisSinceEpoch::UNIX_EPOCH,
+        ));
+
+        provider.force_flush().unwrap();
+        global::set_tracer_provider(original_provider);
+        provider.shutdown().unwrap();
+        let spans = exporter.0.lock().unwrap();
+        assert_eq!(spans.len(), 7);
+        assert_eq!(spans[0].parent_span_id, SpanId::INVALID);
+        assert!(spans[0].links.links.is_empty());
+        assert_eq!(spans[1].parent_span_id, remote.span_id());
+        assert_eq!(spans[1].span_context.trace_id(), remote.trace_id());
+        assert!(spans[1].links.links.is_empty());
+        for index in [2, 6] {
+            assert_eq!(spans[index].links.links.len(), 1);
+            assert!(spans[index].links.links[0].attributes.is_empty());
+            assert_eq!(
+                spans[index].links.links[0].span_context.trace_id(),
+                remote.trace_id()
+            );
+            assert_eq!(
+                spans[index].links.links[0].span_context.span_id(),
+                remote.span_id()
+            );
+        }
+        assert_eq!(spans[3].parent_span_id, remote.span_id());
+        assert_eq!(
+            spans[3].span_context.span_id(),
+            context.span_context().span_id()
+        );
+        for span in &spans[4..6] {
+            assert_eq!(span.parent_span_id, context.span_context().span_id());
+            assert_eq!(span.span_context.trace_id(), remote.trace_id());
+        }
+        assert!(spans[3..6].iter().all(|span| span.links.links.is_empty()));
+    }
 
     #[test]
     fn macro_call_syntax() {
