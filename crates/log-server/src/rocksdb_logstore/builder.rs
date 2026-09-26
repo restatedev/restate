@@ -566,7 +566,7 @@ mod tests {
             let block_options =
                 restate_rocksdb::configuration::create_default_block_options(&config.rocksdb, None);
             let mut options = restate_rocksdb::configuration::create_default_cf_options(None);
-            cf_data_options(&mut options, &block_options, &config);
+            cf_data_options(&mut options, block_options, &config);
             options.create_if_missing(true);
             // Only the manual compaction below should determine the resulting file layout.
             options.set_disable_auto_compactions(true);
