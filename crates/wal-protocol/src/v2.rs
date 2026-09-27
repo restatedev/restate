@@ -308,7 +308,15 @@ pub enum CommandScope {
 /// Enumerates the logical categories of WAL records that the partition
 /// processor understands.
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration, strum::Display, strum::IntoStaticStr,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    bilrost::Enumeration,
+    strum::Display,
+    strum::IntoStaticStr,
+    strum::VariantNames,
 )]
 pub enum CommandKind {
     Unknown = 0,

@@ -11,6 +11,7 @@
 //! Scan log records from the log-server data column family.
 
 use anyhow::{Context, Result};
+use bilrost::OwnedMessage;
 use bytes::BytesMut;
 use cling::prelude::*;
 use comfy_table::Table;
@@ -22,9 +23,9 @@ use restate_log_server::rocksdb_logstore::DATA_CF;
 use restate_log_server::rocksdb_logstore::keys::{DataRecordKey, KeyPrefixKind};
 use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
-use restate_types::storage::StorageCodec;
+use restate_types::storage::{StorageCodecKind, StorageDecode, StorageDecodeError};
 use restate_util_bytecount::ByteCount;
-use restate_wal_protocol::{Command, Envelope};
+use restate_wal_protocol::{Envelope, v2};
 
 use crate::app::GlobalOpts;
 use crate::util::hex_encode;
@@ -37,8 +38,9 @@ use super::{LogServerOpts, open_log_store_db};
 /// Iterates through data records for a given loglet or log. By default, shows
 /// a summary table with offset, timestamp, keys, command type, and size.
 ///
-/// Use --decode to fully decode and display the WAL envelope (header + command)
-/// as JSON. Use --hex to show the raw record body as hex bytes.
+/// Use --decode to display v1 WAL envelopes (header + command) as JSON.
+/// For v2 envelopes, only the command kind is decoded. Use --hex to show the
+/// raw record body as hex bytes.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_scan")]
 pub struct Scan {
@@ -77,7 +79,7 @@ pub struct Scan {
     #[arg(long, default_value = "0")]
     pub skip: usize,
 
-    /// Fully decode and display WAL envelopes as JSON
+    /// Display WAL envelopes as JSON (v1 only; v2 shows the command kind)
     #[arg(long)]
     pub decode: bool,
 
@@ -115,18 +117,7 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
         Some(
             cmd.command
                 .iter()
-                .map(|c| {
-                    Command::VARIANTS
-                        .iter()
-                        .find(|v| v.eq_ignore_ascii_case(c))
-                        .copied()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "unknown command type '{c}', valid command types: {}",
-                                Command::VARIANTS.join(", ")
-                            )
-                        })
-                })
+                .map(|c| resolve_command_name(c))
                 .collect::<Result<Vec<_>>>()?,
         )
     };
@@ -298,6 +289,19 @@ pub async fn run_scan(global_opts: &GlobalOpts, cmd: &Scan) -> Result<()> {
     Ok(())
 }
 
+fn resolve_command_name(command: &str) -> Result<&'static str> {
+    v2::CommandKind::VARIANTS
+        .iter()
+        .find(|v| v.eq_ignore_ascii_case(command))
+        .copied()
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "unknown command type '{command}', valid command types: {}",
+                v2::CommandKind::VARIANTS.join(", ")
+            )
+        })
+}
+
 fn print_summary_table(records: &[RecordInfo]) {
     c_println!();
     let mut table = Table::new_styled();
@@ -368,6 +372,11 @@ fn print_decoded_records(records: &[RecordInfo]) {
 
         if let Some(ref envelope_json) = rec.envelope_json {
             table.add_kv_row("Envelope:", envelope_json);
+        } else if rec.decode_error.is_none() {
+            table.add_kv_row(
+                "Envelope:",
+                "Full JSON decoding is not supported for v2 envelopes; use --hex to inspect the body",
+            );
         }
         if let Some(ref err) = rec.decode_error {
             table.add_kv_row("Decode Error:", err);
@@ -431,23 +440,11 @@ fn build_record_info(
     let body_bytes = record.body().encode_to_bytes(&mut BytesMut::new()).ok();
     let body_size = body_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
 
-    // Try to decode the WAL Envelope from the record body
     let (command_name, envelope_json, envelope_error) = match &body_bytes {
-        Some(body) => {
-            let mut cursor = std::io::Cursor::new(body.as_ref());
-            match StorageCodec::decode::<Envelope, _>(&mut cursor) {
-                Ok(envelope) => {
-                    let name = envelope.command.name().to_string();
-                    let json = if cmd.decode {
-                        serde_json::to_string_pretty(&envelope).ok()
-                    } else {
-                        None
-                    };
-                    (name, json, None)
-                }
-                Err(e) => ("?".to_string(), None, Some(format!("envelope: {e}"))),
-            }
-        }
+        Some(body) => match decode_envelope(body, cmd.decode) {
+            Ok((name, json)) => (name, json, None),
+            Err(e) => ("?".to_string(), None, Some(format!("envelope: {e}"))),
+        },
         None => ("?".to_string(), None, Some("no body".to_string())),
     };
 
@@ -478,6 +475,28 @@ fn build_record_info(
     }
 }
 
+fn decode_envelope(body: &[u8], decode: bool) -> Result<(String, Option<String>)> {
+    let (&codec, body) = body.split_first().context("missing envelope codec")?;
+    let codec = StorageCodecKind::try_from(codec)?;
+    match codec {
+        StorageCodecKind::FlexbuffersSerde | StorageCodecKind::Json => {
+            // Decode v1 directly: converting to v2 adds validation and allocations that
+            // aren't needed for inspection, and would discard the original header.
+            let envelope = Envelope::decode(body, codec)?;
+            let json = decode
+                .then(|| serde_json::to_string_pretty(&envelope))
+                .transpose()?;
+            Ok((envelope.command.name().to_string(), json))
+        }
+        StorageCodecKind::Custom => {
+            // Only read the v2 header; leave the potentially large payload untouched.
+            let header = v2::Header::decode_length_delimited(body)?;
+            Ok((header.kind().to_string(), None))
+        }
+        codec => Err(StorageDecodeError::UnsupportedCodecKind(codec).into()),
+    }
+}
+
 struct RecordInfo {
     loglet_id: LogletId,
     offset: LogletOffset,
@@ -495,4 +514,123 @@ enum LogletFilter {
     Single(LogletId),
     ByLogId(LogId),
     All,
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::Bytes;
+
+    use restate_storage_api::deduplication_table::{
+        DedupInformation, DedupSequenceNumber, EpochSequenceNumber, ProducerId,
+    };
+    use restate_types::logs::Keys;
+    use restate_types::storage::{PolyBytes, StorageCodec};
+    use restate_wal_protocol::v1;
+    use restate_wal_protocol::vqueues::PurgeVQueueMetaCommand;
+
+    use super::*;
+
+    fn scan_body(body: Bytes, decode: bool) -> RecordInfo {
+        let mut cmd = Scan::parse_from(["scan", "--hex"]);
+        cmd.decode = decode;
+        build_record_info(
+            LogletId::from(0u64),
+            LogletOffset::new(1),
+            Record::from_parts(Default::default(), Keys::None, PolyBytes::Bytes(body)),
+            &cmd,
+        )
+    }
+
+    #[test]
+    fn scan_v1_preserves_original_envelope() {
+        // Even semantically invalid dedup metadata must remain inspectable: the
+        // scanner should not require a successful conversion to a v2 envelope.
+        for dedup in [
+            None,
+            Some(DedupInformation {
+                producer_id: ProducerId::Partition(1.into()),
+                sequence_number: DedupSequenceNumber::Esn(EpochSequenceNumber::new(1.into())),
+            }),
+        ] {
+            let envelope = Envelope::new(
+                v1::Header {
+                    source: v1::Source::Ingress {},
+                    dest: v1::Destination::Processor {
+                        partition_key: 42,
+                        dedup,
+                    },
+                },
+                v1::Command::TruncateOutbox(123),
+            );
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&envelope, &mut buf).unwrap();
+            let body = buf.freeze();
+            for decode in [false, true] {
+                let info = scan_body(body.clone(), decode);
+                assert_eq!(info.command_name, "TruncateOutbox");
+                assert_eq!(info.body_size, body.len());
+                assert!(info.decode_error.is_none());
+                assert_eq!(
+                    info.envelope_json,
+                    decode.then(|| serde_json::to_string_pretty(&envelope).unwrap())
+                );
+            }
+
+            // The v1 storage decoder also accepts JSON-encoded envelopes.
+            let mut json_body = vec![u8::from(StorageCodecKind::Json)];
+            json_body.extend(serde_json::to_vec(&envelope).unwrap());
+            let info = scan_body(json_body.into(), true);
+            assert_eq!(info.command_name, "TruncateOutbox");
+            assert!(info.envelope_json.is_some());
+            assert!(info.decode_error.is_none());
+        }
+    }
+
+    #[test]
+    fn scan_v2_only_command_and_filter() {
+        let envelope =
+            v2::Envelope::new(v2::Dedup::None, PurgeVQueueMetaCommand { vqueues: vec![] });
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&envelope, &mut buf).unwrap();
+        let body = buf.freeze();
+        for decode in [false, true] {
+            let info = scan_body(body.clone(), decode);
+            assert_eq!(info.command_name, "PurgeVQueueMeta");
+            assert_eq!(info.body_size, body.len());
+            assert!(info.envelope_json.is_none());
+            assert!(info.decode_error.is_none());
+            assert_eq!(
+                resolve_command_name("purgevqueuemeta").unwrap(),
+                info.command_name
+            );
+        }
+        // All legacy filter names must still be accepted.
+        for name in v1::Command::VARIANTS {
+            assert_eq!(resolve_command_name(name).unwrap(), *name);
+        }
+        let error = resolve_command_name("not-a-command").unwrap_err();
+        assert!(error.to_string().contains("PurgeVQueueMeta"));
+    }
+
+    #[test]
+    fn scan_invalid_envelopes_reports_errors() {
+        for body in [
+            &[][..],
+            &[255],
+            &[u8::from(StorageCodecKind::Protobuf)],
+            &[u8::from(StorageCodecKind::LengthPrefixedRawBytes)],
+            &[u8::from(StorageCodecKind::Bilrost)],
+            &[u8::from(StorageCodecKind::ZstdBilrostDefault)],
+            &[u8::from(StorageCodecKind::FlexbuffersSerde)],
+            &[u8::from(StorageCodecKind::Json)],
+            &[u8::from(StorageCodecKind::Custom)],
+            &[u8::from(StorageCodecKind::Custom), 10, 0],
+        ] {
+            let info = scan_body(Bytes::copy_from_slice(body), true);
+            assert_eq!(info.command_name, "?", "{body:?}");
+            assert!(info.envelope_json.is_none(), "{body:?}");
+            assert!(info.decode_error.is_some(), "{body:?}");
+            assert_eq!(info.body_hex.as_deref(), Some(hex_encode(body).as_str()));
+        }
+    }
 }
