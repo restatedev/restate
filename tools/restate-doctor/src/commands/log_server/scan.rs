@@ -24,7 +24,7 @@ use restate_log_server::rocksdb_logstore::record_format::DataRecordDecoder;
 use restate_types::logs::{LogId, LogletId, LogletOffset, Record, SequenceNumber};
 use restate_types::storage::StorageCodec;
 use restate_util_bytecount::ByteCount;
-use restate_wal_protocol::{Command, Envelope};
+use restate_wal_protocol::{Command, Envelope, v2};
 
 use crate::app::GlobalOpts;
 use crate::util::hex_encode;
@@ -431,15 +431,19 @@ fn build_record_info(
     let body_bytes = record.body().encode_to_bytes(&mut BytesMut::new()).ok();
     let body_size = body_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
 
-    // Try to decode the WAL Envelope from the record body
+    // The v2 envelope header carries the command kind for both the v1 (flexbuffers) and the v2
+    // (custom) encodings. Full JSON decoding is only available for v1 envelopes.
     let (command_name, envelope_json, envelope_error) = match &body_bytes {
         Some(body) => {
             let mut cursor = std::io::Cursor::new(body.as_ref());
-            match StorageCodec::decode::<Envelope, _>(&mut cursor) {
+            match StorageCodec::decode::<v2::Envelope<v2::Raw>, _>(&mut cursor) {
                 Ok(envelope) => {
-                    let name = envelope.command.name().to_string();
+                    let name = envelope.header().kind().to_string();
                     let json = if cmd.decode {
-                        serde_json::to_string_pretty(&envelope).ok()
+                        let mut cursor = std::io::Cursor::new(body.as_ref());
+                        StorageCodec::decode::<Envelope, _>(&mut cursor)
+                            .ok()
+                            .and_then(|envelope| serde_json::to_string_pretty(&envelope).ok())
                     } else {
                         None
                     };
