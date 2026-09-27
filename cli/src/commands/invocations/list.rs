@@ -18,10 +18,10 @@ use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
 
-use restate_cli_util::c_eprintln;
-use restate_cli_util::ui::console::Styled;
+use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
+use restate_cli_util::{CliContext, OutputFormat, c_eprintln, c_println};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{InvocationState, find_and_count_active_invocations};
@@ -191,24 +191,69 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         find_and_count_active_invocations(&sql_client, &active_filter_str, order_by, opts.limit)
             .await?;
 
-    // Render Output UI
     progress.finish_and_clear();
 
-    // Sample of active invocations
-    if !results.is_empty() {
-        // Truncate the output to fit the requested limit
-        results.truncate(opts.limit);
-        for inv in &results {
-            render_invocation_compact(inv);
+    match CliContext::get().output_format() {
+        OutputFormat::Human => {
+            // Sample of active invocations
+            if !results.is_empty() {
+                // Truncate the output to fit the requested limit
+                results.truncate(opts.limit);
+                for inv in &results {
+                    render_invocation_compact(inv);
+                }
+            }
+            c_eprintln!(
+                "Showing {}/{} invocations. Query took {:?}",
+                results.len(),
+                count_estimate,
+                Styled(Style::Notice, start_time.elapsed())
+            );
+        }
+        OutputFormat::Table => {
+            if !results.is_empty() {
+                results.truncate(opts.limit);
+                let mut table = comfy_table::Table::new_styled();
+                table.set_styled_header(vec!["ID", "TARGET", "STATUS", "DEPLOYMENT", "CREATED AT"]);
+                for inv in &results {
+                    let deployment = inv
+                        .pinned_deployment_id
+                        .as_deref()
+                        .or(inv.last_attempt_deployment_id.as_deref())
+                        .unwrap_or("-");
+                    table.add_row(vec![
+                        inv.id.as_str(),
+                        inv.target.as_str(),
+                        &inv.status.to_string(),
+                        deployment,
+                        &inv.created_at.to_rfc3339(),
+                    ]);
+                }
+                c_println!("{}", table);
+            }
+            c_eprintln!(
+                "Showing {}/{} invocations. Query took {:?}",
+                results.len(),
+                count_estimate,
+                Styled(Style::Notice, start_time.elapsed())
+            );
+        }
+        OutputFormat::Json => {
+            results.truncate(opts.limit);
+            serde_json::to_writer(std::io::stdout(), &results)?;
+            println!();
+        }
+        OutputFormat::Jsonl => {
+            results.truncate(opts.limit);
+            let stdout = std::io::stdout();
+            let mut out = stdout.lock();
+            for inv in &results {
+                serde_json::to_writer(&mut out, inv)?;
+                use std::io::Write;
+                writeln!(out)?;
+            }
         }
     }
-
-    c_eprintln!(
-        "Showing {}/{} invocations. Query took {:?}",
-        results.len(),
-        count_estimate,
-        Styled(Style::Notice, start_time.elapsed())
-    );
 
     Ok(())
 }

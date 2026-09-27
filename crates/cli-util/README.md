@@ -280,5 +280,6 @@ These options are available to all commands via `CommonOpts`:
 | `-y`, `--yes` | Auto-confirm prompts |
 | `--table-style` | `compact` (default) or `borders` |
 | `--time-format` | `human` (default), `iso8601`, or `rfc2822` |
+| `--output` | `human` (default), `table`, `json`, or `jsonl` |
 | `--connect-timeout` | Connection timeout in ms |
 | `--request-timeout` | Request timeout in ms |
