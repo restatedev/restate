@@ -1046,6 +1046,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<Option<ServiceInvocation>, Error>
     where
         S: ReadInvocationStatusTable
+            + ReadVQueueTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -1058,6 +1059,26 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if is_workflow_run && has_idempotency_key {
             warn!("The idempotency key for workflow methods is ignored!");
             has_idempotency_key = false;
+        }
+
+        // In case vqueues are enabled, we can perform a lighter weight since vqueue_entry_status
+        // might be cheaper to read.
+        if self
+            .processor
+            .fsm()
+            .features()
+            .is_fully_migrated_to_vqueues()
+        {
+            let entry_status = self
+                .storage
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+                .await?;
+            if entry_status.is_none() {
+                // We are confident that there is no completed entry that matches this entry. We can
+                // respond confidently. Otherwise, we'll need to fallback to get-invocation-status
+                // as usual.
+                return Ok(Some(service_invocation));
+            }
         }
 
         let previous_invocation_status = self.get_invocation_status(&invocation_id).await?;
