@@ -19,7 +19,7 @@ use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::{CommonOptions, Configuration, RocksDbWriteRateLimiterMode};
 use restate_util_bytecount::ByteCount;
 
 use crate::background::ReadyStorageTask;
@@ -93,7 +93,7 @@ impl RocksDbManager {
             100 * 1000,
             10,
             RateLimiterMode::KWritesOnly,
-            true,
+            opts.rocksdb_write_rate_limiter_mode == RocksDbWriteRateLimiterMode::AutoTuned,
         );
 
         // Create our own storage thread pools
