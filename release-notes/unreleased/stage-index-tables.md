@@ -31,7 +31,9 @@ Indexed dimensions support native filtering. Timestamp predicates use millisecon
 precision; `next_at` retains its stored second precision without rounding
 fractional-second equality predicates onto stored values. ID equality and IN-list
 predicates are pushed down; ordered ID-string comparisons remain residual.
-Counter predicates on covering values remain residual. All tables report
+Counter predicates on covering values remain residual. `ORDER BY <indexed time>
+LIMIT n` queries apply the evolving top-n threshold while scanning and skip index
+ranges that can no longer qualify. All tables report
 storage-scan metrics through `EXPLAIN ANALYZE`, and key values are decoded lazily
 according to the projected columns.
 

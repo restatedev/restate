@@ -212,9 +212,6 @@ impl PartitionStore {
                             }
                             KeyMatch::Done => return ControlFlow::Break(Ok(())),
                         }
-                        if break_on_err(cursor.live_rejects(key))? {
-                            return ControlFlow::Continue(IterAction::Next);
-                        }
                         let (_, payload) = break_on_err(IndexKeyPrefix::decode_prefix(key))?;
                         f(payload.into_decoder::<K>(), value, range)
                             .map_continue(|()| IterAction::Next)

@@ -166,9 +166,7 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
                             }
                             match cursor.evaluate(key).unwrap() {
                                 KeyMatch::Match => {
-                                    if !cursor.live_rejects(key).unwrap() {
-                                        actual.push(*row);
-                                    }
+                                    actual.push(*row);
                                     position += 1;
                                 }
                                 KeyMatch::Seek(target) => {

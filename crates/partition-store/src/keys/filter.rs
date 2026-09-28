@@ -482,14 +482,15 @@ impl<K: IndexKeySchema> PreparedKeyFilter<K> {
                 start.slice(..prefix.len())
             }
         };
-        let offsets = Vec::with_capacity(K::FIELDS.len() + 1);
         Ok(Some(KeyFilterCursor {
             filter: self,
             live: None,
-            scan,
-            identity,
-            offsets,
-            target: BytesMut::new(),
+            position: Position {
+                scan,
+                identity,
+                offsets: Vec::with_capacity(K::FIELDS.len() + 1),
+                target: BytesMut::new(),
+            },
         }))
     }
 
@@ -520,17 +521,15 @@ impl<K: IndexKeySchema> PreparedKeyFilter<K> {
 /// borrowed iterator bytes survive a call. Carry always stays under `identity`.
 pub(crate) struct KeyFilterCursor<K> {
     filter: PreparedKeyFilter<K>,
-    /// The latest live filter. It rejects keys inside the static scan plan.
+    /// The latest live filter. Within the static scan plan, it rejects keys and
+    /// navigates past the ranges it rejects, like the static filter.
     live: Option<PreparedKeyFilter<K>>,
-    scan: PhysicalScan<Bytes>,
-    identity: Bytes,
-    offsets: Vec<usize>,
-    target: BytesMut,
+    position: Position,
 }
 
 impl<K: IndexKeySchema> KeyFilterCursor<K> {
     pub(crate) fn scan(&self) -> &PhysicalScan<Bytes> {
-        &self.scan
+        &self.position.scan
     }
 
     /// Replaces the live filter. It must be sound on its own, see
@@ -539,34 +538,47 @@ impl<K: IndexKeySchema> KeyFilterCursor<K> {
         self.live = Some(filter);
     }
 
-    /// Checks an in-bounds full key. At the first rejected field, advance within
-    /// that field's domain or carry to a preceding field and reset the suffix.
+    /// Checks an in-bounds full key. At the first field rejected by the static or
+    /// live filter, advance within that field's domain or carry to a preceding
+    /// field and reset the suffix.
     pub(crate) fn evaluate(&mut self, key: &[u8]) -> Result<KeyMatch> {
         let payload = key
-            .strip_prefix(self.identity.as_ref())
+            .strip_prefix(self.position.identity.as_ref())
             .ok_or(StorageError::DataIntegrityError)?;
-        match self.filter.first_rejected(payload, &mut self.offsets)? {
-            Some(rejected) => self.advance(key, payload, rejected),
-            None => Ok(KeyMatch::Match),
+        for filter in std::iter::once(&self.filter).chain(&self.live) {
+            if filter.empty {
+                return Ok(KeyMatch::Done);
+            }
+            if let Some(rejected) = filter.first_rejected(payload, &mut self.position.offsets)? {
+                return self.position.advance(filter, key, payload, rejected);
+            }
         }
+        Ok(KeyMatch::Match)
     }
+}
 
-    /// Whether the latest live filter rejects a key that [`Self::evaluate`] matched.
-    pub(crate) fn live_rejects(&mut self, key: &[u8]) -> Result<bool> {
-        let Some(live) = &self.live else {
-            return Ok(false);
-        };
-        let payload = key
-            .strip_prefix(self.identity.as_ref())
-            .ok_or(StorageError::DataIntegrityError)?;
-        Ok(live.empty || live.first_rejected(payload, &mut self.offsets)?.is_some())
-    }
+/// The scan's bounds and reusable seek storage, shared by the static and live filters.
+struct Position {
+    scan: PhysicalScan<Bytes>,
+    identity: Bytes,
+    offsets: Vec<usize>,
+    target: BytesMut,
+}
 
-    fn advance(&mut self, key: &[u8], payload: &[u8], rejected: usize) -> Result<KeyMatch> {
+impl Position {
+    /// Finds the next key that `filter` may accept after `key`, which it rejected
+    /// at field `rejected`. Every skipped key is rejected by `filter`.
+    fn advance<K: IndexKeySchema>(
+        &mut self,
+        filter: &PreparedKeyFilter<K>,
+        key: &[u8],
+        payload: &[u8],
+        rejected: usize,
+    ) -> Result<KeyMatch> {
         for index in (0..=rejected).rev() {
             let start = self.offsets[index];
             let current = &payload[start..self.offsets[index + 1]];
-            let next = self.filter.fields[index].advance(&self.filter.literals, current)?;
+            let next = filter.fields[index].advance(&filter.literals, current)?;
             self.target.clear();
             self.target.extend_from_slice(&self.identity);
             self.target.extend_from_slice(&payload[..start]);
@@ -574,7 +586,7 @@ impl<K: IndexKeySchema> KeyFilterCursor<K> {
                 FieldAdvance::Exhausted => continue,
                 FieldAdvance::Value(value) => {
                     self.target.extend_from_slice(value);
-                    if !self.filter.append_minimum(index + 1, &mut self.target)? {
+                    if !filter.append_minimum(index + 1, &mut self.target)? {
                         return Ok(KeyMatch::Done);
                     }
                 }
