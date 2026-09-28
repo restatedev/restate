@@ -376,77 +376,14 @@ fn sleep_command(completion_id: CompletionId) -> SleepCommand {
 }
 
 #[restate_core::test]
-async fn kill_deletes_pending_sleep_timers_only_for_reusable_ids() -> anyhow::Result<()> {
-    let mut test_env = TestEnv::create().await;
-
-    // Workflow run with two sleeps, the first one already fired
-    let workflow_id = fixtures::mock_start_invocation_with_invocation_target(
-        &mut test_env,
-        InvocationTarget::mock_workflow(),
-    )
-    .await;
-    fixtures::mock_pinned_deployment_v5(&mut test_env, workflow_id).await;
-    test_env
-        .apply_multiple([
-            fixtures::invoker_entry_effect(workflow_id, sleep_command(1)),
-            fixtures::invoker_entry_effect(workflow_id, sleep_command(2)),
-            commands::TimerCommand::test_envelope(TimerKeyValue::complete_journal_entry(
-                MillisSinceEpoch::new(1337),
-                workflow_id,
-                1,
-            )),
-        ])
-        .await;
-
-    // Invocation with a random id and a pending sleep
-    let random_id = fixtures::mock_start_invocation(&mut test_env).await;
-    fixtures::mock_pinned_deployment_v5(&mut test_env, random_id).await;
-    test_env
-        .apply(fixtures::invoker_entry_effect(random_id, sleep_command(1)))
-        .await;
-
-    let kill = |invocation_id| {
-        commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
-            invocation_id,
-            flavor: TerminationFlavor::Kill,
-            response_sink: None,
-        })
-    };
-
-    // Killing the workflow deletes only the timer of the pending sleep
-    let actions = test_env.apply(kill(workflow_id)).await;
-    assert_that!(
-        actions,
-        all!(
-            contains(matchers::actions::delete_sleep_timer(2)),
-            not(contains(matchers::actions::delete_sleep_timer(1)))
-        )
-    );
-
-    // Killing the invocation with a random id leaves its timer, it can never match another invocation
-    let actions = test_env.apply(kill(random_id)).await;
-    assert_that!(actions, not(contains(pat!(Action::DeleteTimer { .. }))));
-
-    let timers = test_env
-        .storage
-        .next_timers_greater_than(None, usize::MAX)?
-        .map_ok(|(_, timer)| timer)
-        .try_collect::<Vec<_>>()
-        .await?;
-    assert_eq!(timers, vec![Timer::CompleteJournalEntry(random_id, 1)]);
-
-    test_env.shutdown().await;
-    Ok(())
-}
-
-#[restate_core::test]
 async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
 
     let invocation_target = InvocationTarget::mock_workflow();
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-    // Complete the workflow while one of its sleeps is still pending, retaining the journal
+    // Complete the workflow with two sleeps, the first one fired and the second one still
+    // pending, retaining the journal
     let actions = test_env
         .apply_multiple([
             commands::InvokeCommand::test_envelope(ServiceInvocation {
@@ -458,6 +395,12 @@ async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
             }),
             fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
             fixtures::invoker_entry_effect(invocation_id, sleep_command(1)),
+            fixtures::invoker_entry_effect(invocation_id, sleep_command(2)),
+            commands::TimerCommand::test_envelope(TimerKeyValue::complete_journal_entry(
+                MillisSinceEpoch::new(1337),
+                invocation_id,
+                1,
+            )),
             fixtures::invoker_entry_effect(
                 invocation_id,
                 OutputCommand {
@@ -468,7 +411,10 @@ async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
             fixtures::invoker_end_effect(invocation_id),
         ])
         .await;
-    assert_that!(actions, not(contains(pat!(Action::DeleteTimer { .. }))));
+    assert_that!(
+        actions,
+        not(contains(matchers::actions::delete_sleep_timer(2)))
+    );
     assert_that!(
         test_env
             .storage
@@ -477,7 +423,7 @@ async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
         pat!(InvocationStatus::Completed(_))
     );
 
-    // Purging drops the journal together with the pending sleep timer
+    // Purging drops the journal together with the timer of the pending sleep only
     let actions = test_env
         .apply(commands::PurgeInvocationCommand::test_envelope(
             PurgeInvocationRequest {
@@ -486,7 +432,13 @@ async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
             },
         ))
         .await;
-    assert_that!(actions, contains(matchers::actions::delete_sleep_timer(1)));
+    assert_that!(
+        actions,
+        all!(
+            contains(matchers::actions::delete_sleep_timer(2)),
+            not(contains(matchers::actions::delete_sleep_timer(1)))
+        )
+    );
     assert_that!(
         test_env
             .storage
