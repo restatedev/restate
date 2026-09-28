@@ -40,6 +40,7 @@ impl PartitionStore {
     /// Invalid entry-kind sentinels in the filter are rejected during binding.
     /// The filter is prepared synchronously; the returned future does not borrow it.
     /// Callback errors fail the scan; `Break(Ok(()))` stops it successfully.
+    /// Optional metrics account only for this scan, including empty scan plans.
     pub fn scan_service_load<
         F: for<'a> FnMut(
                 KeyDecoder<'a, ServiceLoadKey>,
@@ -50,15 +51,21 @@ impl PartitionStore {
     >(
         &self,
         filter: &Filter<ServiceLoad>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>> {
-        self.scan_prepared_stats::<ServiceLoad, F>(ServiceLoadKey::prepare_filter(filter)?, f)
+        self.scan_prepared_stats::<ServiceLoad, F>(
+            ServiceLoadKey::prepare_filter(filter)?,
+            metrics,
+            f,
+        )
     }
 
     /// Scans deployment-load keys, preparing the filter before starting the scan.
     pub fn scan_deployment_load<F>(
         &self,
         filter: &Filter<DeploymentLoad>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
@@ -66,13 +73,18 @@ impl PartitionStore {
             + Send
             + 'static,
     {
-        self.scan_prepared_stats::<DeploymentLoad, F>(DeploymentLoadKey::prepare_filter(filter)?, f)
+        self.scan_prepared_stats::<DeploymentLoad, F>(
+            DeploymentLoadKey::prepare_filter(filter)?,
+            metrics,
+            f,
+        )
     }
 
     /// Scans virtual-object-load keys, preparing the filter before starting the scan.
     pub fn scan_virtual_object_load<F>(
         &self,
         filter: &Filter<VirtualObjectLoad>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
@@ -85,6 +97,7 @@ impl PartitionStore {
     {
         self.scan_prepared_stats::<VirtualObjectLoad, F>(
             VirtualObjectLoadKey::prepare_filter(filter)?,
+            metrics,
             f,
         )
     }
@@ -93,6 +106,7 @@ impl PartitionStore {
     fn scan_prepared_stats<S, F>(
         &self,
         prepared: PreparedKeyFilter<S::OwnedKey>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
@@ -102,6 +116,9 @@ impl PartitionStore {
             + Send
             + 'static,
     {
+        if let Some(metrics) = &metrics {
+            metrics.mark_supported();
+        }
         // Counters
         let mut counters = IteratorCounters {
             partition_id: self.partition_id(),
@@ -126,6 +143,7 @@ impl PartitionStore {
                     Priority::Low,
                     opts,
                     scan,
+                    metrics,
                     move |(key, value)| {
                         let counters = &mut counters;
                         counters.iterations += 1;

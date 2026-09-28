@@ -69,6 +69,7 @@ impl ScanLocalPartition for JournalEventsScanner {
     >(
         partition_store: &PartitionStore,
         range: InvocationIdFilter,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store

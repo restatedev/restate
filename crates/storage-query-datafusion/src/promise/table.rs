@@ -67,6 +67,7 @@ impl ScanLocalPartition for PromiseScanner {
     >(
         partition_store: &PartitionStore,
         range: KeyRange,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         partition_store.for_each_promise(range, move |item| f(item).map_break(Result::unwrap))

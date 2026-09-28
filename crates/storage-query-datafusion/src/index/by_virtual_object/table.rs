@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::index::EntryByVirtualObjectStageKeyView;
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_partition_store::{IteratorMetrics, PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::index::EntryByVirtualObject;
 
@@ -55,6 +55,7 @@ impl ScanLocalPartition for EntryByVirtualObjectScanner {
     fn for_each_row<F>(
         store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
     where
@@ -63,7 +64,7 @@ impl ScanLocalPartition for EntryByVirtualObjectScanner {
             + Sync
             + 'static,
     {
-        store.scan_entry_by_virtual_object(filter.range, &filter.predicate, f)
+        store.scan_entry_by_virtual_object(filter.range, &filter.predicate, metrics, f)
     }
 
     fn append_row<'a>(

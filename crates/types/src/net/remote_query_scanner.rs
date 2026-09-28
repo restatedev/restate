@@ -57,6 +57,10 @@ pub struct RemoteQueryScannerOpen {
     /// todo: make required in v1.8
     #[bilrost(tag(8))]
     pub scanner_id: Option<ScannerId>,
+    /// Requests progress snapshots and the richer completion reply. Absent for
+    /// older clients, which continue to receive NoMoreRecords.
+    #[bilrost(tag(9))]
+    pub collect_metrics: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
@@ -95,6 +99,8 @@ pub struct ScannerBatch {
     pub scanner_id: ScannerId,
     #[bilrost(tag(2), encoding(plainbytes))]
     pub record_batch: Vec<u8>,
+    #[bilrost(tag(3))]
+    pub metrics: Option<ScannerMetrics>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
@@ -103,6 +109,47 @@ pub struct ScannerFailure {
     pub scanner_id: ScannerId,
     #[bilrost(2)]
     pub message: String,
+    #[bilrost(tag(3))]
+    pub metrics: Option<ScannerMetrics>,
+}
+
+/// Cumulative, unsampled accounting for one scanner, not process-wide metrics.
+/// Missing reports mean unavailable, not zero work. Progress may lag batched
+/// iterator publication; complete reports include all work before scanner EOF.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct ScannerMetrics {
+    #[bilrost(1)]
+    pub iterators: u64,
+    #[bilrost(2)]
+    pub completed_iterators: u64,
+    #[bilrost(3)]
+    pub keys_visited: u64,
+    #[bilrost(4)]
+    pub seeks: u64,
+    #[bilrost(5)]
+    pub nexts: u64,
+    #[bilrost(6)]
+    pub prevs: u64,
+    /// Bytes presented by iterators, not disk bytes.
+    #[bilrost(7)]
+    pub bytes_visited: u64,
+    #[bilrost(8)]
+    pub wall_time_ns: u64,
+    /// Native records delivered for Arrow conversion; one may produce several rows.
+    #[bilrost(9)]
+    pub records_emitted: u64,
+    #[bilrost(10)]
+    pub available: bool,
+    #[bilrost(11)]
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
+pub struct ScannerCompleted {
+    #[bilrost(1)]
+    pub scanner_id: ScannerId,
+    #[bilrost(2)]
+    pub metrics: ScannerMetrics,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, bilrost::Oneof)]
@@ -116,6 +163,9 @@ pub enum RemoteQueryScannerNextResult {
     NoMoreRecords(ScannerId),
     #[bilrost(4)]
     NoSuchScanner(ScannerId),
+    /// Sent only to clients that requested metrics when opening the scanner.
+    #[bilrost(5)]
+    Completed(ScannerCompleted),
 }
 
 // ----- close scanner -----

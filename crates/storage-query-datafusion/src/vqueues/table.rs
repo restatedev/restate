@@ -90,6 +90,7 @@ impl ScanLocalPartition for VQueuesScanner {
     >(
         partition_store: &PartitionStore,
         filter: VQueueFilter,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         if let Some(entry_ids) = filter.entry_ids {

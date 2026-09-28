@@ -16,7 +16,6 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::metrics::Time;
 use tokio::sync::mpsc;
 use tokio_stream::StreamExt as TokioStreamExt;
 use tracing::{debug, warn};
@@ -26,12 +25,13 @@ use restate_core::{TaskCenter, TaskKind};
 use restate_types::GenerationalNodeId;
 use restate_types::net::remote_query_scanner::{
     RemoteQueryScannerNextResult, RemoteQueryScannerOpen, RemoteQueryScannerPredicate,
-    ScannerBatch, ScannerFailure, ScannerId,
+    ScannerBatch, ScannerCompleted, ScannerFailure, ScannerId,
 };
 
 use crate::context::QueryContext;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
+use crate::scan_metrics::ScanMetrics;
 use crate::{decode_expr, decode_schema, encode_record_batch};
 
 const SCANNER_EXPIRATION: Duration = Duration::from_secs(60);
@@ -53,6 +53,8 @@ pub(crate) struct ScannerTask {
     ctx: Arc<TaskContext>,
     schema: SchemaRef,
     dynamic_filter: Option<Arc<DynamicFilterPhysicalExpr>>,
+    metrics: ScanMetrics,
+    collect_metrics: bool,
 }
 
 impl ScannerTask {
@@ -82,6 +84,7 @@ impl ScannerTask {
             .as_ref()
             .map(|pred| Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), Arc::clone(pred))));
 
+        let metrics = ScanMetrics::remote(request.partition_id);
         let stream = scanner.scan_partition(
             request.partition_id,
             request.range,
@@ -94,7 +97,7 @@ impl ScannerTask {
             request
                 .limit
                 .map(|limit| usize::try_from(limit).expect("limit to fit in a usize")),
-            Time::new(),
+            metrics.clone(),
         )?;
 
         let (tx, rx) = mpsc::unbounded_channel();
@@ -107,6 +110,8 @@ impl ScannerTask {
             ctx,
             schema,
             dynamic_filter,
+            metrics,
+            collect_metrics: request.collect_metrics,
         };
 
         scanners.insert(scanner_id, tx);
@@ -177,47 +182,45 @@ impl ScannerTask {
                 return;
             }
 
-            // The filtering is now done by FilterCoalesceStream inside scan_partition,
-            // so we just need to get the next batch from the stream.
-            let record_batch = match self.stream.next().await {
-                Some(Ok(record_batch)) => record_batch,
-                Some(Err(e)) => {
-                    warn!("Error while scanning {}: {e}", self.scanner_id);
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                            scanner_id: self.scanner_id,
-                            message: e.to_string(),
-                        }));
-                    return;
-                }
-                None => {
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id));
-                    return;
-                }
-            };
+            let response = self.next_response().await;
+            let more = matches!(response, RemoteQueryScannerNextResult::NextBatch(_));
+            request.reciprocal.send(response);
+            if !more {
+                return;
+            }
+        }
+    }
 
-            match encode_record_batch(&self.stream.schema(), record_batch) {
-                Ok(record_batch) => {
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-                            scanner_id: self.scanner_id,
-                            record_batch,
-                        }))
-                }
-                Err(e) => {
-                    warn!("Error while encoding batch {}: {e}", self.scanner_id);
-                    request
-                        .reciprocal
-                        .send(RemoteQueryScannerNextResult::Failure(ScannerFailure {
-                            scanner_id: self.scanner_id,
-                            message: e.to_string(),
-                        }));
-                    return;
-                }
+    async fn next_response(&mut self) -> RemoteQueryScannerNextResult {
+        // The local scan publishes its final counters before exposing EOF.
+        let result = match self.stream.next().await {
+            Some(Ok(batch)) => encode_record_batch(&self.stream.schema(), batch),
+            Some(Err(error)) => Err(error),
+            None => {
+                return if self.collect_metrics {
+                    RemoteQueryScannerNextResult::Completed(ScannerCompleted {
+                        scanner_id: self.scanner_id,
+                        metrics: self.metrics.snapshot(),
+                    })
+                } else {
+                    RemoteQueryScannerNextResult::NoMoreRecords(self.scanner_id)
+                };
+            }
+        };
+        let metrics = self.collect_metrics.then(|| self.metrics.snapshot());
+        match result {
+            Ok(record_batch) => RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
+                scanner_id: self.scanner_id,
+                record_batch,
+                metrics,
+            }),
+            Err(error) => {
+                warn!("Error while scanning/encoding {}: {error}", self.scanner_id);
+                RemoteQueryScannerNextResult::Failure(ScannerFailure {
+                    scanner_id: self.scanner_id,
+                    message: error.to_string(),
+                    metrics,
+                })
             }
         }
     }
@@ -228,5 +231,92 @@ impl Drop for ScannerTask {
         if let Some(scanners) = self.scanners.upgrade() {
             let _ = scanners.remove(&self.scanner_id);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::datatypes::Schema;
+    use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use restate_types::sharding::PartitionId;
+
+    use super::*;
+
+    fn task(
+        collect_metrics: bool,
+        batches: Vec<datafusion::common::Result<RecordBatch>>,
+    ) -> ScannerTask {
+        let schema = Arc::new(Schema::empty());
+        let (_, rx) = mpsc::unbounded_channel();
+        ScannerTask {
+            peer: GenerationalNodeId::new(1, 1),
+            scanner_id: ScannerId(GenerationalNodeId::new(1, 1), 1),
+            stream: Box::pin(RecordBatchStreamAdapter::new(
+                schema.clone(),
+                futures::stream::iter(batches),
+            )),
+            rx,
+            scanners: Weak::new(),
+            ctx: Arc::new(TaskContext::default()),
+            schema,
+            dynamic_filter: None,
+            metrics: ScanMetrics::remote(PartitionId::MIN),
+            collect_metrics,
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_completion_empty_and_failed_replies_respect_capabilities() {
+        for enabled in [false, true] {
+            let mut task = task(
+                enabled,
+                vec![Ok(RecordBatch::new_empty(Arc::new(Schema::empty())))],
+            );
+            task.metrics.iterator_metrics().mark_supported();
+            task.metrics.record_emitted();
+            let (reply, received) = Reciprocal::<Oneshot<RemoteQueryScannerNextResult>>::mock();
+            reply.send(task.next_response().await);
+            let RemoteQueryScannerNextResult::NextBatch(batch) = received.recv().await else {
+                panic!("expected batch")
+            };
+            assert_eq!(batch.metrics.is_some(), enabled);
+            if let Some(metrics) = batch.metrics {
+                assert!(metrics.available);
+                assert!(!metrics.complete);
+                assert_eq!(metrics.records_emitted, 1);
+            }
+            task.metrics.finish();
+            let response = task.next_response().await;
+            match response {
+                RemoteQueryScannerNextResult::Completed(done) => {
+                    assert!(enabled);
+                    assert!(done.metrics.complete);
+                    assert_eq!(done.metrics.records_emitted, 1);
+                }
+                RemoteQueryScannerNextResult::NoMoreRecords(_) => assert!(!enabled),
+                _ => panic!("expected EOF"),
+            }
+        }
+        let mut empty = task(true, vec![]);
+        empty.metrics.iterator_metrics().mark_supported();
+        empty.metrics.finish();
+        let RemoteQueryScannerNextResult::Completed(done) = empty.next_response().await else {
+            panic!("expected measured EOF")
+        };
+        assert!(done.metrics.available && done.metrics.complete);
+        assert_eq!(done.metrics.keys_visited, 0);
+
+        let mut failed = task(
+            true,
+            vec![Err(datafusion::common::DataFusionError::Execution(
+                "failed scan".into(),
+            ))],
+        );
+        failed.metrics.iterator_metrics().mark_supported();
+        let RemoteQueryScannerNextResult::Failure(failure) = failed.next_response().await else {
+            panic!("expected failure")
+        };
+        assert!(!failure.metrics.unwrap().complete);
     }
 }
