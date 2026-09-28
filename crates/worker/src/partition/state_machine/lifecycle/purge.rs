@@ -16,14 +16,15 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{
     EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
@@ -44,6 +45,8 @@ impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s,
     for OnPurgeCommand<'_>
 where
     S: WriteJournalTable
+        + ReadJournalTable
+        + WriteTimerTable
         + ReadInvocationStatusTable
         + ReadVQueueTable
         + WriteVQueueTable
@@ -66,6 +69,7 @@ where
                 invocation_target,
                 journal_metadata,
                 pinned_deployment,
+                idempotency_key,
                 ..
             }) => {
                 // delete the vqueue entry information.
@@ -126,6 +130,10 @@ where
                         invocation_id,
                         journal_metadata.length,
                         pinned_service_protocol_version,
+                        InvocationUuid::is_deterministic(
+                            &invocation_target,
+                            idempotency_key.as_deref(),
+                        ),
                     )
                     .await?;
                 }

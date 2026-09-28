@@ -290,11 +290,22 @@ impl InvocationUuid {
         self.0.to_be_bytes()
     }
 
+    /// Returns true if [`Self::generate`] derives a deterministic id for the given inputs,
+    /// meaning the same id can be reused by a later invocation (after the previous one is purged).
+    pub fn is_deterministic(
+        invocation_target: &InvocationTarget,
+        idempotency_key: Option<&str>,
+    ) -> bool {
+        idempotency_key.is_some()
+            || invocation_target.invocation_target_ty()
+                == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+    }
+
     pub fn generate(invocation_target: &InvocationTarget, idempotency_key: Option<&str>) -> Self {
         let scope = invocation_target.scope();
         const HASH_SEPARATOR: u8 = 0x2c;
 
-        // --- Rules for deterministic ID
+        // --- Rules for deterministic ID (keep in sync with `is_deterministic`)
         // * If the target is _scoped_, use the scope name as part of the hash to avoid collision
         // with unscoped requests with the same idempotency key.
         // * If the target IS a workflow run, use workflow name + key
