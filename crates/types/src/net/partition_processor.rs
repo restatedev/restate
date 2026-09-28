@@ -8,6 +8,48 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Wire types of the [`PartitionLeaderService`], the RPCs served by partition processor leaders.
+//!
+//! Two request/response formats coexist:
+//! - The legacy [`PartitionProcessorRpcRequest`]: one flexbuffers-encoded request for all
+//!   operations, answered with `Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>`.
+//!   It will be removed in 1.9, once all RPCs use the dedicated messages.
+//! - Dedicated messages, one per operation (e.g. [`CancelInvocationRpcRequest`]). Each one is
+//!   answered with a [`PartitionProcessorResponseRpcEnvelope`], which carries either the
+//!   operation's result or one of the errors any PP RPC can return. They are registered with
+//!   `define_partition_processor_rpcs!` at the bottom of this module.
+//!
+//! # Response enums are `bilrost::Oneof`s
+//!
+//! Most response enums derive `bilrost::Oneof` + `bilrost::Message` instead of
+//! `bilrost::Enumeration`. This keeps them extensible: an enum can later move into a field of a
+//! struct, and the struct can gain new fields, without changing the bytes on the wire.
+//!
+//! ```ignore
+//! // Today
+//! #[derive(bilrost::Oneof, bilrost::Message)]
+//! pub enum CancelInvocationRpcResponse {
+//!     #[bilrost(empty)]
+//!     Unknown,
+//!     #[bilrost(tag(1), message)]
+//!     Done,
+//!     // ... tags 2-4
+//! }
+//!
+//! // Later: the same bytes on the wire, plus a new field
+//! #[derive(bilrost::Message)]
+//! pub struct CancelInvocationRpcResponse {
+//!     #[bilrost(oneof(1, 2, 3, 4))]
+//!     pub status: CancelInvocationStatus, // the old enum, renamed
+//!     #[bilrost(tag(100))]
+//!     pub new_field: Option<Foo>,
+//! }
+//! ```
+//!
+//! The `#[bilrost(empty)] Unknown` variant is what a response decodes to when none of the
+//! variant tags are set. Converting `Unknown` into a client response type fails with
+//! [`UnexpectedResponse`].
+
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
