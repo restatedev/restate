@@ -1193,36 +1193,43 @@ async fn live_topk_thresholds_reject_stale_keys_in_every_stage() {
     );
     let emitted = Arc::new(Mutex::new(Vec::new()));
     let threshold = Arc::new(Mutex::new(None));
+    let metrics = restate_partition_store::IteratorMetrics::default();
     engine
         .partition_store()
-        .scan_entry_by_stage(filter.range, &filter.predicate, filter.live, None, {
-            let emitted = emitted.clone();
-            let threshold = threshold.clone();
-            move |key| {
-                let ms = key
-                    .transitioned_at
-                    .decode()
-                    .unwrap()
-                    .0
-                    .to_unix_millis()
-                    .as_u64();
-                let mut emitted = emitted.lock().unwrap();
-                emitted.push(ms);
-                if emitted.len() == 100 {
-                    *threshold.lock().unwrap() = Some(ms);
-                    let at = lit(ScalarValue::TimestampMillisecond(Some(ms as i64), None));
-                    dynamic
-                        .update(logical2physical(
-                            &col("transitioned_at")
-                                .is_null()
-                                .or(col("transitioned_at").gt(at)),
-                            &schema,
-                        ))
-                        .unwrap();
+        .scan_entry_by_stage(
+            filter.range,
+            &filter.predicate,
+            filter.live,
+            Some(metrics.clone()),
+            {
+                let emitted = emitted.clone();
+                let threshold = threshold.clone();
+                move |key| {
+                    let ms = key
+                        .transitioned_at
+                        .decode()
+                        .unwrap()
+                        .0
+                        .to_unix_millis()
+                        .as_u64();
+                    let mut emitted = emitted.lock().unwrap();
+                    emitted.push(ms);
+                    if emitted.len() == 100 {
+                        *threshold.lock().unwrap() = Some(ms);
+                        let at = lit(ScalarValue::TimestampMillisecond(Some(ms as i64), None));
+                        dynamic
+                            .update(logical2physical(
+                                &col("transitioned_at")
+                                    .is_null()
+                                    .or(col("transitioned_at").gt(at)),
+                                &schema,
+                            ))
+                            .unwrap();
+                    }
+                    ControlFlow::Continue(())
                 }
-                ControlFlow::Continue(())
-            }
-        })
+            },
+        )
         .unwrap()
         .await
         .unwrap();
@@ -1245,4 +1252,13 @@ async fn live_topk_thresholds_reject_stale_keys_in_every_stage() {
     // Older entries stop within one poll interval of the update.
     let stale = emitted.iter().filter(|ms| **ms < threshold).count();
     assert!(stale < 64, "{stale} stale entries emitted");
+    // The rejected remainder of each stage group costs one key and one seek.
+    let metrics = metrics.snapshot();
+    assert_eq!(
+        (metrics.keys_visited, metrics.seeks),
+        (
+            emitted.len() as u64 + STAGES.len() as u64,
+            1 + STAGES.len() as u64
+        )
+    );
 }
