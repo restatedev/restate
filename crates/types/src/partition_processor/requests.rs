@@ -416,7 +416,7 @@ impl PartitionProcessorRpc for CancelInvocation {
         response: LegacyResponse,
     ) -> Result<Self::Response, WireResponseError> {
         match response? {
-            PartitionProcessorRpcResponse::CancelInvocation(res) => Ok(res.into()),
+            PartitionProcessorRpcResponse::CancelInvocation(res) => Ok(res.try_into()?),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
     }
@@ -456,7 +456,7 @@ impl PartitionProcessorRpc for KillInvocation {
         response: LegacyResponse,
     ) -> Result<Self::Response, WireResponseError> {
         match response? {
-            PartitionProcessorRpcResponse::KillInvocation(res) => Ok(res.into()),
+            PartitionProcessorRpcResponse::KillInvocation(res) => Ok(res.try_into()?),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
     }
@@ -497,7 +497,7 @@ impl PartitionProcessorRpc for PurgeInvocation {
         response: LegacyResponse,
     ) -> Result<Self::Response, WireResponseError> {
         match response? {
-            PartitionProcessorRpcResponse::PurgeInvocation(res) => Ok(res.into()),
+            PartitionProcessorRpcResponse::PurgeInvocation(res) => Ok(res.try_into()?),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
     }
@@ -538,7 +538,7 @@ impl PartitionProcessorRpc for PurgeJournal {
         response: LegacyResponse,
     ) -> Result<Self::Response, WireResponseError> {
         match response? {
-            PartitionProcessorRpcResponse::PurgeJournal(res) => Ok(res.into()),
+            PartitionProcessorRpcResponse::PurgeJournal(res) => Ok(res.try_into()?),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
     }
@@ -667,7 +667,7 @@ impl PartitionProcessorRpc for PauseInvocation {
         response: LegacyResponse,
     ) -> Result<Self::Response, WireResponseError> {
         match response? {
-            PartitionProcessorRpcResponse::PauseInvocation(res) => Ok(res.into()),
+            PartitionProcessorRpcResponse::PauseInvocation(res) => Ok(res.try_into()?),
             _ => Err(WireResponseError::UnexpectedResponse),
         }
     }
