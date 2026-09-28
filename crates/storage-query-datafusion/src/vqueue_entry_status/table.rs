@@ -13,11 +13,11 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
-use restate_sharding::PartitionKey;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatusTable};
-use restate_types::vqueues::{EntryId, VQueueId};
+use restate_types::identifiers::BaseEntryId;
+use restate_types::vqueues::VQueueId;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
@@ -73,7 +73,7 @@ struct VQueueEntryStatusScanner;
 
 impl ScanLocalPartition for VQueueEntryStatusScanner {
     type Builder = SysVqueueEntryStatusBuilder;
-    type Item<'a> = (PartitionKey, &'a EntryId, &'a RawStatusHeaderRef<'a>);
+    type Item<'a> = (&'a BaseEntryId, &'a RawStatusHeaderRef<'a>);
     type ConversionError = std::convert::Infallible;
     type Filter = VQueueEntryIdFilter;
 
@@ -87,19 +87,16 @@ impl ScanLocalPartition for VQueueEntryStatusScanner {
         filter: VQueueEntryIdFilter,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.for_each_vqueue_entry_status(
-            filter.into(),
-            move |partition_key, entry_id, header| {
-                f((partition_key, entry_id, header)).map_break(Result::unwrap)
-            },
-        )
+        partition_store.for_each_vqueue_entry_status(filter.into(), move |id, header| {
+            f((id, header)).map_break(Result::unwrap)
+        })
     }
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
-        (partition_key, entry_id, header): Self::Item<'a>,
+        (id, header): Self::Item<'a>,
     ) -> Result<(), Self::ConversionError> {
-        append_vqueue_entry_status_row(row_builder, partition_key, entry_id, header);
+        append_vqueue_entry_status_row(row_builder, id, header);
         Ok(())
     }
 }
