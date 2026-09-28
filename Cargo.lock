@@ -8413,7 +8413,6 @@ dependencies = [
  "restate-memory",
  "restate-metadata-providers",
  "restate-metadata-server",
- "restate-metadata-server-grpc",
  "restate-metadata-store",
  "restate-partition-store",
  "restate-rocksdb",

@@ -41,7 +41,6 @@ restate-log-server = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-providers = { workspace = true }
 restate-metadata-server = { workspace = true }
-restate-metadata-server-grpc = { workspace = true, features = ["grpc-client"] }
 restate-metadata-store = { workspace = true, features = ["grpc-server"] }
 restate-partition-store = { workspace = true }
 restate-rocksdb = { workspace = true }
