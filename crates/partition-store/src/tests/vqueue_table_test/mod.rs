@@ -52,7 +52,7 @@ fn entry_id(id: u8) -> EntryId {
 
 fn entry_id_from_u64(id: u64) -> EntryId {
     let mut remainder = [0; EntryId::REMAINDER_LEN];
-    remainder[8..].copy_from_slice(&id.to_be_bytes());
+    remainder[8..].copy_from_slice(&(id + 1).to_be_bytes());
     EntryId::new(EntryKind::Invocation, remainder)
 }
 
