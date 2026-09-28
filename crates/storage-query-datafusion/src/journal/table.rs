@@ -78,6 +78,7 @@ impl ScanLocalPartition for JournalScanner {
     >(
         partition_store: &PartitionStore,
         filter: InvocationIdFilter,
+        _metrics: Option<restate_partition_store::IteratorMetrics>,
         f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
         // these two iterators can run concurrently in theory.

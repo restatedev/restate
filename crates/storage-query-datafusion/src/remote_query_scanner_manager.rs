@@ -19,7 +19,6 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::metrics::Time;
 use parking_lot::Mutex;
 
 use restate_core::Metadata;
@@ -32,6 +31,7 @@ use restate_types::sharding::KeyRange;
 use crate::remote_query_scanner_client::{
     RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
 };
+use crate::scan_metrics::ScanMetrics;
 use crate::table_providers::{Scan, ScanPartition};
 
 // A global scanner sequence generate shared across all RemoteScannerManager
@@ -267,7 +267,7 @@ impl ScanPartition for ScanToScanPartitionAdapter {
         _access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        _elapsed_compute: Time,
+        _metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         // Node-level scanners don't use partition-based predicates
         Ok(self.0.scan(projection, &[], batch_size, limit))
@@ -284,7 +284,7 @@ impl ScanPartition for RemotePartitionsScanner {
         access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
-        elapsed_compute: Time,
+        metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
         // The wire protocol carries one initial predicate; only the worker introduces a separate
         // update wrapper. Enforce this for both routes so routing cannot change access planning.
@@ -310,7 +310,7 @@ impl ScanPartition for RemotePartitionsScanner {
                     access_predicate,
                     batch_size,
                     limit,
-                    elapsed_compute,
+                    metrics,
                 )?)
             }
             PartitionLocation::Remote { node_id } => {
@@ -326,6 +326,7 @@ impl ScanPartition for RemotePartitionsScanner {
                     predicate,
                     batch_size,
                     limit,
+                    Some(metrics),
                 ))
             }
         }

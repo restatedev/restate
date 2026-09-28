@@ -40,11 +40,12 @@ macro_rules! entry_scan {
     ($method:ident, $target:ty, $key:ty, $view:ident) => {
         /// Scans persisted index entries within the requested and owned key range.
         /// Validates field boundaries and the canonical ID; other values remain lazy.
-        /// Native predicates run before materialization.
+        /// Native predicates run before materialization. Metrics include empty scan plans.
         pub fn $method<F>(
             &self,
             range: KeyRange,
             filter: &Filter<$target>,
+            metrics: Option<restate_rocksdb::IteratorMetrics>,
             mut f: F,
         ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
         where
@@ -53,6 +54,7 @@ macro_rules! entry_scan {
             self.scan_index(
                 range,
                 <$key>::prepare_filter(filter)?,
+                metrics,
                 move |decoder, value, range| {
                     if !value.is_empty() {
                         return ControlFlow::Break(Err(StorageError::DataIntegrityError));
@@ -118,6 +120,7 @@ impl PartitionStore {
         &self,
         range: KeyRange,
         filter: &Filter<BusyVQueueTarget>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
@@ -128,6 +131,7 @@ impl PartitionStore {
         self.scan_index(
             range,
             BusyVQueueKey::prepare_filter(filter)?,
+            metrics,
             move |decoder, value, range| {
                 let view = break_on_err(decoder.take_all())?;
                 if !range.contains(&break_on_err(view.vqueue_id.decode())?.partition_key()) {
@@ -145,6 +149,7 @@ impl PartitionStore {
         &self,
         range: KeyRange,
         filter: PreparedKeyFilter<K>,
+        metrics: Option<restate_rocksdb::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, K, F>>
     where
@@ -154,6 +159,9 @@ impl PartitionStore {
             + 'static,
     {
         let prefix = IndexKeyPrefix::of::<K::Index>(self.partition_id());
+        if let Some(metrics) = &metrics {
+            metrics.mark_supported();
+        }
         let cursor = filter.into_cursor(prefix.as_bytes())?;
         let range = range.intersect(&self.partition_key_range());
         let future = range
@@ -167,6 +175,7 @@ impl PartitionStore {
                     Priority::Low,
                     opts,
                     scan,
+                    metrics,
                     move |(key, value)| {
                         match break_on_err(cursor.evaluate(key))? {
                             KeyMatch::Match => {}
@@ -220,7 +229,7 @@ mod tests {
     ) -> Result<Vec<CanonicalEntryId>> {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(range, &filter, move |key| {
+            .scan_entry_by_service(range, &filter, None, move |key| {
                 sender.send(key.canonical_id.decode().unwrap()).unwrap();
                 ControlFlow::Continue(())
             })?
@@ -307,7 +316,7 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, move |_| {
+            .scan_entry_by_service(KeyRange::FULL, &Filter::All, None, move |_| {
                 sender.send(()).unwrap();
                 ControlFlow::Break(Ok(()))
             })
@@ -316,13 +325,52 @@ mod tests {
             .unwrap();
         assert_eq!(receiver.recv().await, Some(()));
         assert_eq!(receiver.recv().await, None);
+        let failed_metrics = restate_rocksdb::IteratorMetrics::default();
         let error = store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, |_| {
-                ControlFlow::Break(Err(StorageError::DataIntegrityError))
-            })
+            .scan_entry_by_service(
+                KeyRange::FULL,
+                &Filter::All,
+                Some(failed_metrics.clone()),
+                |_| ControlFlow::Break(Err(StorageError::DataIntegrityError)),
+            )
             .unwrap()
             .await
             .unwrap_err();
         assert!(matches!(error, StorageError::DataIntegrityError));
+        let failed = failed_metrics.snapshot();
+        assert_eq!(failed.completed_iterators, 1);
+        assert_eq!(failed.keys_visited, 2);
+
+        // Accounting belongs to each operation, even when scans share a store.
+        let empty_metrics = restate_rocksdb::IteratorMetrics::default();
+        let stopped_metrics = restate_rocksdb::IteratorMetrics::default();
+        let empty = store
+            .scan_entry_by_service(
+                KeyRange::FULL,
+                &Filter::Empty,
+                Some(empty_metrics.clone()),
+                |_| panic!("empty scan produced a row"),
+            )
+            .unwrap();
+        let stopped = store
+            .scan_entry_by_service(
+                KeyRange::FULL,
+                &Filter::All,
+                Some(stopped_metrics.clone()),
+                |_| ControlFlow::Break(Ok(())),
+            )
+            .unwrap();
+        let (empty, stopped) = tokio::join!(empty, stopped);
+        empty.unwrap();
+        stopped.unwrap();
+        let empty = empty_metrics.snapshot();
+        assert!(empty.supported);
+        assert_eq!(empty.iterators, 0);
+        let stopped = stopped_metrics.snapshot();
+        assert_eq!(stopped.iterators, 1);
+        assert_eq!(stopped.completed_iterators, 1);
+        assert_eq!(stopped.keys_visited, 2); // Foreign key 90, then owned key 110.
+        assert_eq!(stopped.seeks, 1);
+        assert_eq!(stopped.nexts, 1);
     }
 }

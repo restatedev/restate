@@ -12,6 +12,7 @@ use bytes::Bytes;
 use rocksdb::{DB, DBRawIteratorWithThreadMode};
 
 use crate::RocksError;
+use crate::iterator_metrics::{IteratorMetrics, IteratorProbe};
 
 pub enum Disposition {
     // No value to emit, continue driving the iterator
@@ -46,6 +47,7 @@ enum State<'a> {
 
 pub struct RocksIterator<'a, F> {
     state: State<'a>,
+    probe: Option<IteratorProbe>,
     f: F,
 }
 
@@ -56,11 +58,17 @@ where
     pub fn new(iterator: DBRawIteratorWithThreadMode<'a, DB>, next_step: IterAction, f: F) -> Self {
         Self {
             f,
+            probe: None,
             state: State::Active {
                 iterator,
                 next_step,
             },
         }
+    }
+
+    pub fn with_metrics(mut self, metrics: Option<IteratorMetrics>) -> Self {
+        self.probe = metrics.map(IteratorProbe::new);
+        self
     }
 
     /// Drive the iterator one step at a time
@@ -71,6 +79,9 @@ where
                 next_step,
                 ..
             } => {
+                if let Some(probe) = &mut self.probe {
+                    probe.action(next_step);
+                }
                 match next_step {
                     IterAction::Seek(items) => iterator.seek(items),
                     IterAction::Prev => iterator.prev(),
@@ -78,6 +89,9 @@ where
                     IterAction::SeekToFirst => iterator.seek_to_first(),
                     IterAction::SeekToLast => iterator.seek_to_last(),
                     IterAction::Stop => {
+                        if let Some(probe) = &mut self.probe {
+                            probe.finish();
+                        }
                         self.state = State::Terminated;
                         return Disposition::Stop;
                     }
@@ -90,6 +104,9 @@ where
         let Some((key, value)) = iterator.item() else {
             match iterator.status() {
                 Ok(()) => {
+                    if let Some(probe) = &mut self.probe {
+                        probe.finish();
+                    }
                     self.state = State::Terminated;
                     return Disposition::Stop;
                 }
@@ -100,6 +117,9 @@ where
                     // todo: perhaps in the future we can allow the user to decide
                     // to retry on IO errors. But for now, we ignore the returned
                     // action and always terminate.
+                    if let Some(probe) = &mut self.probe {
+                        probe.finish();
+                    }
                     let _ = (self.f)(Err(RocksError::from(e)));
                     self.state = State::Terminated;
                     return Disposition::Stop;
@@ -108,6 +128,9 @@ where
         };
 
         // call the user's function
+        if let Some(probe) = &mut self.probe {
+            probe.visit(key.len() + value.len());
+        }
         *next_step = (self.f)(Ok((key, value)));
         Disposition::Continue
     }

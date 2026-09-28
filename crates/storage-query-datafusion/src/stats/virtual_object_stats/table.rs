@@ -79,9 +79,10 @@ impl ScanLocalPartition for VirtualObjectStatsScanner {
     >(
         partition_store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<restate_partition_store::IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        partition_store.scan_virtual_object_load(&filter, move |key_decoder, value| {
+        partition_store.scan_virtual_object_load(&filter, metrics, move |key_decoder, value| {
             f((key_decoder, value)).map_break(|result| result.map_err(StorageError::from))
         })
     }

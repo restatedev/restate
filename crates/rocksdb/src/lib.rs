@@ -14,6 +14,7 @@ mod db_manager;
 mod db_spec;
 mod error;
 mod iterator;
+mod iterator_metrics;
 mod logging;
 mod metric_definitions;
 mod perf;
@@ -45,6 +46,7 @@ pub use self::db_spec::*;
 pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
+pub use self::iterator_metrics::{IteratorMetrics, IteratorStats};
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
 
@@ -342,6 +344,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
+    #[allow(clippy::too_many_arguments)]
     pub fn run_background_iterator(
         self: Arc<Self>,
         cf: CfName,
@@ -349,6 +352,7 @@ impl RocksDb {
         priority: Priority,
         initial_action: IterAction,
         mut read_options: rocksdb::ReadOptions,
+        metrics: Option<IteratorMetrics>,
         mut on_item: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         // ensure that we allow blocking IO.
@@ -370,7 +374,8 @@ impl RocksDb {
                     self.db.as_raw_db().raw_iterator_cf_opt(&cf, read_options),
                     initial_action,
                     on_item,
-                );
+                )
+                .with_metrics(metrics);
                 loop {
                     match iter.step() {
                         iterator::Disposition::WouldBlock => {

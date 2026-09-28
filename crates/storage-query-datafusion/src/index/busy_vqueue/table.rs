@@ -15,7 +15,7 @@ use enum_map::EnumMap;
 
 use restate_partition_store::index::BusyVQueueKeyView;
 use restate_partition_store::stats::aggregated::StageCounts;
-use restate_partition_store::{PartitionStore, PartitionStoreManager};
+use restate_partition_store::{IteratorMetrics, PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::index::BusyVQueue;
 use restate_storage_api::vqueue_table::Stage;
@@ -59,6 +59,7 @@ impl ScanLocalPartition for BusyVQueueScanner {
     fn for_each_row<F>(
         store: &PartitionStore,
         filter: Self::Filter,
+        metrics: Option<IteratorMetrics>,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError>
     where
@@ -67,9 +68,12 @@ impl ScanLocalPartition for BusyVQueueScanner {
             + Sync
             + 'static,
     {
-        store.scan_busy_vqueues(filter.range, &filter.predicate, move |key, counts| {
-            f((key, counts))
-        })
+        store.scan_busy_vqueues(
+            filter.range,
+            &filter.predicate,
+            metrics,
+            move |key, counts| f((key, counts)),
+        )
     }
 
     fn append_row<'a>(
