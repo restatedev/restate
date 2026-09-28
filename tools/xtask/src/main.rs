@@ -209,6 +209,7 @@ Tasks:
     generate-default-config: Generate default configuration.
     generate-rest-api-doc: Generate Rest API documentation. Make sure to have the port 8081 open.
     generate-table-docs: Generate default configuration.
+    generate-cli-sql-tables: Generate the SQL introspection reference embedded in the CLI.
 "
     );
 }
@@ -232,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
                     .await?
             }
             "generate-table-docs" => generate_table_docs()?,
+            "generate-cli-sql-tables" => print!("{}", table_docs::render_cli_sql_tables()),
             invalid => {
                 print_help();
                 bail!("Invalid task name: {}", invalid)
