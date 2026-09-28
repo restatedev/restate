@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_sharding::{KeyRange, PartitionKey};
+use restate_sharding::KeyRange;
+use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{Seq, VQueueId};
 
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
@@ -178,7 +179,8 @@ pub trait WriteVQueueTable {
         status: Status,
     );
 
-    fn delete_vqueue_entry_status(&mut self, partition_key: PartitionKey, id: &EntryId);
+    /// Deletes the status by base identity, without checking a sequence number.
+    fn delete_vqueue_entry_status(&mut self, id: &BaseEntryId);
 
     /// Stores a vqueue entry input payload
     fn put_vqueue_input_payload<E>(
@@ -201,12 +203,12 @@ pub trait ReadVQueueTable {
         qid: &VQueueId,
     ) -> impl Future<Output = Result<Option<super::metadata::VQueueMeta>>>;
 
-    /// Get the entry state (header information only) for a vqueue entry by id
+    /// Get the current entry state (header information only) by base identity.
+    /// This lookup does not check a sequence number.
     fn get_vqueue_entry_status(
         &self,
-        partition_key: PartitionKey,
-        id: &EntryId,
-    ) -> impl Future<Output = Result<Option<impl EntryStatusHeader + 'static>>>;
+        id: &BaseEntryId,
+    ) -> impl Future<Output = Result<Option<impl EntryStatusHeader + 'static + use<Self>>>>;
 
     // /// Get the entry state for a vqueue entry by id
     // fn get_vqueue_entry_status_lazy<'a>(
@@ -297,11 +299,7 @@ pub trait ScanVQueueEntryStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(
-                PartitionKey,
-                &'a EntryId,
-                &'a RawStatusHeaderRef<'a>,
-            ) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
             + Send
             + Sync
             + 'static;
