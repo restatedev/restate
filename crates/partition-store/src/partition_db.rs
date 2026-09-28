@@ -638,11 +638,21 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
 
         let config = &Configuration::pinned().worker.storage;
-        let block_options = restate_rocksdb::configuration::create_default_block_options(
+        let mut block_options = restate_rocksdb::configuration::create_default_block_options(
             &config.rocksdb,
             // use global block cache
             Some(global_cache),
         );
+        if config.rocksdb_enable_l6_filters {
+            // By default, optimize_filters_for_hits skips L6 filters to save memory. Enable
+            // them to avoid unnecessary block reads when looking up missing invocation IDs.
+            cf_options.set_optimize_filters_for_hits(false);
+            // Use Ribbon filters to reduce L6 filter memory, keeping Bloom on other levels.
+            // In internal write-heavy workloads, Ribbon filter size was 28.9% smaller:
+            // for L6 240.4M entries, Ribbon=237.8MiB vs. Bloom=334.3MiB.
+            block_options.set_hybrid_ribbon_filter(10.0, 6);
+        }
+
         cf_options.set_block_based_table_factory(&block_options);
         cf_options.set_merge_operator(
             "PartitionMerge",
@@ -674,6 +684,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         ));
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(true);
+
         cf_options.set_num_levels(7);
         let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {
             rocksdb::DBCompressionType::None
