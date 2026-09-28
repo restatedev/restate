@@ -271,12 +271,21 @@ pub enum PartitionProcessorResponseRpcEnvelope<T> {
     Unknown,
     #[bilrost(tag(1))]
     Ok { result: T },
-    #[bilrost(tag(2))]
-    NotLeader(PartitionId),
-    #[bilrost(tag(3))]
-    LostLeadership(PartitionId),
-    #[bilrost(tag(4))]
-    Internal(String),
+    #[bilrost(tag(2), message)]
+    NotLeader {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+    },
+    #[bilrost(tag(3), message)]
+    LostLeadership {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+    },
+    #[bilrost(tag(4), message)]
+    Internal {
+        #[bilrost(1)]
+        message: String,
+    },
 }
 
 impl<T> PartitionProcessorResponseRpcEnvelope<T> {
@@ -284,13 +293,13 @@ impl<T> PartitionProcessorResponseRpcEnvelope<T> {
     pub fn into_result(self) -> Result<T, WireResponseError> {
         match self {
             Self::Ok { result } => Ok(result),
-            Self::NotLeader(partition_id) => {
+            Self::NotLeader { partition_id } => {
                 Err(PartitionProcessorRpcError::NotLeader(partition_id).into())
             }
-            Self::LostLeadership(partition_id) => {
+            Self::LostLeadership { partition_id } => {
                 Err(PartitionProcessorRpcError::LostLeadership(partition_id).into())
             }
-            Self::Internal(message) => Err(PartitionProcessorRpcError::Internal(message).into()),
+            Self::Internal { message } => Err(PartitionProcessorRpcError::Internal(message).into()),
             Self::Unknown => Err(UnexpectedResponse.into()),
         }
     }
@@ -337,11 +346,11 @@ impl<T> From<Result<T, PartitionProcessorRpcError>> for PartitionProcessorRespon
 impl<T> From<PartitionProcessorRpcError> for PartitionProcessorResponseRpcEnvelope<T> {
     fn from(value: PartitionProcessorRpcError) -> Self {
         match value {
-            PartitionProcessorRpcError::NotLeader(partition_id) => Self::NotLeader(partition_id),
+            PartitionProcessorRpcError::NotLeader(partition_id) => Self::NotLeader { partition_id },
             PartitionProcessorRpcError::LostLeadership(partition_id) => {
-                Self::LostLeadership(partition_id)
+                Self::LostLeadership { partition_id }
             }
-            PartitionProcessorRpcError::Internal(msg) => Self::Internal(msg),
+            PartitionProcessorRpcError::Internal(message) => Self::Internal { message },
         }
     }
 }
