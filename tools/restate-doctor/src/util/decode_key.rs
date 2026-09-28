@@ -11,7 +11,9 @@
 //! Decoding helpers for partition-store keys with custom layouts.
 
 use restate_partition_store::index::{
-    EntryByServiceStageKey, EntryByStageKey, EntryNextAtByStageKey, IndexId,
+    BusyVQueueKey, EntryByStageKey, EntryByStageServiceKey, EntryByVirtualObjectStageKey,
+    EntryNextAtByStageKey, EntryNextAtByStageServiceKey, EntryNextAtByVirtualObjectStageKey,
+    IndexId,
 };
 use restate_partition_store::keys::IndexKeyPrefix;
 use restate_partition_store::stats::aggregated::{
@@ -28,18 +30,18 @@ use super::hex_encode;
 pub fn decode_secondary_index_key(key: &[u8]) -> Option<String> {
     let (prefix, payload) = IndexKeyPrefix::decode_prefix(key).ok()?;
     let details = match prefix.index_id() {
-        Some(index @ IndexId::EntryByServiceStage) => {
+        Some(index @ IndexId::EntryByStageService) => {
             let key = payload
-                .into_decoder::<EntryByServiceStageKey>()
+                .into_decoder::<EntryByStageServiceKey>()
                 .decode_all()
                 .ok()?;
             // Decoding removes the descending-order transformation. Preserve the
             // full HLC alongside Unix milliseconds so logical ticks remain visible.
             let transitioned_at = key.transitioned_at.0;
             format!(
-                "index={index}, service_name={:?}, stage={}, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={}, entry_id={}",
-                key.service_name.as_str(),
+                "index={index}, stage={}, service_name={:?}, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={}, entry_id={}",
                 key.stage,
+                key.service_name.as_str(),
                 transitioned_at.to_unix_millis().as_u64(),
                 transitioned_at.as_u64(),
                 key.canonical_id,
@@ -53,11 +55,10 @@ pub fn decode_secondary_index_key(key: &[u8]) -> Option<String> {
                 .ok()?;
             let transitioned_at = key.transitioned_at.0;
             format!(
-                "index={index}, stage={}, transitioned_at_unix_ms={}, transitioned_at_hlc={}, status={}, canonical_id={}, entry_id={}",
+                "index={index}, stage={}, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={}, entry_id={}",
                 key.stage,
                 transitioned_at.to_unix_millis().as_u64(),
                 transitioned_at.as_u64(),
-                key.status,
                 key.canonical_id,
                 key.canonical_id.to_base_entry_id(),
             )
@@ -68,10 +69,70 @@ pub fn decode_secondary_index_key(key: &[u8]) -> Option<String> {
                 .decode_all()
                 .ok()?;
             format!(
-                "index={index}, stage={}, next_at_unix_ms={}, status={}, canonical_id={}, entry_id={}",
+                "index={index}, stage={}, next_at_unix_ms={}, seq={}, canonical_id={}, entry_id={}",
                 key.stage,
                 key.next_at.as_unix_millis().as_u64(),
-                key.status,
+                key.seq,
+                key.canonical_id,
+                key.canonical_id.to_base_entry_id(),
+            )
+        }
+        Some(index @ IndexId::BusyVQueue) => {
+            let key = payload.into_decoder::<BusyVQueueKey>().decode_all().ok()?;
+            format!(
+                "index={index}, total_non_completed={}, last_modified_unix_ms={}, last_modified_hlc={}, scope={:?}, vqueue_id={}",
+                key.total_non_completed.0,
+                key.last_modified.0.to_unix_millis().as_u64(),
+                key.last_modified.0.as_u64(),
+                key.scope,
+                key.vqueue_id,
+            )
+        }
+        Some(index @ IndexId::EntryNextAtByStageService) => {
+            let key = payload
+                .into_decoder::<EntryNextAtByStageServiceKey>()
+                .decode_all()
+                .ok()?;
+            format!(
+                "index={index}, stage={}, service_name={:?}, next_at_unix_ms={}, seq={}, canonical_id={}, entry_id={}",
+                key.stage,
+                key.service_name.as_str(),
+                key.next_at.as_unix_millis().as_u64(),
+                key.seq,
+                key.canonical_id,
+                key.canonical_id.to_base_entry_id(),
+            )
+        }
+        Some(index @ IndexId::EntryByVirtualObjectStage) => {
+            let key = payload
+                .into_decoder::<EntryByVirtualObjectStageKey>()
+                .decode_all()
+                .ok()?;
+            format!(
+                "index={index}, service_name={:?}, scope={:?}, key={:?}, stage={}, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={}, entry_id={}",
+                key.service_name.as_str(),
+                key.scope,
+                key.key,
+                key.stage,
+                key.transitioned_at.0.to_unix_millis().as_u64(),
+                key.transitioned_at.0.as_u64(),
+                key.canonical_id,
+                key.canonical_id.to_base_entry_id(),
+            )
+        }
+        Some(index @ IndexId::EntryNextAtByVirtualObjectStage) => {
+            let key = payload
+                .into_decoder::<EntryNextAtByVirtualObjectStageKey>()
+                .decode_all()
+                .ok()?;
+            format!(
+                "index={index}, service_name={:?}, scope={:?}, key={:?}, stage={}, next_at_unix_ms={}, seq={}, canonical_id={}, entry_id={}",
+                key.service_name.as_str(),
+                key.scope,
+                key.key,
+                key.stage,
+                key.next_at.as_unix_millis().as_u64(),
+                key.seq,
                 key.canonical_id,
                 key.canonical_id.to_base_entry_id(),
             )
@@ -137,15 +198,17 @@ mod tests {
     use std::cmp::Reverse;
 
     use restate_partition_store::index::SecondaryIndexKey;
+    use restate_partition_store::keys::KeyKind;
     use restate_partition_store::stats::Stat;
-    use restate_storage_api::vqueue_table::{Stage, Status};
+    use restate_storage_api::vqueue_table::Stage;
     use restate_types::ServiceName;
     use restate_types::clock::{RoughTimestamp, UniqueTimestamp};
     use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, InvocationId, InvocationUuid};
     use restate_types::sharding::PartitionId;
-    use restate_types::vqueues::{EntryKind, Seq};
+    use restate_types::vqueues::{EntryKind, Seq, VQueueId};
 
     use super::*;
+    use crate::util::decode_value::{DecodedContent, decode_value};
 
     fn service_load_key() -> Vec<u8> {
         let mut key = Vec::new();
@@ -197,12 +260,12 @@ mod tests {
         let canonical_id = BaseEntryId::from(id).canonicalize(Seq::MAX);
         let at = UniqueTimestamp::try_from_parts(100, 7).unwrap();
         let mut key = Vec::new();
-        EntryByServiceStageKey::borrowed("Morder", Stage::Running, Reverse(at), canonical_id)
+        EntryByStageServiceKey::borrowed(Stage::Running, "Morder", Reverse(at), canonical_id)
             .encode_key(PartitionId::from(7), &mut key);
         assert_eq!(
             decode_secondary_index_key(&key).unwrap(),
             format!(
-                "index_id=1, partition_id=7, index=EntryByServiceStage, service_name=\"Morder\", stage=running, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={canonical_id}, entry_id={id}",
+                "index_id=1, partition_id=7, index=EntryByStageService, stage=running, service_name=\"Morder\", transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={canonical_id}, entry_id={id}",
                 at.to_unix_millis().as_u64(),
                 at.as_u64(),
             )
@@ -240,12 +303,12 @@ mod tests {
         );
 
         let mut key = Vec::new();
-        EntryByStageKey::borrowed(Stage::Running, Reverse(at), Status::Started, canonical_id)
+        EntryByStageKey::borrowed(Stage::Running, Reverse(at), canonical_id)
             .encode_key(PartitionId::from(7), &mut key);
         assert_eq!(
             decode_secondary_index_key(&key).unwrap(),
             format!(
-                "index_id=2, partition_id=7, index=EntryByStage, stage=running, transitioned_at_unix_ms={}, transitioned_at_hlc={}, status=started, canonical_id={canonical_id}, entry_id={id}",
+                "index_id=2, partition_id=7, index=EntryByStage, stage=running, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={canonical_id}, entry_id={id}",
                 at.to_unix_millis().as_u64(),
                 at.as_u64(),
             )
@@ -257,18 +320,102 @@ mod tests {
             Stage::Inbox,
             RoughTimestamp::MAX,
             canonical_id.seq(),
-            Status::Scheduled,
             canonical_id,
         )
         .encode_key(PartitionId::from(7), &mut key);
         assert_eq!(
             decode_secondary_index_key(&key).unwrap(),
             format!(
-                "index_id=3, partition_id=7, index=EntryNextAtByStage, stage=inbox, next_at_unix_ms={}, status=scheduled, canonical_id={canonical_id}, entry_id={id}",
+                "index_id=3, partition_id=7, index=EntryNextAtByStage, stage=inbox, next_at_unix_ms={}, seq={}, canonical_id={canonical_id}, entry_id={id}",
                 RoughTimestamp::MAX.as_unix_millis().as_u64(),
+                canonical_id.seq(),
             )
         );
         key.push(0);
         assert!(decode_secondary_index_key(&key).is_none());
+
+        let mut key = Vec::new();
+        EntryNextAtByStageServiceKey::borrowed(
+            Stage::Inbox,
+            "Morder",
+            RoughTimestamp::MAX,
+            canonical_id.seq(),
+            canonical_id,
+        )
+        .encode_key(PartitionId::from(7), &mut key);
+        assert_eq!(
+            decode_secondary_index_key(&key).unwrap(),
+            format!(
+                "index_id=6, partition_id=7, index=EntryNextAtByStageService, stage=inbox, service_name=\"Morder\", next_at_unix_ms={}, seq={}, canonical_id={canonical_id}, entry_id={id}",
+                RoughTimestamp::MAX.as_unix_millis().as_u64(),
+                canonical_id.seq(),
+            )
+        );
+        for scope in [None, Some("tenant")] {
+            let mut key = Vec::new();
+            EntryByVirtualObjectStageKey::borrowed(
+                "Morder",
+                scope,
+                "object",
+                Stage::Suspended,
+                Reverse(at),
+                canonical_id,
+            )
+            .encode_key(PartitionId::from(7), &mut key);
+            assert_eq!(
+                decode_secondary_index_key(&key).unwrap(),
+                format!(
+                    "index_id=5, partition_id=7, index=EntryByVirtualObjectStage, service_name=\"Morder\", scope={scope:?}, key=\"object\", stage=suspended, transitioned_at_unix_ms={}, transitioned_at_hlc={}, canonical_id={canonical_id}, entry_id={id}",
+                    at.to_unix_millis().as_u64(),
+                    at.as_u64(),
+                )
+            );
+            let mut key = Vec::new();
+            EntryNextAtByVirtualObjectStageKey::borrowed(
+                "Morder",
+                scope,
+                "object",
+                Stage::Suspended,
+                RoughTimestamp::MAX,
+                canonical_id.seq(),
+                canonical_id,
+            )
+            .encode_key(PartitionId::from(7), &mut key);
+            assert_eq!(
+                decode_secondary_index_key(&key).unwrap(),
+                format!(
+                    "index_id=7, partition_id=7, index=EntryNextAtByVirtualObjectStage, service_name=\"Morder\", scope={scope:?}, key=\"object\", stage=suspended, next_at_unix_ms={}, seq={}, canonical_id={canonical_id}, entry_id={id}",
+                    RoughTimestamp::MAX.as_unix_millis().as_u64(),
+                    canonical_id.seq(),
+                )
+            );
+        }
+
+        let qid = VQueueId::custom(3337, "busy");
+        let mut key = Vec::new();
+        BusyVQueueKey::borrowed(Reverse(42), Reverse(at), Some("tenant"), qid.clone())
+            .encode_key(PartitionId::from(7), &mut key);
+        assert_eq!(
+            decode_secondary_index_key(&key).unwrap(),
+            format!(
+                "index_id=4, partition_id=7, index=BusyVQueue, total_non_completed=42, last_modified_unix_ms={}, last_modified_hlc={}, scope=Some(\"tenant\"), vqueue_id={qid}",
+                at.to_unix_millis().as_u64(),
+                at.as_u64(),
+            )
+        );
+        let mut value = vec![Stage::Inbox as u8];
+        value.extend_from_slice(&42_u64.to_be_bytes());
+        assert_eq!(
+            decode_value(KeyKind::SecondaryIndex, &key, &value).to_string(),
+            "StageCounts([(Inbox, 42)])"
+        );
+        assert_eq!(
+            decode_value(KeyKind::SecondaryIndex, &key, &[]).to_string(),
+            "StageCounts([])"
+        );
+        assert!(matches!(
+            decode_value(KeyKind::SecondaryIndex, &key, &value[..8]).content,
+            DecodedContent::Error(_)
+        ));
     }
 }

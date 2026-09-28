@@ -19,11 +19,18 @@ use crate::keys::{EncodeIndexKey, IndexKeyPrefix};
 mod entry;
 mod macros;
 mod maintenance;
+mod virtual_object;
+mod vqueue;
 
 pub use entry::{
-    EntryByServiceStage, EntryByServiceStageKey, EntryByStage, EntryByStageKey, EntryNextAtByStage,
-    EntryNextAtByStageKey,
+    EntryByStage, EntryByStageKey, EntryByStageService, EntryByStageServiceKey, EntryNextAtByStage,
+    EntryNextAtByStageKey, EntryNextAtByStageService, EntryNextAtByStageServiceKey,
 };
+pub use virtual_object::{
+    EntryByVirtualObjectStage, EntryByVirtualObjectStageKey, EntryNextAtByVirtualObjectStage,
+    EntryNextAtByVirtualObjectStageKey,
+};
+pub use vqueue::{BusyVQueue, BusyVQueueKey};
 
 /// Identifies a secondary index and the primary-key type it references.
 pub trait SecondaryIndex {
@@ -50,24 +57,42 @@ pub trait SecondaryIndexKey: EncodeIndexKey {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 #[allow(clippy::enum_variant_names)]
 pub enum IndexId {
-    EntryByServiceStage = 1,
+    /// Stage, service, descending transition time, canonical ID.
+    EntryByStageService = 1,
+    /// Stage, descending transition time, canonical ID.
     EntryByStage = 2,
+    /// Stage, next transition time, sequence, canonical ID.
     EntryNextAtByStage = 3,
+    BusyVQueue = 4,
+    /// Service, scope, object key, stage, descending transition time, canonical ID.
+    EntryByVirtualObjectStage = 5,
+    /// Stage, service, next transition time, sequence, canonical ID.
+    EntryNextAtByStageService = 6,
+    /// Service, scope, object key, stage, next transition time, sequence, canonical ID.
+    EntryNextAtByVirtualObjectStage = 7,
 }
 
 impl IndexId {
     pub const fn as_u32(self) -> u32 {
         match self {
-            Self::EntryByServiceStage => 1,
+            Self::EntryByStageService => 1,
             Self::EntryByStage => 2,
             Self::EntryNextAtByStage => 3,
+            Self::BusyVQueue => 4,
+            Self::EntryByVirtualObjectStage => 5,
+            Self::EntryNextAtByStageService => 6,
+            Self::EntryNextAtByVirtualObjectStage => 7,
         }
     }
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
-            1 => Some(Self::EntryByServiceStage),
+            1 => Some(Self::EntryByStageService),
             2 => Some(Self::EntryByStage),
             3 => Some(Self::EntryNextAtByStage),
+            4 => Some(Self::BusyVQueue),
+            5 => Some(Self::EntryByVirtualObjectStage),
+            6 => Some(Self::EntryNextAtByStageService),
+            7 => Some(Self::EntryNextAtByVirtualObjectStage),
             _ => None,
         }
     }
