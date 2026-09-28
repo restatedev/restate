@@ -37,14 +37,14 @@ use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::v2::{Command, CommandWithKeys, ErasedCommand};
 
 #[derive(Clone, derive_more::Debug)]
-pub(crate) struct RpcProposal {
+pub(crate) struct RpcProposal<Response> {
     keys: Keys,
     cmd: ErasedCommand,
-    reply_on: ReplyOn,
+    reply_on: ReplyOn<Response>,
 }
 
-impl RpcProposal {
-    pub(crate) fn new<C: Command>(cmd: impl CommandWithKeys<C>, reply_on: ReplyOn) -> Self {
+impl<R> RpcProposal<R> {
+    pub(crate) fn new<C: Command>(cmd: impl CommandWithKeys<C>, reply_on: ReplyOn<R>) -> Self {
         let keys = cmd.keys();
         let cmd = cmd.inner();
         Self {
@@ -54,7 +54,7 @@ impl RpcProposal {
         }
     }
 
-    pub(crate) fn into_parts(self) -> (Keys, ErasedCommand, ReplyOn) {
+    pub(crate) fn into_parts(self) -> (Keys, ErasedCommand, ReplyOn<R>) {
         let Self {
             keys,
             cmd,
@@ -67,15 +67,15 @@ impl RpcProposal {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
-pub(crate) enum Decision {
-    Propose(RpcProposal),
+pub(crate) enum Decision<Response = PartitionProcessorRpcResponse> {
+    Propose(RpcProposal<Response>),
     /// Reply immediately; nothing is proposed.
-    Reply(Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>),
+    Reply(Result<Response, PartitionProcessorRpcError>),
 }
 
-impl Decision {
+impl<R> Decision<R> {
     #[cfg(test)]
-    fn extract_as_rpc_proposal<C: Command>(self) -> (Keys, C, ReplyOn) {
+    fn extract_as_rpc_proposal<C: Command>(self) -> (Keys, C, ReplyOn<R>) {
         let Self::Propose(proposal) = self else {
             panic!("Invalid Decision variant, expecting Decision::Propose");
         };
@@ -93,15 +93,13 @@ impl Decision {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum ReplyOn {
+pub(crate) enum ReplyOn<Response> {
     /// Responds to the request; the state machine's Action replies later.
     Apply {
         request_id: PartitionProcessorRpcRequestId,
     },
     /// Append WITHOUT dedup ESN; reply `response` on Bifrost commit.
-    Commit {
-        response: PartitionProcessorRpcResponse,
-    },
+    Commit { response: Response },
     /// Like Apply, but clear the invocation's fencing token strictly AFTER the
     /// append succeeds.
     ApplyAndFence {
@@ -133,8 +131,8 @@ impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
     }
 }
 
-pub(super) trait RpcHandler<Input> {
-    fn handle(self, input: Input) -> impl Future<Output = Decision>;
+pub(super) trait RpcHandler<Input, Response = PartitionProcessorRpcResponse> {
+    fn handle(self, input: Input) -> impl Future<Output = Decision<Response>>;
 }
 
 impl<'a, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>

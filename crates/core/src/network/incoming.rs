@@ -782,6 +782,36 @@ impl<O: RpcResponse + WireEncode> Reciprocal<Oneshot<O>> {
     }
 }
 
+/// The reply port of an rpc whose response type has been erased, so that reply ports of
+/// different rpcs can be stored together. Restore it with [`ErasedReciprocal::into_typed`].
+pub struct ErasedReciprocal {
+    protocol_version: ProtocolVersion,
+    reply_port: RpcReplyPort,
+}
+
+impl<O: RpcResponse> Reciprocal<Oneshot<O>> {
+    pub fn erase(self) -> ErasedReciprocal {
+        ErasedReciprocal {
+            protocol_version: self.protocol_version,
+            reply_port: self.reply_port.inner,
+        }
+    }
+}
+
+impl ErasedReciprocal {
+    /// The caller is responsible for `O` being the response type of the original rpc.
+    pub fn into_typed<O: RpcResponse>(self) -> Reciprocal<Oneshot<O>> {
+        Reciprocal {
+            protocol_version: self.protocol_version,
+            reply_port: Oneshot {
+                inner: self.reply_port,
+                _phantom: PhantomData,
+            },
+            _phantom: PhantomData,
+        }
+    }
+}
+
 impl<O: WatchResponse + WireEncode> Reciprocal<Updates<O>> {
     /// Ignores the error if connection is closed.
     ///
