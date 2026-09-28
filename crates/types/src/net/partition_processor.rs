@@ -362,26 +362,31 @@ pub struct CancelInvocationRpcRequest {
 }
 bilrost_wire_codec!(CancelInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum CancelInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Done,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     Appended,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotFound,
-    #[bilrost(3)]
+    #[bilrost(tag(4), message)]
     AlreadyCompleted,
 }
 
-impl From<CancelInvocationRpcResponse> for CancelInvocationResponse {
-    fn from(value: CancelInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<CancelInvocationRpcResponse> for CancelInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: CancelInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            CancelInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             CancelInvocationRpcResponse::Done => Self::Done,
             CancelInvocationRpcResponse::Appended => Self::Appended,
             CancelInvocationRpcResponse::NotFound => Self::NotFound,
             CancelInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
-        }
+        })
     }
 }
 
@@ -411,23 +416,28 @@ pub struct KillInvocationRpcRequest {
 }
 bilrost_wire_codec!(KillInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum KillInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     NotFound,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     AlreadyCompleted,
 }
 
-impl From<KillInvocationRpcResponse> for KillInvocationResponse {
-    fn from(value: KillInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<KillInvocationRpcResponse> for KillInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: KillInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            KillInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             KillInvocationRpcResponse::Ok => Self::Ok,
             KillInvocationRpcResponse::NotFound => Self::NotFound,
             KillInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
-        }
+        })
     }
 }
 
@@ -466,23 +476,28 @@ pub struct PurgeJournalRpcRequest {
 bilrost_wire_codec!(PurgeJournalRpcRequest);
 
 /// Both purge journal and purge invocation use the same response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum PurgeInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     NotFound,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotCompleted,
 }
 
-impl From<PurgeInvocationRpcResponse> for PurgeInvocationResponse {
-    fn from(value: PurgeInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<PurgeInvocationRpcResponse> for PurgeInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: PurgeInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PurgeInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             PurgeInvocationRpcResponse::Ok => Self::Ok,
             PurgeInvocationRpcResponse::NotFound => Self::NotFound,
             PurgeInvocationRpcResponse::NotCompleted => Self::NotCompleted,
-        }
+        })
     }
 }
 
@@ -758,26 +773,31 @@ pub struct PauseInvocationRpcRequest {
 }
 bilrost_wire_codec!(PauseInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum PauseInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     AlreadyPaused,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     Accepted,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotFound,
-    #[bilrost(3)]
+    #[bilrost(tag(4), message)]
     NotRunning,
 }
 
-impl From<PauseInvocationRpcResponse> for PauseInvocationResponse {
-    fn from(value: PauseInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<PauseInvocationRpcResponse> for PauseInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: PauseInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PauseInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             PauseInvocationRpcResponse::Accepted => PauseInvocationResponse::Accepted,
             PauseInvocationRpcResponse::NotFound => PauseInvocationResponse::NotFound,
             PauseInvocationRpcResponse::NotRunning => PauseInvocationResponse::NotRunning,
             PauseInvocationRpcResponse::AlreadyPaused => PauseInvocationResponse::AlreadyPaused,
-        }
+        })
     }
 }
 
