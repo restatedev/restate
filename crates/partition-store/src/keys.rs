@@ -22,7 +22,7 @@ pub(crate) mod predicate;
 // Re-exports
 pub use index::{
     DecodeIndexKey, EncodeIndexKey, FieldDecoder, IndexFieldDecode, IndexFieldEncode,
-    IndexFieldView, IntoIndexFieldRef,
+    IndexFieldView, IndexKeyPrefix, IntoIndexFieldRef,
 };
 #[doc(hidden)]
 pub use restate_util_string::decode_str_into;
