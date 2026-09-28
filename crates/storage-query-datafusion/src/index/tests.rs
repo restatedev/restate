@@ -511,7 +511,7 @@ async fn stage_index_native_filters_survive_transport_and_skip_timestamp_gaps() 
                 if next_at {
                     let filter = Filter::<EntryNextAtByStage>::new(range, Some(predicate.clone()));
                     store
-                        .scan_entry_next_at_by_stage(range, &filter, None, move |key| {
+                        .scan_entry_next_at_by_stage(range, &filter, None, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -521,7 +521,7 @@ async fn stage_index_native_filters_survive_transport_and_skip_timestamp_gaps() 
                 } else {
                     let filter = Filter::<EntryByStage>::new(range, Some(predicate.clone()));
                     store
-                        .scan_entry_by_stage(range, &filter, None, move |key| {
+                        .scan_entry_by_stage(range, &filter, None, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -726,7 +726,7 @@ async fn new_entry_tables_filter_scopes_sequences_and_follow_lifecycle() {
                     let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                     engine
                         .partition_store()
-                        .$scan(range, &filter, None, move |key| {
+                        .$scan(range, &filter, None, None, move |key| {
                             sender.send(key.canonical_id.decode().unwrap()).unwrap();
                             ControlFlow::Continue(())
                         })
@@ -989,7 +989,7 @@ async fn busy_queue_table_covers_counts_and_translates_descending_filters() {
                 let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
                 engine
                     .partition_store()
-                    .scan_busy_vqueues(range, &filter, None, move |key, _| {
+                    .scan_busy_vqueues(range, &filter, None, None, move |key, _| {
                         sender
                             .send(key.vqueue_id.decode().unwrap().to_string())
                             .unwrap();
@@ -1147,4 +1147,102 @@ async fn stage_tables_register_for_partition_queries_and_sort_across_stores() {
             assert_eq!(strings(&batches, "canonical_id"), [ids[1].to_string()]);
         }
     }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_topk_thresholds_reject_stale_keys_in_every_stage() {
+    use std::sync::{Arc, Mutex};
+
+    use datafusion::physical_expr::expressions::{Column, DynamicFilterPhysicalExpr};
+    use datafusion::physical_plan::PhysicalExpr;
+
+    use crate::index::table::IndexFilter;
+
+    const PER_STAGE: u64 = 2048;
+    const STAGES: [Stage; 3] = [Stage::Finished, Stage::Inbox, Stage::Running];
+    let mut engine = MockQueryEngine::create().await;
+    let base = EntryId::new(EntryKind::Invocation, [1; 16]).to_base_id(100);
+    let unix_ms = |ms: u64| at(ms, 0).to_unix_millis().as_u64();
+    let mut tx = engine.partition_store().transaction();
+    for (s, stage) in STAGES.into_iter().enumerate() {
+        for i in 0..PER_STAGE {
+            // Distinct milliseconds, interleaved across stages.
+            let ms = i * STAGES.len() as u64 + s as u64;
+            let id = base.canonicalize(Seq::new(ms));
+            tx.update_secondary_index(
+                None,
+                Some(&EntryByStageKey::borrowed(stage, Reverse(at(ms, 0)), id)),
+            );
+        }
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    // A TopK threshold published after the 100 newest finished entries, as
+    // `transitioned_at IS NULL OR transitioned_at > threshold`.
+    let schema = IdxEntryByStageBuilder::schema();
+    let dynamic = Arc::new(DynamicFilterPhysicalExpr::new(
+        vec![Arc::new(Column::new("transitioned_at", 1)) as Arc<dyn PhysicalExpr>],
+        logical2physical(&lit(true), &schema),
+    ));
+    let predicate = dynamic.clone() as Arc<dyn PhysicalExpr>;
+    let filter = IndexFilter::<EntryByStage>::new_live(
+        KeyRange::FULL,
+        Some(predicate.clone()),
+        Some(&predicate),
+    );
+    let emitted = Arc::new(Mutex::new(Vec::new()));
+    let threshold = Arc::new(Mutex::new(None));
+    engine
+        .partition_store()
+        .scan_entry_by_stage(filter.range, &filter.predicate, filter.live, None, {
+            let emitted = emitted.clone();
+            let threshold = threshold.clone();
+            move |key| {
+                let ms = key
+                    .transitioned_at
+                    .decode()
+                    .unwrap()
+                    .0
+                    .to_unix_millis()
+                    .as_u64();
+                let mut emitted = emitted.lock().unwrap();
+                emitted.push(ms);
+                if emitted.len() == 100 {
+                    *threshold.lock().unwrap() = Some(ms);
+                    let at = lit(ScalarValue::TimestampMillisecond(Some(ms as i64), None));
+                    dynamic
+                        .update(logical2physical(
+                            &col("transitioned_at")
+                                .is_null()
+                                .or(col("transitioned_at").gt(at)),
+                            &schema,
+                        ))
+                        .unwrap();
+                }
+                ControlFlow::Continue(())
+            }
+        })
+        .unwrap()
+        .await
+        .unwrap();
+
+    let threshold = threshold.lock().unwrap().unwrap();
+    let emitted = emitted.lock().unwrap();
+    let total = PER_STAGE * STAGES.len() as u64;
+    // Every newer entry is still returned, in every stage.
+    let mut newer: Vec<_> = emitted
+        .iter()
+        .copied()
+        .filter(|ms| *ms > threshold)
+        .collect();
+    newer.sort_unstable();
+    let expected: Vec<_> = (0..total)
+        .map(unix_ms)
+        .filter(|ms| *ms > threshold)
+        .collect();
+    assert_eq!(newer, expected);
+    // Older entries stop within one poll interval of the update.
+    let stale = emitted.iter().filter(|ms| **ms < threshold).count();
+    assert!(stale < 64, "{stale} stale entries emitted");
 }

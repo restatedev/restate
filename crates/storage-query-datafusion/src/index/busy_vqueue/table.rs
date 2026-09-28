@@ -71,6 +71,7 @@ impl ScanLocalPartition for BusyVQueueScanner {
         store.scan_busy_vqueues(
             filter.range,
             &filter.predicate,
+            filter.live,
             metrics,
             move |key, counts| f((key, counts)),
         )
