@@ -58,7 +58,6 @@ impl WithPartitionKey for SubmitInvocation {
 }
 
 impl PartitionProcessorRpc for SubmitInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = SubmittedInvocationNotification;
     type Wire = AppendInvocationRpcRequest;
 
@@ -117,7 +116,6 @@ impl WithPartitionKey for CallInvocation {
 }
 
 impl PartitionProcessorRpc for CallInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = InvocationOutput;
     type Wire = AppendInvocationRpcRequest;
 
@@ -176,7 +174,6 @@ impl WithPartitionKey for AttachInvocation {
 }
 
 impl PartitionProcessorRpc for AttachInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = AttachInvocationResponse;
     type Wire = GetInvocationOutputRpcRequest;
 
@@ -223,7 +220,6 @@ impl WithPartitionKey for GetInvocationOutput {
 }
 
 impl PartitionProcessorRpc for GetInvocationOutput {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = GetInvocationOutputResponse;
     type Wire = GetInvocationOutputRpcRequest;
 
@@ -273,7 +269,6 @@ impl WithPartitionKey for GetInvocationStatus {
 }
 
 impl PartitionProcessorRpc for GetInvocationStatus {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = GetInvocationStatusResponse;
     type Wire = GetInvocationStatusRpcRequest;
 
@@ -318,7 +313,6 @@ impl WithPartitionKey for AppendInvocationResponse {
 }
 
 impl PartitionProcessorRpc for AppendInvocationResponse {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = AppendInvocationResponseRpcResponse;
     type Wire = AppendInvocationResponseRpcRequest;
 
@@ -359,7 +353,6 @@ impl WithPartitionKey for AppendSignal {
 }
 
 impl PartitionProcessorRpc for AppendSignal {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = AppendSignalRpcResponse;
     type Wire = AppendSignalRpcRequest;
 
@@ -402,7 +395,6 @@ impl WithPartitionKey for CancelInvocation {
 }
 
 impl PartitionProcessorRpc for CancelInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = CancelInvocationResponse;
     type Wire = CancelInvocationRpcRequest;
 
@@ -443,7 +435,6 @@ impl WithPartitionKey for KillInvocation {
 }
 
 impl PartitionProcessorRpc for KillInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = KillInvocationResponse;
     type Wire = KillInvocationRpcRequest;
 
@@ -485,7 +476,6 @@ impl WithPartitionKey for PurgeInvocation {
 }
 
 impl PartitionProcessorRpc for PurgeInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = PurgeInvocationResponse;
     type Wire = PurgeInvocationRpcRequest;
 
@@ -527,7 +517,6 @@ impl WithPartitionKey for PurgeJournal {
 }
 
 impl PartitionProcessorRpc for PurgeJournal {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = PurgeInvocationResponse;
     type Wire = PurgeJournalRpcRequest;
 
@@ -570,7 +559,6 @@ impl WithPartitionKey for RestartAsNewInvocation {
 }
 
 impl PartitionProcessorRpc for RestartAsNewInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = RestartAsNewInvocationResponse;
     type Wire = RestartAsNewInvocationRpcRequest;
 
@@ -616,7 +604,6 @@ impl WithPartitionKey for ResumeInvocation {
 }
 
 impl PartitionProcessorRpc for ResumeInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = ResumeInvocationResponse;
     type Wire = ResumeInvocationRpcRequest;
 
@@ -659,7 +646,6 @@ impl WithPartitionKey for PauseInvocation {
 }
 
 impl PartitionProcessorRpc for PauseInvocation {
-    const HAS_LEGACY_WIRE: bool = true;
     type Response = PauseInvocationResponse;
     type Wire = PauseInvocationRpcRequest;
 
