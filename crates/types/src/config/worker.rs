@@ -808,6 +808,18 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
 
+    /// # Enable L6 filters
+    ///
+    /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
+    /// Other levels continue to use Bloom filters. Disabled by default.
+    ///
+    /// Takes effect when partition stores are opened and applies to newly generated SST files.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_enable_l6_filters: bool,
+
     /// # Disable compact-on-deletion collector
     ///
     /// When set to `true`, disables RocksDB's CompactOnDeletionCollector for partition stores.
@@ -1082,6 +1094,7 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_enable_l6_filters: false,
             rocksdb_disable_compact_on_deletion: false,
             rocksdb_compact_on_deletions_window: serde_helpers::default_compact_on_deletions_window(
             ),
