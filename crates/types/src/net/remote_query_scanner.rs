@@ -21,9 +21,7 @@ define_service! {
     @tag = ServiceTag::RemoteDataFusionService,
 }
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, bilrost::Message,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, bilrost::Message)]
 pub struct ScannerId(#[bilrost(1)] pub GenerationalNodeId, #[bilrost(2)] pub u64);
 
 impl Display for ScannerId {
@@ -34,7 +32,7 @@ impl Display for ScannerId {
 
 // ----- open scanner -----
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RemoteQueryScannerOpen {
     #[bilrost(1)]
     pub partition_id: PartitionId,
@@ -45,13 +43,10 @@ pub struct RemoteQueryScannerOpen {
     #[bilrost(tag(4), encoding(plainbytes))]
     pub projection_schema_bytes: Vec<u8>,
     #[bilrost(tag(5))]
-    #[serde(default)]
     pub limit: Option<u64>,
     #[bilrost(tag(6))]
-    #[serde(default = "default_batch_size")]
     pub batch_size: u64,
     #[bilrost(tag(7))]
-    #[serde(default)]
     pub predicate: Option<RemoteQueryScannerPredicate>,
     /// Scanner id allocated by the caller; the server adopts this id rather than
     /// minting its own, which lets clients pipeline the first `Next` immediately
@@ -64,11 +59,7 @@ pub struct RemoteQueryScannerOpen {
     pub scanner_id: Option<ScannerId>,
 }
 
-fn default_batch_size() -> u64 {
-    64
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RemoteQueryScannerPredicate {
     // We ship the expression passed to scan() over the wire to filter records before sending
     // them back
@@ -77,16 +68,7 @@ pub struct RemoteQueryScannerPredicate {
     pub serialized_physical_expression: Vec<u8>,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bilrost::Message,
-    bilrost::Oneof,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, bilrost::Oneof)]
 pub enum RemoteQueryScannerOpened {
     Failure,
     #[bilrost(1)]
@@ -99,16 +81,15 @@ pub enum RemoteQueryScannerOpened {
 
 // ----- next batch -----
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RemoteQueryScannerNext {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
     #[bilrost(tag(2))]
-    #[serde(default)]
     pub next_predicate: Option<RemoteQueryScannerPredicate>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct ScannerBatch {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
@@ -116,7 +97,7 @@ pub struct ScannerBatch {
     pub record_batch: Vec<u8>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct ScannerFailure {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
@@ -124,16 +105,7 @@ pub struct ScannerFailure {
     pub message: String,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    serde::Serialize,
-    serde::Deserialize,
-    bilrost::Message,
-    bilrost::Oneof,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message, bilrost::Oneof)]
 pub enum RemoteQueryScannerNextResult {
     Unknown,
     #[bilrost(1)]
@@ -148,13 +120,13 @@ pub enum RemoteQueryScannerNextResult {
 
 // ----- close scanner -----
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RemoteQueryScannerClose {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+#[derive(Debug, Clone, PartialEq, Eq, bilrost::Message)]
 pub struct RemoteQueryScannerClosed {
     #[bilrost(1)]
     pub scanner_id: ScannerId,
@@ -187,63 +159,3 @@ define_rpc! {
 }
 bilrost_wire_codec!(RemoteQueryScannerClose);
 bilrost_wire_codec!(RemoteQueryScannerClosed);
-
-#[cfg(test)]
-mod test {
-
-    use serde::Deserialize;
-
-    use crate::{
-        GenerationalNodeId,
-        net::remote_query_scanner::{ScannerBatch, ScannerFailure, ScannerId},
-    };
-
-    // V1/flexbuffers scanner next result type.
-    #[derive(Deserialize)]
-    #[allow(dead_code)]
-    pub enum RemoteQueryScannerNextResult {
-        NextBatch {
-            scanner_id: ScannerId,
-            record_batch: Vec<u8>,
-        },
-        Failure {
-            scanner_id: ScannerId,
-            message: String,
-        },
-        NoMoreRecords(ScannerId),
-        NoSuchScanner(ScannerId),
-    }
-
-    #[test]
-    fn backward_compatibility() {
-        let scanner_id = ScannerId(GenerationalNodeId::new(10, 20), 100);
-        let batch = vec![1, 2, 3, 4];
-        let v2 = super::RemoteQueryScannerNextResult::NextBatch(ScannerBatch {
-            scanner_id,
-            record_batch: batch.clone(),
-        });
-
-        let bytes = flexbuffers::to_vec(&v2).expect("to serialize");
-
-        let v1: RemoteQueryScannerNextResult =
-            flexbuffers::from_slice(&bytes).expect("to deserialize");
-
-        assert!(
-            matches!(v1, RemoteQueryScannerNextResult::NextBatch { scanner_id: id, record_batch} if id == scanner_id && batch == record_batch )
-        );
-
-        let v2 = super::RemoteQueryScannerNextResult::Failure(ScannerFailure {
-            scanner_id,
-            message: "scanner failed successfully!".to_string(),
-        });
-
-        let bytes = flexbuffers::to_vec(&v2).expect("to serialize");
-
-        let v1: RemoteQueryScannerNextResult =
-            flexbuffers::from_slice(&bytes).expect("to deserialize");
-
-        assert!(
-            matches!(v1, RemoteQueryScannerNextResult::Failure { scanner_id: id, message} if id == scanner_id && message == "scanner failed successfully!" )
-        )
-    }
-}
