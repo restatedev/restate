@@ -29,11 +29,11 @@ use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
-    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+    fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
 }
 
 impl ScanLocalPartitionFilter for KeyRange {
-    fn new(range: KeyRange, _predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+    fn new(range: KeyRange, _access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         range
     }
 }
@@ -92,10 +92,12 @@ where
         range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
+        let filter = S::Filter::new(range, access_predicate);
         let partition_store_manager = self.partition_store_manager.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
@@ -115,18 +117,14 @@ where
             let mut batch_sender =
                 BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
 
-            S::for_each_row(
-                &partition_store,
-                S::Filter::new(range, predicate),
-                move |row| {
-                    elapsed_compute.start();
-                    match S::append_row(batch_sender.builder_mut(), row) {
-                        Ok(()) => {}
-                        err => return ControlFlow::Break(err),
-                    }
-                    batch_sender.send_if_needed().map_break(Ok)
-                },
-            )
+            S::for_each_row(&partition_store, filter, move |row| {
+                elapsed_compute.start();
+                match S::append_row(batch_sender.builder_mut(), row) {
+                    Ok(()) => {}
+                    err => return ControlFlow::Break(err),
+                }
+                batch_sender.send_if_needed().map_break(Ok)
+            })
             .map_err(|err| DataFusionError::External(err.into()))?
             .await
             .map_err(|err| DataFusionError::External(err.into()))?;
@@ -149,6 +147,7 @@ where
         range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
@@ -158,6 +157,7 @@ where
             range,
             projection,
             predicate,
+            access_predicate,
             batch_size,
             limit,
             elapsed_compute,
