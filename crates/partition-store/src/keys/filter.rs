@@ -482,14 +482,37 @@ impl<K: IndexKeySchema> PreparedKeyFilter<K> {
                 start.slice(..prefix.len())
             }
         };
-        let offsets = Vec::with_capacity(self.fields.len() + 1);
+        let offsets = Vec::with_capacity(K::FIELDS.len() + 1);
         Ok(Some(KeyFilterCursor {
             filter: self,
+            live: None,
             scan,
             identity,
             offsets,
             target: BytesMut::new(),
         }))
+    }
+
+    /// Records field boundaries in `offsets` up to the first field this filter
+    /// rejects, and returns that field's index.
+    fn first_rejected(&self, payload: &[u8], offsets: &mut Vec<usize>) -> Result<Option<usize>> {
+        if self.fields.is_empty() {
+            return Ok(None);
+        }
+        let mut remaining = payload;
+        offsets.clear();
+        offsets.push(0);
+        for (index, field) in self.fields.iter().enumerate() {
+            let encoded = (field.schema.take)(&mut remaining)?;
+            offsets.push(payload.len() - remaining.len());
+            if !field.matches(&self.literals, encoded)? {
+                return Ok(Some(index));
+            }
+        }
+        if !remaining.is_empty() {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(None)
     }
 }
 
@@ -497,6 +520,8 @@ impl<K: IndexKeySchema> PreparedKeyFilter<K> {
 /// borrowed iterator bytes survive a call. Carry always stays under `identity`.
 pub(crate) struct KeyFilterCursor<K> {
     filter: PreparedKeyFilter<K>,
+    /// The latest live filter. It rejects keys inside the static scan plan.
+    live: Option<PreparedKeyFilter<K>>,
     scan: PhysicalScan<Bytes>,
     identity: Bytes,
     offsets: Vec<usize>,
@@ -508,29 +533,33 @@ impl<K: IndexKeySchema> KeyFilterCursor<K> {
         &self.scan
     }
 
+    /// Replaces the live filter. It must be sound on its own, see
+    /// [`restate_storage_api::filter::LiveFilter`].
+    pub(crate) fn set_live(&mut self, filter: PreparedKeyFilter<K>) {
+        self.live = Some(filter);
+    }
+
     /// Checks an in-bounds full key. At the first rejected field, advance within
     /// that field's domain or carry to a preceding field and reset the suffix.
     pub(crate) fn evaluate(&mut self, key: &[u8]) -> Result<KeyMatch> {
         let payload = key
             .strip_prefix(self.identity.as_ref())
             .ok_or(StorageError::DataIntegrityError)?;
-        if self.filter.fields.is_empty() {
-            return Ok(KeyMatch::Match);
+        match self.filter.first_rejected(payload, &mut self.offsets)? {
+            Some(rejected) => self.advance(key, payload, rejected),
+            None => Ok(KeyMatch::Match),
         }
-        let mut remaining = payload;
-        self.offsets.clear();
-        self.offsets.push(0);
-        for (index, field) in self.filter.fields.iter().enumerate() {
-            let encoded = (field.schema.take)(&mut remaining)?;
-            self.offsets.push(payload.len() - remaining.len());
-            if !field.matches(&self.filter.literals, encoded)? {
-                return self.advance(key, payload, index);
-            }
-        }
-        if !remaining.is_empty() {
-            return Err(StorageError::DataIntegrityError);
-        }
-        Ok(KeyMatch::Match)
+    }
+
+    /// Whether the latest live filter rejects a key that [`Self::evaluate`] matched.
+    pub(crate) fn live_rejects(&mut self, key: &[u8]) -> Result<bool> {
+        let Some(live) = &self.live else {
+            return Ok(false);
+        };
+        let payload = key
+            .strip_prefix(self.identity.as_ref())
+            .ok_or(StorageError::DataIntegrityError)?;
+        Ok(live.empty || live.first_rejected(payload, &mut self.offsets)?.is_some())
     }
 
     fn advance(&mut self, key: &[u8], payload: &[u8], rejected: usize) -> Result<KeyMatch> {

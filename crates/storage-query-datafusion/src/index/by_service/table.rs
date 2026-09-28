@@ -11,20 +11,15 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::physical_plan::PhysicalExpr;
-
 use restate_partition_store::index::EntryByStageServiceKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::filter::Filter;
 use restate_storage_api::index::EntryByService;
-use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
-use crate::partition_store_scanner::{
-    LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
-};
+use crate::index::table::IndexFilter;
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -66,25 +61,11 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 pub(super) struct EntryIndexScanner;
 
-pub(super) struct EntryIndexFilter {
-    range: KeyRange,
-    predicate: Filter<EntryByService>,
-}
-
-impl ScanLocalPartitionFilter for EntryIndexFilter {
-    fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
-        Self {
-            range,
-            predicate: Filter::new(range, access_predicate),
-        }
-    }
-}
-
 impl ScanLocalPartition for EntryIndexScanner {
     type Builder = IdxEntryByServiceBuilder;
     type Item<'a> = EntryByStageServiceKeyView<'a>;
     type ConversionError = StorageError;
-    type Filter = EntryIndexFilter;
+    type Filter = IndexFilter<EntryByService>;
 
     fn for_each_row<F>(
         partition_store: &PartitionStore,
@@ -98,7 +79,13 @@ impl ScanLocalPartition for EntryIndexScanner {
             + Sync
             + 'static,
     {
-        partition_store.scan_entry_by_service(filter.range, &filter.predicate, metrics, f)
+        partition_store.scan_entry_by_service(
+            filter.range,
+            &filter.predicate,
+            filter.live,
+            metrics,
+            f,
+        )
     }
 
     fn append_row<'a>(

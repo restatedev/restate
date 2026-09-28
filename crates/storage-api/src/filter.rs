@@ -121,6 +121,16 @@ impl<T: FilterTarget> Filter<T> {
     }
 }
 
+/// A source of filters that may tighten while a scan is running.
+///
+/// Each filter must be sound on its own: records it rejects are not needed by the
+/// consumer, regardless of earlier or later filters. A scan may therefore stop
+/// returning records as soon as the latest filter rejects them.
+pub trait LiveFilter<T: FilterTarget>: Send {
+    /// Returns a newer filter if one became available since the previous call.
+    fn poll(&mut self) -> Option<Filter<T>>;
+}
+
 /// A predicate over logical values, using the equality and ordering of `V`.
 ///
 /// These are storage-value predicates, not SQL expressions. SQL adapters must

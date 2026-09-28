@@ -11,20 +11,15 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::physical_plan::PhysicalExpr;
-
 use restate_partition_store::index::EntryByStageKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::filter::Filter;
 use restate_storage_api::index::EntryByStage;
-use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
-use crate::partition_store_scanner::{
-    LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
-};
+use crate::index::table::IndexFilter;
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -63,25 +58,11 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct EntryByStageScanner;
 
-struct EntryByStageFilter {
-    range: KeyRange,
-    predicate: Filter<EntryByStage>,
-}
-
-impl ScanLocalPartitionFilter for EntryByStageFilter {
-    fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
-        Self {
-            range,
-            predicate: Filter::new(range, access_predicate),
-        }
-    }
-}
-
 impl ScanLocalPartition for EntryByStageScanner {
     type Builder = IdxEntryByStageBuilder;
     type Item<'a> = EntryByStageKeyView<'a>;
     type ConversionError = StorageError;
-    type Filter = EntryByStageFilter;
+    type Filter = IndexFilter<EntryByStage>;
 
     fn for_each_row<F>(
         partition_store: &PartitionStore,
@@ -95,7 +76,13 @@ impl ScanLocalPartition for EntryByStageScanner {
             + Sync
             + 'static,
     {
-        partition_store.scan_entry_by_stage(filter.range, &filter.predicate, metrics, f)
+        partition_store.scan_entry_by_stage(
+            filter.range,
+            &filter.predicate,
+            filter.live,
+            metrics,
+            f,
+        )
     }
 
     fn append_row<'a>(

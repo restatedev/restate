@@ -31,6 +31,19 @@ use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
     fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+
+    /// Like [`Self::new`], also receiving the live row predicate whose dynamic filters
+    /// may tighten during the scan. Filters that can apply them natively override this.
+    fn new_live(
+        range: KeyRange,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
+        _predicate: Option<&Arc<dyn PhysicalExpr>>,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        Self::new(range, access_predicate)
+    }
 }
 
 impl ScanLocalPartitionFilter for KeyRange {
@@ -43,7 +56,7 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
     type ConversionError;
-    type Filter: ScanLocalPartitionFilter + Send + Sync + 'static;
+    type Filter: ScanLocalPartitionFilter + Send + 'static;
 
     /// Metrics are scoped to this call. Implementations pass the optional probe
     /// to instrumented native scans; unsupported paths leave it unmarked so their
@@ -102,7 +115,7 @@ where
         limit: Option<usize>,
         metrics: ScanMetrics,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        let filter = S::Filter::new(range, access_predicate);
+        let filter = S::Filter::new_live(range, access_predicate, predicate.as_ref());
         let partition_store_manager = self.partition_store_manager.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();
