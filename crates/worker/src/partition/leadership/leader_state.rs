@@ -38,7 +38,6 @@ use restate_types::identifiers::{
     InvocationId, LeaderEpoch, PartitionId, PartitionProcessorRpcRequestId, WithPartitionKey,
 };
 use restate_types::invocation::PurgeInvocationRequest;
-use restate_types::invocation::client::{InvocationOutput, SubmittedInvocationNotification};
 use restate_types::logs::BodyWithKeys;
 use restate_types::logs::Keys;
 use restate_types::net::ingest::{IngestRecord, ResponseStatus};
@@ -1047,40 +1046,9 @@ impl LeaderState {
                     .abort_invocation(invocation_id)
                     .map_err(Error::Invoker)?;
             }
-            Action::IngressResponse {
-                request_id,
-                invocation_id,
-                response,
-                completion_expiry_time,
-                ..
-            } => {
+            Action::ReplyRpc { request_id, reply } => {
                 if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Output(
-                        InvocationOutput {
-                            request_id,
-                            invocation_id,
-                            completion_expiry_time,
-                            response,
-                        },
-                    )));
-                } else {
-                    debug!(%request_id, "Ignoring sending ingress response because there is no awaiting rpc");
-                }
-            }
-            Action::IngressSubmitNotification {
-                request_id,
-                execution_time,
-                is_new_invocation,
-                ..
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::Submitted(
-                        SubmittedInvocationNotification {
-                            request_id,
-                            execution_time,
-                            is_new_invocation,
-                        },
-                    )));
+                    response_tx.send(Ok(reply.into()));
                 }
             }
             Action::ForwardNotification {
@@ -1091,76 +1059,6 @@ impl LeaderState {
                 self.invoker_handle
                     .notify_notification(invocation_id, entry_index, notification_id)
                     .map_err(Error::Invoker)?;
-            }
-            Action::ForwardKillResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::KillInvocation(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardCancelResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::CancelInvocation(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardPurgeInvocationResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeInvocation(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardPurgeJournalResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PurgeJournal(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardResumeInvocationResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::ResumeInvocation(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardPauseInvocationResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::PauseInvocation(
-                        response.into(),
-                    )));
-                }
-            }
-            Action::ForwardRestartAsNewInvocationResponse {
-                request_id,
-                response,
-            } => {
-                if let Some(response_tx) = self.awaiting_rpc_actions.remove(&request_id) {
-                    response_tx.send(Ok(PartitionProcessorRpcResponse::RestartAsNewInvocation(
-                        response.into(),
-                    )));
-                }
             }
             Action::VQEvent(inbox_event) => {
                 self.handle_vqueue_inbox_event(processor.vqueues(), inbox_event);

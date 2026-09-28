@@ -247,11 +247,11 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::state_machine::{Action, RpcReply};
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::{all, assert_that, contains, eq, pat};
     use restate_storage_api::invocation_status_table::{
@@ -449,9 +449,9 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardResumeInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(ResumeInvocationResponse::Ok)
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
             }))
         );
         assert_that!(
@@ -514,9 +514,9 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardResumeInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(ResumeInvocationResponse::Ok)
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
             }))
         );
         assert_that!(
@@ -582,9 +582,9 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardResumeInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(ResumeInvocationResponse::Ok)
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
             }))
         );
         assert_that!(

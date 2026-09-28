@@ -36,7 +36,7 @@ impl<'a, TSchemas, TStorage> RpcHandler<PauseRequest> for RpcContext<'a, TSchema
         }
 
         // The apply path (OnManualPauseCommand) classifies the (possibly changed) status and
-        // replies via Action::ForwardPauseInvocationResponse. propose_pause_and_fence clears
+        // replies via Action::ReplyRpc. propose_pause_and_fence clears
         // the leader's in-memory fencing token (after appending the command) so that any
         // straggler effect from the attempt we are pausing is dropped at write time.
         Decision::Propose(RpcProposal::new(

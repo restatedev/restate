@@ -97,7 +97,7 @@ pub mod storage {
 pub mod actions {
     use super::*;
 
-    use crate::partition::state_machine::Action;
+    use crate::partition::state_machine::{Action, RpcReply};
     use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
     use restate_types::invocation::ResponseResult;
     use restate_types::invocation::client::{
@@ -138,33 +138,33 @@ pub mod actions {
         })
     }
 
-    pub fn forward_cancel_invocation_response(
+    pub fn cancel_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         cancel_invocation_response: CancelInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCancelResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(cancel_invocation_response)
+            reply: pat!(RpcReply::CancelInvocation(eq(cancel_invocation_response)))
         })
     }
 
-    pub fn forward_kill_invocation_response(
+    pub fn kill_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         kill_invocation_response: KillInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardKillResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(kill_invocation_response)
+            reply: pat!(RpcReply::KillInvocation(eq(kill_invocation_response)))
         })
     }
 
-    pub fn forward_purge_invocation_response(
+    pub fn purge_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         purge_invocation_response: PurgeInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardPurgeInvocationResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(purge_invocation_response)
+            reply: pat!(RpcReply::PurgeInvocation(eq(purge_invocation_response)))
         })
     }
 

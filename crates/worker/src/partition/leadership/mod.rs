@@ -11,6 +11,7 @@
 mod durability_tracker;
 mod fencing;
 mod leader_state;
+mod rpc;
 mod self_proposer;
 mod self_proposer_scheduler;
 pub mod trim_queue;
@@ -80,7 +81,7 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
-use super::{processor::*, rpc};
+use super::{processor::*, rpc as partition_rpc};
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
@@ -141,7 +142,7 @@ pub(crate) enum TaskTermination {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum NetworkServiceEvent {
     RpcProposal {
-        proposal: rpc::RpcProposal,
+        proposal: partition_rpc::RpcProposal,
         #[debug(skip)]
         reciprocal: RpcReciprocal,
         lease: MemoryLease,
@@ -937,7 +938,7 @@ pub(super) struct RpcProposalSender {
 impl RpcProposalSender {
     pub fn send_rpc_proposal(
         self,
-        proposal: rpc::RpcProposal,
+        proposal: partition_rpc::RpcProposal,
         reciprocal: RpcReciprocal,
         lease: MemoryLease,
     ) {
