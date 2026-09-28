@@ -33,7 +33,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
 use tracing::error;
 
-use restate_rocksdb::{Priority, StorageTaskKind};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
@@ -417,6 +417,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
 impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     async fn get_vqueue(&self, qid: &VQueueId) -> Result<Option<VQueueMeta>, StorageError> {
+        let _x = RocksDbReadPerfGuard::new("get-vqueue-meta");
         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
         MetaKeyRef::builder()
             .qid(qid)
@@ -433,6 +434,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         partition_key: PartitionKey,
         id: &EntryId,
     ) -> Result<Option<impl EntryStatusHeader + 'static>> {
+        let _x = RocksDbReadPerfGuard::new("get-vqueue-entry-status");
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
         EntryStatusKeyRef::builder()
             .partition_key(&partition_key)

@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::task::{Poll, ready};
 
 use itertools::{EitherOrBoth, Itertools as _};
+use restate_rocksdb::RocksDbReadPerfGuard;
 use tokio::time::Instant;
 use tracing::trace;
 
@@ -643,6 +644,7 @@ impl<S: VQueueStore> Queue<S> {
         skip: &UnconfirmedAssignments,
         refill_mode: RefillMode,
     ) -> Result<(), CursorError> {
+        let _x = RocksDbReadPerfGuard::new("vqueue-refill-sync");
         let start = Instant::now();
         let mut reader = storage.new_inbox_reader(
             qid,
@@ -698,6 +700,7 @@ impl<S: VQueueStore> Queue<S> {
         let task_cancel = Arc::clone(&cancel);
 
         let handle = tokio::task::spawn_blocking(move || {
+            let _x = RocksDbReadPerfGuard::new("vqueue-refill-async");
             // collect and send the results at the end
             let mut results = Vec::with_capacity(INBOX_CACHE_CAPACITY);
 
