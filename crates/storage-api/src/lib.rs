@@ -63,6 +63,7 @@ impl From<OutOfMemory> for BudgetedReadError {
 }
 
 pub mod deduplication_table;
+pub mod filter;
 pub mod fsm_table;
 pub mod inbox_table;
 pub mod invocation_status_table;
@@ -75,6 +76,8 @@ pub mod promise_table;
 pub mod protobuf_types;
 pub mod service_status_table;
 pub mod state_table;
+pub mod stats;
+mod table;
 pub mod timer_table;
 pub mod vqueue_table;
 
