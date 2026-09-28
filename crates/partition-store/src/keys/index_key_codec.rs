@@ -15,10 +15,37 @@ use bytes::BufMut;
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{Stage, Status};
-use restate_types::identifiers::CanonicalEntryId;
-use restate_types::vqueues::{EntryKind, Seq};
+use restate_types::identifiers::{CanonicalEntryId, ResourceId};
+use restate_types::vqueues::{EntryKind, Seq, VQueueId};
 
 use super::{EncodedMemCmpStr, IndexFieldDecode, IndexFieldEncode};
+
+impl IndexFieldEncode for VQueueId {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(self.as_raw_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        Self::RAW_BYTES_LEN
+    }
+}
+
+impl IndexFieldDecode for VQueueId {
+    type Owned = Self;
+    type Encoded = [u8; Self::RAW_BYTES_LEN];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        Ok(Self::from_raw_bytes(&mut encoded.as_ref()))
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        let Some((encoded, remaining)) = source.split_first_chunk() else {
+            return Err(StorageError::DataIntegrityError);
+        };
+        *source = remaining;
+        Ok(encoded)
+    }
+}
 
 impl IndexFieldEncode for CanonicalEntryId {
     fn encode_field<B: BufMut>(&self, target: &mut B) {
@@ -138,6 +165,29 @@ impl IndexFieldDecode for Reverse<UniqueTimestamp> {
     }
 }
 
+impl IndexFieldEncode for Reverse<u64> {
+    fn encode_field<B: BufMut>(&self, target: &mut B) {
+        target.put_u64(!self.0);
+    }
+
+    fn serialized_length(&self) -> usize {
+        size_of::<u64>()
+    }
+}
+
+impl IndexFieldDecode for Reverse<u64> {
+    type Owned = Self;
+    type Encoded = [u8; size_of::<u64>()];
+
+    fn decode_encoded(encoded: &Self::Encoded) -> crate::Result<Self> {
+        Ok(Reverse(!u64::from_be_bytes(*encoded)))
+    }
+
+    fn take_encoded<'a>(source: &mut &'a [u8]) -> crate::Result<&'a Self::Encoded> {
+        u64::take_encoded(source)
+    }
+}
+
 impl IndexFieldEncode for EntryKind {
     fn encode_field<B: BufMut>(&self, target: &mut B) {
         assert_ne!(
@@ -217,6 +267,51 @@ impl IndexFieldDecode for Status {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static_assertions::assert_impl_all!(VQueueId: restate_storage_api::PrimaryKey);
+    static_assertions::assert_not_impl_any!(Option<VQueueId>: restate_storage_api::PrimaryKey);
+
+    #[test]
+    fn vqueue_ids_preserve_order_and_round_trip() {
+        let mut previous = None;
+        for id in [
+            VQueueId::new(0, &[0; 16]),
+            VQueueId::new(255, &[255; 16]),
+            VQueueId::new(256, &[0; 16]),
+            VQueueId::new(256, &[255; 16]),
+            VQueueId::new(u64::MAX, &[255; 16]),
+        ] {
+            let mut bytes = Vec::new();
+            id.encode_field(&mut bytes);
+            assert_eq!(bytes.len(), id.serialized_length());
+            assert_eq!(bytes.len(), VQueueId::RAW_BYTES_LEN);
+            assert_eq!(bytes, id.as_raw_bytes());
+            if let Some(previous) = previous {
+                assert!(previous < bytes);
+            }
+            previous = Some(bytes.clone());
+
+            for len in 0..bytes.len() {
+                let mut truncated = &bytes[..len];
+                assert!(matches!(
+                    VQueueId::decode_field(&mut truncated),
+                    Err(StorageError::DataIntegrityError)
+                ));
+                assert_eq!(truncated, &bytes[..len]);
+            }
+
+            bytes.extend_from_slice(b"suffix");
+            let mut remaining = bytes.as_slice();
+            let encoded = VQueueId::take_encoded(&mut remaining).unwrap();
+            assert_eq!(encoded.as_slice(), id.as_raw_bytes());
+            assert_eq!(VQueueId::decode_encoded(encoded).unwrap(), id);
+            assert_eq!(remaining, b"suffix");
+
+            let mut remaining = bytes.as_slice();
+            assert_eq!(VQueueId::decode_field(&mut remaining).unwrap(), id);
+            assert_eq!(remaining, b"suffix");
+        }
+    }
 
     #[test]
     fn rough_timestamps_preserve_order_and_reject_invalid_encoding() {
