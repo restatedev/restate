@@ -8,6 +8,48 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Wire types of the [`PartitionLeaderService`], the RPCs served by partition processor leaders.
+//!
+//! Two request/response formats coexist:
+//! - The legacy [`PartitionProcessorRpcRequest`]: one flexbuffers-encoded request for all
+//!   operations, answered with `Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>`.
+//!   It will be removed in 1.9, once all RPCs use the dedicated messages.
+//! - Dedicated messages, one per operation (e.g. [`CancelInvocationRpcRequest`]). Each one is
+//!   answered with a [`PartitionProcessorResponseRpcEnvelope`], which carries either the
+//!   operation's result or one of the errors any PP RPC can return. They are registered with
+//!   `define_partition_processor_rpcs!` at the bottom of this module.
+//!
+//! # Response enums are `bilrost::Oneof`s
+//!
+//! Most response enums derive `bilrost::Oneof` + `bilrost::Message` instead of
+//! `bilrost::Enumeration`. This keeps them extensible: an enum can later move into a field of a
+//! struct, and the struct can gain new fields, without changing the bytes on the wire.
+//!
+//! ```ignore
+//! // Today
+//! #[derive(bilrost::Oneof, bilrost::Message)]
+//! pub enum CancelInvocationRpcResponse {
+//!     #[bilrost(empty)]
+//!     Unknown,
+//!     #[bilrost(tag(1), message)]
+//!     Done,
+//!     // ... tags 2-4
+//! }
+//!
+//! // Later: the same bytes on the wire, plus a new field
+//! #[derive(bilrost::Message)]
+//! pub struct CancelInvocationRpcResponse {
+//!     #[bilrost(oneof(1, 2, 3, 4))]
+//!     pub status: CancelInvocationStatus, // the old enum, renamed
+//!     #[bilrost(tag(100))]
+//!     pub new_field: Option<Foo>,
+//! }
+//! ```
+//!
+//! The `#[bilrost(empty)] Unknown` variant is what a response decodes to when none of the
+//! variant tags are set. Converting `Unknown` into a client response type fails with
+//! [`UnexpectedResponse`].
+
 use std::ops::RangeInclusive;
 use std::sync::Arc;
 
@@ -271,12 +313,21 @@ pub enum PartitionProcessorResponseRpcEnvelope<T> {
     Unknown,
     #[bilrost(tag(1))]
     Ok { result: T },
-    #[bilrost(tag(2))]
-    NotLeader(PartitionId),
-    #[bilrost(tag(3))]
-    LostLeadership(PartitionId),
-    #[bilrost(tag(4))]
-    Internal(String),
+    #[bilrost(tag(2), message)]
+    NotLeader {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+    },
+    #[bilrost(tag(3), message)]
+    LostLeadership {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+    },
+    #[bilrost(tag(4), message)]
+    Internal {
+        #[bilrost(1)]
+        message: String,
+    },
 }
 
 impl<T> PartitionProcessorResponseRpcEnvelope<T> {
@@ -284,13 +335,13 @@ impl<T> PartitionProcessorResponseRpcEnvelope<T> {
     pub fn into_result(self) -> Result<T, WireResponseError> {
         match self {
             Self::Ok { result } => Ok(result),
-            Self::NotLeader(partition_id) => {
+            Self::NotLeader { partition_id } => {
                 Err(PartitionProcessorRpcError::NotLeader(partition_id).into())
             }
-            Self::LostLeadership(partition_id) => {
+            Self::LostLeadership { partition_id } => {
                 Err(PartitionProcessorRpcError::LostLeadership(partition_id).into())
             }
-            Self::Internal(message) => Err(PartitionProcessorRpcError::Internal(message).into()),
+            Self::Internal { message } => Err(PartitionProcessorRpcError::Internal(message).into()),
             Self::Unknown => Err(UnexpectedResponse.into()),
         }
     }
@@ -337,11 +388,11 @@ impl<T> From<Result<T, PartitionProcessorRpcError>> for PartitionProcessorRespon
 impl<T> From<PartitionProcessorRpcError> for PartitionProcessorResponseRpcEnvelope<T> {
     fn from(value: PartitionProcessorRpcError) -> Self {
         match value {
-            PartitionProcessorRpcError::NotLeader(partition_id) => Self::NotLeader(partition_id),
+            PartitionProcessorRpcError::NotLeader(partition_id) => Self::NotLeader { partition_id },
             PartitionProcessorRpcError::LostLeadership(partition_id) => {
-                Self::LostLeadership(partition_id)
+                Self::LostLeadership { partition_id }
             }
-            PartitionProcessorRpcError::Internal(msg) => Self::Internal(msg),
+            PartitionProcessorRpcError::Internal(message) => Self::Internal { message },
         }
     }
 }
@@ -362,26 +413,31 @@ pub struct CancelInvocationRpcRequest {
 }
 bilrost_wire_codec!(CancelInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum CancelInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Done,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     Appended,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotFound,
-    #[bilrost(3)]
+    #[bilrost(tag(4), message)]
     AlreadyCompleted,
 }
 
-impl From<CancelInvocationRpcResponse> for CancelInvocationResponse {
-    fn from(value: CancelInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<CancelInvocationRpcResponse> for CancelInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: CancelInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            CancelInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             CancelInvocationRpcResponse::Done => Self::Done,
             CancelInvocationRpcResponse::Appended => Self::Appended,
             CancelInvocationRpcResponse::NotFound => Self::NotFound,
             CancelInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
-        }
+        })
     }
 }
 
@@ -411,23 +467,28 @@ pub struct KillInvocationRpcRequest {
 }
 bilrost_wire_codec!(KillInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum KillInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     NotFound,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     AlreadyCompleted,
 }
 
-impl From<KillInvocationRpcResponse> for KillInvocationResponse {
-    fn from(value: KillInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<KillInvocationRpcResponse> for KillInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: KillInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            KillInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             KillInvocationRpcResponse::Ok => Self::Ok,
             KillInvocationRpcResponse::NotFound => Self::NotFound,
             KillInvocationRpcResponse::AlreadyCompleted => Self::AlreadyCompleted,
-        }
+        })
     }
 }
 
@@ -466,23 +527,28 @@ pub struct PurgeJournalRpcRequest {
 bilrost_wire_codec!(PurgeJournalRpcRequest);
 
 /// Both purge journal and purge invocation use the same response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum PurgeInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     Ok,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     NotFound,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotCompleted,
 }
 
-impl From<PurgeInvocationRpcResponse> for PurgeInvocationResponse {
-    fn from(value: PurgeInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<PurgeInvocationRpcResponse> for PurgeInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: PurgeInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PurgeInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             PurgeInvocationRpcResponse::Ok => Self::Ok,
             PurgeInvocationRpcResponse::NotFound => Self::NotFound,
             PurgeInvocationRpcResponse::NotCompleted => Self::NotCompleted,
-        }
+        })
     }
 }
 
@@ -758,26 +824,31 @@ pub struct PauseInvocationRpcRequest {
 }
 bilrost_wire_codec!(PauseInvocationRpcRequest);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Enumeration)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, bilrost::Oneof, bilrost::Message)]
 pub enum PauseInvocationRpcResponse {
-    #[bilrost(0)]
+    #[bilrost(empty)]
+    Unknown,
+    #[bilrost(tag(1), message)]
     AlreadyPaused,
-    #[bilrost(1)]
+    #[bilrost(tag(2), message)]
     Accepted,
-    #[bilrost(2)]
+    #[bilrost(tag(3), message)]
     NotFound,
-    #[bilrost(3)]
+    #[bilrost(tag(4), message)]
     NotRunning,
 }
 
-impl From<PauseInvocationRpcResponse> for PauseInvocationResponse {
-    fn from(value: PauseInvocationRpcResponse) -> Self {
-        match value {
+impl TryFrom<PauseInvocationRpcResponse> for PauseInvocationResponse {
+    type Error = UnexpectedResponse;
+
+    fn try_from(value: PauseInvocationRpcResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            PauseInvocationRpcResponse::Unknown => return Err(UnexpectedResponse),
             PauseInvocationRpcResponse::Accepted => PauseInvocationResponse::Accepted,
             PauseInvocationRpcResponse::NotFound => PauseInvocationResponse::NotFound,
             PauseInvocationRpcResponse::NotRunning => PauseInvocationResponse::NotRunning,
             PauseInvocationRpcResponse::AlreadyPaused => PauseInvocationResponse::AlreadyPaused,
-        }
+        })
     }
 }
 
