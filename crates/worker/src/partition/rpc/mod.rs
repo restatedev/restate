@@ -30,8 +30,13 @@ use restate_types::identifiers::{InvocationId, PartitionId, PartitionProcessorRp
 use restate_types::invocation::InvocationRequest;
 use restate_types::logs::Keys;
 use restate_types::net::partition_processor::{
-    AppendInvocationReplyOn, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse,
+    AppendInvocationReplyOn, AppendInvocationResponseRpcRequest, AppendInvocationRpcRequest,
+    AppendSignalRpcRequest, CancelInvocationRpcRequest, GetInvocationOutputRpcRequest,
+    GetInvocationStatusRpcRequest, KillInvocationRpcRequest, PartitionProcessorRpcError,
+    PartitionProcessorRpcRequest, PartitionProcessorRpcRequestHeader,
+    PartitionProcessorRpcRequestInner, PartitionProcessorRpcResponse, PartitionProcessorWireRpc,
+    PauseInvocationRpcRequest, PurgeInvocationRpcRequest, PurgeJournalRpcRequest,
+    RestartAsNewInvocationRpcRequest, ResumeInvocationRpcRequest,
 };
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::v2::{Command, CommandWithKeys, ErasedCommand};
@@ -74,6 +79,21 @@ pub(crate) enum Decision<Response = PartitionProcessorRpcResponse> {
 }
 
 impl<R> Decision<R> {
+    fn map_response<T>(self, map: impl FnOnce(R) -> T) -> Decision<T> {
+        match self {
+            Self::Propose(RpcProposal {
+                keys,
+                cmd,
+                reply_on,
+            }) => Decision::Propose(RpcProposal {
+                keys,
+                cmd,
+                reply_on: reply_on.map_response(map),
+            }),
+            Self::Reply(response) => Decision::Reply(response.map(map)),
+        }
+    }
+
     #[cfg(test)]
     fn extract_as_rpc_proposal<C: Command>(self) -> (Keys, C, ReplyOn<R>) {
         let Self::Propose(proposal) = self else {
@@ -108,6 +128,24 @@ pub(crate) enum ReplyOn<Response> {
     },
 }
 
+impl<R> ReplyOn<R> {
+    fn map_response<T>(self, map: impl FnOnce(R) -> T) -> ReplyOn<T> {
+        match self {
+            Self::Apply { request_id } => ReplyOn::Apply { request_id },
+            Self::Commit { response } => ReplyOn::Commit {
+                response: map(response),
+            },
+            Self::ApplyAndFence {
+                request_id,
+                invocation_id,
+            } => ReplyOn::ApplyAndFence {
+                request_id,
+                invocation_id,
+            },
+        }
+    }
+}
+
 pub(super) struct RpcContext<'a, Schemas, Storage> {
     is_leader: bool,
     partition_id: PartitionId,
@@ -131,8 +169,8 @@ impl<'a, Schemas, Storage> RpcContext<'a, Schemas, Storage> {
     }
 }
 
-pub(super) trait RpcHandler<Input, Response = PartitionProcessorRpcResponse> {
-    fn handle(self, input: Input) -> impl Future<Output = Decision<Response>>;
+pub(super) trait RpcHandler<Request: PartitionProcessorWireRpc> {
+    fn handle(self, request: Request) -> impl Future<Output = Decision<Request::Ok>>;
 }
 
 impl<'a, TSchemas, TStorage> RpcHandler<PartitionProcessorRpcRequest>
@@ -146,109 +184,133 @@ where
         PartitionProcessorRpcRequest {
             request_id,
             partition_id: _,
-            sent_at: _,
+            sent_at,
             inner,
         }: PartitionProcessorRpcRequest,
     ) -> Decision {
+        let header = PartitionProcessorRpcRequestHeader {
+            request_id,
+            sent_at,
+        };
+
         match inner {
             PartitionProcessorRpcRequestInner::AppendInvocation(
                 invocation_request,
                 append_invocation_reply_on,
-            ) => {
-                self.handle(append_invocation::Request {
-                    request_id,
+            ) => self
+                .handle(AppendInvocationRpcRequest {
+                    header,
                     invocation_request,
                     append_invocation_reply_on,
                 })
                 .await
-            }
+                .map_response(|response| {
+                    response
+                        .try_into()
+                        .expect("handler returned an invalid append invocation response")
+                }),
             PartitionProcessorRpcRequestInner::GetInvocationOutput(
                 invocation_query,
                 response_mode,
-            ) => {
-                self.handle(get_invocation_output::Request {
-                    request_id,
-                    invocation_query,
+            ) => self
+                .handle(GetInvocationOutputRpcRequest {
+                    header,
+                    invocation_query: invocation_query.into(),
                     response_mode,
                 })
                 .await
-            }
-            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => {
-                self.handle(get_invocation_status::Request { invocation_id })
-                    .await
-            }
+                .map_response(|response| {
+                    response
+                        .try_into()
+                        .expect("handler returned an invalid get invocation output response")
+                }),
+            PartitionProcessorRpcRequestInner::GetInvocationStatus { invocation_id } => self
+                .handle(GetInvocationStatusRpcRequest {
+                    header,
+                    invocation_id,
+                })
+                .await
+                .map_response(|response| {
+                    response
+                        .try_into()
+                        .expect("handler returned an invalid get invocation status response")
+                }),
             PartitionProcessorRpcRequestInner::AppendInvocationResponse(invocation_response) => {
-                self.handle(append_invocation_response::Request {
+                self.handle(AppendInvocationResponseRpcRequest {
+                    header,
                     invocation_response,
                 })
                 .await
+                .map_response(Into::into)
             }
-            PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal) => {
-                self.handle(append_signal::Request {
+            PartitionProcessorRpcRequestInner::AppendSignal(invocation_id, signal) => self
+                .handle(AppendSignalRpcRequest {
+                    header,
                     invocation_id,
-                    signal,
+                    signal_id: Some(signal.id.into()),
+                    result: Some(signal.result.into()),
                 })
                 .await
-            }
-            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => {
-                self.handle(cancel_invocation::Request {
-                    request_id,
-                    invocation_id,
-                })
-                .await
-            }
-            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => {
-                self.handle(kill_invocation::Request {
-                    request_id,
+                .map_response(Into::into),
+            PartitionProcessorRpcRequestInner::CancelInvocation { invocation_id } => self
+                .handle(CancelInvocationRpcRequest {
+                    header,
                     invocation_id,
                 })
                 .await
-            }
-            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => {
-                self.handle(purge_invocation::Request {
-                    request_id,
+                .map_response(Into::into),
+            PartitionProcessorRpcRequestInner::KillInvocation { invocation_id } => self
+                .handle(KillInvocationRpcRequest {
+                    header,
                     invocation_id,
                 })
                 .await
-            }
-            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => {
-                self.handle(purge_journal::Request {
-                    request_id,
+                .map_response(Into::into),
+            PartitionProcessorRpcRequestInner::PurgeInvocation { invocation_id } => self
+                .handle(PurgeInvocationRpcRequest {
+                    header,
                     invocation_id,
                 })
                 .await
-            }
+                .map_response(Into::into),
+            PartitionProcessorRpcRequestInner::PurgeJournal { invocation_id } => self
+                .handle(PurgeJournalRpcRequest {
+                    header,
+                    invocation_id,
+                })
+                .await
+                .map_response(PartitionProcessorRpcResponse::PurgeJournal),
             PartitionProcessorRpcRequestInner::RestartAsNewInvocation {
                 invocation_id,
                 copy_prefix_up_to_index_included,
                 patch_deployment_id,
-            } => {
-                self.handle(restart_as_new_invocation::Request {
-                    request_id,
+            } => self
+                .handle(RestartAsNewInvocationRpcRequest {
+                    header,
                     invocation_id,
                     copy_prefix_up_to_index_included,
-                    patch_deployment_id,
+                    patch_deployment_id: patch_deployment_id.into(),
                 })
                 .await
-            }
+                .map_response(Into::into),
             PartitionProcessorRpcRequestInner::ResumeInvocation {
                 invocation_id,
                 deployment_id,
-            } => {
-                self.handle(resume_invocation::Request {
-                    request_id,
+            } => self
+                .handle(ResumeInvocationRpcRequest {
+                    header,
                     invocation_id,
-                    update_deployment_id: deployment_id,
+                    deployment_id: deployment_id.into(),
                 })
                 .await
-            }
-            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => {
-                self.handle(pause_invocation::PauseRequest {
-                    request_id,
+                .map_response(Into::into),
+            PartitionProcessorRpcRequestInner::PauseInvocation { invocation_id } => self
+                .handle(PauseInvocationRpcRequest {
+                    header,
                     invocation_id,
                 })
                 .await
-            }
+                .map_response(Into::into),
         }
     }
 }

@@ -8,24 +8,26 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::logs::BodyWithKeys;
+use restate_types::net::partition_processor::{
+    PauseInvocationRpcRequest, PauseInvocationRpcResponse,
+};
 use restate_wal_protocol::invocation::PauseInvocationCommand;
 
-pub(super) struct PauseRequest {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<PauseRequest> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<PauseInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        PauseRequest {
-            request_id,
+        PauseInvocationRpcRequest {
+            header,
             invocation_id,
-        }: PauseRequest,
-    ) -> Decision {
+        }: PauseInvocationRpcRequest,
+    ) -> Decision<PauseInvocationRpcResponse> {
+        let request_id = header.request_id;
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
@@ -60,6 +62,7 @@ mod tests {
     use std::assert_matches;
 
     use restate_test_util::assert;
+    use restate_types::identifiers::InvocationId;
     use restate_wal_protocol::v2::commands;
     use test_log::test;
 
@@ -72,14 +75,15 @@ mod tests {
         struct NoopStorage;
         let mut storage = NoopStorage;
 
-        let decision = RpcHandler::handle(
+        let decision: Decision = RpcHandler::handle(
             RpcContext::new(false, PartitionId::from(0), &(), &mut storage),
-            PauseRequest {
-                request_id: Default::default(),
+            PauseInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
             },
         )
-        .await;
+        .await
+        .map_response(Into::into);
 
         assert_matches!(
             decision,
@@ -96,14 +100,15 @@ mod tests {
         let mut storage = NoopStorage;
 
         let request_id = PartitionProcessorRpcRequestId::new();
-        let decision = RpcHandler::handle(
+        let decision: Decision = RpcHandler::handle(
             RpcContext::new(true, PartitionId::MIN, &(), &mut storage),
-            PauseRequest {
-                request_id,
+            PauseInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(request_id),
                 invocation_id,
             },
         )
-        .await;
+        .await
+        .map_response(Into::into);
 
         let (keys, pause, reply_on) =
             decision.extract_as_rpc_proposal::<commands::PauseInvocationCommand>();
