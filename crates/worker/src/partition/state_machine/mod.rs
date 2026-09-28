@@ -72,7 +72,7 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    AwakeableIdentifier, BaseEntryId, EntryIndex, ExternalSignalIdentifier, InvocationId,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
@@ -1852,10 +1852,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
                 let record_unique_ts =
@@ -1996,10 +1993,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
                 let record_unique_ts =
@@ -2903,10 +2897,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             else {
                 // Invocation has been removed already!
@@ -3048,12 +3039,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     entry_key
                 };
 
-                let mutation_id = entry_key
-                    .entry_id()
-                    .to_state_mutation_id(partition_key)
-                    .unwrap();
+                let mutation_id = entry_key.entry_id().to_base_id(qid.partition_key());
 
-                let Some(state_header) = state_header else {
+                let Some(state_header) = self.storage.get_vqueue_entry_status(&mutation_id).await?
+                else {
                     info!(
                         "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
                     );
@@ -3151,16 +3140,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     {
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-        let invocation_id = entry_key
-            .entry_id()
-            .to_invocation_id(qid.partition_key())
-            .expect("call run_invocation() on invocation entries only");
+        let base_id = entry_key.entry_id().to_base_id(qid.partition_key());
+        let invocation_id = base_id
+            .to_invocation_id()
+            .expect("run_invocation requires an invocation entry");
 
-        let Some(header) = self
-            .storage
-            .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
-            .await?
-        else {
+        let Some(header) = self.storage.get_vqueue_entry_status(&base_id).await? else {
             // This can happen if the invocation was killed (and) expired/removed from the vqueue
             // between the time the scheduler decided to run it and the time we observed its
             // decision. In particular, if we are configured with a retention policy that removes
@@ -3179,7 +3164,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             // Similar to the case above.
             debug!(
                 vqueue = %qid,
-                "Ignoring the scheduler's decision to run {invocation_id} because the entry has
+                "Ignoring the scheduler's decision to run {base_id} because the entry has
                 already moved to {} stage!",
                 header.stage(),
             );
@@ -4635,10 +4620,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         if metadata.vqueue_id.is_some() {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-            let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self
                 .storage
-                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             else {
                 // todo resolve once we decided on the actual migration strategy
@@ -5204,10 +5188,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = self
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // todo resolve once we decided on the actual migration strategy
@@ -5278,10 +5261,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = self
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // todo resolve once we decided on the actual migration strategy
