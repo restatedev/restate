@@ -209,14 +209,22 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
-            node_ctx,
+            mut node_ctx,
         } = self;
 
         let mut partition_store = PartitionStore::from(partition_db);
 
-        let ctx =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
-                .await?;
+        let vqueue_metadata_cache_capacity = node_ctx
+            .config
+            .live_load()
+            .worker
+            .vqueue_metadata_cache_capacity();
+        let ctx = ProcessorRawContext::create(
+            SemanticRestateVersion::current(),
+            &mut partition_store,
+            vqueue_metadata_cache_capacity,
+        )
+        .await?;
 
         // Seed the cache with whatever we just loaded from the FSM
         // table, so a freshly-restarted PP doesn't briefly serve the
