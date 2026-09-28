@@ -10,7 +10,7 @@
 
 use super::*;
 
-use crate::partition::state_machine::tests::matchers::actions::forward_purge_invocation_response;
+use crate::partition::state_machine::tests::matchers::actions::purge_invocation_reply;
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
@@ -74,12 +74,14 @@ async fn start_workflow_method() {
     // We get back this error due to the fact that we disabled the attach semantics
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id_2),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Failure(
-                WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id_2),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Failure(
+                    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+                ))
+            })))
         }))
     );
 
@@ -107,22 +109,26 @@ async fn start_workflow_method() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_1),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
             // This is a not() because we currently disabled the attach semantics on request/response
-            not(contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_2),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            not(contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_2),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })))
         )
     );
@@ -154,12 +160,14 @@ async fn start_workflow_method() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id_3),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Failure(
-                WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id_3),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Failure(
+                    WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR
+                ))
+            })))
         }))
     );
     test_env.shutdown().await;
@@ -210,7 +218,12 @@ async fn attach_by_workflow_key() {
             },
         ))
         .await;
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
+    assert_that!(
+        actions,
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+        })))
+    );
 
     // Send output, then end
     let response_bytes = Bytes::from_static(b"123");
@@ -236,21 +249,25 @@ async fn attach_by_workflow_key() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_1),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_2),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_2),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         )
     );
@@ -284,13 +301,15 @@ async fn attach_by_workflow_key() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id_3),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Success(
-                invocation_target.clone(),
-                response_bytes.clone()
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id_3),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })))
         }))
     );
     test_env.shutdown().await;
@@ -330,7 +349,7 @@ async fn purge_completed_workflow() {
         .await;
     assert_that!(
         actions,
-        contains(forward_purge_invocation_response(
+        contains(purge_invocation_reply(
             request_id,
             PurgeInvocationResponse::Ok
         ))

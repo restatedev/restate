@@ -18,7 +18,7 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2;
-use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationRequestHeader,
@@ -27,27 +27,23 @@ use restate_types::invocation::{
 };
 use restate_types::journal as journal_v1;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
-use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
+use restate_types::net::partition_processor::{
+    RestartAsNewInvocationRpcRequest, RestartAsNewInvocationRpcResponse,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
 use restate_wal_protocol::v2::commands;
-
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-    pub(super) copy_prefix_up_to_index_included: EntryIndex,
-    pub(super) patch_deployment_id: PatchDeploymentId,
-}
 
 macro_rules! bail {
     ($err:expr) => {
         use RestartAsNewInvocationRpcResponse::*;
 
-        return Decision::Reply(Ok($err.into()));
+        return Decision::Reply(Ok($err));
     };
 }
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<RestartAsNewInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
 where
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
@@ -56,13 +52,15 @@ where
 {
     async fn handle(
         self,
-        Request {
-            request_id,
+        RestartAsNewInvocationRpcRequest {
+            header,
             invocation_id,
             copy_prefix_up_to_index_included,
             patch_deployment_id,
-        }: Request,
-    ) -> Decision {
+        }: RestartAsNewInvocationRpcRequest,
+    ) -> Decision<RestartAsNewInvocationRpcResponse> {
+        let request_id = header.request_id;
+        let patch_deployment_id = PatchDeploymentId::from(patch_deployment_id);
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
@@ -239,7 +237,7 @@ where
             return Decision::Propose(RpcProposal::new(
                 cmd,
                 ReplyOn::Commit {
-                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }.into(),
+                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 },
             ));
         }
@@ -292,8 +290,7 @@ where
                             pinned_protocol_version: pinned_service_protocol as i32,
                             deployment_id: deployment.id,
                             supported_protocol_versions: deployment.supported_protocol_versions,
-                        }
-                        .into(),
+                        },
                     ));
                 }
                 Some(deployment.id)
@@ -709,13 +706,14 @@ mod tests {
         is_leader: bool,
         schemas: &R,
         storage: &mut MockStorage,
-        request: Request,
+        request: RestartAsNewInvocationRpcRequest,
     ) -> Decision {
         RpcHandler::handle(
             RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
             request,
         )
         .await
+        .map_response(Into::into)
     }
 
     #[test(restate_core::test)]
@@ -749,11 +747,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id: old_invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
@@ -814,11 +812,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -853,11 +851,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -895,13 +893,14 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::PinTo {
                     id: DeploymentId::new(),
-                },
+                }
+                .into(),
             },
         )
         .await;
@@ -935,11 +934,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
@@ -969,11 +968,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1013,11 +1012,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1042,11 +1041,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1081,11 +1080,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1118,11 +1117,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1157,11 +1156,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1229,11 +1228,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1275,11 +1274,11 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
@@ -1319,11 +1318,11 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinTo { id },
+                patch_deployment_id: PatchDeploymentId::PinTo { id }.into(),
             },
         )
         .await;
@@ -1360,11 +1359,11 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinTo { id: some_id },
+                patch_deployment_id: PatchDeploymentId::PinTo { id: some_id }.into(),
             },
         )
         .await;
@@ -1394,11 +1393,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1424,11 +1423,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1451,11 +1450,11 @@ mod tests {
             false,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
