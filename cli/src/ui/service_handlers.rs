@@ -10,9 +10,12 @@
 
 use comfy_table::{Cell, Color, Table};
 
-use restate_cli_util::ui::console::{Icon, StyledTable};
+use restate_cli_util::CliContext;
+use restate_cli_util::ui::console::StyledTable;
 use restate_types::invocation::ServiceType;
 use restate_types::schema::service::HandlerMetadata;
+
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 pub fn create_service_handlers_table<'a>(
     handlers: impl Iterator<Item = &'a HandlerMetadata>,
@@ -28,6 +31,46 @@ pub fn create_service_handlers_table<'a>(
         ]);
     }
     table
+}
+
+/// Handler rows for a formatter `table` section (headers: handler / input / output).
+/// Sorted by handler name for deterministic output.
+/// The first line of a handler's SDK-provided documentation, if any.
+pub fn handler_description(handler: &HandlerMetadata) -> Option<&str> {
+    handler
+        .documentation
+        .as_deref()
+        .and_then(|doc| doc.lines().map(str::trim).find(|line| !line.is_empty()))
+}
+
+/// Write the handlers of a service as a `handlers` table, sorted by name. The human
+/// output adds a DESCRIPTION column only when some handler is documented; JSON always
+/// carries `description`.
+pub fn write_service_handlers<'a>(
+    f: &mut Formatter,
+    handlers: impl Iterator<Item = &'a HandlerMetadata>,
+) {
+    let mut handlers: Vec<&HandlerMetadata> = handlers.collect();
+    handlers.sort_by(|a, b| a.name.cmp(&b.name));
+    let with_description = CliContext::get().json_output()
+        || handlers.iter().any(|h| handler_description(h).is_some());
+    let rows = handlers.into_iter().map(|handler| {
+        let mut row = vec![
+            Field::new(handler.name.to_string()),
+            Field::new(handler.input_description.clone()),
+            Field::new(handler.output_description.clone()),
+        ];
+        if with_description {
+            row.push(Field::new(handler_description(handler)));
+        }
+        row
+    });
+    let headers: &[&str] = if with_description {
+        &["handler", "input", "output", "description"]
+    } else {
+        &["handler", "input", "output"]
+    };
+    f.table("handlers", headers, rows);
 }
 
 pub fn create_service_handlers_table_diff<'a>(
@@ -74,18 +117,29 @@ pub fn create_service_handlers_table_diff<'a>(
     table
 }
 
-pub fn icon_for_service_type(svc_type: &ServiceType) -> Icon<'static, 'static> {
+pub fn service_type_label(svc_type: &ServiceType) -> &'static str {
     match svc_type {
-        ServiceType::Service => Icon("", ""),
-        ServiceType::VirtualObject => Icon("⬅️ 🚶🚶🚶", "virtual object"),
-        ServiceType::Workflow => Icon("📝", "workflow"),
+        ServiceType::Service => "service",
+        ServiceType::VirtualObject => "virtual object",
+        ServiceType::Workflow => "workflow",
     }
 }
 
-pub fn icon_for_is_public(public: bool) -> Icon<'static, 'static> {
-    if public {
-        Icon("🌎", "[public]")
-    } else {
-        Icon("🔒", "[private]")
+/// Stable machine value for a service type (`service` / `virtual_object` / `workflow`,
+/// matching the SQL `target_service_ty` vocabulary).
+pub fn service_type_machine(svc_type: &ServiceType) -> &'static str {
+    match svc_type {
+        ServiceType::Service => "service",
+        ServiceType::VirtualObject => "virtual_object",
+        ServiceType::Workflow => "workflow",
     }
+}
+
+/// Service-type as a formatter [`Field`]: the machine value with a human-friendly display.
+pub fn service_type_field(svc_type: &ServiceType) -> Field {
+    Field::with_display(service_type_machine(svc_type), service_type_label(svc_type))
+}
+
+pub fn visibility_label(public: bool) -> &'static str {
+    if public { "public" } else { "private" }
 }

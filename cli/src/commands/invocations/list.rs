@@ -14,6 +14,9 @@ use std::str::FromStr;
 use std::time::Instant;
 
 use anyhow::Result;
+use clap::ValueEnum;
+use clap::builder::{EnumValueParser, PossibleValue, TypedValueParser};
+use clap::error::{ContextKind, ContextValue};
 use cling::prelude::*;
 use indicatif::ProgressBar;
 use itertools::Itertools;
@@ -24,8 +27,26 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::{InvocationState, find_and_count_active_invocations};
-use crate::ui::invocations::render_invocation_compact;
+use crate::clients::datafusion_helpers::{
+    InvocationState, find_and_count_active_invocations, invocation_status_filter,
+};
+use crate::ui::fmt::{Formatter, OutputFormatter};
+
+/// Timestamp to order `invocations list` by.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum OrderBy {
+    /// Last status change
+    Modified,
+    /// Creation time
+    Created,
+}
+
+/// Sort direction.
+#[derive(ValueEnum, Clone, Copy, Debug)]
+pub enum SortOrder {
+    Desc,
+    Asc,
+}
 
 #[derive(Clone, Debug)]
 pub enum CompletionResult {
@@ -56,12 +77,70 @@ impl fmt::Display for CompletionResult {
     }
 }
 
+/// Parses `--status` like [`InvocationState`]'s `ValueEnum`, pointing completion outcomes
+/// (e.g. `failed`) to `--completion-result`.
+#[derive(Clone)]
+struct StatusParser;
+
+impl TypedValueParser for StatusParser {
+    type Value = InvocationState;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        EnumValueParser::<InvocationState>::new()
+            .parse_ref(cmd, arg, value)
+            .map_err(|mut err| {
+                let outcome = value.to_string_lossy().to_lowercase();
+                if matches!(
+                    outcome.as_str(),
+                    "failed" | "failure" | "succeeded" | "success" | "cancelled" | "killed"
+                ) {
+                    err.insert(
+                        ContextKind::Suggested,
+                        ContextValue::StyledStrs(vec![
+                            "completed invocations are filtered by outcome: use '--completion-result failure' (or 'success')"
+                                .into(),
+                        ]),
+                    );
+                }
+                err
+            })
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            InvocationState::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
+    }
+}
+
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
 pub struct List {
+    /// Only list invocations matching this query: an invocation id, or a target exact
+    /// match or prefix, e.g.:
+    /// * `invocationId`
+    /// * `serviceName`
+    /// * `serviceName/handler`
+    /// * `virtualObjectName`
+    /// * `virtualObjectName/key`
+    /// * `virtualObjectName/key/handler`
+    /// * `workflowName`
+    /// * `workflowName/key`
+    /// * `workflowName/key/handler`
+    ///
+    /// Combines with the other filters.
+    #[clap(verbatim_doc_comment)]
+    query: Option<String>,
     /// Service to list invocations for
-    #[clap(long, visible_alias = "service", value_delimiter = ',')]
+    #[clap(long, value_delimiter = ',')]
     service: Vec<String>,
     /// Filter by invocation on this handler name
     #[clap(long, value_delimiter = ',')]
@@ -70,7 +149,7 @@ pub struct List {
     #[clap(long)]
     all: bool,
     /// Filter by status(es)
-    #[clap(long, ignore_case = true, value_delimiter = ',')]
+    #[clap(long, ignore_case = true, value_delimiter = ',', value_parser = StatusParser)]
     status: Vec<InvocationState>,
     /// Filter completed invocations by result: 'success' or 'failure'. Implies --status=completed.
     #[clap(long, ignore_case = true, conflicts_with_all = ["all", "status"])]
@@ -90,8 +169,14 @@ pub struct List {
     /// Find zombie invocations (invocations pinned to removed deployments)
     #[clap(long)]
     zombie: bool,
-    /// Order the results by older invocations first
-    #[clap(long)]
+    /// Which timestamp to order the results by
+    #[clap(long, value_enum, default_value_t = OrderBy::Modified)]
+    order_by: OrderBy,
+    /// Sort direction: `desc` shows the most recent first
+    #[clap(long, value_enum, default_value_t = SortOrder::Desc)]
+    order: SortOrder,
+    /// Same as `--order asc` (kept for compatibility)
+    #[clap(long, hide = true, conflicts_with = "order")]
     oldest_first: bool,
 
     #[clap(flatten)]
@@ -107,12 +192,19 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     let statuses: HashSet<InvocationState> = HashSet::from_iter(opts.status.clone());
     // Prepare filters
     let mut active_filters: Vec<String> = vec![]; // "WHERE 1 = 1\n".to_string();
+    if let Some(query) = &opts.query {
+        active_filters.push(super::create_prefixed_query_filter(query, "inv.")?);
+    }
 
-    let order_by = if opts.oldest_first {
-        "ORDER BY inv.created_at ASC, inv.id"
-    } else {
-        "ORDER BY inv.created_at DESC, inv.id"
+    let column = match opts.order_by {
+        OrderBy::Modified => "inv.modified_at",
+        OrderBy::Created => "inv.created_at",
     };
+    let direction = match (opts.order, opts.oldest_first) {
+        (SortOrder::Asc, _) | (_, true) => "ASC",
+        (SortOrder::Desc, false) => "DESC",
+    };
+    let order_by = &format!("ORDER BY {column} {direction}, inv.id");
 
     if !opts.service.is_empty() {
         active_filters.push(format!(
@@ -167,10 +259,8 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         active_filters.push("status != 'completed'".to_owned());
     } else {
         // Apply status filters
-        active_filters.push(format!(
-            "status IN ({})",
-            statuses.iter().map(|x| format!("'{x}'")).format(",")
-        ));
+        let statuses: Vec<InvocationState> = statuses.into_iter().collect();
+        active_filters.push(invocation_status_filter(&sql_client, &statuses).await?);
     }
 
     let active_filter_str = if !active_filters.is_empty() {
@@ -194,13 +284,16 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     // Render Output UI
     progress.finish_and_clear();
 
-    // Sample of active invocations
-    if !results.is_empty() {
-        // Truncate the output to fit the requested limit
-        results.truncate(opts.limit);
-        for inv in &results {
-            render_invocation_compact(inv);
-        }
+    // Truncate the output to fit the requested limit
+    results.truncate(opts.limit);
+
+    let mut f = Formatter::new();
+    f.list("invocations", &results)?;
+    if let Some(inv) = results.first() {
+        f.next_step(
+            &format!("restate invocations describe {}", inv.id),
+            "inspect the first invocation's status, progress, and journal",
+        );
     }
 
     c_eprintln!(
@@ -210,5 +303,5 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         Styled(Style::Notice, start_time.elapsed())
     );
 
-    Ok(())
+    f.finish()
 }

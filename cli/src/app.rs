@@ -37,6 +37,7 @@ pub struct CliApp {
 }
 
 #[derive(Args, Collect, Clone, Default)]
+#[command(next_help_heading = "Global options")]
 pub struct GlobalOpts {
     /// Environment to select from the config file. Environment is read from these sources in order of precedence:
     ///     1. This command line argument
@@ -79,8 +80,8 @@ pub enum Command {
     Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
     Sql(sql::Sql),
-    /// Download one of Restate's examples in this directory.
-    #[clap(name = "example", alias = "examples")]
+    /// Download one of Restate's examples (aka templates), or `--list` them.
+    #[clap(name = "example", visible_aliases = ["examples", "template", "templates"])]
     Examples(examples::Examples),
 
     /// Manage service state

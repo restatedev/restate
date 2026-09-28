@@ -8,23 +8,21 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 use indicatif::ProgressBar;
-use restate_cli_util::ui::console::StyledTable;
+use itertools::Itertools;
+
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
-    add_deployment_to_kv_table, render_active_invocations, render_deployment_type,
-    render_deployment_url,
+    active_invocations_field, deployment_info_fields, render_deployment_type, render_deployment_url,
 };
-use crate::ui::service_handlers::create_service_handlers_table;
-
-use anyhow::Result;
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::service_handlers::{service_type_field, visibility_label, write_service_handlers};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -45,29 +43,50 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let client = AdminClient::new(env).await?;
     let service = client.get_service(&opts.name).await?.into_body().await?;
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("Name:", &service.name);
-    table.add_kv_row("Service type:", format!("{:?}", service.ty));
-    table.add_kv_row("Revision:", service.revision);
-    table.add_kv_row("Public:", service.public);
-    table.add_kv_row("Deployment ID:", service.deployment_id);
-
     let deployment = client
         .get_deployment(&service.deployment_id.to_string())
         .await?
         .into_body()
         .await?;
     let (_, deployment, _) = Deployment::from_detailed_deployment_response(deployment);
-    add_deployment_to_kv_table(&deployment, &mut table);
 
-    c_title!("📜", "Service Information");
-    c_println!("{}", table);
+    let mut f = Formatter::new();
+    f.next_step(
+        &format!("restate services status {}", service.name),
+        "see the service's invocation activity per handler",
+    );
+    f.next_step(
+        &format!("restate invocations list --service {}", service.name),
+        "list the service's active invocations",
+    );
 
-    // Methods
-    c_println!();
-    c_title!("🔌", "Handlers");
-    let table = create_service_handlers_table(service.handlers.values());
-    c_println!("{}", table);
+    f.title("📜", "Service Information");
+    f.detail(
+        "service",
+        [
+            ("name", Field::new(service.name.clone())),
+            ("service_type", service_type_field(&service.ty)),
+            ("revision", Field::new(service.revision)),
+            ("visibility", Field::new(visibility_label(service.public))),
+        ],
+    );
+    f.title("📜", "Deployment Information");
+    f.detail(
+        "deployment",
+        vec![
+            vec![(
+                "deployment_id".to_string(),
+                Field::new(service.deployment_id.to_string()),
+            )],
+            deployment_info_fields(&deployment),
+        ]
+        .into_iter()
+        .concat(),
+    );
+
+    // Handlers
+    f.title("🔌", "Handlers");
+    write_service_handlers(&mut f, service.handlers.values());
 
     // Printing other existing endpoints with previous revisions. We currently don't
     // have an API to get endpoints by service name so we get everything and filter
@@ -116,40 +135,41 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         .collect();
 
     if other_deployments.is_empty() {
-        return Ok(());
+        progress.finish_and_clear();
+        return f.finish();
     }
 
     let sql_client = crate::clients::DataFusionHttpClient::from(client);
-    // We have older deployments for this service, let's grab
-    let mut table = Table::new_styled();
-    let headers = vec![
-        "ADDRESS",
-        "TYPE",
-        "SERVICE-REVISION",
-        "ACTIVE-INVOCATIONS",
-        "DEPLOYMENT-ID",
-    ];
-    table.set_styled_header(headers);
     // sort other_endpoints by revision in descending order
     other_deployments.sort_by(|(_, _, rev1), (_, _, rev2)| rev2.cmp(rev1));
 
+    let mut rows = Vec::with_capacity(other_deployments.len());
     for (deployment_id, deployment_metadata, rev) in other_deployments {
         let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
 
-        table.add_row(vec![
-            Cell::new(render_deployment_url(&deployment_metadata)),
-            Cell::new(render_deployment_type(&deployment_metadata)),
-            Cell::new(rev),
-            render_active_invocations(active_inv),
-            Cell::new(deployment_id),
+        rows.push(vec![
+            Field::new(render_deployment_url(&deployment_metadata)),
+            Field::new(render_deployment_type(&deployment_metadata)),
+            Field::new(rev),
+            active_invocations_field(active_inv),
+            Field::new(deployment_id.to_string()),
         ]);
     }
 
     progress.finish_and_clear();
 
-    c_println!();
-    c_title!("👵", "Older Revisions");
-    c_println!("{}", table);
+    f.title("👵", "Older Revisions");
+    f.table(
+        "older_revisions",
+        &[
+            "address",
+            "type",
+            "service_revision",
+            "active_invocations",
+            "deployment_id",
+        ],
+        &rows,
+    );
 
-    Ok(())
+    f.finish()
 }

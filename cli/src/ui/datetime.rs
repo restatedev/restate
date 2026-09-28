@@ -14,7 +14,10 @@ use chrono::{DateTime, Local, TimeZone};
 use humantime::Timestamp;
 
 pub trait DateTimeExt {
+    /// Human-friendly local rendering (for tables).
     fn display(&self) -> String;
+    /// Machine-friendly RFC 3339 / ISO-8601 rendering (for `--json`).
+    fn iso(&self) -> String;
 }
 
 impl<Tz> DateTimeExt for DateTime<Tz>
@@ -25,11 +28,19 @@ where
         let dt: DateTime<Local> = self.with_timezone(&Local);
         dt.format("%a %d %h %Y %X %Z").to_string()
     }
+
+    fn iso(&self) -> String {
+        self.with_timezone(&Local).to_rfc3339()
+    }
 }
 
 impl DateTimeExt for Timestamp {
     fn display(&self) -> String {
         let dt = DateTime::<Local>::from(SystemTime::from(*self));
         dt.display()
+    }
+
+    fn iso(&self) -> String {
+        DateTime::<Local>::from(SystemTime::from(*self)).to_rfc3339()
     }
 }

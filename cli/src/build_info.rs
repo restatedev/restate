@@ -15,6 +15,7 @@ use std::str::FromStr;
 use std::sync::OnceLock;
 
 use restate_cli_util::c_println;
+use restate_cli_util::ui::console::Icon;
 use restate_types::SemanticRestateVersion;
 
 /// The version of restate CLI.
@@ -80,7 +81,8 @@ pub async fn check_if_latest_version() {
             std::cmp::Ordering::Greater
         ) {
             c_println!(
-                "📣⬆️A newer version was released at {}, v{}->v{}. Check it out at {}.",
+                "{}A newer version was released at {}, v{}->v{}. Check it out at {}.",
+                Icon("📣⬆️", ""),
                 current_version.to_string(),
                 latest_release.to_string(),
                 latest

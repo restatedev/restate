@@ -59,12 +59,14 @@
 
 pub mod completions;
 mod context;
+pub mod exit;
 pub mod lambda;
 mod opts;
 mod os_env;
 pub mod ui;
 
 pub use context::CliContext;
+pub use exit::Aborted;
 pub use opts::CommonOpts;
 pub use os_env::OsEnv;
 

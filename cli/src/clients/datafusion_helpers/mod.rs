@@ -13,13 +13,16 @@ use std::{collections::HashMap, fmt::Display, str::FromStr};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Local};
 use clap::ValueEnum;
-use restate_types::journal_v2::Entry;
-use restate_types::{identifiers::AwakeableIdentifier, invocation::ServiceType};
-use serde::Deserialize;
-use serde_with::{DeserializeAs, serde_as};
+use restate_types::invocation::ServiceType;
+use restate_types::journal_events::{Event, TransientErrorEvent};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use serde_with::{DeserializeAs, SerializeAs, serde_as};
 
+mod locks;
 mod v2;
 
+pub use locks::*;
 pub use v2::*;
 
 #[derive(Deserialize)]
@@ -33,10 +36,22 @@ pub struct ServiceHandlerUsage {
 pub struct SimpleInvocation {
     pub id: String,
     pub target: String,
+    /// The `sys_invocation_status.status` value (e.g. `completed`, `suspended`), with
+    /// `invoked` refined to the live status (e.g. `running`, `backing-off`).
+    pub status: String,
 }
 
 #[derive(
-    ValueEnum, Copy, Clone, Eq, Hash, PartialEq, Debug, Default, serde_with::DeserializeFromStr,
+    ValueEnum,
+    Copy,
+    Clone,
+    Eq,
+    Hash,
+    PartialEq,
+    Debug,
+    Default,
+    serde_with::DeserializeFromStr,
+    serde_with::SerializeDisplay,
 )]
 pub enum InvocationState {
     #[default]
@@ -86,7 +101,7 @@ impl Display for InvocationState {
 }
 
 #[serde_as]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Invocation {
     pub id: String,
     pub target: String,
@@ -113,15 +128,20 @@ pub struct Invocation {
     pub current_attempt_duration: Option<Duration>,
     // E.g. If suspended, since when?
     pub state_modified_at: Option<DateTime<Local>>,
+    // Lifecycle timestamps, when the invocation went through that stage.
+    pub inboxed_at: Option<DateTime<Local>>,
+    pub scheduled_at: Option<DateTime<Local>>,
+    pub scheduled_start_at: Option<DateTime<Local>>,
+    pub running_at: Option<DateTime<Local>>,
+    pub completed_at: Option<DateTime<Local>>,
 
-    // If backing-off
+    // If backing-off: from the VQueue entry status (not `sys_invocation`).
     pub num_retries: Option<u64>,
     pub next_retry_at: Option<DateTime<Local>>,
 
     pub last_attempt_started_at: Option<DateTime<Local>>,
-    // Last attempt failed?
+    // Last failure: from the latest `TransientError` / `Paused` journal event.
     pub last_failure_message: Option<String>,
-    pub last_failure_entry_index: Option<u64>,
     pub last_failure_entry_name: Option<String>,
     pub last_failure_entry_ty: Option<String>,
 }
@@ -149,6 +169,20 @@ impl<'de> DeserializeAs<'de, ServiceType> for DatafusionServiceType {
         D: serde::Deserializer<'de>,
     {
         Ok(DatafusionServiceType::deserialize(deserializer)?.into())
+    }
+}
+
+impl SerializeAs<ServiceType> for DatafusionServiceType {
+    fn serialize_as<S>(source: &ServiceType, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let repr = match source {
+            ServiceType::Service => "service",
+            ServiceType::VirtualObject => "virtual_object",
+            ServiceType::Workflow => "workflow",
+        };
+        serializer.serialize_str(repr)
     }
 }
 
@@ -185,167 +219,54 @@ impl InvocationCompletion {
     }
 }
 
+/// Which slice of an invocation's journal to fetch (see [`get_journal`](v2::get_journal)).
+#[derive(Debug, Clone, Copy)]
+pub enum JournalFetch {
+    /// The first `head` and last `tail` entries (a preview of large journals).
+    Preview { head: u32, tail: u32 },
+    /// The entire journal.
+    All,
+    /// A single entry by index.
+    One(u32),
+    /// An inclusive index range; `None` bounds are open.
+    Range(Option<u32>, Option<u32>),
+}
+
+/// A single journal entry fetched from `sys_journal`. `lite`/`full` are the parsed
+/// `entry_lite_json` (metadata projection) and `entry_json` (full payload).
 #[derive(Debug, Clone)]
-// todo: fix this and box the large variant (JournalEntryV2 is 496 bytes)
-#[allow(clippy::large_enum_variant)]
-pub enum JournalEntry {
-    V1(JournalEntryV1),
-    V2(JournalEntryV2),
-}
-
-impl JournalEntry {
-    pub fn should_present(&self) -> bool {
-        match self {
-            JournalEntry::V1(v1) => v1.should_present(),
-            JournalEntry::V2(_) => {
-                // For now in V2 we show all the entries
-                true
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct JournalEntryV1 {
-    pub seq: u32,
-    pub entry_type: JournalEntryTypeV1,
-    completed: bool,
-    pub name: Option<String>,
-}
-
-impl JournalEntryV1 {
-    pub fn is_completed(&self) -> bool {
-        if self.entry_type.is_completable() {
-            self.completed
-        } else {
-            true
-        }
-    }
-
-    pub fn should_present(&self) -> bool {
-        self.entry_type.should_present()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum JournalEntryTypeV1 {
-    Sleep {
-        wakeup_at: Option<chrono::DateTime<Local>>,
-    },
-    Call(OutgoingInvoke),
-    OneWayCall(OutgoingInvoke),
-    Awakeable(AwakeableIdentifier),
-    GetState,
-    SetState,
-    ClearState,
-    Run,
-    /// GetPromise is the blocking promise API,
-    ///  PeekPromise is the non-blocking variant (we don't need to show it)
-    GetPromise(Option<String>),
-    Other(String),
-}
-
-impl JournalEntryTypeV1 {
-    fn is_completable(&self) -> bool {
-        matches!(
-            self,
-            JournalEntryTypeV1::Sleep { .. }
-                | JournalEntryTypeV1::Call(_)
-                | JournalEntryTypeV1::Awakeable(_)
-                | JournalEntryTypeV1::GetState
-                | JournalEntryTypeV1::GetPromise(_)
-        )
-    }
-
-    fn should_present(&self) -> bool {
-        matches!(
-            self,
-            JournalEntryTypeV1::Sleep { .. }
-                | JournalEntryTypeV1::Call(_)
-                | JournalEntryTypeV1::OneWayCall(_)
-                | JournalEntryTypeV1::Awakeable(_)
-                | JournalEntryTypeV1::Run
-                | JournalEntryTypeV1::GetPromise(_)
-        )
-    }
-}
-
-impl Display for JournalEntryTypeV1 {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            JournalEntryTypeV1::Sleep { .. } => write!(f, "Sleep"),
-            JournalEntryTypeV1::Call(_) => write!(f, "Call"),
-            JournalEntryTypeV1::OneWayCall(_) => write!(f, "Send"),
-            JournalEntryTypeV1::Awakeable(_) => write!(f, "Awakeable"),
-            JournalEntryTypeV1::GetState => write!(f, "GetState"),
-            JournalEntryTypeV1::SetState => write!(f, "SetState"),
-            JournalEntryTypeV1::ClearState => write!(f, "ClearState"),
-            JournalEntryTypeV1::Run => write!(f, "Run"),
-            JournalEntryTypeV1::GetPromise(_) => write!(f, "Promise"),
-            JournalEntryTypeV1::Other(s) => write!(f, "{s}"),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct JournalEntryV2 {
-    pub seq: u32,
+pub struct JournalEntryRow {
+    pub index: u32,
     pub entry_type: String,
     pub name: Option<String>,
-    pub entry: Option<Entry>,
-    pub appended_at: Option<chrono::DateTime<Local>>,
+    pub appended_at: Option<DateTime<Local>>,
+    pub lite: Option<Value>,
+    pub full: Option<Value>,
 }
 
+/// A single event from `sys_journal_events` (decoded events attached to an invocation's
+/// timeline, ordered relative to journal entries by `after_journal_entry_index`).
 #[derive(Debug, Clone)]
-pub struct OutgoingInvoke {
-    pub invocation_id: Option<String>,
-    pub invoked_target: Option<String>,
+pub struct JournalEventRow {
+    pub after_journal_entry_index: u32,
+    pub appended_at: Option<DateTime<Local>>,
+    pub event_type: String,
+    pub event: Option<Value>,
 }
 
-// Service -> Locked Keys
-#[derive(Default)]
-pub struct ServiceHandlerLockedKeysMap {
-    services: HashMap<String, HashMap<String, LockedKeyInfo>>,
+impl JournalEventRow {
+    /// The typed event; `None` when this CLI can't decode it (e.g. a newer event type).
+    pub fn decoded(&self) -> Option<Event> {
+        serde_json::from_value(self.event.clone()?).ok()
+    }
 }
 
-#[derive(Clone, Default, Debug, Deserialize)]
-pub struct LockedKeyInfo {
-    pub num_pending: i64,
-    // Who is holding the lock
-    pub invocation_holding_lock: Option<String>,
-    pub invocation_method_holding_lock: Option<String>,
-    pub invocation_status: Option<InvocationState>,
-    pub invocation_created_at: Option<DateTime<Local>>,
-    // if running, how long has it been running?
-    pub invocation_attempt_duration: Option<Duration>,
-    // E.g. If suspended, how long has it been suspended?
-    pub invocation_state_duration: Option<Duration>,
-
-    pub num_retries: Option<u64>,
-    pub next_retry_at: Option<DateTime<Local>>,
-    pub pinned_deployment_id: Option<String>,
-    // Last attempt failed?
-    pub last_failure_message: Option<String>,
-    pub last_attempt_deployment_id: Option<String>,
-}
-
-impl ServiceHandlerLockedKeysMap {
-    fn insert(&mut self, service: &str, key: String, info: LockedKeyInfo) {
-        let locked_keys = self.services.entry(service.to_owned()).or_default();
-        locked_keys.insert(key, info);
-    }
-
-    fn locked_key_info_mut(&mut self, service: &str, key: &str) -> &mut LockedKeyInfo {
-        let locked_keys = self.services.entry(service.to_owned()).or_default();
-        locked_keys.entry(key.to_owned()).or_default()
-    }
-
-    pub fn into_inner(self) -> HashMap<String, HashMap<String, LockedKeyInfo>> {
-        self.services
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.services.is_empty()
+/// The failure an event reports: a transient error, or the one that paused the invocation.
+pub fn event_failure(event: &Event) -> Option<&TransientErrorEvent> {
+    match event {
+        Event::TransientError(failure) => Some(failure),
+        Event::Paused(paused) => paused.last_failure.as_ref(),
+        _ => None,
     }
 }
 
