@@ -20,6 +20,7 @@ use restate_rocksdb::RocksDbReadPerfGuard;
 use tokio::time::Instant;
 use tracing::trace;
 
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::vqueue_table::CursorError;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryValue, VQueueCursor, VQueueRunningCursor, VQueueStore,
