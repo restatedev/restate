@@ -83,11 +83,12 @@ mod tests {
     /// - both entry kinds (Invocation = 0x69 < StateMutation = 0x73),
     /// - remainders differing only in the first vs last byte (bytewise order).
     fn sample_ids() -> Vec<VQueueEntryId> {
-        let r0 = [0u8; 16];
+        let mut r0 = [0u8; 16];
+        r0[15] = 1;
         let mut r_first = [0u8; 16];
         r_first[0] = 1;
         let mut r_last = [0u8; 16];
-        r_last[15] = 1;
+        r_last[15] = 2;
         let r_max = [0xffu8; 16];
 
         vec![
