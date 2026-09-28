@@ -10,7 +10,9 @@
 
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::ValuePredicate;
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::ServiceName;
+use restate_types::identifiers::CanonicalEntryId;
 use restate_types::vqueues::EntryKind;
 use restate_util_string::ReString;
 
@@ -19,11 +21,14 @@ use crate::keys::{IndexFieldDecode, IndexFieldEncode};
 
 use super::PreparedFieldPredicate;
 
+mod timestamp;
+
 /// Binds logical literals to a physical field codec without changing its encoding.
 ///
 /// `Value` may differ from the decoded field type (e.g. string bounds for a
-/// ServiceName). Its encoding must be byte-compatible and order-compatible with
-/// this codec. Validation happens before encoding, never in the row loop.
+/// ServiceName). The default preparation requires byte- and order-compatible
+/// encoding. Codecs with different logical and physical domains must override
+/// preparation to translate predicates. Validation happens before scanning.
 pub(crate) trait IndexFilterCodec: IndexFieldDecode {
     type Value: IndexFieldEncode;
 
@@ -89,6 +94,24 @@ impl IndexFilterCodec for ServiceName {
 
 impl IndexFilterCodec for u64 {
     type Value = u64;
+}
+
+impl IndexFilterCodec for Stage {
+    // Stage keys use the mem-comparable encoding of their names. Arbitrary
+    // strings are valid bounds even if they do not name a stage.
+    type Value = ReString;
+    const PREFIX_NULLABLE: Option<bool> = Some(false);
+}
+
+impl IndexFilterCodec for CanonicalEntryId {
+    type Value = CanonicalEntryId;
+
+    fn validate(value: &Self::Value) -> crate::Result<()> {
+        if value.kind() == EntryKind::Unknown {
+            return Err(StorageError::DataIntegrityError);
+        }
+        Ok(())
+    }
 }
 
 impl IndexFilterCodec for EntryKind {

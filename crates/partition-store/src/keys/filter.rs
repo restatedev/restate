@@ -21,7 +21,7 @@ use crate::scan::PhysicalScan;
 use crate::{Result, ScanMode, TableKind};
 
 use super::IndexFieldDecode;
-use super::predicate::PreparedIndexPredicate;
+use super::predicate::{PreparedIndexPredicate, PreparedIndexRanges};
 
 pub(crate) mod codec;
 
@@ -63,6 +63,8 @@ fn take_field<'a, C: IndexFieldDecode + ?Sized>(input: &mut &'a [u8]) -> Result<
 pub(crate) enum PreparedFieldPredicate {
     /// Equality, membership, or a range over encoded field values.
     Value(PreparedIndexPredicate),
+    /// A union of inclusive intervals in encoded field order.
+    Ranges(PreparedIndexRanges),
     /// A case-sensitive string-prefix condition.
     Prefix {
         prefix: MemCmpPrefix,
@@ -111,6 +113,7 @@ impl PreparedFieldPredicate {
     fn matches(&self, literals: &[u8], encoded: &[u8]) -> Result<bool> {
         match self {
             Self::Value(predicate) => Ok(predicate.matches(literals, encoded)),
+            Self::Ranges(ranges) => Ok(ranges.matches(literals, encoded)),
             Self::Prefix {
                 prefix,
                 nullable_lower,
@@ -141,6 +144,7 @@ impl PreparedFieldPredicate {
     fn bounds<'a>(&'a self, literals: &'a [u8]) -> (Bound<&'a [u8]>, Bound<&'a [u8]>) {
         match self {
             Self::Value(predicate) => predicate.bounds(literals),
+            Self::Ranges(ranges) => ranges.bounds(literals),
             Self::Prefix {
                 prefix,
                 nullable_lower,
@@ -267,12 +271,23 @@ impl PreparedField {
         if matches!(upper, Included(end) | Excluded(end) if current >= end) {
             return Ok(FieldAdvance::Exhausted);
         }
-        // Above all lower bounds and below all upper bounds, only a prefix
-        // mismatch can remain. Its contiguous string domain is then exhausted.
-        if !self.matches(literals, current)? {
-            return Ok(FieldAdvance::Exhausted);
+        let mut next = None;
+        for predicate in &self.predicates {
+            if predicate.matches(literals, current)? {
+                continue;
+            }
+            // Inside the enclosing bounds, an interval union may still have a
+            // gap. Seek past every rejecting interval's gap before retrying the
+            // conjunction. A prefix mismatch exhausts its contiguous domain.
+            let PreparedFieldPredicate::Ranges(ranges) = predicate else {
+                return Ok(FieldAdvance::Exhausted);
+            };
+            let Some(start) = ranges.next_start(literals, current) else {
+                return Ok(FieldAdvance::Exhausted);
+            };
+            next = Some(next.map_or(start, |previous: &[u8]| previous.max(start)));
         }
-        Ok(FieldAdvance::After(current))
+        Ok(next.map_or(FieldAdvance::After(current), FieldAdvance::Value))
     }
 }
 
