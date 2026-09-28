@@ -113,7 +113,7 @@ use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{self, EntryId, VQueueId};
+use restate_types::vqueues::{self, EntryId, EntryTargetExt, EntryTargetRef, VQueueId};
 use restate_types::{RESTATE_VERSION_1_9_0, journal::*};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_util_string::{ReString, ToReString};
@@ -431,6 +431,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                                         .expect("This version does not support yielding vqueues entries other than invocations"),
                                     resume_at: yield_action.next_run_at,
                                     yield_reason: yield_action.reason,
+                                    invocation_target: None,
                                 }
                                 .apply(self)
                                 .await?;
@@ -985,6 +986,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         .await?
         .enqueue_new(
             record_unique_ts,
+            &metadata.invocation_target.entry_target_ref(),
             self.record_lsn,
             metadata.execution_time,
             EntryId::from(invocation_id),
@@ -1873,6 +1875,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .end(
                     record_unique_ts,
                     &entry_status,
+                    &invocation_target.entry_target_ref(),
                     new_status,
                     completion_retention,
                 );
@@ -2014,6 +2017,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .end(
                     record_unique_ts,
                     &entry_status,
+                    &invocation_target.entry_target_ref(),
                     new_status,
                     completion_retention,
                 );
@@ -2706,6 +2710,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 // Submit the journal event if we have one
                 lifecycle::YieldInvocationCommand {
                     invocation_id: &effect.invocation_id,
+                    invocation_target: invocation_status.invocation_target(),
                     yield_reason: reason,
                     resume_at,
                 }
@@ -2924,6 +2929,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .end(
                 record_unique_ts,
                 &entry_status,
+                &invocation_target.entry_target_ref(),
                 end_status,
                 completion_retention,
             );
@@ -3105,6 +3111,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .run_then_finish(
                     record_unique_ts,
                     &state_header,
+                    &state_mutation.entry_target_ref(),
                     wait_stats,
                     status,
                 );
@@ -3203,7 +3210,15 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .await?
             .unwrap();
 
-            vqueue.run_entry(record_unique_ts, &header, wait_stats);
+            vqueue.run_entry(
+                record_unique_ts,
+                &header,
+                &status
+                    .invocation_target()
+                    .expect("running invocation has a target")
+                    .entry_target_ref(),
+                wait_stats,
+            );
             let vq_handle = vqueue.handle();
 
             if self.is_leader {
@@ -3240,7 +3255,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 .await?
                 .unwrap();
 
-                vqueue.run_entry(record_unique_ts, &header, wait_stats);
+                vqueue.run_entry(
+                    record_unique_ts,
+                    &header,
+                    &metadata.invocation_target.entry_target_ref(),
+                    wait_stats,
+                );
                 let vq_handle = vqueue.handle();
 
                 self.init_journal_and_vqueue_invoke(
@@ -4579,8 +4599,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         metadata.timestamps.update(self.record_created_at);
 
         if metadata.vqueue_id.is_some() {
-            self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
-                .await?;
+            self.vqueue_move_invocation_to_inbox_stage(
+                &invocation_id,
+                &metadata.invocation_target.entry_target_ref(),
+            )
+            .await?;
         }
 
         self.storage
@@ -4639,7 +4662,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             )
             .await?
             .expect("suspending in a non-existent vqueue")
-            .suspend_entry(now, &header);
+            .suspend_entry(
+                now,
+                &header,
+                &metadata.invocation_target.entry_target_ref(),
+            );
         }
 
         self.storage
@@ -5184,6 +5211,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     async fn vqueue_move_invocation_to_inbox_stage(
         &mut self,
         invocation_id: &InvocationId,
+        entry_target: &EntryTargetRef<'_>,
     ) -> Result<(), Error>
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
@@ -5214,13 +5242,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         match header.stage() {
             Stage::Suspended => {
-                vqueue.wake_up(now, &header, None, None);
+                vqueue.wake_up(now, &header, entry_target, None, None);
             }
             Stage::Paused => {
-                vqueue.wake_up(now, &header, None, None);
+                vqueue.wake_up(now, &header, entry_target, None, None);
             }
             Stage::Running => {
-                vqueue.yield_entry(now, &header, None, YieldReason::Unknown);
+                vqueue.yield_entry(now, &header, entry_target, None, YieldReason::Unknown);
             }
             Stage::Inbox => {
                 // nothing to do if we are already in the inbox
@@ -5256,6 +5284,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         &mut self,
         invocation_id: &InvocationId,
         run_at: Option<RoughTimestamp>,
+        entry_target: &EntryTargetRef<'_>,
         pinned_deployment: Option<DeploymentId>,
     ) -> Result<bool, Error>
     where
@@ -5291,7 +5320,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         .await?
         .expect("rescheduling in a non-existent vqueue");
 
-        vqueue.reschedule(&header, run_at, pinned_deployment);
+        vqueue.reschedule(&header, entry_target, run_at, pinned_deployment);
 
         Ok(is_waiting)
     }
@@ -5361,6 +5390,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         vqueue.enqueue_new(
             now,
+            &state_mutation.entry_target_ref(),
             self.record_lsn,
             None,
             entry_id,
