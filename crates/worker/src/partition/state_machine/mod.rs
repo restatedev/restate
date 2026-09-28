@@ -5021,13 +5021,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: journal_table_v2::ReadJournalTable + WriteTimerTable,
     {
         let mut sleeps = HashMap::new();
-        // let mut completed = HashSet::new();
         {
             let mut journal = std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
                 self.storage,
                 invocation_id,
                 journal_length,
             )?);
+
             while let Some((_, entry)) = journal.try_next().await? {
                 match &entry.inner {
                     RawEntry::Command(cmd) if cmd.command_type() == CommandType::Sleep => {
