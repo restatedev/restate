@@ -141,7 +141,7 @@ fn main() -> anyhow::Result<()> {
 
     runtime.block_on(
         async move {
-            let tracing_guard = init_tracing_and_logging(&config.common, "pp-bench")
+            let tracing_guard = init_tracing_and_logging(&config.common)
                 .expect("failed to configure logging and tracing!");
 
             CliContext::new_without_tracing(args.common_opts.clone()).set_as_global();

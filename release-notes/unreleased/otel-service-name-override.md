@@ -32,5 +32,3 @@ routing, dashboards, or adoption metrics.
   and `service.namespace=Restate`.
 - **Deployments setting `OTEL_SERVICE_NAME` or `service.*` in `OTEL_RESOURCE_ATTRIBUTES`**: These
   values are now honored for services traces instead of being overwritten.
-- **Runtime traces** (`tracing-runtime-endpoint`) are unchanged: their `service.name` remains
-  `<role>@<node-name>` so per-node runtime identity is preserved.

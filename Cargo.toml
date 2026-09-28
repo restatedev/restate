@@ -209,7 +209,6 @@ octocrab = { version = "0.54.2", default-features = false, features = [
     "rustls-ring", "jwt-aws-lc-rs",
 ] }
 opentelemetry = { version = "0.31" }
-opentelemetry-contrib = { version = "0.23" }
 opentelemetry-otlp = { version = "0.31" }
 opentelemetry-semantic-conventions = { version = "0.31" }
 opentelemetry_sdk = { version = "0.31" }
@@ -279,7 +278,6 @@ tonic-prost-build = { version = "0.14.2" }
 tower = "0.5.2"
 tower-http = { version = "0.7.1", default-features = false }
 tracing = { version = "0.1" }
-tracing-opentelemetry = { version = "0.32.0" }
 tracing-subscriber = { version = "0.3", features = [
     "env-filter",
     "fmt",

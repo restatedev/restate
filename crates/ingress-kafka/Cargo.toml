@@ -44,7 +44,6 @@ rdkafka = { version = "0.38", git = "https://github.com/restatedev/rust-rdkafka.
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["sync", "rt", "net", "time"] }
 tracing = { workspace = true }
-tracing-opentelemetry = { workspace = true }
 xxhash-rust = { workspace = true, features = ["xxh3", "std"] }
 
 # AWS MSK IAM Auth (for OAUTHBEARER with provider=msk-iam). Always compiled in so MSK IAM works on the default build;
