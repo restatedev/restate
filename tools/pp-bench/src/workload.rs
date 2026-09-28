@@ -34,6 +34,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
+use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Keys, Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -102,9 +103,15 @@ pub async fn run(
     // The state machine is stateless; per-partition state lives in the processor
     // context. Build it via the production init path, which hydrates the FSM,
     // dedup, outbox, and vqueue caches from the (empty) partition store.
-    let mut processor =
-        ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
-            .await?;
+    let vqueue_metadata_cache_capacity = Configuration::default()
+        .worker
+        .vqueue_metadata_cache_capacity();
+    let mut processor = ProcessorRawContext::create(
+        SemanticRestateVersion::current(),
+        &mut partition_store,
+        vqueue_metadata_cache_capacity,
+    )
+    .await?;
 
     let workload_name = format!("{:?}", opts.spec.workload);
     let batch_size = opts.batch_size;

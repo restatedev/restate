@@ -184,6 +184,20 @@ pub struct WorkerOptions {
     /// Since v1.7.3
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub self_proposal_queue_memory_limit: NonZeroByteCount,
+
+    /// # VQueue metadata cache size
+    ///
+    /// The target number of VQueue metadata entries to cache per partition. Each entry uses
+    /// approximately 300 bytes. Active VQueues remain cached even when this target is exceeded.
+    ///
+    /// Default: 32,000 (approximately 9 MiB per partition)
+    ///
+    /// Since v1.8.0
+    #[serde(
+        default = "serde_helpers::vqueue_metadata_cache_size_default",
+        skip_serializing_if = "serde_helpers::is_vqueue_metadata_cache_default"
+    )]
+    vqueue_metadata_cache_size: u32,
 }
 
 impl WorkerOptions {
@@ -210,6 +224,10 @@ impl WorkerOptions {
 
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
+    }
+
+    pub const fn vqueue_metadata_cache_capacity(&self) -> usize {
+        self.vqueue_metadata_cache_size as usize
     }
 }
 
@@ -251,6 +269,7 @@ impl Default for WorkerOptions {
             self_proposal_queue_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
             ),
+            vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
         }
     }
 }
@@ -1233,6 +1252,14 @@ mod serde_helpers {
     use std::num::NonZeroUsize;
 
     use restate_util_bytecount::ByteCount;
+
+    pub const fn vqueue_metadata_cache_size_default() -> u32 {
+        32_000
+    }
+
+    pub const fn is_vqueue_metadata_cache_default(i: &u32) -> bool {
+        *i == vqueue_metadata_cache_size_default()
+    }
 
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
         // SAFETY: 50_000 is non-zero
