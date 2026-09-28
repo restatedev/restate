@@ -31,6 +31,28 @@ jobs:
         run: cargo hakari generate --diff
       - name: Check all crates depend on workspace-hack
         run: cargo hakari manage-deps --dry-run
+  cli-sql-tables-check:
+    name: Check CLI SQL tables reference
+    runs-on: warp-ubuntu-latest-x64-4x
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+      - name: Setup Rust Caching
+        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        with:
+          prefix-key: "v1-rust-xtask"
+          cache-on-failure: "true"
+      - name: Install protoc
+        uses: ./.github/actions/install-protoc
+      - name: Check cli/src/commands/sql_tables.rs is up-to-date
+        run: |
+          cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs
+          git diff --exit-code cli/src/commands/sql_tables.rs || \
+            (echo "::error::cli/src/commands/sql_tables.rs is stale, run: cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs" && exit 1)
   build-and-test:
     name: Build and test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

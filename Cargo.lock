@@ -7629,7 +7629,6 @@ dependencies = [
  "restate-limiter",
  "restate-lite",
  "restate-serde-util",
- "restate-storage-query-datafusion",
  "restate-types",
  "restate-util-string",
  "restate-util-time",
