@@ -95,12 +95,12 @@ the formatter's `next_step` instead (see [Structured Output](#structured-output-
 
 #### Section Titles
 
-Titles are plain underlined text — pass an empty icon (decorative emoji are not used
-to encode meaning, so output stays clean for humans and parseable for scripts/agents):
+Titles are underlined text with a decorative icon. The icon never encodes meaning, and
+it is dropped when colors are disabled:
 
 ```rust
-c_title!("", "Service Information");
-c_title!("", "Handlers");
+c_title!("📜", "Service Information");
+c_title!("🔌", "Handlers");
 ```
 
 #### Indented Output
@@ -230,12 +230,6 @@ Core output primitives that handle broken pipes gracefully (unlike `println!`).
 | `c_indentln!` | stdout | Indented line |
 | `c_indent_table!` | stdout | Indented table |
 
-### `ui::fmt` - Output Formatter
-
-The `OutputFormatter` abstraction (`formatter()`, `Field`) that renders a command's
-primary output as either human tables or a JSON document, and owns coloring. See
-[Structured Output](#structured-output---json) above.
-
 ### `ui::stylesheet` - Visual Constants
 
 Defines the visual language: icons, styles, and table formatting.
@@ -303,28 +297,30 @@ These options are available to all commands via `CommonOpts`:
 `--non-interactive` is also implied by `--json` (a prompt would corrupt the JSON
 stream), when stdin is not a terminal, or when the `CI` environment variable is set
 (to anything but empty, `false` or `0`, as CI providers set `CI=true`). `--yes` is also
-implied by `CI`, so in CI changes apply without confirmation. With `--yes`, `choose()` / `input()` fail instead of
-prompting (`CliContext::can_prompt()`), so a command that would ask for a value needs it as
+implied by `CI`, so in CI changes apply without confirmation. With `--yes`, `choose()` /
+`input()` fail instead of prompting (`CliContext::can_prompt()`), so a command that would ask for a value needs it as
 an argument (or falls back to a default).
 `--color` takes precedence over `NO_COLOR` / `CLICOLOR_FORCE` / `TERM` / TTY detection.
 
 ## Structured Output (`--json`)
 
-Commands render their primary output through an [`OutputFormatter`](src/ui/fmt.rs)
-rather than building tables inline. A command describes *what* to emit with semantic
+Commands render their primary output through an `OutputFormatter` rather than building
+tables inline. It lives in the `restate` CLI crate
+([`cli/src/ui/fmt.rs`](../../cli/src/ui/fmt.rs)), not in this crate. A command describes *what* to emit with semantic
 building blocks — a `title`, a key-value `detail` view, a `table`, or a scalar
 `value` — and the formatter decides *how*: styled human tables, or a single JSON
 document under `--json`. The formatter also owns coloring: attach a semantic `Style`
 to a `Field` and only the human formatter renders it.
 
 ```rust
-use restate_cli_util::ui::fmt::{formatter, Field};
 use restate_cli_util::ui::stylesheet::Style;
 
-let mut f = formatter(); // human or JSON, based on --json
-f.title("Service Information");
-f.detail("service", &[
-    ("name", Field::new(&svc.name)),
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
+
+let mut f = Formatter::new(); // human or JSON, based on --json
+f.title("📜", "Service Information");
+f.detail("service", [
+    ("name", Field::new(svc.name.as_str())),
     ("status", Field::styled("running", Style::Success)),
     ("revision", Field::new(svc.revision)),
 ]);
@@ -343,14 +339,19 @@ Pass `IncludeFormatting::No` when ` --json` makes no sense for the command (e.g.
 ## Exit Codes
 
 Failures map to a small, stable taxonomy (see [`exit`](src/exit.rs)) so scripts can
-branch on the failure class:
+branch on the failure class. In the `restate` CLI, return a `RestateCliError`
+([`cli/src/error.rs`](../../cli/src/error.rs)) to pick the class (e.g.
+`RestateCliError::not_found`, `bad_input`) and suggest next steps; API and network errors
+are classified automatically, and the formatter's `error` renders the result.
 
 | Code | Meaning |
 |------|---------|
 | `0` | Success |
 | `1` | Unclassified error |
-| `2` | Invalid usage (from clap) |
-| `4` | Not found (reserved) |
-| `5` | Network / connection error (reserved) |
-| `6` | Authentication / authorization error (reserved) |
+| `2` | Invalid usage (from clap), or invalid input caught by the command (e.g. a malformed id) |
+| `3` | Confirmation required: nothing was changed; re-run with `--yes` to apply |
+| `4` | Not found |
+| `5` | Network / connection error |
+| `6` | Authentication / authorization error |
 | `7` | User aborted, or a prompt was refused in non-interactive mode |
+| `8` | Server error (HTTP 5xx) |
