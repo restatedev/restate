@@ -1073,6 +1073,13 @@ impl LeaderState {
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);
             }
+            Action::CleanerPurgeApplied { leader_epoch } => {
+                // Cleaner only cares about purges that are proposed
+                // by itself (i.e. in the same leader epoch).
+                if leader_epoch == self.leader_epoch {
+                    self.cleaner_handle.on_purge_applied();
+                }
+            }
         }
 
         Ok(())
