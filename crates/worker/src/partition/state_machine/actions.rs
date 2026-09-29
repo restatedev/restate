@@ -12,7 +12,9 @@ use restate_limiter::RuleUpdate;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_storage_api::timer_table::TimerKey;
 use restate_storage_api::vqueue_table::EntryKey;
-use restate_types::identifiers::{EntryIndex, InvocationId, PartitionProcessorRpcRequestId};
+use restate_types::identifiers::{
+    EntryIndex, InvocationId, LeaderEpoch, PartitionProcessorRpcRequestId,
+};
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{
     CancelInvocationResponse, InvocationOutput, KillInvocationResponse, PauseInvocationResponse,
@@ -84,6 +86,11 @@ pub enum Action {
     /// advances. Followers ignore this action (no live UserLimiter to
     /// notify); only the leader's `leader_state` dispatches it onward.
     RulesUpdated(Box<[RuleUpdate]>),
+    /// A purge that was self-proposed without a response sink, as the cleaner does, has been
+    /// applied. Frees a slot of the cleaner's in-flight window if `leader_epoch` is the current one.
+    CleanerPurgeApplied {
+        leader_epoch: LeaderEpoch,
+    },
 }
 
 impl From<VQueueEvent> for Action {

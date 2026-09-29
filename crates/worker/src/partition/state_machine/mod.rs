@@ -72,7 +72,7 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, LeaderEpoch,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
@@ -107,8 +107,8 @@ use restate_types::journal_v2::{
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
+use restate_types::state_mut::{ExternalStateMutation, StateMutationInput};
 use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
@@ -249,6 +249,22 @@ impl StateMachine {
 }
 
 impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
+    /// Reports a purge the cleaner may have proposed to the leader. A purge is proposed by a cleaner if it's self-proposed
+    /// and has no sink.
+    fn report_cleaner_purge(
+        &mut self,
+        leader_epoch: Option<LeaderEpoch>,
+        request: &PurgeInvocationRequest,
+    ) {
+        if self.is_leader
+            && request.response_sink.is_none()
+            && let Some(leader_epoch) = leader_epoch
+        {
+            self.action_collector
+                .push(Action::CleanerPurgeApplied { leader_epoch });
+        }
+    }
+
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -506,10 +522,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.on_terminate_invocation(inner.into()).await
             }
             CommandKind::PurgeInvocation => {
+                let proposer_leader_epoch = envelope.dedup().self_proposer_epoch();
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(proposer_leader_epoch, &purge_invocation_request);
 
                 lifecycle::OnPurgeCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
@@ -520,10 +538,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 Ok(())
             }
             CommandKind::PurgeJournal => {
+                let proposer_leader_epoch = envelope.dedup().self_proposer_epoch();
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(proposer_leader_epoch, &purge_invocation_request);
 
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
@@ -580,6 +600,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         .copy_prefix_up_to_index_included,
                     response_sink: restart_as_new_invocation_request.response_sink,
                     patch_deployment_id: restart_as_new_invocation_request.patch_deployment_id,
+                    span_context: restart_as_new_invocation_request.span_context,
                 }
                 .apply(self)
                 .await?;
@@ -1494,7 +1515,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
                         .await?;
                 }
-                VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, &mutation).await?,
+                VirtualObjectStatus::Unlocked => {
+                    Self::do_mutate_state(self, &mutation.into_parts().1).await?
+                }
             }
         }
 
@@ -3013,16 +3036,44 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.run_invocation(qid, entry_key, wait_stats).await?;
             }
             vqueues::EntryKind::StateMutation => {
+                let partition_key = qid.partition_key();
+                let local_key;
+                let mut state_header = self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, entry_key.entry_id())
+                    .await?;
+
+                // State mutations enqueued before v1.8.0 got a random id on every replica (see
+                // #5416), so the id in the decision may not match the local one. In this case, we
+                // look the entry up by its position in the inbox, which is the same on all
+                // replicas. This isn't needed anymore once these state mutations were cleaned up.
+                let entry_key = if !self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_inconsistent_state_mutation_cleanup_enabled()
+                    && state_header.is_none()
+                    && let Some(key) = self
+                        .storage
+                        .find_inbox_state_mutation_key(qid, entry_key)
+                        .await?
+                {
+                    local_key = key;
+                    state_header = self
+                        .storage
+                        .get_vqueue_entry_status(partition_key, local_key.entry_id())
+                        .await?;
+                    &local_key
+                } else {
+                    entry_key
+                };
+
                 let mutation_id = entry_key
                     .entry_id()
-                    .to_state_mutation_id(qid.partition_key())
+                    .to_state_mutation_id(partition_key)
                     .unwrap();
 
-                let Some(state_header) = self
-                    .storage
-                    .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
-                    .await?
-                else {
+                let Some(state_header) = state_header else {
                     info!(
                         "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
                     );
@@ -3053,7 +3104,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
                 let Some(state_mutation) = self
                     .storage
-                    .get_vqueue_input_payload::<ExternalStateMutation>(
+                    .get_vqueue_input_payload::<StateMutationInput>(
                         qid,
                         entry_key.seq(),
                         entry_key.entry_id(),
@@ -3311,7 +3362,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         return Ok(());
                     }
                     InboxEntry::StateMutation(state_mutation) => {
-                        self.mutate_state(&state_mutation).await?;
+                        self.mutate_state(&state_mutation.into_parts().1).await?;
                     }
                 }
             }
@@ -5068,7 +5119,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .push(Action::AbortInvocation { invocation_id });
     }
 
-    async fn do_mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> Result<(), Error>
+    async fn do_mutate_state(&mut self, state_mutation: &StateMutationInput) -> Result<(), Error>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5116,12 +5167,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     async fn mutate_state(
         &mut self,
-        state_mutation: &ExternalStateMutation,
+        state_mutation: &StateMutationInput,
     ) -> StorageResult<vqueue_table::Status>
     where
         S: ReadStateTable + WriteStateTable,
     {
-        let ExternalStateMutation {
+        let StateMutationInput {
             service_id,
             version,
             state,
@@ -5291,7 +5342,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + WriteFsmTable,
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let service_id = &state_mutation.service_id;
+        let (id, input) = state_mutation.into_parts();
+        let service_id = &input.service_id;
         // we don't pass the limit key here yet
         let limit_key = LimitKey::None;
 
@@ -5305,8 +5357,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             scope: service_id.scope.clone(),
         };
 
-        // todo: Make this a use-facing ID, generated at ingress.
-        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        // The id must be the same on all replicas (see #5416). Use the id assigned by the admin api
+        // if present or otherwise derive it from the position of the command in the log.
+        let partition_key = service_id.partition_key();
+        let mutation_id = match id {
+            Some(id) => {
+                if self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, &EntryId::from(&id))
+                    .await?
+                    .is_some()
+                {
+                    debug!("Ignoring duplicate state mutation {id} for {service_id}");
+                    return Ok(());
+                }
+                id
+            }
+            None => StateMutationId::from_parts(
+                partition_key,
+                0, // to make sure that future ids don't clash with this one as they are Ulids
+                u128::from(self.record_lsn.as_u64()),
+            ),
+        };
+        let entry_id = EntryId::from(mutation_id);
         let qid = VQueue::infer_vqueue_id_from_invocation(
             service_id.partition_key(),
             &target,
@@ -5333,7 +5406,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         self.storage
-            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, state_mutation);
+            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, input);
 
         Ok(())
     }

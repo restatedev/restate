@@ -348,7 +348,7 @@ impl ScanInvocationStatusTable for PartitionStore {
         Ok(new_status_keys.boxed())
     }
 
-    fn filter_map_invocation_status_ranged_lazy<
+    fn filter_map_invocation_status_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -359,16 +359,26 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
-        key_range: KeyRange,
+        after: Option<InvocationId>,
         mut f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send> {
+        let scan = match after {
+            None => TableScan::ScanPartitionKeyRange::<InvocationStatusKeyBuilder>(
+                self.partition_key_range(),
+            ),
+            Some(after) => TableScan::RangeInclusive(
+                InvocationStatusKey::builder()
+                    .partition_key(after.partition_key())
+                    .invocation_uuid(after.invocation_uuid()),
+                InvocationStatusKey::builder().partition_key(self.partition_key_range().end()),
+            ),
+        };
+
         let new_status_keys = self
             .iterator_filter_map(
                 "df-filter-map-invocation-status",
                 Priority::Low,
-                TableScan::ScanPartitionKeyRange::<InvocationStatusKey>(
-                    key_range,
-                ),
+                scan,
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;

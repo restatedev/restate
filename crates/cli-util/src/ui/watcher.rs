@@ -43,6 +43,12 @@ impl Watch {
         if !self.watch {
             return what().await;
         }
+        if crate::CliContext::get().json_output() {
+            return Err(crate::exit::BadInput(
+                "watch mode (-w) cannot be combined with --json; poll the command instead".into(),
+            )
+            .into());
+        }
         // Redirect console output to in-memory buffer
         let console = Console::in_memory();
         crate::ui::output::set_stdout(console.clone());

@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::{c_println, c_success};
@@ -146,7 +145,11 @@ pub fn generate_completions<T: CompletionProvider>(shell: Option<Shell>) -> Resu
     let binary_name = T::completion_binary_name();
     let mut cmd = T::command();
 
-    generate(detected_shell, &mut cmd, &binary_name, &mut io::stdout());
+    // Render into a buffer and print through the broken-pipe-safe sink, so that
+    // `restate completions generate <shell> | head` doesn't panic on EPIPE.
+    let mut buffer = Vec::new();
+    generate(detected_shell, &mut cmd, &binary_name, &mut buffer);
+    crate::c_print!("{}", String::from_utf8_lossy(&buffer));
     Ok(())
 }
 

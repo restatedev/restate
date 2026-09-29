@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod exporter;
+mod id_generator;
 mod pretty;
 #[cfg(feature = "prometheus")]
 pub mod prometheus_metrics;
@@ -52,9 +53,13 @@ pub use exporter::set_global_node_id;
 pub mod semconv {
 
     pub mod attribute {
-        pub use opentelemetry_semantic_conventions::attribute::{
-            ERROR_MESSAGE, RPC_METHOD, RPC_SERVICE, RPC_SYSTEM,
-        };
+        pub use opentelemetry_semantic_conventions::attribute::RPC_METHOD;
+
+        // Deprecated by the OpenTelemetry semantic conventions, but kept so that the emitted
+        // attributes stay stable for existing trace consumers.
+        pub const ERROR_MESSAGE: &str = "error.message";
+        pub const RPC_SERVICE: &str = "rpc.service";
+        pub const RPC_SYSTEM: &str = "rpc.system";
 
         /// Restate invocation id. Set on every span scoped to one invocation;
         /// used by Jaeger query templates and the Restate UI to deep-link.
@@ -242,6 +247,7 @@ fn install_opentelemetry_tracer_provider(
     // Reference: https://github.com/open-telemetry/opentelemetry-rust/blob/main/docs/migration_0.28.md#async-runtime-requirements-removed
     let provider = opentelemetry_sdk::trace::TracerProviderBuilder::default()
         .with_resource(resource)
+        .with_id_generator(id_generator::PresetIdGenerator::default())
         .with_span_processor(opentelemetry_sdk::trace::span_processor_with_async_runtime::BatchSpanProcessor::builder(exporter, runtime::Tokio).build())
         .build();
 
@@ -405,7 +411,7 @@ impl Drop for TracingGuard {
 /// id: ref to an instance of [`InvocationId`]
 /// target: ref to an instance of [`InvocationTarget`]
 /// tags: is a list of any extra tags that need to be associated with this span for example `tags = (client.ip = "10.20.30.40")`
-/// fields [optional]: is a list of extra custom span builder fields that can be used to override the default ones for example `fields = (with_span_id = 10)`
+/// fields [optional]: is a list of extra custom span builder fields that can be used to override the default ones for example `fields = (with_kind = SpanKind::Server)`
 #[macro_export]
 macro_rules! invocation_span {
     (level= $lvl:expr, relation = $relation:expr, prefix= $prefix:expr, id= $id:expr, target= $target:expr, tags=($($($key:ident).+ = $value:expr),*), fields=($($field:ident = $field_value:expr),*)) => {
@@ -642,8 +648,6 @@ pub fn create_invocation_start_span(
         .span_builder(format!("invocation-start {}", invocation_target.short()))
         .with_kind(SpanKind::Consumer)
         .with_start_time(start_time)
-        .with_trace_id(span_ctx.span_context().trace_id())
-        .with_span_id(span_ctx.span_context().span_id())
         .with_attributes(vec![
             KeyValue::new(
                 semconv::attribute::RPC_SERVICE,
@@ -663,16 +667,21 @@ pub fn create_invocation_start_span(
             ),
         ]);
 
-    match span_ctx.causing_span_relation() {
-        SpanRelation::None => builder.start(&tracer),
-        SpanRelation::Linked(ctx) => builder
-            .with_links(vec![Link::with_context(ctx.into())])
-            .start(&tracer),
-        SpanRelation::Parent(ctx) => builder.start_with_context(
-            &tracer,
-            &Context::new().with_remote_span_context(ctx.into()),
-        ),
-    }
+    let span_context = span_ctx.span_context();
+    id_generator::with_preset_ids(
+        span_context.trace_id(),
+        span_context.span_id(),
+        || match span_ctx.causing_span_relation() {
+            SpanRelation::None => builder.start(&tracer),
+            SpanRelation::Linked(ctx) => builder
+                .with_links(vec![Link::with_context(ctx.into())])
+                .start(&tracer),
+            SpanRelation::Parent(ctx) => builder.start_with_context(
+                &tracer,
+                &Context::new().with_remote_span_context(ctx.into()),
+            ),
+        },
+    )
     .into()
 }
 
@@ -781,7 +790,7 @@ pub fn get_services_tracer() -> BoxedTracer {
 mod test {
     use std::sync::{Arc, Mutex};
 
-    use opentelemetry::trace::{SpanId, TraceFlags, TraceId, TraceState};
+    use opentelemetry::trace::{SpanId, SpanKind, TraceFlags, TraceId, TraceState};
     use opentelemetry_sdk::error::OTelSdkResult;
     use opentelemetry_sdk::trace::{Sampler, SpanData, SpanExporter};
 
@@ -804,6 +813,7 @@ mod test {
         let exporter = TestExporter::default();
         let provider = SdkTracerProvider::builder()
             .with_sampler(Sampler::AlwaysOn)
+            .with_id_generator(id_generator::PresetIdGenerator::default())
             .with_simple_exporter(exporter.clone())
             .build();
         let original_provider = global::tracer_provider();
@@ -903,7 +913,7 @@ mod test {
             id = "hello",
             target = target,
             tags = (hello.world = 10, error = true),
-            fields = (with_span_id = SpanId::from(10))
+            fields = (with_kind = SpanKind::Server)
         );
     }
 }

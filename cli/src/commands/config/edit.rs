@@ -17,9 +17,12 @@ use cling::prelude::*;
 pub struct Edit {}
 
 pub async fn run_edit(State(env): State<CliEnv>, _opts: &Edit) -> Result<()> {
-    console::_gecho!(@nl_with_prefix, ("📝"), stderr, "Editing {}", env.config_file.display());
+    console::c_eprintln!("Editing {}", env.config_file.display());
 
-    env.open_default_editor(&env.config_file)?;
+    env.open_default_editor(
+        &env.config_file,
+        &format!("edit {} directly instead", env.config_file.display()),
+    )?;
 
     Ok(())
 }

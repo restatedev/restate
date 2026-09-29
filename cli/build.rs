@@ -30,5 +30,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         .add_instructions(&cargo)?
         .add_instructions(&git)?
         .emit()?;
+
     Ok(())
 }

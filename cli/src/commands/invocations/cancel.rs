@@ -8,12 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Color, Table};
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_indent_table, c_println, c_success, c_warn};
 
 use crate::cli_env::CliEnv;
 use crate::clients::batch_execute;
@@ -23,7 +22,11 @@ use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use crate::ui::invocations::render_simple_invocation_list;
+use crate::ui::fmt::{DryRun, Formatter, OutputFormatter};
+use crate::ui::invocations::{
+    finish_invocation_results, no_invocations_to_change, print_invocation_changes,
+    print_invocation_results,
+};
 use crate::ui::with_progress;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -47,6 +50,8 @@ pub struct Cancel {
     /// Limit the number of fetched invocations
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     pub(super) limit: usize,
+    #[clap(flatten)]
+    pub(super) dry_run: DryRun,
 }
 
 pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> {
@@ -55,7 +60,7 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
 
     let filter = format!(
         "{} AND status != 'completed' LIMIT {}",
-        create_query_filter(&opts.query),
+        create_query_filter(&opts.query)?,
         opts.limit
     );
 
@@ -65,102 +70,51 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     )
     .await?;
     if invocations.is_empty() {
-        bail!(
+        return no_invocations_to_change(format!(
             "No invocations found for query {}! Note that the cancel command only works on non-completed invocations. \
             If you want to remove a completed invocation, consider using the purge command instead.",
             opts.query
-        );
+        ));
     };
 
-    render_simple_invocation_list(
-        &invocations,
-        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
-    );
-
-    // Get the invocation and confirm
-    let prompt = format!(
-        "Are you sure you want to {} these invocations?",
-        if opts.kill {
-            Styled(Style::Danger, "kill")
-        } else {
-            Styled(Style::Warn, "cancel")
-        },
-    );
-    confirm_or_exit(&prompt)?;
-
-    if opts.kill {
-        // Kill invocations
-        let (killed, failed_to_kill) =
-            batch_execute(client, invocations, |client, invocation| async move {
-                client
-                    .kill_invocation(&invocation.id)
-                    .await
-                    .map_err(anyhow::Error::from)
-            })
-            .await;
-        let succeeded_count = killed.len();
-        let failed_count = failed_to_kill.len();
-
-        c_println!();
-        c_success!("Killed {} invocations", succeeded_count);
-
-        // Print failed ones, if any
-        if !failed_to_kill.is_empty() {
-            c_println!();
-            c_warn!("Failed to kill:");
-            let mut failed_to_kill_table = Table::new_styled();
-            failed_to_kill_table.set_styled_header(vec!["ID", "REASON"]);
-            for (inv, reason) in failed_to_kill {
-                failed_to_kill_table.add_row(vec![
-                    Cell::new(&inv.id),
-                    Cell::new(reason).fg(Color::DarkRed),
-                ]);
-            }
-            c_indent_table!(0, failed_to_kill_table);
-
-            return Err(anyhow!(
-                "Failed to kill {} invocations out of {}",
-                failed_count,
-                failed_count + succeeded_count
-            ));
-        }
+    let (verb, past, style) = if opts.kill {
+        ("kill", "Killed", Style::Danger)
     } else {
-        // Cancel invocations
-        let (cancelled, failed_to_cancel) =
-            batch_execute(client, invocations, |client, invocation| async move {
-                client
-                    .cancel_invocation(&invocation.id)
-                    .await
-                    .map_err(anyhow::Error::from)
-            })
-            .await;
-        let succeeded_count = cancelled.len();
-        let failed_count = failed_to_cancel.len();
+        ("cancel", "Cancelled", Style::Warn)
+    };
+    let mut f = Formatter::new();
+    print_invocation_changes(
+        &mut f,
+        &invocations,
+        verb,
+        DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
+    )?;
+    f.confirm(
+        &opts.dry_run,
+        &format!(
+            "Are you sure you want to {} these invocations?",
+            Styled(style, verb)
+        ),
+    )?;
 
-        c_println!();
-        c_success!("Cancelled {} invocations", succeeded_count);
-
-        // Print failed ones, if any
-        if !failed_to_cancel.is_empty() {
-            c_println!();
-            c_warn!("Failed to cancel:");
-            let mut failed_to_cancel_table = Table::new_styled();
-            failed_to_cancel_table.set_styled_header(vec!["ID", "REASON"]);
-            for (inv, reason) in failed_to_cancel {
-                failed_to_cancel_table.add_row(vec![
-                    Cell::new(&inv.id),
-                    Cell::new(reason).fg(Color::DarkRed),
-                ]);
+    let kill = opts.kill;
+    let (succeeded, failed) =
+        batch_execute(client, invocations, move |client, invocation| async move {
+            if kill {
+                client.kill_invocation(&invocation.id).await
+            } else {
+                client.cancel_invocation(&invocation.id).await
             }
-            c_indent_table!(0, failed_to_cancel_table);
+            .map_err(anyhow::Error::from)
+        })
+        .await;
 
-            return Err(anyhow!(
-                "Failed to cancel {} invocations out of {}",
-                failed_count,
-                failed_count + succeeded_count
-            ));
-        }
+    print_invocation_results(&mut f, past, &succeeded, &failed);
+    if let [(inv, _)] = succeeded.as_slice() {
+        f.next_step(
+            &format!("restate invocations describe {}", inv.id),
+            "check the invocation's status",
+        );
     }
-
-    Ok(())
+    finish_invocation_results(f, verb, succeeded.len(), failed)
 }
