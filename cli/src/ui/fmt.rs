@@ -195,10 +195,6 @@ pub trait ListItem: Serialize {
 /// `section` names group the output in the JSON document (`detail` → an object,
 /// `table` → an array of objects keyed by header, `value` → a scalar). Human output
 /// ignores section names.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands move to nested items next")
-)]
 pub trait OutputFormatter {
     /// A section heading with a decorative icon (human only; ignored in JSON). The
     /// icon is dropped when colors are disabled.
@@ -229,6 +225,10 @@ pub trait OutputFormatter {
 
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
     /// `Label: value` row, aligned with the adjacent `field` rows.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no command writes single fields yet")
+    )]
     fn field(&mut self, key: &str, field: Field);
 
     /// Start the `section` list of nested items (JSON: an array of objects, `[]` when
@@ -293,18 +293,10 @@ pub trait OutputFormatter {
 /// A list of nested items being written, see [`OutputFormatter::start_items`]. It is
 /// attached to the parent formatter when finished or dropped.
 #[must_use = "an unused list is attached empty right away"]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands move to nested items next")
-)]
 pub struct Items<'a, F: OutputFormatter> {
     parent: &'a mut F,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands move to nested items next")
-)]
 impl<F: OutputFormatter> Items<'_, F> {
     /// Start the next item: describe it on the returned formatter.
     pub fn item(&mut self) -> Item<'_, F> {
@@ -328,10 +320,6 @@ impl<F: OutputFormatter> Drop for Items<'_, F> {
 /// command-level calls (`next_step`, `confirm`, `error`) go to the
 /// parent formatter.
 #[must_use = "an unused item is attached empty right away"]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands move to nested items next")
-)]
 pub struct Item<'a, F: OutputFormatter> {
     parent: &'a mut F,
 }
@@ -640,10 +628,6 @@ pub struct HumanFormatter {
     /// How many items the current output is nested in.
     depth: usize,
     /// Items started so far in each open list, to separate them with a blank line.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "commands move to nested items next")
-    )]
     item_counts: Vec<usize>,
     /// The next line opens an item, so it gets the ` - ` marker.
     item_start: bool,
@@ -984,10 +968,6 @@ pub struct JsonFormatter {
 }
 
 /// An open list or item of the [`JsonFormatter`].
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "commands move to nested items next")
-)]
 enum Open {
     Items { section: String, items: Vec<Value> },
     Item(Map<String, Value>),
