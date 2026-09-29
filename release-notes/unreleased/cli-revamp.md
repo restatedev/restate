@@ -12,7 +12,8 @@ Diagnostics/progress stay on stderr, so `restate <cmd> --json` produces clean, p
 stdout. Supported by:
 
 - `services list` / `describe` / `status`, `deployments list` / `describe`,
-  `invocations list` / `describe` / `journal`, `state get`, `vqueues list` / `describe`
+  `invocations list` / `describe` / `journal`, `state get`, `vqueues list` / `describe`,
+  `rules list` / `set` / `enable` / `disable` / `delete`
 - `whoami` (also reports the connected server's version)
 - `sql describe` (and `sql "<query>"`, which already supported `--json`)
 - `config view` (emits JSON instead of TOML)
@@ -47,9 +48,9 @@ failures, the matching `list` on not found): a tip in human output, `error.next_
 ### Previewing and confirming changes (`--dry-run` / `--yes`)
 
 Commands that change state (`deployments register` / `remove`, `invocations cancel` / `kill` /
-`purge` / `pause` / `resume` / `restart-as-new`, `state clear` / `patch`, `services config patch`)
-share one confirmation flow, designed so an agent can preview a change, get its user's approval, and
-then apply it:
+`purge` / `pause` / `resume` / `restart-as-new`, `state clear` / `patch`, `services config patch`,
+`rules delete`) share one confirmation flow, designed so an agent can preview a change, get its
+user's approval, and then apply it:
 
 - `--dry-run` shows the planned changes and exits `0` without applying anything. With `--json`, the
   plan is a `changes` array (e.g. every resolved invocation id and the action to take).

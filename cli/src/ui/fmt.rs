@@ -109,6 +109,11 @@ impl Field {
         }
     }
 
+    /// A `null` without a human rendering: JSON keeps the key, human detail rows skip it.
+    fn is_unset(&self) -> bool {
+        self.value.is_null() && self.display.is_none()
+    }
+
     /// The value rendered as a plain string for human output.
     fn human_string(&self) -> String {
         if let Some(display) = &self.display {
@@ -201,7 +206,8 @@ pub trait OutputFormatter {
     fn title(&mut self, icon: &str, title: &str);
 
     /// A key-value detail view. `rows` are `(key, value)` pairs where `key` is a
-    /// machine key (`snake_case`); the human formatter derives a display label.
+    /// machine key (`snake_case`); the human formatter derives a display label, and
+    /// skips rows whose value is `null` without a display (JSON keeps them as `null`).
     /// Accepts any iterable of pairs, owned or borrowed: arrays, slices, or a
     /// `&Vec<(String, Field)>`.
     fn detail<K: AsRef<str>>(
@@ -226,7 +232,8 @@ pub trait OutputFormatter {
     fn value(&mut self, section: &str, field: Field);
 
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
-    /// `Label: value` row, aligned with the adjacent `field` rows.
+    /// `Label: value` row, aligned with the adjacent `field` rows (skipped when the value
+    /// is `null` without a display, like in `detail`).
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "no command writes single fields yet")
@@ -569,7 +576,7 @@ fn redact_secrets(args: Vec<String>) -> Vec<String> {
 }
 
 /// Single-quote `arg` for a POSIX shell when it contains anything but safe characters.
-fn shell_quote(arg: &str) -> String {
+pub(crate) fn shell_quote(arg: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c);
     if !arg.is_empty() && arg.chars().all(safe) {
         arg.to_owned()
@@ -700,6 +707,9 @@ impl HumanFormatter {
         }
         let mut table = Table::new_styled();
         for (key, field) in std::mem::take(&mut self.fields) {
+            if field.is_unset() {
+                continue;
+            }
             table.add_kv_row(&format!("{}:", humanize_label(&key)), field.to_cell());
         }
         self.println(&table.to_string());

@@ -10,16 +10,15 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
+use serde_json::Value;
 
-use restate_cli_util::c_println;
-use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
 
-use super::{RuleRow, render_concurrency};
+use super::{RuleRow, concurrency_field, disabled_field};
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
 use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
@@ -47,46 +46,44 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         )
         .await?;
 
-    if rows.is_empty() {
-        c_println!("No rules defined.");
-        return Ok(());
-    }
-
-    let mut table = Table::new_styled();
+    let mut headers = vec!["pattern", "concurrency", "disabled"];
     if opts.extra {
-        table.set_styled_header(vec![
-            "PATTERN",
-            "CONCURRENCY",
-            "DISABLED",
-            "DESCRIPTION",
-            "VERSION",
-            "LAST MODIFIED",
-        ]);
-    } else {
-        table.set_styled_header(vec!["PATTERN", "CONCURRENCY", "DISABLED"]);
+        headers.extend(["description", "version", "last_modified"]);
     }
+    let table_rows: Vec<Vec<Field>> = rows
+        .iter()
+        .map(|row| {
+            let mut cells = vec![
+                Field::new(row.pattern.as_str()),
+                concurrency_field(row.concurrency),
+                disabled_field(row.disabled),
+            ];
+            if opts.extra {
+                cells.extend([
+                    Field::new(row.description.as_deref()),
+                    Field::new(row.version),
+                    row.last_modified.map_or(Field::new(Value::Null), |t| {
+                        Field::with_display(t.iso(), t.display())
+                    }),
+                ]);
+            }
+            cells
+        })
+        .collect();
 
-    for row in rows {
-        let disabled = if row.disabled { "yes" } else { "no" };
-        if opts.extra {
-            let last_modified = row.last_modified.map(|dt| dt.display()).unwrap_or_default();
-            table.add_row(vec![
-                Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.concurrency)),
-                Cell::new(disabled),
-                Cell::new(row.description.unwrap_or_default()),
-                Cell::new(row.version),
-                Cell::new(last_modified),
-            ]);
-        } else {
-            table.add_row(vec![
-                Cell::new(row.pattern),
-                Cell::new(render_concurrency(row.concurrency)),
-                Cell::new(disabled),
-            ]);
-        }
+    let mut f = Formatter::new();
+    f.table(
+        "rules",
+        &headers,
+        &table_rows,
+        IfEmpty::Say("No rules defined."),
+    );
+    if !opts.extra && !rows.is_empty() {
+        f.next_step(
+            "restate rules list --extra",
+            "also see the rules' descriptions, versions and last modified times",
+            IncludeFormatting::Yes,
+        );
     }
-
-    c_println!("{table}");
-    Ok(())
+    f.finish()
 }

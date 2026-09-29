@@ -328,6 +328,10 @@ f.next_step(&format!("restate services status {}", svc.name), "see its activity"
 f.finish()?;
 ```
 
+A `detail` row whose value is `null` (e.g. `Field::new(description.as_deref())` with no
+description) is left out for humans and stays `null` in JSON, so optional rows need no
+`if json` branch. To show it anyway, give it a display: `Field::with_display(Value::Null, "-")`.
+
 Nested data (e.g. services, each with its handlers) goes in a list of items. Each item
 is described with the same building blocks (plus `field` for a single key/value row) on
 its own formatter, which borrows the parent until it's finished (or dropped):

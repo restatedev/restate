@@ -10,17 +10,19 @@
 
 use std::num::NonZeroU32;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
 
 use restate_admin_rest_model::rules::UpsertRuleRequest;
-use restate_cli_util::c_success;
+use restate_cli_util::{CliContext, c_success};
 use restate_limiter::{Precondition, UserLimits};
 use restate_types::Version;
 
-use super::{fetch_rule, parse_pattern, upsert_one};
+use super::{RuleRow, fetch_rule, json_only, parse_pattern, rules_list_step, upsert_one};
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, DataFusionHttpClient};
+use crate::error::RestateCliError;
+use crate::ui::fmt::{Formatter, OutputFormatter, shell_quote};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_set")]
@@ -69,9 +71,14 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
         },
         Some(rule) => {
             if opts.disabled {
-                bail!(
+                return Err(RestateCliError::bad_input(format!(
                     "Rule '{canonical}' already exists. Use `restate rules disable` to disable it."
-                );
+                ))
+                .with_next_step(
+                    format!("restate rules disable {}", shell_quote(&canonical)),
+                    "disable the existing rule",
+                )
+                .into());
             }
             let concurrency = if opts.unlimited {
                 None
@@ -93,17 +100,32 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
     };
 
     let client = AdminClient::new(&env).await?;
-    let result = upsert_one(
+    let rule = upsert_one(
         &client,
         request,
         &format!("Rule '{canonical}' was modified concurrently; please re-run."),
     )
     .await?;
 
-    let verb = if was_create { "Created" } else { "Updated" };
-    match result {
-        Some(rule) => c_success!("{verb} rule '{canonical}' (version {})", rule.version),
-        None => c_success!("{verb} rule '{canonical}'"),
+    let (verb, result) = if was_create {
+        ("Created", "created")
+    } else {
+        ("Updated", "updated")
+    };
+    let rule = rule.map(RuleRow::from);
+    if !CliContext::get().json_output() {
+        match &rule {
+            Some(rule) => c_success!(
+                "{verb} rule '{canonical}' (version {})",
+                Version::from(rule.version)
+            ),
+            None => c_success!("{verb} rule '{canonical}'"),
+        }
     }
-    Ok(())
+
+    let mut f = Formatter::new();
+    f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
+    f.value("result", json_only(result));
+    rules_list_step(&mut f);
+    f.finish()
 }

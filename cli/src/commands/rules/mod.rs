@@ -21,15 +21,19 @@ use anyhow::{Result, anyhow};
 use chrono::{DateTime, Local};
 use cling::prelude::*;
 use serde::Deserialize;
+use serde_json::{Value, json};
 
 use restate_admin_rest_model::rules::{RuleResponse, UpsertRuleRequest};
-use restate_cli_util::{c_println, c_success};
+use restate_cli_util::{CliContext, c_println, c_success};
 use restate_limiter::{Precondition, RulePattern, UserLimits};
 use restate_types::Version;
 use restate_util_string::ReString;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, ClientError, DataFusionHttpClient};
+use crate::error::RestateCliError;
+use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "rule")]
@@ -65,21 +69,61 @@ impl RuleRow {
     fn concurrency(&self) -> Option<NonZeroU32> {
         self.concurrency.and_then(NonZeroU32::new)
     }
+
+    /// The rule as emitted in `--json` output.
+    fn to_json(&self) -> Value {
+        json!({
+            "pattern": self.pattern,
+            "concurrency": self.concurrency,
+            "description": self.description,
+            "disabled": self.disabled,
+            "version": self.version,
+            "last_modified": self.last_modified.map(|t| t.iso()),
+        })
+    }
 }
 
-/// Renders a concurrency limit for display (`unlimited` when unset).
-pub(crate) fn render_concurrency(limit: Option<u32>) -> String {
-    match limit {
-        Some(limit) => limit.to_string(),
-        None => "unlimited".to_string(),
+impl From<RuleResponse> for RuleRow {
+    fn from(rule: RuleResponse) -> Self {
+        Self {
+            pattern: rule.pattern.to_string(),
+            concurrency: rule.limits.concurrency.map(NonZeroU32::get),
+            description: rule.description,
+            disabled: rule.disabled,
+            version: rule.version.into(),
+            last_modified: i64::try_from(rule.last_modified_millis_since_epoch)
+                .ok()
+                .and_then(DateTime::from_timestamp_millis)
+                .map(|t| t.with_timezone(&Local)),
+        }
     }
+}
+
+/// A concurrency limit: `unlimited` for humans, `null` in JSON when unset.
+pub(crate) fn concurrency_field(limit: Option<u32>) -> Field {
+    let display = match limit {
+        Some(limit) => limit.to_string(),
+        None => "unlimited".to_owned(),
+    };
+    Field::with_display(limit, display)
+}
+
+/// The `disabled` flag: `yes`/`no` for humans, a bool in JSON.
+pub(crate) fn disabled_field(disabled: bool) -> Field {
+    Field::with_display(disabled, if disabled { "yes" } else { "no" })
+}
+
+/// A value emitted in JSON only (human output describes it with its own messages).
+pub(crate) fn json_only(value: impl Into<Value>) -> Field {
+    Field::with_display(value, "")
 }
 
 /// Parses and validates a rule pattern, canonicalizing it client-side so we
 /// fail fast on bad input and can match against the `sys_rules` table.
 pub(crate) fn parse_pattern(pattern: &str) -> Result<RulePattern<ReString>> {
-    RulePattern::<ReString>::from_str(pattern)
-        .map_err(|e| anyhow!("Invalid rule pattern '{pattern}': {e}"))
+    RulePattern::<ReString>::from_str(pattern).map_err(|e| {
+        RestateCliError::bad_input(format!("Invalid rule pattern '{pattern}': {e}")).into()
+    })
 }
 
 /// Reads a single rule (by its canonical pattern) from the `sys_rules` table.
@@ -94,6 +138,17 @@ pub(crate) async fn fetch_rule(
     );
     let rows: Vec<RuleRow> = client.run_json_query(query).await?;
     Ok(rows.into_iter().next())
+}
+
+/// Like [`fetch_rule`], but a missing rule is a not-found error.
+pub(crate) async fn fetch_existing_rule(
+    client: &DataFusionHttpClient,
+    canonical_pattern: &str,
+) -> Result<RuleRow> {
+    fetch_rule(client, canonical_pattern).await?.ok_or_else(|| {
+        RestateCliError::not_found(format!("No rule found with pattern '{canonical_pattern}'."))
+            .into()
+    })
 }
 
 /// Escapes single quotes for safe inlining into a SQL string literal. Canonical
@@ -121,6 +176,15 @@ pub(crate) async fn upsert_one(
     }
 }
 
+/// Suggests listing the rules, after a change.
+fn rules_list_step(f: &mut impl OutputFormatter) {
+    f.next_step(
+        "restate rules list",
+        "see the rules",
+        IncludeFormatting::Yes,
+    );
+}
+
 /// Read-modify-write helper backing `enable`/`disable`: toggles a rule's
 /// `disabled` flag while preserving its other fields, guarded by a CAS on the
 /// version currently visible in `sys_rules`.
@@ -130,30 +194,38 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
     let action = if disabled { "disabled" } else { "enabled" };
 
     let sql_client = DataFusionHttpClient::new(env).await?;
-    let current = fetch_rule(&sql_client, &canonical)
-        .await?
-        .ok_or_else(|| anyhow!("No rule found with pattern '{canonical}'."))?;
+    let current = fetch_existing_rule(&sql_client, &canonical).await?;
+    let json = CliContext::get().json_output();
 
-    if current.disabled == disabled {
-        c_println!("Rule '{canonical}' is already {action}.");
-        return Ok(());
-    }
-
-    let client = AdminClient::new(env).await?;
-    let request = UpsertRuleRequest {
-        pattern,
-        limits: UserLimits::new(current.concurrency()),
-        description: current.description.clone(),
-        disabled,
-        precondition: Precondition::Matches(Version::from(current.version)),
+    let (rule, result) = if current.disabled == disabled {
+        if !json {
+            c_println!("Rule '{canonical}' is already {action}.");
+        }
+        (Some(current), format!("already_{action}"))
+    } else {
+        let client = AdminClient::new(env).await?;
+        let request = UpsertRuleRequest {
+            pattern,
+            limits: UserLimits::new(current.concurrency()),
+            description: current.description.clone(),
+            disabled,
+            precondition: Precondition::Matches(Version::from(current.version)),
+        };
+        let updated = upsert_one(
+            &client,
+            request,
+            &format!("Rule '{canonical}' was modified concurrently; please re-run."),
+        )
+        .await?;
+        if !json {
+            c_success!("Rule '{canonical}' {action}");
+        }
+        (updated.map(RuleRow::from), action.to_owned())
     };
-    upsert_one(
-        &client,
-        request,
-        &format!("Rule '{canonical}' was modified concurrently; please re-run."),
-    )
-    .await?;
 
-    c_success!("Rule '{canonical}' {action}");
-    Ok(())
+    let mut f = Formatter::new();
+    f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
+    f.value("result", json_only(result));
+    rules_list_step(&mut f);
+    f.finish()
 }
