@@ -249,6 +249,14 @@ impl StateMachine {
 }
 
 impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
+    /// Reports a purge the cleaner may have proposed to the leader. A purge is proposed by a cleaner if it's self-proposed
+    /// and has no sink. Admin API uses ingestion client but uses Dedup::None, so we won't report it.
+    fn report_cleaner_purge(&mut self, is_self_proposal: bool, request: &PurgeInvocationRequest) {
+        if self.is_leader && is_self_proposal && request.response_sink.is_none() {
+            self.action_collector.push(Action::CleanerPurgeApplied);
+        }
+    }
+
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -506,10 +514,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.on_terminate_invocation(inner.into()).await
             }
             CommandKind::PurgeInvocation => {
+                let is_self_proposal = matches!(envelope.dedup(), v2::Dedup::SelfProposal { .. });
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(is_self_proposal, &purge_invocation_request);
 
                 lifecycle::OnPurgeCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
@@ -520,10 +530,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 Ok(())
             }
             CommandKind::PurgeJournal => {
+                let is_self_proposal = matches!(envelope.dedup(), v2::Dedup::SelfProposal { .. });
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(is_self_proposal, &purge_invocation_request);
 
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
