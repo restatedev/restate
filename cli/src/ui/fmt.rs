@@ -47,7 +47,8 @@ use dialoguer::console::measure_text_width;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::_unicode_width::UnicodeWidthStr;
+use restate_cli_util::ui::console::{Icon, Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, exit};
 
@@ -648,6 +649,8 @@ pub struct HumanFormatter {
     item_start: bool,
     /// `field` rows not printed yet, so adjacent ones align in one table.
     fields: Vec<(String, Field)>,
+    /// Something was printed already, so a top-level title needs a blank line above.
+    printed: bool,
 }
 
 impl HumanFormatter {
@@ -665,6 +668,7 @@ impl HumanFormatter {
                 prefix.push_str(" -");
             }
             restate_cli_util::c_println!("{prefix}{line}");
+            self.printed = true;
         }
     }
 
@@ -681,12 +685,63 @@ impl HumanFormatter {
     }
 }
 
+/// Left-aligned columns sized to their widest cell, as used by `list` and `journal`.
+struct Columns(Vec<usize>);
+
+impl Columns {
+    fn new(headers: &[impl AsRef<str>], rows: &[impl AsRef<[String]>]) -> Self {
+        let mut widths: Vec<usize> = headers
+            .iter()
+            .map(|h| measure_text_width(h.as_ref()))
+            .collect();
+        for row in rows {
+            for (width, cell) in widths.iter_mut().zip(row.as_ref()) {
+                *width = (*width).max(measure_text_width(cell));
+            }
+        }
+        Self(widths)
+    }
+
+    /// The bold header row; widths were measured on the unstyled text.
+    fn header(&self, headers: &[impl AsRef<str>]) -> String {
+        let bold: Vec<String> = headers
+            .iter()
+            .map(|h| dialoguer::console::style(h.as_ref()).bold().to_string())
+            .collect();
+        self.line(&bold)
+    }
+
+    /// Columns separated by two spaces; the last one isn't padded.
+    fn line(&self, cells: &[String]) -> String {
+        let mut out = String::from(" ");
+        for (i, (cell, width)) in cells.iter().zip(&self.0).enumerate() {
+            out.push_str(cell);
+            if i + 1 < cells.len() {
+                out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
+            }
+        }
+        out
+    }
+}
+
 impl OutputFormatter for HumanFormatter {
     fn title(&mut self, icon: &str, title: &str) {
         self.flush_fields();
         if self.depth == 0 {
-            // `c_title!` builds its own format string, so the text is a single argument.
-            restate_cli_util::c_title!(icon, title);
+            // Separated from the output above, but not from the command line.
+            if self.printed {
+                restate_cli_util::c_println!();
+            }
+            // The icon renders empty without colors; don't leave a leading space then.
+            let icon = Icon(icon, "").to_string();
+            let title = if icon.is_empty() {
+                format!("{title}:")
+            } else {
+                format!("{icon} {title}:")
+            };
+            restate_cli_util::c_println!("{title}");
+            restate_cli_util::c_println!("{}", "―".repeat(title.width_cjk()));
+            self.printed = true;
             return;
         }
         let title = format!("{title}:");
@@ -776,31 +831,10 @@ impl OutputFormatter for HumanFormatter {
             .iter()
             .map(|item| item.columns().iter().map(Field::human_display).collect())
             .collect();
-        let mut widths: Vec<usize> = headers.iter().map(|h| measure_text_width(h)).collect();
-        for row in &rows {
-            for (width, cell) in widths.iter_mut().zip(row) {
-                *width = (*width).max(measure_text_width(cell));
-            }
-        }
-        // Columns separated by two spaces; the last one isn't padded.
-        let line = |cells: &[String]| {
-            let mut out = String::from(" ");
-            for (i, (cell, width)) in cells.iter().zip(&widths).enumerate() {
-                out.push_str(cell);
-                if i + 1 < cells.len() {
-                    out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
-                }
-            }
-            out
-        };
-
-        let bold_headers: Vec<String> = headers
-            .iter()
-            .map(|h| dialoguer::console::style(h).bold().to_string())
-            .collect();
-        self.println(&line(&bold_headers));
+        let columns = Columns::new(&headers, &rows);
+        self.println(&columns.header(&headers));
         for (row, item) in rows.iter().zip(items) {
-            self.println(&line(row));
+            self.println(&columns.line(row));
             let details = item.details();
             for (i, detail) in details.iter().enumerate() {
                 if detail.trim().is_empty() {
@@ -852,27 +886,9 @@ impl OutputFormatter for HumanFormatter {
                 ]
             })
             .collect();
-        let headers = ["ENTRY", "NAME", "WHEN"].map(str::to_owned);
-        let mut widths = headers.clone().map(|h| h.len());
-        for row in &cells {
-            for (width, cell) in widths.iter_mut().zip(row) {
-                *width = (*width).max(measure_text_width(cell));
-            }
-        }
-        let line = |cells: &[String; 3]| {
-            let mut out = String::from(" ");
-            for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
-                out.push_str(cell);
-                if i + 1 < cells.len() {
-                    out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
-                }
-            }
-            out.trim_end().to_owned()
-        };
-
-        self.println(&line(
-            &headers.map(|h| dialoguer::console::style(h).bold().to_string()),
-        ));
+        let headers = ["ENTRY", "NAME", "WHEN"];
+        let columns = Columns::new(&headers, &cells);
+        self.println(&columns.header(&headers));
         let mut previous_index: Option<u64> = None;
         for (row, cells) in rows.iter().zip(&cells) {
             if matches!(scope, JournalScope::Preview)
@@ -882,7 +898,8 @@ impl OutputFormatter for HumanFormatter {
                 let hidden = row.index - previous - 1;
                 self.println(&format!("   · · ·   ({hidden} more)"));
             }
-            self.println(&line(cells));
+            // NAME and WHEN can be empty, which would leave trailing padding.
+            self.println(columns.line(cells).trim_end());
             for (i, detail) in row.details.iter().enumerate() {
                 let branch = if i + 1 == row.details.len() {
                     "└"
@@ -1241,6 +1258,19 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn columns_pad_to_widest_cell_except_last() {
+        let rows = [
+            ["[0]: Input".to_owned(), String::new(), "5s ago".to_owned()],
+            ["[1]: Run".to_owned(), "load".to_owned(), String::new()],
+        ];
+        let columns = Columns::new(&["ENTRY", "NAME", "WHEN"], &rows);
+
+        assert_eq!(columns.line(&rows[0]), " [0]: Input        5s ago");
+        // An empty last cell leaves the padding, which `journal` trims.
+        assert_eq!(columns.line(&rows[1]), " [1]: Run    load  ");
+    }
 
     #[test]
     fn json_formatter_builds_sectioned_document() {

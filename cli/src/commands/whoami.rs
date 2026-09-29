@@ -43,6 +43,7 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
         );
         c_println!("            Restate");
         c_println!("       https://restate.dev/");
+        c_println!();
     }
 
     let mut f = Formatter::new();
