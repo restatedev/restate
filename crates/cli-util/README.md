@@ -301,8 +301,9 @@ These options are available to all commands via `CommonOpts`:
 | `--request-timeout` | Request timeout in ms |
 
 `--non-interactive` is also implied by `--json` (a prompt would corrupt the JSON
-stream), when stdin is not a terminal, or when the `CI` environment variable is set.
-`--yes` is also implied by `CI`. With `--yes`, `choose()` / `input()` fail instead of
+stream), when stdin is not a terminal, or when the `CI` environment variable is set
+(to anything but empty, `false` or `0`, as CI providers set `CI=true`). `--yes` is also
+implied by `CI`, so in CI changes apply without confirmation. With `--yes`, `choose()` / `input()` fail instead of
 prompting (`CliContext::can_prompt()`), so a command that would ask for a value needs it as
 an argument (or falls back to a default).
 `--color` takes precedence over `NO_COLOR` / `CLICOLOR_FORCE` / `TERM` / TTY detection.

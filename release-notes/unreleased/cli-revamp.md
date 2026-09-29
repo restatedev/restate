@@ -53,7 +53,7 @@ then apply it:
 
 - `--dry-run` shows the planned changes and exits `0` without applying anything. With `--json`, the
   plan is a `changes` array (e.g. every resolved invocation id and the action to take).
-- `--json` without `--yes` no longer prompts: it prints the same plan document
+- `--json` without `--yes` (or `CI`, see below) no longer prompts: it prints the same plan document
   (`"dry_run": true, "applied": false`, a `hint`, and the ready-to-run `apply_command`) and exits
   with the new code `3` (confirmation required). Non-interactive human runs also exit `3` instead
   of `7`.
@@ -61,7 +61,11 @@ then apply it:
   `results` for bulk operations; a partial failure keeps that single document on stdout and exits
   non-zero.
 - Interactive human runs are unchanged: preview, then prompt.
-- `--yes` (also implied by the `CI` environment variable) never waits for input: a command that
+- As before, the `CI` environment variable (set by CI providers, e.g. `CI=true`) counts as `--yes`:
+  in CI, changes apply without confirmation, with or without `--json`; use `--dry-run` to only
+  preview them. New: `CI` set to empty, `false` or `0` now counts as unset (before, any value
+  enabled it).
+- `--yes` never waits for input: a command that
   would ask you to pick or type a value fails and asks for it as an argument instead, or uses its
   default (e.g. `example <name> --yes` downloads into `./<name>`).
 
