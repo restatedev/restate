@@ -17,23 +17,24 @@ mod set;
 use std::num::NonZeroU32;
 use std::str::FromStr;
 
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use chrono::{DateTime, Local};
 use cling::prelude::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use restate_admin_rest_model::rules::{RuleResponse, UpsertRuleRequest};
-use restate_cli_util::{CliContext, c_println, c_success};
 use restate_limiter::{Precondition, RulePattern, UserLimits};
 use restate_types::Version;
 use restate_util_string::ReString;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, ClientError, DataFusionHttpClient};
-use crate::error::RestateCliError;
+use crate::error::{ErrorKind, RestateCliError};
 use crate::ui::datetime::DateTimeExt;
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{
+    Field, Formatter, IncludeFormatting, Outcome, OutputFormatter, rerun_command,
+};
 
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "rule")]
@@ -162,16 +163,27 @@ fn is_conflict(err: &ClientError) -> bool {
     matches!(err, ClientError::Api(api) if api.http_status_code == reqwest::StatusCode::CONFLICT)
 }
 
+/// The rule changed since it was read (a failed precondition, 409): re-running the
+/// command applies it to the current rule.
+fn modified_concurrently(canonical: &str) -> anyhow::Error {
+    RestateCliError::new(
+        ErrorKind::Generic,
+        format!("Rule '{canonical}' was modified concurrently"),
+    )
+    .with_next_step(rerun_command(), "retry against the rule's current state")
+    .into()
+}
+
 /// Sends a single-rule upsert, translating a precondition conflict (409) into
-/// the supplied actionable message.
+/// [`modified_concurrently`].
 pub(crate) async fn upsert_one(
     client: &AdminClient,
     request: UpsertRuleRequest,
-    conflict_msg: &str,
+    canonical: &str,
 ) -> Result<Option<RuleResponse>> {
     match client.upsert_rules(vec![request]).await?.into_body().await {
         Ok(mut rules) => Ok(rules.drain(..).next()),
-        Err(e) if is_conflict(&e) => Err(anyhow!("{conflict_msg}")),
+        Err(e) if is_conflict(&e) => Err(modified_concurrently(canonical)),
         Err(e) => Err(e.into()),
     }
 }
@@ -195,13 +207,14 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
 
     let sql_client = DataFusionHttpClient::new(env).await?;
     let current = fetch_existing_rule(&sql_client, &canonical).await?;
-    let json = CliContext::get().json_output();
-
-    let (rule, result) = if current.disabled == disabled {
-        if !json {
-            c_println!("Rule '{canonical}' is already {action}.");
-        }
-        (Some(current), format!("already_{action}"))
+    let (rule, outcome) = if current.disabled == disabled {
+        let result = if disabled {
+            "already_disabled"
+        } else {
+            "already_enabled"
+        };
+        let message = format!("Rule '{canonical}' is already {action}.");
+        (Some(current), (result, message, Outcome::Success))
     } else {
         let client = AdminClient::new(env).await?;
         let request = UpsertRuleRequest {
@@ -211,21 +224,18 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
             disabled,
             precondition: Precondition::Matches(Version::from(current.version)),
         };
-        let updated = upsert_one(
-            &client,
-            request,
-            &format!("Rule '{canonical}' was modified concurrently; please re-run."),
+        let updated = upsert_one(&client, request, &canonical).await?;
+        let message = format!("Rule '{canonical}' {action}");
+        (
+            updated.map(RuleRow::from),
+            (action, message, Outcome::Success),
         )
-        .await?;
-        if !json {
-            c_success!("Rule '{canonical}' {action}");
-        }
-        (updated.map(RuleRow::from), action.to_owned())
     };
 
+    let (result, message, outcome) = outcome;
     let mut f = Formatter::new();
     f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
-    f.value("result", json_only(result));
+    f.outcome("result", Field::with_display(result, message), outcome);
     rules_list_step(&mut f);
     f.finish()
 }

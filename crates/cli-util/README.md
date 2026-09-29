@@ -332,6 +332,11 @@ A `detail` row whose value is `null` (e.g. `Field::new(description.as_deref())` 
 description) is left out for humans and stays `null` in JSON, so optional rows need no
 `if json` branch. To show it anyway, give it a display: `Field::with_display(Value::Null, "-")`.
 
+A change command reports what happened with `outcome`, not with `c_success!` behind an
+`if !json`: `f.outcome("result", Field::with_display("deleted", format!("Deleted rule '{p}'")), Outcome::Success)`
+gives JSON `"result": "deleted"` and humans the `✅` line. A no-op that leaves things as asked
+(e.g. already deleted) is a `Success` too; `Failure` prints `❌` on stderr.
+
 Nested data (e.g. services, each with its handlers) goes in a list of items. Each item
 is described with the same building blocks (plus `field` for a single key/value row) on
 its own formatter, which borrows the parent until it's finished (or dropped):

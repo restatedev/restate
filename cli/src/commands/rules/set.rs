@@ -14,7 +14,6 @@ use anyhow::Result;
 use cling::prelude::*;
 
 use restate_admin_rest_model::rules::UpsertRuleRequest;
-use restate_cli_util::{CliContext, c_success};
 use restate_limiter::{Precondition, UserLimits};
 use restate_types::Version;
 
@@ -22,7 +21,7 @@ use super::{RuleRow, fetch_rule, json_only, parse_pattern, rules_list_step, upse
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, DataFusionHttpClient};
 use crate::error::RestateCliError;
-use crate::ui::fmt::{Formatter, OutputFormatter, shell_quote};
+use crate::ui::fmt::{Field, Formatter, Outcome, OutputFormatter, shell_quote};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_set")]
@@ -100,32 +99,26 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
     };
 
     let client = AdminClient::new(&env).await?;
-    let rule = upsert_one(
-        &client,
-        request,
-        &format!("Rule '{canonical}' was modified concurrently; please re-run."),
-    )
-    .await?;
+    let rule = upsert_one(&client, request, &canonical).await?;
 
     let (verb, result) = if was_create {
         ("Created", "created")
     } else {
         ("Updated", "updated")
     };
+    let message = match &rule {
+        Some(rule) => format!("{verb} rule '{canonical}' (version {})", rule.version),
+        None => format!("{verb} rule '{canonical}'"),
+    };
     let rule = rule.map(RuleRow::from);
-    if !CliContext::get().json_output() {
-        match &rule {
-            Some(rule) => c_success!(
-                "{verb} rule '{canonical}' (version {})",
-                Version::from(rule.version)
-            ),
-            None => c_success!("{verb} rule '{canonical}'"),
-        }
-    }
 
     let mut f = Formatter::new();
     f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
-    f.value("result", json_only(result));
+    f.outcome(
+        "result",
+        Field::with_display(result, message),
+        Outcome::Success,
+    );
     rules_list_step(&mut f);
     f.finish()
 }

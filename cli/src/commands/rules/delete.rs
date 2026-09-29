@@ -8,21 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
 use serde_json::json;
 
 use restate_admin_rest_model::rules::DeleteRuleRequest;
-use restate_cli_util::{CliContext, c_println, c_success};
 use restate_types::Version;
 
 use super::{
-    concurrency_field, disabled_field, fetch_existing_rule, is_conflict, json_only, parse_pattern,
-    rules_list_step,
+    concurrency_field, disabled_field, fetch_existing_rule, is_conflict, json_only,
+    modified_concurrently, parse_pattern, rules_list_step,
 };
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, Outcome, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_delete")]
@@ -41,7 +40,6 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
 
     let sql_client = DataFusionHttpClient::new(&env).await?;
     let current = fetch_existing_rule(&sql_client, &canonical).await?;
-    let json = CliContext::get().json_output();
 
     let mut f = Formatter::new();
     f.detail(
@@ -66,25 +64,22 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
         expected_version: Some(Version::from(current.version)),
     };
 
-    let result = match client.delete_rules(vec![request]).await?.into_body().await {
-        Ok(deleted) if deleted.is_empty() => {
-            if !json {
-                c_println!("Rule '{canonical}' was already absent.");
-            }
-            "already_absent"
-        }
-        Ok(_) => {
-            if !json {
-                c_success!("Deleted rule '{canonical}'");
-            }
-            "deleted"
-        }
-        Err(e) if is_conflict(&e) => {
-            bail!("Rule '{canonical}' was modified concurrently; please re-run.")
-        }
-        Err(e) => return Err(e.into()),
-    };
-    f.value("result", json_only(result));
+    let (result, message, outcome) =
+        match client.delete_rules(vec![request]).await?.into_body().await {
+            Ok(deleted) if deleted.is_empty() => (
+                "already_absent",
+                format!("Rule '{canonical}' was already absent."),
+                Outcome::Success,
+            ),
+            Ok(_) => (
+                "deleted",
+                format!("Deleted rule '{canonical}'"),
+                Outcome::Success,
+            ),
+            Err(e) if is_conflict(&e) => return Err(modified_concurrently(&canonical)),
+            Err(e) => return Err(e.into()),
+        };
+    f.outcome("result", Field::with_display(result, message), outcome);
     rules_list_step(&mut f);
     f.finish()
 }

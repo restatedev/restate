@@ -231,6 +231,11 @@ pub trait OutputFormatter {
     /// A single scalar value.
     fn value(&mut self, section: &str, field: Field);
 
+    /// The command's outcome, e.g. `created` or `already_absent`: `section: value` in
+    /// JSON; human output prints the field's display as a status line, styled per
+    /// `outcome`.
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome);
+
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
     /// `Label: value` row, aligned with the adjacent `field` rows (skipped when the value
     /// is `null` without a display, like in `detail`).
@@ -366,6 +371,10 @@ impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
         self.parent.value(section, field)
     }
 
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome) {
+        self.parent.outcome(section, field, outcome)
+    }
+
     fn field(&mut self, key: &str, field: Field) {
         self.parent.field(key, field)
     }
@@ -467,6 +476,10 @@ impl OutputFormatter for Formatter {
         dispatch!(self.value(section, field))
     }
 
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome) {
+        dispatch!(self.outcome(section, field, outcome))
+    }
+
     fn field(&mut self, key: &str, field: Field) {
         dispatch!(self.field(key, field))
     }
@@ -531,12 +544,26 @@ pub struct DryRun {
 /// The current command line with `--dry-run` removed and `--yes` added: the command
 /// that applies the previewed changes.
 fn apply_command() -> String {
-    let mut args: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|arg| arg != "--dry-run" && arg != "--yes" && arg != "-y")
-        .collect();
-    args.insert(0, "restate".to_owned());
+    let mut args = command_args(|arg| matches!(arg, "--dry-run" | "--yes" | "-y"));
     args.push("--yes".to_owned());
+    join_command(args)
+}
+
+/// The current command line without `--json`, to suggest as a next step (JSON output
+/// appends `--json` again): e.g. to retry after a concurrent change.
+pub(crate) fn rerun_command() -> String {
+    join_command(command_args(|arg| arg == "--json"))
+}
+
+/// `restate` and the current arguments, without those `drop` matches.
+fn command_args(drop: impl Fn(&str) -> bool) -> Vec<String> {
+    std::iter::once("restate".to_owned())
+        .chain(std::env::args().skip(1).filter(|arg| !drop(arg)))
+        .collect()
+}
+
+/// `args` as one shell command line, secrets redacted.
+fn join_command(args: Vec<String>) -> String {
     redact_secrets(args)
         .iter()
         .map(|arg| shell_quote(arg))
@@ -625,6 +652,17 @@ fn next_step_line(command: &str, description: &str) -> String {
 pub enum IncludeFormatting {
     Yes,
     No,
+}
+
+/// How human output shows an [`OutputFormatter::outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The command reached what was asked, including when there was nothing to change
+    /// (`✅`/`[OK]:` on stdout).
+    Success,
+    /// The command could not do what was asked (`❌`/`[ERR]:` on stderr).
+    #[expect(dead_code, reason = "no command reports a failed outcome yet")]
+    Failure,
 }
 
 /// What human output shows for an empty [`OutputFormatter::list`] or
@@ -813,6 +851,16 @@ impl OutputFormatter for HumanFormatter {
             table.add_row(row.as_ref().iter().map(Field::to_cell).collect::<Vec<_>>());
         }
         self.println(&table.to_string());
+    }
+
+    fn outcome(&mut self, _section: &str, field: Field, outcome: Outcome) {
+        self.flush_fields();
+        let message = field.human_display();
+        match outcome {
+            Outcome::Success => restate_cli_util::c_success!("{message}"),
+            Outcome::Failure => restate_cli_util::c_error!("{message}"),
+        }
+        self.printed = true;
     }
 
     fn value(&mut self, _section: &str, field: Field) {
@@ -1149,6 +1197,10 @@ impl OutputFormatter for JsonFormatter {
         self.insert(section, field.value);
     }
 
+    fn outcome(&mut self, section: &str, field: Field, _outcome: Outcome) {
+        self.insert(section, field.value);
+    }
+
     fn field(&mut self, key: &str, field: Field) {
         self.insert(key, field.value);
     }
@@ -1332,8 +1384,14 @@ mod tests {
             &[vec![Field::new("greet"), Field::new(true)]],
             IfEmpty::Nothing,
         );
+        jf.outcome(
+            "result",
+            Field::with_display("created", "Created service 'greeter'"),
+            Outcome::Success,
+        );
         let value = jf.into_document();
 
+        assert_eq!(value["result"], json!("created"));
         assert_eq!(value["service"]["name"], json!("greeter"));
         assert_eq!(value["service"]["revision"], json!(3));
         assert_eq!(value["handlers"][0]["handler"], json!("greet"));
