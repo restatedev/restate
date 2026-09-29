@@ -289,8 +289,8 @@ typify = { version = "0.8.0" }
 ulid = { version = "3.0.0" }
 url = { version = "2.5" }
 urlencoding = { version = "2.1" }
-utoipa = { version = "5.4" }
-utoipa-axum = "0.2"
+utoipa = { version = "6.0" }
+utoipa-axum = "0.3"
 uuid = { version = "1.19.0", features = ["v7", "serde"] }
 vergen-gitcl = { version = "10.0.3", default-features = false, features = ["build", "cargo", "cargo_metadata"] }
 wildmatch = "2.6.1"

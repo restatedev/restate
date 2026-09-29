@@ -142,7 +142,7 @@ tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
 ulid = { version = "3", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
-utoipa = { version = "5", features = ["axum_extras", "time"] }
+utoipa = { version = "6", features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
 winnow = { version = "1" }
 xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
@@ -287,8 +287,8 @@ tracing-log = { version = "0.2" }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "parking_lot"] }
 ulid = { version = "3", features = ["serde"] }
 url = { version = "2", features = ["serde"] }
-utoipa = { version = "5", features = ["axum_extras", "time"] }
-utoipa-gen = { version = "5", default-features = false, features = ["axum_extras", "time"] }
+utoipa = { version = "6", features = ["axum_extras", "time"] }
+utoipa-gen = { version = "6", default-features = false, features = ["axum_extras", "time"] }
 uuid = { version = "1", features = ["js", "serde", "v4", "v7"] }
 winnow = { version = "1" }
 xxhash-rust = { version = "0.8", default-features = false, features = ["std", "xxh3"] }
