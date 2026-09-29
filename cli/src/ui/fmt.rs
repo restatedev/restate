@@ -12,8 +12,9 @@
 //!
 //! Commands describe *what* to output using semantic building blocks — a
 //! [`title`](OutputFormatter::title), a key-value [`detail`](OutputFormatter::detail)
-//! view, a [`table`](OutputFormatter::table), or a single scalar
-//! [`value`](OutputFormatter::value) — and the selected [`OutputFormatter`] decides
+//! view, a [`table`](OutputFormatter::table), a single scalar
+//! [`value`](OutputFormatter::value), or a list of nested items
+//! ([`start_items`](OutputFormatter::start_items)) — and the selected [`OutputFormatter`] decides
 //! *how* to render them: human-friendly styled tables, or a single JSON document for
 //! scripting and agents (`--json`).
 //!
@@ -193,6 +194,10 @@ pub trait ListItem: Serialize {
 /// `section` names group the output in the JSON document (`detail` → an object,
 /// `table` → an array of objects keyed by header, `value` → a scalar). Human output
 /// ignores section names.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "commands move to nested items next")
+)]
 pub trait OutputFormatter {
     /// A section heading with a decorative icon (human only; ignored in JSON). The
     /// icon is dropped when colors are disabled.
@@ -220,6 +225,30 @@ pub trait OutputFormatter {
 
     /// A single scalar value.
     fn value(&mut self, section: &str, field: Field);
+
+    /// One key/value row in the current scope: `key: value` in JSON; in human output a
+    /// `Label: value` row, aligned with the adjacent `field` rows.
+    fn field(&mut self, key: &str, field: Field);
+
+    /// Start the `section` list of nested items (JSON: an array of objects, `[]` when
+    /// empty). Describe each item on the formatter returned by [`Items::item`]. Items
+    /// and the list are attached when finished or dropped, which gives this formatter
+    /// back. Human
+    /// output indents each item under a ` - ` marker.
+    fn start_items(&mut self, section: &str) -> Items<'_, Self>
+    where
+        Self: Sized,
+    {
+        self.begin_items(section);
+        Items { parent: self }
+    }
+
+    /// Hooks behind [`start_items`](OutputFormatter::start_items), which callers use
+    /// instead: they open and close the list, and each item in it.
+    fn begin_items(&mut self, section: &str);
+    fn begin_item(&mut self);
+    fn end_item(&mut self);
+    fn end_items(&mut self);
 
     /// A journal-style timeline of indexed entries. Human output renders ENTRY / NAME /
     /// WHEN columns with detail lines and optional payload blocks (head/tail elision
@@ -254,10 +283,134 @@ pub trait OutputFormatter {
     /// goes to stderr (`Error: …`, the docs link, the causes, then a tip with the next
     /// steps); JSON prints
     /// `{"error": {"kind", "message", "docs_url"?, "causes"?, "next_steps"?}}` on stdout.
-    fn error(self, error: &RestateCliError) -> anyhow::Result<()>;
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()>;
 
     /// Flush the output. The JSON formatter emits its accumulated document here.
     fn finish(self) -> anyhow::Result<()>;
+}
+
+/// A list of nested items being written, see [`OutputFormatter::start_items`]. It is
+/// attached to the parent formatter when finished or dropped.
+#[must_use = "an unused list is attached empty right away"]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "commands move to nested items next")
+)]
+pub struct Items<'a, F: OutputFormatter> {
+    parent: &'a mut F,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "commands move to nested items next")
+)]
+impl<F: OutputFormatter> Items<'_, F> {
+    /// Start the next item: describe it on the returned formatter.
+    pub fn item(&mut self) -> Item<'_, F> {
+        self.parent.begin_item();
+        Item {
+            parent: &mut *self.parent,
+        }
+    }
+
+    /// Attach the list to the parent formatter (same as dropping it).
+    pub fn finish(self) {}
+}
+
+impl<F: OutputFormatter> Drop for Items<'_, F> {
+    fn drop(&mut self) {
+        self.parent.end_items();
+    }
+}
+
+/// One item of an [`Items`] list, attached to it when finished or dropped. The
+/// command-level calls (`next_step`, `confirm`, `error`) go to the
+/// parent formatter.
+#[must_use = "an unused item is attached empty right away"]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "commands move to nested items next")
+)]
+pub struct Item<'a, F: OutputFormatter> {
+    parent: &'a mut F,
+}
+
+impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
+    fn title(&mut self, icon: &str, title: &str) {
+        self.parent.title(icon, title)
+    }
+
+    fn detail<K: AsRef<str>>(
+        &mut self,
+        section: &str,
+        rows: impl IntoIterator<Item = impl Borrow<(K, Field)>>,
+    ) {
+        self.parent.detail(section, rows)
+    }
+
+    fn table(
+        &mut self,
+        section: &str,
+        headers: &[impl AsRef<str>],
+        rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+    ) {
+        self.parent.table(section, headers, rows)
+    }
+
+    fn value(&mut self, section: &str, field: Field) {
+        self.parent.value(section, field)
+    }
+
+    fn field(&mut self, key: &str, field: Field) {
+        self.parent.field(key, field)
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        self.parent.begin_items(section)
+    }
+
+    fn begin_item(&mut self) {
+        self.parent.begin_item()
+    }
+
+    fn end_item(&mut self) {
+        self.parent.end_item()
+    }
+
+    fn end_items(&mut self) {
+        self.parent.end_items()
+    }
+
+    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope) {
+        self.parent.journal(section, rows, scope)
+    }
+
+    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
+        self.parent.list(section, items)
+    }
+
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        self.parent.next_step(command, description, formatting)
+    }
+
+    fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
+        self.parent.confirm(dry_run, prompt)
+    }
+
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        self.parent.error(error)
+    }
+
+    /// Attach the item to its list (same as dropping it).
+    fn finish(self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<F: OutputFormatter> Drop for Item<'_, F> {
+    fn drop(&mut self) {
+        self.parent.end_item();
+    }
 }
 
 /// The formatter selected for the current invocation (see [`Formatter::new`]): statically
@@ -303,6 +456,26 @@ impl OutputFormatter for Formatter {
         dispatch!(self.value(section, field))
     }
 
+    fn field(&mut self, key: &str, field: Field) {
+        dispatch!(self.field(key, field))
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        dispatch!(self.begin_items(section))
+    }
+
+    fn begin_item(&mut self) {
+        dispatch!(self.begin_item())
+    }
+
+    fn end_item(&mut self) {
+        dispatch!(self.end_item())
+    }
+
+    fn end_items(&mut self) {
+        dispatch!(self.end_items())
+    }
+
     fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope) {
         dispatch!(self.journal(section, rows, scope))
     }
@@ -323,7 +496,7 @@ impl OutputFormatter for Formatter {
         dispatch!(self.finish())
     }
 
-    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
         dispatch!(self.error(error))
     }
 }
@@ -463,12 +636,62 @@ fn print_next_steps(lines: &[String]) {
 #[derive(Default)]
 pub struct HumanFormatter {
     next_steps: Vec<String>,
+    /// How many items the current output is nested in.
+    depth: usize,
+    /// Items started so far in each open list, to separate them with a blank line.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "commands move to nested items next")
+    )]
+    item_counts: Vec<usize>,
+    /// The next line opens an item, so it gets the ` - ` marker.
+    item_start: bool,
+    /// `field` rows not printed yet, so adjacent ones align in one table.
+    fields: Vec<(String, Field)>,
+}
+
+impl HumanFormatter {
+    /// Print `text` on stdout, indented to the current depth.
+    fn println(&mut self, text: &str) {
+        for line in text.lines() {
+            if line.is_empty() {
+                restate_cli_util::c_println!();
+                continue;
+            }
+            let mut prefix = "  ".repeat(self.depth);
+            if std::mem::take(&mut self.item_start) {
+                // Lines start with a space, so ` -` lines up with the item's other rows.
+                prefix.truncate(prefix.len() - 2);
+                prefix.push_str(" -");
+            }
+            restate_cli_util::c_println!("{prefix}{line}");
+        }
+    }
+
+    /// Print the buffered `field` rows as one key/value table.
+    fn flush_fields(&mut self) {
+        if self.fields.is_empty() {
+            return;
+        }
+        let mut table = Table::new_styled();
+        for (key, field) in std::mem::take(&mut self.fields) {
+            table.add_kv_row(&format!("{}:", humanize_label(&key)), field.to_cell());
+        }
+        self.println(&table.to_string());
+    }
 }
 
 impl OutputFormatter for HumanFormatter {
     fn title(&mut self, icon: &str, title: &str) {
-        // `c_title!` builds its own format string, so the text is a single argument.
-        restate_cli_util::c_title!(icon, title);
+        self.flush_fields();
+        if self.depth == 0 {
+            // `c_title!` builds its own format string, so the text is a single argument.
+            restate_cli_util::c_title!(icon, title);
+            return;
+        }
+        let title = format!("{title}:");
+        let underline = "―".repeat(measure_text_width(&title));
+        self.println(&format!("\n {title}\n {underline}"));
     }
 
     fn detail<K: AsRef<str>>(
@@ -476,15 +699,12 @@ impl OutputFormatter for HumanFormatter {
         _section: &str,
         rows: impl IntoIterator<Item = impl Borrow<(K, Field)>>,
     ) {
-        let mut table = Table::new_styled();
+        self.flush_fields();
         for row in rows {
             let (key, field) = row.borrow();
-            table.add_kv_row(
-                &format!("{}:", humanize_label(key.as_ref())),
-                field.to_cell(),
-            );
+            self.fields.push((key.as_ref().to_owned(), field.clone()));
         }
-        restate_cli_util::c_println!("{table}");
+        self.flush_fields();
     }
 
     fn table(
@@ -493,6 +713,7 @@ impl OutputFormatter for HumanFormatter {
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
     ) {
+        self.flush_fields();
         let mut rows = rows.into_iter().peekable();
         // An empty table would be a lone header row; JSON still gets `[]`.
         if rows.peek().is_none() {
@@ -503,23 +724,50 @@ impl OutputFormatter for HumanFormatter {
         for row in rows {
             table.add_row(row.as_ref().iter().map(Field::to_cell).collect::<Vec<_>>());
         }
-        restate_cli_util::c_println!("{table}");
+        self.println(&table.to_string());
     }
 
     fn value(&mut self, _section: &str, field: Field) {
-        // `c_println!` expands with a trailing semicolon, so call it in statement
-        // position rather than as a match-arm expression.
-        let rendered = match field.style {
-            Some(style) => Styled(style, field.human_string()).to_string(),
-            None => field.human_string(),
-        };
+        self.flush_fields();
         // Indented like the rows of detail tables and lists.
-        for line in rendered.lines() {
-            restate_cli_util::c_println!(" {line}");
+        for line in field.human_display().lines() {
+            self.println(&format!(" {line}"));
         }
     }
 
+    fn field(&mut self, key: &str, field: Field) {
+        self.fields.push((key.to_owned(), field));
+    }
+
+    fn begin_items(&mut self, _section: &str) {
+        self.flush_fields();
+        self.item_counts.push(0);
+    }
+
+    fn begin_item(&mut self) {
+        self.flush_fields();
+        if let Some(count) = self.item_counts.last_mut() {
+            *count += 1;
+            if *count > 1 {
+                restate_cli_util::c_println!();
+            }
+        }
+        self.depth += 1;
+        self.item_start = true;
+    }
+
+    fn end_item(&mut self) {
+        self.flush_fields();
+        self.depth -= 1;
+        self.item_start = false;
+    }
+
+    fn end_items(&mut self) {
+        self.item_counts.pop();
+    }
+
     fn list<T: ListItem>(&mut self, _section: &str, items: &[T]) -> anyhow::Result<()> {
+        self.flush_fields();
         if items.is_empty() {
             return Ok(());
         }
@@ -550,27 +798,28 @@ impl OutputFormatter for HumanFormatter {
             .iter()
             .map(|h| dialoguer::console::style(h).bold().to_string())
             .collect();
-        restate_cli_util::c_println!("{}", line(&bold_headers));
+        self.println(&line(&bold_headers));
         for (row, item) in rows.iter().zip(items) {
-            restate_cli_util::c_println!("{}", line(row));
+            self.println(&line(row));
             let details = item.details();
             for (i, detail) in details.iter().enumerate() {
                 if detail.trim().is_empty() {
                     // A blank line inside a multi-line detail keeps the bracket going.
-                    restate_cli_util::c_println!("   │");
+                    self.println("   │");
                     continue;
                 }
                 let branch = if i + 1 == details.len() { "└" } else { "│" };
-                restate_cli_util::c_println!(
+                self.println(&format!(
                     "   {branch} {}",
                     dialoguer::console::style(detail).dim()
-                );
+                ));
             }
         }
         Ok(())
     }
 
     fn journal(&mut self, _section: &str, rows: &[JournalRow], scope: JournalScope) {
+        self.flush_fields();
         if rows.is_empty() {
             return;
         }
@@ -621,10 +870,9 @@ impl OutputFormatter for HumanFormatter {
             out.trim_end().to_owned()
         };
 
-        restate_cli_util::c_println!(
-            "{}",
-            line(&headers.map(|h| dialoguer::console::style(h).bold().to_string()))
-        );
+        self.println(&line(
+            &headers.map(|h| dialoguer::console::style(h).bold().to_string()),
+        ));
         let mut previous_index: Option<u64> = None;
         for (row, cells) in rows.iter().zip(&cells) {
             if matches!(scope, JournalScope::Preview)
@@ -632,23 +880,23 @@ impl OutputFormatter for HumanFormatter {
                 && row.index > previous + 1
             {
                 let hidden = row.index - previous - 1;
-                restate_cli_util::c_println!("   · · ·   ({hidden} more)");
+                self.println(&format!("   · · ·   ({hidden} more)"));
             }
-            restate_cli_util::c_println!("{}", line(cells));
+            self.println(&line(cells));
             for (i, detail) in row.details.iter().enumerate() {
                 let branch = if i + 1 == row.details.len() {
                     "└"
                 } else {
                     "├"
                 };
-                restate_cli_util::c_println!(
+                self.println(&format!(
                     "   {branch} {}",
                     dialoguer::console::style(detail).dim()
-                );
+                ));
             }
             if let Some(payload) = &row.payload {
                 for payload_line in payload.lines() {
-                    restate_cli_util::c_println!("     {payload_line}");
+                    self.println(&format!("     {payload_line}"));
                 }
             }
             previous_index = Some(row.index);
@@ -660,6 +908,7 @@ impl OutputFormatter for HumanFormatter {
     }
 
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
+        self.flush_fields();
         if dry_run.dry_run {
             restate_cli_util::c_eprintln!();
             restate_cli_util::c_tip!(
@@ -672,7 +921,8 @@ impl OutputFormatter for HumanFormatter {
         confirm_or_exit(prompt)
     }
 
-    fn finish(self) -> anyhow::Result<()> {
+    fn finish(mut self) -> anyhow::Result<()> {
+        self.flush_fields();
         if self.next_steps.is_empty() {
             // Keep the shell prompt off the last line of output (the next-steps tip
             // brings its own leading blank line).
@@ -682,7 +932,8 @@ impl OutputFormatter for HumanFormatter {
         Ok(())
     }
 
-    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        self.flush_fields();
         restate_cli_util::c_eprintln!("{}{}", Styled(Style::Danger, "Error: "), error.message());
         if let Some(docs_url) = error.docs_url() {
             restate_cli_util::c_eprintln!("  -> See {}", Styled(Style::Info, docs_url));
@@ -706,10 +957,23 @@ impl OutputFormatter for HumanFormatter {
 #[derive(Default)]
 pub struct JsonFormatter {
     doc: Map<String, Value>,
+    /// The open [`start_items`](OutputFormatter::start_items) lists and items, innermost
+    /// last: sections go to the innermost open item, else to `doc`.
+    open: Vec<Open>,
     next_steps: Vec<Value>,
     /// `--yes` (or CI): [`confirm`](OutputFormatter::confirm) applies instead of
     /// emitting the plan.
     auto_confirm: bool,
+}
+
+/// An open list or item of the [`JsonFormatter`].
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "commands move to nested items next")
+)]
+enum Open {
+    Items { section: String, items: Vec<Value> },
+    Item(Map<String, Value>),
 }
 
 /// The JSON `error` object of a failed command, see [`OutputFormatter::error`].
@@ -756,7 +1020,11 @@ impl JsonFormatter {
             ![NEXT_STEPS, DRY_RUN, APPLIED, "hint", "apply_command"].contains(&section),
             "`{section}` is a reserved section"
         );
-        self.doc.insert(section.to_owned(), value);
+        let target = match self.open.last_mut() {
+            Some(Open::Item(item)) => item,
+            _ => &mut self.doc,
+        };
+        target.insert(section.to_owned(), value);
     }
 
     /// The failure document: `error`, with the next steps nested in it.
@@ -828,6 +1096,35 @@ impl OutputFormatter for JsonFormatter {
         self.insert(section, field.value);
     }
 
+    fn field(&mut self, key: &str, field: Field) {
+        self.insert(key, field.value);
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        self.open.push(Open::Items {
+            section: section.to_owned(),
+            items: Vec::new(),
+        });
+    }
+
+    fn begin_item(&mut self) {
+        self.open.push(Open::Item(Map::new()));
+    }
+
+    fn end_item(&mut self) {
+        if let Some(Open::Item(item)) = self.open.pop()
+            && let Some(Open::Items { items, .. }) = self.open.last_mut()
+        {
+            items.push(Value::Object(item));
+        }
+    }
+
+    fn end_items(&mut self) {
+        if let Some(Open::Items { section, items }) = self.open.pop() {
+            self.insert(&section, Value::Array(items));
+        }
+    }
+
     fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
         let items = items
             .iter()
@@ -881,8 +1178,8 @@ impl OutputFormatter for JsonFormatter {
         Ok(())
     }
 
-    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
-        let rendered = serde_json::to_string_pretty(&self.error_document(error))?;
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        let rendered = serde_json::to_string_pretty(&std::mem::take(self).error_document(error))?;
         restate_cli_util::c_println!("{rendered}");
         Ok(())
     }
@@ -971,6 +1268,53 @@ mod tests {
         assert_eq!(value["handlers"][0]["public"], json!(true));
         assert!(value.get("ignored").is_none());
         assert!(value.get(NEXT_STEPS).is_none());
+    }
+
+    #[test]
+    fn json_items_nest_objects_and_forward_next_steps() {
+        let mut jf = JsonFormatter::default();
+        let mut services = jf.start_items("services");
+        let mut service = services.item();
+        service.field("name", Field::styled("Greeter", Style::Info));
+        service.table("handlers", &["handler"], &[vec![Field::new("greet")]]);
+        let mut tags = service.start_items("tags");
+        let mut tag = tags.item();
+        tag.field("tag", Field::new("beta"));
+        tag.finish().unwrap();
+        tags.finish();
+        service.next_step(
+            "restate services list",
+            "list services",
+            IncludeFormatting::Yes,
+        );
+        service.finish().unwrap();
+        services.finish();
+        jf.start_items("empty").finish();
+        // Dropping attaches too.
+        {
+            let mut dropped = jf.start_items("dropped");
+            dropped.item().field("name", Field::new("Counter"));
+        }
+        jf.value("id", Field::new("dp_1"));
+        let value = jf.into_document();
+
+        assert_eq!(
+            value,
+            json!({
+                "services": [{
+                    "name": "Greeter",
+                    "handlers": [{"handler": "greet"}],
+                    "tags": [{"tag": "beta"}],
+                }],
+                "empty": [],
+                "dropped": [{"name": "Counter"}],
+                "id": "dp_1",
+                NEXT_STEPS: [{
+                    "command": "restate services list --json",
+                    "description": "list services",
+                }],
+            })
+        );
     }
 
     #[test]

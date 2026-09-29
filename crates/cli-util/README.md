@@ -328,6 +328,26 @@ f.next_step(&format!("restate services status {}", svc.name), "see its activity"
 f.finish()?;
 ```
 
+Nested data (e.g. services, each with its handlers) goes in a list of items. Each item
+is described with the same building blocks (plus `field` for a single key/value row) on
+its own formatter, which borrows the parent until it's finished (or dropped):
+
+```rust
+let mut services = f.start_items("services");
+for svc in &svcs {
+    let mut item = services.item();
+    item.field("name", Field::styled(svc.name.as_str(), Style::Info));
+    item.field("revision", Field::new(svc.revision));
+    item.table("handlers", &["handler", "input"], handler_rows(svc));
+    item.finish()?;
+}
+services.finish();
+```
+
+JSON gets `"services": [{"name": …, "revision": …, "handlers": [...]}]` (`[]` when
+empty); humans get each item indented under a ` - ` marker. `next_step` on an item goes
+to the command's output.
+
 `next_step(command, description, IncludeFormatting::Yes)` suggests a follow-up: humans get one tip at `finish`
 ("Run `<command>` to <description>."), JSON gets a top-level `next_steps` array of
 `{"command", "description"}` objects with ` --json` appended to `command` (the key is
