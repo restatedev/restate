@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::num::NonZeroU32;
+use std::task::{Poll, Waker, ready};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
@@ -34,6 +36,14 @@ pub enum CleanerEffect {
 pub(super) struct CleanerHandle {
     task_id: TaskId,
     rx: ReceiverStream<CleanerEffect>,
+    // Maximum number of purges the leader may have proposed but not yet applied. Purges are cheap
+    // to propose but expensive to apply. Bounding them in flight keeps other commands from
+    // queueing behind a long backlog of purges in the log.
+    max_in_flight: u32,
+    // Purges handed out to the leader that have not been applied yet.
+    in_flight: u32,
+    // Woken once a slot frees up after the window was full.
+    window_waker: Option<Waker>,
 }
 
 impl CleanerHandle {
@@ -41,8 +51,34 @@ impl CleanerHandle {
         TaskCenter::cancel_task(self.task_id)
     }
 
-    pub fn effects(&mut self) -> impl Stream<Item = CleanerEffect> {
-        &mut self.rx
+    /// The cleaner effects, paced by an in-flight window: once `max_in_flight` purges wait to be
+    /// applied, the stream stays pending until [`Self::on_purge_applied`] frees a slot.
+    pub fn effects(&mut self) -> impl Stream<Item = CleanerEffect> + Unpin + '_ {
+        futures::stream::poll_fn(move |cx| self.poll_next_effect(cx))
+    }
+
+    fn poll_next_effect(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<CleanerEffect>> {
+        if self.in_flight >= self.max_in_flight {
+            match &mut self.window_waker {
+                Some(waker) => waker.clone_from(cx.waker()),
+                None => self.window_waker = Some(cx.waker().clone()),
+            }
+
+            return Poll::Pending;
+        }
+        let effect = ready!(self.rx.poll_next_unpin(cx));
+        if effect.is_some() {
+            self.in_flight += 1;
+        }
+        Poll::Ready(effect)
+    }
+
+    /// Frees a slot of the in-flight window. Called whenever the leader applies a purge.
+    pub fn on_purge_applied(&mut self) {
+        self.in_flight = self.in_flight.saturating_sub(1);
+        if let Some(waker) = self.window_waker.take() {
+            waker.wake();
+        }
     }
 }
 
@@ -50,6 +86,7 @@ pub(super) struct Cleaner<Storage> {
     partition_id: PartitionId,
     storage: Storage,
     cleanup_interval: Duration,
+    max_in_flight_purges: NonZeroU32,
 }
 
 impl<Storage> Cleaner<Storage>
@@ -60,21 +97,27 @@ where
         storage: Storage,
         partition_id: PartitionId,
         cleanup_interval: Duration,
+        max_in_flight_purges: NonZeroU32,
     ) -> Self {
         Self {
             partition_id,
             storage,
             cleanup_interval,
+            max_in_flight_purges,
         }
     }
 
     pub(super) fn start(self) -> Result<CleanerHandle, ShutdownError> {
         let (tx, rx) = mpsc::channel(CLEANER_EFFECT_QUEUE_SIZE);
+        let max_in_flight = self.max_in_flight_purges.get();
         let task_id = TaskCenter::spawn_child(TaskKind::Cleaner, "cleaner", self.run(tx))?;
 
         Ok(CleanerHandle {
             task_id,
             rx: ReceiverStream::new(rx),
+            max_in_flight,
+            in_flight: 0,
+            window_waker: None,
         })
     }
 
@@ -200,7 +243,7 @@ where
 mod tests {
     use super::*;
 
-    use futures::{Stream, stream};
+    use futures::{FutureExt, Stream, stream};
     use googletest::prelude::*;
     use prost::Message;
     use restate_storage_api::invocation_status_table::ScanInvocationStatusTableRange;
@@ -307,6 +350,8 @@ mod tests {
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
         let not_expired_invocation_2 =
             InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
+        let expired_invocation_2 =
+            InvocationId::from_parts(PartitionKey::MIN, InvocationUuid::mock_random());
 
         let now = MillisSinceEpoch::now().as_u64();
 
@@ -339,11 +384,23 @@ mod tests {
                 journal_retention_duration: Duration::ZERO,
                 journal_length: 0,
             },
+            MockCompletedInvocation {
+                invocation_id: expired_invocation_2,
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
+            },
         ]);
 
-        let mut handle = Cleaner::new(mock_storage, 0.into(), Duration::from_secs(1))
-            .start()
-            .unwrap();
+        let mut handle = Cleaner::new(
+            mock_storage,
+            0.into(),
+            Duration::from_secs(1),
+            NonZeroU32::new(2).unwrap(),
+        )
+        .start()
+        .unwrap();
 
         // cleanup will run after around 200ms
         tokio::time::advance(Duration::from_secs(1)).await;
@@ -357,6 +414,17 @@ mod tests {
                 contains(pat!(CleanerEffect::PurgeInvocation(eq(expired_invocation)))),
                 contains(pat!(CleanerEffect::PurgeJournal(eq(expired_journal))))
             )
+        );
+
+        // The in-flight window is full until a purge is applied
+        assert!(handle.effects().next().now_or_never().is_none());
+        handle.on_purge_applied();
+
+        assert_that!(
+            handle.effects().next().await,
+            some(pat!(CleanerEffect::PurgeInvocation(eq(
+                expired_invocation_2
+            ))))
         );
     }
 }

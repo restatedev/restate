@@ -33,7 +33,7 @@ use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
 use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeCommand<'a> {
     pub invocation_id: &'a InvocationId,
@@ -60,6 +60,11 @@ where
             invocation_id,
             response_sink,
         } = self;
+
+        if ctx.is_leader && response_sink.is_none() {
+            ctx.action_collector.push(Action::CleanerPurgeApplied);
+        }
+
         match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(CompletedInvocation {
                 ref vqueue_id,

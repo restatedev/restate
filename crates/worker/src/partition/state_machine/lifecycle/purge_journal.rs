@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -20,6 +18,9 @@ use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use tracing::trace;
+
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeJournalCommand<'a> {
     pub invocation_id: &'a InvocationId,
@@ -41,6 +42,11 @@ where
             invocation_id,
             response_sink,
         } = self;
+
+        if ctx.is_leader && response_sink.is_none() {
+            ctx.action_collector.push(Action::CleanerPurgeApplied);
+        }
+
         match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let pinned_service_protocol_version = completed
