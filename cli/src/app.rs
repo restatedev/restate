@@ -80,6 +80,9 @@ pub enum Command {
     Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
     Sql(sql::Sql),
+    /// Print the admin API's OpenAPI spec (JSON), to discover and call the admin API directly
+    #[clap(name = "openapi")]
+    OpenApi(openapi::OpenApi),
     /// Download one of Restate's examples (aka templates), or `--list` them.
     #[clap(name = "example", visible_aliases = ["examples", "template", "templates"])]
     Examples(examples::Examples),
