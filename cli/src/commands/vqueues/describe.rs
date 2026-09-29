@@ -11,17 +11,16 @@
 use anyhow::Result;
 use chrono::{DateTime, Local};
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 use serde::Deserialize;
 
-use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::c_eprintln;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_eprintln, c_println, c_title};
 use restate_types::vqueues::VQueueId;
 
+use super::{optional_str, optional_time, time};
 use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
-use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -76,71 +75,74 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         ))
         .await?;
 
-    let mut info = Table::new_styled();
-    info.add_kv_row("ID:", &queue.id);
-    info.add_kv_row("Service:", queue.service_name.as_deref().unwrap_or("-"));
-    info.add_kv_row("Scope:", queue.scope.as_deref().unwrap_or("-"));
-    info.add_kv_row("Limit key:", queue.limit_key.as_deref().unwrap_or("-"));
-    info.add_kv_row("Lock:", queue.lock_name.as_deref().unwrap_or("-"));
-    info.add_kv_row("Active:", queue.is_active);
-    info.add_kv_row("Paused:", queue.queue_is_paused);
-    info.add_kv_row("Created at:", queue.created_at.display());
-    info.add_kv_row(
-        "Last enqueued at:",
-        display_optional(queue.last_enqueued_at),
+    let mut f = Formatter::new();
+    f.title("📜", "Virtual Queue Information");
+    f.detail(
+        "vqueue",
+        [
+            ("id", Field::new(queue.id.as_str())),
+            ("service", optional_str(queue.service_name.as_deref())),
+            ("scope", optional_str(queue.scope.as_deref())),
+            ("limit_key", optional_str(queue.limit_key.as_deref())),
+            ("lock", optional_str(queue.lock_name.as_deref())),
+            ("active", Field::new(queue.is_active)),
+            ("paused", Field::new(queue.queue_is_paused)),
+            ("created_at", time(queue.created_at)),
+            ("last_enqueued_at", optional_time(queue.last_enqueued_at)),
+            ("last_started_at", optional_time(queue.last_start_at)),
+            ("last_attempted_at", optional_time(queue.last_attempt_at)),
+            ("last_finished_at", optional_time(queue.last_finish_at)),
+        ],
     );
-    info.add_kv_row("Last started at:", display_optional(queue.last_start_at));
-    info.add_kv_row(
-        "Last attempted at:",
-        display_optional(queue.last_attempt_at),
+
+    f.title("📊", "Entry Counts");
+    f.table(
+        "entry_counts",
+        &["inbox", "running", "suspended", "paused", "finished"],
+        [[
+            Field::new(queue.num_inbox),
+            Field::new(queue.num_running),
+            Field::new(queue.num_suspended),
+            Field::new(queue.num_paused),
+            Field::new(queue.num_finished),
+        ]],
+        IfEmpty::Nothing,
     );
-    info.add_kv_row("Last finished at:", display_optional(queue.last_finish_at));
 
-    c_title!("📜", "Virtual Queue Information");
-    c_println!("{info}");
-    c_println!();
-
-    let mut counts = Table::new_styled();
-    counts.set_styled_header(vec!["INBOX", "RUNNING", "SUSPENDED", "PAUSED", "FINISHED"]);
-    counts.add_row(vec![
-        Cell::new(queue.num_inbox),
-        Cell::new(queue.num_running),
-        Cell::new(queue.num_suspended),
-        Cell::new(queue.num_paused),
-        Cell::new(queue.num_finished),
-    ]);
-    c_title!("📊", "Entry Counts");
-    c_println!("{counts}");
-    c_println!();
-
-    c_title!("📥", "Entries");
-    if entries.is_empty() {
-        c_println!("No entries found.");
-    } else {
-        let mut entries_table = Table::new_styled();
-        entries_table.set_styled_header(vec![
-            "ENTRY ID",
-            "KIND",
-            "STAGE",
-            "STATUS",
-            "HAS LOCK",
-            "ATTEMPTS",
-            "CREATED-AT",
-            "DEPLOYMENT",
-        ]);
-        for entry in &entries {
-            entries_table.add_row(vec![
-                Cell::new(&entry.entry_id),
-                Cell::new(&entry.entry_kind),
-                Cell::new(&entry.stage),
-                Cell::new(&entry.status),
-                Cell::new(entry.has_lock),
-                Cell::new(entry.num_attempts),
-                Cell::new(entry.created_at.display()),
-                Cell::new(entry.deployment.as_deref().unwrap_or("-")),
-            ]);
-        }
-        c_println!("{entries_table}");
+    f.title("📥", "Entries");
+    let rows = entries.iter().map(|entry| {
+        [
+            Field::new(entry.entry_id.as_str()),
+            Field::new(entry.entry_kind.as_str()),
+            Field::new(entry.stage.as_str()),
+            Field::new(entry.status.as_str()),
+            Field::new(entry.has_lock),
+            Field::new(entry.num_attempts),
+            time(entry.created_at),
+            optional_str(entry.deployment.as_deref()),
+        ]
+    });
+    f.table(
+        "entries",
+        &[
+            "entry_id",
+            "kind",
+            "stage",
+            "status",
+            "has_lock",
+            "attempts",
+            "created_at",
+            "deployment",
+        ],
+        rows,
+        IfEmpty::Say("No entries found."),
+    );
+    if let Some(entry) = entries.iter().find(|e| e.entry_kind == "invocation") {
+        f.next_step(
+            &format!("restate invocations describe {}", entry.entry_id),
+            "inspect the invocation's status, progress, and journal",
+            IncludeFormatting::Yes,
+        );
     }
 
     let total_entries = queue.num_inbox
@@ -149,11 +151,5 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         + queue.num_paused
         + queue.num_finished;
     c_eprintln!("Showing {}/{} entries.", entries.len(), total_entries);
-    Ok(())
-}
-
-fn display_optional(value: Option<DateTime<Local>>) -> String {
-    value
-        .map(|value| value.display())
-        .unwrap_or_else(|| "-".to_owned())
+    f.finish()
 }

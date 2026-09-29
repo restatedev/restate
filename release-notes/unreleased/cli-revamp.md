@@ -12,7 +12,7 @@ Diagnostics/progress stay on stderr, so `restate <cmd> --json` produces clean, p
 stdout. Supported by:
 
 - `services list` / `describe` / `status`, `deployments list` / `describe`,
-  `invocations list` / `describe` / `journal`, `state get`
+  `invocations list` / `describe` / `journal`, `state get`, `vqueues list` / `describe`
 - `whoami` (also reports the connected server's version)
 - `sql describe` (and `sql "<query>"`, which already supported `--json`)
 - `config view` (emits JSON instead of TOML)

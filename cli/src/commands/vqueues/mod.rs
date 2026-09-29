@@ -16,11 +16,14 @@ mod resume;
 use chrono::{DateTime, Local};
 use cling::prelude::*;
 use serde::Deserialize;
+use serde_json::Value;
 
 use restate_types::vqueues::VQueueId;
 
 use crate::clients::DataFusionHttpClient;
 use crate::error::RestateCliError;
+use crate::ui::datetime::DateTimeExt;
+use crate::ui::fmt::Field;
 
 const VQUEUE_COLUMNS: &str = "id, is_active, queue_is_paused, service_name, scope, limit_key, \
     lock_name, created_at, last_enqueued_at, last_start_at, last_attempt_at, last_finish_at, \
@@ -73,4 +76,21 @@ async fn get_vqueue(
     rows.pop().ok_or_else(|| {
         RestateCliError::not_found(format!("Virtual queue {vqueue_id} not found")).into()
     })
+}
+
+/// `-` for humans, `null` in JSON.
+fn missing() -> Field {
+    Field::with_display(Value::Null, "-")
+}
+
+fn optional_str(value: Option<&str>) -> Field {
+    value.map_or_else(missing, Field::new)
+}
+
+fn time(value: DateTime<Local>) -> Field {
+    Field::with_display(value.iso(), value.display())
+}
+
+fn optional_time(value: Option<DateTime<Local>>) -> Field {
+    value.map_or_else(missing, time)
 }
