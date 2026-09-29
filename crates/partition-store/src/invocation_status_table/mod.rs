@@ -359,15 +359,26 @@ impl ScanInvocationStatusTable for PartitionStore {
             + 'static,
     >(
         &self,
+        after: Option<InvocationId>,
         mut f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send> {
+        let scan = match after {
+            None => TableScan::ScanPartitionKeyRange::<InvocationStatusKeyBuilder>(
+                self.partition_key_range(),
+            ),
+            Some(after) => TableScan::RangeInclusive(
+                InvocationStatusKey::builder()
+                    .partition_key(after.partition_key())
+                    .invocation_uuid(after.invocation_uuid()),
+                InvocationStatusKey::builder().partition_key(self.partition_key_range().end()),
+            ),
+        };
+
         let new_status_keys = self
             .iterator_filter_map(
                 "df-filter-map-invocation-status",
                 Priority::Low,
-                TableScan::ScanPartitionKeyRange::<InvocationStatusKey>(
-                    self.partition_key_range(),
-                ),
+                scan,
                 {
                     move |(mut key, mut value)| {
                         let status_key = InvocationStatusKey::deserialize_from(&mut key)?;

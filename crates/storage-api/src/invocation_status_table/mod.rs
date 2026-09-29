@@ -896,6 +896,7 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
+        after: Option<InvocationId>,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
 }
