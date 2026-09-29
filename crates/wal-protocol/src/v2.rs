@@ -531,6 +531,16 @@ pub enum Dedup {
     },
 }
 
+impl Dedup {
+    // Returns leader epoch of the self-proposer, if it was self-proposed.
+    pub fn self_proposer_epoch(&self) -> Option<LeaderEpoch> {
+        match self {
+            Self::SelfProposal { leader_epoch, .. } => Some(*leader_epoch),
+            Self::None | Self::ForeignPartition { .. } | Self::Arbitrary { .. } => None,
+        }
+    }
+}
+
 /// Marker trait implemented by strongly-typed representations of WAL record
 /// payloads.
 pub trait Command: sealed::Sealed + StorageEncode + Sized {
