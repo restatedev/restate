@@ -293,7 +293,7 @@ These options are available to all commands via `CommonOpts`:
 | `-v`, `-vv`, `-vvv` | Increase verbosity (logging) |
 | `--json` | Print output as JSON instead of tables (for scripting/CI/agents) |
 | `--color` | `auto` (default), `always`, or `never` |
-| `-y`, `--yes` | Auto-confirm prompts |
+| `-y`, `--yes` | Auto-confirm prompts; never ask for other input |
 | `--non-interactive` | Never prompt; fail fast instead of waiting for input |
 | `--table-style` | `compact` (default) or `borders` |
 | `--time-format` | `human` (default), `iso8601`, or `rfc2822` |
@@ -302,6 +302,9 @@ These options are available to all commands via `CommonOpts`:
 
 `--non-interactive` is also implied by `--json` (a prompt would corrupt the JSON
 stream), when stdin is not a terminal, or when the `CI` environment variable is set.
+`--yes` is also implied by `CI`. With `--yes`, `choose()` / `input()` fail instead of
+prompting (`CliContext::can_prompt()`), so a command that would ask for a value needs it as
+an argument (or falls back to a default).
 `--color` takes precedence over `NO_COLOR` / `CLICOLOR_FORCE` / `TERM` / TTY detection.
 
 ## Structured Output (`--json`)

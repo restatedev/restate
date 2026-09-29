@@ -272,10 +272,10 @@ pub fn choose<T: ToString + std::fmt::Display>(
     prompt: &str,
     choices: &[T],
 ) -> anyhow::Result<usize> {
-    if !CliContext::get().is_interactive() {
+    if !CliContext::get().can_prompt() {
         anyhow::bail!(
-            "Cannot show an interactive selection ({prompt:?}) in non-interactive mode. \
-             Re-run in an interactive terminal, or provide the value via command-line arguments."
+            "Cannot show an interactive selection ({prompt:?}) with --yes or in non-interactive \
+             mode. Provide the value via command-line arguments."
         );
     }
     let theme = dialoguer::theme::ColorfulTheme::default();
@@ -294,10 +294,10 @@ pub fn choose<T: ToString + std::fmt::Display>(
 /// ```
 #[allow(dead_code)]
 pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
-    if !CliContext::get().is_interactive() {
+    if !CliContext::get().can_prompt() {
         anyhow::bail!(
-            "Cannot prompt for input ({prompt:?}) in non-interactive mode. \
-             Re-run in an interactive terminal, or provide the value via command-line arguments."
+            "Cannot prompt for input ({prompt:?}) with --yes or in non-interactive mode. \
+             Provide the value via command-line arguments."
         );
     }
     let theme = dialoguer::theme::ColorfulTheme::default();

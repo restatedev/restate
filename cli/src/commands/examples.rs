@@ -114,7 +114,7 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
     let default_dir = selected_example.name.trim_end_matches(".zip");
     let output_dir = match &example_opts.output_directory {
         Some(out_dir) => out_dir.clone(),
-        None if !CliContext::get().is_interactive() => default_dir.into(),
+        None if !CliContext::get().can_prompt() => default_dir.into(),
         None => input("Output directory", default_dir.to_owned())?.into(),
     };
     if tokio::fs::try_exists(&output_dir).await? {

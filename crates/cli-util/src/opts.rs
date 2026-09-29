@@ -90,7 +90,7 @@ pub(crate) struct UiOpts {
 
 #[derive(Args, Clone, Default)]
 pub(crate) struct ConfirmMode {
-    /// Auto answer "yes" to confirmation prompts.
+    /// Auto answer "yes" to confirmation prompts, and never prompt for other input.
     /// Default to `false`, unless running on ci (when env variable 'CI' is set).
     #[arg(name = "yes", long, short, global = true)]
     pub yes: bool,

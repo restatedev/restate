@@ -60,6 +60,9 @@ then apply it:
   `results` for bulk operations; a partial failure keeps that single document on stdout and exits
   non-zero.
 - Interactive human runs are unchanged: preview, then prompt.
+- `--yes` (also implied by the `CI` environment variable) never waits for input: a command that
+  would ask you to pick or type a value fails and asks for it as an argument instead, or uses its
+  default (e.g. `example <name> --yes` downloads into `./<name>`).
 
 Errors carrying a Restate error code (e.g. `META0003`) link to its documentation
 (`https://docs.restate.dev/references/errors#meta0003`), shown on its own line and as

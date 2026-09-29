@@ -269,11 +269,19 @@ impl CliContext {
 
     /// Whether interactive prompts are allowed.
     ///
-    /// Returns `false` when `--non-interactive` was passed, when stdin is not a
-    /// terminal, or when the `CI` environment variable is set — in which case
+    /// Returns `false` when `--non-interactive` or `--json` was passed, when stdin is
+    /// not a terminal, or when the `CI` environment variable is set — in which case
     /// prompts must fail fast instead of blocking.
     pub fn is_interactive(&self) -> bool {
         !self.non_interactive
+    }
+
+    /// Whether the command may ask for input (a selection or a text value). Like
+    /// [`is_interactive`](Self::is_interactive), but also `false` with `--yes`
+    /// ([`auto_confirm`](Self::auto_confirm)), which promises the command never waits
+    /// for input.
+    pub fn can_prompt(&self) -> bool {
+        self.is_interactive() && !self.auto_confirm()
     }
 
     /// Get the connection timeout for network requests.
