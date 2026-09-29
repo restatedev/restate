@@ -25,10 +25,9 @@ use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::deployment::PinnedDeployment;
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::sharding::WithPartitionKey;
-use restate_types::vqueues::EntryId;
+use restate_types::vqueues::EntryTargetExt;
 use restate_util_string::ToReString;
 use restate_vqueues::VQueue;
 
@@ -95,10 +94,9 @@ where
         );
 
         if let Some(ref vqueue_id) = in_flight_invocation_metadata.vqueue_id {
-            let entry_id = EntryId::from(&self.invocation_id);
             let Some(header) = ctx
                 .storage
-                .get_vqueue_entry_status(self.invocation_id.partition_key(), &entry_id)
+                .get_vqueue_entry_status(&BaseEntryId::from(self.invocation_id))
                 .await?
             else {
                 panic!(
@@ -117,7 +115,13 @@ where
             )
             .await?
             .expect("pinning in a non-existent vqueue")
-            .update_entry_metadata(&header, &metadata);
+            .update_entry_metadata(
+                &header,
+                &in_flight_invocation_metadata
+                    .invocation_target
+                    .entry_target_ref(),
+                &metadata,
+            );
         }
 
         in_flight_invocation_metadata
