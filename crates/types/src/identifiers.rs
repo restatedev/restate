@@ -971,7 +971,7 @@ mod utoipa_schema {
 
     impl ToSchema for InvocationId {
         fn name() -> Cow<'static, str> {
-            String::name()
+            "InvocationId".into()
         }
     }
 

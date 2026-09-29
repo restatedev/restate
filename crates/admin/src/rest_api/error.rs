@@ -95,14 +95,17 @@ macro_rules! impl_meta_api_error {
                     Json(ErrorDescriptionResponse {
                         message: self.to_string(),
                         restate_code: None,
-                    })
-                ).into_response()
+                    }),
+                )
+                    .into_response()
             }
         }
 
         impl utoipa::IntoResponses for $error_name {
-            fn responses() -> std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::response::Response>> {
-
+            fn responses() -> std::collections::BTreeMap<
+                String,
+                utoipa::openapi::RefOr<utoipa::openapi::response::Response>,
+            > {
                 utoipa::openapi::ResponsesBuilder::new()
                     .response(
                         StatusCode::$status_code.as_str(),
@@ -111,16 +114,17 @@ macro_rules! impl_meta_api_error {
                             .content(
                                 "application/json",
                                 utoipa::openapi::ContentBuilder::new()
-                                    .schema(Some(<ErrorDescriptionResponse as utoipa::PartialSchema>::schema()))
-                                    .build())
-                        .build())
-                .build()
-                .into()
+                                    .schema(Some(utoipa::openapi::Ref::from_schema_name(
+                                        <ErrorDescriptionResponse as utoipa::ToSchema>::name(),
+                                    )))
+                                    .build(),
+                            )
+                            .build(),
+                    )
+                    .build()
+                    .into()
             }
         }
-    };
-    ($error_name:ident: $status_code:ident) => {
-        impl_meta_api_error!($error_name: $status_code "");
     };
 }
 
@@ -129,12 +133,12 @@ macro_rules! impl_meta_api_error {
 #[derive(Debug, thiserror::Error)]
 #[error("The request field '{0}' is invalid. Reason: {1}")]
 pub(crate) struct InvalidFieldError(pub(crate) &'static str, pub(crate) String);
-impl_meta_api_error!(InvalidFieldError: BAD_REQUEST);
+impl_meta_api_error!(InvalidFieldError: BAD_REQUEST "A request field is invalid.");
 
 #[derive(Debug, thiserror::Error)]
 #[error("The query parameter '{0}' is invalid. Reason: {1}")]
 pub(crate) struct InvalidQueryParameterError(pub(crate) &'static str, pub(crate) String);
-impl_meta_api_error!(InvalidQueryParameterError: BAD_REQUEST);
+impl_meta_api_error!(InvalidQueryParameterError: BAD_REQUEST "A query parameter is invalid.");
 
 #[derive(Debug, thiserror::Error)]
 #[error("Batch size {0} exceeds maximum allowed size of {1}")]
@@ -144,7 +148,7 @@ impl_meta_api_error!(BatchTooLargeError: BAD_REQUEST "The batch size exceeds the
 #[derive(Debug, thiserror::Error)]
 #[error("The requested invocation '{0}' does not exist")]
 pub(crate) struct InvocationNotFoundError(pub(crate) String);
-impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND);
+impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND "The invocation was not found.");
 
 #[derive(Debug, thiserror::Error)]
 #[error("Error when routing the request internally. Reason: {0}")]

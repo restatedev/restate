@@ -7491,6 +7491,7 @@ dependencies = [
  "restate-util-time",
  "restate-workspace-hack",
  "serde",
+ "serde_json",
  "serde_with",
  "strum",
  "thiserror 2.0.20",

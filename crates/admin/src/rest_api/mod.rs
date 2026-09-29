@@ -63,7 +63,7 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "introspection", description = "System introspection"),
         (name = "rule", description = "Limiter rule book management"),
     ),
-    components(responses(
+    components(schemas(ErrorDescriptionResponse), responses(
         error::meta_api_error::BadRequest,
         error::meta_api_error::NotFound,
         error::meta_api_error::MethodNotAllowed,

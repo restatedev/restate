@@ -541,7 +541,7 @@ impl Deployment {
         deployment_response: DeploymentResponse,
     ) -> (DeploymentId, Self, Vec<ServiceNameRevPair>) {
         match deployment_response {
-            DeploymentResponse::Http {
+            DeploymentResponse::Http(HttpDeploymentResponse {
                 id,
                 uri,
                 protocol_type,
@@ -555,7 +555,7 @@ impl Deployment {
                 sdk_version,
                 auth,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Http {
                     uri,
@@ -571,7 +571,7 @@ impl Deployment {
                 },
                 services,
             ),
-            DeploymentResponse::Lambda {
+            DeploymentResponse::Lambda(LambdaDeploymentResponse {
                 id,
                 arn,
                 assume_role_arn,
@@ -583,7 +583,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Lambda {
                     arn,
@@ -604,7 +604,7 @@ impl Deployment {
         detailed_deployment_response: DetailedDeploymentResponse,
     ) -> (DeploymentId, Self, Vec<ServiceMetadata>) {
         match detailed_deployment_response {
-            DetailedDeploymentResponse::Http {
+            DetailedDeploymentResponse::Http(HttpDetailedDeploymentResponse {
                 id,
                 uri,
                 protocol_type,
@@ -618,7 +618,7 @@ impl Deployment {
                 sdk_version,
                 auth,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Http {
                     uri,
@@ -634,7 +634,7 @@ impl Deployment {
                 },
                 services,
             ),
-            DetailedDeploymentResponse::Lambda {
+            DetailedDeploymentResponse::Lambda(LambdaDetailedDeploymentResponse {
                 id,
                 arn,
                 assume_role_arn,
@@ -646,7 +646,7 @@ impl Deployment {
                 metadata,
                 sdk_version,
                 ..
-            } => (
+            }) => (
                 id,
                 Deployment::Lambda {
                     arn,
