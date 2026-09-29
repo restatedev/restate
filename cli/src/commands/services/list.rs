@@ -23,7 +23,7 @@ use restate_types::identifiers::{DeploymentId, ServiceRevision};
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClientInterface, Deployment};
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, ListItem, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -98,10 +98,12 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         f.next_step(
             &format!("restate services describe {name}"),
             "see the service's handlers",
+            IncludeFormatting::Yes,
         );
         f.next_step(
             &format!("restate deployments describe {deployment_id}"),
             "see the deployment serving it",
+            IncludeFormatting::Yes,
         );
     }
     f.finish()

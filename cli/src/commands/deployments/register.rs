@@ -34,7 +34,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{
     create_service_handlers_table, create_service_handlers_table_diff, service_type_label,
     service_type_machine,
@@ -483,6 +483,7 @@ async fn register(
         f.next_step(
             &format!("restate deployments describe {}", dry_run_result.id),
             "see the existing deployment",
+            IncludeFormatting::Yes,
         );
         // Not read-only, but overwriting in place is the usual loop during development.
         f.next_step(
@@ -491,6 +492,7 @@ async fn register(
                 discover_opts.deployment.cli_parameter_display()
             ),
             "overwrite this deployment during development",
+            IncludeFormatting::Yes,
         );
         return f.finish();
     }
@@ -584,8 +586,13 @@ fn print_registration_result(mut f: Formatter, result: RegisterDeploymentRespons
     f.next_step(
         &format!("restate deployments describe {}", result.id),
         "see the registered deployment's details",
+        IncludeFormatting::Yes,
     );
-    f.next_step("restate services list", "see all registered services");
+    f.next_step(
+        "restate services list",
+        "see all registered services",
+        IncludeFormatting::Yes,
+    );
     f.finish()
 }
 

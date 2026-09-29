@@ -29,7 +29,7 @@ use crate::ui::deployments::{
     active_invocations_field, calculate_deployment_status, deployment_info_fields,
     deployment_status_field,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -230,6 +230,10 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         c_println!();
         c_success!("Deployment {deployment_id} removed successfully");
     }
-    f.next_step("restate deployments list", "see the remaining deployments");
+    f.next_step(
+        "restate deployments list",
+        "see the remaining deployments",
+        IncludeFormatting::Yes,
+    );
     f.finish()
 }

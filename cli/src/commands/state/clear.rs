@@ -22,7 +22,7 @@ use restate_cli_util::{CliContext, c_println};
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]
@@ -125,6 +125,7 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
             f.next_step(
                 &format!("restate state get {} {}", svc_id.service_name, svc_id.key),
                 "check the state once the mutation is processed",
+                IncludeFormatting::Yes,
             );
         }
     }

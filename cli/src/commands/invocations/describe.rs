@@ -25,7 +25,7 @@ use crate::clients::datafusion_helpers::{
     get_invocation, get_journal, get_journal_events,
 };
 use crate::clients::{self};
-use crate::ui::fmt::{Field, Formatter, JournalScope, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, JournalScope, OutputFormatter};
 use crate::ui::invocations::{add_invocation_to_kv_table, journal_event_lines};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -60,6 +60,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     f.next_step(
         &format!("restate invocations journal {}", opts.invocation_id),
         "see the full journal, a range (e.g. 20..30), or entry payloads (--payload)",
+        IncludeFormatting::Yes,
     );
     // Next steps are meant to be read-only, but resuming is the one obvious way forward
     // for a paused invocation, so it is suggested explicitly.
@@ -67,6 +68,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         f.next_step(
             &format!("restate invocations resume {}", opts.invocation_id),
             "resume the paused invocation once its cause is fixed",
+            IncludeFormatting::Yes,
         );
     }
 

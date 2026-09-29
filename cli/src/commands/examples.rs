@@ -28,7 +28,7 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, c_eprintln, c_tip, exit};
 
 use crate::console::{Styled, c_println, c_title, choose};
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
@@ -198,6 +198,7 @@ fn list_examples(mut languages: Vec<Language>) -> Result<()> {
         f.next_step(
             &format!("restate example {}", example.id()),
             "download that example (swap in any other listed name)",
+            IncludeFormatting::Yes,
         );
     }
 

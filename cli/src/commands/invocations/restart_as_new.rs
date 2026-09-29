@@ -20,7 +20,7 @@ use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::invocations::{
     finish_invocation_results, no_invocations_to_change, print_invocation_changes,
     print_invocation_results,
@@ -101,6 +101,7 @@ pub async fn run_restart_as_new(State(env): State<CliEnv>, opts: &RestartAsNew) 
         f.next_step(
             &format!("restate invocations describe {new_id}"),
             "check the new invocation's status",
+            IncludeFormatting::Yes,
         );
     }
     finish_invocation_results(f, "restart", succeeded.len(), failed)

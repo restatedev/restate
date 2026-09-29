@@ -324,15 +324,16 @@ f.detail("service", &[
     ("status", Field::styled("running", Style::Success)),
     ("revision", Field::new(svc.revision)),
 ]);
-f.next_step(&format!("restate services status {}", svc.name), "see its activity");
+f.next_step(&format!("restate services status {}", svc.name), "see its activity", IncludeFormatting::Yes);
 f.finish()?;
 ```
 
-`next_step(command, description)` suggests a follow-up: humans get one tip at `finish`
+`next_step(command, description, IncludeFormatting::Yes)` suggests a follow-up: humans get one tip at `finish`
 ("Run `<command>` to <description>."), JSON gets a top-level `next_steps` array of
 `{"command", "description"}` objects with ` --json` appended to `command` (the key is
 omitted when empty and reserved as a section name). Only suggest read-only commands,
 with real ids filled in so they run as-is.
+Pass `IncludeFormatting::No` when ` --json` makes no sense for the command (e.g. `--help`).
 
 ## Exit Codes
 

@@ -19,7 +19,7 @@ use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
     as_json, compute_version, from_json, get_current_state, pretty_print_json, update_state,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "patch")]
@@ -107,6 +107,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     f.next_step(
         &format!("restate state get {} {}", opts.service, opts.key),
         "check the state once the mutation is processed",
+        IncludeFormatting::Yes,
     );
     f.finish()
 }

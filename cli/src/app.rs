@@ -80,6 +80,8 @@ pub enum Command {
     Rules(rules::Rules),
     /// Runs SQL queries against the data fusion service
     Sql(sql::Sql),
+    /// Search commands, flags and SQL tables
+    Search(search::Search),
     /// Print the admin API's OpenAPI spec (JSON), to discover and call the admin API directly
     #[clap(name = "openapi")]
     OpenApi(openapi::OpenApi),

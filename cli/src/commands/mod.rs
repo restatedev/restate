@@ -20,6 +20,7 @@ pub mod invocations;
 pub mod kafkaclusters;
 pub mod openapi;
 pub mod rules;
+pub mod search;
 pub mod services;
 pub mod sql;
 pub mod state;

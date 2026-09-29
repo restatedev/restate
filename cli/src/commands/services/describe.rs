@@ -21,7 +21,7 @@ use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
     active_invocations_field, deployment_info_fields, render_deployment_type, render_deployment_url,
 };
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{service_type_field, visibility_label, write_service_handlers};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -54,10 +54,12 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     f.next_step(
         &format!("restate services status {}", service.name),
         "see the service's invocation activity per handler",
+        IncludeFormatting::Yes,
     );
     f.next_step(
         &format!("restate invocations list --service {}", service.name),
         "list the service's active invocations",
+        IncludeFormatting::Yes,
     );
 
     f.title("📜", "Service Information");

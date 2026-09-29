@@ -30,7 +30,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, find_and_count_active_invocations, invocation_status_filter,
 };
-use crate::ui::fmt::{Formatter, OutputFormatter};
+use crate::ui::fmt::{Formatter, IncludeFormatting, OutputFormatter};
 
 /// Timestamp to order `invocations list` by.
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -293,6 +293,7 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
         f.next_step(
             &format!("restate invocations describe {}", inv.id),
             "inspect the first invocation's status, progress, and journal",
+            IncludeFormatting::Yes,
         );
     }
 

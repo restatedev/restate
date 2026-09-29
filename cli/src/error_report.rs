@@ -26,7 +26,9 @@ use crate::clients::{ApiError, MetasClientError};
 use crate::commands::{
     deployments, invocations, kafkaclusters, rules, services, subscriptions, vqueues,
 };
-use crate::ui::fmt::{NEXT_STEPS, next_step_json, next_step_line, print_next_steps};
+use crate::ui::fmt::{
+    IncludeFormatting, NEXT_STEPS, next_step_json, next_step_line, print_next_steps,
+};
 
 /// A read-only follow-up suggestion: `(command, description)`.
 type NextStep = (&'static str, &'static str);
@@ -152,7 +154,10 @@ fn error_document(
         error["docs_url"] = Value::from(docs_url);
     }
     if !steps.is_empty() {
-        error[NEXT_STEPS] = steps.iter().map(|(c, d)| next_step_json(c, d)).collect();
+        error[NEXT_STEPS] = steps
+            .iter()
+            .map(|(c, d)| next_step_json(c, d, IncludeFormatting::Yes))
+            .collect();
     }
     serde_json::json!({ "error": error })
 }

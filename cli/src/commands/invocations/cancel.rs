@@ -22,7 +22,7 @@ use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use crate::ui::fmt::{DryRun, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::invocations::{
     finish_invocation_results, no_invocations_to_change, print_invocation_changes,
     print_invocation_results,
@@ -114,6 +114,7 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
         f.next_step(
             &format!("restate invocations describe {}", inv.id),
             "check the invocation's status",
+            IncludeFormatting::Yes,
         );
     }
     finish_invocation_results(f, verb, succeeded.len(), failed)

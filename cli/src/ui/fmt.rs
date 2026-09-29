@@ -232,8 +232,9 @@ pub trait OutputFormatter {
     /// Suggest a read-only follow-up command, ready to run (real ids filled in).
     /// `description` completes "Run `command` to …". Human output shows the
     /// accumulated steps in one tip at [`finish`](OutputFormatter::finish); JSON emits
-    /// them as a top-level `next_steps` array, with ` --json` appended to `command`.
-    fn next_step(&mut self, command: &str, description: &str);
+    /// them as a top-level `next_steps` array, with ` --json` appended to `command`
+    /// unless `formatting` is [`IncludeFormatting::No`].
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting);
 
     /// Gate a change on confirmation, after the planned changes were written to this
     /// formatter. Returns `Ok(())` when the command should go on and apply them.
@@ -302,8 +303,8 @@ impl OutputFormatter for Formatter {
         dispatch!(self.list(section, items))
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
-        dispatch!(self.next_step(command, description))
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        dispatch!(self.next_step(command, description, formatting))
     }
 
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
@@ -416,11 +417,27 @@ pub(crate) fn next_step_line(command: &str, description: &str) -> String {
     format!("Run `{command}` to {description}.")
 }
 
-/// JSON rendering of a next step, with ` --json` appended so the agent's next call
-/// stays structured too.
-pub(crate) fn next_step_json(command: &str, description: &str) -> Value {
+/// Whether the JSON rendering of a [`OutputFormatter::next_step`] appends ` --json` to
+/// its command, so the agent's next call stays structured too. `No` is for commands
+/// where ` --json` makes no sense (e.g. `--help`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeFormatting {
+    Yes,
+    No,
+}
+
+/// JSON rendering of a next step.
+pub(crate) fn next_step_json(
+    command: &str,
+    description: &str,
+    formatting: IncludeFormatting,
+) -> Value {
+    let command = match formatting {
+        IncludeFormatting::Yes => format!("{command} --json"),
+        IncludeFormatting::No => command.to_owned(),
+    };
     serde_json::json!({
-        "command": format!("{command} --json"),
+        "command": command,
         "description": description,
     })
 }
@@ -630,7 +647,7 @@ impl OutputFormatter for HumanFormatter {
         }
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
+    fn next_step(&mut self, command: &str, description: &str, _formatting: IncludeFormatting) {
         self.next_steps.push(next_step_line(command, description));
     }
 
@@ -750,8 +767,9 @@ impl OutputFormatter for JsonFormatter {
         self.insert(section, Value::Array(arr));
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
-        self.next_steps.push(next_step_json(command, description));
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        self.next_steps
+            .push(next_step_json(command, description, formatting));
     }
 
     fn confirm(&mut self, dry_run: &DryRun, _prompt: &str) -> anyhow::Result<()> {
@@ -877,8 +895,16 @@ mod tests {
     fn json_next_steps_are_collected_with_json_flag() {
         let mut jf = JsonFormatter::default();
         jf.value("id", Field::new("inv_1"));
-        jf.next_step("restate invocations journal inv_1", "see the full journal");
-        jf.next_step("restate services list", "list services");
+        jf.next_step(
+            "restate invocations journal inv_1",
+            "see the full journal",
+            IncludeFormatting::Yes,
+        );
+        jf.next_step(
+            "restate services list",
+            "list services",
+            IncludeFormatting::Yes,
+        );
         let value = jf.into_document();
 
         assert_eq!(value["id"], json!("inv_1"));

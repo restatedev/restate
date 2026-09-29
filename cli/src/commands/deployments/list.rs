@@ -30,7 +30,7 @@ use crate::ui::deployments::{
     DeploymentStatus, calculate_deployment_status, render_deployment_type, render_deployment_url,
     render_transport_protocol,
 };
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, ListItem, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -126,6 +126,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         f.next_step(
             &format!("restate deployments describe {}", item.id),
             "see the deployment's services and endpoint details",
+            IncludeFormatting::Yes,
         );
     }
     f.finish()

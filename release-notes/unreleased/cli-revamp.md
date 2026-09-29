@@ -120,6 +120,9 @@ next retry and last failure) in `invocations list` / `describe` and the dry-run 
   directory and README path. An unknown name exits `4` and points to `restate example --list`; an
   existing output directory exits `2` (missing parent directories are created). `--list` can no
   longer be combined with a name or `--output-directory`.
+- New `restate search <words>` finds the commands and SQL tables matching a free-text query or a
+  description of what you want to do (e.g. `restate search pause a stuck invocation`), searching
+  their descriptions and flags too and tolerating typos.
 - New `restate openapi` prints the admin API's OpenAPI spec as JSON, so you (or an agent) can
   discover the admin API and call it directly, e.g. with `curl`.
 
