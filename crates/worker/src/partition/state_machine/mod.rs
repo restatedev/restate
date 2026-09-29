@@ -72,7 +72,7 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, LeaderEpoch,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
@@ -249,6 +249,22 @@ impl StateMachine {
 }
 
 impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
+    /// Reports a purge the cleaner may have proposed to the leader. A purge is proposed by a cleaner if it's self-proposed
+    /// and has no sink.
+    fn report_cleaner_purge(
+        &mut self,
+        leader_epoch: Option<LeaderEpoch>,
+        request: &PurgeInvocationRequest,
+    ) {
+        if self.is_leader
+            && request.response_sink.is_none()
+            && let Some(leader_epoch) = leader_epoch
+        {
+            self.action_collector
+                .push(Action::CleanerPurgeApplied { leader_epoch });
+        }
+    }
+
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -506,10 +522,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.on_terminate_invocation(inner.into()).await
             }
             CommandKind::PurgeInvocation => {
+                let proposer_leader_epoch = envelope.dedup().self_proposer_epoch();
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(proposer_leader_epoch, &purge_invocation_request);
 
                 lifecycle::OnPurgeCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
@@ -520,10 +538,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 Ok(())
             }
             CommandKind::PurgeJournal => {
+                let proposer_leader_epoch = envelope.dedup().self_proposer_epoch();
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
+                self.report_cleaner_purge(proposer_leader_epoch, &purge_invocation_request);
 
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
