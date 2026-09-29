@@ -66,6 +66,23 @@ pub struct WorkerOptions {
     /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
     cleanup_interval: NonZeroFriendlyDuration,
 
+    /// # Cleanup max in-flight purges
+    ///
+    /// The maximum number of purges the cleanup procedure keeps in flight per partition, i.e.
+    /// proposed to the log but not yet applied. Higher values let the cleanup procedure purge
+    /// completed invocations faster, at the cost of higher latency for other requests while it
+    /// runs. Deployments with high log latency (e.g. spanning multiple regions) might need a
+    /// higher value to keep up with the rate of completed invocations.
+    ///
+    /// Default: 32
+    ///
+    /// Since v1.8.0
+    #[serde(
+        default = "serde_helpers::cleanup_max_in_flight_purges_default",
+        skip_serializing_if = "serde_helpers::is_cleanup_max_in_flight_purges_default"
+    )]
+    cleanup_max_in_flight_purges: NonZeroUsize,
+
     pub storage: StorageOptions,
 
     /// # Disable scheduler
@@ -219,6 +236,10 @@ impl WorkerOptions {
         self.cleanup_interval.into()
     }
 
+    pub fn cleanup_max_in_flight_purges(&self) -> NonZeroUsize {
+        self.cleanup_max_in_flight_purges
+    }
+
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
     }
@@ -234,6 +255,7 @@ impl Default for WorkerOptions {
             internal_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             num_timers_in_memory_limit: None,
             cleanup_interval: NonZeroFriendlyDuration::from_secs_unchecked(60 * 60),
+            cleanup_max_in_flight_purges: serde_helpers::cleanup_max_in_flight_purges_default(),
             storage: StorageOptions::default(),
             disable_scheduler: false,
             invoker: Default::default(),
@@ -1262,6 +1284,14 @@ mod serde_helpers {
     use std::num::NonZeroUsize;
 
     use restate_util_bytecount::ByteCount;
+
+    pub const fn cleanup_max_in_flight_purges_default() -> NonZeroUsize {
+        NonZeroUsize::new(32).unwrap()
+    }
+
+    pub fn is_cleanup_max_in_flight_purges_default(v: &NonZeroUsize) -> bool {
+        *v == cleanup_max_in_flight_purges_default()
+    }
 
     pub const fn vqueue_metadata_cache_size_default() -> u32 {
         32_000
