@@ -334,8 +334,9 @@ f.finish()?;
 `next_step(command, description, IncludeFormatting::Yes)` suggests a follow-up: humans get one tip at `finish`
 ("Run `<command>` to <description>."), JSON gets a top-level `next_steps` array of
 `{"command", "description"}` objects with ` --json` appended to `command` (the key is
-omitted when empty and reserved as a section name). Only suggest read-only commands,
-with real ids filled in so they run as-is.
+omitted when empty and reserved as a section name). Fill in real ids so the
+suggested commands run as-is. Changing commands (e.g. `resume`) are fine: they still go
+through the confirmation flow.
 Pass `IncludeFormatting::No` when ` --json` makes no sense for the command (e.g. `--help`).
 
 ## Exit Codes

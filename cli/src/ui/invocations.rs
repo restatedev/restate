@@ -30,6 +30,7 @@ use restate_types::journal_v2::{BuiltInSignal, NotificationId, UnresolvedFuture}
 use crate::clients::datafusion_helpers::{
     Invocation, InvocationCompletion, InvocationState, JournalEventRow, SimpleInvocation,
 };
+use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
@@ -296,15 +297,9 @@ pub fn print_invocation_changes(
     Ok(())
 }
 
-/// No invocation matched: `--json` gets an empty `changes` plan, humans get `message`
-/// as an error.
+/// No invocation matched: a not-found error, in every output format.
 pub fn no_invocations_to_change(message: String) -> Result<()> {
-    if !CliContext::get().json_output() {
-        bail!(message);
-    }
-    let mut f = Formatter::new();
-    f.list::<InvocationChange>("changes", &[])?;
-    f.finish()
+    Err(RestateCliError::not_found(message).into())
 }
 
 /// Write the outcome of a batch invocation command: the success count for humans, and a
@@ -327,7 +322,7 @@ pub fn print_invocation_results<T>(
         .chain(
             failed
                 .iter()
-                .map(|(inv, err)| (inv, "failed", Value::from(err.to_string()))),
+                .map(|(inv, err)| (inv, "failed", Value::from(failure_reason(err)))),
         )
         .map(|(inv, outcome, error)| {
             vec![
@@ -343,6 +338,12 @@ pub fn print_invocation_results<T>(
         &["invocation_id", "target", "outcome", "error"],
         &rows,
     );
+}
+
+/// Why one invocation of a batch could not be changed: the server's message, not the
+/// HTTP exchange it came with.
+fn failure_reason(err: &anyhow::Error) -> String {
+    RestateCliError::from(err).message().to_owned()
 }
 
 /// Finish a batch invocation command, failing when any invocation could not be
@@ -377,10 +378,10 @@ pub fn finish_invocation_results(
     c_warn!("Failed to {verb}:");
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["ID", "REASON"]);
-    for (inv, reason) in failed {
+    for (inv, err) in failed {
         table.add_row(vec![
             Cell::new(&inv.id),
-            Cell::new(reason).fg(Color::DarkRed),
+            Cell::new(failure_reason(&err)).fg(Color::DarkRed),
         ]);
     }
     c_indent_table!(0, table);

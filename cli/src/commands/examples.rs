@@ -25,9 +25,10 @@ use tokio::io::AsyncWriteExt;
 
 use restate_cli_util::ui::console::input;
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{CliContext, c_eprintln, c_tip, exit};
+use restate_cli_util::{CliContext, c_eprintln, c_tip};
 
 use crate::console::{Styled, c_println, c_title, choose};
+use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -89,9 +90,10 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
             (Some(asset), _) => (asset.clone(), ExampleRepo::Examples),
             (None, Some(asset)) => (asset.clone(), ExampleRepo::AiExamples),
             (None, None) => {
-                return Err(exit::NotFound(format!(
-                    "Unknown example '{example_lowercase}'. Run `restate example --list` to see the available examples."
+                return Err(RestateCliError::not_found(format!(
+                    "Unknown example '{example_lowercase}'"
                 ))
+                .with_next_step("restate example --list", "see the available examples")
                 .into());
             }
         }
@@ -118,7 +120,7 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
         None => input("Output directory", default_dir.to_owned())?.into(),
     };
     if tokio::fs::try_exists(&output_dir).await? {
-        return Err(exit::BadInput(format!(
+        return Err(RestateCliError::bad_input(format!(
             "Output directory {} already exists; pick another --output-directory or remove it",
             output_dir.display()
         ))

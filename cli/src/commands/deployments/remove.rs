@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
 use indoc::indoc;
 
@@ -25,6 +25,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
+use crate::error::RestateCliError;
 use crate::ui::deployments::{
     active_invocations_field, calculate_deployment_status, deployment_info_fields,
     deployment_status_field,
@@ -205,11 +206,14 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     };
 
     if !safe && !opts.force {
-        bail!(
-            "If you accept the risk of breaking in-flight invocations, you can use {} to \
-                forcefully remove this deployment.",
-            Styled(Style::Notice, "--force"),
-        );
+        return Err(RestateCliError::bad_input(format!(
+            "Deployment {deployment_id} is not drained: removing it can break in-flight invocations"
+        ))
+        .with_next_step(
+            format!("restate deployments remove {deployment_id} --force"),
+            "remove it anyway, if you accept that risk",
+        )
+        .into());
     }
 
     f.confirm(

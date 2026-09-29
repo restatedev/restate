@@ -31,8 +31,9 @@ use restate_types::identifiers::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, Deployment};
+use crate::clients::{AdminClient, AdminClientInterface, ClientError, Deployment};
 use crate::console::c_println;
+use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
 use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{
@@ -459,12 +460,16 @@ async fn register(
     if dry_run_result.status_code() == StatusCode::CONFLICT {
         progress.finish_and_clear();
         let api_error = dry_run_result.into_api_error().await?;
-        bail!(
-            "Breaking changes detected: {}. To register a deployment containing breaking \
-             changes, re-run with: restate deployments register {} --breaking",
-            api_error.body,
-            discover_opts.deployment.cli_parameter_display()
-        );
+        return Err(RestateCliError::from(ClientError::from(api_error))
+            .with_context(vec!["Breaking changes detected".to_owned()])
+            .with_next_step(
+                format!(
+                    "restate deployments register {} --breaking",
+                    discover_opts.deployment.cli_parameter_display()
+                ),
+                "register it, breaking changes included",
+            )
+            .into());
     }
     if dry_run_result.status_code() == StatusCode::OK && !discover_opts.force {
         progress.finish_and_clear();

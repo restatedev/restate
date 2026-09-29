@@ -16,6 +16,7 @@ mod app;
 mod cli_env;
 mod clients;
 mod commands;
+mod error;
 mod error_report;
 mod ui;
 mod util;

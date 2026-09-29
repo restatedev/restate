@@ -254,7 +254,7 @@ pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
         return Err(crate::exit::ConfirmationRequired::default().into());
     }
     if !confirm(prompt) {
-        return Err(crate::exit::Aborted.into());
+        return Err(crate::exit::Aborted::default().into());
     }
     Ok(())
 }
@@ -273,10 +273,13 @@ pub fn choose<T: ToString + std::fmt::Display>(
     choices: &[T],
 ) -> anyhow::Result<usize> {
     if !CliContext::get().can_prompt() {
-        anyhow::bail!(
-            "Cannot show an interactive selection ({prompt:?}) with --yes or in non-interactive \
-             mode. Provide the value via command-line arguments."
-        );
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot show an interactive selection ({prompt:?}) with --yes or in \
+                 non-interactive mode. Provide the value via command-line arguments."
+            )),
+        }
+        .into());
     }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Select::with_theme(&theme)
@@ -295,10 +298,13 @@ pub fn choose<T: ToString + std::fmt::Display>(
 #[allow(dead_code)]
 pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
     if !CliContext::get().can_prompt() {
-        anyhow::bail!(
-            "Cannot prompt for input ({prompt:?}) with --yes or in non-interactive mode. \
-             Provide the value via command-line arguments."
-        );
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot prompt for input ({prompt:?}) with --yes or in non-interactive mode. \
+                 Provide the value via command-line arguments."
+            )),
+        }
+        .into());
     }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Input::with_theme(&theme)

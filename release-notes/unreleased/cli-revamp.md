@@ -36,11 +36,12 @@ Where a read-only follow-up is useful (e.g. `invocations list` → `invocations 
 ### Machine-readable errors and exit codes
 
 On failure with `--json`, the CLI emits a JSON error object on stdout —
-`{"error": {"kind": "...", "message": "..."}}` — and returns a differentiated process exit code so
+`{"error": {"kind": "...", "message": "...", "causes": [...], "docs_url": "...", "next_steps": [...]}}`
+(the last three only when present) — and returns a differentiated process exit code so
 scripts/agents can branch on the failure class: `2` invalid usage, `3` confirmation required,
 `4` not found, `5` network, `6` auth, `7` aborted (prompt declined), `8` server (5xx), `1` other. Messages are tidied (no
-`<UNKNOWN>` placeholder; transport URL / HTTP-status detail is kept in human output but dropped from
-the JSON `message`). Errors also suggest read-only next steps (e.g. `whoami` on connection
+`<UNKNOWN>` placeholder; for a server error, the `message` is the server's own and the HTTP status
+and URL are listed under `causes`). Errors also suggest read-only next steps (e.g. `whoami` on connection
 failures, the matching `list` on not found): a tip in human output, `error.next_steps` in JSON. `whoami` now exits non-zero when the admin health probe fails. `state get` exits `4` (not found) when the key has no state or the service is unknown (a deleted service with leftover state still prints it, with a warning).
 
 ### Previewing and confirming changes (`--dry-run` / `--yes`)

@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
 use comfy_table::Table;
 use dialoguer::console::style;
@@ -25,6 +25,7 @@ use crate::clients::datafusion_helpers::{
     get_invocation, get_journal, get_journal_events,
 };
 use crate::clients::{self};
+use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, JournalScope, OutputFormatter};
 use crate::ui::invocations::{add_invocation_to_kv_table, journal_event_lines};
 
@@ -48,7 +49,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     let sql_client = clients::DataFusionHttpClient::new(env).await?;
 
     let Some(inv) = get_invocation(&sql_client, &opts.invocation_id).await? else {
-        bail!("Invocation {} not found!", opts.invocation_id);
+        return Err(RestateCliError::not_found(format!(
+            "Invocation {} not found",
+            opts.invocation_id
+        ))
+        .into());
     };
 
     // The latest timeline event, when the server exposes them.

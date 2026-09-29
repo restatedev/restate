@@ -11,12 +11,13 @@
 use anyhow::Result;
 use cling::prelude::*;
 
+use restate_cli_util::CliContext;
 use restate_cli_util::c_println;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{CliContext, exit};
 
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{as_json, get_current_state, pretty_print_json_object};
+use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -47,9 +48,11 @@ pub async fn run_get(State(env): State<CliEnv>, opts: &Get) -> Result<()> {
 async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
     let current_state = get_current_state(env, &opts.service, &opts.key, true).await?;
     if current_state.is_empty() {
-        return Err(
-            exit::NotFound(format!("State not found for {}/{}", opts.service, opts.key)).into(),
-        );
+        return Err(RestateCliError::not_found(format!(
+            "State not found for {}/{}",
+            opts.service, opts.key
+        ))
+        .into());
     }
     let current_state_json = as_json(current_state, opts.binary)?;
 

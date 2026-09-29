@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Write;
-
 use anyhow::Result;
 use cling::prelude::*;
 use figment::Profile;
@@ -322,11 +320,8 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
 
     // Output is already written; signal admin-probe failure via the exit code without
     // letting the error reporter print a second (duplicate) message.
-    if let Some(code) = health_exit_code {
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
-        std::process::exit(i32::from(code));
+    match health_exit_code {
+        Some(code) => Err(exit::AlreadyReported { code }.into()),
+        None => Ok(()),
     }
-
-    Ok(())
 }

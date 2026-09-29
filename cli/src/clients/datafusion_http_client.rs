@@ -10,11 +10,6 @@
 
 //! A wrapper client for the datafusion HTTP service.
 
-use super::errors::ApiError;
-
-use crate::cli_env::CliEnv;
-use crate::clients::AdminClient;
-use arrow::error::ArrowError;
 use arrow::ipc::reader::StreamReader;
 use arrow::record_batch::RecordBatch;
 use arrow::{
@@ -23,26 +18,15 @@ use arrow::{
 };
 use bytes::Buf;
 use itertools::Itertools;
-use restate_types::SemanticRestateVersion;
 use serde::{Deserialize, Serialize};
-use thiserror::Error;
 use tracing::{debug, info};
-use url::Url;
 
-#[derive(Error, Debug)]
-#[error(transparent)]
-pub enum Error {
-    Api(#[from] Box<ApiError>),
-    #[error(
-        "The Restate server '{0}' lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'."
-    )]
-    JSONSupport(Url, String),
-    #[error("(Protocol error) {0}")]
-    Serialization(#[from] serde_json::Error),
-    Network(#[from] reqwest::Error),
-    Arrow(#[from] ArrowError),
-    UrlParse(#[from] url::ParseError),
-}
+use restate_types::SemanticRestateVersion;
+
+use crate::cli_env::CliEnv;
+use crate::clients::AdminClient;
+
+use super::errors::{ApiError, ApiErrorBody, ClientError};
 
 /// A handy client for the datafusion HTTP service.
 #[derive(Clone)]
@@ -64,7 +48,7 @@ impl DataFusionHttpClient {
     }
 
     /// Prepare a request builder for a DataFusion request.
-    fn prepare(&self) -> Result<reqwest::RequestBuilder, Error> {
+    fn prepare(&self) -> Result<reqwest::RequestBuilder, ClientError> {
         Ok(self
             .inner
             .prepare(reqwest::Method::POST, self.inner.versioned_url(["query"])))
@@ -73,7 +57,7 @@ impl DataFusionHttpClient {
     pub async fn run_json_query<T: serde::de::DeserializeOwned>(
         &self,
         query: String,
-    ) -> Result<Vec<T>, Error> {
+    ) -> Result<Vec<T>, ClientError> {
         debug!("Sending request sql query with json output '{}'", query);
         let resp = self
             .prepare()?
@@ -89,17 +73,17 @@ impl DataFusionHttpClient {
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(Box::new(ApiError {
+            return Err(ClientError::Api(ApiError {
                 http_status_code,
-                url,
-                body: serde_json::from_str(&body)?,
-            })));
+                url: url.into(),
+                body: ApiErrorBody::parse(body),
+            }));
         }
 
         match resp.headers().get(http::header::CONTENT_TYPE) {
             Some(header) if header.eq("application/json") => {}
             _ => {
-                return Err(Error::JSONSupport(
+                return Err(ClientError::JSONSupport(
                     self.inner.base_url.clone(),
                     self.inner.restate_server_version.to_string(),
                 ));
@@ -114,7 +98,7 @@ impl DataFusionHttpClient {
         Ok(serde_json::from_reader::<_, JsonResponse<T>>(payload)?.rows)
     }
 
-    pub async fn run_arrow_query(&self, query: String) -> Result<SqlResponse, Error> {
+    pub async fn run_arrow_query(&self, query: String) -> Result<SqlResponse, ClientError> {
         debug!("Sending request sql query with arrow output '{}'", query);
         let resp = self
             .prepare()?
@@ -129,11 +113,11 @@ impl DataFusionHttpClient {
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(Box::new(ApiError {
+            return Err(ClientError::Api(ApiError {
                 http_status_code,
-                url,
-                body: serde_json::from_str(&body)?,
-            })));
+                url: url.into(),
+                body: ApiErrorBody::parse(body),
+            }));
         }
 
         // We read the entire payload first in-memory to simplify the logic, however,
@@ -151,7 +135,7 @@ impl DataFusionHttpClient {
         Ok(SqlResponse { schema, batches })
     }
 
-    pub async fn run_count_agg_query(&self, query: String) -> Result<i64, Error> {
+    pub async fn run_count_agg_query(&self, query: String) -> Result<i64, ClientError> {
         let resp = self.run_arrow_query(query).await?;
 
         Ok(resp
@@ -162,7 +146,11 @@ impl DataFusionHttpClient {
             .unwrap_or(0))
     }
 
-    pub async fn check_columns_exists(&self, table: &str, columns: &[&str]) -> Result<bool, Error> {
+    pub async fn check_columns_exists(
+        &self,
+        table: &str,
+        columns: &[&str],
+    ) -> Result<bool, ClientError> {
         let expected_count = columns.len();
 
         let actual_count = self

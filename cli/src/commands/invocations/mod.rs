@@ -21,8 +21,9 @@ mod resume;
 use anyhow::Result;
 use cling::prelude::*;
 
-use restate_cli_util::exit;
 use restate_types::identifiers::InvocationId;
+
+use crate::error::RestateCliError;
 
 const DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT: usize = 500;
 const DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT: usize =
@@ -52,9 +53,9 @@ pub enum Invocations {
 /// Validate an invocation id client-side, so a typo is bad input (exit 2) rather than
 /// a server-side SQL error.
 fn parse_invocation_id(id: &str) -> Result<InvocationId> {
-    id.trim()
-        .parse()
-        .map_err(|err| exit::BadInput(format!("invalid invocation id '{id}': {err}")).into())
+    id.trim().parse().map_err(|err| {
+        RestateCliError::bad_input(format!("invalid invocation id '{id}': {err}")).into()
+    })
 }
 
 /// See [cancel::Cancel] for more details on query

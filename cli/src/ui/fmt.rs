@@ -50,6 +50,8 @@ use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, exit};
 
+use crate::error::{ErrorKind, RestateCliError};
+
 /// A single output value: a JSON-native value, an optional human-display override,
 /// and an optional semantic [`Style`].
 ///
@@ -229,7 +231,7 @@ pub trait OutputFormatter {
     /// items' serialized form.
     fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()>;
 
-    /// Suggest a read-only follow-up command, ready to run (real ids filled in).
+    /// Suggest a follow-up command, ready to run (real ids filled in).
     /// `description` completes "Run `command` to …". Human output shows the
     /// accumulated steps in one tip at [`finish`](OutputFormatter::finish); JSON emits
     /// them as a top-level `next_steps` array, with ` --json` appended to `command`
@@ -247,6 +249,12 @@ pub trait OutputFormatter {
     ///   [`ConfirmationRequired`](exit::ConfirmationRequired) (exit 3). With `--yes`,
     ///   the final document carries `"dry_run": false, "applied": true`.
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()>;
+
+    /// Report the command's failure, with the next steps suggested so far. Human output
+    /// goes to stderr (`Error: …`, the docs link, the causes, then a tip with the next
+    /// steps); JSON prints
+    /// `{"error": {"kind", "message", "docs_url"?, "causes"?, "next_steps"?}}` on stdout.
+    fn error(self, error: &RestateCliError) -> anyhow::Result<()>;
 
     /// Flush the output. The JSON formatter emits its accumulated document here.
     fn finish(self) -> anyhow::Result<()>;
@@ -313,6 +321,10 @@ impl OutputFormatter for Formatter {
 
     fn finish(self) -> anyhow::Result<()> {
         dispatch!(self.finish())
+    }
+
+    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
+        dispatch!(self.error(error))
     }
 }
 
@@ -410,10 +422,10 @@ impl Default for Formatter {
 }
 
 /// JSON key holding the [`OutputFormatter::next_step`] suggestions.
-pub(crate) const NEXT_STEPS: &str = "next_steps";
+const NEXT_STEPS: &str = "next_steps";
 
 /// Human rendering of a next step: "Run `command` to description.".
-pub(crate) fn next_step_line(command: &str, description: &str) -> String {
+fn next_step_line(command: &str, description: &str) -> String {
     format!("Run `{command}` to {description}.")
 }
 
@@ -427,11 +439,7 @@ pub enum IncludeFormatting {
 }
 
 /// JSON rendering of a next step.
-pub(crate) fn next_step_json(
-    command: &str,
-    description: &str,
-    formatting: IncludeFormatting,
-) -> Value {
+fn next_step_json(command: &str, description: &str, formatting: IncludeFormatting) -> Value {
     let command = match formatting {
         IncludeFormatting::Yes => format!("{command} --json"),
         IncludeFormatting::No => command.to_owned(),
@@ -444,7 +452,7 @@ pub(crate) fn next_step_json(
 
 /// Print accumulated next-step lines as one tip on stderr, separated from the output
 /// above by a blank line (no-op when empty).
-pub(crate) fn print_next_steps(lines: &[String]) {
+fn print_next_steps(lines: &[String]) {
     if !lines.is_empty() {
         restate_cli_util::c_eprintln!();
         restate_cli_util::c_tip!("{}", lines.join("\n"));
@@ -673,6 +681,25 @@ impl OutputFormatter for HumanFormatter {
         print_next_steps(&self.next_steps);
         Ok(())
     }
+
+    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
+        restate_cli_util::c_eprintln!("{}{}", Styled(Style::Danger, "Error: "), error.message());
+        if let Some(docs_url) = error.docs_url() {
+            restate_cli_util::c_eprintln!("  -> See {}", Styled(Style::Info, docs_url));
+        }
+        let causes: Vec<_> = error.causes().collect();
+        if !causes.is_empty() {
+            restate_cli_util::c_eprintln!();
+            restate_cli_util::c_eprintln!("{}", Styled(Style::Warn, "Caused by:"));
+            let last = causes.len() - 1;
+            for (i, cause) in causes.iter().enumerate() {
+                let symbol = if i == last { "└─" } else { "├─" };
+                restate_cli_util::c_eprintln!("  {symbol} {cause}");
+            }
+        }
+        print_next_steps(&self.next_steps);
+        Ok(())
+    }
 }
 
 /// Accumulates one JSON document keyed by section and emits it on [`finish`].
@@ -683,6 +710,40 @@ pub struct JsonFormatter {
     /// `--yes` (or CI): [`confirm`](OutputFormatter::confirm) applies instead of
     /// emitting the plan.
     auto_confirm: bool,
+}
+
+/// The JSON `error` object of a failed command, see [`OutputFormatter::error`].
+#[derive(Serialize)]
+struct ErrorReport {
+    kind: ErrorKind,
+    message: String,
+    /// Where the Restate error code is documented.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    docs_url: Option<String>,
+    /// The underlying errors, outermost first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    causes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    next_steps: Vec<Value>,
+}
+
+/// Strip ANSI CSI escape sequences: messages may be styled for the terminal, even with
+/// `--json`.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for next in chars.by_ref() {
+                if next == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Keys the JSON formatter adds around a [`OutputFormatter::confirm`]ed change.
@@ -696,6 +757,21 @@ impl JsonFormatter {
             "`{section}` is a reserved section"
         );
         self.doc.insert(section.to_owned(), value);
+    }
+
+    /// The failure document: `error`, with the next steps nested in it.
+    fn error_document(self, error: &RestateCliError) -> Value {
+        let report = ErrorReport {
+            kind: error.kind(),
+            message: strip_ansi(error.message()),
+            docs_url: error.docs_url(),
+            causes: error
+                .causes()
+                .map(|cause| strip_ansi(&cause.to_string()))
+                .collect(),
+            next_steps: self.next_steps,
+        };
+        serde_json::json!({ "error": report })
     }
 
     /// The final document: every section, plus `next_steps` when any were added.
@@ -801,6 +877,12 @@ impl OutputFormatter for JsonFormatter {
 
     fn finish(self) -> anyhow::Result<()> {
         let rendered = serde_json::to_string_pretty(&self.into_document())?;
+        restate_cli_util::c_println!("{rendered}");
+        Ok(())
+    }
+
+    fn error(self, error: &RestateCliError) -> anyhow::Result<()> {
+        let rendered = serde_json::to_string_pretty(&self.error_document(error))?;
         restate_cli_util::c_println!("{rendered}");
         Ok(())
     }
@@ -993,6 +1075,33 @@ mod tests {
         assert_eq!(
             jf.into_document(),
             json!({"items": [{"name": "a", "tags": [1]}, {"name": "b", "tags": []}]})
+        );
+    }
+
+    #[test]
+    fn json_error_document_nests_next_steps_and_omits_empty_fields() {
+        let err = RestateCliError::from_error(
+            ErrorKind::Network,
+            &*anyhow::anyhow!("\u{1b}[31mtcp connect error\u{1b}[0m").context("Unable to connect"),
+        );
+        let mut jf = JsonFormatter::default();
+        jf.next_step(
+            "restate whoami",
+            "check the admin URL",
+            IncludeFormatting::Yes,
+        );
+        assert_eq!(
+            jf.error_document(&err),
+            json!({"error": {
+                "kind": "network",
+                "message": "Unable to connect",
+                "causes": ["tcp connect error"],
+                "next_steps": [{"command": "restate whoami --json", "description": "check the admin URL"}],
+            }})
+        );
+        assert_eq!(
+            JsonFormatter::default().error_document(&RestateCliError::not_found("nope")),
+            json!({"error": {"kind": "not_found", "message": "nope"}})
         );
     }
 

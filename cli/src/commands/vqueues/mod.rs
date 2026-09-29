@@ -15,10 +15,12 @@ mod resume;
 
 use chrono::{DateTime, Local};
 use cling::prelude::*;
-use restate_types::vqueues::VQueueId;
 use serde::Deserialize;
 
+use restate_types::vqueues::VQueueId;
+
 use crate::clients::DataFusionHttpClient;
+use crate::error::RestateCliError;
 
 const VQUEUE_COLUMNS: &str = "id, is_active, queue_is_paused, service_name, scope, limit_key, \
     lock_name, created_at, last_enqueued_at, last_start_at, last_attempt_at, last_finish_at, \
@@ -68,6 +70,7 @@ async fn get_vqueue(
             "SELECT {VQUEUE_COLUMNS} FROM sys_vqueue_meta WHERE id = '{vqueue_id}'"
         ))
         .await?;
-    rows.pop()
-        .ok_or_else(|| anyhow::anyhow!("Virtual queue {vqueue_id} not found!"))
+    rows.pop().ok_or_else(|| {
+        RestateCliError::not_found(format!("Virtual queue {vqueue_id} not found")).into()
+    })
 }

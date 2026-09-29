@@ -17,12 +17,13 @@ use cling::prelude::*;
 use serde_json::{Value, json};
 
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{CliContext, c_println, c_title, exit};
+use restate_cli_util::{CliContext, c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     Invocation, JournalEntryRow, JournalFetch, get_invocation, get_journal, get_journal_length,
 };
+use crate::error::RestateCliError;
 use crate::ui::fmt::{
     Formatter, JournalRow, JournalScope, OutputFormatter, compact_duration, journal_time,
 };
@@ -139,29 +140,40 @@ async fn journal(env: &CliEnv, opts: &Journal) -> Result<()> {
     };
 
     let entries = get_journal(&sql_client, &opts.invocation_id, fetch, opts.payload).await?;
-    if entries.is_empty()
-        && let Some(selector) = &opts.selector
-    {
-        let length = get_journal_length(&sql_client, &opts.invocation_id).await?;
-        return Err(exit::NotFound(format!(
-            "Journal entries {selector} not found: the journal of {} has {length} entries{}",
-            opts.invocation_id,
-            if length > 0 {
-                format!(" (0..{})", length - 1)
-            } else {
-                String::new()
-            }
-        ))
-        .into());
-    }
-
-    // The header/footer are human-only; skip the extra lookup for JSON.
+    // The header/footer are human-only; skip the extra lookup for JSON unless the empty
+    // journal may be a missing invocation.
     let json_output = CliContext::get().json_output();
-    let invocation = if json_output {
+    let invocation = if json_output && !entries.is_empty() {
         None
     } else {
         get_invocation(&sql_client, &opts.invocation_id).await?
     };
+    if entries.is_empty() {
+        if invocation.is_none() {
+            return Err(RestateCliError::not_found(format!(
+                "Invocation {} not found",
+                opts.invocation_id
+            ))
+            .into());
+        }
+        if let Some(selector) = &opts.selector {
+            let length = get_journal_length(&sql_client, &opts.invocation_id).await?;
+            return Err(RestateCliError::not_found(format!(
+                "Journal {selector} not found: the journal of {} has {length} entries{}",
+                opts.invocation_id,
+                if length > 0 {
+                    format!(" (0..{})", length - 1)
+                } else {
+                    String::new()
+                }
+            ))
+            .with_next_step(
+                format!("restate invocations journal {}", opts.invocation_id),
+                "see the whole journal",
+            )
+            .into());
+        }
+    }
     if !json_output {
         print_journal_header();
     }

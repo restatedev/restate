@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
 use itertools::Itertools;
 use serde_json::Value;
@@ -22,6 +22,7 @@ use restate_cli_util::{CliContext, c_println};
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
+use crate::error::RestateCliError;
 use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -61,12 +62,9 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
     let services_state = get_state_keys(&sql_client, svc, key).await?;
     let json = CliContext::get().json_output();
     if services_state.is_empty() {
-        if !json {
-            bail!("No state found!");
-        }
-        let mut f = Formatter::new();
-        f.table("changes", &CHANGE_HEADERS, &[] as &[Vec<Field>]);
-        return f.finish();
+        return Err(
+            RestateCliError::not_found(format!("No state found for {}", opts.query)).into(),
+        );
     }
 
     let mut f = Formatter::new();

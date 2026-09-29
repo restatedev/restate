@@ -29,7 +29,7 @@ use restate_types::Version;
 use restate_util_string::ReString;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient, MetasClientError};
+use crate::clients::{AdminClient, AdminClientInterface, ClientError, DataFusionHttpClient};
 
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "rule")]
@@ -103,8 +103,8 @@ fn escape_sql(value: &str) -> String {
 }
 
 /// `true` when the error is an HTTP 409 Conflict (a failed precondition).
-fn is_conflict(err: &MetasClientError) -> bool {
-    matches!(err, MetasClientError::Api(api) if api.http_status_code == reqwest::StatusCode::CONFLICT)
+fn is_conflict(err: &ClientError) -> bool {
+    matches!(err, ClientError::Api(api) if api.http_status_code == reqwest::StatusCode::CONFLICT)
 }
 
 /// Sends a single-rule upsert, translating a precondition conflict (409) into
