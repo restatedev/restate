@@ -23,7 +23,7 @@ use restate_types::vqueues::VQueueId;
 use crate::clients::DataFusionHttpClient;
 use crate::error::RestateCliError;
 use crate::ui::datetime::DateTimeExt;
-use crate::ui::fmt::Field;
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
 const VQUEUE_COLUMNS: &str = "id, is_active, queue_is_paused, service_name, scope, limit_key, \
     lock_name, created_at, last_enqueued_at, last_start_at, last_attempt_at, last_finish_at, \
@@ -76,6 +76,24 @@ async fn get_vqueue(
     rows.pop().ok_or_else(|| {
         RestateCliError::not_found(format!("Virtual queue {vqueue_id} not found")).into()
     })
+}
+
+/// Reports a pause/resume: `[OK]: <verb> virtual queue <id>` for humans, the id and
+/// `result` in JSON.
+fn report_outcome(vqueue_id: &VQueueId, result: &str, verb: &str) -> anyhow::Result<()> {
+    let mut f = Formatter::new();
+    f.value("vqueue_id", Field::with_display(vqueue_id.to_string(), ""));
+    f.outcome(
+        "result",
+        Field::with_display(result, format!("{verb} virtual queue {vqueue_id}")),
+        Outcome::Success,
+    );
+    f.next_step(
+        &format!("restate vqueues describe {vqueue_id}"),
+        "check the queue's state and entries",
+        IncludeFormatting::Yes,
+    );
+    f.finish()
 }
 
 /// `-` for humans, `null` in JSON.
