@@ -22,7 +22,7 @@ use restate_util_time::DurationExt;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, ListItem, OutputFormatter};
 
 // TODO we could infer this text from the OpenAPI docs!
 pub(super) const PUBLIC_DESCRIPTION: &str = indoc! {
@@ -158,7 +158,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
         },
     ]);
     f.title("⚙️", "Options");
-    f.list("options", &options)?;
+    f.list("options", &options, IfEmpty::Nothing)?;
 
     // Handler-level overrides of the options above.
     let mut overrides = Vec::new();
@@ -241,7 +241,7 @@ async fn view(env: &CliEnv, opts: &View) -> Result<()> {
     if !overrides.is_empty() {
         f.title("🔌", "Handler Overrides");
     }
-    f.list("handler_overrides", &overrides)?;
+    f.list("handler_overrides", &overrides, IfEmpty::Nothing)?;
     f.finish()
 }
 

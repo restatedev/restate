@@ -20,7 +20,7 @@ use restate_util_time::{DurationExt, FriendlyDuration};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 pub(super) const DURATION_EDIT_DESCRIPTION: &str = "Can be configured using a human friendly \
     duration format (e.g. 5d 1h 30m 15s) or ISO8601.";
@@ -161,6 +161,7 @@ pub(super) async fn apply_service_configuration_patch(
             "changes",
             &["service", "change", "field", "new_value"],
             &rows,
+            IfEmpty::Nothing,
         );
     }
     if changes.is_empty() {

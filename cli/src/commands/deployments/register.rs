@@ -35,7 +35,7 @@ use crate::clients::{AdminClient, AdminClientInterface, ClientError, Deployment}
 use crate::console::c_println;
 use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{
     create_service_handlers_table, create_service_handlers_table_diff, service_type_label,
     service_type_machine,
@@ -483,7 +483,12 @@ async fn register(
                 Field::styled(dry_run_result.id.to_string(), Style::Info),
             )],
         );
-        f.table("changes", &CHANGE_HEADERS, &[] as &[Vec<Field>]);
+        f.table(
+            "changes",
+            &CHANGE_HEADERS,
+            &[] as &[Vec<Field>],
+            IfEmpty::Nothing,
+        );
         f.value("note", Field::new(ALREADY_REGISTERED_NOTE));
         f.next_step(
             &format!("restate deployments describe {}", dry_run_result.id),
@@ -587,7 +592,12 @@ fn print_registration_result(mut f: Formatter, result: RegisterDeploymentRespons
         .into_iter()
         .map(|svc| vec![Field::new(svc.name), Field::new(svc.revision)])
         .collect();
-    f.table("services", &["service", "revision"], &rows);
+    f.table(
+        "services",
+        &["service", "revision"],
+        &rows,
+        IfEmpty::Nothing,
+    );
     f.next_step(
         &format!("restate deployments describe {}", result.id),
         "see the registered deployment's details",
@@ -679,7 +689,7 @@ async fn print_registration_changes(
                     }),
             );
         }
-        f.table("changes", &CHANGE_HEADERS, &rows);
+        f.table("changes", &CHANGE_HEADERS, &rows, IfEmpty::Nothing);
         return Ok(());
     }
 

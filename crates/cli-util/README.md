@@ -338,7 +338,7 @@ for svc in &svcs {
     let mut item = services.item();
     item.field("name", Field::styled(svc.name.as_str(), Style::Info));
     item.field("revision", Field::new(svc.revision));
-    item.table("handlers", &["handler", "input"], handler_rows(svc));
+    item.table("handlers", &["handler", "input"], handler_rows(svc), IfEmpty::Nothing);
     item.finish()?;
 }
 services.finish();
@@ -347,6 +347,12 @@ services.finish();
 JSON gets `"services": [{"name": …, "revision": …, "handlers": [...]}]` (`[]` when
 empty); humans get each item indented under a ` - ` marker. `next_step` on an item goes
 to the command's output.
+
+`table` and `list` take an `IfEmpty`: with `IfEmpty::Say("No services were found.")`
+humans get that line when there are no rows (JSON still gets `[]`), so commands don't
+need their own `if json` branch for the empty case. Say it for the command's main
+result; pass `IfEmpty::Nothing` for secondary tables, or when the surrounding output
+already covers it.
 
 `next_step(command, description, IncludeFormatting::Yes)` suggests a follow-up: humans get one tip at `finish`
 ("Run `<command>` to <description>."), JSON gets a top-level `next_steps` array of

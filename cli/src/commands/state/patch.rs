@@ -19,7 +19,7 @@ use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
     as_json, compute_version, from_json, get_current_state, pretty_print_json, update_state,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "patch")]
@@ -80,6 +80,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
         "changes",
         &["state_key", "operation", "value"],
         &state_changes(&old_state, &state)?,
+        IfEmpty::Nothing,
     );
 
     if !json {

@@ -21,7 +21,7 @@ use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
     active_invocations_field, deployment_info_fields, render_deployment_type, render_deployment_url,
 };
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{service_type_field, visibility_label, write_service_handlers};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -171,6 +171,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             "deployment_id",
         ],
         &rows,
+        IfEmpty::Nothing,
     );
 
     f.finish()

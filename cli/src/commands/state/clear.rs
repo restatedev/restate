@@ -23,7 +23,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
 use crate::error::RestateCliError;
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]
@@ -84,7 +84,7 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
             ]
         })
         .collect();
-    f.table("changes", &CHANGE_HEADERS, &rows);
+    f.table("changes", &CHANGE_HEADERS, &rows, IfEmpty::Nothing);
 
     if !json {
         c_println!();

@@ -16,8 +16,6 @@ use cling::prelude::*;
 use serde::Serialize;
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::CliContext;
-use restate_cli_util::c_error;
 use restate_cli_util::ui::watcher::Watch;
 use restate_types::identifiers::{DeploymentId, ServiceRevision};
 use restate_types::schema::service::ServiceMetadata;
@@ -30,7 +28,7 @@ use crate::ui::deployments::{
     DeploymentStatus, calculate_deployment_status, render_deployment_type, render_deployment_url,
     render_transport_protocol,
 };
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
@@ -61,12 +59,6 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         .await?
         .deployments;
 
-    if deployments.is_empty() && !CliContext::get().json_output() {
-        c_error!(
-            "No deployments were found! Did you forget to register your deployment with 'restate dep register'?"
-        );
-        return Ok(());
-    }
     // For each deployment, we need to calculate the status and # of invocations.
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     for service in services {
@@ -121,7 +113,13 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         .collect();
 
     let mut f = Formatter::new();
-    f.list("deployments", &items)?;
+    f.list(
+        "deployments",
+        &items,
+        IfEmpty::Say(
+            "No deployments were found! Did you forget to register your deployment with 'restate dep register'?",
+        ),
+    )?;
     if let Some(item) = items.first() {
         f.next_step(
             &format!("restate deployments describe {}", item.id),

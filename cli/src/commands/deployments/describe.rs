@@ -24,7 +24,7 @@ use crate::ui::deployments::{
     active_invocations_field, calculate_deployment_status, deployment_info_fields,
     deployment_status_field, latest_service, service_item,
 };
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
 use crate::ui::service_handlers::handler_description;
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -146,7 +146,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
             }
             row
         });
-        item.table("handlers", &headers, rows);
+        item.table("handlers", &headers, rows, IfEmpty::Nothing);
         item.finish()?;
     }
     items.finish();

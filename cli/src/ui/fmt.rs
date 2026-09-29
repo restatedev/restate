@@ -212,12 +212,14 @@ pub trait OutputFormatter {
 
     /// A list/collection table. `headers` are machine keys (`snake_case`); each row
     /// aligns positionally with `headers`. Rows can be owned or borrowed (e.g.
-    /// `&Vec<Vec<Field>>`, `Vec<[Field; 3]>`).
+    /// `&Vec<Vec<Field>>`, `Vec<[Field; 3]>`). `if_empty` says what human output shows
+    /// when there are no rows.
     fn table(
         &mut self,
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     );
 
     /// A single scalar value.
@@ -258,8 +260,14 @@ pub trait OutputFormatter {
 
     /// A list of items. Human output renders a header row, the items' columns aligned,
     /// and each item's detail lines under it; JSON emits `section` as an array of the
-    /// items' serialized form.
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()>;
+    /// items' serialized form. `if_empty` says what human output shows when there are
+    /// no items.
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()>;
 
     /// Suggest a follow-up command, ready to run (real ids filled in).
     /// `description` completes "Run `command` to …". Human output shows the
@@ -342,8 +350,9 @@ impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     ) {
-        self.parent.table(section, headers, rows)
+        self.parent.table(section, headers, rows, if_empty)
     }
 
     fn value(&mut self, section: &str, field: Field) {
@@ -374,8 +383,13 @@ impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
         self.parent.journal(section, rows, scope)
     }
 
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
-        self.parent.list(section, items)
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
+        self.parent.list(section, items, if_empty)
     }
 
     fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
@@ -437,8 +451,9 @@ impl OutputFormatter for Formatter {
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     ) {
-        dispatch!(self.table(section, headers, rows))
+        dispatch!(self.table(section, headers, rows, if_empty))
     }
 
     fn value(&mut self, section: &str, field: Field) {
@@ -469,8 +484,13 @@ impl OutputFormatter for Formatter {
         dispatch!(self.journal(section, rows, scope))
     }
 
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
-        dispatch!(self.list(section, items))
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
+        dispatch!(self.list(section, items, if_empty))
     }
 
     fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
@@ -600,6 +620,16 @@ pub enum IncludeFormatting {
     No,
 }
 
+/// What human output shows for an empty [`OutputFormatter::list`] or
+/// [`OutputFormatter::table`]. JSON always emits `[]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfEmpty<'a> {
+    /// Nothing, e.g. when the surrounding output already says it.
+    Nothing,
+    /// This message, where the rows would be.
+    Say(&'a str),
+}
+
 /// JSON rendering of a next step.
 fn next_step_json(command: &str, description: &str, formatting: IncludeFormatting) -> Value {
     let command = match formatting {
@@ -639,6 +669,13 @@ pub struct HumanFormatter {
 
 impl HumanFormatter {
     /// Print `text` on stdout, indented to the current depth.
+    /// The [`IfEmpty`] message of an empty list or table, indented like its rows.
+    fn empty(&mut self, if_empty: IfEmpty) {
+        if let IfEmpty::Say(message) = if_empty {
+            self.println(&format!(" {message}"));
+        }
+    }
+
     fn println(&mut self, text: &str) {
         for line in text.lines() {
             if line.is_empty() {
@@ -751,11 +788,13 @@ impl OutputFormatter for HumanFormatter {
         _section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     ) {
         self.flush_fields();
         let mut rows = rows.into_iter().peekable();
         // An empty table would be a lone header row; JSON still gets `[]`.
         if rows.peek().is_none() {
+            self.empty(if_empty);
             return;
         }
         let mut table = Table::new_styled();
@@ -805,9 +844,15 @@ impl OutputFormatter for HumanFormatter {
         self.item_counts.pop();
     }
 
-    fn list<T: ListItem>(&mut self, _section: &str, items: &[T]) -> anyhow::Result<()> {
+    fn list<T: ListItem>(
+        &mut self,
+        _section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
         self.flush_fields();
         if items.is_empty() {
+            self.empty(if_empty);
             return Ok(());
         }
         let headers: Vec<String> = T::HEADERS.iter().map(|h| header_label(h)).collect();
@@ -1074,6 +1119,7 @@ impl OutputFormatter for JsonFormatter {
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        _if_empty: IfEmpty,
     ) {
         let arr = rows
             .into_iter()
@@ -1122,7 +1168,12 @@ impl OutputFormatter for JsonFormatter {
         }
     }
 
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        _if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
         let items = items
             .iter()
             .map(serde_json::to_value)
@@ -1269,6 +1320,7 @@ mod tests {
             "handlers",
             &["handler", "public"],
             &[vec![Field::new("greet"), Field::new(true)]],
+            IfEmpty::Nothing,
         );
         let value = jf.into_document();
 
@@ -1286,7 +1338,12 @@ mod tests {
         let mut services = jf.start_items("services");
         let mut service = services.item();
         service.field("name", Field::styled("Greeter", Style::Info));
-        service.table("handlers", &["handler"], &[vec![Field::new("greet")]]);
+        service.table(
+            "handlers",
+            &["handler"],
+            &[vec![Field::new("greet")]],
+            IfEmpty::Nothing,
+        );
         let mut tags = service.start_items("tags");
         let mut tag = tags.item();
         tag.field("tag", Field::new("beta"));
@@ -1422,6 +1479,7 @@ mod tests {
                     tags: vec![],
                 },
             ],
+            IfEmpty::Say("No items."),
         )
         .unwrap();
 

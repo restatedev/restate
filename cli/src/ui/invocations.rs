@@ -31,7 +31,7 @@ use crate::clients::datafusion_helpers::{
     Invocation, InvocationCompletion, InvocationState, JournalEventRow, SimpleInvocation,
 };
 use crate::error::RestateCliError;
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, ListItem, OutputFormatter};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();
@@ -287,7 +287,7 @@ pub fn print_invocation_changes(
             action,
         })
         .collect();
-    f.list("changes", &changes)?;
+    f.list("changes", &changes, IfEmpty::Nothing)?;
     if !json {
         if invocations.len() > shown {
             c_println!("And other {} invocations...", invocations.len() - shown)
@@ -337,6 +337,7 @@ pub fn print_invocation_results<T>(
         "results",
         &["invocation_id", "target", "outcome", "error"],
         &rows,
+        IfEmpty::Nothing,
     );
 }
 

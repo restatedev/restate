@@ -30,7 +30,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, find_and_count_active_invocations, invocation_status_filter,
 };
-use crate::ui::fmt::{Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 /// Timestamp to order `invocations list` by.
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -288,7 +288,11 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     results.truncate(opts.limit);
 
     let mut f = Formatter::new();
-    f.list("invocations", &results)?;
+    f.list(
+        "invocations",
+        &results,
+        IfEmpty::Say("No invocations found."),
+    )?;
     if let Some(inv) = results.first() {
         f.next_step(
             &format!("restate invocations describe {}", inv.id),

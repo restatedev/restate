@@ -16,7 +16,7 @@ use crate::clients::datafusion_helpers::{
     get_locked_keys, get_service_invocations, get_service_status,
 };
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::fmt::OutputFormatter;
+use crate::ui::fmt::{IfEmpty, OutputFormatter};
 
 pub async fn run_detailed_status(
     f: &mut impl OutputFormatter,
@@ -60,7 +60,7 @@ pub async fn run_detailed_status(
     // Sample of active invocations
     if !active.is_empty() {
         f.title("🚂", "Recent Invocations");
-        f.list("recent_invocations", &active)?;
+        f.list("recent_invocations", &active, IfEmpty::Nothing)?;
     }
     Ok(())
 }

@@ -15,15 +15,13 @@ use cling::prelude::*;
 use serde::Serialize;
 
 use restate_admin_rest_model::deployments::DeploymentResponse;
-use restate_cli_util::CliContext;
-use restate_cli_util::c_error;
 use restate_cli_util::ui::watcher::Watch;
 use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClientInterface, Deployment};
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -45,13 +43,6 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::AdminClient::new(env).await?;
     let defs = client.get_services().await?.into_body().await?;
-
-    if defs.services.is_empty() && !CliContext::get().json_output() {
-        c_error!(
-            "No services were found! Services are added by registering deployments with 'restate dep register'"
-        );
-        return Ok(());
-    }
 
     let deployments = client.get_deployments().await?.into_body().await?;
 
@@ -88,7 +79,13 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     }
 
     let mut f = Formatter::new();
-    f.list("services", &items)?;
+    f.list(
+        "services",
+        &items,
+        IfEmpty::Say(
+            "No services were found! Services are added by registering deployments with 'restate dep register'",
+        ),
+    )?;
     if let Some(ServiceListItem {
         name,
         deployment_id,

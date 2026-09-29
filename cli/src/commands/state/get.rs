@@ -18,7 +18,7 @@ use restate_cli_util::ui::watcher::Watch;
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{as_json, get_current_state, pretty_print_json_object};
 use crate::error::RestateCliError;
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_get")]
@@ -83,7 +83,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
             .into_iter()
             .map(|(k, v)| vec![Field::new(k), Field::new(v)])
             .collect();
-        f.table("state", &["key", "value"], &rows);
+        f.table("state", &["key", "value"], &rows, IfEmpty::Nothing);
     }
 
     f.finish()

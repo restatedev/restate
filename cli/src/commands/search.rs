@@ -15,11 +15,9 @@ use bm25::{Language, SearchEngine, SearchEngineBuilder, Tokenizer};
 use clap::CommandFactory;
 use cling::prelude::*;
 
-use restate_cli_util::{CliContext, c_eprintln};
-
 use crate::app::CliApp;
 use crate::commands::sql::SQL_TABLES;
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 /// Maximum number of results shown for a query.
 const LIMIT: usize = 10;
@@ -68,12 +66,14 @@ fn run_search(opts: &Search) -> Result<()> {
         })
         .collect();
     let mut f = Formatter::new();
-    f.table("results", &["command", "description"], &rows);
+    f.table(
+        "results",
+        &["command", "description"],
+        &rows,
+        IfEmpty::Say(&format!("No commands or SQL tables match '{query}'.")),
+    );
     match results.first() {
         None => {
-            if !CliContext::get().json_output() {
-                c_eprintln!("No commands or SQL tables match '{query}'.");
-            }
             f.next_step("restate --help", "list the commands", IncludeFormatting::No);
         }
         Some(top) if top.kind == Kind::SqlTable => {
