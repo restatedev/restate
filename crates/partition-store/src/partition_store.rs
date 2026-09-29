@@ -483,7 +483,7 @@ impl PartitionStore {
         Ok(ReceiverStream::new(rx))
     }
 
-    pub fn iterator_filter_map<K: EncodeTableKey, O: Send + 'static>(
+    pub fn iterator_filter_map<K: EncodeTableKeyPrefix, O: Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
