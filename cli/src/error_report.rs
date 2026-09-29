@@ -206,6 +206,7 @@ fn list_command(command: &Command) -> Option<NextStep> {
         Command::Rules(cmd) if !matches!(cmd, rules::Rules::List(_)) => {
             ("restate rules list", "see the existing rules")
         }
+        Command::Examples(_) => ("restate example --list", "see the available examples"),
         _ => return None,
     })
 }
