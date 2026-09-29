@@ -40,7 +40,7 @@ pub struct Remove {
     /// break in-flight invocations pinned to this deployment.
     #[clap(long)]
     force: bool,
-    /// Deployment ID, or the endpoint URL / Lambda ARN it was registered with
+    /// Deployment ID
     deployment_id: String,
 
     #[clap(flatten)]
@@ -53,7 +53,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
     let deployment = client
-        .get_deployment(&super::resolve_deployment_id(&client, &opts.deployment_id).await?)
+        .get_deployment(&opts.deployment_id)
         .await?
         .into_body()
         .await?;

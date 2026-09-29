@@ -37,7 +37,7 @@ use crate::ui::service_handlers::{handler_description, service_type_label, servi
 #[cling(run = "run_describe")]
 #[clap(visible_alias = "get")]
 pub struct Describe {
-    /// Deployment ID, or the endpoint URL / Lambda ARN it was registered with
+    /// Deployment ID
     deployment_id: String,
 
     #[clap(flatten)]
@@ -63,7 +63,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     }
 
     let deployment = client
-        .get_deployment(&super::resolve_deployment_id(&client, &opts.deployment_id).await?)
+        .get_deployment(&opts.deployment_id)
         .await?
         .into_body()
         .await?;

@@ -116,8 +116,6 @@ next retry and last failure) in `invocations list` / `describe` and the dry-run 
   `--order-by modified|created` and `--order desc|asc` to change it (`--oldest-first` still
   works). It also accepts the same query as `cancel` / `pause` / `purge` (an invocation id,
   or a target prefix like `Cart/alice`), combined with the other filters.
-- `deployments describe` / `remove` accept the endpoint URL or Lambda ARN a deployment was
-  registered with, as well as its id.
 - `example <name>` works non-interactively: without `--output-directory` (alias `--out`) it
   downloads into `./<name>` instead of prompting, and with `--json` prints the example's name,
   directory and README path. An unknown name exits `4` and points to `restate example --list`; an
