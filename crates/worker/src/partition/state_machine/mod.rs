@@ -16,7 +16,7 @@ mod utils;
 pub use actions::{Action, ActionCollector, RpcReply};
 use restate_worker_api::processor::PartitionFeatures;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
@@ -72,7 +72,7 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
@@ -98,7 +98,7 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal_v2;
-use restate_types::journal_v2::command::{OutputCommand, OutputResult};
+use restate_types::journal_v2::command::{OutputCommand, OutputResult, SleepCommand};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
@@ -1796,7 +1796,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteJournalEventsTable
-            + WriteLockTable,
+            + WriteLockTable
+            + ReadJournalTable
+            + journal_table_v2::ReadJournalTable
+            + WriteTimerTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1835,6 +1838,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 pinned_deployment
                     .as_ref()
                     .map(|pd| pd.service_protocol_version),
+                InvocationUuid::is_deterministic(
+                    &metadata.invocation_target,
+                    metadata.idempotency_key.as_deref(),
+                ),
             ))
         } else {
             None
@@ -1907,11 +1914,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_store_completed_invocation(invocation_id, completed_invocation)?;
         }
 
-        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
+        if let Some((journal_length, pinned_service_protocol_version, delete_pending_timers)) =
+            journal_to_drop
+        {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -1942,7 +1952,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + ReadJournalTable
+            + journal_table_v2::ReadJournalTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1979,6 +1991,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 pinned_deployment
                     .as_ref()
                     .map(|pd| pd.service_protocol_version),
+                InvocationUuid::is_deterministic(
+                    &metadata.invocation_target,
+                    metadata.idempotency_key.as_deref(),
+                ),
             ))
         } else {
             None
@@ -2053,11 +2069,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_store_completed_invocation(invocation_id, completed_invocation)?;
         }
 
-        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
+        if let Some((journal_length, pinned_service_protocol_version, delete_pending_timers)) =
+            journal_to_drop
+        {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -2094,7 +2113,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2132,7 +2152,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2790,12 +2811,17 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
+        let delete_pending_timers = InvocationUuid::is_deterministic(
+            &invocation_target,
+            invocation_metadata.idempotency_key.as_deref(),
+        );
 
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
@@ -2896,6 +2922,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -4935,14 +4962,26 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .map_err(Error::Storage)
     }
 
+    /// Drops the journal of the given invocation.
+    ///
+    /// If `delete_pending_timers` is set, the sleep timers of the journal that did not fire yet
+    /// are deleted too. This is required when the invocation id can be reused (see
+    /// [`InvocationUuid::is_deterministic`]), otherwise the leftover timers would complete
+    /// journal entries of the next invocation with the same id.
     async fn do_drop_journal(
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
         pinned_protocol_version: Option<ServiceProtocolVersion>,
+        delete_pending_timers: bool,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + journal_table_v2::WriteJournalTable + WriteJournalEventsTable,
+        S: ReadJournalTable
+            + WriteJournalTable
+            + journal_table_v2::ReadJournalTable
+            + journal_table_v2::WriteJournalTable
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4951,10 +4990,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
+            if delete_pending_timers {
+                self.do_delete_pending_sleep_timers_v1(*invocation_id, journal_length)
+                    .await?;
+            }
             WriteJournalTable::delete_journal(self.storage, invocation_id, journal_length)
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
+            if delete_pending_timers {
+                self.do_delete_pending_sleep_timers_v2(*invocation_id, journal_length)
+                    .await?;
+            }
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
                 invocation_id,
@@ -4964,6 +5011,95 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
+        Ok(())
+    }
+
+    /// Deletes the timers of all the sleep entries in the journal (v1) that are not completed yet.
+    ///
+    /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
+    /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
+    /// of an invocation.
+    async fn do_delete_pending_sleep_timers_v1(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
+    where
+        S: ReadJournalTable + WriteTimerTable,
+    {
+        let pending_sleeps: Vec<(EntryIndex, EnrichedRawEntry)> =
+            ReadJournalTable::get_journal(self.storage, &invocation_id, journal_length)?
+                .try_filter_map(|(journal_index, journal_entry)| async move {
+                    if let JournalEntry::Entry(journal_entry) = journal_entry
+                        && let EnrichedEntryHeader::Sleep {
+                            is_completed: false,
+                        } = journal_entry.header()
+                    {
+                        return Ok(Some((journal_index, journal_entry)));
+                    }
+                    Ok(None)
+                })
+                .try_collect()
+                .await?;
+
+        for (journal_index, journal_entry) in pending_sleeps {
+            assert!(let
+                Entry::Sleep(SleepEntry { wake_up_time, .. }) =
+                    ProtobufRawEntryCodec::deserialize(EntryType::Sleep, journal_entry.into_inner().1)?
+            );
+            let (timer_key, _) =
+                Timer::complete_journal_entry(wake_up_time, invocation_id, journal_index);
+            debug!(timer=?timer_key, "Purging leftover timer");
+            self.do_delete_timer(timer_key).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Deletes the timers of all the sleep commands in the journal (v2) that have no completion yet.
+    ///
+    /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
+    /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
+    /// of an invocation.
+    async fn do_delete_pending_sleep_timers_v2(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
+    where
+        S: journal_table_v2::ReadJournalTable + WriteTimerTable,
+    {
+        let mut sleeps = HashMap::new();
+        {
+            let mut journal = std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
+                self.storage,
+                invocation_id,
+                journal_length,
+            )?);
+
+            while let Some((_, entry)) = journal.try_next().await? {
+                match &entry.inner {
+                    RawEntry::Command(cmd) if cmd.command_type() == CommandType::Sleep => {
+                        let sleep = cmd.decode::<ServiceProtocolV4Codec, SleepCommand>()?;
+                        sleeps.insert(sleep.completion_id, sleep.wake_up_time);
+                    }
+                    RawEntry::Notification(notification) => {
+                        if let NotificationId::CompletionId(completion_id) = notification.id() {
+                            sleeps.remove(&completion_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for (completion_id, wake_up_time) in sleeps {
+            let (timer_key, _) =
+                Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, completion_id);
+            debug!(timer=?timer_key, "Purging leftover timer");
+            self.do_delete_timer(timer_key).await?;
+        }
+
         Ok(())
     }
 

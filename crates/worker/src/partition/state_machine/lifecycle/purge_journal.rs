@@ -15,8 +15,9 @@ use restate_storage_api::invocation_status_table::{
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::WriteJournalTable;
-use restate_types::identifiers::InvocationId;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::timer_table::WriteTimerTable;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
 use tracing::trace;
@@ -30,8 +31,11 @@ impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s,
     for OnPurgeJournalCommand<'_>
 where
     S: WriteJournalTable
+        + ReadJournalTable
+        + WriteTimerTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
+        + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WriteJournalEventsTable,
     P: ProcessorContext,
@@ -54,6 +58,10 @@ where
                         invocation_id,
                         completed.journal_metadata.length,
                         pinned_service_protocol_version,
+                        InvocationUuid::is_deterministic(
+                            &completed.invocation_target,
+                            completed.idempotency_key.as_deref(),
+                        ),
                     )
                     .await?;
                 }
