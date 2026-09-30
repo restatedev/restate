@@ -127,7 +127,8 @@ use restate_worker_api::invoker::Effect;
 use self::utils::SpanExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+    PARTITION_CLEANER_PURGE_DELAY, TYPE_LABEL, USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
