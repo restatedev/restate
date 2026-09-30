@@ -896,6 +896,9 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
+        // Invocation id to start the scan from (inclusive). If `None`, the scan starts from the
+        // beginning of the partition key range.
+        from: Option<InvocationId>,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
 }

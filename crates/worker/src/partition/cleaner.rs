@@ -13,13 +13,17 @@ use std::task::{Poll, Waker, ready};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Context;
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use tokio::sync::mpsc::{self, Sender};
 use tokio::time::{Instant, MissedTickBehavior};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::time::FutureExt;
 use tracing::{debug, instrument, warn};
 
-use restate_core::{ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind, cancellation_watcher};
+use restate_core::{
+    ShutdownError, TaskCenter, TaskHandle, TaskId, TaskKind, cancellation_token,
+    cancellation_watcher,
+};
 use restate_storage_api::invocation_status_table::ScanInvocationStatusTable;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::{InvocationId, PartitionId};
@@ -27,10 +31,24 @@ use restate_util_time::DurationExt;
 
 const CLEANER_EFFECT_QUEUE_SIZE: usize = 10;
 
+// Buffer up to that many effects in memory from storage.
+// Note: it's important to keep the CleanerEffect enum size in check.
+// Currently, it's 48 bytes, so with 4096 effects, that's 200KiB per partition.
+const CLEANER_EFFECT_BUFFER_SIZE: usize = 4096;
+
 #[derive(Debug, Clone)]
 pub enum CleanerEffect {
     PurgeInvocation(InvocationId),
     PurgeJournal(InvocationId),
+}
+
+impl CleanerEffect {
+    pub fn invocation_id(&self) -> InvocationId {
+        match self {
+            CleanerEffect::PurgeInvocation(invocation_id)
+            | CleanerEffect::PurgeJournal(invocation_id) => *invocation_id,
+        }
+    }
 }
 
 pub(super) struct CleanerHandle {
@@ -141,11 +159,21 @@ where
         loop {
             tokio::select! {
                 _ = interval.tick() => {
-                    if let Err(e) = self.do_cleanup(&tx).await {
-                        warn!(
-                            partition_id=%self.partition_id,
-                            "Error when trying to cleanup completed invocations: {e:?}"
-                        );
+                    match self.do_cleanup(&tx).with_cancellation_token(&cancellation_token()).await {
+                        Some(Ok(_)) => {}
+                        Some(Err(e)) => {
+                            warn!(
+                                partition_id=%self.partition_id,
+                                "Error when trying to cleanup completed invocations: {e:?}"
+                            );
+                        }
+                        None => {
+                            debug!(
+                                partition_id=%self.partition_id,
+                                "Aborting cleanup midway due to cancellation"
+                            );
+                            break;
+                        }
                     }
                 },
                 _ = cancellation_watcher() => {
@@ -167,9 +195,12 @@ where
 
         let now = SystemTime::now();
 
-        let effects_stream = self
+        let mut from: Option<InvocationId> = None;
+
+        loop {
+            let mut effects: Vec<_> = self
             .storage
-            .filter_map_invocation_status_lazy(move |(invocation_id, invocation_status_v2_lazy)| {
+            .filter_map_invocation_status_lazy(from, move |(invocation_id, invocation_status_v2_lazy)| {
                 let restate_storage_api::protobuf_types::v1::invocation_status_v2::Status::Completed =
                     invocation_status_v2_lazy.inner.status()
                 else {
@@ -209,22 +240,26 @@ where
                 }
 
                 Result::<Option<_>, ConversionError>::Ok(None)
-            })?;
-        tokio::pin!(effects_stream);
+            })?.take(CLEANER_EFFECT_BUFFER_SIZE + 1 /* An extra element for pagination */).try_collect().await
+                        .context("Cannot read the next expired item of the invocation status table")?;
 
-        while let Some(effect) = effects_stream
-            .next()
-            .await
-            .transpose()
-            .context("Cannot read the next expired item of the invocation status table")?
-        {
-            match &effect {
-                CleanerEffect::PurgeInvocation(_) => purged_invocation_count += 1,
-                CleanerEffect::PurgeJournal(_) => purged_journal_count += 1,
+            let has_more = effects.len() > CLEANER_EFFECT_BUFFER_SIZE;
+            if has_more {
+                from = Some(effects.pop().unwrap().invocation_id());
             }
-            tx.send(effect)
-                .await
-                .context("Cannot send cleaner effect")?;
+
+            for effect in effects {
+                match &effect {
+                    CleanerEffect::PurgeInvocation(_) => purged_invocation_count += 1,
+                    CleanerEffect::PurgeJournal(_) => purged_journal_count += 1,
+                }
+                tx.send(effect)
+                    .await
+                    .context("Cannot send cleaner effect")?;
+            }
+            if !has_more {
+                break;
+            }
         }
 
         debug!(
@@ -297,11 +332,16 @@ mod tests {
                 + 'static,
         >(
             &self,
+            from: Option<InvocationId>,
             mut f: F,
         ) -> restate_storage_api::Result<impl Stream<Item = restate_storage_api::Result<O>> + Send>
         {
+            // Resume inclusively from `from`, like the partition store does.
+            let invocations = self.0.clone().into_iter().skip_while(move |invocation| {
+                from.is_some_and(|from| invocation.invocation_id != from)
+            });
             Ok(
-                stream::iter(self.0.clone()).filter_map(move |expired_invocation| {
+                stream::iter(invocations).filter_map(move |expired_invocation| {
                     let completion_retention_duration = protobuf_types::v1::Duration::from(
                         expired_invocation.completion_retention_duration,
                     )
@@ -426,5 +466,46 @@ mod tests {
                 expired_invocation_2
             ))))
         );
+    }
+
+    #[test(restate_core::test(start_paused = true))]
+    async fn cleanup_paginates() {
+        let now = MillisSinceEpoch::now().as_u64();
+        // Two full pages and one more effect on a third page
+        let invocations: Vec<_> = (0..2 * CLEANER_EFFECT_BUFFER_SIZE + 1)
+            .map(|_| MockCompletedInvocation {
+                invocation_id: InvocationId::from_parts(
+                    PartitionKey::MIN,
+                    InvocationUuid::mock_random(),
+                ),
+                completed_transition_time: Some(now),
+                completion_retention_duration: Duration::ZERO,
+                journal_retention_duration: Duration::ZERO,
+                journal_length: 0,
+            })
+            .collect();
+        let expected: Vec<_> = invocations.iter().map(|i| i.invocation_id).collect();
+
+        let cleaner = Cleaner::new(
+            MockInvocationStatusReader(invocations),
+            0.into(),
+            Duration::from_secs(1),
+            NonZeroU32::new(1).unwrap(),
+        );
+
+        // Sized for exactly the expected effects: sending any effect twice blocks the cleanup,
+        // which then fails on the timeout.
+        let (tx, rx) = mpsc::channel(expected.len());
+        tokio::time::timeout(Duration::from_secs(1), cleaner.do_cleanup(&tx))
+            .await
+            .expect("cleanup terminates")
+            .unwrap();
+        drop(tx);
+
+        let received: Vec<_> = ReceiverStream::new(rx)
+            .map(|effect| effect.invocation_id())
+            .collect()
+            .await;
+        assert_eq!(received, expected);
     }
 }
