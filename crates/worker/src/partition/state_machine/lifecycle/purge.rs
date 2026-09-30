@@ -53,6 +53,7 @@ where
         + WriteLockTable
         + WriteInvocationStatusTable
         + WriteStateTable
+        + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
         + WriteJournalEventsTable,

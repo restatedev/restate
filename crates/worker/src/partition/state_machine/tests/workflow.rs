@@ -14,11 +14,13 @@ use crate::partition::state_machine::tests::matchers::actions::purge_invocation_
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_storage_api::timer_table::ReadTimerTable;
+use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR;
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationQuery, InvocationTarget,
     PurgeInvocationRequest,
 };
+use restate_types::service_protocol;
 use std::time::Duration;
 
 #[restate_core::test]
@@ -446,6 +448,99 @@ async fn purge_workflow_deletes_pending_sleep_timers() -> anyhow::Result<()> {
             .try_collect::<Vec<_>>()
             .await?,
         empty()
+    );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+fn v1_sleep_entry(is_completed: bool) -> JournalEntry {
+    JournalEntry::Entry(EnrichedRawEntry::new(
+        EnrichedEntryHeader::Sleep { is_completed },
+        service_protocol::SleepEntryMessage {
+            wake_up_time: 1337,
+            result: is_completed.then_some(service_protocol::sleep_entry_message::Result::Empty(
+                Default::default(),
+            )),
+            ..Default::default()
+        }
+        .encode_to_vec()
+        .into(),
+    ))
+}
+
+#[restate_core::test]
+async fn purge_workflow_v1_deletes_pending_sleep_timers() -> anyhow::Result<()> {
+    let mut test_env = TestEnv::create().await;
+
+    let invocation_target = InvocationTarget::mock_workflow();
+    let invocation_id = InvocationId::mock_generate(&invocation_target);
+
+    // Completed workflow pinned to journal v1, with a fired sleep (1) and a pending one (2)
+    let mut txn = test_env.storage().transaction();
+    txn.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Completed(CompletedInvocation {
+            invocation_target,
+            pinned_deployment: Some(PinnedDeployment {
+                deployment_id: Default::default(),
+                service_protocol_version: ServiceProtocolVersion::V3,
+            }),
+            journal_metadata: JournalMetadata::new(3, 0, ServiceInvocationSpanContext::empty()),
+            ..CompletedInvocation::mock_neo()
+        }),
+    )?;
+    let journal = [
+        JournalEntry::Entry(EnrichedRawEntry::new(
+            EnrichedEntryHeader::Input {},
+            Bytes::default(),
+        )),
+        v1_sleep_entry(true),
+        v1_sleep_entry(false),
+    ];
+    for (idx, entry) in journal.iter().enumerate() {
+        journal_table::WriteJournalTable::put_journal_entry(
+            &mut txn,
+            &invocation_id,
+            idx as u32,
+            entry,
+        )?;
+    }
+    let (timer_key, timer) = Timer::complete_journal_entry(1337, invocation_id, 2);
+    txn.put_timer(&timer_key, &timer)?;
+    txn.commit().await?;
+    drop(txn);
+
+    // Purging drops the journal together with the timer of the pending sleep only
+    let actions = test_env
+        .apply(commands::PurgeInvocationCommand::test_envelope(
+            PurgeInvocationRequest {
+                invocation_id,
+                response_sink: None,
+            },
+        ))
+        .await;
+    assert_that!(
+        actions,
+        all!(
+            contains(matchers::actions::delete_sleep_timer(2)),
+            not(contains(matchers::actions::delete_sleep_timer(1)))
+        )
+    );
+    assert_that!(
+        test_env
+            .storage
+            .next_timers_greater_than(None, usize::MAX)?
+            .try_collect::<Vec<_>>()
+            .await?,
+        empty()
+    );
+    assert_that!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?,
+        pat!(InvocationStatus::Free)
     );
 
     test_env.shutdown().await;

@@ -35,6 +35,7 @@ where
         + WriteTimerTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
+        + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WriteJournalEventsTable,
     P: ProcessorContext,

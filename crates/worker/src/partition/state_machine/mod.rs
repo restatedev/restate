@@ -1797,6 +1797,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteJournalEventsTable
             + WriteLockTable
+            + ReadJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteTimerTable,
     {
@@ -1952,6 +1953,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable
+            + ReadJournalTable
             + journal_table_v2::ReadJournalTable,
     {
         let error = match termination_flavor {
@@ -4974,7 +4976,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         delete_pending_timers: bool,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable
+        S: ReadJournalTable
+            + WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + WriteJournalEventsTable
@@ -4987,12 +4990,16 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
+            if delete_pending_timers {
+                self.do_delete_pending_sleep_timers_v1(*invocation_id, journal_length)
+                    .await?;
+            }
             WriteJournalTable::delete_journal(self.storage, invocation_id, journal_length)
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
             if delete_pending_timers {
-                self.do_delete_pending_sleep_timers(*invocation_id, journal_length)
+                self.do_delete_pending_sleep_timers_v2(*invocation_id, journal_length)
                     .await?;
             }
             journal_table_v2::WriteJournalTable::delete_journal(
@@ -5007,12 +5014,54 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         Ok(())
     }
 
+    /// Deletes the timers of all the sleep entries in the journal (v1) that are not completed yet.
+    ///
+    /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
+    /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
+    /// of an invocation.
+    async fn do_delete_pending_sleep_timers_v1(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
+    where
+        S: ReadJournalTable + WriteTimerTable,
+    {
+        let pending_sleeps: Vec<(EntryIndex, EnrichedRawEntry)> =
+            ReadJournalTable::get_journal(self.storage, &invocation_id, journal_length)?
+                .try_filter_map(|(journal_index, journal_entry)| async move {
+                    if let JournalEntry::Entry(journal_entry) = journal_entry
+                        && let EnrichedEntryHeader::Sleep {
+                            is_completed: false,
+                        } = journal_entry.header()
+                    {
+                        return Ok(Some((journal_index, journal_entry)));
+                    }
+                    Ok(None)
+                })
+                .try_collect()
+                .await?;
+
+        for (journal_index, journal_entry) in pending_sleeps {
+            assert!(let
+                Entry::Sleep(SleepEntry { wake_up_time, .. }) =
+                    ProtobufRawEntryCodec::deserialize(EntryType::Sleep, journal_entry.into_inner().1)?
+            );
+            let (timer_key, _) =
+                Timer::complete_journal_entry(wake_up_time, invocation_id, journal_index);
+            debug!(timer=?timer_key, "Purging leftover timer");
+            self.do_delete_timer(timer_key).await?;
+        }
+
+        Ok(())
+    }
+
     /// Deletes the timers of all the sleep commands in the journal (v2) that have no completion yet.
     ///
     /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
     /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
     /// of an invocation.
-    async fn do_delete_pending_sleep_timers(
+    async fn do_delete_pending_sleep_timers_v2(
         &mut self,
         invocation_id: InvocationId,
         journal_length: EntryIndex,
@@ -5046,8 +5095,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         for (completion_id, wake_up_time) in sleeps {
             let (timer_key, _) =
-                TimerKeyValue::complete_journal_entry(wake_up_time, invocation_id, completion_id)
-                    .into_inner();
+                Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, completion_id);
             debug!(timer=?timer_key, "Purging leftover timer");
             self.do_delete_timer(timer_key).await?;
         }
