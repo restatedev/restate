@@ -738,8 +738,8 @@ where
             let cleaner = Cleaner::new(
                 partition_store.clone(),
                 processor.partition_id(),
-                processor.key_range(),
                 config.worker.cleanup_interval(),
+                config.worker.cleanup_max_in_flight_purges(),
             );
 
             let cleaner_handle = cleaner.start()?;

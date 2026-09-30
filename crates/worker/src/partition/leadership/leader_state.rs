@@ -1073,6 +1073,9 @@ impl LeaderState {
             Action::RulesUpdated(updates) => {
                 self.scheduler.on_rules_updated(updates);
             }
+            Action::CleanerPurgeApplied => {
+                self.cleaner_handle.on_purge_applied();
+            }
         }
 
         Ok(())
