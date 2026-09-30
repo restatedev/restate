@@ -18,11 +18,18 @@ use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// List virtual queues, with how many invocations each has waiting, running, suspended, ...
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate vqueues list --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/flow-control",
+))]
 #[clap(visible_alias = "ls")]
 pub struct List {
-    /// Limit the number of results
+    /// Show at most this many virtual queues; the others are left out
     #[clap(long, default_value = "100")]
     limit: usize,
 

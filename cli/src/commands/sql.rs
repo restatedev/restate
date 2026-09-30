@@ -41,11 +41,17 @@ use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatt
 //  table schemas/docs into a lightweight crate the CLI can depend on directly.
 include!("sql_tables.rs");
 
+/// Run SQL queries to introspect Restate: invocations, journals, state, ...
+///
+/// Queries the server's introspection tables with ANSI SQL.
+/// By default, the output is a table, use `--json` for json array output or `--jsonl` for newline delimited json.
+/// Use `restate sql describe <table>` to read individual tables documentation.
 #[derive(Parser, Collect, Clone)]
 #[command(args_conflicts_with_subcommands = true)]
-#[command(after_long_help = SQL_TABLES_HELP)]
+#[command(after_help = sql_after_help(false), after_long_help = sql_after_help(true))]
 pub struct Sql {
-    /// The SQL query to run.
+    /// The SQL query to run, e.g. "SELECT * FROM sys_invocation LIMIT 10". Required unless
+    /// running a subcommand
     query: Option<String>,
 
     #[command(subcommand)]
@@ -54,16 +60,45 @@ pub struct Sql {
     #[clap(flatten)]
     watch: Watch,
 
-    /// Print result as line delimited json instead of using the tabular format
+    /// Print the rows as line-delimited JSON (one object per line) instead of a table.
+    /// Unlike --json, works with -w
     #[arg(long, alias = "ldjson")]
     pub jsonl: bool,
 }
 
+/// Examples and docs link, plus the list of tables in the long help.
+fn sql_after_help(long: bool) -> String {
+    let examples = after_help!(
+        examples: [
+            "restate sql \"SELECT id, target FROM sys_invocation ORDER BY created_at DESC LIMIT 10\" --json",
+            "# State of the Cart virtual object: service_key is the object key, key the state key",
+            "restate sql \"SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'Cart'\"",
+            "restate sql describe sys_invocation",
+        ],
+        learn_more: "https://docs.restate.dev/references/sql-introspection",
+    );
+    if long {
+        // The generated table list starts with its own heading line.
+        let (title, tables) = SQL_TABLES_HELP
+            .split_once('\n')
+            .unwrap_or((SQL_TABLES_HELP, ""));
+        format!("{}\n{tables}\n\n{examples}", crate::help::heading(title))
+    } else {
+        examples.to_owned()
+    }
+}
+
 #[derive(Subcommand, Clone)]
 enum SqlSub {
-    /// Describe the columns of a SQL introspection table
+    /// Describe the columns of a SQL introspection table: name, type and description.
+    #[command(after_help = after_help!(
+        examples: [
+            "restate sql describe sys_invocation --json",
+        ],
+        learn_more: "https://docs.restate.dev/references/sql-introspection",
+    ))]
     Describe {
-        /// The table to describe
+        /// The table to describe, e.g. `sys_invocation` (see `restate sql --help` for the list)
         table: String,
     },
 }

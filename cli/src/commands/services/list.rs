@@ -25,11 +25,18 @@ use crate::ui::deployments::render_deployment_url;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
 
+/// List the registered services, with their type, deployment and handlers
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services list --json",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services",
+))]
 pub struct List {
-    /// Show only publicly accessible services
+    /// Show only public services, the ones that can be called through the ingress
     #[clap(long)]
     public_only: bool,
 

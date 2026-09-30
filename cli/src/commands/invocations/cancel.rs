@@ -29,25 +29,23 @@ use crate::ui::invocations::{
 };
 use crate::ui::with_progress;
 
+/// Cancel invocations gracefully
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_cancel")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations cancel inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
+        "restate invocations cancel Cart/u1 --dry-run     # every invocation on key u1 of Cart",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#cancel",
+))]
 pub struct Cancel {
-    /// Either an invocation id, or a target string exact match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    /// * `workflowName`
-    /// * `workflowName/key`
-    /// * `workflowName/key/handler`
-    #[clap(verbatim_doc_comment)]
+    #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     pub(super) query: String,
-    /// Ungracefully kill the invocation and its children
+    /// Kill instead of cancelling, same as `restate invocations kill`
     #[clap(long)]
     pub(super) kill: bool,
-    /// Limit the number of fetched invocations
+    /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     pub(super) limit: usize,
     #[clap(flatten)]

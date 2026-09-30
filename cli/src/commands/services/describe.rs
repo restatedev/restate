@@ -25,11 +25,20 @@ use crate::ui::deployments::{
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{service_type_field, visibility_label, write_service_handlers};
 
+/// Show a service definition: its type, metadata, the deployment serving it, and its handlers.
+///
+/// For its configuration (retention, timeouts, retries) use `restate services config view`.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
 #[clap(visible_alias = "get")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services describe Greeter --json",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services",
+))]
 pub struct Describe {
-    /// service name
+    /// Service name
     name: String,
 
     #[clap(flatten)]

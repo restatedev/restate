@@ -117,7 +117,10 @@ struct TokenClaims {
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "c")]
 pub enum Cloud {
-    /// Authenticate to Restate Cloud
+    /// Log in to Restate Cloud in the browser, and store the token in the CLI config file
+    ///
+    /// Prints a URL and a code to confirm in the browser (opened automatically when possible),
+    /// then waits for the login to complete. Needs a person: agents can't complete it.
     Login(login::Login),
     /// Manage Restate Cloud Environments
     #[clap(subcommand)]

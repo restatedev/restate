@@ -20,21 +20,31 @@ use crate::commands::state::util::{as_json, get_current_state, pretty_print_json
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
 
+/// Show the K/V state of a virtual object or workflow key
+///
+/// Values are shown as JSON; pass --binary for values that are not JSON.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_get")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate state get Cart u1",
+        "restate state get Cart u1 --plain | jq .items",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
+))]
 pub struct Get {
-    /// Don't try to convert the values to a UTF-8 string
+    /// Treat values as base64-encoded bytes instead of JSON, in the output and in the input
     #[clap(long, alias = "bin")]
     binary: bool,
 
-    /// Only print the retrieved state as a JSON
+    /// Print only the state, as a JSON object of state key to value (ignores --json)
     #[clap(long, short)]
     plain: bool,
 
-    /// service name
+    /// Virtual object or workflow name
     service: String,
 
-    /// service key
+    /// Virtual object or workflow key
     key: String,
 
     #[clap(flatten)]

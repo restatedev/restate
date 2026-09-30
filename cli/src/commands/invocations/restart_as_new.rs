@@ -26,20 +26,26 @@ use crate::ui::invocations::{
     print_invocation_results,
 };
 
+/// Run completed invocations again, as new invocations
+///
+/// Each new invocation gets a new id and the input and headers of the original one, and runs
+/// from the start: nothing of the original execution is kept, and the original invocation is
+/// left untouched. Only affects completed invocations (including failed, cancelled and killed
+/// ones); workflows are not supported. To continue a paused invocation instead, use `resume`.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_restart_as_new")]
 #[clap(visible_alias = "restart")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations restart-as-new inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
+        "restate invocations restart-as-new Greeter/greet --dry-run",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#restart-as-new",
+))]
 pub struct RestartAsNew {
-    /// Either an invocation id, or a target string exact match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    #[clap(verbatim_doc_comment)]
+    #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     query: String,
-    /// Limit the number of fetched invocations
+    /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
     #[clap(flatten)]

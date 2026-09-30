@@ -20,8 +20,19 @@ use crate::clients::DataFusionHttpClient;
 use crate::ui::datetime::DateTimeExt;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// List the concurrency-limit rules
+///
+/// Shows each rule's pattern, concurrency limit and whether it's disabled; --extra adds the
+/// description, version and last modification time.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate rules list --extra",
+        "restate rules list --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/flow-control",
+))]
 #[clap(visible_alias = "ls")]
 pub struct List {
     /// Show additional columns (description, version, last modified)

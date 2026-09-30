@@ -122,15 +122,35 @@ fn locked_keys_json(locked_keys: &LockedKeysMap) -> Value {
     Value::Array(services)
 }
 
+/// Show the invocation activity of a service, or of all services
+///
+/// For each handler: the number of invocations per status (pending, scheduled, ready,
+/// running, backing-off, suspended, paused), and the age of the oldest one not suspended.
+///
+/// For virtual objects and workflows: the active keys, i.e. the keys an invocation holds the
+/// lock of (while running, suspended, paused, ...), and how many invocations queue behind it.
+///
+/// For a single service: its most recent invocations.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services status",
+        "restate services status Cart --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct Status {
+    /// Maximum number of active keys shown per service
     #[clap(long, default_value = "5")]
     locked_keys_limit: usize,
 
+    /// Add a note to an active key when the invocation holding it has been running or
+    /// suspended for longer than this many seconds
     #[clap(long, default_value = "5")]
     locked_key_held_threshold_second: i64,
 
+    /// Maximum number of recent invocations shown, when a service name is given
     #[clap(long, default_value = "5")]
     sample_invocations_limit: usize,
 

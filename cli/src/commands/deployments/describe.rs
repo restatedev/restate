@@ -27,17 +27,25 @@ use crate::ui::deployments::{
 use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
 use crate::ui::service_handlers::handler_description;
 
+/// Show a deployment: its endpoint, SDK, protocol, and the services and handlers it serves
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
 #[clap(visible_alias = "get")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate deployments describe dp_14LsPzBd7Uuvbx8wA3wtKoD --extra",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services#deployments-endpoints-and-versions",
+))]
 pub struct Describe {
-    /// Deployment ID
+    /// Deployment id (`dp_...`)
     deployment_id: String,
 
     #[clap(flatten)]
     watch: Watch,
 
-    /// Show draining status and invocation statistics per deployment
+    /// Also show the deployment's status (active, draining or drained) and its active
+    /// invocations per handler: a deployment can be removed once it's drained
     #[clap(long)]
     extra: bool,
 }

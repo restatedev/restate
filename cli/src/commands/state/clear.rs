@@ -24,17 +24,28 @@ use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
 use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// Delete all the K/V state of a virtual object or workflow, or of one of its keys.
+///
+/// Shows the state keys that will be deleted, then deletes them after confirmation
+/// (preview with --dry-run, apply with --yes). To delete a single state key, use
+/// `restate state patch` with a `remove` operation.
+/// The change is queued behind the invocations running on that key: the command returns once
+/// it's submitted, before it's applied.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate state clear Cart/u1 --dry-run",
+        "restate state clear Cart --yes     # all Cart objects, whatever their key",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
+))]
 pub struct Clear {
-    /// A string with either service name and key, or only the service name, e.g.:
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `workflowName`
-    /// * `workflowName/key`
+    /// Whose state to clear: `Name/key` for one virtual object or workflow key, or `Name` for
+    /// all of its keys at once
     query: String,
 
-    /// Force means, ignore the current version
+    /// Apply even if the state changed since it was read, overwriting those changes
     #[clap(long, short)]
     force: bool,
 

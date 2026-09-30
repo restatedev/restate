@@ -22,17 +22,29 @@ use crate::cli_env::CliEnv;
 use crate::clients::DataFusionHttpClient;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// Show a virtual queue and the invocations in it
+///
+/// Shows the queue's service, scope, limit key and lock (the `Object/key` a virtual object
+/// queue is for), its counters, and one row per entry with its status, attempts and stage:
+/// inbox (waiting to run), running, suspended, paused or finished.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate vqueues describe vq_11FXYJ7NW9jx5RWxXgKQR3GcJu7ASG3XB1 --newest-first",
+    ],
+    learn_more: "https://docs.restate.dev/services/flow-control",
+))]
 #[clap(visible_alias = "get")]
 pub struct Describe {
-    /// Virtual queue ID
+    /// Virtual queue id (`vq_...`), as shown by `restate vqueues list`
     vqueue_id: VQueueId,
 
-    /// Limit the number of displayed entries
+    /// Show at most this many entries
     #[clap(long, default_value = "100")]
     limit: usize,
 
+    /// Order entries by queue sequence number, highest (most recently enqueued) first
     #[clap(long, default_value = "false")]
     newest_first: bool,
 

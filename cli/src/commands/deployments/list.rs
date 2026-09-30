@@ -29,11 +29,21 @@ use crate::ui::deployments::{
 };
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 
+/// List the registered deployments, with their endpoint and services
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate deployments list --extra --json",
+        "restate deployments list --extra --json \\",
+        "  | jq -r '.deployments[] | select(.status == \"Drained\") | .deployment_id'",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services#deployments-endpoints-and-versions",
+))]
 pub struct List {
-    //// Show additional columns
+    /// Also show each deployment's status (active, draining or drained) and number of active
+    /// invocations
     #[clap(long)]
     extra: bool,
 

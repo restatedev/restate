@@ -43,25 +43,40 @@ use crate::ui::service_handlers::{
     service_type_machine,
 };
 
+/// Register a deployment, making its services callable
+///
+/// Restate contacts the endpoint (discovery) to learn which services and handlers it serves,
+/// then registers them as a new deployment: new invocations go to it, while in-flight ones
+/// stay on the deployment they started on. Registering an endpoint that is already registered
+/// changes nothing, since Restate can't tell whether the code behind it changed: deploy each
+/// new version at a new URL (or Lambda version), or during development use --force.
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "discover", visible_alias = "add")]
 #[cling(run = "run_register")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate deployments register http://localhost:9080 --yes",
+        "restate deployments register arn:aws:lambda:eu-central-1:123456789012:function:greeter:3 --dry-run",
+        "restate deployments register http://localhost:9080 --force --yes   # overwrite, during development",
+    ],
+    learn_more: "https://docs.restate.dev/services/versioning",
+))]
 pub struct Register {
-    /// Allow performing incompatible changes to services, detected during discovery.
+    /// Accept breaking changes to the services, e.g. a service whose type changed (from service
+    /// to virtual object, ...). Without it, registration fails when discovery detects one
     #[clap(long)]
     breaking: bool,
 
-    /// Force overwriting the deployment if it already exists or if incompatible changes were
-    /// detected during discovery. When set, implies `--breaking`.
-    ///
-    /// Without it, registering an endpoint that is already registered is a no-op
-    /// (registration is idempotent), and the existing deployment is left untouched.
+    /// Replace the deployment already registered at this endpoint in place (implies
+    /// --breaking): it keeps its id, and its services are updated to the ones discovered now
+    /// (services it no longer has are removed). No old deployment is left to drain: its
+    /// in-flight invocations continue on the new code, and may fail if the code changed.
+    /// Meant for development. Without it, re-registering the same endpoint is a no-op.
     #[clap(long)]
     force: bool,
 
-    #[clap(long)]
-    /// The role ARN that Restate server will assume when invoking any service on the Lambda being
-    /// discovered.
+    #[clap(long, help_heading = "AWS Lambda")]
+    /// IAM role that the Restate server assumes to invoke this Lambda function
     assume_role_arn: Option<String>,
 
     /// Enable Google OIDC ID-token authentication for this HTTP deployment.
@@ -71,21 +86,21 @@ pub struct Register {
     /// Note: Workload Identity Federation (external_account) and gcloud
     /// user credentials (authorized_user) cannot mint ID tokens directly
     /// and must be paired with --gcp-impersonate-service-account.
-    #[clap(long)]
+    #[clap(long, help_heading = "GCP authentication")]
     gcp_id_token: bool,
 
     /// Service account email to impersonate when minting the Google ID token,
     /// via the IAM Credentials generateIdToken API. Requires the caller to
     /// hold roles/iam.serviceAccountOpenIdTokenCreator on the target SA.
     /// Implies --gcp-id-token.
-    #[clap(long)]
+    #[clap(long, help_heading = "GCP authentication")]
     gcp_impersonate_service_account: Option<String>,
 
     /// Explicit OIDC `aud` claim for minted Google ID tokens. Defaults to the
     /// deployment URL origin (scheme://host[:port]). Set this for Cloud Run
     /// services behind a custom domain or load balancer. Implies
     /// --gcp-id-token.
-    #[clap(long)]
+    #[clap(long, help_heading = "GCP authentication")]
     gcp_audience: Option<String>,
 
     /// Full resource name of a GCP workload identity federation provider, e.g.
@@ -95,7 +110,11 @@ pub struct Register {
     /// `gcp_workload_identity_federation` feature and have
     /// `[worker.invoker.gcp-federation]` configured. Requires
     /// --gcp-impersonate-service-account and implies --gcp-id-token.
-    #[clap(long, requires = "gcp_impersonate_service_account")]
+    #[clap(
+        long,
+        requires = "gcp_impersonate_service_account",
+        help_heading = "GCP authentication"
+    )]
     gcp_workload_identity_provider: Option<String>,
 
     /// Additional header that will be sent to the endpoint during the discovery request.
@@ -110,19 +129,21 @@ pub struct Register {
     #[clap(long="metadata", value_parser = parse_metadata, action = clap::ArgAction::Append)]
     metadata: Option<Vec<Metadata>>,
 
-    /// Attempt discovery using a client that defaults to HTTP1.1 instead of a prior-knowledge HTTP2 client.
-    /// This may be necessary if you see `META0014` discovering local dev servers like `wrangler dev`.
+    /// Use HTTP/1.1 for discovery instead of HTTP/2. Needed for endpoints that don't speak
+    /// HTTP/2, e.g. local dev servers like `wrangler dev`: discovery then fails with `META0014`.
     #[clap(long = "use-http1.1")]
     use_http_11: bool,
 
-    /// The URL or ARN that Restate server needs to fetch service information from.
+    /// Endpoint of the deployment: an HTTP URL, or an AWS Lambda function ARN
     ///
-    /// The URL must be network-accessible from Restate server. In case of using
-    /// Lambda ARN, the ARN should include the function version.
+    /// The URL must be reachable from the Restate server (`localhost` is the server's host),
+    /// and defaults to `http://` without a scheme. The Lambda ARN must include the function
+    /// version, e.g. `arn:aws:lambda:eu-central-1:123456789012:function:greeter:3`.
     #[clap(value_parser = parse_deployment)]
     deployment: DeploymentEndpoint,
 
-    /// The name of a Restate Cloud tunnel through which to register the uri
+    /// Name of the Restate Cloud tunnel to reach the endpoint through (see
+    /// `restate cloud environments tunnel`)
     #[cfg(feature = "cloud")]
     #[clap(long = "tunnel-name")]
     tunnel_name: Option<String>,

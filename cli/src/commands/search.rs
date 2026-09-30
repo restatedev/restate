@@ -12,10 +12,8 @@ use std::collections::BTreeSet;
 
 use anyhow::Result;
 use bm25::{Language, SearchEngine, SearchEngineBuilder, Tokenizer};
-use clap::CommandFactory;
 use cling::prelude::*;
 
-use crate::app::CliApp;
 use crate::commands::sql::SQL_TABLES;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
@@ -26,10 +24,22 @@ const FUZZY_THRESHOLD: f64 = 0.9;
 /// Boosts of [`Entry::fields`].
 const BOOSTS: [f32; 4] = [8.0, 5.0, 2.0, 0.5];
 
+/// Find the command, flag or SQL table for a task
+///
+/// Searches the names, descriptions and flags of every command, and the names, descriptions
+/// and columns of the SQL tables, and prints the best matches, best first: the command to run
+/// and a one-line description.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_search")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate search change the retention of a service",
+        "restate search retry a failed invocation",
+        "restate search journal table --json",
+    ],
+))]
 pub struct Search {
-    /// Words to look for, or a description of what you want to do. Typos are tolerated.
+    /// Words to look for, or a description of what you want to do. Typos are tolerated
     #[arg(required = true)]
     query: Vec<String>,
 }
@@ -92,7 +102,7 @@ fn run_search(opts: &Search) -> Result<()> {
 /// and flags are searchable as part of the command itself.
 fn build_index() -> Vec<Entry> {
     let mut entries = Vec::new();
-    index_command(&CliApp::command(), "restate".to_owned(), &mut entries);
+    index_command(&crate::command(), "restate".to_owned(), &mut entries);
     for table in SQL_TABLES {
         let columns: Vec<&str> = table.columns.iter().map(|c| c.name).collect();
         entries.push(Entry {
@@ -116,7 +126,9 @@ fn index_command(cmd: &clap::Command, path: String, entries: &mut Vec<Entry>) {
         names.push_str(alias);
     }
     let mut context = String::new();
-    for arg in cmd.get_arguments().filter(|a| !a.is_hide_set()) {
+    // Global options are copied, hidden from help, into subcommands (see `crate::command`).
+    let visible = |a: &&clap::Arg| !a.is_hide_set() && !a.is_hide_long_help_set();
+    for arg in cmd.get_arguments().filter(visible) {
         let values = arg.get_possible_values();
         let words = std::iter::once(arg.get_id().as_str())
             .chain(arg.get_all_aliases().into_iter().flatten())

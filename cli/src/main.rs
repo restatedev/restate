@@ -52,10 +52,14 @@ async fn main() -> ExitCode {
 
     // Parse outside cling (as `Cling::parse_and_run` does) to keep the failed command
     // around: it refines the next steps suggested on error.
-    let app = match CliApp::try_parse() {
+    let mut cmd = restate_cli::command();
+    let app = match cmd
+        .try_get_matches_from_mut(std::env::args_os())
+        .and_then(|matches| CliApp::from_arg_matches(&matches))
+    {
         Ok(app) => app,
         Err(err) => {
-            let err = err.format(&mut CliApp::command());
+            let err = err.format(&mut cmd);
             return restate_cli::report_error(err.into(), None);
         }
     };

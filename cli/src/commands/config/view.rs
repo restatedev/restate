@@ -17,8 +17,15 @@ use restate_cli_util::c_println;
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 use crate::{cli_env::CliEnv, console};
 
+/// Print the CLI config file
+///
+/// Prints the file as is, bearer tokens included: don't share the output. With --json, prints
+/// it converted to JSON.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_view")]
+#[command(after_help = after_help!(
+    learn_more: "https://docs.restate.dev/references/cli-config",
+))]
 pub struct View {}
 
 pub async fn run_view(State(env): State<CliEnv>, _opts: &View) -> Result<()> {

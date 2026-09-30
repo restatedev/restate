@@ -31,21 +31,27 @@ use crate::console::{Styled, c_println, c_title, choose};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
 
+/// Download an example project (aka template) into a new directory, or `--list` them
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate example --list --json",
+        "restate example typescript-hello-world --out ./hello",
+    ],
+))]
 pub struct Examples {
     /// List the available examples (grouped by language) without downloading anything.
     /// Combine with --json for machine-readable output.
     #[arg(long, short = 'l', conflicts_with_all = ["name", "output_directory"])]
     list: bool,
 
-    /// Output directory.
+    /// Directory to download the example into
     #[arg(long, visible_alias = "out")]
     output_directory: Option<PathBuf>,
 
-    /// Example name.
-    ///
-    /// If omitted, an interactive prompt will ask you which example to download.
+    /// Example name, as shown by `--list`. If omitted, you're asked to pick one, which fails
+    /// when prompting isn't possible (e.g. with --json)
     name: Option<String>,
 }
 

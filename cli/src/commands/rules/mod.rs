@@ -39,15 +39,11 @@ use crate::ui::fmt::{
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "rule")]
 pub enum Rules {
-    /// List the configured concurrency-limit rules
+    // Commands are documented on their own struct.
     List(list::List),
-    /// Create or update a rule
     Set(set::Set),
-    /// Enable a previously disabled rule
     Enable(enable::Enable),
-    /// Disable a rule without removing it
     Disable(disable::Disable),
-    /// Remove a rule
     Delete(delete::Delete),
 }
 

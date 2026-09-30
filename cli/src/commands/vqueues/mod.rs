@@ -31,9 +31,8 @@ const VQUEUE_COLUMNS: &str = "id, is_active, queue_is_paused, service_name, scop
 
 #[derive(Run, Subcommand, Clone)]
 pub enum VQueues {
-    /// List virtual queues
+    // Commands are documented on their own struct.
     List(list::List),
-    /// Print detailed information about a virtual queue
     Describe(describe::Describe),
     /// Pause a virtual queue
     #[command(hide = true)]

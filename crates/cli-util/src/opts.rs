@@ -90,22 +90,22 @@ pub(crate) struct UiOpts {
 
 #[derive(Args, Clone, Default)]
 pub(crate) struct ConfirmMode {
-    /// Auto answer "yes" to confirmation prompts, and never prompt for other input.
-    /// Default to `false`, unless running on ci (when env variable 'CI' is set).
-    #[arg(name = "yes", long, short, global = true)]
+    /// Apply changes without asking for confirmation, and never prompt for other input.
+    /// Implied when the 'CI' env variable is set.
+    #[arg(name = "yes", long, short, global = true, display_order = 0)]
     pub yes: bool,
 
     /// Never prompt for interactive input; fail instead of waiting.
-    /// Implied when stdin is not a terminal or when the 'CI' env variable is set.
+    /// Implied by --json, when stdin is not a terminal, or when the 'CI' env variable is set.
     #[arg(long, global = true)]
     pub non_interactive: bool,
 }
 
 #[derive(Args, Clone, Default)]
 pub(crate) struct OutputOpts {
-    /// Print output as JSON instead of human-readable tables. Intended for scripting,
-    /// CI, and automation. Diagnostics are still written to stderr.
-    #[arg(long, global = true)]
+    /// Print the output (or the error) as one JSON document on stdout, for agents and scripts.
+    /// Diagnostics go to stderr. Implies --non-interactive, but not --yes.
+    #[arg(long, global = true, display_order = 0)]
     pub json: bool,
 
     /// When to colorize output.
@@ -175,14 +175,16 @@ impl CommonClientConnectionOptions for NetworkOpts {
 #[derive(Args, Collect, Clone, Default)]
 #[command(next_help_heading = "Global options")]
 pub struct CommonOpts {
+    // `--yes` and `--json` are listed first in `--help` (see `display_order`), so they are
+    // easy to spot for agents and scripts.
+    #[clap(flatten)]
+    pub(crate) confirm: ConfirmMode,
+    #[clap(flatten)]
+    pub(crate) output: OutputOpts,
     #[clap(flatten)]
     pub(crate) verbose: clap_verbosity_flag::Verbosity<Quiet>,
     #[clap(flatten)]
     pub(crate) ui: UiOpts,
-    #[clap(flatten)]
-    pub(crate) output: OutputOpts,
-    #[clap(flatten)]
-    pub(crate) confirm: ConfirmMode,
     #[clap(flatten)]
     pub(crate) network: NetworkOpts,
 }

@@ -28,15 +28,29 @@ use crate::ui::deployments::{
 };
 use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
+/// Remove a drained deployment
+///
+/// A deployment is drained when newer deployments serve the latest revision of all its
+/// services, and none of its invocations are still in flight (invocations keep running on the
+/// deployment they started on). Check with `restate deployments describe <id> --extra`.
+/// Removing a deployment that isn't drained is refused unless --force.
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]
 #[cling(run = "run_remove")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate deployments remove dp_14LsPzBd7Uuvbx8wA3wtKoD --dry-run",
+        "restate deployments list --extra --json \\",
+        "  | jq -r '.deployments[] | select(.status == \"Drained\") | .deployment_id'",
+    ],
+    learn_more: "https://docs.restate.dev/services/versioning",
+))]
 pub struct Remove {
-    /// Force removal of a deployment if it's not drained. This is dangerous and will
-    /// break in-flight invocations pinned to this deployment.
+    /// Remove the deployment even if it's not drained. Its in-flight invocations will fail,
+    /// and the services whose latest revision it serves become unavailable
     #[clap(long)]
     force: bool,
-    /// Deployment ID
+    /// Deployment id (`dp_...`)
     deployment_id: String,
 
     #[clap(flatten)]

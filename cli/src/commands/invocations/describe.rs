@@ -26,11 +26,23 @@ use crate::ui::fmt::{
 };
 use crate::ui::invocations::{invocation_detail, journal_event_lines, journal_status};
 
+/// Show an invocation: status, target, deployment, retries and last failure
+///
+/// Shows who called it, its idempotency key, when it was created and last changed, its
+/// deployment, and for invocations that are retrying or paused the retry count and the last
+/// failure (with the journal entry that caused it).
+/// Also shows a preview of the journal: see `restate invocations journal` for all of it.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
 #[clap(visible_alias = "get")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations describe inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct Describe {
-    /// The ID of the invocation
+    /// Invocation id (`inv_...`)
     invocation_id: String,
 
     #[clap(flatten)]

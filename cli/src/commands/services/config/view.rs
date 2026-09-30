@@ -44,8 +44,8 @@ pub(super) const JOURNAL_RETENTION: &str = indoc! {
     "The journal retention.
     The retention period starts once the invocation completes (with either success or failure).
 
-    In case the invocation has an idempotency key, the `idempotency_retention` caps the maximum `journal_retention` time.
-    In case the invocation targets a workflow handler, the `workflow_completion_retention` caps the maximum `journal_retention` time."
+    For invocations with an idempotency key, the idempotency retention caps the journal retention.
+    For workflow handlers, the workflow completion retention caps the journal retention."
 };
 pub(super) const INACTIVITY_TIMEOUT: &str = indoc! {
     "This timer guards against stalled service/handler invocations. Once it expires,
@@ -81,8 +81,17 @@ pub(super) const RETRY_POLICY: &str = indoc! {
     On max attempts: What to do when max attempts are reached (Pause or Kill)."
 };
 
+/// Show a service's configuration: visibility, retention, timeouts, retry policy, state preloading
+///
+/// Use `restate services config edit` or `restate services config patch` to change service configuration.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_view")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services config view Greeter --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/configuration",
+))]
 pub struct View {
     /// Service name
     service: String,

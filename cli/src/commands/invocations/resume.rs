@@ -24,26 +24,30 @@ use crate::ui::invocations::{
     print_invocation_results,
 };
 
+/// Resume paused invocations; also wakes suspended ones and retries backing-off ones now
+///
+/// By default, an invocation resumes on the deployment it started on. Pass `--deployment`
+/// to move it to another one, e.g. one with a bug fix: this works only if the new code takes
+/// the same steps as the old one up to where the invocation stopped.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_resume")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations resume inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
+        "restate invocations resume Greeter --deployment latest --dry-run",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct Resume {
-    /// Either an invocation id, or a target string exact match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    #[clap(verbatim_doc_comment)]
+    #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     query: String,
 
-    /// When resuming from paused/suspended, provide a deployment id to use to replace the currently pinned deployment id.
-    /// If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id.
-    /// When not provided, the invocation will resume on the pinned deployment id.
-    /// When provided and the invocation is either running, or no deployment is pinned, this operation will fail.
+    /// Deployment to resume on: a deployment id (`dp_...`), `latest` for the latest deployment,
+    /// or `keep` to stay on the deployment the invocation started on (the default). Fails for running invocations, and for
+    /// invocations that didn't start on a deployment yet.
     #[clap(long)]
     deployment: Option<String>,
-    /// Limit the number of fetched invocations
+    /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
     #[clap(flatten)]

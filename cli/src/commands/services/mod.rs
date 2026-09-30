@@ -15,17 +15,18 @@ mod status;
 
 use cling::prelude::*;
 
+// Commands are documented on their own struct.
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "svc", alias = "service")]
 pub enum Services {
-    /// List the registered services
     List(list::List),
-    /// Prints detailed information about a given service
     Describe(describe::Describe),
-    /// Prints activity information about a given service (and method)
     Status(status::Status),
-    /// Configure a service
+    /// View and change a service's configuration: retention, timeouts, visibility
     #[clap(name = "config", alias = "conf")]
+    #[command(after_help = after_help!(
+        learn_more: "https://docs.restate.dev/services/configuration",
+    ))]
     #[clap(subcommand)]
     Config(config::Config),
 }

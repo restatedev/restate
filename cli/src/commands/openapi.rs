@@ -16,8 +16,17 @@ use restate_cli_util::c_println;
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClient;
 
+/// Print the Admin API's OpenAPI spec (JSON), to discover and call the admin API directly.
+///
+/// Use it for operations the CLI doesn't cover, calling the admin API (e.g. with curl) at the admin URL shown by `restate whoami`.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate openapi > admin-api.json",
+        "restate openapi | jq '.paths | keys'",
+    ],
+))]
 pub struct OpenApi {}
 
 async fn run(State(env): State<CliEnv>) -> Result<()> {

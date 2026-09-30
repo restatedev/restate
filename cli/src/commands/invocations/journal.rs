@@ -85,17 +85,28 @@ fn parse_bound(s: &str) -> std::result::Result<Option<u32>, String> {
     }
 }
 
+/// Show an invocation's journal: the steps it recorded, e.g. calls, timers and state changes
+///
+/// Shows only entry metadata by default; add --payload for the values (inputs, outputs, state).
+/// Long journals show only the first --head and last --tail entries, unless --all or an entry selector is passed.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_journal")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations journal inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --all",
+        "restate invocations journal inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz 3..7 --payload --json",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#durable-execution",
+))]
 pub struct Journal {
-    /// The ID of the invocation
+    /// Invocation id (`inv_...`)
     invocation_id: String,
 
     /// Entry index or inclusive range to show, e.g. `5`, `1..3`, `..10`, `90..`.
-    /// Omit to show a head+tail preview of the journal.
+    /// Entry indexes start at 0. Omit to show a head+tail preview of the journal.
     selector: Option<EntrySelector>,
 
-    /// Include entry payloads (input/output/state values). Pipe with --json into jq.
+    /// Include entry payloads (input, output and state values)
     #[clap(long, short = 'p')]
     payload: bool,
 

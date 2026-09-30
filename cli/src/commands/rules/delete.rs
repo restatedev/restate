@@ -23,11 +23,21 @@ use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
 use crate::ui::fmt::{DryRun, Field, Formatter, Outcome, OutputFormatter};
 
+/// Delete a rule
+///
+/// To stop enforcing a rule but keep it, use `restate rules disable` instead.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_delete")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate rules delete checkout --dry-run",
+    ],
+    learn_more: "https://docs.restate.dev/services/flow-control",
+))]
 #[clap(visible_alias = "rm", alias = "remove")]
 pub struct Delete {
-    /// Pattern of the rule to delete
+    /// Pattern of the rule to delete, exactly as shown by `restate rules list` (`'*'` is only
+    /// the `*` rule)
     pattern: String,
 
     #[clap(flatten)]

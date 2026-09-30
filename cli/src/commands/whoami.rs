@@ -29,8 +29,21 @@ use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
+/// Show the server the CLI talks to, and check that it's reachable
+///
+/// Prints the admin and ingress URLs in use, whether a bearer token is set (never the token),
+/// the selected environment and where it comes from, the CLI config paths, and the CLI build.
+/// Then checks the admin API: exits with code 5 (network error) if it can't be reached, 8
+/// (server error) if it's unhealthy.
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate whoami --json",
+        "restate -e prod whoami",
+    ],
+    learn_more: "https://docs.restate.dev/references/cli-config",
+))]
 pub struct WhoAmI {}
 
 pub async fn run(State(env): State<CliEnv>) -> Result<()> {

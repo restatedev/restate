@@ -33,8 +33,8 @@ use crate::{
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_configure")]
 pub struct Configure {
-    /// The Cloud environment to configure the CLI for.
-    /// Format: [ACCOUNT/]ENVIRONMENT where ACCOUNT and ENVIRONMENT may be either names or IDs.
+    /// The Cloud environment to configure the CLI for: `[ACCOUNT/]ENVIRONMENT`, where each is a
+    /// name or an id. If omitted, you're asked to pick one
     environment_specifier: Option<EnvironmentSpecifier>,
 }
 
