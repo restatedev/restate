@@ -652,6 +652,19 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             // for L6 240.4M entries, Ribbon=237.8MiB vs. Bloom=334.3MiB.
             block_options.set_hybrid_ribbon_filter(10.0, 6);
         }
+        // Without whole keys, point lookups check the prefix filter (see the prefix extractor
+        // below), which already tells apart the invocations and vqueues sharing a partition key.
+        // On an 18.7M-invocation partition store (330.7M keys), the filters in the SST files added
+        // up to 39.4 MiB with whole keys and no L6 filters, 320.2 MiB with whole keys and L6
+        // filters, and 74.8 MiB with L6 filters and no whole keys. These are sizes on disk and an
+        // upper bound for the block cache, which only holds the filters of L0 files (pinned) and
+        // the ones that reads, flushes and compactions loaded. L6 filters without whole keys make
+        // cold lookups of missing invocations 100x faster than the v1.7 layout (2.7 vs 268 µs),
+        // but only once files written with the fixed 10-byte extractor are gone: they give point
+        // lookups no filter at all without whole keys (512 vs 268 µs).
+        // TODO(v1.9): always disable whole-key filtering and enable L6 filters by default.
+        let whole_key_filtering = !config.rocksdb_disable_whole_key_filtering;
+        block_options.set_whole_key_filtering(whole_key_filtering);
 
         cf_options.set_block_based_table_factory(&block_options);
         cf_options.set_merge_operator(
@@ -677,13 +690,10 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             );
         }
 
-        // Actually, we would love to use CappedPrefixExtractor but unfortunately it's neither exposed
-        // in the C API nor the rust binding. That's okay and we can change it later.
-        cf_options.set_prefix_extractor(rocksdb::SliceTransform::create_fixed_prefix(
-            crate::DB_PREFIX_LENGTH,
-        ));
+        // Keys shorter than the cap are their own prefix, so every key is in the extractor's domain.
+        cf_options.set_capped_prefix_extractor(crate::PREFIX_EXTRACTOR_LENGTH);
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
-        cf_options.set_memtable_whole_key_filtering(true);
+        cf_options.set_memtable_whole_key_filtering(whole_key_filtering);
 
         cf_options.set_num_levels(7);
         let l0_l1 = if config.rocksdb.rocksdb_disable_l0_l1_compression() {

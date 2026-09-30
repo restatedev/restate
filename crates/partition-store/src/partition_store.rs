@@ -67,12 +67,25 @@ use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
 
-// Key prefix is 10 bytes (KeyKind(2) + PartitionKey/Id(8))
+// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8))
 pub(crate) const DB_PREFIX_LENGTH: usize =
     KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
 
 // If this changes, we need to know.
 const_assert_eq!(DB_PREFIX_LENGTH, 10);
+
+/// Length of the capped prefix extractor of partition-store column families: the key kind, the
+/// partition key and up to 10 more bytes, which tell apart the invocations and vqueues sharing a
+/// partition key. Keys shorter than this are their own prefix, so prefix seeks need prefixes of at
+/// least this length.
+///
+/// 20 bytes also cover the timestamp and 4 random bytes of ULID-based ids, and the sequence number
+/// of canonical entry ids. On an 18.7M-invocation partition store, it halved the block reads of
+/// cold journal scans on busy partition keys compared to 10 bytes (1.41 vs 2.72), for filters as
+/// large as with 13 bytes and 7% smaller than with 26 bytes. Shorter scans lose their filter:
+/// whole partition keys (2.39 vs 1.70 block reads) and the state of objects whose service name and
+/// key add up to less than 7 bytes (510 vs 13 µs).
+pub(crate) const PREFIX_EXTRACTOR_LENGTH: usize = 20;
 
 /// An internal representation of PartitionId that pads the underlying u16 into u64 to align with
 /// partition-key length. This should only be used as a replacement to PartitionId when
@@ -949,8 +962,8 @@ impl ScanMode {
         S: AsRef<[u8]>,
         E: AsRef<[u8]>,
     {
-        let start_prefix = start.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
-        let end_prefix = end.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
+        let start_prefix = start.as_ref().first_chunk::<PREFIX_EXTRACTOR_LENGTH>();
+        let end_prefix = end.as_ref().first_chunk::<PREFIX_EXTRACTOR_LENGTH>();
 
         if start_prefix.is_some() && start_prefix == end_prefix {
             ScanMode::WithinPrefix
