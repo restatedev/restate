@@ -10,7 +10,10 @@
 
 use super::*;
 
-use crate::partition::state_machine::tests::matchers::actions::purge_invocation_reply;
+use std::time::Duration;
+
+use prost::Message;
+
 use restate_storage_api::invocation_status_table::CompletedInvocation;
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_storage_api::timer_table::ReadTimerTable;
@@ -21,7 +24,8 @@ use restate_types::invocation::{
     PurgeInvocationRequest,
 };
 use restate_types::service_protocol;
-use std::time::Duration;
+
+use crate::partition::state_machine::tests::matchers::actions::purge_invocation_reply;
 
 #[restate_core::test]
 async fn start_workflow_method() {
