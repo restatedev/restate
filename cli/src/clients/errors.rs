@@ -8,13 +8,41 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use arrow::error::ArrowError;
 use serde::Deserialize;
+use thiserror::Error;
 use url::Url;
 
-use restate_cli_util::ui::stylesheet::Style;
+/// The error of the CLI's HTTP clients (admin API, SQL queries, Restate Cloud).
+#[derive(Error, Debug)]
+pub enum ClientError {
+    /// The server answered with an error status.
+    #[error(transparent)]
+    Api(#[from] ApiError),
+    /// The server's response couldn't be parsed. The serde error isn't the source: the
+    /// message already includes it.
+    #[error("Unexpected response from the server: {0}")]
+    Serialization(serde_json::Error),
+    #[error(transparent)]
+    Network(#[from] reqwest::Error),
+    #[error(
+        "The Restate server '{0}' lacks JSON /query support. Please update the CLI to match the Restate server version '{1}'."
+    )]
+    JSONSupport(Url, String),
+    #[error(transparent)]
+    Arrow(#[from] ArrowError),
+    #[error(transparent)]
+    UrlParse(#[from] url::ParseError),
+}
 
-use crate::console::Styled;
+impl From<serde_json::Error> for ClientError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serialization(err)
+    }
+}
 
+/// The admin API's error body. Keep in sync with `ErrorDescriptionResponse` in
+/// `crates/admin/src/rest_api/mod.rs`.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ApiErrorBody {
     pub restate_code: Option<String>,
@@ -26,6 +54,19 @@ impl ApiErrorBody {
     /// `Cannot parse deployment …` 400).
     pub fn parse(body: String) -> Self {
         serde_json::from_str(&body).unwrap_or_else(|_| Self::from(body.trim().to_owned()))
+    }
+
+    /// The server's message, without the `[CODE] ` prefixes it may repeat (once per
+    /// error layer): the code is reported, and linked to its docs, on its own.
+    pub fn message(&self) -> &str {
+        let mut message = self.message.as_str();
+        if let Some(code) = &self.restate_code {
+            let tag = format!("[{code}] ");
+            while let Some(rest) = message.strip_prefix(&tag) {
+                message = rest;
+            }
+        }
+        message
     }
 }
 
@@ -41,7 +82,9 @@ impl From<String> for ApiErrorBody {
 #[derive(Debug, Clone)]
 pub struct ApiError {
     pub http_status_code: reqwest::StatusCode,
-    pub url: Url,
+    /// The request URL, only for display (a `String` rather than a `Url` keeps
+    /// `ClientError` small).
+    pub url: String,
     pub body: ApiErrorBody,
 }
 
@@ -54,38 +97,12 @@ pub fn error_docs_url(code: &str) -> String {
     )
 }
 
-impl std::fmt::Display for ApiErrorBody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.restate_code {
-            Some(code) => {
-                // The server's message may repeat the code as `[CODE] ` prefixes (once
-                // per error layer); the docs link below already names it.
-                let tag = format!("[{code}] ");
-                let mut message = self.message.as_str();
-                while let Some(rest) = message.strip_prefix(&tag) {
-                    message = rest;
-                }
-                write!(
-                    f,
-                    "{message}\n  -> See {}",
-                    Styled(Style::Info, error_docs_url(code))
-                )
-            }
-            None => write!(f, "{}", self.message),
-        }
-    }
-}
-
+/// The HTTP exchange that failed, e.g. `403 Forbidden at 'http://…'`. Plain text: it is
+/// part of [`RestateCliError`](crate::error::RestateCliError)'s message, which JSON
+/// output carries too.
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "{}", self.body)?;
-        write!(
-            f,
-            "  -> Http status code {} at '{}'",
-            Styled(Style::Warn, &self.http_status_code),
-            Styled(Style::Info, &self.url),
-        )?;
-        Ok(())
+        write!(f, "{} at '{}'", self.http_status_code, self.url)
     }
 }
 

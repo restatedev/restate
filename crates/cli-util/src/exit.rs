@@ -38,13 +38,16 @@ pub const ABORTED: u8 = 7;
 pub const SERVER: u8 = 8;
 
 /// Error returned when the user declines a confirmation prompt, or when a prompt is
-/// refused because the CLI is running non-interactively. Maps to [`ABORTED`].
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Aborted;
+/// refused because the CLI is running non-interactively (`reason` says which prompt, and
+/// how to avoid it). Maps to [`ABORTED`].
+#[derive(Debug, Default, Clone)]
+pub struct Aborted {
+    pub reason: Option<String>,
+}
 
 impl fmt::Display for Aborted {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "User aborted")
+        f.write_str(self.reason.as_deref().unwrap_or("User aborted"))
     }
 }
 
@@ -82,19 +85,6 @@ impl fmt::Display for BadInput {
 }
 
 impl Error for BadInput {}
-
-/// A requested resource does not exist (e.g. no state for a key, or a journal range
-/// past the end). Maps to [`NOT_FOUND`].
-#[derive(Debug, Clone)]
-pub struct NotFound(pub String);
-
-impl fmt::Display for NotFound {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl Error for NotFound {}
 
 /// Returned by `--dry-run` once the planned changes have been shown: stops the command
 /// before it changes anything, and exits with [`SUCCESS`] without printing an error.

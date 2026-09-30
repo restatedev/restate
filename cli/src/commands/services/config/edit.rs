@@ -19,8 +19,16 @@ use std::fs::File;
 use std::io;
 use tempfile::tempdir;
 
+/// Edit a service's configuration in $EDITOR (interactive)
+///
+/// Needs a terminal: from scripts and agents, use `restate services config patch` instead.
+/// Registering a new deployment of the service resets these settings to what the service
+/// code defines, or to the server defaults.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_edit")]
+#[command(after_help = after_help!(
+    learn_more: "https://docs.restate.dev/services/configuration",
+))]
 pub struct Edit {
     /// Service name
     service: String,

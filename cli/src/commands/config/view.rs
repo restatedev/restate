@@ -17,8 +17,15 @@ use restate_cli_util::c_println;
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 use crate::{cli_env::CliEnv, console};
 
+/// Print the CLI config file
+///
+/// Prints the file as is, bearer tokens included: don't share the output. With --json, prints
+/// it converted to JSON.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_view")]
+#[command(after_help = after_help!(
+    learn_more: "https://docs.restate.dev/references/cli-config",
+))]
 pub struct View {}
 
 pub async fn run_view(State(env): State<CliEnv>, _opts: &View) -> Result<()> {
@@ -32,7 +39,7 @@ pub async fn run_view(State(env): State<CliEnv>, _opts: &View) -> Result<()> {
         // Convert the TOML config into JSON so `config view --json` is machine-readable.
         let value: serde_json::Value = toml::from_str(&config_data)?;
         let mut f = Formatter::new();
-        f.value("config", Field::json(value));
+        f.value("config", Field::new(value));
         return f.finish();
     }
 

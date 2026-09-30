@@ -57,13 +57,22 @@ pub enum InvocationState {
     #[default]
     #[clap(hide = true)]
     Unknown,
+    /// Will start at a later time (a delayed call)
     Scheduled,
+    /// Queued behind other invocations, e.g. on the same virtual object key or for a
+    /// concurrency limit
     Pending,
+    /// Ready to run, waiting to be started
     Ready,
+    /// Executing on a deployment
     Running,
+    /// Waiting for something to complete (e.g. a timer, a call, a signal), not executing
     Suspended,
+    /// Failed an attempt, waiting to retry
     BackingOff,
+    /// Finished, successfully or with a failure (see --completion-result)
     Completed,
+    /// Stopped until resumed: ran out of retries, or was paused
     Paused,
 }
 
@@ -246,7 +255,7 @@ pub struct JournalEntryRow {
 
 /// A single event from `sys_journal_events` (decoded events attached to an invocation's
 /// timeline, ordered relative to journal entries by `after_journal_entry_index`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct JournalEventRow {
     pub after_journal_entry_index: u32,
     pub appended_at: Option<DateTime<Local>>,

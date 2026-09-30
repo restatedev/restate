@@ -45,6 +45,7 @@ arrow = { workspace = true, features = ["ipc", "prettyprint", "json"] }
 axum = { workspace = true, default-features = false, features = ["http1", "http2", "query", "tokio"] }
 bytes = { workspace = true }
 base64 = { workspace = true }
+bm25 = { workspace = true }
 chrono = { workspace = true }
 chrono-humanize = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
@@ -78,6 +79,7 @@ rustls = { workspace = true, features = ["aws-lc-rs"]}
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
+strsim = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }
 thiserror = { workspace = true }

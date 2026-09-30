@@ -22,21 +22,32 @@ use crate::commands::state::util::{
     update_state, write_json_file,
 };
 
+/// Edit the K/V state of a virtual object or workflow key in an editor
+///
+/// Needs a terminal: scripts and agents should use `restate state patch` instead.
+/// The change is queued behind the invocations running on that key: the command returns once
+/// it's submitted, before it's applied.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_edit")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate state edit Cart u1",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
+))]
 pub struct Edit {
-    /// Don't try to convert the values to a UTF-8 string
+    /// Treat values as base64-encoded bytes instead of JSON, in the output and in the input
     #[clap(long, alias = "bin")]
     binary: bool,
 
-    /// Force means, ignore the current version
+    /// Apply even if the state changed since it was read, overwriting those changes
     #[clap(long, short)]
     force: bool,
 
-    /// service name
+    /// Virtual object or workflow name
     service: String,
 
-    /// service key
+    /// Virtual object or workflow key
     key: String,
 }
 

@@ -14,10 +14,20 @@ use cling::prelude::*;
 use super::toggle_disabled;
 use crate::cli_env::CliEnv;
 
+/// Enforce a disabled rule again
+///
+/// Applies without asking for confirmation.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_enable")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate rules enable checkout",
+    ],
+    learn_more: "https://docs.restate.dev/services/flow-control",
+))]
 pub struct Enable {
-    /// Pattern of the rule to enable
+    /// Pattern of the rule to enable, exactly as shown by `restate rules list` (`'*'` is only
+    /// the `*` rule)
     pattern: String,
 }
 

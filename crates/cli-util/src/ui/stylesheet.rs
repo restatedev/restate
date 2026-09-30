@@ -36,6 +36,9 @@ pub const SUCCESS_ICON: Icon = Icon("✅", "[OK]:");
 /// Error indicator icon. Displays as X emoji or "[ERR]:" in non-color mode.
 pub const ERR_ICON: Icon = Icon("❌", "[ERR]:");
 
+/// Nothing-to-do indicator icon. Displays as information emoji or "[NOOP]:" in non-color mode.
+pub const NOOP_ICON: Icon = Icon("ℹ️", "[NOOP]:");
+
 /// Warning indicator icon. Displays as warning emoji or "[WARNING]:" in non-color mode.
 pub const WARN_ICON: Icon = Icon("⚠️", "[WARNING]:");
 

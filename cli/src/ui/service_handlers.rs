@@ -15,7 +15,7 @@ use restate_cli_util::ui::console::StyledTable;
 use restate_types::invocation::ServiceType;
 use restate_types::schema::service::HandlerMetadata;
 
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
 
 pub fn create_service_handlers_table<'a>(
     handlers: impl Iterator<Item = &'a HandlerMetadata>,
@@ -70,7 +70,7 @@ pub fn write_service_handlers<'a>(
     } else {
         &["handler", "input", "output"]
     };
-    f.table("handlers", headers, rows);
+    f.table("handlers", headers, rows, IfEmpty::Nothing);
 }
 
 pub fn create_service_handlers_table_diff<'a>(

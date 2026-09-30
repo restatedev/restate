@@ -21,40 +21,46 @@ mod resume;
 use anyhow::Result;
 use cling::prelude::*;
 
-use restate_cli_util::exit;
 use restate_types::identifiers::InvocationId;
+
+use crate::error::RestateCliError;
 
 const DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT: usize = 500;
 const DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT: usize =
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT;
 
+/// Help of the `<QUERY>` argument of the commands acting on a set of invocations.
+const QUERY_HELP: &str =
+    "Invocation id, or target: `Service`, `Service/handler`, `Object/key`, `Object/key/handler`";
+const QUERY_LONG_HELP: &str = "\
+Which invocations: an invocation id (`inv_...`), or all the invocations of a target:
+  * `Service`: of any handler of a service, virtual object or workflow
+  * `Service/handler`: of one handler of a service
+  * `Object/key`: of one key of a virtual object or workflow
+  * `Object/key/handler`: of one handler of a virtual object or workflow key
+A two-part query is `Object/key` for virtual objects and workflows, else `Service/handler`.
+Names and keys match exactly: `Cart/u1` doesn't match `Cart/u10`.";
+
+// Commands are documented on their own struct.
 #[derive(Run, Subcommand, Clone)]
 pub enum Invocations {
-    /// List invocations
     List(list::List),
-    /// Prints detailed information about a given invocation
     Describe(describe::Describe),
-    /// Show an invocation's journal (metadata by default; add --payload for entry payloads)
     Journal(journal::Journal),
-    /// Cancel a given invocation, or a set of invocations, and its children
     Cancel(cancel::Cancel),
     Kill(kill::Kill),
-    /// Purge a completed invocation, or a set of invocations. This command affects only completed invocations.
     Purge(purge::Purge),
-    /// Restart a completed invocation, or a set of invocations. This command affects only completed invocations. Note: this command doesn't work on workflows yet.
     RestartAsNew(restart_as_new::RestartAsNew),
-    /// Resume an invocation, or a set of invocations.
     Resume(resume::Resume),
-    /// Pause an invocation, or a set of invocations.
     Pause(pause::Pause),
 }
 
 /// Validate an invocation id client-side, so a typo is bad input (exit 2) rather than
 /// a server-side SQL error.
 fn parse_invocation_id(id: &str) -> Result<InvocationId> {
-    id.trim()
-        .parse()
-        .map_err(|err| exit::BadInput(format!("invalid invocation id '{id}': {err}")).into())
+    id.trim().parse().map_err(|err| {
+        RestateCliError::bad_input(format!("invalid invocation id '{id}': {err}")).into()
+    })
 }
 
 /// See [cancel::Cancel] for more details on query
