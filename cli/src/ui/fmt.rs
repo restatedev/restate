@@ -236,6 +236,24 @@ pub trait OutputFormatter {
     /// `outcome`.
     fn outcome(&mut self, section: &str, field: Field, outcome: Outcome);
 
+    /// Report that a state-changing command's query matched nothing. There is nothing to
+    /// do, which is a success whatever `--dry-run`/`--yes` say: JSON gets the empty
+    /// `changes` plan and `"result": "nothing_to_do"`, humans get `message` as a
+    /// nothing-to-do line.
+    fn nothing_to_do(&mut self, message: impl Into<String>) {
+        self.table(
+            "changes",
+            &[] as &[&str],
+            std::iter::empty::<[Field; 0]>(),
+            IfEmpty::Nothing,
+        );
+        self.outcome(
+            "result",
+            Field::with_display("nothing_to_do", message),
+            Outcome::NothingToDo,
+        );
+    }
+
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
     /// `Label: value` row, aligned with the adjacent `field` rows (skipped when the value
     /// is `null` without a display, like in `detail`).
@@ -657,9 +675,11 @@ pub enum IncludeFormatting {
 /// How human output shows an [`OutputFormatter::outcome`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// The command reached what was asked, including when there was nothing to change
-    /// (`✅`/`[OK]:` on stdout).
+    /// The command did what was asked (`✅`/`[OK]:` on stdout).
     Success,
+    /// There was nothing to change, e.g. the query matched nothing or the rule is already
+    /// absent: still a success (`ℹ️`/`[NOOP]:` on stdout).
+    NothingToDo,
     /// The command could not do what was asked (`❌`/`[ERR]:` on stderr).
     #[expect(dead_code, reason = "no command reports a failed outcome yet")]
     Failure,
@@ -858,6 +878,7 @@ impl OutputFormatter for HumanFormatter {
         let message = field.human_display();
         match outcome {
             Outcome::Success => restate_cli_util::c_success!("{message}"),
+            Outcome::NothingToDo => restate_cli_util::c_noop!("{message}"),
             Outcome::Failure => restate_cli_util::c_error!("{message}"),
         }
         self.printed = true;
@@ -1582,6 +1603,16 @@ mod tests {
         assert_eq!(
             JsonFormatter::default().error_document(&RestateCliError::not_found("nope")),
             json!({"error": {"kind": "not_found", "message": "nope"}})
+        );
+    }
+
+    #[test]
+    fn nothing_to_do_emits_empty_plan_and_result() {
+        let mut jf = JsonFormatter::default();
+        jf.nothing_to_do("No state found for Counter");
+        assert_eq!(
+            jf.into_document(),
+            json!({"changes": [], "result": "nothing_to_do"})
         );
     }
 

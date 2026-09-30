@@ -22,7 +22,6 @@ use restate_cli_util::{CliContext, c_println};
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
-use crate::error::RestateCliError;
 use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 #[derive(Run, Parser, Collect, Clone)]
@@ -62,9 +61,9 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
     let services_state = get_state_keys(&sql_client, svc, key).await?;
     let json = CliContext::get().json_output();
     if services_state.is_empty() {
-        return Err(
-            RestateCliError::not_found(format!("No state found for {}", opts.query)).into(),
-        );
+        let mut f = Formatter::new();
+        f.nothing_to_do(format!("No state found for {}", opts.query));
+        return f.finish();
     }
 
     let mut f = Formatter::new();

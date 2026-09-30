@@ -477,6 +477,14 @@ macro_rules! c_success {
     };
 }
 
+/// A change command found nothing to do (e.g. its query matched nothing).
+#[macro_export]
+macro_rules! c_noop {
+    ($($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::NOOP_ICON), stdout, $($arg)*);
+    };
+}
+
 #[macro_export]
 macro_rules! c_error {
     ($($arg:tt)*) => {

@@ -13,18 +13,16 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
-use restate_cli_util::ui::stylesheet::Style;
-
-use crate::console::Styled;
-
 /// The error of the CLI's HTTP clients (admin API, SQL queries, Restate Cloud).
 #[derive(Error, Debug)]
 pub enum ClientError {
     /// The server answered with an error status.
     #[error(transparent)]
     Api(#[from] ApiError),
-    #[error("(Protocol error) {0}")]
-    Serialization(#[from] serde_json::Error),
+    /// The server's response couldn't be parsed. The serde error isn't the source: the
+    /// message already includes it.
+    #[error("Unexpected response from the server: {0}")]
+    Serialization(serde_json::Error),
     #[error(transparent)]
     Network(#[from] reqwest::Error),
     #[error(
@@ -37,6 +35,14 @@ pub enum ClientError {
     UrlParse(#[from] url::ParseError),
 }
 
+impl From<serde_json::Error> for ClientError {
+    fn from(err: serde_json::Error) -> Self {
+        Self::Serialization(err)
+    }
+}
+
+/// The admin API's error body. Keep in sync with `ErrorDescriptionResponse` in
+/// `crates/admin/src/rest_api/mod.rs`.
 #[derive(Deserialize, Debug, Clone)]
 pub struct ApiErrorBody {
     pub restate_code: Option<String>,
@@ -91,17 +97,12 @@ pub fn error_docs_url(code: &str) -> String {
     )
 }
 
-/// The HTTP exchange that failed; the server's message is reported on its own (see
-/// [`RestateCliError`](crate::error::RestateCliError)).
+/// The HTTP exchange that failed, e.g. `403 Forbidden at 'http://…'`. Plain text: it is
+/// part of [`RestateCliError`](crate::error::RestateCliError)'s message, which JSON
+/// output carries too.
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "Http status code {} at '{}'",
-            Styled(Style::Warn, &self.http_status_code),
-            Styled(Style::Info, &self.url),
-        )?;
-        Ok(())
+        write!(f, "{} at '{}'", self.http_status_code, self.url)
     }
 }
 

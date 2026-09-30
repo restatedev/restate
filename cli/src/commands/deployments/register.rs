@@ -31,7 +31,7 @@ use restate_types::identifiers::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, ClientError, Deployment};
+use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
@@ -460,7 +460,7 @@ async fn register(
     if dry_run_result.status_code() == StatusCode::CONFLICT {
         progress.finish_and_clear();
         let api_error = dry_run_result.into_api_error().await?;
-        return Err(RestateCliError::from(ClientError::from(api_error))
+        return Err(RestateCliError::from(api_error)
             .with_context(vec!["Breaking changes detected".to_owned()])
             .with_next_step(
                 format!(
@@ -747,7 +747,7 @@ async fn print_registration_changes(
                          We will not be able to show the detailed changes for this service.",
                         service.name,
                     );
-                        c_error!("{}", e);
+                        c_error!("{}", RestateCliError::from(e).message());
                     });
                 }
             };

@@ -297,9 +297,11 @@ pub fn print_invocation_changes(
     Ok(())
 }
 
-/// No invocation matched: a not-found error, in every output format.
+/// No invocation matched: nothing to do, a success (see [`OutputFormatter::nothing_to_do`]).
 pub fn no_invocations_to_change(message: String) -> Result<()> {
-    Err(RestateCliError::not_found(message).into())
+    let mut f = Formatter::new();
+    f.nothing_to_do(message);
+    f.finish()
 }
 
 /// Write the outcome of a batch invocation command: the success count for humans, and a

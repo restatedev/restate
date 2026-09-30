@@ -223,6 +223,7 @@ Core output primitives that handle broken pipes gracefully (unlike `println!`).
 | `c_print!` | stdout | Print (no newline) |
 | `c_eprintln!` | stderr | Print line to stderr |
 | `c_success!` | stdout | Success message with icon |
+| `c_noop!` | stdout | Nothing-to-do message with icon |
 | `c_error!` | stderr | Error message with icon |
 | `c_warn!` | stderr | Warning box (yellow, bold) |
 | `c_tip!` | stderr | Tip box (italic, dim) |
@@ -335,7 +336,8 @@ description) is left out for humans and stays `null` in JSON, so optional rows n
 A change command reports what happened with `outcome`, not with `c_success!` behind an
 `if !json`: `f.outcome("result", Field::with_display("deleted", format!("Deleted rule '{p}'")), Outcome::Success)`
 gives JSON `"result": "deleted"` and humans the `✅` line. A no-op that leaves things as asked
-(e.g. already deleted) is a `Success` too; `Failure` prints `❌` on stderr.
+(e.g. already deleted, or a query that matched nothing) is `Outcome::NothingToDo`: still a
+success (exit `0`), shown with `ℹ️`; `Failure` prints `❌` on stderr.
 
 Nested data (e.g. services, each with its handlers) goes in a list of items. Each item
 is described with the same building blocks (plus `field` for a single key/value row) on

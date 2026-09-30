@@ -22,5 +22,5 @@ pub use self::admin_interface::Deployment;
 pub use self::admin_interface::{AdminClientInterface, batch_execute};
 pub use self::datafusion_http_client::DataFusionHttpClient;
 #[cfg(test)]
-pub(crate) use self::errors::{ApiError, ApiErrorBody};
-pub use self::errors::{ClientError, error_docs_url};
+pub(crate) use self::errors::ApiErrorBody;
+pub use self::errors::{ApiError, ClientError, error_docs_url};

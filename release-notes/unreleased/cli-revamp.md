@@ -41,8 +41,8 @@ On failure with `--json`, the CLI emits a JSON error object on stdout —
 (the last three only when present) — and returns a differentiated process exit code so
 scripts/agents can branch on the failure class: `2` invalid usage, `3` confirmation required,
 `4` not found, `5` network, `6` auth, `7` aborted (prompt declined), `8` server (5xx), `1` other. Messages are tidied (no
-`<UNKNOWN>` placeholder; for a server error, the `message` is the server's own and the HTTP status
-and URL are listed under `causes`). Errors also suggest read-only next steps (e.g. `whoami` on connection
+`<UNKNOWN>` placeholder; for a server error, the `message` is the server's own, followed by the HTTP
+status and URL). Errors also suggest read-only next steps (e.g. `whoami` on connection
 failures, the matching `list` on not found): a tip in human output, `error.next_steps` in JSON. `whoami` now exits non-zero when the admin health probe fails. `state get` exits `4` (not found) when the key has no state or the service is unknown (a deleted service with leftover state still prints it, with a warning).
 
 ### Previewing and confirming changes (`--dry-run` / `--yes`)
@@ -62,6 +62,10 @@ user's approval, and then apply it:
   `results` for bulk operations; a partial failure keeps that single document on stdout and exits
   non-zero.
 - Interactive human runs are unchanged: preview, then prompt.
+- When the query matches nothing (the bulk `invocations` commands, `state clear`), there is
+  nothing to do and the command succeeds with exit `0`, with or without `--dry-run` / `--yes`.
+  With `--json`, it prints an empty `changes` array and `"result": "nothing_to_do"`. Previously
+  human runs of the `invocations` commands exited `1`.
 - As before, the `CI` environment variable (set by CI providers, e.g. `CI=true`) counts as `--yes`:
   in CI, changes apply without confirmation, with or without `--json`; use `--dry-run` to only
   preview them. New: `CI` set to empty, `false` or `0` now counts as unset (before, any value

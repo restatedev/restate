@@ -69,7 +69,7 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
             Ok(deleted) if deleted.is_empty() => (
                 "already_absent",
                 format!("Rule '{canonical}' was already absent."),
-                Outcome::Success,
+                Outcome::NothingToDo,
             ),
             Ok(_) => (
                 "deleted",

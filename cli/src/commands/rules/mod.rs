@@ -214,7 +214,7 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
             "already_enabled"
         };
         let message = format!("Rule '{canonical}' is already {action}.");
-        (Some(current), (result, message, Outcome::Success))
+        (Some(current), (result, message, Outcome::NothingToDo))
     } else {
         let client = AdminClient::new(env).await?;
         let request = UpsertRuleRequest {

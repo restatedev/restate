@@ -21,7 +21,7 @@ use serde::Serialize;
 use restate_cli_util::exit;
 
 use crate::app::Command;
-use crate::clients::{ClientError, error_docs_url};
+use crate::clients::{ApiError, ClientError, error_docs_url};
 use crate::commands::{
     deployments, invocations, kafkaclusters, rules, services, subscriptions, vqueues,
 };
@@ -285,24 +285,41 @@ impl Error for RestateCliError {
     }
 }
 
+/// The server's message followed by the HTTP exchange, e.g. `access denied (403 Forbidden
+/// at 'http://…')`, or just the exchange when the server gave no message.
+impl From<&ApiError> for RestateCliError {
+    fn from(api: &ApiError) -> Self {
+        let message = match api.body.message().trim() {
+            "" => api.to_string(),
+            message => format!("{message} ({api})"),
+        };
+        Self {
+            restate_code: api.body.restate_code.clone(),
+            ..Self::new(ErrorKind::from_status(api.http_status_code), message)
+        }
+    }
+}
+
+impl From<ApiError> for RestateCliError {
+    fn from(api: ApiError) -> Self {
+        Self::from(&api)
+    }
+}
+
 impl From<ClientError> for RestateCliError {
     fn from(err: ClientError) -> Self {
-        Self::from(&err)
+        match err {
+            ClientError::Api(api) => api.into(),
+            err => Self::from(&err),
+        }
     }
 }
 
 impl From<&ClientError> for RestateCliError {
     fn from(err: &ClientError) -> Self {
         match err {
-            ClientError::Api(api) => Self {
-                restate_code: api.body.restate_code.clone(),
-                cause: Some(Box::new(api.clone())),
-                ..Self::new(
-                    ErrorKind::from_status(api.http_status_code),
-                    api.body.message(),
-                )
-            },
-            ClientError::Network(err) => Self::from_error(ErrorKind::from_reqwest(err), err),
+            ClientError::Api(api) => api.into(),
+            ClientError::Network(err) => err.into(),
             err => Self::from_error(ErrorKind::Generic, err),
         }
     }
@@ -408,7 +425,7 @@ impl Error for Cause {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::clients::{ApiError, ApiErrorBody};
+    use crate::clients::ApiErrorBody;
 
     fn causes(err: &RestateCliError) -> Vec<String> {
         err.causes().map(ToString::to_string).collect()
@@ -428,12 +445,15 @@ mod tests {
             anyhow::Error::from(ClientError::from(api)).context("Describing dp_x"),
         ));
         assert_eq!(err.kind(), ErrorKind::NotFound);
-        assert_eq!(err.message(), "Describing dp_x: no deployment");
+        assert_eq!(
+            err.message(),
+            "Describing dp_x: no deployment (404 Not Found at 'http://localhost:9070/deployments/dp_x')"
+        );
         assert_eq!(
             err.docs_url().as_deref(),
             Some("https://docs.restate.dev/references/errors#meta0003")
         );
-        assert_eq!(err.causes().count(), 1);
+        assert_eq!(err.causes().count(), 0);
 
         let err = RestateCliError::from(CliError::Other(
             anyhow::Error::from(
@@ -463,5 +483,56 @@ mod tests {
             .unwrap_err();
         let err = RestateCliError::from(CliError::Other(ClientError::Network(err).into()));
         assert_eq!(err.kind(), ErrorKind::NotFound);
+    }
+
+    fn api_client_error(body: &str) -> ClientError {
+        ClientError::Api(ApiError {
+            http_status_code: StatusCode::FORBIDDEN,
+            url: "http://localhost:9070/services/Greeter".to_owned(),
+            body: ApiErrorBody::parse(body.to_owned()),
+        })
+    }
+
+    #[test]
+    fn api_client_errors_report_the_servers_message_and_the_exchange() {
+        let err = RestateCliError::from(api_client_error(r#"{"message":"access denied"}"#));
+        assert_eq!(
+            err.message(),
+            "access denied (403 Forbidden at 'http://localhost:9070/services/Greeter')"
+        );
+    }
+
+    #[test]
+    fn api_client_errors_without_a_message_report_the_exchange() {
+        let err = RestateCliError::from(api_client_error(r#"{"message":" "}"#));
+        assert_eq!(
+            err.message(),
+            "403 Forbidden at 'http://localhost:9070/services/Greeter'"
+        );
+    }
+
+    #[test]
+    fn api_client_errors_have_no_causes() {
+        let err = RestateCliError::from(api_client_error(r#"{"message":"access denied"}"#));
+        assert_eq!(causes(&err), Vec::<String>::new());
+    }
+
+    fn serialization_error() -> RestateCliError {
+        let err = serde_json::from_str::<u32>("x").unwrap_err();
+        RestateCliError::from(ClientError::from(err))
+    }
+
+    #[test]
+    fn serialization_errors_say_the_response_is_unexpected() {
+        assert!(
+            serialization_error()
+                .message()
+                .starts_with("Unexpected response from the server: ")
+        );
+    }
+
+    #[test]
+    fn serialization_errors_are_not_repeated_as_causes() {
+        assert_eq!(causes(&serialization_error()), Vec::<String>::new());
     }
 }
