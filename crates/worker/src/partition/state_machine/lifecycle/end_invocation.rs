@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use assert2::let_assert;
+use assert2::assert;
 use restate_storage_api::output_table::WriteOutputTable;
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use tracing::warn;
@@ -138,7 +138,7 @@ impl ResponseResultCache {
 
             output_entry
                 .map(|enriched_entry| {
-                    let_assert!(
+                    assert!(let
                         restate_types::journal::Entry::Output(e) =
                             enriched_entry.deserialize_entry_ref::<ProtobufRawEntryCodec>()?
                     );
