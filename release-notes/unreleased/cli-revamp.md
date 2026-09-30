@@ -12,7 +12,8 @@ Diagnostics/progress stay on stderr, so `restate <cmd> --json` produces clean, p
 stdout. Supported by:
 
 - `services list` / `describe` / `status`, `deployments list` / `describe`,
-  `invocations list` / `describe` / `journal`, `state get`
+  `invocations list` / `describe` / `journal`, `state get`, `vqueues list` / `describe`,
+  `rules list` / `set` / `enable` / `disable` / `delete`
 - `whoami` (also reports the connected server's version)
 - `sql describe` (and `sql "<query>"`, which already supported `--json`)
 - `config view` (emits JSON instead of TOML)
@@ -20,8 +21,12 @@ stdout. Supported by:
 
 JSON is consistent across commands: timestamps are RFC 3339 / ISO-8601 regardless of `--time-format`;
 service type uses one key (`service_type`) and one vocabulary (`service` / `virtual_object` /
-`workflow`); deployment `protocol` is a `[min, max]` array (not a stringified one);
-`invocations describe --json` includes `completion` (success/failure); and collection ordering (e.g.
+`workflow`); deployments are described with the same keys everywhere (`deployment_id`,
+`endpoint`, `transport` such as `HTTP/2.0` or `AWS Lambda`, `active_invocations`), and table
+headers in human output use the same names; deployment `protocol` is a `[min, max]` array (not a
+stringified one);
+`invocations describe --json` includes `completion` (success/failure), and `invocations journal
+--json` the invocation's `status` and `completion` next to the entries; and collection ordering (e.g.
 handlers) is deterministic.
 
 `services status` now derives Active Keys (`locked_keys`, with new `scope` and `lock_acquired_at`
@@ -36,23 +41,24 @@ Where a read-only follow-up is useful (e.g. `invocations list` → `invocations 
 ### Machine-readable errors and exit codes
 
 On failure with `--json`, the CLI emits a JSON error object on stdout —
-`{"error": {"kind": "...", "message": "..."}}` — and returns a differentiated process exit code so
+`{"error": {"kind": "...", "message": "...", "causes": [...], "docs_url": "...", "next_steps": [...]}}`
+(the last three only when present) — and returns a differentiated process exit code so
 scripts/agents can branch on the failure class: `2` invalid usage, `3` confirmation required,
 `4` not found, `5` network, `6` auth, `7` aborted (prompt declined), `8` server (5xx), `1` other. Messages are tidied (no
-`<UNKNOWN>` placeholder; transport URL / HTTP-status detail is kept in human output but dropped from
-the JSON `message`). Errors also suggest read-only next steps (e.g. `whoami` on connection
+`<UNKNOWN>` placeholder; for a server error, the `message` is the server's own, followed by the HTTP
+status and URL). Errors also suggest read-only next steps (e.g. `whoami` on connection
 failures, the matching `list` on not found): a tip in human output, `error.next_steps` in JSON. `whoami` now exits non-zero when the admin health probe fails. `state get` exits `4` (not found) when the key has no state or the service is unknown (a deleted service with leftover state still prints it, with a warning).
 
 ### Previewing and confirming changes (`--dry-run` / `--yes`)
 
 Commands that change state (`deployments register` / `remove`, `invocations cancel` / `kill` /
-`purge` / `pause` / `resume` / `restart-as-new`, `state clear` / `patch`, `services config patch`)
-share one confirmation flow, designed so an agent can preview a change, get its user's approval, and
-then apply it:
+`purge` / `pause` / `resume` / `restart-as-new`, `state clear` / `patch`, `services config patch`,
+`rules delete`) share one confirmation flow, designed so an agent can preview a change, get its
+user's approval, and then apply it:
 
 - `--dry-run` shows the planned changes and exits `0` without applying anything. With `--json`, the
   plan is a `changes` array (e.g. every resolved invocation id and the action to take).
-- `--json` without `--yes` no longer prompts: it prints the same plan document
+- `--json` without `--yes` (or `CI`, see below) no longer prompts: it prints the same plan document
   (`"dry_run": true, "applied": false`, a `hint`, and the ready-to-run `apply_command`) and exits
   with the new code `3` (confirmation required). Non-interactive human runs also exit `3` instead
   of `7`.
@@ -60,6 +66,17 @@ then apply it:
   `results` for bulk operations; a partial failure keeps that single document on stdout and exits
   non-zero.
 - Interactive human runs are unchanged: preview, then prompt.
+- When the query matches nothing (the bulk `invocations` commands, `state clear`), there is
+  nothing to do and the command succeeds with exit `0`, with or without `--dry-run` / `--yes`.
+  With `--json`, it prints an empty `changes` array and `"result": "nothing_to_do"`. Previously
+  human runs of the `invocations` commands exited `1`.
+- As before, the `CI` environment variable (set by CI providers, e.g. `CI=true`) counts as `--yes`:
+  in CI, changes apply without confirmation, with or without `--json`; use `--dry-run` to only
+  preview them. New: `CI` set to empty, `false` or `0` now counts as unset (before, any value
+  enabled it).
+- `--yes` never waits for input: a command that
+  would ask you to pick or type a value fails and asks for it as an argument instead, or uses its
+  default (e.g. `example <name> --yes` downloads into `./<name>`).
 
 Errors carrying a Restate error code (e.g. `META0003`) link to its documentation
 (`https://docs.restate.dev/references/errors#meta0003`), shown on its own line and as
@@ -113,8 +130,16 @@ next retry and last failure) in `invocations list` / `describe` and the dry-run 
   `--order-by modified|created` and `--order desc|asc` to change it (`--oldest-first` still
   works). It also accepts the same query as `cancel` / `pause` / `purge` (an invocation id,
   or a target prefix like `Cart/alice`), combined with the other filters.
-- `deployments describe` / `remove` accept the endpoint URL or Lambda ARN a deployment was
-  registered with, as well as its id.
+- `example <name>` works non-interactively: without `--output-directory` (alias `--out`) it
+  downloads into `./<name>` instead of prompting, and with `--json` prints the example's name,
+  directory and README path. An unknown name exits `4` and points to `restate example --list`; an
+  existing output directory exits `2` (missing parent directories are created). `--list` can no
+  longer be combined with a name or `--output-directory`.
+- New `restate search <words>` finds the commands and SQL tables matching a free-text query or a
+  description of what you want to do (e.g. `restate search pause a stuck invocation`), searching
+  their descriptions and flags too and tolerating typos.
+- New `restate openapi` prints the admin API's OpenAPI spec as JSON, so you (or an agent) can
+  discover the admin API and call it directly, e.g. with `curl`.
 
 ## Why This Matters
 

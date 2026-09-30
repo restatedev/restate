@@ -14,15 +14,11 @@ mod view;
 
 use cling::prelude::*;
 
+// Commands are documented on their own struct.
 #[derive(Run, Subcommand, Clone)]
 pub enum Config {
-    /// Dump the current service configuration
     #[clap(name = "view", alias = "get")]
     View(view::View),
-    /// Interactively edit the service configuration
     Edit(edit::Edit),
-    /// Patch the service configuration either with a file or with the provided arguments.
-    ///
-    /// *NOTE:* Service re-discovery will update the settings based on the service endpoint configuration.
     Patch(patch::Patch),
 }

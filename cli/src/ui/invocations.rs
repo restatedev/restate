@@ -16,7 +16,7 @@ use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
 use dialoguer::console::{Style, style};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_precise;
@@ -30,7 +30,8 @@ use restate_types::journal_v2::{BuiltInSignal, NotificationId, UnresolvedFuture}
 use crate::clients::datafusion_helpers::{
     Invocation, InvocationCompletion, InvocationState, JournalEventRow, SimpleInvocation,
 };
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::error::RestateCliError;
+use crate::ui::fmt::{Field, Formatter, IfEmpty, JournalStatus, ListItem, OutputFormatter};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();
@@ -136,21 +137,67 @@ pub fn rich_invocation_status(
     }
 }
 
-pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
-    table.add_kv_row("Target:", &invocation.target);
+/// An invocation's completion in JSON: `{"result": "success"}`, `{"result": "failure",
+/// "message": …}`, or `null` while it hasn't completed.
+pub fn completion_json(completion: Option<&InvocationCompletion>) -> Value {
+    match completion {
+        Some(InvocationCompletion::Success) => json!({ "result": "success" }),
+        Some(InvocationCompletion::Failure(message)) => {
+            json!({ "result": "failure", "message": message })
+        }
+        None => Value::Null,
+    }
+}
+
+/// The invocation's current status, closing its journal view: the rich status for
+/// humans, `status` and `completion` in JSON.
+pub fn journal_status(invocation: &Invocation) -> JournalStatus {
+    let mut record = Map::new();
+    record.insert("status".to_owned(), invocation.status.to_string().into());
+    record.insert(
+        "completion".to_owned(),
+        completion_json(invocation.completion.as_ref()),
+    );
+    JournalStatus {
+        display: rich_invocation_status(invocation.status, invocation.completion.as_ref())
+            .to_string(),
+        record,
+    }
+}
+
+/// The `invocation` detail of `invocations describe`. JSON also gets the machine
+/// details the human view summarizes (ids, retries, the completion); `error` is the
+/// completion failure, else the last attempt's failure.
+pub fn invocation_detail(invocation: &Invocation) -> Vec<(&'static str, Field)> {
+    let mut rows = vec![
+        ("id", Field::new(invocation.id.as_str())),
+        ("target", Field::new(invocation.target.as_str())),
+        (
+            "target_service_type",
+            Field::new(invocation.target_service_ty.to_string()),
+        ),
+    ];
 
     // Status: backing-off (Retried 1198 time(s). Next retry in 5 seconds and 78 ms) (if not pending....)
-    let status_msg = invocation_status_note(invocation);
-    let status = format!(
-        "{} {}",
-        rich_invocation_status(invocation.status, invocation.completion.as_ref()),
-        status_msg
-    );
-    table.add_kv_row("Status:", status);
-
-    if let Some(idempotency_key) = &invocation.idempotency_key {
-        table.add_kv_row("Idempotency key:", idempotency_key);
-    }
+    rows.push((
+        "status",
+        Field::with_display(
+            invocation.status.to_string(),
+            format!(
+                "{} {}",
+                rich_invocation_status(invocation.status, invocation.completion.as_ref()),
+                invocation_status_note(invocation)
+            ),
+        ),
+    ));
+    rows.push((
+        "completion",
+        Field::json_only(completion_json(invocation.completion.as_ref())),
+    ));
+    rows.push((
+        "idempotency_key",
+        Field::new(invocation.idempotency_key.clone()),
+    ));
 
     // Invoked by: TicketDb p4DGRWa7OTJwAYxelm96fFWSV9woYc0MLQ
     if let Some(invoked_by_id) = &invocation.invoked_by_id {
@@ -163,7 +210,13 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
             style(invoked_by_id).italic(),
         );
-        table.add_kv_row("Invoked by:", invoked_by_msg);
+        rows.push((
+            "invoked_by",
+            Field::with_display(
+                json!({ "id": invoked_by_id, "target": invocation.invoked_by_target }),
+                invoked_by_msg,
+            ),
+        ));
     }
 
     // Deployment: "bG9jYWxob3N0OjkwODAv" [pinned]
@@ -171,73 +224,115 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         .pinned_deployment_id
         .as_deref()
         .or(invocation.last_attempt_deployment_id.as_deref());
-
-    if let Some(deployment_id) = deployment_id {
-        let deployment_msg = format!(
-            "{} {}{}",
-            deployment_id,
-            if invocation.pinned_deployment_id.is_some() {
-                if invocation.pinned_deployment_exists {
-                    format!("[{}]", style("pinned").bold())
+    let pinned = invocation.pinned_deployment_id.is_some();
+    let deployment = match deployment_id {
+        Some(deployment_id) => Field::with_display(
+            json!({
+                "id": deployment_id,
+                "pinned": pinned,
+                "missing": pinned && !invocation.pinned_deployment_exists,
+                "server": invocation.last_attempt_server,
+            }),
+            format!(
+                "{} {}{}",
+                deployment_id,
+                if pinned {
+                    if invocation.pinned_deployment_exists {
+                        format!("[{}]", style("pinned").bold())
+                    } else {
+                        // deployment is missing!
+                        format!("[{}]", style("ZOMBIE").red().bold())
+                    }
                 } else {
-                    // deployment is missing!
-                    format!("[{}]", style("ZOMBIE").red().bold())
+                    "".to_string()
+                },
+                if let Some(server) = &invocation.last_attempt_server {
+                    format!(" using {server}")
+                } else {
+                    "".to_string()
                 }
-            } else {
-                "".to_string()
-            },
-            if let Some(server) = &invocation.last_attempt_server {
-                format!(" using {server}")
-            } else {
-                "".to_string()
-            }
-        );
-        table.add_kv_row("Deployment:", deployment_msg);
-    }
+            ),
+        ),
+        None => Field::new(Value::Null),
+    };
+    rows.push(("deployment", deployment));
 
     // Trace Id: "12343345345"
-    if let Some(trace_id) = &invocation.trace_id {
-        table.add_kv_row("Trace ID:", trace_id);
-    }
+    rows.push(("trace_id", Field::new(invocation.trace_id.clone())));
+
+    rows.push(("num_retries", Field::json_only(invocation.num_retries)));
+    rows.push(("next_retry_at", Field::json_only(invocation.next_retry_at)));
+    rows.push((
+        "current_attempt_duration",
+        Field::json_only(invocation.current_attempt_duration),
+    ));
+    rows.push((
+        "last_attempt_started_at",
+        Field::json_only(invocation.last_attempt_started_at),
+    ));
 
     // Error: [Internal] other client error: error trying to connect: tcp connect error: Connection refused (os error 61)
-    if invocation.status == InvocationState::BackingOff
-        && let Some(error) = &invocation.last_failure_message
-    {
-        let when = format!(
-            "[{}]",
-            invocation
-                .last_attempt_started_at
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "UNKNOWN".to_owned())
-        );
-
-        table.add_kv_row(
-            "Error:",
-            format!("{}\n{}", style(when).dim(), style(error).red()),
-        );
-
-        table.add_kv_row(
-            "Caused by:",
-            format!(
-                "{}{}",
+    // Shown while backing off; JSON-only otherwise.
+    if let Some(InvocationCompletion::Failure(error)) = &invocation.completion {
+        rows.push((
+            "error",
+            Field::with_display(error.as_str(), style(error).red().to_string()),
+        ));
+    } else if let Some(error) = &invocation.last_failure_message {
+        let caused_by = json!({
+            "entry_type": invocation.last_failure_entry_ty,
+            "entry_name": invocation.last_failure_entry_name,
+        });
+        if invocation.status == InvocationState::BackingOff {
+            let when = format!(
+                "[{}]",
                 invocation
-                    .last_failure_entry_ty
-                    .as_deref()
-                    .unwrap_or("UNKNOWN"),
-                invocation
-                    .last_failure_entry_name
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .map(|n| format!(" [{n}]"))
-                    .unwrap_or_default()
+                    .last_attempt_started_at
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_owned())
+            );
+            rows.push((
+                "error",
+                Field::with_display(
+                    error.as_str(),
+                    format!("{}\n{}", style(when).dim(), style(error).red()),
+                ),
+            ));
+            rows.push((
+                "caused_by",
+                Field::with_display(
+                    caused_by,
+                    format!(
+                        "{}{}",
+                        invocation
+                            .last_failure_entry_ty
+                            .as_deref()
+                            .unwrap_or("UNKNOWN"),
+                        invocation
+                            .last_failure_entry_name
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .map(|n| format!(" [{n}]"))
+                            .unwrap_or_default()
+                    ),
+                ),
+            ));
+        } else {
+            rows.push(("error", Field::json_only(error.as_str())));
+            rows.push(("caused_by", Field::json_only(caused_by)));
+        }
+    }
+
+    if invocation.invoked_by_id.is_none() {
+        rows.push((
+            "invoked_by",
+            Field::with_display(
+                Value::Null,
+                format!("[{}]", style("Ingress").dim().italic()),
             ),
-        );
+        ));
     }
-
-    if let Some(InvocationCompletion::Failure(error)) = invocation.completion.clone() {
-        table.add_kv_row("Error:", format!("{}", style(error).red()));
-    }
+    rows
 }
 
 /// Columns of the `changes` plan table of the batch invocation commands.
@@ -286,7 +381,7 @@ pub fn print_invocation_changes(
             action,
         })
         .collect();
-    f.list("changes", &changes)?;
+    f.list("changes", &changes, IfEmpty::Nothing)?;
     if !json {
         if invocations.len() > shown {
             c_println!("And other {} invocations...", invocations.len() - shown)
@@ -296,14 +391,10 @@ pub fn print_invocation_changes(
     Ok(())
 }
 
-/// No invocation matched: `--json` gets an empty `changes` plan, humans get `message`
-/// as an error.
+/// No invocation matched: nothing to do, a success (see [`OutputFormatter::nothing_to_do`]).
 pub fn no_invocations_to_change(message: String) -> Result<()> {
-    if !CliContext::get().json_output() {
-        bail!(message);
-    }
     let mut f = Formatter::new();
-    f.list::<InvocationChange>("changes", &[])?;
+    f.nothing_to_do(message);
     f.finish()
 }
 
@@ -327,14 +418,14 @@ pub fn print_invocation_results<T>(
         .chain(
             failed
                 .iter()
-                .map(|(inv, err)| (inv, "failed", Value::from(err.to_string()))),
+                .map(|(inv, err)| (inv, "failed", Value::from(failure_reason(err)))),
         )
         .map(|(inv, outcome, error)| {
             vec![
                 Field::new(inv.id.clone()),
                 Field::new(inv.target.clone()),
                 Field::new(outcome),
-                Field::json(error),
+                Field::new(error),
             ]
         })
         .collect();
@@ -342,7 +433,14 @@ pub fn print_invocation_results<T>(
         "results",
         &["invocation_id", "target", "outcome", "error"],
         &rows,
+        IfEmpty::Nothing,
     );
+}
+
+/// Why one invocation of a batch could not be changed: the server's message, not the
+/// HTTP exchange it came with.
+fn failure_reason(err: &anyhow::Error) -> String {
+    RestateCliError::from(err).message().to_owned()
 }
 
 /// Finish a batch invocation command, failing when any invocation could not be
@@ -377,10 +475,10 @@ pub fn finish_invocation_results(
     c_warn!("Failed to {verb}:");
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["ID", "REASON"]);
-    for (inv, reason) in failed {
+    for (inv, err) in failed {
         table.add_row(vec![
             Cell::new(&inv.id),
-            Cell::new(reason).fg(Color::DarkRed),
+            Cell::new(failure_reason(&err)).fg(Color::DarkRed),
         ]);
     }
     c_indent_table!(0, table);

@@ -20,25 +20,30 @@ use crate::commands::invocations::{
     DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT, DEFAULT_BATCH_INVOCATIONS_OPERATION_PRINT_LIMIT,
     create_query_filter,
 };
-use crate::ui::fmt::{DryRun, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Formatter, IncludeFormatting, OutputFormatter};
 use crate::ui::invocations::{
     finish_invocation_results, no_invocations_to_change, print_invocation_changes,
     print_invocation_results,
 };
 
+/// Pause invocations, until resumed
+///
+/// A paused invocation stops executing and stays `paused` until `restate invocations resume`,
+/// e.g. to fix a bug and resume it on a new deployment. Restate also pauses invocations that
+/// ran out of retries: list them with `restate invocations list --status paused`.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_pause")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations pause inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
+        "restate invocations pause Greeter --dry-run      # every invocation of Greeter",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct Pause {
-    /// Either an invocation id, or a target string exact match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    #[clap(verbatim_doc_comment)]
+    #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     query: String,
-    /// Limit the number of fetched invocations
+    /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
     #[clap(flatten)]
@@ -94,6 +99,7 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
         f.next_step(
             &format!("restate invocations describe {}", inv.id),
             "check the invocation's status",
+            IncludeFormatting::Yes,
         );
     }
     finish_invocation_results(f, "pause", succeeded.len(), failed)

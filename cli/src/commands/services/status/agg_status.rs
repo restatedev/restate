@@ -11,16 +11,17 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_cli_util::{CliContext, c_error, c_title};
+use serde_json::json;
 
-use super::{
-    Status, locked_keys_json, render_locked_keys, render_services_status, services_status_json,
-};
+use restate_cli_util::c_error;
+
+use super::{Status, render_locked_keys, render_services_status};
 use crate::clients::datafusion_helpers::{get_locked_keys, get_service_status};
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{Field, OutputFormatter};
 
 pub async fn run_aggregated_status(
+    f: &mut impl OutputFormatter,
     opts: &Status,
     metas_client: AdminClient,
     sql_client: DataFusionHttpClient,
@@ -43,6 +44,7 @@ pub async fn run_aggregated_status(
         c_error!(
             "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
+        f.value("services", Field::with_display(json!([]), ""));
         return Ok(());
     }
 
@@ -62,29 +64,9 @@ pub async fn run_aggregated_status(
     // Render UI
     progress.finish_and_clear();
 
-    if CliContext::get().json_output() {
-        let mut f = Formatter::new();
-        f.value(
-            "services",
-            Field::json(services_status_json(&services, &status_map)),
-        );
-        if let Some(locked_keys) = &locked_keys {
-            f.value("locked_keys", Field::json(locked_keys_json(locked_keys)));
-        }
-        return f.finish();
-    }
-
-    // Render Status Table
-    c_title!("📷", "Summary");
-    render_services_status(services, status_map).await?;
-    // Render Locked Keys
-    if let Some(locked_keys) = &locked_keys {
-        c_title!("📨", "Active Keys");
-        render_locked_keys(
-            locked_keys,
-            opts.locked_keys_limit,
-            opts.locked_key_held_threshold_second,
-        );
+    render_services_status(f, &services, &status_map);
+    if let Some(keys) = &locked_keys {
+        render_locked_keys(f, keys, opts);
     }
     Ok(())
 }

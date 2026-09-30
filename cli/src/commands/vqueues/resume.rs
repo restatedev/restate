@@ -11,7 +11,6 @@
 use anyhow::Result;
 use cling::prelude::*;
 
-use restate_cli_util::c_success;
 use restate_types::vqueues::VQueueId;
 
 use crate::cli_env::CliEnv;
@@ -35,6 +34,5 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
         .await?
         .success_or_error()?;
 
-    c_success!("Resumed virtual queue {}", opts.vqueue_id);
-    Ok(())
+    super::report_outcome(&opts.vqueue_id, "resumed", "Resumed")
 }

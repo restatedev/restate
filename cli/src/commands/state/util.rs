@@ -13,7 +13,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use anyhow::{Context, anyhow, bail};
+use anyhow::{Context, anyhow};
 use base64::alphabet::URL_SAFE;
 use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
@@ -30,7 +30,8 @@ use restate_types::state_mut::StateMutationVersion;
 use serde_with::serde_as;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, MetasClientError};
+use crate::clients::{AdminClient, AdminClientInterface, ClientError};
+use crate::error::RestateCliError;
 
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -53,10 +54,15 @@ pub(crate) async fn get_current_state(
     let missing_service = match client.get_service(service).await?.into_body().await {
         Ok(service_meta) => match service_meta.ty {
             ServiceType::VirtualObject | ServiceType::Workflow => None,
-            ServiceType::Service => bail!("Only virtual objects and workflows support state"),
+            ServiceType::Service => {
+                return Err(RestateCliError::bad_input(format!(
+                    "{service} is a service: only virtual objects and workflows have state"
+                ))
+                .into());
+            }
         },
         // continue as it is reasonable to get state for a deleted service
-        Err(MetasClientError::Api(err)) if allow_missing_service && err.http_status_code == 404 => {
+        Err(ClientError::Api(err)) if allow_missing_service && err.http_status_code == 404 => {
             Some(err)
         }
         Err(err) => return Err(err.into()),
@@ -84,7 +90,7 @@ pub(crate) async fn get_current_state(
     if let Some(err) = missing_service {
         // Without any leftover state, the unknown service is the actual failure.
         if user_state.is_empty() {
-            return Err(MetasClientError::Api(err).into());
+            return Err(ClientError::Api(err).into());
         }
         c_warn!(
             "This service does not exist in the registry; it may have been deleted, or never existed"

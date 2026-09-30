@@ -33,20 +33,21 @@ mod renderer;
 #[cling(run = "run_tunnel")]
 #[clap(visible_alias = "expose", visible_alias = "tun")]
 pub struct Tunnel {
-    /// Disable inbound requests from the Cloud Environment through the tunnel
+    /// Only expose remote ports: block calls from the Cloud environment to this machine
     #[clap(long = "no-local")]
     no_inbound: bool,
 
-    /// Remote port on the Environment to expose on localhost
-    /// This argument can be repeated to specify multiple remote ports
+    /// Remote port of the environment to expose on localhost. Repeat for several ports; by
+    /// default all of them are exposed
     #[clap(short = 'r', long, action = clap::ArgAction::Append, conflicts_with = "no_remote_ports")]
     remote_port: Vec<remote::RemotePort>,
 
-    /// Disable proxying remote Environment ports to localhost
+    /// Only accept calls from the Cloud environment: expose none of its ports on localhost
     #[clap(long)]
     no_remote_ports: bool,
 
-    /// A name for the tunnel; a random name will be generated if not provided
+    /// Name of the tunnel, to pass to `restate deployments register --tunnel-name`. Random if
+    /// omitted
     #[clap(long = "tunnel-name")]
     tunnel_name: Option<String>,
 }

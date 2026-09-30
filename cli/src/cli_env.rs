@@ -232,7 +232,7 @@ impl CliEnv {
     /// suggesting `alternative` (e.g. the matching `patch` command).
     pub fn open_default_editor(&self, path: &Path, alternative: &str) -> anyhow::Result<()> {
         if !restate_cli_util::CliContext::get().is_interactive() {
-            return Err(restate_cli_util::exit::BadInput(format!(
+            return Err(crate::error::RestateCliError::bad_input(format!(
                 "cannot open an editor in non-interactive mode; {alternative}"
             ))
             .into());

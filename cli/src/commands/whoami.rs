@@ -8,13 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::io::Write;
+use std::path::Path;
 
 use anyhow::Result;
 use cling::prelude::*;
 use figment::Profile;
 use itertools::Itertools;
-use serde_json::Value;
+use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
 use restate_admin_rest_model::version::AdminApiVersion;
@@ -29,8 +29,21 @@ use crate::clients::AdminClientInterface;
 use crate::clients::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 
+/// Show the server the CLI talks to, and check that it's reachable
+///
+/// Prints the admin and ingress URLs in use, whether a bearer token is set (never the token),
+/// the selected environment and where it comes from, the CLI config paths, and the CLI build.
+/// Then checks the admin API: exits with code 5 (network error) if it can't be reached, 8
+/// (server error) if it's unhealthy.
 #[derive(Run, Parser, Clone)]
 #[cling(run = "run")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate whoami --json",
+        "restate -e prod whoami",
+    ],
+    learn_more: "https://docs.restate.dev/references/cli-config",
+))]
 pub struct WhoAmI {}
 
 pub async fn run(State(env): State<CliEnv>) -> Result<()> {
@@ -45,90 +58,74 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
         );
         c_println!("            Restate");
         c_println!("       https://restate.dev/");
+        c_println!();
     }
 
     let mut f = Formatter::new();
-
-    // Connection.
-    let url_field = |url: Option<String>| match url {
-        Some(u) => Field::new(u),
+    let or_none = |value: Option<String>| match value {
+        Some(v) => Field::new(v),
         None => Field::with_display(Value::Null, "(NONE)"),
     };
-    let token_set = env.config.bearer_token.is_some();
+
+    // Connection. Only whether a token is set is reported, never the token itself;
+    // humans see the row only when it is.
     let mut connection = vec![
         (
             "ingress_base_url",
-            url_field(env.ingress_base_url().map(|u| u.to_string()).ok()),
+            or_none(env.ingress_base_url().map(|u| u.to_string()).ok()),
         ),
         (
             "admin_base_url",
-            url_field(env.admin_base_url().map(|u| u.to_string()).ok()),
+            or_none(env.admin_base_url().map(|u| u.to_string()).ok()),
         ),
     ];
-    if json_output {
-        connection.push(("authentication_token_set", Field::new(token_set)));
-    } else if token_set {
-        connection.push(("authentication_token", Field::with_display(true, "(set)")));
+    let token_set = env.config.bearer_token.is_some();
+    if token_set || json_output {
+        connection.push((
+            "authentication_token",
+            Field::with_display(token_set, "(set)"),
+        ));
     }
     f.title("🔗", "Connection");
     f.detail("connection", &connection);
 
-    // Local environment.
-    let annotate_path = |path: &std::path::Path| -> Field {
-        let annotation = if path.exists() {
-            "(exists)"
-        } else {
-            "(does not exist)"
-        };
+    // Local environment. Paths are `{path, exists}` in JSON, annotated for humans.
+    let path_field = |path: &Path| {
+        let exists = path.exists();
+        let annotation = if exists { "exists" } else { "does not exist" };
         Field::with_display(
-            path.display().to_string(),
-            format!("{} {annotation}", path.display()),
+            json!({ "path": path.display().to_string(), "exists": exists }),
+            format!("{} ({annotation})", path.display()),
         )
     };
-
-    let mut environment: Vec<(&str, Field)> = Vec::new();
-    environment.push(("config_dir", annotate_path(&env.config_home)));
-    if json_output {
-        environment.push(("config_dir_exists", Field::new(env.config_home.exists())));
-    }
-    environment.push(("environment_file", annotate_path(&env.environment_file)));
-    if json_output {
-        environment.push((
-            "environment_file_exists",
-            Field::new(env.environment_file.exists()),
-        ));
-    }
-    let environment_field = if env.environment == Profile::Default {
-        Field::with_display(env.environment.to_string(), "default")
+    let (name, source) = (
+        env.environment.to_string(),
+        env.environment_source.to_string(),
+    );
+    let display = if env.environment == Profile::Default {
+        name.clone()
     } else {
-        Field::with_display(
-            env.environment.to_string(),
-            format!("{} (source: {})", env.environment, env.environment_source),
-        )
+        format!("{name} (source: {source})")
     };
-    environment.push(("environment", environment_field));
-    if json_output {
-        environment.push((
-            "environment_source",
-            Field::new(env.environment_source.to_string()),
-        ));
-    }
-    environment.push(("config_file", annotate_path(&env.config_file)));
-    if json_output {
-        environment.push(("config_file_exists", Field::new(env.config_file.exists())));
-    }
-    let loaded_dotenv = CliContext::get()
-        .loaded_dotenv()
-        .map(|p| p.display().to_string());
-    environment.push((
-        "loaded_dotenv",
-        match loaded_dotenv {
-            Some(p) => Field::new(p),
-            None => Field::with_display(Value::Null, "(NONE)"),
-        },
-    ));
+    let environment = Field::with_display(json!({ "name": name, "source": source }), display);
     f.title("🏠", "Local Environment");
-    f.detail("environment", &environment);
+    f.detail(
+        "environment",
+        [
+            ("config_dir", path_field(&env.config_home)),
+            ("environment_file", path_field(&env.environment_file)),
+            ("environment", environment),
+            ("config_file", path_field(&env.config_file)),
+            (
+                "loaded_dotenv",
+                or_none(
+                    CliContext::get()
+                        .loaded_dotenv()
+                        .map(|p| p.display().to_string()),
+                ),
+            ),
+        ],
+    );
 
     // Build information.
     let supported_admin_api = if MIN_ADMIN_API_VERSION == MAX_ADMIN_API_VERSION {
@@ -193,128 +190,95 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
                 },
                 None => (false, "no token".to_string()),
             };
-            let logged_in_display = format!("{logged_in} ({logged_in_status})");
-
-            let mut cloud = vec![
-                (
-                    "account_id",
-                    match account_id {
-                        Some(id) => Field::new(id),
-                        None => Field::with_display(Value::Null, "(NONE)"),
-                    },
-                ),
-                (
-                    "environment_id",
-                    match environment_id {
-                        Some(id) => Field::new(id),
-                        None => Field::with_display(Value::Null, "(NONE)"),
-                    },
-                ),
-                (
-                    "logged_in",
-                    Field::with_display(logged_in, logged_in_display),
-                ),
-            ];
-            if json_output {
-                cloud.push(("logged_in_status", Field::new(logged_in_status)));
-            }
             f.title("☁️", "Cloud");
-            f.detail("cloud", &cloud);
+            f.detail(
+                "cloud",
+                [
+                    ("account_id", or_none(account_id)),
+                    ("environment_id", or_none(environment_id)),
+                    (
+                        "logged_in",
+                        Field::with_display(
+                            json!({ "value": logged_in, "status": logged_in_status }),
+                            format!("{logged_in} ({logged_in_status})"),
+                        ),
+                    ),
+                ],
+            );
         }
     }
 
-    // Admin service health. Never fails the command: a failed probe is reported as
-    // unhealthy in the output. Human mode keeps the styled success/error messages;
-    // JSON mode carries a structured `admin_health` result.
-    f.title("🩺", "Admin Service Health");
-    // Non-zero exit when the admin probe fails, so automation gets a liveness signal.
-    let mut health_exit_code: Option<u8> = None;
-    match crate::clients::AdminClient::new(&env).await {
-        Ok(client) => match client.health().await {
-            Ok(envelope) if envelope.status_code().is_success() => {
-                let server_version = client.restate_server_version.to_string();
-                if json_output {
-                    let mut health = vec![
-                        ("healthy", Field::new(true)),
-                        ("base_url", Field::new(client.base_url.to_string())),
-                        ("server_version", Field::new(server_version)),
-                    ];
-                    if let Some(advertised_ingress_address) = &client.advertised_ingress_address {
-                        health.push((
-                            "advertised_ingress_address",
-                            Field::new(advertised_ingress_address.clone()),
-                        ));
+    // Admin service health. A failed probe is reported in the output, then signalled
+    // through the exit code so automation gets a liveness signal. Humans get styled
+    // status messages (errors on stderr), which the formatter has no block for.
+    let mut health = Vec::new();
+    let mut health_exit_code = None;
+    let (headline, details) = match crate::clients::AdminClient::new(&env).await {
+        Ok(client) => {
+            let base_url = client.base_url.to_string();
+            health.push(("base_url", Field::new(base_url.as_str())));
+            match client.health().await {
+                Ok(envelope) if envelope.status_code().is_success() => {
+                    let server_version = client.restate_server_version.to_string();
+                    let headline = format!(
+                        "Admin Service '{base_url}' is healthy! (server version {server_version})"
+                    );
+                    health.push(("server_version", Field::new(server_version)));
+                    let mut details = Vec::new();
+                    if let Some(address) = client.advertised_ingress_address {
+                        details.push(format!("Advertised ingress address: {address}"));
+                        health.push(("advertised_ingress_address", Field::new(address)));
                     }
-                    f.detail("admin_health", &health);
-                } else {
-                    c_success!(
-                        "Admin Service '{}' is healthy! (server version {})",
-                        client.base_url,
-                        server_version
-                    );
-                    if let Some(advertised_ingress_address) = client.advertised_ingress_address {
-                        // Align with the text after the (color-dependent) success icon.
-                        let indent = SUCCESS_ICON.to_string().width() + 1;
-                        c_println!(
-                            "{:indent$}Advertised ingress address: {advertised_ingress_address}",
-                            ""
-                        );
-                    }
+                    (headline, details)
+                }
+                Ok(envelope) => {
+                    health_exit_code = Some(exit::SERVER);
+                    let status_code = envelope.status_code().to_string();
+                    let url = envelope.url().to_string();
+                    let body = envelope.into_text().await.unwrap_or_default();
+                    let details = vec![format!("[{status_code}] from '{url}'"), body.clone()];
+                    health.extend([
+                        ("status_code", Field::new(status_code)),
+                        ("url", Field::new(url)),
+                        ("error", Field::new(body)),
+                    ]);
+                    (format!("Admin Service '{base_url}' is unhealthy:"), details)
+                }
+                Err(e) => {
+                    health_exit_code = Some(exit::NETWORK);
+                    health.push(("error", Field::new(e.to_string())));
+                    (
+                        format!("Admin Service '{base_url}' is unhealthy:"),
+                        vec![e.to_string()],
+                    )
                 }
             }
-            Ok(envelope) => {
-                health_exit_code = Some(exit::SERVER);
-                let url = envelope.url().clone();
-                let status_code = envelope.status_code();
-                let body = envelope.into_text().await;
-                if json_output {
-                    f.detail(
-                        "admin_health",
-                        &[
-                            ("healthy", Field::new(false)),
-                            ("base_url", Field::new(client.base_url.to_string())),
-                            ("status_code", Field::new(status_code.to_string())),
-                            ("url", Field::new(url.to_string())),
-                            ("error", Field::new(body.unwrap_or_default())),
-                        ],
-                    );
-                } else {
-                    c_error!("Admin Service '{}' is unhealthy:", client.base_url);
-                    c_eprintln!("   >> [{}] from '{}'", status_code.to_string(), url);
-                    c_eprintln!("   >> {}", body.unwrap_or_default());
-                }
-            }
-            Err(e) => {
-                health_exit_code = Some(exit::NETWORK);
-                if json_output {
-                    f.detail(
-                        "admin_health",
-                        &[
-                            ("healthy", Field::new(false)),
-                            ("base_url", Field::new(client.base_url.to_string())),
-                            ("error", Field::new(e.to_string())),
-                        ],
-                    );
-                } else {
-                    c_error!("Admin Service '{}' is unhealthy:", client.base_url);
-                    c_eprintln!("   >> {}", e);
-                }
-            }
-        },
+        }
         Err(e) => {
             health_exit_code = Some(exit::NETWORK);
-            if json_output {
-                f.detail(
-                    "admin_health",
-                    &[
-                        ("healthy", Field::new(false)),
-                        ("error", Field::new(e.to_string())),
-                    ],
-                );
-            } else {
-                c_error!("Could not connect to Admin Service:");
-                c_eprintln!("   >> {}", e);
-            }
+            health.push(("error", Field::new(e.to_string())));
+            (
+                "Could not connect to Admin Service:".to_owned(),
+                vec![e.to_string()],
+            )
+        }
+    };
+    health.insert(0, ("healthy", Field::new(health_exit_code.is_none())));
+
+    f.title("🩺", "Admin Service Health");
+    if json_output {
+        f.detail("admin_health", &health);
+    } else if health_exit_code.is_none() {
+        c_success!("{headline}");
+        // Align with the text after the (color-dependent) success icon.
+        let indent = SUCCESS_ICON.to_string().width() + 1;
+        for line in details {
+            c_println!("{:indent$}{line}", "");
+        }
+    } else {
+        c_error!("{headline}");
+        for line in details {
+            c_eprintln!("   >> {line}");
         }
     }
 
@@ -322,11 +286,8 @@ pub async fn run(State(env): State<CliEnv>) -> Result<()> {
 
     // Output is already written; signal admin-probe failure via the exit code without
     // letting the error reporter print a second (duplicate) message.
-    if let Some(code) = health_exit_code {
-        let _ = std::io::stdout().flush();
-        let _ = std::io::stderr().flush();
-        std::process::exit(i32::from(code));
+    match health_exit_code {
+        Some(code) => Err(exit::AlreadyReported { code }.into()),
+        None => Ok(()),
     }
-
-    Ok(())
 }

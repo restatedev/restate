@@ -19,26 +19,41 @@ use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
     as_json, compute_version, from_json, get_current_state, pretty_print_json, update_state,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// Change the K/V state of a virtual object or workflow key with a JSON Patch
+///
+/// The state is a JSON object of state key to value: an `add`/`replace` operation on `/<key>`
+/// sets a state key, `remove` deletes it. Shows the changes, then applies them after
+/// confirmation (preview with --dry-run, apply with --yes).
+/// The change is queued behind the invocations running on that key: the command returns once
+/// it's submitted, before it's applied.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "patch")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate state patch Cart u1 --patch '[{\"op\": \"add\", \"path\": \"/items\", \"value\": []}]' --dry-run",
+        "restate state patch Cart u1 --patch '[{\"op\": \"remove\", \"path\": \"/items\"}]' --yes",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
+))]
 pub struct Patch {
-    /// Don't try to convert the values to a UTF-8 string
+    /// Treat values as base64-encoded bytes instead of JSON, in the output and in the input
     #[clap(long, alias = "bin")]
     binary: bool,
 
-    /// Force means, ignore the current version
+    /// Apply even if the state changed since it was read, overwriting those changes
     #[clap(long, short)]
     force: bool,
 
-    /// Service name
+    /// Virtual object or workflow name
     service: String,
 
-    /// Service key
+    /// Virtual object or workflow key
     key: String,
 
-    /// JSON patch
+    /// RFC 6902 JSON Patch, applied to the JSON object of state key to value, e.g.
+    /// `[{"op": "add", "path": "/items", "value": []}]` sets the state key `items`
     #[arg(short, long)]
     patch: String,
 
@@ -80,6 +95,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
         "changes",
         &["state_key", "operation", "value"],
         &state_changes(&old_state, &state)?,
+        IfEmpty::Nothing,
     );
 
     if !json {
@@ -107,6 +123,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     f.next_step(
         &format!("restate state get {} {}", opts.service, opts.key),
         "check the state once the mutation is processed",
+        IncludeFormatting::Yes,
     );
     f.finish()
 }
