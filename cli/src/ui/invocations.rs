@@ -16,7 +16,7 @@ use dialoguer::console::Style as DStyle;
 use dialoguer::console::StyledObject;
 use dialoguer::console::{Style, style};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Map, Value, json};
 
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_precise;
@@ -31,7 +31,7 @@ use crate::clients::datafusion_helpers::{
     Invocation, InvocationCompletion, InvocationState, JournalEventRow, SimpleInvocation,
 };
 use crate::error::RestateCliError;
-use crate::ui::fmt::{Field, Formatter, IfEmpty, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, JournalStatus, ListItem, OutputFormatter};
 
 pub fn invocation_status_note(invocation: &Invocation) -> String {
     let mut msg = String::new();
@@ -134,6 +134,34 @@ pub fn rich_invocation_status(
             .red()
             .bold()
             .apply_to("completed with failure".to_string()),
+    }
+}
+
+/// An invocation's completion in JSON: `{"result": "success"}`, `{"result": "failure",
+/// "message": …}`, or `null` while it hasn't completed.
+pub fn completion_json(completion: Option<&InvocationCompletion>) -> Value {
+    match completion {
+        Some(InvocationCompletion::Success) => json!({ "result": "success" }),
+        Some(InvocationCompletion::Failure(message)) => {
+            json!({ "result": "failure", "message": message })
+        }
+        None => Value::Null,
+    }
+}
+
+/// The invocation's current status, closing its journal view: the rich status for
+/// humans, `status` and `completion` in JSON.
+pub fn journal_status(invocation: &Invocation) -> JournalStatus {
+    let mut record = Map::new();
+    record.insert("status".to_owned(), invocation.status.to_string().into());
+    record.insert(
+        "completion".to_owned(),
+        completion_json(invocation.completion.as_ref()),
+    );
+    JournalStatus {
+        display: rich_invocation_status(invocation.status, invocation.completion.as_ref())
+            .to_string(),
+        record,
     }
 }
 

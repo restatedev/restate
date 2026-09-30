@@ -17,17 +17,16 @@ use cling::prelude::*;
 use serde_json::{Value, json};
 
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{CliContext, c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    Invocation, JournalEntryRow, JournalFetch, get_invocation, get_journal, get_journal_length,
+    JournalEntryRow, JournalFetch, get_invocation, get_journal, get_journal_length,
 };
 use crate::error::RestateCliError;
 use crate::ui::fmt::{
     Formatter, JournalRow, JournalScope, OutputFormatter, compact_duration, journal_time,
 };
-use crate::ui::invocations::rich_invocation_status;
+use crate::ui::invocations::journal_status;
 
 const DEFAULT_HEAD: u32 = 5;
 const DEFAULT_TAIL: u32 = 15;
@@ -140,65 +139,41 @@ async fn journal(env: &CliEnv, opts: &Journal) -> Result<()> {
     };
 
     let entries = get_journal(&sql_client, &opts.invocation_id, fetch, opts.payload).await?;
-    // The header/footer are human-only; skip the extra lookup for JSON unless the empty
-    // journal may be a missing invocation.
-    let json_output = CliContext::get().json_output();
-    let invocation = if json_output && !entries.is_empty() {
-        None
-    } else {
-        get_invocation(&sql_client, &opts.invocation_id).await?
+    // The journal closes with the invocation's status; an empty journal may also be a
+    // missing invocation.
+    let Some(invocation) = get_invocation(&sql_client, &opts.invocation_id).await? else {
+        return Err(RestateCliError::not_found(format!(
+            "Invocation {} not found",
+            opts.invocation_id
+        ))
+        .into());
     };
-    if entries.is_empty() {
-        if invocation.is_none() {
-            return Err(RestateCliError::not_found(format!(
-                "Invocation {} not found",
-                opts.invocation_id
-            ))
-            .into());
-        }
-        if let Some(selector) = &opts.selector {
-            let length = get_journal_length(&sql_client, &opts.invocation_id).await?;
-            return Err(RestateCliError::not_found(format!(
-                "Journal {selector} not found: the journal of {} has {length} entries{}",
-                opts.invocation_id,
-                if length > 0 {
-                    format!(" (0..{})", length - 1)
-                } else {
-                    String::new()
-                }
-            ))
-            .with_next_step(
-                format!("restate invocations journal {}", opts.invocation_id),
-                "see the whole journal",
-            )
-            .into());
-        }
-    }
-    if !json_output {
-        print_journal_header();
+    if entries.is_empty()
+        && let Some(selector) = &opts.selector
+    {
+        let length = get_journal_length(&sql_client, &opts.invocation_id).await?;
+        return Err(RestateCliError::not_found(format!(
+            "Journal {selector} not found: the journal of {} has {length} entries{}",
+            opts.invocation_id,
+            if length > 0 {
+                format!(" (0..{})", length - 1)
+            } else {
+                String::new()
+            }
+        ))
+        .with_next_step(
+            format!("restate invocations journal {}", opts.invocation_id),
+            "see the whole journal",
+        )
+        .into());
     }
 
     let rows = journal_rows(&entries, opts.payload);
 
     let mut f = Formatter::new();
-    f.journal("journal", &rows, scope);
-    print_journal_footer(invocation.as_ref());
+    f.title("🚂", "Journal");
+    f.journal("journal", &rows, scope, Some(journal_status(&invocation)));
     f.finish()
-}
-
-/// Human-only closing line of a journal view: the invocation's current status.
-pub(super) fn print_journal_footer(invocation: Option<&Invocation>) {
-    if let Some(inv) = invocation {
-        c_println!(
-            " >> {}",
-            rich_invocation_status(inv.status, inv.completion.as_ref())
-        );
-    }
-}
-
-/// Human-only heading of a journal view.
-pub(super) fn print_journal_header() {
-    c_title!("🚂", "Journal");
 }
 
 /// Build the rows for `entries`. Notifications are linked back to the command that owns

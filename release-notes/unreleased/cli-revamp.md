@@ -25,7 +25,8 @@ service type uses one key (`service_type`) and one vocabulary (`service` / `virt
 `endpoint`, `transport` such as `HTTP/2.0` or `AWS Lambda`, `active_invocations`), and table
 headers in human output use the same names; deployment `protocol` is a `[min, max]` array (not a
 stringified one);
-`invocations describe --json` includes `completion` (success/failure); and collection ordering (e.g.
+`invocations describe --json` includes `completion` (success/failure), and `invocations journal
+--json` the invocation's `status` and `completion` next to the entries; and collection ordering (e.g.
 handlers) is deterministic.
 
 `services status` now derives Active Keys (`locked_keys`, with new `scope` and `lock_acquired_at`

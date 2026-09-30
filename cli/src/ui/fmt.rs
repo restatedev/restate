@@ -167,6 +167,15 @@ pub struct JournalRow {
     pub payload: Option<String>,
 }
 
+/// The status closing a journal view ([`OutputFormatter::journal`]), e.g. the
+/// invocation's current status.
+pub struct JournalStatus {
+    /// The human line after the entries, shown as ` >> display`.
+    pub display: String,
+    /// Sections added next to the journal in JSON output, e.g. `status` and `completion`.
+    pub record: Map<String, Value>,
+}
+
 /// How a journal is rendered in human output. JSON always emits every provided row.
 #[derive(Clone, Copy)]
 pub enum JournalScope {
@@ -285,8 +294,15 @@ pub trait OutputFormatter {
 
     /// A journal-style timeline of indexed entries. Human output renders ENTRY / NAME /
     /// WHEN columns with detail lines and optional payload blocks (head/tail elision
-    /// per `scope`); JSON emits `section` as an array of the rows' `record`s.
-    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope);
+    /// per `scope`), then the `status` line (even without rows); JSON emits `section` as
+    /// an array of the rows' `record`s, and the `status` record's sections next to it.
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    );
 
     /// A list of items. Human output renders a header row, the items' columns aligned,
     /// and each item's detail lines under it; JSON emits `section` as an array of the
@@ -413,8 +429,14 @@ impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
         self.parent.end_items()
     }
 
-    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope) {
-        self.parent.journal(section, rows, scope)
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        self.parent.journal(section, rows, scope, status)
     }
 
     fn list<T: ListItem>(
@@ -518,8 +540,14 @@ impl OutputFormatter for Formatter {
         dispatch!(self.end_items())
     }
 
-    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope) {
-        dispatch!(self.journal(section, rows, scope))
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        dispatch!(self.journal(section, rows, scope, status))
     }
 
     fn list<T: ListItem>(
@@ -758,6 +786,71 @@ impl HumanFormatter {
         }
     }
 
+    /// The rows of [`OutputFormatter::journal`], with the column header.
+    fn journal_rows(&mut self, rows: &[JournalRow], scope: JournalScope) {
+        // WHEN: the first shown entry's age, then each entry's offset from it.
+        let base = rows.iter().find_map(|row| row.appended_at);
+        // Zero-pad indices to the widest one (`[07]`), so the entry types line up.
+        let index_digits = rows
+            .iter()
+            .map(|row| row.index.to_string().len())
+            .max()
+            .unwrap_or_default();
+        let cells: Vec<[String; 3]> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let when = match (row.appended_at, base) {
+                    (Some(at), Some(base)) if i > 0 => {
+                        format!("+{}", compact_duration(at.signed_duration_since(base)))
+                    }
+                    (Some(at), _) => format!(
+                        "{} ago",
+                        compact_duration(Local::now().signed_duration_since(at))
+                    ),
+                    (None, _) => String::new(),
+                };
+                [
+                    format!("[{:0index_digits$}]: {}", row.index, row.entry),
+                    row.name.clone().unwrap_or_default(),
+                    when,
+                ]
+            })
+            .collect();
+        let headers = ["ENTRY", "NAME", "WHEN"];
+        let columns = Columns::new(&headers, &cells);
+        self.println(&columns.header(&headers));
+        let mut previous_index: Option<u64> = None;
+        for (row, cells) in rows.iter().zip(&cells) {
+            if matches!(scope, JournalScope::Preview)
+                && let Some(previous) = previous_index
+                && row.index > previous + 1
+            {
+                let hidden = row.index - previous - 1;
+                self.println(&format!("   · · ·   ({hidden} more)"));
+            }
+            // NAME and WHEN can be empty, which would leave trailing padding.
+            self.println(columns.line(cells).trim_end());
+            for (i, detail) in row.details.iter().enumerate() {
+                let branch = if i + 1 == row.details.len() {
+                    "└"
+                } else {
+                    "├"
+                };
+                self.println(&format!(
+                    "   {branch} {}",
+                    dialoguer::console::style(detail).dim()
+                ));
+            }
+            if let Some(payload) = &row.payload {
+                for payload_line in payload.lines() {
+                    self.println(&format!("     {payload_line}"));
+                }
+            }
+            previous_index = Some(row.index);
+        }
+    }
+
     /// Print the buffered `field` rows as one key/value table.
     fn flush_fields(&mut self) {
         if self.fields.is_empty() {
@@ -960,71 +1053,19 @@ impl OutputFormatter for HumanFormatter {
         Ok(())
     }
 
-    fn journal(&mut self, _section: &str, rows: &[JournalRow], scope: JournalScope) {
+    fn journal(
+        &mut self,
+        _section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
         self.flush_fields();
-        if rows.is_empty() {
-            return;
+        if !rows.is_empty() {
+            self.journal_rows(rows, scope);
         }
-        // WHEN: the first shown entry's age, then each entry's offset from it.
-        let base = rows.iter().find_map(|row| row.appended_at);
-        // Zero-pad indices to the widest one (`[07]`), so the entry types line up.
-        let index_digits = rows
-            .iter()
-            .map(|row| row.index.to_string().len())
-            .max()
-            .unwrap_or_default();
-        let cells: Vec<[String; 3]> = rows
-            .iter()
-            .enumerate()
-            .map(|(i, row)| {
-                let when = match (row.appended_at, base) {
-                    (Some(at), Some(base)) if i > 0 => {
-                        format!("+{}", compact_duration(at.signed_duration_since(base)))
-                    }
-                    (Some(at), _) => format!(
-                        "{} ago",
-                        compact_duration(Local::now().signed_duration_since(at))
-                    ),
-                    (None, _) => String::new(),
-                };
-                [
-                    format!("[{:0index_digits$}]: {}", row.index, row.entry),
-                    row.name.clone().unwrap_or_default(),
-                    when,
-                ]
-            })
-            .collect();
-        let headers = ["ENTRY", "NAME", "WHEN"];
-        let columns = Columns::new(&headers, &cells);
-        self.println(&columns.header(&headers));
-        let mut previous_index: Option<u64> = None;
-        for (row, cells) in rows.iter().zip(&cells) {
-            if matches!(scope, JournalScope::Preview)
-                && let Some(previous) = previous_index
-                && row.index > previous + 1
-            {
-                let hidden = row.index - previous - 1;
-                self.println(&format!("   · · ·   ({hidden} more)"));
-            }
-            // NAME and WHEN can be empty, which would leave trailing padding.
-            self.println(columns.line(cells).trim_end());
-            for (i, detail) in row.details.iter().enumerate() {
-                let branch = if i + 1 == row.details.len() {
-                    "└"
-                } else {
-                    "├"
-                };
-                self.println(&format!(
-                    "   {branch} {}",
-                    dialoguer::console::style(detail).dim()
-                ));
-            }
-            if let Some(payload) = &row.payload {
-                for payload_line in payload.lines() {
-                    self.println(&format!("     {payload_line}"));
-                }
-            }
-            previous_index = Some(row.index);
+        if let Some(status) = status {
+            self.println(&format!(" >> {}", status.display));
         }
     }
 
@@ -1265,10 +1306,19 @@ impl OutputFormatter for JsonFormatter {
         Ok(())
     }
 
-    fn journal(&mut self, section: &str, rows: &[JournalRow], _scope: JournalScope) {
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        _scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
         // Elision is a human affordance; JSON emits every provided entry.
         let arr = rows.iter().map(|row| row.record.clone()).collect();
         self.insert(section, Value::Array(arr));
+        for (key, value) in status.into_iter().flat_map(|status| status.record) {
+            self.insert(&key, value);
+        }
     }
 
     fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
@@ -1520,7 +1570,7 @@ mod tests {
     }
 
     #[test]
-    fn json_journal_emits_every_record_ignoring_elision() {
+    fn json_journal_emits_every_record_ignoring_elision_and_its_status() {
         let rows: Vec<JournalRow> = (0..3)
             .map(|index| JournalRow {
                 index,
@@ -1533,13 +1583,24 @@ mod tests {
             })
             .collect();
 
+        let status = JournalStatus {
+            display: "running".to_owned(),
+            record: json!({ "status": "running", "completion": null })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        };
+
         let mut jf = JsonFormatter::default();
         // Preview would print elision markers in human output; JSON keeps all rows.
-        jf.journal("journal", &rows, JournalScope::Preview);
+        jf.journal("journal", &rows, JournalScope::Preview, Some(status));
         let value = Value::Object(jf.doc);
 
         assert_eq!(value["journal"].as_array().map(Vec::len), Some(3));
         assert_eq!(value["journal"][2]["index"], json!(2));
+        // The status sections sit next to the journal, flat.
+        assert_eq!(value["status"], json!("running"));
+        assert_eq!(value["completion"], Value::Null);
     }
 
     #[test]

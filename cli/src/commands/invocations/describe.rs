@@ -21,13 +21,15 @@ use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    Invocation, InvocationCompletion, InvocationState, JournalEventRow, JournalFetch,
-    get_invocation, get_journal, get_journal_events,
+    Invocation, InvocationState, JournalEventRow, JournalFetch, get_invocation, get_journal,
+    get_journal_events,
 };
 use crate::clients::{self};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, JournalScope, OutputFormatter};
-use crate::ui::invocations::{add_invocation_to_kv_table, journal_event_lines};
+use crate::ui::invocations::{
+    add_invocation_to_kv_table, completion_json, journal_event_lines, journal_status,
+};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -84,14 +86,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         // `completion` is `#[serde(skip)]` on the model (it's computed, not a column),
         // so inject it explicitly — an agent must be able to tell success from failure.
         if let Some(object) = invocation.as_object_mut() {
-            let completion = match &inv.completion {
-                Some(InvocationCompletion::Success) => serde_json::json!({ "result": "success" }),
-                Some(InvocationCompletion::Failure(message)) => {
-                    serde_json::json!({ "result": "failure", "message": message })
-                }
-                None => serde_json::Value::Null,
-            };
-            object.insert("completion".to_owned(), completion);
+            object.insert(
+                "completion".to_owned(),
+                completion_json(inv.completion.as_ref()),
+            );
         }
         f.value("invocation", Field::json(invocation));
         if let Some(event) = &event {
@@ -115,7 +113,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     c_title!("🕒", "Lifecycle");
     c_println!("{}", lifecycle_table(&inv));
 
-    super::journal::print_journal_header();
+    // The sections above aren't written through the formatter yet, so it doesn't know to
+    // separate its title from them.
+    c_println!();
+    f.title("🚂", "Journal");
 
     // Journal preview (metadata only). The dedicated `journal` command offers ranges,
     // full listing, and payloads.
@@ -129,11 +130,13 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     )
     .await?;
 
-    if !entries.is_empty() {
-        let rows = super::journal::journal_rows(&entries, false);
-        f.journal("journal", &rows, JournalScope::Preview);
-    }
-    super::journal::print_journal_footer(Some(&inv));
+    let rows = super::journal::journal_rows(&entries, false);
+    f.journal(
+        "journal",
+        &rows,
+        JournalScope::Preview,
+        Some(journal_status(&inv)),
+    );
 
     // The latest timeline event, if the server exposes any.
     if let Some(event) = &event {
