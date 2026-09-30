@@ -10,7 +10,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use cling::prelude::*;
 use serde::Serialize;
 
@@ -20,6 +20,7 @@ use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClientInterface, Deployment};
+use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
@@ -59,9 +60,9 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             // Skip non-public services if users chooses to.
             continue;
         }
-        let deployment = deployment_cache
-            .get(&svc.deployment_id)
-            .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
+        let deployment = deployment_cache.get(&svc.deployment_id).ok_or_else(|| {
+            RestateCliError::not_found(format!("Deployment {} not found", svc.deployment_id))
+        })?;
         let (_, deployment, _) = Deployment::from_deployment_response(deployment.clone());
 
         let mut handlers: Vec<String> = svc.handlers.into_values().map(|h| h.name).collect();

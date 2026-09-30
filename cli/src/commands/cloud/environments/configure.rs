@@ -16,7 +16,7 @@ use indicatif::ProgressBar;
 use itertools::Itertools;
 use toml_edit::{DocumentMut, table, value};
 
-use restate_cli_util::{c_error, c_success};
+use restate_cli_util::{CliContext, c_error, c_success};
 
 use crate::{
     cli_env::CliEnv,
@@ -227,7 +227,12 @@ fn list_profiles(doc: &DocumentMut) -> Result<Vec<String>> {
         .collect())
 }
 
+/// The profile name to configure: asked for, defaulting to the environment's name (used
+/// as is when prompting isn't possible, e.g. with `--yes`).
 fn profile_input(profiles: &[String], environment_name: &str) -> Result<String> {
+    if !CliContext::get().can_prompt() {
+        return Ok(environment_name.to_owned());
+    }
     input(
         &format!(
             "Choose a friendly name for the Environment for use with the CLI.\n  Current names: [{}]\n",
