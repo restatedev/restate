@@ -51,15 +51,12 @@ use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
     Incoming, RawSvcRpc, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
+use restate_core::{Metadata, ShutdownError, cancellation_token};
 use restate_ingestion_client::IngestionClient;
 use restate_partition_store::{
     PartitionDb, PartitionSeal, PartitionStore, PartitionStoreTransaction,
 };
 use restate_platform::memory::EstimatedMemorySize;
-use restate_storage_api::deduplication_table::{
-    DedupSequenceNumber, ProducerId, ReadDeduplicationTable,
-};
 use restate_storage_api::{StorageError, Transaction};
 use restate_tracing::warn_ratelimited;
 use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
@@ -67,8 +64,9 @@ use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{self, Lsn, RecordDecodeError, SequenceNumber};
 use restate_types::net::RpcRequest;
+#[allow(deprecated)]
 use restate_types::net::ingest::{
-    self, DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
+    DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
 };
 use restate_types::net::partition_processor::{
@@ -602,7 +600,7 @@ where
                         "network_leader_svc_rx",
                     );
                     // todo: replace the live schema with the leader's consistent schema
-                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, rpc_proposal_sender.expect("guarded with is_some")).await;
+                    self.on_rpc(msg, live_schemas.live_load(), rpc_proposal_sender.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
@@ -829,7 +827,7 @@ where
         &mut self,
         msg: ServiceMessage<PartitionLeaderService>,
         schemas: &Schema,
-        permit: RpcProcessingPermit,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
