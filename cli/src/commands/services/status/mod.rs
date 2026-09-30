@@ -170,7 +170,7 @@ fn table_section(
     table: impl FnOnce() -> Table,
 ) {
     if CliContext::get().json_output() {
-        f.value(section, Field::json(json()));
+        f.value(section, Field::new(json()));
     } else {
         c_println!("{}", table());
     }

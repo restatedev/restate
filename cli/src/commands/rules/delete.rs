@@ -16,8 +16,8 @@ use restate_admin_rest_model::rules::DeleteRuleRequest;
 use restate_types::Version;
 
 use super::{
-    concurrency_field, disabled_field, fetch_existing_rule, is_conflict, json_only,
-    modified_concurrently, parse_pattern, rules_list_step,
+    concurrency_field, disabled_field, fetch_existing_rule, is_conflict, modified_concurrently,
+    parse_pattern, rules_list_step,
 };
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
@@ -54,7 +54,7 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
     // The plan, JSON-only: the human output already describes the rule to delete.
     f.value(
         "changes",
-        json_only(json!([{"pattern": canonical, "change": "delete"}])),
+        Field::json_only(json!([{"pattern": canonical, "change": "delete"}])),
     );
     f.confirm(&opts.dry_run, &format!("Delete rule '{canonical}'?"))?;
 

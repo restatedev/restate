@@ -63,55 +63,59 @@ use crate::error::{ErrorKind, RestateCliError};
 /// ago"` but stored as a number, a list shown on multiple lines but stored as an
 /// array, an enum shown via `Debug` but stored as a string.
 ///
-/// Construct from any type that converts into a `serde_json::Value` (`&str`,
-/// `String`, integers, floats, `bool`, …).
+/// Construct from any [`Serialize`] value (`&str`, `String`, integers, `bool`,
+/// `Option`s, timestamps, structs, a `serde_json::Value`, …).
 #[derive(Clone)]
 pub struct Field {
     value: Value,
     display: Option<String>,
     style: Option<Style>,
+    /// Emitted in JSON only, see [`json_only`](Field::json_only).
+    json_only: bool,
 }
 
 impl Field {
     /// A plain, unstyled value; the human rendering is derived from the value.
-    pub fn new(value: impl Into<Value>) -> Self {
+    ///
+    /// Panics if `value` can't be serialized to JSON (e.g. a map with non-string keys).
+    pub fn new(value: impl Serialize) -> Self {
         Self {
-            value: value.into(),
+            value: serde_json::to_value(value).expect("output field serializes to JSON"),
             display: None,
             style: None,
+            json_only: false,
         }
     }
 
     /// A value carrying a semantic style (applied by the human formatter only).
-    pub fn styled(value: impl Into<Value>, style: Style) -> Self {
+    pub fn styled(value: impl Serialize, style: Style) -> Self {
         Self {
-            value: value.into(),
-            display: None,
             style: Some(style),
+            ..Self::new(value)
         }
     }
 
     /// A value with an explicit human rendering distinct from its machine value.
-    pub fn with_display(value: impl Into<Value>, display: impl Into<String>) -> Self {
+    pub fn with_display(value: impl Serialize, display: impl Into<String>) -> Self {
         Self {
-            value: value.into(),
             display: Some(display.into()),
-            style: None,
+            ..Self::new(value)
         }
     }
 
-    /// A value from an already-built JSON document (e.g. arbitrary nested data).
-    pub fn json(value: Value) -> Self {
+    /// A value for JSON output only: human detail rows and values skip it, e.g. machine
+    /// details the human view summarizes elsewhere.
+    pub fn json_only(value: impl Serialize) -> Self {
         Self {
-            value,
-            display: None,
-            style: None,
+            json_only: true,
+            ..Self::new(value)
         }
     }
 
-    /// A `null` without a human rendering: JSON keeps the key, human detail rows skip it.
-    fn is_unset(&self) -> bool {
-        self.value.is_null() && self.display.is_none()
+    /// Human output skips this: JSON-only, or a `null` without a human rendering (JSON
+    /// keeps the key).
+    fn is_hidden(&self) -> bool {
+        self.json_only || (self.value.is_null() && self.display.is_none())
     }
 
     /// The value rendered as a plain string for human output.
@@ -176,15 +180,38 @@ pub struct JournalStatus {
     pub record: Map<String, Value>,
 }
 
-/// How a journal is rendered in human output. JSON always emits every provided row.
+/// Which entries a journal view shows. Both formatters emit every provided row.
 #[derive(Clone, Copy)]
 pub enum JournalScope {
-    /// A preview: rows may skip indices (the caller fetched only a head+tail slice), so
-    /// an elision marker (`· · · (N more)`) is printed wherever consecutive rows are not
-    /// index-contiguous.
+    /// A preview: rows may skip indices (the caller fetched only a head+tail slice).
+    /// Every gap between consecutive rows is reported as omitted: an elision marker
+    /// (`· · · (N more)`) in human output, an `omitted` range in JSON.
     Preview,
-    /// Show every provided row with no elision markers.
+    /// Every provided row, with nothing reported as omitted.
     Full,
+}
+
+/// Journal entries a [`JournalScope::Preview`] skipped, inclusive.
+#[derive(Serialize)]
+struct OmittedEntries {
+    from: u64,
+    to: u64,
+    count: u64,
+}
+
+/// The index gaps between consecutive `rows`, for [`JournalScope::Preview`].
+fn omitted_entries(rows: &[JournalRow], scope: JournalScope) -> Vec<OmittedEntries> {
+    if matches!(scope, JournalScope::Full) {
+        return Vec::new();
+    }
+    rows.windows(2)
+        .filter(|pair| pair[1].index > pair[0].index + 1)
+        .map(|pair| OmittedEntries {
+            from: pair[0].index + 1,
+            to: pair[1].index - 1,
+            count: pair[1].index - pair[0].index - 1,
+        })
+        .collect()
 }
 
 /// An entry of a list view ([`OutputFormatter::list`]): summary columns aligned across
@@ -216,7 +243,8 @@ pub trait OutputFormatter {
 
     /// A key-value detail view. `rows` are `(key, value)` pairs where `key` is a
     /// machine key (`snake_case`); the human formatter derives a display label, and
-    /// skips rows whose value is `null` without a display (JSON keeps them as `null`).
+    /// skips [`json_only`](Field::json_only) rows and rows whose value is `null` without
+    /// a display (JSON keeps them as `null`).
     /// Accepts any iterable of pairs, owned or borrowed: arrays, slices, or a
     /// `&Vec<(String, Field)>`.
     fn detail<K: AsRef<str>>(
@@ -237,7 +265,7 @@ pub trait OutputFormatter {
         if_empty: IfEmpty,
     );
 
-    /// A single scalar value.
+    /// A single scalar value (human output skips [`json_only`](Field::json_only) ones).
     fn value(&mut self, section: &str, field: Field);
 
     /// The command's outcome, e.g. `created` or `already_absent`: `section: value` in
@@ -270,8 +298,8 @@ pub trait OutputFormatter {
     fn warning(&mut self, message: &str);
 
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
-    /// `Label: value` row, aligned with the adjacent `field` rows (skipped when the value
-    /// is `null` without a display, like in `detail`).
+    /// `Label: value` row, aligned with the adjacent `field` rows (skipped like in
+    /// `detail`).
     #[cfg_attr(
         not(test),
         expect(dead_code, reason = "no command writes single fields yet")
@@ -299,9 +327,10 @@ pub trait OutputFormatter {
     fn end_items(&mut self);
 
     /// A journal-style timeline of indexed entries. Human output renders ENTRY / NAME /
-    /// WHEN columns with detail lines and optional payload blocks (head/tail elision
-    /// per `scope`), then the `status` line (even without rows); JSON emits `section` as
-    /// an array of the rows' `record`s, and the `status` record's sections next to it.
+    /// WHEN columns with detail lines and optional payload blocks (elision markers per
+    /// `scope`), then the `status` line (even without rows); JSON emits `section` as
+    /// `{"entries": [the rows' records], "omitted": [{"from", "to", "count"}]}`, and the
+    /// `status` record's sections next to it.
     fn journal(
         &mut self,
         section: &str,
@@ -836,14 +865,10 @@ impl HumanFormatter {
         let headers = ["ENTRY", "NAME", "WHEN"];
         let columns = Columns::new(&headers, &cells);
         self.println(&columns.header(&headers));
-        let mut previous_index: Option<u64> = None;
+        let mut omitted = omitted_entries(rows, scope).into_iter().peekable();
         for (row, cells) in rows.iter().zip(&cells) {
-            if matches!(scope, JournalScope::Preview)
-                && let Some(previous) = previous_index
-                && row.index > previous + 1
-            {
-                let hidden = row.index - previous - 1;
-                self.println(&format!("   · · ·   ({hidden} more)"));
+            if let Some(gap) = omitted.next_if(|gap| gap.to + 1 == row.index) {
+                self.println(&format!("   · · ·   ({} more)", gap.count));
             }
             // NAME and WHEN can be empty, which would leave trailing padding.
             self.println(columns.line(cells).trim_end());
@@ -863,7 +888,6 @@ impl HumanFormatter {
                     self.println(&format!("     {payload_line}"));
                 }
             }
-            previous_index = Some(row.index);
         }
     }
 
@@ -874,7 +898,7 @@ impl HumanFormatter {
         }
         let mut table = Table::new_styled();
         for (key, field) in std::mem::take(&mut self.fields) {
-            if field.is_unset() {
+            if field.is_hidden() {
                 continue;
             }
             table.add_kv_row(&format!("{}:", humanize_label(&key)), field.to_cell());
@@ -1004,6 +1028,9 @@ impl OutputFormatter for HumanFormatter {
 
     fn value(&mut self, _section: &str, field: Field) {
         self.flush_fields();
+        if field.json_only {
+            return;
+        }
         // Indented like the rows of detail tables and lists.
         for line in field.human_display().lines() {
             self.println(&format!(" {line}"));
@@ -1352,12 +1379,17 @@ impl OutputFormatter for JsonFormatter {
         &mut self,
         section: &str,
         rows: &[JournalRow],
-        _scope: JournalScope,
+        scope: JournalScope,
         status: Option<JournalStatus>,
     ) {
-        // Elision is a human affordance; JSON emits every provided entry.
-        let arr = rows.iter().map(|row| row.record.clone()).collect();
-        self.insert(section, Value::Array(arr));
+        let entries: Vec<Value> = rows.iter().map(|row| row.record.clone()).collect();
+        self.insert(
+            section,
+            serde_json::json!({
+                "entries": entries,
+                "omitted": omitted_entries(rows, scope),
+            }),
+        );
         for (key, value) in status.into_iter().flat_map(|status| status.record) {
             self.insert(&key, value);
         }
@@ -1408,19 +1440,18 @@ impl OutputFormatter for JsonFormatter {
     }
 }
 
-/// `snake_case` / `kebab-case` machine key → `Title Case` human label.
+/// `snake_case` / `kebab-case` machine key → `Sentence case` human label.
 fn humanize_label(key: &str) -> String {
-    key.split(['_', '-'])
+    let label = key
+        .split(['_', '-'])
         .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Machine key → `UPPER CASE` table header.
@@ -1609,13 +1640,14 @@ mod tests {
 
     #[test]
     fn labels_are_derived_from_machine_keys() {
-        assert_eq!(humanize_label("deployment_id").as_str(), "Deployment Id");
+        assert_eq!(humanize_label("deployment_id").as_str(), "Deployment id");
         assert_eq!(header_label("deployment-type").as_str(), "DEPLOYMENT TYPE");
     }
 
     #[test]
-    fn json_journal_emits_every_record_ignoring_elision_and_its_status() {
-        let rows: Vec<JournalRow> = (0..3)
+    fn json_journal_emits_every_record_the_omitted_ranges_and_its_status() {
+        let rows: Vec<JournalRow> = [0, 1, 5]
+            .into_iter()
             .map(|index| JournalRow {
                 index,
                 appended_at: None,
@@ -1636,12 +1668,18 @@ mod tests {
         };
 
         let mut jf = JsonFormatter::default();
-        // Preview would print elision markers in human output; JSON keeps all rows.
         jf.journal("journal", &rows, JournalScope::Preview, Some(status));
         let value = Value::Object(jf.doc);
 
-        assert_eq!(value["journal"].as_array().map(Vec::len), Some(3));
-        assert_eq!(value["journal"][2]["index"], json!(2));
+        assert_eq!(
+            value["journal"]["entries"].as_array().map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(value["journal"]["entries"][2]["index"], json!(5));
+        assert_eq!(
+            value["journal"]["omitted"],
+            json!([{"from": 2, "to": 4, "count": 3}])
+        );
         // The status sections sit next to the journal, flat.
         assert_eq!(value["status"], json!("running"));
         assert_eq!(value["completion"], Value::Null);

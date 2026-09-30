@@ -114,11 +114,6 @@ pub(crate) fn disabled_field(disabled: bool) -> Field {
     Field::with_display(disabled, if disabled { "yes" } else { "no" })
 }
 
-/// A value emitted in JSON only (human output describes it with its own messages).
-pub(crate) fn json_only(value: impl Into<Value>) -> Field {
-    Field::with_display(value, "")
-}
-
 /// Parses and validates a rule pattern, canonicalizing it client-side so we
 /// fail fast on bad input and can match against the `sys_rules` table.
 pub(crate) fn parse_pattern(pattern: &str) -> Result<RulePattern<ReString>> {
@@ -234,7 +229,10 @@ pub(crate) async fn toggle_disabled(env: &CliEnv, pattern: &str, disabled: bool)
 
     let (result, message, outcome) = outcome;
     let mut f = Formatter::new();
-    f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
+    f.value(
+        "rule",
+        Field::json_only(rule.as_ref().map(RuleRow::to_json)),
+    );
     f.outcome("result", Field::with_display(result, message), outcome);
     rules_list_step(&mut f);
     f.finish()

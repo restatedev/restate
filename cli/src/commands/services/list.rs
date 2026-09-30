@@ -84,7 +84,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         "services",
         &items,
         IfEmpty::Say(
-            "No services were found! Services are added by registering deployments with 'restate dep register'",
+            "No services were found for the given filters! Services are added by registering deployments with 'restate dep register'",
         ),
     )?;
     if let Some(ServiceListItem {

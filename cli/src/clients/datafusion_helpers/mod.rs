@@ -246,7 +246,7 @@ pub struct JournalEntryRow {
 
 /// A single event from `sys_journal_events` (decoded events attached to an invocation's
 /// timeline, ordered relative to journal entries by `after_journal_entry_index`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct JournalEventRow {
     pub after_journal_entry_index: u32,
     pub appended_at: Option<DateTime<Local>>,

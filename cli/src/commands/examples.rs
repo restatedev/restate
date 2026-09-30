@@ -222,7 +222,7 @@ fn list_examples(mut languages: Vec<Language>) -> Result<()> {
                 json!({ "language": language.display_name, "examples": examples })
             })
             .collect();
-        f.value("templates", Field::json(Value::Array(languages_json)));
+        f.value("templates", Field::new(Value::Array(languages_json)));
         return f.finish();
     }
 

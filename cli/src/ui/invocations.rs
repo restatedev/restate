@@ -165,21 +165,39 @@ pub fn journal_status(invocation: &Invocation) -> JournalStatus {
     }
 }
 
-pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
-    table.add_kv_row("Target:", &invocation.target);
+/// The `invocation` detail of `invocations describe`. JSON also gets the machine
+/// details the human view summarizes (ids, retries, the completion); `error` is the
+/// completion failure, else the last attempt's failure.
+pub fn invocation_detail(invocation: &Invocation) -> Vec<(&'static str, Field)> {
+    let mut rows = vec![
+        ("id", Field::new(invocation.id.as_str())),
+        ("target", Field::new(invocation.target.as_str())),
+        (
+            "target_service_type",
+            Field::new(invocation.target_service_ty.to_string()),
+        ),
+    ];
 
     // Status: backing-off (Retried 1198 time(s). Next retry in 5 seconds and 78 ms) (if not pending....)
-    let status_msg = invocation_status_note(invocation);
-    let status = format!(
-        "{} {}",
-        rich_invocation_status(invocation.status, invocation.completion.as_ref()),
-        status_msg
-    );
-    table.add_kv_row("Status:", status);
-
-    if let Some(idempotency_key) = &invocation.idempotency_key {
-        table.add_kv_row("Idempotency key:", idempotency_key);
-    }
+    rows.push((
+        "status",
+        Field::with_display(
+            invocation.status.to_string(),
+            format!(
+                "{} {}",
+                rich_invocation_status(invocation.status, invocation.completion.as_ref()),
+                invocation_status_note(invocation)
+            ),
+        ),
+    ));
+    rows.push((
+        "completion",
+        Field::json_only(completion_json(invocation.completion.as_ref())),
+    ));
+    rows.push((
+        "idempotency_key",
+        Field::new(invocation.idempotency_key.clone()),
+    ));
 
     // Invoked by: TicketDb p4DGRWa7OTJwAYxelm96fFWSV9woYc0MLQ
     if let Some(invoked_by_id) = &invocation.invoked_by_id {
@@ -192,7 +210,13 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
                 .unwrap_or_else(|| style("<UNKNOWN>".to_owned()).red()),
             style(invoked_by_id).italic(),
         );
-        table.add_kv_row("Invoked by:", invoked_by_msg);
+        rows.push((
+            "invoked_by",
+            Field::with_display(
+                json!({ "id": invoked_by_id, "target": invocation.invoked_by_target }),
+                invoked_by_msg,
+            ),
+        ));
     }
 
     // Deployment: "bG9jYWxob3N0OjkwODAv" [pinned]
@@ -200,73 +224,115 @@ pub fn add_invocation_to_kv_table(table: &mut Table, invocation: &Invocation) {
         .pinned_deployment_id
         .as_deref()
         .or(invocation.last_attempt_deployment_id.as_deref());
-
-    if let Some(deployment_id) = deployment_id {
-        let deployment_msg = format!(
-            "{} {}{}",
-            deployment_id,
-            if invocation.pinned_deployment_id.is_some() {
-                if invocation.pinned_deployment_exists {
-                    format!("[{}]", style("pinned").bold())
+    let pinned = invocation.pinned_deployment_id.is_some();
+    let deployment = match deployment_id {
+        Some(deployment_id) => Field::with_display(
+            json!({
+                "id": deployment_id,
+                "pinned": pinned,
+                "missing": pinned && !invocation.pinned_deployment_exists,
+                "server": invocation.last_attempt_server,
+            }),
+            format!(
+                "{} {}{}",
+                deployment_id,
+                if pinned {
+                    if invocation.pinned_deployment_exists {
+                        format!("[{}]", style("pinned").bold())
+                    } else {
+                        // deployment is missing!
+                        format!("[{}]", style("ZOMBIE").red().bold())
+                    }
                 } else {
-                    // deployment is missing!
-                    format!("[{}]", style("ZOMBIE").red().bold())
+                    "".to_string()
+                },
+                if let Some(server) = &invocation.last_attempt_server {
+                    format!(" using {server}")
+                } else {
+                    "".to_string()
                 }
-            } else {
-                "".to_string()
-            },
-            if let Some(server) = &invocation.last_attempt_server {
-                format!(" using {server}")
-            } else {
-                "".to_string()
-            }
-        );
-        table.add_kv_row("Deployment:", deployment_msg);
-    }
+            ),
+        ),
+        None => Field::new(Value::Null),
+    };
+    rows.push(("deployment", deployment));
 
     // Trace Id: "12343345345"
-    if let Some(trace_id) = &invocation.trace_id {
-        table.add_kv_row("Trace ID:", trace_id);
-    }
+    rows.push(("trace_id", Field::new(invocation.trace_id.clone())));
+
+    rows.push(("num_retries", Field::json_only(invocation.num_retries)));
+    rows.push(("next_retry_at", Field::json_only(invocation.next_retry_at)));
+    rows.push((
+        "current_attempt_duration",
+        Field::json_only(invocation.current_attempt_duration),
+    ));
+    rows.push((
+        "last_attempt_started_at",
+        Field::json_only(invocation.last_attempt_started_at),
+    ));
 
     // Error: [Internal] other client error: error trying to connect: tcp connect error: Connection refused (os error 61)
-    if invocation.status == InvocationState::BackingOff
-        && let Some(error) = &invocation.last_failure_message
-    {
-        let when = format!(
-            "[{}]",
-            invocation
-                .last_attempt_started_at
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "UNKNOWN".to_owned())
-        );
-
-        table.add_kv_row(
-            "Error:",
-            format!("{}\n{}", style(when).dim(), style(error).red()),
-        );
-
-        table.add_kv_row(
-            "Caused by:",
-            format!(
-                "{}{}",
+    // Shown while backing off; JSON-only otherwise.
+    if let Some(InvocationCompletion::Failure(error)) = &invocation.completion {
+        rows.push((
+            "error",
+            Field::with_display(error.as_str(), style(error).red().to_string()),
+        ));
+    } else if let Some(error) = &invocation.last_failure_message {
+        let caused_by = json!({
+            "entry_type": invocation.last_failure_entry_ty,
+            "entry_name": invocation.last_failure_entry_name,
+        });
+        if invocation.status == InvocationState::BackingOff {
+            let when = format!(
+                "[{}]",
                 invocation
-                    .last_failure_entry_ty
-                    .as_deref()
-                    .unwrap_or("UNKNOWN"),
-                invocation
-                    .last_failure_entry_name
-                    .as_deref()
-                    .filter(|s| !s.is_empty())
-                    .map(|n| format!(" [{n}]"))
-                    .unwrap_or_default()
+                    .last_attempt_started_at
+                    .map(|d| d.to_string())
+                    .unwrap_or_else(|| "UNKNOWN".to_owned())
+            );
+            rows.push((
+                "error",
+                Field::with_display(
+                    error.as_str(),
+                    format!("{}\n{}", style(when).dim(), style(error).red()),
+                ),
+            ));
+            rows.push((
+                "caused_by",
+                Field::with_display(
+                    caused_by,
+                    format!(
+                        "{}{}",
+                        invocation
+                            .last_failure_entry_ty
+                            .as_deref()
+                            .unwrap_or("UNKNOWN"),
+                        invocation
+                            .last_failure_entry_name
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .map(|n| format!(" [{n}]"))
+                            .unwrap_or_default()
+                    ),
+                ),
+            ));
+        } else {
+            rows.push(("error", Field::json_only(error.as_str())));
+            rows.push(("caused_by", Field::json_only(caused_by)));
+        }
+    }
+
+    if invocation.invoked_by_id.is_none() {
+        rows.push((
+            "invoked_by",
+            Field::with_display(
+                Value::Null,
+                format!("[{}]", style("Ingress").dim().italic()),
             ),
-        );
+        ));
     }
-
-    if let Some(InvocationCompletion::Failure(error)) = invocation.completion.clone() {
-        table.add_kv_row("Error:", format!("{}", style(error).red()));
-    }
+    rows
 }
 
 /// Columns of the `changes` plan table of the batch invocation commands.
@@ -359,7 +425,7 @@ pub fn print_invocation_results<T>(
                 Field::new(inv.id.clone()),
                 Field::new(inv.target.clone()),
                 Field::new(outcome),
-                Field::json(error),
+                Field::new(error),
             ]
         })
         .collect();

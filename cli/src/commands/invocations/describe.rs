@@ -10,26 +10,21 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
 use dialoguer::console::style;
 
-use restate_cli_util::CliContext;
-use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::duration_to_human_rough;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
-    Invocation, InvocationState, JournalEventRow, JournalFetch, get_invocation, get_journal,
-    get_journal_events,
+    Invocation, InvocationState, JournalFetch, get_invocation, get_journal, get_journal_events,
 };
 use crate::clients::{self};
 use crate::error::RestateCliError;
-use crate::ui::fmt::{Field, Formatter, IncludeFormatting, JournalScope, OutputFormatter};
-use crate::ui::invocations::{
-    add_invocation_to_kv_table, completion_json, journal_event_lines, journal_status,
+use crate::ui::fmt::{
+    Field, Formatter, IncludeFormatting, JournalScope, OutputFormatter, compact_duration,
 };
+use crate::ui::invocations::{invocation_detail, journal_event_lines, journal_status};
 
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_describe")]
@@ -79,43 +74,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         );
     }
 
-    if CliContext::get().json_output() {
-        // The journal call-graph is a human-oriented rendering; its structured form
-        // is available via `restate invocations journal <id> --json`.
-        let mut invocation = serde_json::to_value(&inv)?;
-        // `completion` is `#[serde(skip)]` on the model (it's computed, not a column),
-        // so inject it explicitly — an agent must be able to tell success from failure.
-        if let Some(object) = invocation.as_object_mut() {
-            object.insert(
-                "completion".to_owned(),
-                completion_json(inv.completion.as_ref()),
-            );
-        }
-        f.value("invocation", Field::json(invocation));
-        if let Some(event) = &event {
-            f.value("event", Field::json(event_json(event)));
-        }
-        return f.finish();
-    }
-
-    let mut table = Table::new_styled();
-    add_invocation_to_kv_table(&mut table, &inv);
-    if inv.invoked_by_id.is_none() {
-        table.add_kv_row(
-            "Invoked by:",
-            format!("[{}]", style("Ingress").dim().italic()),
-        );
-    }
-    c_title!("📜", "Invocation Information");
-    c_println!("{}", table);
-
-    // `c_title!` starts with a blank line of its own.
-    c_title!("🕒", "Lifecycle");
-    c_println!("{}", lifecycle_table(&inv));
-
-    // The sections above aren't written through the formatter yet, so it doesn't know to
-    // separate its title from them.
-    c_println!();
+    f.title("📜", "Invocation Information");
+    f.detail("invocation", invocation_detail(&inv));
+    f.title("🕒", "Lifecycle");
+    f.detail("lifecycle", lifecycle_detail(&inv));
     f.title("🚂", "Journal");
 
     // Journal preview (metadata only). The dedicated `journal` command offers ranges,
@@ -141,41 +103,34 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     // The latest timeline event, if the server exposes any.
     if let Some(event) = &event {
         let completions = super::journal::completion_commands(&entries);
-        let lines =
-            journal_event_lines(event, inv.num_retries, &|id| completions.get(&id).cloned());
-        c_title!("📅", "Last Event");
-        let mut lines = lines.into_iter();
+        let mut lines =
+            journal_event_lines(event, inv.num_retries, &|id| completions.get(&id).cloned())
+                .into_iter();
+        // `value` indents each line by one space.
+        let mut display = String::new();
         if let Some(headline) = lines.next() {
             let when = event
                 .appended_at
                 .map(|at| format!(", {}", chrono_humanize::HumanTime::from(at)))
                 .unwrap_or_default();
-            c_println!("  {}{}", style(headline).bold(), style(when).dim());
+            display = format!(" {}{}", style(headline).bold(), style(when).dim());
         }
         for line in lines {
-            c_println!("    {line}");
+            display.push_str(&format!("\n   {line}"));
         }
+        f.title("📅", "Last Event");
+        f.value("event", Field::with_display(event, display));
     }
 
     f.finish()
 }
 
-/// The journal event for `describe --json`.
-fn event_json(event: &JournalEventRow) -> serde_json::Value {
-    serde_json::json!({
-        "after_journal_entry_index": event.after_journal_entry_index,
-        "appended_at": event.appended_at.map(|t| t.to_rfc3339()),
-        "event_type": event.event_type,
-        "event": event.event,
-    })
-}
-
 /// The invocation's timestamps, in lifecycle order, skipping stages it never went
-/// through. The creation time also says how long ago it was.
-fn lifecycle_table(inv: &Invocation) -> Table {
-    let mut table = Table::new_styled();
-    table.add_kv_row(
-        "Created at:",
+/// through. The creation time also says how long ago it was, the others how long after
+/// it they happened.
+fn lifecycle_detail(inv: &Invocation) -> Vec<(&'static str, Field)> {
+    let created_at = Field::with_display(
+        inv.created_at,
         format!(
             "{} ({})",
             inv.created_at,
@@ -185,17 +140,26 @@ fn lifecycle_table(inv: &Invocation) -> Table {
             )
         ),
     );
-    for (label, at) in [
-        ("Scheduled at:", inv.scheduled_at),
-        ("Scheduled to start at:", inv.scheduled_start_at),
-        ("Inboxed at:", inv.inboxed_at),
-        ("First run at:", inv.running_at),
-        ("Modified at:", inv.state_modified_at),
-        ("Completed at:", inv.completed_at),
+    let mut rows = vec![("created_at", created_at)];
+    for (key, at) in [
+        ("scheduled_at", inv.scheduled_at),
+        ("scheduled_to_start_at", inv.scheduled_start_at),
+        ("inboxed_at", inv.inboxed_at),
+        ("first_run_at", inv.running_at),
+        ("modified_at", inv.state_modified_at),
+        ("completed_at", inv.completed_at),
     ] {
-        if let Some(at) = at {
-            table.add_kv_row(label, at.to_string());
-        }
+        let field = match at {
+            Some(at) => Field::with_display(
+                at,
+                format!(
+                    "{at} (+{})",
+                    compact_duration(at.signed_duration_since(inv.created_at))
+                ),
+            ),
+            None => Field::new(()),
+        };
+        rows.push((key, field));
     }
-    table
+    rows
 }

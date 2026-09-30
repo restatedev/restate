@@ -75,7 +75,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
             ],
         );
         // Emit the real, structured state value so scripts get native JSON.
-        f.value("state", Field::json(current_state_json));
+        f.value("state", Field::new(current_state_json));
     } else {
         // Human output keeps the familiar KEY / VALUE table with pretty-printed values.
         let pretty_json = pretty_print_json_object(&current_state_json)?;

@@ -32,7 +32,7 @@ pub async fn run_view(State(env): State<CliEnv>, _opts: &View) -> Result<()> {
         // Convert the TOML config into JSON so `config view --json` is machine-readable.
         let value: serde_json::Value = toml::from_str(&config_data)?;
         let mut f = Formatter::new();
-        f.value("config", Field::json(value));
+        f.value("config", Field::new(value));
         return f.finish();
     }
 

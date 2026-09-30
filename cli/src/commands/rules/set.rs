@@ -17,7 +17,7 @@ use restate_admin_rest_model::rules::UpsertRuleRequest;
 use restate_limiter::{Precondition, UserLimits};
 use restate_types::Version;
 
-use super::{RuleRow, fetch_rule, json_only, parse_pattern, rules_list_step, upsert_one};
+use super::{RuleRow, fetch_rule, parse_pattern, rules_list_step, upsert_one};
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, DataFusionHttpClient};
 use crate::error::RestateCliError;
@@ -113,7 +113,10 @@ pub async fn run_set(State(env): State<CliEnv>, opts: &Set) -> Result<()> {
     let rule = rule.map(RuleRow::from);
 
     let mut f = Formatter::new();
-    f.value("rule", json_only(rule.as_ref().map(RuleRow::to_json)));
+    f.value(
+        "rule",
+        Field::json_only(rule.as_ref().map(RuleRow::to_json)),
+    );
     f.outcome(
         "result",
         Field::with_display(result, message),
