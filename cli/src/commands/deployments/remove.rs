@@ -15,7 +15,7 @@ use cling::prelude::*;
 use serde_json::json;
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::{CliContext, c_eprintln, c_println, c_success, c_warn};
+use restate_cli_util::{CliContext, c_eprintln, c_println, c_success};
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
@@ -152,12 +152,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
                 f.next_step(&force_step, force_description, IncludeFormatting::Yes);
                 format!("Deployment is still {risk} Without --force, removing it will be refused.")
             };
-            if json {
-                f.value("warning", Field::with_display(warning, ""));
-            } else {
-                c_println!();
-                c_warn!("{warning}");
-            }
+            f.warning(&warning);
         }
         None if !json => {
             c_println!();

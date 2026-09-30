@@ -26,7 +26,7 @@ use restate_admin_rest_model::version::AdminApiVersion;
 use restate_cli_util::CliContext;
 use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln, c_success, c_warn};
+use restate_cli_util::{c_eprintln, c_error, c_indent_table, c_indentln};
 use restate_types::identifiers::LambdaARN;
 use restate_types::schema::service::ServiceMetadata;
 
@@ -35,7 +35,9 @@ use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::console::c_println;
 use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
+use crate::ui::fmt::{
+    DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter,
+};
 use crate::ui::service_handlers::{
     create_service_handlers_table, create_service_handlers_table_diff, service_type_label,
     service_type_machine,
@@ -523,22 +525,19 @@ async fn register(
         None
     };
 
+    let mut f = Formatter::new();
     if let Some(ref existing_deployment) = existing_deployment {
-        c_eprintln!();
-        c_warn!(
+        f.warning(&format!(
             "This deployment is already known to the server under the ID \"{}\". \
             Confirming this operation will overwrite services defined by the existing \
-            deployment. Inflight invocations to this deployment might move to an unrecoverable \
-            failure state afterwards!.\
-            \n\nThis is a DANGEROUS operation! \n
+            deployment. In-flight invocations to this deployment might move to an unrecoverable \
+            failure state afterwards!\
+            \n\nThis is a DANGEROUS operation!\n\
             In production, we recommend creating a new deployment with a unique endpoint while \
             keeping the old one active until the old deployment is drained.",
             existing_deployment.id()
-        );
-        c_eprintln!();
+        ));
     }
-
-    let mut f = Formatter::new();
     print_registration_changes(&mut f, &client, dry_run_response, existing_deployment).await?;
     f.confirm(
         &discover_opts.dry_run,
@@ -571,9 +570,6 @@ async fn register(
 
 /// Print the outcome of a successful registration, pointing at read-only follow-ups.
 fn print_registration_result(mut f: Formatter, result: RegisterDeploymentResponse) -> Result<()> {
-    if !CliContext::get().json_output() {
-        c_success!("DEPLOYMENT:");
-    }
     f.detail(
         "deployment",
         &[(
@@ -591,6 +587,14 @@ fn print_registration_result(mut f: Formatter, result: RegisterDeploymentRespons
         &["service", "revision"],
         &rows,
         IfEmpty::Nothing,
+    );
+    f.outcome(
+        "result",
+        Field::with_display(
+            "registered",
+            format!("Deployment {} registered successfully", result.id),
+        ),
+        Outcome::Success,
     );
     f.next_step(
         &format!("restate deployments describe {}", result.id),

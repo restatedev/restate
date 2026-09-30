@@ -263,6 +263,12 @@ pub trait OutputFormatter {
         );
     }
 
+    /// Warn about a risk of the command, e.g. before confirming a dangerous change. Human
+    /// output shows a warning box on stderr; JSON collects the messages in a top-level
+    /// `warnings` array, also part of the plan document emitted by
+    /// [`confirm`](OutputFormatter::confirm).
+    fn warning(&mut self, message: &str);
+
     /// One key/value row in the current scope: `key: value` in JSON; in human output a
     /// `Label: value` row, aligned with the adjacent `field` rows (skipped when the value
     /// is `null` without a display, like in `detail`).
@@ -409,6 +415,10 @@ impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
         self.parent.outcome(section, field, outcome)
     }
 
+    fn warning(&mut self, message: &str) {
+        self.parent.warning(message)
+    }
+
     fn field(&mut self, key: &str, field: Field) {
         self.parent.field(key, field)
     }
@@ -518,6 +528,10 @@ impl OutputFormatter for Formatter {
 
     fn outcome(&mut self, section: &str, field: Field, outcome: Outcome) {
         dispatch!(self.outcome(section, field, outcome))
+    }
+
+    fn warning(&mut self, message: &str) {
+        dispatch!(self.warning(message))
     }
 
     fn field(&mut self, key: &str, field: Field) {
@@ -685,6 +699,8 @@ impl Default for Formatter {
 
 /// JSON key holding the [`OutputFormatter::next_step`] suggestions.
 const NEXT_STEPS: &str = "next_steps";
+/// JSON key holding the [`OutputFormatter::warning`] messages.
+const WARNINGS: &str = "warnings";
 
 /// Human rendering of a next step: "Run `command` to description.".
 fn next_step_line(command: &str, description: &str) -> String {
@@ -977,6 +993,15 @@ impl OutputFormatter for HumanFormatter {
         self.printed = true;
     }
 
+    fn warning(&mut self, message: &str) {
+        self.flush_fields();
+        if self.printed {
+            restate_cli_util::c_eprintln!();
+        }
+        restate_cli_util::c_warn!("{message}");
+        self.printed = true;
+    }
+
     fn value(&mut self, _section: &str, field: Field) {
         self.flush_fields();
         // Indented like the rows of detail tables and lists.
@@ -1127,6 +1152,7 @@ pub struct JsonFormatter {
     /// last: sections go to the innermost open item, else to `doc`.
     open: Vec<Open>,
     next_steps: Vec<Value>,
+    warnings: Vec<Value>,
     /// `--yes` (or CI): [`confirm`](OutputFormatter::confirm) applies instead of
     /// emitting the plan.
     auto_confirm: bool,
@@ -1179,7 +1205,15 @@ const APPLIED: &str = "applied";
 impl JsonFormatter {
     fn insert(&mut self, section: &str, value: Value) {
         debug_assert!(
-            ![NEXT_STEPS, DRY_RUN, APPLIED, "hint", "apply_command"].contains(&section),
+            ![
+                NEXT_STEPS,
+                WARNINGS,
+                DRY_RUN,
+                APPLIED,
+                "hint",
+                "apply_command"
+            ]
+            .contains(&section),
             "`{section}` is a reserved section"
         );
         let target = match self.open.last_mut() {
@@ -1204,9 +1238,13 @@ impl JsonFormatter {
         serde_json::json!({ "error": report })
     }
 
-    /// The final document: every section, plus `next_steps` when any were added.
+    /// The final document: every section, plus `warnings` and `next_steps` when any
+    /// were added.
     fn into_document(self) -> Value {
         let mut doc = self.doc;
+        if !self.warnings.is_empty() {
+            doc.insert(WARNINGS.to_owned(), Value::Array(self.warnings));
+        }
         if !self.next_steps.is_empty() {
             doc.insert(NEXT_STEPS.to_owned(), Value::Array(self.next_steps));
         }
@@ -1261,6 +1299,10 @@ impl OutputFormatter for JsonFormatter {
 
     fn outcome(&mut self, section: &str, field: Field, _outcome: Outcome) {
         self.insert(section, field.value);
+    }
+
+    fn warning(&mut self, message: &str) {
+        self.warnings.push(Value::from(strip_ansi(message)));
     }
 
     fn field(&mut self, key: &str, field: Field) {
@@ -1473,6 +1515,7 @@ mod tests {
             Field::with_display("created", "Created service 'greeter'"),
             Outcome::Success,
         );
+        jf.warning("Overwrites service 'greeter'");
         let value = jf.into_document();
 
         assert_eq!(value["result"], json!("created"));
@@ -1480,6 +1523,7 @@ mod tests {
         assert_eq!(value["service"]["revision"], json!(3));
         assert_eq!(value["handlers"][0]["handler"], json!("greet"));
         assert_eq!(value["handlers"][0]["public"], json!(true));
+        assert_eq!(value[WARNINGS], json!(["Overwrites service 'greeter'"]));
         assert!(value.get("ignored").is_none());
         assert!(value.get(NEXT_STEPS).is_none());
     }
