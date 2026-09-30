@@ -633,7 +633,8 @@ impl QueryContext {
 
         let sql_options = SQLOptions::new()
             .with_allow_ddl(false)
-            .with_allow_dml(false);
+            .with_allow_dml(false)
+            .with_allow_statements(false);
 
         Ok(Self {
             sql_options,
