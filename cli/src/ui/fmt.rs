@@ -1367,6 +1367,19 @@ pub fn journal_time(t: DateTime<Local>) -> String {
     t.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
+/// Asserts that every human header of `item` is also a key of its JSON form, so both
+/// output formats use the same vocabulary.
+#[cfg(test)]
+pub(crate) fn assert_headers_are_json_keys<T: ListItem>(item: &T) {
+    let value = serde_json::to_value(item).unwrap();
+    for header in T::HEADERS {
+        assert!(
+            value.get(header).is_some(),
+            "header `{header}` is not a key of {value}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

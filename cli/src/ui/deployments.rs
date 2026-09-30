@@ -43,13 +43,6 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
     }
 }
 
-pub fn render_deployment_type(deployment: &Deployment) -> String {
-    match deployment {
-        Deployment::Http { .. } => "HTTP".to_string(),
-        Deployment::Lambda { .. } => "Lambda".to_string(),
-    }
-}
-
 pub fn render_transport_protocol(deployment: &Deployment) -> String {
     match deployment {
         Deployment::Http { http_version, .. } => {
@@ -196,7 +189,7 @@ pub fn deployment_info_fields(deployment: &Deployment) -> Vec<(String, Field)> {
             ));
             if let Some(assume_role_arn) = assume_role_arn {
                 rows.push((
-                    "deployment_assume_role_arn".to_owned(),
+                    "assume_role_arn".to_owned(),
                     Field::new(assume_role_arn.to_string()),
                 ));
             }

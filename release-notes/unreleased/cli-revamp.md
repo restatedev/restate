@@ -21,7 +21,10 @@ stdout. Supported by:
 
 JSON is consistent across commands: timestamps are RFC 3339 / ISO-8601 regardless of `--time-format`;
 service type uses one key (`service_type`) and one vocabulary (`service` / `virtual_object` /
-`workflow`); deployment `protocol` is a `[min, max]` array (not a stringified one);
+`workflow`); deployments are described with the same keys everywhere (`deployment_id`,
+`endpoint`, `transport` such as `HTTP/2.0` or `AWS Lambda`, `active_invocations`), and table
+headers in human output use the same names; deployment `protocol` is a `[min, max]` array (not a
+stringified one);
 `invocations describe --json` includes `completion` (success/failure); and collection ordering (e.g.
 handlers) is deterministic.
 

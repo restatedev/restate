@@ -121,7 +121,7 @@ struct ServiceListItem {
 }
 
 impl ListItem for ServiceListItem {
-    const HEADERS: &'static [&'static str] = &["service", "type"];
+    const HEADERS: &'static [&'static str] = &["name", "service_type"];
 
     fn columns(&self) -> Vec<Field> {
         vec![
@@ -139,5 +139,24 @@ impl ListItem for ServiceListItem {
             lines.push(format!("handlers {}", self.handlers.join(", ")));
         }
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_headers_are_json_keys() {
+        crate::ui::fmt::assert_headers_are_json_keys(&ServiceListItem {
+            name: "Greeter".to_owned(),
+            revision: 1,
+            service_type: "service",
+            deployment_id: String::new(),
+            endpoint: String::new(),
+            handlers: Vec::new(),
+            visibility: "public",
+            service_type_label: "Service",
+        });
     }
 }

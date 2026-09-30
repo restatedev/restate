@@ -483,13 +483,7 @@ async fn register(
                 Field::styled(dry_run_result.id.to_string(), Style::Info),
             )],
         );
-        f.table(
-            "changes",
-            &CHANGE_HEADERS,
-            &[] as &[Vec<Field>],
-            IfEmpty::Nothing,
-        );
-        f.value("note", Field::new(ALREADY_REGISTERED_NOTE));
+        f.nothing_to_do(ALREADY_REGISTERED_NOTE);
         f.next_step(
             &format!("restate deployments describe {}", dry_run_result.id),
             "see the existing deployment",

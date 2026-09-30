@@ -25,8 +25,7 @@ use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{AdminClientInterface, Deployment};
 use crate::ui::datetime::DateTimeExt;
 use crate::ui::deployments::{
-    DeploymentStatus, calculate_deployment_status, render_deployment_type, render_deployment_url,
-    render_transport_protocol,
+    DeploymentStatus, calculate_deployment_status, render_deployment_url, render_transport_protocol,
 };
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 
@@ -122,7 +121,7 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     )?;
     if let Some(item) = items.first() {
         f.next_step(
-            &format!("restate deployments describe {}", item.id),
+            &format!("restate deployments describe {}", item.deployment_id),
             "see the deployment's services and endpoint details",
             IncludeFormatting::Yes,
         );
@@ -140,17 +139,14 @@ struct EnrichedDeployment {
 
 #[derive(Serialize)]
 struct DeploymentListItem {
-    deployment: String,
-    #[serde(rename = "type")]
-    ty: String,
+    deployment_id: DeploymentId,
+    endpoint: String,
+    /// e.g. `HTTP/2.0` or `AWS Lambda`.
+    transport: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<DeploymentStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     active_invocations: Option<i64>,
-    id: DeploymentId,
-    /// HTTP deployments only, e.g. `HTTP/2.0`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    http_version: Option<String>,
     created_at: String,
     services: Vec<ServiceListEntry>,
 }
@@ -177,37 +173,36 @@ impl DeploymentListItem {
             })
             .collect();
         services.sort_by(|a, b| a.name.cmp(&b.name));
-        let http_version = matches!(d.deployment, Deployment::Http { .. })
-            .then(|| render_transport_protocol(&d.deployment));
         Self {
-            deployment: render_deployment_url(&d.deployment),
-            ty: render_deployment_type(&d.deployment),
+            deployment_id: d.deployment_id,
+            endpoint: render_deployment_url(&d.deployment),
+            transport: render_transport_protocol(&d.deployment),
             status: d.status,
             active_invocations: d.active_invocations,
-            id: d.deployment_id,
-            http_version,
             created_at: d.deployment.created_at().iso(),
             services,
         }
     }
 }
 
-/// `deployments list` item: id and target (with the HTTP version), then the services and
+/// `deployments list` item: id and endpoint (with the HTTP version), then the services and
 /// (with `--extra`, which fetches them) the status and active invocations.
 impl ListItem for DeploymentListItem {
-    const HEADERS: &'static [&'static str] = &["deployment_id", "target"];
+    const HEADERS: &'static [&'static str] = &["deployment_id", "endpoint"];
 
     fn columns(&self) -> Vec<Field> {
-        let address = match &self.http_version {
+        let endpoint = match self.transport.strip_prefix("HTTP/") {
             // e.g. `HTTP/2.0` -> `HTTP 2`, `HTTP/1.1` -> `HTTP 1.1`
             Some(version) => {
-                let version = version.replace('/', " ");
-                let version = version.strip_suffix(".0").unwrap_or(&version);
-                format!("{} ({version})", self.deployment)
+                let version = version.strip_suffix(".0").unwrap_or(version);
+                format!("{} (HTTP {version})", self.endpoint)
             }
-            None => self.deployment.clone(),
+            None => self.endpoint.clone(),
         };
-        vec![Field::new(self.id.to_string()), Field::new(address)]
+        vec![
+            Field::new(self.deployment_id.to_string()),
+            Field::new(endpoint),
+        ]
     }
 
     fn details(&self) -> Vec<String> {
@@ -229,5 +224,23 @@ impl ListItem for DeploymentListItem {
             ));
         }
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_headers_are_json_keys() {
+        crate::ui::fmt::assert_headers_are_json_keys(&DeploymentListItem {
+            deployment_id: DeploymentId::new(),
+            endpoint: "http://localhost:9080/".to_owned(),
+            transport: "HTTP/2.0".to_owned(),
+            status: None,
+            active_invocations: None,
+            created_at: String::new(),
+            services: Vec::new(),
+        });
     }
 }

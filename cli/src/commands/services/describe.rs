@@ -19,7 +19,8 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
 use crate::ui::deployments::{
-    active_invocations_field, deployment_info_fields, render_deployment_type, render_deployment_url,
+    active_invocations_field, deployment_info_fields, render_deployment_url,
+    render_transport_protocol,
 };
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 use crate::ui::service_handlers::{service_type_field, visibility_label, write_service_handlers};
@@ -150,11 +151,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
         let active_inv = count_deployment_active_inv(&sql_client, &deployment_id).await?;
 
         rows.push(vec![
+            Field::new(deployment_id.to_string()),
             Field::new(render_deployment_url(&deployment_metadata)),
-            Field::new(render_deployment_type(&deployment_metadata)),
+            Field::new(render_transport_protocol(&deployment_metadata)),
             Field::new(rev),
             active_invocations_field(active_inv),
-            Field::new(deployment_id.to_string()),
         ]);
     }
 
@@ -164,11 +165,11 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     f.table(
         "older_revisions",
         &[
-            "address",
-            "type",
+            "deployment_id",
+            "endpoint",
+            "transport",
             "service_revision",
             "active_invocations",
-            "deployment_id",
         ],
         &rows,
         IfEmpty::Nothing,

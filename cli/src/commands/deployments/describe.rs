@@ -74,8 +74,10 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
     };
 
     // Deployment header fields.
-    let mut deployment_fields: Vec<(String, Field)> =
-        vec![("id".to_owned(), Field::new(deployment_id.to_string()))];
+    let mut deployment_fields: Vec<(String, Field)> = vec![(
+        "deployment_id".to_owned(),
+        Field::new(deployment_id.to_string()),
+    )];
     deployment_fields.extend(deployment_info_fields(&deployment));
 
     if opts.extra {
@@ -98,7 +100,7 @@ async fn describe(env: &CliEnv, opts: &Describe) -> Result<()> {
 
         deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
         deployment_fields.push((
-            "invocations".to_owned(),
+            "active_invocations".to_owned(),
             active_invocations_field(total_active_inv),
         ));
     }

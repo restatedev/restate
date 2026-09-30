@@ -84,11 +84,14 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         &latest_services,
     );
 
-    let mut deployment_fields = vec![("id".to_owned(), Field::new(deployment_id.to_string()))];
+    let mut deployment_fields = vec![(
+        "deployment_id".to_owned(),
+        Field::new(deployment_id.to_string()),
+    )];
     deployment_fields.extend(deployment_info_fields(&deployment));
     deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
     deployment_fields.push((
-        "invocations".to_owned(),
+        "active_invocations".to_owned(),
         active_invocations_field(total_active_inv),
     ));
     let mut f = Formatter::new();
