@@ -51,11 +51,12 @@ pub use restate_util_string::encoded_mem_cmp_str;
 
 use crate::scan::TableScan;
 
-// FixedPrefixTransform requires seek keys to be at least as long as its configured prefix.
-// Shorter prefixes must bypass prefix seeking and its bloom filters.
+// The capped prefix extractor maps a seek key shorter than its cap to the key itself, so a prefix
+// seek would stop at the first longer key. Shorter prefixes must bypass prefix seeking and its
+// bloom filters.
 fn configure_prefix_iterator_opts<B: Into<Vec<u8>>>(opts: &mut rocksdb::ReadOptions, prefix: B) {
     let prefix = prefix.into();
-    if prefix.len() >= DB_PREFIX_LENGTH {
+    if prefix.len() >= PREFIX_EXTRACTOR_LENGTH {
         opts.set_prefix_same_as_start(true);
         opts.set_total_order_seek(false);
     } else {
