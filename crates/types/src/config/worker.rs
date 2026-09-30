@@ -835,12 +835,32 @@ pub struct StorageOptions {
     /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
     /// Other levels continue to use Bloom filters. Disabled by default.
     ///
+    /// L6 holds most of the keys, so these filters are about 4x smaller with
+    /// `rocksdb-disable-whole-key-filtering` set.
+    ///
     /// Takes effect when partition stores are opened and applies to newly generated SST files.
     ///
     /// Since v1.8.0
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub rocksdb_enable_l6_filters: bool,
+
+    /// # Disable whole-key filtering
+    ///
+    /// Build partition-store filters from key prefixes only, instead of prefixes and whole keys.
+    /// Filters get much smaller and point lookups still use the prefix filters. Files written
+    /// before v1.8 have no usable prefix filters for point lookups, so only set this once
+    /// compaction has rewritten them.
+    ///
+    /// Takes effect when partition stores are opened and applies to newly generated SST files.
+    ///
+    /// Temporary: this option will be removed in v1.9.0 (or earlier), when disabling whole-key
+    /// filtering becomes the default.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_disable_whole_key_filtering: bool,
 
     /// # Disable compact-on-deletion collector
     ///
@@ -1117,6 +1137,7 @@ impl Default for StorageOptions {
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
             rocksdb_enable_l6_filters: false,
+            rocksdb_disable_whole_key_filtering: false,
             rocksdb_disable_compact_on_deletion: false,
             rocksdb_compact_on_deletions_window: serde_helpers::default_compact_on_deletions_window(
             ),
