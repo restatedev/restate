@@ -8,9 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::histogram;
 use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -32,6 +34,7 @@ use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
+use crate::metric_definitions::PARTITION_CLEANER_PURGE_DELAY;
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -61,13 +64,23 @@ where
             response_sink,
         } = self;
         match ctx.get_invocation_status(invocation_id).await? {
-            InvocationStatus::Completed(CompletedInvocation {
-                ref vqueue_id,
-                invocation_target,
-                journal_metadata,
-                pinned_deployment,
-                ..
-            }) => {
+            InvocationStatus::Completed(completed) => {
+                if ctx.is_leader
+                    && response_sink.is_none()
+                    && let Some(expiry_time) = completed.completion_expiry_time()
+                {
+                    histogram!(PARTITION_CLEANER_PURGE_DELAY)
+                        .record(MillisSinceEpoch::now().duration_since(expiry_time));
+                }
+
+                let CompletedInvocation {
+                    ref vqueue_id,
+                    invocation_target,
+                    journal_metadata,
+                    pinned_deployment,
+                    ..
+                } = completed;
+
                 // delete the vqueue entry information.
                 if let Some(vqueue_id) = vqueue_id {
                     let entry_id = EntryId::from(invocation_id);

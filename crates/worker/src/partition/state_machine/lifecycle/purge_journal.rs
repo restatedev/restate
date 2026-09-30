@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::histogram;
+use tracing::trace;
+
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -17,8 +21,8 @@ use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
-use tracing::trace;
 
+use crate::metric_definitions::PARTITION_CLEANER_PURGE_DELAY;
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -51,6 +55,13 @@ where
 
                 // If journal is not empty, clean it up
                 if completed.journal_metadata.length != 0 {
+                    if ctx.is_leader
+                        && response_sink.is_none()
+                        && let Some(expiry_time) = completed.journal_expiry_time()
+                    {
+                        histogram!(PARTITION_CLEANER_PURGE_DELAY)
+                            .record(MillisSinceEpoch::now().duration_since(expiry_time));
+                    }
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,

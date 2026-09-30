@@ -44,6 +44,8 @@ pub const STARTUP_ERROR_STOP: &str = "startup-error";
 pub const GAP_STOP: &str = "log-gap-detected";
 pub const ERROR_STOP: &str = "error";
 
+pub const PARTITION_CLEANER_PURGE_DELAY: &str = "restate.partition.cleaner_purge_delay.seconds";
+
 pub const SNAPSHOT_AGE: &str = "restate.partition.snapshot_age.seconds";
 
 pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
@@ -81,6 +83,12 @@ pub(crate) fn describe_metrics() {
         PARTITION_HANDLE_LEADER_ACTIONS,
         Unit::Count,
         "Number of actions the leader has performed"
+    );
+
+    describe_histogram!(
+        PARTITION_CLEANER_PURGE_DELAY,
+        Unit::Seconds,
+        "Delay between the retention expiry of a completed invocation (or its journal) and the application of the cleaner's purge"
     );
 
     describe_counter!(

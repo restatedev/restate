@@ -839,6 +839,13 @@ impl CompletedInvocation {
             .completed_transition_time()
             .map(|base| base + self.completion_retention_duration)
     }
+
+    /// Expiration time of the journal of the [`InvocationStatus::Completed`], if any.
+    pub fn journal_expiry_time(&self) -> Option<MillisSinceEpoch> {
+        self.timestamps
+            .completed_transition_time()
+            .map(|base| base + self.journal_retention_duration)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
