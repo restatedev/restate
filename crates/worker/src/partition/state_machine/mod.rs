@@ -98,11 +98,10 @@ use restate_types::journal::enriched::{
     AwakeableEnrichmentResult, CallEnrichmentResult, EnrichedEntryHeader,
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
-use restate_types::journal::*;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
-    self, CommandIndex, CompletionId, InputCommand, NotificationId, Signal, SignalResult,
-    SleepCommand, UnresolvedFuture,
+    self, CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId,
+    Signal, SignalResult, SleepCommand, UnresolvedFuture,
 };
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
