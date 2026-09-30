@@ -84,6 +84,8 @@ pub enum Action {
     /// advances. Followers ignore this action (no live UserLimiter to
     /// notify); only the leader's `leader_state` dispatches it onward.
     RulesUpdated(Box<[RuleUpdate]>),
+    /// Notify the leader's `Cleaner` that a purge has been applied.
+    CleanerPurgeApplied,
 }
 
 impl From<VQueueEvent> for Action {
