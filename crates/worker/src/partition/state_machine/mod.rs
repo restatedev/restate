@@ -249,14 +249,6 @@ impl StateMachine {
 }
 
 impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
-    /// Reports a purge the cleaner may have proposed to the leader. A purge is proposed by a cleaner if it's self-proposed
-    /// and has no sink. Admin API uses ingestion client but uses Dedup::None, so we won't report it.
-    fn report_cleaner_purge(&mut self, is_self_proposal: bool, request: &PurgeInvocationRequest) {
-        if self.is_leader && is_self_proposal && request.response_sink.is_none() {
-            self.action_collector.push(Action::CleanerPurgeApplied);
-        }
-    }
-
     async fn get_invocation_status(
         &mut self,
         invocation_id: &InvocationId,
@@ -519,11 +511,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
-                self.report_cleaner_purge(is_self_proposal, &purge_invocation_request);
+                let is_cleaner_purge = self.is_leader
+                    && is_self_proposal
+                    && purge_invocation_request.response_sink.is_none();
 
                 lifecycle::OnPurgeCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    is_cleaner_purge,
                 }
                 .apply(self)
                 .await?;
@@ -535,11 +530,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
-                self.report_cleaner_purge(is_self_proposal, &purge_invocation_request);
+                let is_cleaner_purge = self.is_leader
+                    && is_self_proposal
+                    && purge_invocation_request.response_sink.is_none();
 
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    is_cleaner_purge,
                 }
                 .apply(self)
                 .await?;
@@ -2419,6 +2417,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 lifecycle::OnPurgeCommand {
                     invocation_id,
                     response_sink: None,
+                    is_cleaner_purge: false,
                 }
                 .apply(self)
                 .await?;

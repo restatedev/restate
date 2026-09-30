@@ -8,6 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::histogram;
+use tracing::trace;
+
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -17,14 +21,18 @@ use restate_storage_api::journal_table_v2::WriteJournalTable;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
-use tracing::trace;
 
+use crate::metric_definitions::PARTITION_CLEANER_PURGE_DELAY;
 use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeJournalCommand<'a> {
     pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// Whether this purge was proposed by the leader's cleaner. A purge is proposed by the cleaner
+    /// if it's self-proposed and has no sink. Admin API uses ingestion client but uses
+    /// Dedup::None, so it won't be considered a cleaner purge.
+    pub is_cleaner_purge: bool,
 }
 
 impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
@@ -41,7 +49,13 @@ where
         let OnPurgeJournalCommand {
             invocation_id,
             response_sink,
+            is_cleaner_purge,
         } = self;
+
+        if is_cleaner_purge {
+            ctx.action_collector.push(Action::CleanerPurgeApplied);
+        }
+
         match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let pinned_service_protocol_version = completed
@@ -51,6 +65,10 @@ where
 
                 // If journal is not empty, clean it up
                 if completed.journal_metadata.length != 0 {
+                    if is_cleaner_purge && let Some(expiry_time) = completed.journal_expiry_time() {
+                        histogram!(PARTITION_CLEANER_PURGE_DELAY)
+                            .record(MillisSinceEpoch::now().duration_since(expiry_time));
+                    }
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
