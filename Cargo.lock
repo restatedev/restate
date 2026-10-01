@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "bifrost-benchpress"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1783,7 +1783,7 @@ checksum = "0c9ea0ac24bc397ab3c98583a3c9ba74fa56b09a4449bbe172b9b1ddb016027a"
 
 [[package]]
 name = "codederror"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "codederror-derive",
  "restate-workspace-hack",
@@ -5341,7 +5341,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "logserver-bench"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -5634,7 +5634,7 @@ checksum = "f2b8f3a258db515d5e91a904ce4ae3f73e091149b90cadbdb93d210bee07f63b"
 
 [[package]]
 name = "mock-service-endpoint"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "assert2",
  "async-stream",
@@ -6509,7 +6509,7 @@ checksum = "439ee305def115ba05938db6eb1644ff94165c5ab5e9420d1c1bcedbba909391"
 
 [[package]]
 name = "pp-bench"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "axum",
@@ -7522,7 +7522,7 @@ checksum = "1e061d1b48cb8d38042de4ae0a7a6401009d6143dc80d2e2d6f31f0bdd6470c7"
 
 [[package]]
 name = "restate-admin"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7583,7 +7583,7 @@ dependencies = [
 
 [[package]]
 name = "restate-admin-rest-model"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "bytestring",
@@ -7606,7 +7606,7 @@ dependencies = [
 
 [[package]]
 name = "restate-base64-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "base64 0.22.1",
  "restate-workspace-hack",
@@ -7614,7 +7614,7 @@ dependencies = [
 
 [[package]]
 name = "restate-benchmarks"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "criterion",
@@ -7641,7 +7641,7 @@ dependencies = [
 
 [[package]]
 name = "restate-bifrost"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "adaptive-timeout",
  "ahash",
@@ -7698,7 +7698,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7769,7 +7769,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cli-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -7798,7 +7798,7 @@ dependencies = [
 
 [[package]]
 name = "restate-clock"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "criterion",
@@ -7817,7 +7817,7 @@ dependencies = [
 
 [[package]]
 name = "restate-cloud-tunnel-client"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bs58",
@@ -7837,7 +7837,7 @@ dependencies = [
 
 [[package]]
 name = "restate-core"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -7912,7 +7912,7 @@ dependencies = [
 
 [[package]]
 name = "restate-doctor"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arrow",
@@ -7965,7 +7965,7 @@ dependencies = [
 
 [[package]]
 name = "restate-encoding"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "bytes",
@@ -7986,7 +7986,7 @@ dependencies = [
 
 [[package]]
 name = "restate-errors"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "codederror",
  "paste",
@@ -7998,7 +7998,7 @@ dependencies = [
 
 [[package]]
 name = "restate-fs-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "restate-workspace-hack",
  "tokio",
@@ -8008,7 +8008,7 @@ dependencies = [
 
 [[package]]
 name = "restate-futures-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -8028,7 +8028,7 @@ dependencies = [
 
 [[package]]
 name = "restate-hyper-uds"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "http 1.5.0",
  "hyper-util",
@@ -8040,7 +8040,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingestion-client"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "dashmap",
@@ -8061,7 +8061,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-http"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8109,7 +8109,7 @@ dependencies = [
 
 [[package]]
 name = "restate-ingress-kafka"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -8141,7 +8141,7 @@ dependencies = [
 
 [[package]]
 name = "restate-invoker-impl"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8190,7 +8190,7 @@ dependencies = [
 
 [[package]]
 name = "restate-limiter"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "bytes",
@@ -8208,7 +8208,7 @@ dependencies = [
 
 [[package]]
 name = "restate-lite"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "http 1.5.0",
@@ -8237,7 +8237,7 @@ dependencies = [
 
 [[package]]
 name = "restate-local-cluster-runner"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8274,7 +8274,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8316,7 +8316,7 @@ dependencies = [
 
 [[package]]
 name = "restate-log-server-grpc"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "prost",
  "restate-types",
@@ -8328,7 +8328,7 @@ dependencies = [
 
 [[package]]
 name = "restate-memory"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "futures",
@@ -8344,7 +8344,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-providers"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -8380,7 +8380,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -8425,7 +8425,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-server-grpc"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "bytestring",
@@ -8446,7 +8446,7 @@ dependencies = [
 
 [[package]]
 name = "restate-metadata-store"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "async-trait",
  "bytes",
@@ -8468,7 +8468,7 @@ dependencies = [
 
 [[package]]
 name = "restate-node"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8531,7 +8531,7 @@ dependencies = [
 
 [[package]]
 name = "restate-object-store-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "aws-config",
@@ -8549,7 +8549,7 @@ dependencies = [
 
 [[package]]
 name = "restate-partition-store"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8607,7 +8607,7 @@ dependencies = [
 
 [[package]]
 name = "restate-platform"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "bytes",
@@ -8623,7 +8623,7 @@ dependencies = [
 
 [[package]]
 name = "restate-queue"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bincode",
  "criterion",
@@ -8638,7 +8638,7 @@ dependencies = [
 
 [[package]]
 name = "restate-rocksdb"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bytes",
@@ -8669,7 +8669,7 @@ dependencies = [
 
 [[package]]
 name = "restate-serde-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "http 1.5.0",
@@ -8685,7 +8685,7 @@ dependencies = [
 
 [[package]]
 name = "restate-server"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bytestring",
@@ -8737,7 +8737,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-client"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "arc-swap",
@@ -8793,7 +8793,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "bytes-utils",
@@ -8814,7 +8814,7 @@ dependencies = [
 
 [[package]]
 name = "restate-service-protocol-v4"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "assert2",
  "bytes",
@@ -8849,7 +8849,7 @@ dependencies = [
 
 [[package]]
 name = "restate-sharding"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "derive_more",
@@ -8863,7 +8863,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-api"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8891,7 +8891,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-datafusion"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8936,7 +8936,7 @@ dependencies = [
 
 [[package]]
 name = "restate-test-util"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "assert2",
  "bytes",
@@ -8951,7 +8951,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "futures-util",
@@ -8968,7 +8968,7 @@ dependencies = [
 
 [[package]]
 name = "restate-timer-queue"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "futures",
  "restate-workspace-hack",
@@ -8977,7 +8977,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "restate-clock",
  "restate-workspace-hack",
@@ -8987,7 +8987,7 @@ dependencies = [
 
 [[package]]
 name = "restate-tracing-instrumentation"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "console-subscriber",
  "criterion",
@@ -9017,7 +9017,7 @@ dependencies = [
 
 [[package]]
 name = "restate-types"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "adaptive-timeout",
  "ahash",
@@ -9116,7 +9116,7 @@ dependencies = [
 
 [[package]]
 name = "restate-util-bytecount"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bilrost",
  "bytesize",
@@ -9132,14 +9132,14 @@ dependencies = [
 
 [[package]]
 name = "restate-util-random"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "restate-workspace-hack",
 ]
 
 [[package]]
 name = "restate-util-string"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "bilrost",
@@ -9157,7 +9157,7 @@ dependencies = [
 
 [[package]]
 name = "restate-util-time"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "jiff",
  "rand 0.10.3",
@@ -9171,7 +9171,7 @@ dependencies = [
 
 [[package]]
 name = "restate-utoipa"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "indexmap 2.14.2",
  "restate-utoipa",
@@ -9182,7 +9182,7 @@ dependencies = [
 
 [[package]]
 name = "restate-vqueues"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arrayvec",
@@ -9224,7 +9224,7 @@ dependencies = [
 
 [[package]]
 name = "restate-wal-protocol"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "bilrost",
@@ -9255,7 +9255,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "ahash",
  "anyhow",
@@ -9319,7 +9319,7 @@ dependencies = [
 
 [[package]]
 name = "restate-worker-api"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "codederror",
@@ -9504,7 +9504,7 @@ dependencies = [
 
 [[package]]
 name = "restatectl"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "arrow",
@@ -10117,7 +10117,7 @@ dependencies = [
 
 [[package]]
 name = "service-protocol-wireshark-dissector"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "bytes",
  "mlua",
@@ -12283,7 +12283,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "1.7.12"
+version = "1.7.13"
 dependencies = [
  "anyhow",
  "reqwest 0.12.28",
