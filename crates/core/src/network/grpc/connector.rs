@@ -107,7 +107,9 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         .connect_timeout(*options.connect_timeout)
         .http2_keep_alive_interval(*options.http2_keep_alive_interval)
         .keep_alive_timeout(*options.http2_keep_alive_timeout)
-        .http2_adaptive_window(options.http2_adaptive_window)
+        // Fixed windows, as on the server end (`net_util::run_listener_loop`). tonic applies
+        // adaptive mode after the window sizes, and it would reset both to 64 KiB.
+        .http2_adaptive_window(false)
         .initial_stream_window_size(options.stream_window_size())
         .initial_connection_window_size(options.connection_window_size())
         .keep_alive_while_idle(true)
