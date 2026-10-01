@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
+use restate_storage_query_api::{AdminUser, QueryEngine};
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -51,7 +52,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     serdes_client: SerdesClient,
     invocation_client: Invocations,
-    query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
+    query_engine: Arc<dyn QueryEngine<AdminUser>>,
     metadata_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
@@ -62,6 +63,7 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
@@ -70,6 +72,7 @@ where
         serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
+        query_engine: Arc<dyn QueryEngine<AdminUser>>,
     ) -> Self {
         let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
@@ -82,19 +85,9 @@ where
             ),
             serdes_client,
             invocation_client,
-            query_context: None,
+            query_engine,
             metadata_client,
             rule_book_observer: None,
-        }
-    }
-
-    pub fn with_query_context(
-        self,
-        query_context: restate_storage_query_datafusion::context::QueryContext,
-    ) -> Self {
-        Self {
-            query_context: Some(query_context),
-            ..self
         }
     }
 
@@ -117,7 +110,7 @@ where
             self.invocation_client,
             self.ingestion_client,
             self.metadata_client.clone(),
-            self.query_context,
+            self.query_engine,
             self.rule_book_observer,
         );
 

@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -20,7 +21,6 @@ use tokio::sync::mpsc::Sender;
 
 use tokio::sync::watch;
 
-use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -28,14 +28,15 @@ use super::row::append_partition_row;
 use super::schema::PartitionStateBuilder;
 
 pub fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     watch: watch::Receiver<Arc<LegacyClusterState>>,
 ) -> datafusion::common::Result<()> {
     let table = GenericTableProvider::new(
         PartitionStateBuilder::schema(),
         Arc::new(PartitionStateScanner { watch }),
     );
-    ctx.register_non_partitioned_table("partition_state", Arc::new(table))
+    ctx.register_table("partition_state", Arc::new(table))
+        .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

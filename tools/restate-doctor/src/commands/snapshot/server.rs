@@ -39,7 +39,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{Level, enabled, warn};
 
 use restate_cli_util::c_println;
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
+use restate_storage_query_api::{AdminUser, QueryEngine, QueryOptions, SessionOptions};
 
 /// SQL query request body, matching the admin `/query` endpoint.
 #[derive(Debug, Deserialize)]
@@ -55,28 +56,27 @@ struct QueryErrorBody {
 }
 
 /// Errors that can occur when executing a query.
-struct QueryError(restate_storage_query_datafusion::context::QueryError);
-
-impl From<datafusion::error::DataFusionError> for QueryError {
-    fn from(err: datafusion::error::DataFusionError) -> Self {
-        Self(restate_storage_query_datafusion::context::QueryError::DataFusion(err))
-    }
+#[derive(Debug, thiserror::Error)]
+enum QueryError {
+    #[error(transparent)]
+    Session(#[from] SessionError),
+    #[error(transparent)]
+    Query(#[from] QueryExecutionError),
+    #[error(transparent)]
+    DataFusion(#[from] DataFusionError),
 }
 
 impl IntoResponse for QueryError {
     fn into_response(self) -> Response {
-        let status_code = match &self.0 {
-            restate_storage_query_datafusion::context::QueryError::DataFusion(_) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            restate_storage_query_datafusion::context::QueryError::RateLimited(_) => {
-                StatusCode::TOO_MANY_REQUESTS
-            }
+        let status_code = match &self {
+            QueryError::Session(SessionError::RateLimited(_)) => StatusCode::TOO_MANY_REQUESTS,
+            QueryError::Session(SessionError::EngineDisabled) => StatusCode::SERVICE_UNAVAILABLE,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (
             status_code,
             Json(QueryErrorBody {
-                message: self.0.to_string(),
+                message: self.to_string(),
             }),
         )
             .into_response()
@@ -84,10 +84,11 @@ impl IntoResponse for QueryError {
 }
 
 /// Builds the router, binds the listener, and serves the query API until shutdown.
-pub(crate) async fn run_server(ctx: QueryContext, addr: SocketAddr) -> anyhow::Result<()> {
-    let router = Router::new()
-        .route("/query", post(query))
-        .with_state(Arc::new(ctx));
+pub(crate) async fn run_server(
+    ctx: Arc<dyn QueryEngine<AdminUser>>,
+    addr: SocketAddr,
+) -> anyhow::Result<()> {
+    let router = Router::new().route("/query", post(query)).with_state(ctx);
 
     let listener = tokio::net::TcpListener::bind(addr)
         .await
@@ -107,11 +108,12 @@ pub(crate) async fn run_server(ctx: QueryContext, addr: SocketAddr) -> anyhow::R
 /// JSON (`application/json`) or, by default, Arrow IPC stream
 /// (`application/vnd.apache.arrow.stream`).
 async fn query(
-    State(ctx): State<Arc<QueryContext>>,
+    State(ctx): State<Arc<dyn QueryEngine<AdminUser>>>,
     headers: HeaderMap,
     Json(payload): Json<QueryRequest>,
 ) -> Result<Response, QueryError> {
-    let query_result = ctx.execute(&payload.query).await.map_err(QueryError)?;
+    let session = ctx.create_session(SessionOptions::default())?;
+    let query_result = session.execute(&payload.query, QueryOptions {}).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
