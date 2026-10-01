@@ -10,7 +10,6 @@
 
 use assert2::assert;
 use restate_storage_api::output_table::WriteOutputTable;
-use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
@@ -19,12 +18,12 @@ use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, CompletionStatus, InFlightInvocationMetadata, JournalMetadata,
-    JournalRetentionPolicy, ReadInvocationStatusTable, ResponseResultRef,
-    WriteInvocationStatusTable,
+    CompletedInvocation, CompletionStatus, InFlightInvocationMetadata, JournalRetentionPolicy,
+    ReadInvocationStatusTable, ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable, WriteJournalTable};
+use restate_storage_api::journal_table_v2;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
@@ -32,7 +31,6 @@ use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{self, ReadVQueueTable, WriteVQueueTable};
-use restate_storage_api::{StorageError, journal_table_v2};
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::ResponseResult;
@@ -57,30 +55,24 @@ pub struct EndInvocationCommand {
 
 /// How the invocation ended.
 pub enum EndInvocationReason {
-    /// The invoker reported the invocation ran to completion. The result is read from the
+    /// The invoker reported the invocation ran to completion via an `end` message. The result is read from the
     /// last Output entry in the journal.
-    Completed,
+    End,
     /// The invoker reported a terminal failure, The entry is appended at the end of the journal.
     Failed(InvocationError),
+    /// Invocation completed normally by producing an output
+    Completed(OutputCommand),
     /// The invocation was killed.
     Killed,
 }
 
-enum Cached<T> {
-    None,
-    NotFound,
-    Found(T),
-}
-
-struct ResponseResultCache {
+struct ResponseResultLoader {
     invocation_id: InvocationId,
     journal_length: u32,
     protocol_version: ServiceProtocolVersion,
-
-    result: Cached<ResponseResult>,
 }
 
-impl ResponseResultCache {
+impl ResponseResultLoader {
     fn new(
         invocation_id: InvocationId,
         journal_length: u32,
@@ -90,12 +82,11 @@ impl ResponseResultCache {
             invocation_id,
             journal_length,
             protocol_version,
-            result: Cached::None,
         }
     }
 
     async fn read_last_output_entry_result<'s, S, P>(
-        &self,
+        self,
         ctx: &mut StateMachineApplyContext<'s, S, P>,
     ) -> Result<Option<ResponseResult>, Error>
     where
@@ -147,97 +138,6 @@ impl ResponseResultCache {
                 .transpose()
         }
     }
-
-    async fn fetch<'s, S, P>(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<(), Error>
-    where
-        P: ProcessorContext,
-        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
-    {
-        match &self.result {
-            Cached::NotFound | Cached::Found(_) => {}
-            Cached::None => match self.read_last_output_entry_result(ctx).await? {
-                Some(response) => {
-                    self.result = Cached::Found(response);
-                }
-                None => self.result = Cached::NotFound,
-            },
-        }
-        Ok(())
-    }
-
-    async fn response_result<'s, S, P>(
-        &mut self,
-        ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<Option<&ResponseResult>, Error>
-    where
-        P: ProcessorContext,
-        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
-    {
-        self.fetch(ctx).await?;
-
-        match &self.result {
-            Cached::None => {
-                unreachable!()
-            }
-            Cached::NotFound => Ok(None),
-            Cached::Found(response) => Ok(Some(response)),
-        }
-    }
-
-    async fn into_response_result<'s, S, P>(
-        mut self,
-        ctx: &mut StateMachineApplyContext<'s, S, P>,
-    ) -> Result<Option<ResponseResult>, Error>
-    where
-        P: ProcessorContext,
-        S: ReadJournalTable + journal_table_v2::ReadJournalTable,
-    {
-        self.fetch(ctx).await?;
-
-        match self.result {
-            Cached::None => {
-                unreachable!()
-            }
-            Cached::NotFound => Ok(None),
-            Cached::Found(response) => Ok(Some(response)),
-        }
-    }
-}
-
-fn append_journal_entry<'s, S, P>(
-    ctx: &mut StateMachineApplyContext<'s, S, P>,
-    invocation_id: &InvocationId,
-    journal_meta: &mut JournalMetadata,
-    entry: impl Into<restate_types::journal_v2::Entry>,
-) -> Result<(), StorageError>
-where
-    P: ProcessorContext,
-    S: journal_table_v2::WriteJournalTable,
-{
-    let entry = entry.into().encode::<ServiceProtocolV4Codec>();
-    let entry_index = journal_meta.length;
-
-    // Update journal length
-    journal_meta.length += 1;
-    if matches!(entry.ty(), restate_types::journal_v2::EntryType::Command(_)) {
-        journal_meta.commands += 1;
-    }
-
-    // Store journal entry
-    journal_table_v2::WriteJournalTable::put_journal_entry(
-        ctx.storage,
-        invocation_id,
-        entry_index,
-        // Make sure that a deterministic append time is set based on Bifrost's record creation
-        // time. This ensures that the append time does not depend on the application time of
-        // the record and ensures that subsequent journal entries have monotonically increasing
-        // append times.
-        &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
-        &[],
-    )
 }
 
 impl EndInvocationCommand {
@@ -282,7 +182,7 @@ where
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let EndInvocationCommand {
             invocation_id,
-            mut invocation_metadata,
+            invocation_metadata,
             reason,
         } = self;
 
@@ -294,14 +194,14 @@ where
             invocation_metadata.idempotency_key.as_deref(),
         );
 
-        let mut journal_length = invocation_metadata.journal_metadata.length;
+        let journal_length = invocation_metadata.journal_metadata.length;
 
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
             .map(|pd| pd.service_protocol_version);
 
-        let mut response_cache = ResponseResultCache::new(
+        let response_cache = ResponseResultLoader::new(
             invocation_id,
             journal_length,
             pinned_service_protocol_version.unwrap_or_default(),
@@ -327,59 +227,43 @@ where
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
-        if is_write_output_table_enabled {
-            // auto append (error) output journal entry if one doesn't exist
-            let err = match &reason {
-                EndInvocationReason::Killed => Some(KILLED_INVOCATION_ERROR),
-                EndInvocationReason::Failed(err) => Some(err.clone()),
-                EndInvocationReason::Completed => None,
-            };
-
-            if let Some(err) = err {
-                append_journal_entry(
-                    ctx,
-                    &invocation_id,
-                    &mut invocation_metadata.journal_metadata,
-                    OutputCommand {
-                        result: OutputResult::Failure(err.into()),
-                        name: Default::default(),
-                    },
-                )?;
-
-                // make sure journal_length and cache are updated with
-                // the new length after the append.
-                journal_length = invocation_metadata.journal_metadata.length;
-                response_cache = ResponseResultCache::new(
-                    invocation_id,
-                    journal_length,
-                    pinned_service_protocol_version.unwrap_or(ServiceProtocolVersion::V4),
-                );
-            }
-        }
-
-        let end_status = match &reason {
-            EndInvocationReason::Killed => vqueue_table::Status::Killed,
-            EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
-            EndInvocationReason::Completed => {
-                let Some(response_result) = response_cache.response_result(ctx).await? else {
-                    // We don't panic on this, although it indicates a bug at the moment.
+        let output = match &reason {
+            EndInvocationReason::Completed(output) => match &output.result {
+                OutputResult::Success(bytes) => ResponseResult::Success(bytes.clone()),
+                OutputResult::Failure(failure) => ResponseResult::Failure(failure.clone().into()),
+            },
+            EndInvocationReason::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
+            EndInvocationReason::Failed(error) => ResponseResult::Failure(error.clone()),
+            EndInvocationReason::End => {
+                // If we receive and End. It means the output has already
+                // been written to the journal table. We need to load this out
+                let Some(output) = response_cache.read_last_output_entry_result(ctx).await? else {
                     warn!(
                         "Invocation completed without an output entry. This is not supported yet."
                     );
                     return Ok(());
                 };
+                output
+            }
+        };
 
-                match response_result {
-                    ResponseResult::Success(_) => vqueue_table::Status::Succeeded,
-                    ResponseResult::Failure(err) => {
-                        if err.code == restate_types::errors::codes::ABORTED {
-                            vqueue_table::Status::Cancelled
-                        } else {
-                            vqueue_table::Status::Failed
-                        }
+        if is_write_output_table_enabled {
+            ctx.storage.put_output(&invocation_id, &output)?;
+        }
+
+        let end_status = match &reason {
+            EndInvocationReason::Killed => vqueue_table::Status::Killed,
+            EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
+            EndInvocationReason::End | EndInvocationReason::Completed(_) => match &output {
+                ResponseResult::Success(_) => vqueue_table::Status::Succeeded,
+                ResponseResult::Failure(err) => {
+                    if err.code == restate_types::errors::codes::ABORTED {
+                        vqueue_table::Status::Cancelled
+                    } else {
+                        vqueue_table::Status::Failed
                     }
                 }
-            }
+            },
         };
 
         // If there are any response sinks, or we need to store back the completed status,
@@ -392,17 +276,9 @@ where
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
                     }
                     EndInvocationReason::Failed(err) => ResponseResultRef::Failure(err),
-                    EndInvocationReason::Completed => {
-                        let Some(response_result) = response_cache.response_result(ctx).await?
-                        else {
-                            warn!(
-                                "Invocation completed without an output entry. This is not supported yet."
-                            );
-                            return Ok(());
-                        };
-
+                    EndInvocationReason::End | EndInvocationReason::Completed(_) => {
                         // bytes are cheaply clonable. Errors not so much.
-                        match response_result {
+                        match &output {
                             ResponseResult::Success(bytes) => {
                                 ResponseResultRef::Success(bytes.clone())
                             }
@@ -410,50 +286,20 @@ where
                         }
                     }
                 },
-                true => {
-                    // write result to output table
-                    // the output here can be synthetic (on kill or failure) as
-                    // done above, or organic from the invocation completion. In call cases,
-                    // we need to insert the output into the output table.
-                    let Some(response_result) = response_cache.response_result(ctx).await? else {
-                        warn!(
-                            "Invocation completed without an output entry. This is not supported yet."
-                        );
-                        return Ok(());
-                    };
-
-                    ctx.storage.put_output(&invocation_id, response_result)?;
-
-                    match reason {
-                        EndInvocationReason::Killed => ResponseResultRef::Killed,
-                        EndInvocationReason::Failed(err) => {
+                true => match reason {
+                    EndInvocationReason::Killed => ResponseResultRef::Killed,
+                    EndInvocationReason::Failed(err) => {
+                        ResponseResultRef::Completed(CompletionStatus::Failure(err.code))
+                    }
+                    EndInvocationReason::End | EndInvocationReason::Completed(_) => match &output {
+                        ResponseResult::Success(_) => {
+                            ResponseResultRef::Completed(CompletionStatus::Success)
+                        }
+                        ResponseResult::Failure(err) => {
                             ResponseResultRef::Completed(CompletionStatus::Failure(err.code))
                         }
-                        EndInvocationReason::Completed => match response_result {
-                            ResponseResult::Success(_) => {
-                                ResponseResultRef::Completed(CompletionStatus::Success)
-                            }
-                            ResponseResult::Failure(err) => {
-                                ResponseResultRef::Completed(CompletionStatus::Failure(err.code))
-                            }
-                        },
-                    }
-                }
-            };
-
-            // We still need to create a ResponseResult object to send to sinks
-            //
-            // Note: the cost of copy is only paid when is_write_result_reference_enabled is disabled.
-            // Once is_write_result_reference_enabled is on by default, there will be no copy
-            // since everything will be referenced via the Completed state
-            let response_result = match &response_result_ref {
-                ResponseResultRef::Success(bytes) => ResponseResult::Success(bytes.clone()),
-                ResponseResultRef::Failure(err) => ResponseResult::Failure(err.clone()),
-                ResponseResultRef::Killed | ResponseResultRef::Completed(_) => {
-                    // Note: we can only be here iff response_result has been inserted
-                    // into the output table, so it's safe to just unwrap()
-                    response_cache.into_response_result(ctx).await?.unwrap()
-                }
+                    },
+                },
             };
 
             // Notify invocation result
@@ -461,7 +307,7 @@ where
                 &invocation_id,
                 &invocation_metadata.invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
-                match &response_result {
+                match &output {
                     ResponseResult::Success(_) => Ok(()),
                     ResponseResult::Failure(err) => Err(err),
                 },
@@ -470,7 +316,7 @@ where
             // Send responses out
             ctx.send_response_to_sinks(
                 invocation_metadata.response_sinks.clone(),
-                response_result,
+                output,
                 Some(invocation_id),
                 None,
                 Some(&invocation_metadata.invocation_target),
