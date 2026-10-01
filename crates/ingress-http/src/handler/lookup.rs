@@ -43,8 +43,8 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
             .map_err(|e| HandlerError::Body(e.into()))?
             .to_bytes();
 
-        let target_request: InvocationTargetRequest = serde_json::from_slice(&body_bytes)
-            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid lookup body: {e}").into()))?;
+        let target_request: InvocationTargetRequest =
+            serde_json::from_slice(&body_bytes).map_err(HandlerError::BadRequestBody)?;
 
         let invocation_query = target_request.into_invocation_query()?;
         let invocation_id = invocation_query.to_invocation_id();
