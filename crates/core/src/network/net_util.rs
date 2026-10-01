@@ -351,7 +351,8 @@ where
                 builder
                     .http2()
                     .timer(hyper_util::rt::TokioTimer::default())
-                    .adaptive_window(network_options.http2_adaptive_window)
+                    // Fixed windows, as on the client end (`GrpcConnector`).
+                    .adaptive_window(false)
                     .initial_connection_window_size(network_options.connection_window_size())
                     .initial_stream_window_size(network_options.stream_window_size())
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))
