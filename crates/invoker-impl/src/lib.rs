@@ -864,6 +864,11 @@ where
                 "Invocation task closed correctly");
 
             self.status_store.on_end(&invocation_id);
+            // todo(azmy): Once write-output-table is on by default
+            // it should be safe (eventually) stop writing the End
+            // effect altogether (at least 1 version after)
+            // this also means Output effect must Close the runner
+            // and not wait for further messages.
             let _ = sender
                 .send(fence(
                     ism.fencing_token,

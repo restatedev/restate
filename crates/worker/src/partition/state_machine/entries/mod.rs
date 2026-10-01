@@ -27,6 +27,11 @@ mod sleep_command;
 use std::collections::VecDeque;
 
 use metrics::counter;
+use restate_storage_api::inbox_table::WriteInboxTable;
+use restate_storage_api::journal_events::WriteJournalEventsTable;
+use restate_storage_api::output_table::WriteOutputTable;
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
+use restate_worker_api::processor::{FsmAccess, PartitionFeatures};
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -71,7 +76,9 @@ use crate::partition::state_machine::entries::peek_promise_command::ApplyPeekPro
 use crate::partition::state_machine::entries::send_signal_command::ApplySendSignalCommand;
 use crate::partition::state_machine::entries::set_state_command::ApplySetStateCommand;
 use crate::partition::state_machine::entries::sleep_command::ApplySleepCommand;
-use crate::partition::state_machine::lifecycle::VerifyOrMigrateJournalTableToV2Command;
+use crate::partition::state_machine::lifecycle::{
+    EndInvocationCommand, EndInvocationReason, VerifyOrMigrateJournalTableToV2Command,
+};
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub(super) struct OnJournalEntryCommand {
@@ -109,7 +116,11 @@ impl OnJournalEntryCommand {
 impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnJournalEntryCommand
 where
-    S: WriteJournalTable
+    S: WriteInboxTable
+        + WriteVirtualObjectStatusTable
+        + WriteJournalEventsTable
+        + WriteOutputTable
+        + WriteJournalTable
         + ReadJournalTable
         + journal_table_v1::WriteJournalTable
         + journal_table_v1::ReadJournalTable
@@ -189,13 +200,35 @@ where
                     related_completion_ids = cmd.related_completion_ids();
                     match cmd {
                         Command::Input(_)
-                        | Command::Output(_)
                         | Command::GetEagerState(_)
                         | Command::GetEagerStateKeys(_)
                         | Command::Run(_) => {
                             // For these entries, we don't need to perform operations, we just need to store them
                         }
-
+                        Command::Output(output) => {
+                            if ctx
+                                .processor
+                                .fsm()
+                                .features()
+                                .is_write_output_table_enabled()
+                            {
+                                // When write_output_table feature is enabled, we no longer
+                                // write the output journal to the journal table and instead
+                                // go directly to end invocations.
+                                // EndInvocationCommand will write the output directly to the
+                                // output table and only store a reference to the output.
+                                debug_assert!(entries.is_empty(), "output entry is not last entry");
+                                return EndInvocationCommand::new(
+                                    self.invocation_id,
+                                    self.invocation_status
+                                        .into_invocation_metadata()
+                                        .expect("status is invoked, suspended, or paused"),
+                                    EndInvocationReason::Completed(output),
+                                )
+                                .apply(ctx)
+                                .await;
+                            }
+                        }
                         Command::GetLazyState(entry) => {
                             ApplyGetLazyStateCommand {
                                 invocation_id: self.invocation_id,

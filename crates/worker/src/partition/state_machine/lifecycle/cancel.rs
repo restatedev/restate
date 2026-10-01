@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use tracing::{debug, trace};
 
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -44,6 +45,7 @@ impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s,
     for OnCancelCommand
 where
     S: WriteJournalTable
+        + WriteVirtualObjectStatusTable
         + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable

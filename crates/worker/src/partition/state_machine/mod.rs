@@ -2602,6 +2602,15 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteLockTable
             + WriteOutputTable,
     {
+        if matches!(
+            (&invocation_status, &effect.kind),
+            (InvocationStatus::Completed(_), InvokerEffectKind::End) if self.processor.fsm().features().is_write_output_table_enabled()
+        ) {
+            // it is possible to receive an End effect while the invocation is actually completed
+            // since we end the invocation on Output. So we just ignore it.
+            return Ok(());
+        }
+
         let is_status_invoked = matches!(invocation_status, InvocationStatus::Invoked(_));
 
         if !is_status_invoked {
@@ -2749,7 +2758,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     invocation_status
                         .into_invocation_metadata()
                         .expect("Must be present if status is invoked"),
-                    lifecycle::EndInvocationReason::Completed,
+                    lifecycle::EndInvocationReason::End,
                 )
                 .apply(self)
                 .await?;
@@ -2805,6 +2814,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<(), Error>
     where
         S: WriteJournalTable
+            + WriteInboxTable
+            + WriteVirtualObjectStatusTable
+            + WriteJournalEventsTable
+            + WriteOutputTable
             + ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -3170,7 +3183,6 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVirtualObjectStatusTable
             + ReadInvocationStatusTable
             + WriteInvocationStatusTable
-            + WriteVirtualObjectStatusTable
             + ReadStateTable
             + WriteStateTable
             + WriteJournalTable
