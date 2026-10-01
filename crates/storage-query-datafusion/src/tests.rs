@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
+use std::ops::RangeBounds;
 use std::time::{Duration, SystemTime};
 
 use bytes::Bytes;
@@ -17,7 +17,7 @@ use datafusion::arrow::array::{
     UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
-use futures::StreamExt;
+use futures::{StreamExt, TryStreamExt, stream};
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
 
@@ -31,7 +31,9 @@ use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, ServiceId};
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionId, PartitionKey, ServiceId,
+};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
@@ -42,49 +44,154 @@ use restate_types::vqueues::EntryId;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
-use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport, StatusHandle};
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport};
 use restate_worker_api::{
     BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
     VQueueSchedulerStatus,
 };
+use restate_worker_api::{
+    OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryError, PartitionQueryStream,
+};
 use strum::IntoDiscriminant;
 
-use crate::context::PartitionLeaderStatusHandle;
 use crate::mocks::*;
 use crate::row;
 
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_query_access_preserves_persisted_rows_without_live_state() {
+    let mut engine = MockQueryEngine::create_with(
+        OfflinePartitionQueryAccess::new([(PartitionId::MIN, KeyRange::FULL)]),
+        MockSchemas::default(),
+    )
+    .await;
+    let invocation_id = InvocationId::mock_random();
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    for table in ["sys_invocation_state", "sys_scheduler", "sys_user_limits"] {
+        let batches: Vec<_> = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+    let batches: Vec<_> = engine
+        .execute("SELECT id, last_start_at FROM sys_invocation")
+        .await
+        .unwrap()
+        .stream
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .value(0),
+        invocation_id.to_string()
+    );
+    assert!(batches[0].column(1).is_null(0));
+}
+
+#[derive(Debug)]
+struct FailingQueryAccess;
+
+impl PartitionQueryAccess for FailingQueryAccess {
+    fn scan_invoker_status(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<InvocationStatusReport> {
+        stream::iter([
+            Ok(InvocationStatusReport::new(
+                InvocationId::mock_random(),
+                Default::default(),
+            )),
+            Err(PartitionQueryError::LeaderUnavailable(partition)),
+        ])
+        .boxed()
+    }
+    fn scan_scheduler_status(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<SchedulerStatusEntry> {
+        stream::once(async move { Err(PartitionQueryError::LeaderUnavailable(partition)) }).boxed()
+    }
+    fn scan_user_limit_counters(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        stream::once(async move { Err(PartitionQueryError::LeaderUnavailable(partition)) }).boxed()
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_query_access_failures_are_not_empty_results() {
+    let engine = MockQueryEngine::create_with(FailingQueryAccess, MockSchemas::default()).await;
+    for table in ["sys_invocation_state", "sys_scheduler", "sys_user_limits"] {
+        let error = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("leader query source"), "{error}");
+    }
+}
+
 #[derive(Clone, Debug)]
-struct MockPartitionLeaderStatusHandle {
+struct MockSchedulerQueryAccess {
     scheduler_statuses: Vec<SchedulerStatusEntry>,
 }
 
-impl StatusHandle for MockPartitionLeaderStatusHandle {
-    type Iterator = std::iter::Empty<InvocationStatusReport>;
-
-    fn read_status(&self, _keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send {
-        std::future::ready(std::iter::empty())
-    }
-}
-
-impl PartitionLeaderStatusHandle for MockPartitionLeaderStatusHandle {
-    type SchedulerStatus = SchedulerStatusEntry;
-    type SchedulerStatusIterator = std::vec::IntoIter<Self::SchedulerStatus>;
-
-    type UserLimitCounter = UserLimitCounterEntry;
-    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
-
-    fn read_scheduler_status(
+impl PartitionQueryAccess for MockSchedulerQueryAccess {
+    fn scan_invoker_status(
         &self,
+        _partition_id: PartitionId,
         _keys: KeyRange,
-    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
-        std::future::ready(self.scheduler_statuses.clone().into_iter())
+    ) -> PartitionQueryStream<InvocationStatusReport> {
+        stream::empty().boxed()
     }
 
-    fn read_user_limit_counters(
+    fn scan_scheduler_status(
         &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<SchedulerStatusEntry> {
+        assert_eq!(partition_id, PartitionId::MIN);
+        let mut rows: Vec<_> = self
+            .scheduler_statuses
+            .iter()
+            .filter(|(id, _)| keys.contains(&id.partition_key()))
+            .cloned()
+            .collect();
+        rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+        stream::iter(rows.into_iter().map(Ok)).boxed()
+    }
+
+    fn scan_user_limit_counters(
+        &self,
+        _partition_id: PartitionId,
         _keys: KeyRange,
-    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
-        std::future::ready(std::iter::empty())
+    ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        stream::empty().boxed()
     }
 }
 
@@ -110,7 +217,7 @@ async fn query_sys_scheduler() {
     let expected_blocked_on_json = serde_json::to_string(&blocked_resource).unwrap();
 
     let engine = MockQueryEngine::create_with(
-        MockPartitionLeaderStatusHandle {
+        MockSchedulerQueryAccess {
             scheduler_statuses: vec![(
                 qid.clone(),
                 VQueueSchedulerStatus {

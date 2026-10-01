@@ -12,6 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
 use futures::FutureExt;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -24,7 +25,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_types::vqueues::VQueueId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -36,16 +37,10 @@ use crate::vqueues::schema::SysVqueuesBuilder;
 const NAME: &str = "sys_vqueues";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VQueuesScanner,
-    )) as Arc<dyn ScanPartition>;
-
     let schema = SysVqueuesBuilder::schema();
     let statistics = TableStatisticsBuilder::new(schema.clone())
         .with_num_rows_estimate(RowEstimate::Large)
@@ -58,14 +53,26 @@ pub(crate) fn register_self(
         partition_selector,
         schema,
         Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::default()
             .with_grouped_vqueue_entry_id("entry_id")
             .with_partitioned_resource_id::<VQueueId>("id"),
     )
     .with_statistics(statistics.build());
 
-    ctx.register_partitioned_table(NAME, Arc::new(table))
+    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        VQueuesScanner,
+    )) as Arc<dyn ScanPartition>;
+
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]
