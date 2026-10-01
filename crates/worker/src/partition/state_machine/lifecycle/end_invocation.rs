@@ -207,23 +207,13 @@ where
             pinned_service_protocol_version.unwrap_or_default(),
         );
 
-        // The feature stores a *reference* (journal entry index) to the output entry instead of
+        // The feature stores a *reference* (journal entry index) to the output table instead of
         // inlining the result bytes, and synthesizes a missing output entry on Killed/Failed.
-        // Both only work on journal table v2, which is used by invocations pinned to protocol
-        // version >= V4: `append_journal_entry` writes into journal table v2, and resolving the
-        // reference later reads from it as well (see
-        // `ResponseResultCache::read_last_output_entry_result`). Invocations pinned to <= V3 keep
-        // their journal in table v1, which has no addressable output entry, so we fall back to
-        // inlining the result for them.
-        //
-        // A missing pinned deployment means no user code has run yet, so the journal only holds
-        // entries we wrote ourselves in v2 format; it's safe to treat it as V4.
         let is_write_output_table_enabled = ctx
             .processor
             .fsm()
             .features()
-            .is_write_output_table_enabled()
-            && pinned_service_protocol_version.is_none_or(|v| v >= ServiceProtocolVersion::V4);
+            .is_write_output_table_enabled();
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
@@ -337,12 +327,14 @@ where
                 ctx.do_store_completed_invocation(invocation_id, completed_invocation)?;
             }
         } else {
-            // Just notify Ok, no need to read the output entry
             ctx.emit_invocation_end_span(
                 &invocation_id,
                 &invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
-                Ok(()),
+                match &output {
+                    ResponseResult::Success(_) => Ok(()),
+                    ResponseResult::Failure(err) => Err(err),
+                },
             );
         }
 
