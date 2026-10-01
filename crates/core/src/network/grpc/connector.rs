@@ -24,7 +24,7 @@ use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, Pee
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
-use crate::network::net_util::{DNSResolution, connect_tonic_endpoint};
+use crate::network::net_util::{DNSResolution, apply_options, connect_tonic_endpoint};
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsClientConfig;
@@ -98,21 +98,15 @@ fn create_channel<P: ListenerPort + GrpcPort>(
         PeerNetAddress::Http(uri) => Channel::builder(uri.clone()).executor(TaskCenterExecutor),
     };
 
-    let endpoint = endpoint
+    // Shared with `create_tonic_channel`, so both fabric client paths use the same timeouts and
+    // flow control.
+    let endpoint = apply_options(endpoint, options)
         .user_agent(format!(
             "restate/{}",
             option_env!("CARGO_PKG_VERSION").unwrap_or("dev")
         ))
         .unwrap()
-        .connect_timeout(*options.connect_timeout)
-        .http2_keep_alive_interval(*options.http2_keep_alive_interval)
-        .keep_alive_timeout(*options.http2_keep_alive_timeout)
-        .http2_adaptive_window(options.http2_adaptive_window)
-        .initial_stream_window_size(options.stream_window_size())
-        .initial_connection_window_size(options.connection_window_size())
-        .keep_alive_while_idle(true)
-        // this true by default, but this is to guard against any change in defaults
-        .tcp_nodelay(true);
+        .keep_alive_while_idle(true);
 
     // If TLS is in required mode, we'll just reject to connect to a non TLS address.
     // Note: TLS settings are only supported for HTTP addresses.

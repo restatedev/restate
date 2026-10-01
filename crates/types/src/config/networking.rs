@@ -67,7 +67,14 @@ pub struct NetworkingOptions {
     pub http2_keep_alive_timeout: NonZeroFriendlyDuration,
 
     /// # HTTP/2 Adaptive Window
-    pub http2_adaptive_window: bool,
+    ///
+    /// Deprecated and has no effect. Node-to-node connections use fixed HTTP/2 flow-control
+    /// windows sized by `data-stream-window-size`.
+    ///
+    /// Since v1.8.0 (deprecated)
+    #[deprecated(since = "1.8.0", note = "Has no effect; use `data-stream-window-size`")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http2_adaptive_window: Option<bool>,
 
     /// # Disable Compression
     ///
@@ -76,17 +83,27 @@ pub struct NetworkingOptions {
 
     /// # Data Stream Window Size
     ///
-    /// Controls the number of bytes the can be sent on every data stream before inducing
-    /// back pressure. Data streams are used for sending messages between nodes.
+    /// Controls how many bytes a node can send to another node before the receiving node has
+    /// processed them. Beyond that, the sender waits, which applies back pressure.
     ///
-    /// The value should is often derived from BDP (Bandwidth Delay Product) of the network. For
-    /// instance, if the network has a bandwidth of 10 Gbps with a round-trip time of 5 ms, the BDP
-    /// is 10 Gbps * 0.005 s = 6.25 MB. This means that the window size should be at least 6.25 MB
-    /// to fully utilize the network bandwidth assuming the latency is constant. Our recommendation
-    /// is to set the window size to 2x the BDP to account for any variations in latency.
+    /// The value is best derived from the bandwidth-delay product (BDP) of the network. For
+    /// instance, if the network has a bandwidth of 10 Gbps and a round-trip time of 5 ms, the BDP
+    /// is 10 Gbps * 0.005 s = 6.25 MB. The window should be at least the BDP to fully utilize the
+    /// bandwidth, assuming the latency is constant. We recommend twice the BDP to account for
+    /// variations in latency.
     ///
-    /// If network latency is high, it's recommended to set this to a higher value.
-    /// Maximum theoretical value is 2^31-1 (2 GiB - 1), but we will sanitize this value to 500 MiB.
+    /// At 10 Gbps, the default of 4 MiB is twice the BDP of a round trip of about 1.7 ms, which
+    /// covers typical networks within a data center. On high-latency links, the window limits
+    /// throughput to about one window per round trip, for example about 40 MiB/s at 100 ms, so
+    /// raise it there. Each connection can buffer up to one window of data that the receiving
+    /// node has not processed yet.
+    ///
+    /// Windows above 4 MiB also need larger TCP buffers on every node, because the kernel limits
+    /// each connection's buffers independently of this setting. On Linux, raise the maximum
+    /// (third) values of `net.ipv4.tcp_wmem` and `net.ipv4.tcp_rmem`.
+    ///
+    /// The maximum theoretical value is 2^31-1 (2 GiB - 1), but values above 500 MiB are reduced
+    /// to 500 MiB. Since v1.8.0, the default is 4 MiB (previously 2 MiB).
     data_stream_window_size: NonZeroByteCount,
 
     /// # Networking Message Size Limit
@@ -141,7 +158,7 @@ impl NetworkingOptions {
     }
 
     pub fn connection_window_size(&self) -> u32 {
-        self.stream_window_size() * 3
+        self.stream_window_size()
     }
 
     pub fn fabric_memory_limit(&self) -> NonZeroByteCount {
@@ -151,6 +168,7 @@ impl NetworkingOptions {
 
 impl Default for NetworkingOptions {
     fn default() -> Self {
+        #[allow(deprecated)]
         Self {
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(3),
             connect_retry_policy: RetryPolicy::exponential(
@@ -162,11 +180,11 @@ impl Default for NetworkingOptions {
             handshake_timeout: NonZeroFriendlyDuration::from_secs_unchecked(3),
             http2_keep_alive_interval: NonZeroFriendlyDuration::from_secs_unchecked(1),
             http2_keep_alive_timeout: NonZeroFriendlyDuration::from_secs_unchecked(3),
-            http2_adaptive_window: true,
+            http2_adaptive_window: None,
             disable_compression: false,
-            // 2MiB
+            // 4MiB
             data_stream_window_size: NonZeroByteCount::new(
-                NonZeroUsize::new(2 * 1024 * 1024).expect("Non zero number"),
+                NonZeroUsize::new(4 * 1024 * 1024).expect("Non zero number"),
             ),
             message_size_limit: default_message_size_limit(),
             fabric_memory_limit: default_fabric_memory_limit(),
