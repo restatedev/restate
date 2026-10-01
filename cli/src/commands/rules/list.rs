@@ -73,9 +73,10 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
                 cells.extend([
                     Field::new(row.description.as_deref()),
                     Field::new(row.version),
-                    row.last_modified.map_or(Field::new(Value::Null), |t| {
-                        Field::with_display(t.iso(), t.display())
-                    }),
+                    row.last_modified.map_or_else(
+                        || Field::new(Value::Null),
+                        |t| Field::with_display(t.iso(), t.display()),
+                    ),
                 ]);
             }
             cells
