@@ -9,10 +9,15 @@
 // by the Apache License, Version 2.0.
 
 pub mod context;
+mod environment;
+pub mod local_scanners;
+pub use catalog::{ClusterTables, MetadataTables, UserTables};
+pub use environment::DataFusionEnv;
 
 pub mod remote_query_scanner_server;
 
 pub mod bifrost_read_stream;
+mod catalog;
 pub mod config;
 mod deployment;
 mod inbox;
@@ -20,6 +25,7 @@ mod invocation_state;
 mod invocation_status;
 mod journal;
 mod journal_events;
+mod live_scanners;
 mod locks;
 mod log;
 pub mod loglet_worker;
@@ -62,7 +68,6 @@ use prost::Message;
 #[cfg(test)]
 pub(crate) mod mocks;
 
-pub mod empty_invoker_status_handle;
 mod filter;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
