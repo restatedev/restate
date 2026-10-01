@@ -57,6 +57,13 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "event_type", ty: "Utf8", description: "The event type." },
         SqlColumnDoc { name: "event_json", ty: "Utf8", description: "The event serialized as a JSON string." },
     ] },
+    SqlTableDoc { name: "sys_locks", description: "", columns: &[
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },
+        SqlColumnDoc { name: "scope", ty: "Utf8", description: "The scope of this lock. Only present if this is a scoped lock (i.e. a lock of a scoped virtual object)." },
+        SqlColumnDoc { name: "lock_name", ty: "Utf8", description: "The name of the lock (in the format of `service/key`)" },
+        SqlColumnDoc { name: "acquired_at", ty: "TimestampMillisecond", description: "Timestamp of lock acquisition" },
+        SqlColumnDoc { name: "acquired_by", ty: "Utf8", description: "The invocation (or other operation) that acquired this lock." },
+    ] },
     SqlTableDoc { name: "sys_promise", description: "", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
         SqlColumnDoc { name: "scope", ty: "Utf8", description: "The scope of the workflow instance, if scoped. NULL for unscoped entries. Since v1.7.0" },
@@ -268,4 +275,4 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";

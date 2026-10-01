@@ -309,9 +309,9 @@ impl IntoResponse for MetaApiError {
             | MetaApiError::DeploymentNotFound(_)
             | MetaApiError::SubscriptionNotFound(_)
             | MetaApiError::KafkaClusterNotFound(_) => StatusCode::NOT_FOUND,
-            MetaApiError::InvalidField(_, _) | MetaApiError::UnsupportedOperation(_, _) => {
-                StatusCode::BAD_REQUEST
-            }
+            MetaApiError::InvalidField(_, _)
+            | MetaApiError::UnsupportedOperation(_, _)
+            | MetaApiError::BadScope(_) => StatusCode::BAD_REQUEST,
             MetaApiError::Schema(error) => error.status_code(),
             MetaApiError::Conflict(_) => StatusCode::CONFLICT,
             MetaApiError::DeprecatedPutDeployment => StatusCode::METHOD_NOT_ALLOWED,
