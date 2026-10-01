@@ -127,7 +127,9 @@ impl CommonClientConnectionOptions for NetworkingOptions {
     }
 
     fn http2_adaptive_window(&self) -> bool {
-        self.http2_adaptive_window
+        // Clients built from the fabric options talk to the fabric listener, which uses fixed
+        // windows.
+        false
     }
 }
 
