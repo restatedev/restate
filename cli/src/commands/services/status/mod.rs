@@ -19,11 +19,11 @@ use comfy_table::{Cell, Table};
 use itertools::Itertools;
 use serde_json::{Value, json};
 
-use restate_cli_util::c_println;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 use restate_cli_util::ui::{duration_to_human_precise, duration_to_human_rough};
+use restate_cli_util::{CliContext, c_println};
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
@@ -31,6 +31,7 @@ use crate::clients::AdminClient;
 use crate::clients::datafusion_helpers::{
     InvocationState, LockedKey, LockedKeysMap, ServiceStatus, ServiceStatusMap,
 };
+use crate::ui::fmt::{Field, Formatter, OutputFormatter};
 use crate::ui::invocations::invocation_status;
 use crate::ui::service_handlers::{service_type_label, service_type_machine};
 
@@ -46,10 +47,7 @@ const REPORTED_STATES: &[(InvocationState, &str)] = &[
 ];
 
 /// JSON for the per-handler invocation-state counts of the given services.
-pub(super) fn services_status_json(
-    services: &[ServiceMetadata],
-    status_map: &ServiceStatusMap,
-) -> Value {
+fn services_status_json(services: &[ServiceMetadata], status_map: &ServiceStatusMap) -> Value {
     let empty = ServiceStatus::default();
     let services: Vec<Value> = services
         .iter()
@@ -100,7 +98,7 @@ pub(super) fn services_status_json(
 }
 
 /// JSON for active (locked) keys of keyed services.
-pub(super) fn locked_keys_json(locked_keys: &LockedKeysMap) -> Value {
+fn locked_keys_json(locked_keys: &LockedKeysMap) -> Value {
     let services: Vec<Value> = locked_keys
         .iter()
         .map(|(service, keys)| {
@@ -124,15 +122,35 @@ pub(super) fn locked_keys_json(locked_keys: &LockedKeysMap) -> Value {
     Value::Array(services)
 }
 
+/// Show the invocation activity of a service, or of all services
+///
+/// For each handler: the number of invocations per status (pending, scheduled, ready,
+/// running, backing-off, suspended, paused), and the age of the oldest one not suspended.
+///
+/// For virtual objects and workflows: the active keys, i.e. the keys an invocation holds the
+/// lock of (while running, suspended, paused, ...), and how many invocations queue behind it.
+///
+/// For a single service: its most recent invocations.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_status")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services status",
+        "restate services status Cart --json",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct Status {
+    /// Maximum number of active keys shown per service
     #[clap(long, default_value = "5")]
     locked_keys_limit: usize,
 
+    /// Add a note to an active key when the invocation holding it has been running or
+    /// suspended for longer than this many seconds
     #[clap(long, default_value = "5")]
     locked_key_held_threshold_second: i64,
 
+    /// Maximum number of recent invocations shown, when a service name is given
     #[clap(long, default_value = "5")]
     sample_invocations_limit: usize,
 
@@ -151,17 +169,66 @@ async fn status(env: &CliEnv, opts: &Status) -> Result<()> {
     let client = AdminClient::new(env).await?;
     let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
 
+    let mut f = Formatter::new();
     if let Some(svc) = &opts.service {
-        detailed_status::run_detailed_status(svc, opts, client, sql_client).await
+        detailed_status::run_detailed_status(&mut f, svc, opts, client, sql_client).await?;
     } else {
-        agg_status::run_aggregated_status(opts, client, sql_client).await
+        agg_status::run_aggregated_status(&mut f, opts, client, sql_client).await?;
+    }
+    f.finish()
+}
+
+/// Emit `section`: `json` in JSON output, `table` printed as is for humans.
+///
+/// The human tables span all services (one set of aligned columns, service title rows in
+/// between), which the formatter's per-item tables can't reproduce; and `value` would
+/// indent them by one column. Hence the one branch on the output mode.
+fn table_section(
+    f: &mut impl OutputFormatter,
+    section: &str,
+    json: impl FnOnce() -> Value,
+    table: impl FnOnce() -> Table,
+) {
+    if CliContext::get().json_output() {
+        f.value(section, Field::new(json()));
+    } else {
+        c_println!("{}", table());
     }
 }
 
-async fn render_services_status(
-    services: Vec<ServiceMetadata>,
-    status_map: ServiceStatusMap,
-) -> Result<()> {
+/// The per-handler invocation-state summary of `services`.
+fn render_services_status(
+    f: &mut impl OutputFormatter,
+    services: &[ServiceMetadata],
+    status_map: &ServiceStatusMap,
+) {
+    f.title("📷", "Summary");
+    table_section(
+        f,
+        "services",
+        || services_status_json(services, status_map),
+        || services_status_table(services, status_map),
+    );
+}
+
+/// The active (locked) keys, at most `opts.locked_keys_limit` per service for humans.
+fn render_locked_keys(f: &mut impl OutputFormatter, locked_keys: &LockedKeysMap, opts: &Status) {
+    f.title("📨", "Active Keys");
+    table_section(
+        f,
+        "locked_keys",
+        || locked_keys_json(locked_keys),
+        || {
+            locked_keys_table(
+                locked_keys,
+                opts.locked_keys_limit,
+                opts.locked_key_held_threshold_second,
+            )
+        },
+    );
+}
+
+fn services_status_table(services: &[ServiceMetadata], status_map: &ServiceStatusMap) -> Table {
     let empty = ServiceStatus::default();
     let mut table = Table::new_styled();
     table.set_styled_header(vec![
@@ -184,11 +251,10 @@ async fn render_services_status(
             Cell::new(svc_title).add_attribute(comfy_table::Attribute::Bold),
         ]);
 
-        render_handlers_status(&mut table, svc, svc_status).await?;
+        render_handlers_status(&mut table, svc, svc_status);
         table.add_row(vec![""]);
     }
-    c_println!("{}", table);
-    Ok(())
+    table
 }
 
 fn render_handler_state_stats(
@@ -216,11 +282,7 @@ fn render_handler_state_stats(
     }
 }
 
-async fn render_handlers_status(
-    table: &mut Table,
-    svc: ServiceMetadata,
-    svc_status: &ServiceStatus,
-) -> Result<()> {
+fn render_handlers_status(table: &mut Table, svc: &ServiceMetadata, svc_status: &ServiceStatus) {
     for handler in svc
         .handlers
         .values()
@@ -264,15 +326,14 @@ async fn render_handlers_status(
 
         table.add_row(row);
     }
-
-    Ok(())
 }
-/// Renders the locked keys, at most `limit_per_service` per service.
-fn render_locked_keys(
+
+/// The locked keys table, at most `limit_per_service` per service.
+fn locked_keys_table(
     locked_keys: &LockedKeysMap,
     limit_per_service: usize,
     held_threshold_second: i64,
-) {
+) -> Table {
     let now = Local::now();
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["", "QUEUE", "LOCKED-BY", "HANDLER", "NOTES"]);
@@ -314,7 +375,7 @@ fn render_locked_keys(
         }
         table.add_row(vec![""]);
     }
-    c_println!("{}", table);
+    table
 }
 
 /// Heuristic hint on why a key has been locked for long.

@@ -10,27 +10,33 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use cling::prelude::*;
 use serde::Serialize;
 
 use restate_admin_rest_model::deployments::DeploymentResponse;
-use restate_cli_util::CliContext;
-use restate_cli_util::c_error;
 use restate_cli_util::ui::watcher::Watch;
 use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClientInterface, Deployment};
+use crate::error::RestateCliError;
 use crate::ui::deployments::render_deployment_url;
-use crate::ui::fmt::{Field, Formatter, ListItem, OutputFormatter};
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
 use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
 
+/// List the registered services, with their type, deployment and handlers
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services list --json",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services",
+))]
 pub struct List {
-    /// Show only publicly accessible services
+    /// Show only public services, the ones that can be called through the ingress
     #[clap(long)]
     public_only: bool,
 
@@ -45,13 +51,6 @@ pub async fn run_list(State(env): State<CliEnv>, opts: &List) -> Result<()> {
 async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::AdminClient::new(env).await?;
     let defs = client.get_services().await?.into_body().await?;
-
-    if defs.services.is_empty() && !CliContext::get().json_output() {
-        c_error!(
-            "No services were found! Services are added by registering deployments with 'restate dep register'"
-        );
-        return Ok(());
-    }
 
     let deployments = client.get_deployments().await?.into_body().await?;
 
@@ -68,9 +67,9 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
             // Skip non-public services if users chooses to.
             continue;
         }
-        let deployment = deployment_cache
-            .get(&svc.deployment_id)
-            .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
+        let deployment = deployment_cache.get(&svc.deployment_id).ok_or_else(|| {
+            RestateCliError::not_found(format!("Deployment {} not found", svc.deployment_id))
+        })?;
         let (_, deployment, _) = Deployment::from_deployment_response(deployment.clone());
 
         let mut handlers: Vec<String> = svc.handlers.into_values().map(|h| h.name).collect();
@@ -88,7 +87,13 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     }
 
     let mut f = Formatter::new();
-    f.list("services", &items)?;
+    f.list(
+        "services",
+        &items,
+        IfEmpty::Say(
+            "No services were found for the given filters! Services are added by registering deployments with 'restate dep register'",
+        ),
+    )?;
     if let Some(ServiceListItem {
         name,
         deployment_id,
@@ -98,10 +103,12 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         f.next_step(
             &format!("restate services describe {name}"),
             "see the service's handlers",
+            IncludeFormatting::Yes,
         );
         f.next_step(
             &format!("restate deployments describe {deployment_id}"),
             "see the deployment serving it",
+            IncludeFormatting::Yes,
         );
     }
     f.finish()
@@ -121,7 +128,7 @@ struct ServiceListItem {
 }
 
 impl ListItem for ServiceListItem {
-    const HEADERS: &'static [&'static str] = &["service", "type"];
+    const HEADERS: &'static [&'static str] = &["name", "service_type"];
 
     fn columns(&self) -> Vec<Field> {
         vec![
@@ -139,5 +146,24 @@ impl ListItem for ServiceListItem {
             lines.push(format!("handlers {}", self.handlers.join(", ")));
         }
         lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_headers_are_json_keys() {
+        crate::ui::fmt::assert_headers_are_json_keys(&ServiceListItem {
+            name: "Greeter".to_owned(),
+            revision: 1,
+            service_type: "service",
+            deployment_id: String::new(),
+            endpoint: String::new(),
+            handlers: Vec::new(),
+            visibility: "public",
+            service_type_label: "Service",
+        });
     }
 }

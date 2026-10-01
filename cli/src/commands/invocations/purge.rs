@@ -24,23 +24,27 @@ use crate::ui::invocations::{
     print_invocation_results,
 };
 
+/// Delete completed invocations
+///
+/// Removes what Restate keeps of a completed invocation: its result, journal and metadata.
+/// This can't be undone.
+/// Once purged, it no longer shows up in `restate invocations list`. Completed invocations are
+/// also removed automatically at the end of their service's retention period (see
+/// `restate services config view`). Only affects completed invocations.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_purge")]
 #[clap(visible_alias = "rm")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations purge inv_1gdJBtdVEcM942bjcDmb1c1khoaJe11Hbz --yes",
+        "restate invocations purge Greeter/greet --dry-run",
+    ],
+    learn_more: "https://docs.restate.dev/services/configuration#retention-of-completed-invocations",
+))]
 pub struct Purge {
-    /// Either an invocation id, or a target string exact match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    /// * `workflowName`
-    /// * `workflowName/key`
-    /// * `workflowName/key/handler`
-    #[clap(verbatim_doc_comment)]
+    #[arg(help = super::QUERY_HELP, long_help = super::QUERY_LONG_HELP)]
     query: String,
-    /// Limit the number of fetched invocations
+    /// Act on at most this many of the matching invocations, leaving the others untouched
     #[clap(long, default_value_t = DEFAULT_BATCH_INVOCATIONS_OPERATION_LIMIT)]
     limit: usize,
     #[clap(flatten)]

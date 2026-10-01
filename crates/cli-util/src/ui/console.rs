@@ -254,7 +254,7 @@ pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
         return Err(crate::exit::ConfirmationRequired::default().into());
     }
     if !confirm(prompt) {
-        return Err(crate::exit::Aborted.into());
+        return Err(crate::exit::Aborted::default().into());
     }
     Ok(())
 }
@@ -272,11 +272,14 @@ pub fn choose<T: ToString + std::fmt::Display>(
     prompt: &str,
     choices: &[T],
 ) -> anyhow::Result<usize> {
-    if !CliContext::get().is_interactive() {
-        anyhow::bail!(
-            "Cannot show an interactive selection ({prompt:?}) in non-interactive mode. \
-             Re-run in an interactive terminal, or provide the value via command-line arguments."
-        );
+    if !CliContext::get().can_prompt() {
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot show an interactive selection ({prompt:?}) with --yes or in \
+                 non-interactive mode. Provide the value via command-line arguments."
+            )),
+        }
+        .into());
     }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Select::with_theme(&theme)
@@ -294,11 +297,14 @@ pub fn choose<T: ToString + std::fmt::Display>(
 /// ```
 #[allow(dead_code)]
 pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
-    if !CliContext::get().is_interactive() {
-        anyhow::bail!(
-            "Cannot prompt for input ({prompt:?}) in non-interactive mode. \
-             Re-run in an interactive terminal, or provide the value via command-line arguments."
-        );
+    if !CliContext::get().can_prompt() {
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot prompt for input ({prompt:?}) with --yes or in non-interactive mode. \
+                 Provide the value via command-line arguments."
+            )),
+        }
+        .into());
     }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Input::with_theme(&theme)
@@ -468,6 +474,14 @@ macro_rules! c_eprint {
 macro_rules! c_success {
     ($($arg:tt)*) => {
         $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::SUCCESS_ICON), stdout, $($arg)*);
+    };
+}
+
+/// A change command found nothing to do (e.g. its query matched nothing).
+#[macro_export]
+macro_rules! c_noop {
+    ($($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::NOOP_ICON), stdout, $($arg)*);
     };
 }
 

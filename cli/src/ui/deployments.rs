@@ -8,14 +8,16 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use comfy_table::Cell;
 use serde_json::{Map, Value};
 use std::collections::HashMap;
 
 use crate::clients::Deployment;
 use crate::ui::datetime::DateTimeExt;
-use crate::ui::fmt::Field;
+use crate::ui::fmt::{Field, OutputFormatter};
+use crate::ui::service_handlers::{service_type_label, service_type_machine};
 use restate_admin_rest_model::deployments::{HttpAuth, ServiceNameRevPair};
+use restate_cli_util::c_eprintln;
+use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_types::deployment;
 use restate_types::identifiers::DeploymentId;
@@ -38,13 +40,6 @@ pub fn render_deployment_url(deployment: &Deployment) -> String {
     match deployment {
         Deployment::Http { uri, .. } => uri.to_string(),
         Deployment::Lambda { arn, .. } => arn.to_string(),
-    }
-}
-
-pub fn render_deployment_type(deployment: &Deployment) -> String {
-    match deployment {
-        Deployment::Http { .. } => "HTTP".to_string(),
-        Deployment::Lambda { .. } => "Lambda".to_string(),
     }
 }
 
@@ -85,14 +80,6 @@ pub fn calculate_deployment_status(
     status
 }
 
-pub fn render_active_invocations(active_inv: i64) -> Cell {
-    if active_inv > 0 {
-        Cell::new(active_inv).fg(comfy_table::Color::Yellow)
-    } else {
-        Cell::new(active_inv).fg(comfy_table::Color::Grey)
-    }
-}
-
 /// Deployment status as a [`Field`] for the output formatter:
 /// the machine value is the status name, styled for human output.
 pub fn deployment_status_field(status: DeploymentStatus) -> Field {
@@ -104,7 +91,7 @@ pub fn deployment_status_field(status: DeploymentStatus) -> Field {
     Field::styled(format!("{status:?}"), style)
 }
 
-/// [`Field`] variant of [`render_active_invocations`]: a native number, styled.
+/// Active invocation count as a [`Field`]: a native number, styled.
 pub fn active_invocations_field(active_inv: i64) -> Field {
     let style = if active_inv > 0 {
         Style::Warn
@@ -202,7 +189,7 @@ pub fn deployment_info_fields(deployment: &Deployment) -> Vec<(String, Field)> {
             ));
             if let Some(assume_role_arn) = assume_role_arn {
                 rows.push((
-                    "deployment_assume_role_arn".to_owned(),
+                    "assume_role_arn".to_owned(),
                     Field::new(assume_role_arn.to_string()),
                 ));
             }
@@ -281,4 +268,67 @@ pub fn deployment_info_fields(deployment: &Deployment) -> Vec<(String, Field)> {
     }
 
     rows
+}
+
+/// The latest revision of `service`, from `latest_services`. Warns and returns `None`
+/// when it's missing, which a deployment can't cause by itself.
+pub fn latest_service<'a>(
+    latest_services: &'a HashMap<String, ServiceMetadata>,
+    service: &ServiceMetadata,
+) -> Option<&'a ServiceMetadata> {
+    let latest = latest_services.get(&service.name);
+    if latest.is_none() {
+        c_eprintln!(
+            "Service {} is not found in the latest set of services. This is unexpected.",
+            service.name
+        );
+    }
+    latest
+}
+
+/// A deployment's service as an item of the `services` list: its name, type and
+/// revision, telling whether that is the latest one.
+pub fn service_item(
+    f: &mut impl OutputFormatter,
+    service: &ServiceMetadata,
+    latest_service: &ServiceMetadata,
+) {
+    // Human output is one `Label: value` line each (no aligned key/value table).
+    f.value("name", Field::styled(service.name.as_str(), Style::Info));
+    f.value(
+        "service_type",
+        Field::with_display(
+            service_type_machine(&service.ty),
+            format!("Type: {}", service_type_label(&service.ty)),
+        ),
+    );
+    let is_latest = service.revision == latest_service.revision;
+    let latest = if is_latest {
+        format!("[{}]", Styled(Style::Success, "Latest"))
+    } else {
+        format!(
+            "[Latest {} is in deployment ID {}]",
+            Styled(Style::Success, latest_service.revision),
+            latest_service.deployment_id
+        )
+    };
+    f.value(
+        "revision",
+        Field::with_display(
+            service.revision,
+            format!("Revision: {} {latest}", service.revision),
+        ),
+    );
+    if !is_latest {
+        // Already told by the revision line, so JSON-only: an empty human rendering
+        // prints nothing.
+        f.value(
+            "latest_revision",
+            Field::with_display(latest_service.revision, ""),
+        );
+        f.value(
+            "latest_deployment_id",
+            Field::with_display(latest_service.deployment_id.to_string(), ""),
+        );
+    }
 }

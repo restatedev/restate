@@ -12,8 +12,9 @@
 //!
 //! Commands describe *what* to output using semantic building blocks — a
 //! [`title`](OutputFormatter::title), a key-value [`detail`](OutputFormatter::detail)
-//! view, a [`table`](OutputFormatter::table), or a single scalar
-//! [`value`](OutputFormatter::value) — and the selected [`OutputFormatter`] decides
+//! view, a [`table`](OutputFormatter::table), a single scalar
+//! [`value`](OutputFormatter::value), or a list of nested items
+//! ([`start_items`](OutputFormatter::start_items)) — and the selected [`OutputFormatter`] decides
 //! *how* to render them: human-friendly styled tables, or a single JSON document for
 //! scripting and agents (`--json`).
 //!
@@ -46,9 +47,12 @@ use dialoguer::console::measure_text_width;
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
+use restate_cli_util::_unicode_width::UnicodeWidthStr;
+use restate_cli_util::ui::console::{Icon, Styled, StyledTable, confirm_or_exit};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, exit};
+
+use crate::error::{ErrorKind, RestateCliError};
 
 /// A single output value: a JSON-native value, an optional human-display override,
 /// and an optional semantic [`Style`].
@@ -59,50 +63,59 @@ use restate_cli_util::{CliContext, exit};
 /// ago"` but stored as a number, a list shown on multiple lines but stored as an
 /// array, an enum shown via `Debug` but stored as a string.
 ///
-/// Construct from any type that converts into a `serde_json::Value` (`&str`,
-/// `String`, integers, floats, `bool`, …).
+/// Construct from any [`Serialize`] value (`&str`, `String`, integers, `bool`,
+/// `Option`s, timestamps, structs, a `serde_json::Value`, …).
 #[derive(Clone)]
 pub struct Field {
     value: Value,
     display: Option<String>,
     style: Option<Style>,
+    /// Emitted in JSON only, see [`json_only`](Field::json_only).
+    json_only: bool,
 }
 
 impl Field {
     /// A plain, unstyled value; the human rendering is derived from the value.
-    pub fn new(value: impl Into<Value>) -> Self {
+    ///
+    /// Panics if `value` can't be serialized to JSON (e.g. a map with non-string keys).
+    pub fn new(value: impl Serialize) -> Self {
         Self {
-            value: value.into(),
+            value: serde_json::to_value(value).expect("output field serializes to JSON"),
             display: None,
             style: None,
+            json_only: false,
         }
     }
 
     /// A value carrying a semantic style (applied by the human formatter only).
-    pub fn styled(value: impl Into<Value>, style: Style) -> Self {
+    pub fn styled(value: impl Serialize, style: Style) -> Self {
         Self {
-            value: value.into(),
-            display: None,
             style: Some(style),
+            ..Self::new(value)
         }
     }
 
     /// A value with an explicit human rendering distinct from its machine value.
-    pub fn with_display(value: impl Into<Value>, display: impl Into<String>) -> Self {
+    pub fn with_display(value: impl Serialize, display: impl Into<String>) -> Self {
         Self {
-            value: value.into(),
             display: Some(display.into()),
-            style: None,
+            ..Self::new(value)
         }
     }
 
-    /// A value from an already-built JSON document (e.g. arbitrary nested data).
-    pub fn json(value: Value) -> Self {
+    /// A value for JSON output only: human detail rows and values skip it, e.g. machine
+    /// details the human view summarizes elsewhere.
+    pub fn json_only(value: impl Serialize) -> Self {
         Self {
-            value,
-            display: None,
-            style: None,
+            json_only: true,
+            ..Self::new(value)
         }
+    }
+
+    /// Human output skips this: JSON-only, or a `null` without a human rendering (JSON
+    /// keeps the key).
+    fn is_hidden(&self) -> bool {
+        self.json_only || (self.value.is_null() && self.display.is_none())
     }
 
     /// The value rendered as a plain string for human output.
@@ -158,15 +171,47 @@ pub struct JournalRow {
     pub payload: Option<String>,
 }
 
-/// How a journal is rendered in human output. JSON always emits every provided row.
+/// The status closing a journal view ([`OutputFormatter::journal`]), e.g. the
+/// invocation's current status.
+pub struct JournalStatus {
+    /// The human line after the entries, shown as ` >> display`.
+    pub display: String,
+    /// Sections added next to the journal in JSON output, e.g. `status` and `completion`.
+    pub record: Map<String, Value>,
+}
+
+/// Which entries a journal view shows. Both formatters emit every provided row.
 #[derive(Clone, Copy)]
 pub enum JournalScope {
-    /// A preview: rows may skip indices (the caller fetched only a head+tail slice), so
-    /// an elision marker (`· · · (N more)`) is printed wherever consecutive rows are not
-    /// index-contiguous.
+    /// A preview: rows may skip indices (the caller fetched only a head+tail slice).
+    /// Every gap between consecutive rows is reported as omitted: an elision marker
+    /// (`· · · (N more)`) in human output, an `omitted` range in JSON.
     Preview,
-    /// Show every provided row with no elision markers.
+    /// Every provided row, with nothing reported as omitted.
     Full,
+}
+
+/// Journal entries a [`JournalScope::Preview`] skipped, inclusive.
+#[derive(Serialize)]
+struct OmittedEntries {
+    from: u64,
+    to: u64,
+    count: u64,
+}
+
+/// The index gaps between consecutive `rows`, for [`JournalScope::Preview`].
+fn omitted_entries(rows: &[JournalRow], scope: JournalScope) -> Vec<OmittedEntries> {
+    if matches!(scope, JournalScope::Full) {
+        return Vec::new();
+    }
+    rows.windows(2)
+        .filter(|pair| pair[1].index > pair[0].index + 1)
+        .map(|pair| OmittedEntries {
+            from: pair[0].index + 1,
+            to: pair[1].index - 1,
+            count: pair[1].index - pair[0].index - 1,
+        })
+        .collect()
 }
 
 /// An entry of a list view ([`OutputFormatter::list`]): summary columns aligned across
@@ -197,7 +242,9 @@ pub trait OutputFormatter {
     fn title(&mut self, icon: &str, title: &str);
 
     /// A key-value detail view. `rows` are `(key, value)` pairs where `key` is a
-    /// machine key (`snake_case`); the human formatter derives a display label.
+    /// machine key (`snake_case`); the human formatter derives a display label, and
+    /// skips [`json_only`](Field::json_only) rows and rows whose value is `null` without
+    /// a display (JSON keeps them as `null`).
     /// Accepts any iterable of pairs, owned or borrowed: arrays, slices, or a
     /// `&Vec<(String, Field)>`.
     fn detail<K: AsRef<str>>(
@@ -208,32 +255,107 @@ pub trait OutputFormatter {
 
     /// A list/collection table. `headers` are machine keys (`snake_case`); each row
     /// aligns positionally with `headers`. Rows can be owned or borrowed (e.g.
-    /// `&Vec<Vec<Field>>`, `Vec<[Field; 3]>`).
+    /// `&Vec<Vec<Field>>`, `Vec<[Field; 3]>`). `if_empty` says what human output shows
+    /// when there are no rows.
     fn table(
         &mut self,
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     );
 
-    /// A single scalar value.
+    /// A single scalar value (human output skips [`json_only`](Field::json_only) ones).
     fn value(&mut self, section: &str, field: Field);
 
+    /// The command's outcome, e.g. `created` or `already_absent`: `section: value` in
+    /// JSON; human output prints the field's display as a status line, styled per
+    /// `outcome`.
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome);
+
+    /// Report that a state-changing command's query matched nothing. There is nothing to
+    /// do, which is a success whatever `--dry-run`/`--yes` say: JSON gets the empty
+    /// `changes` plan and `"result": "nothing_to_do"`, humans get `message` as a
+    /// nothing-to-do line.
+    fn nothing_to_do(&mut self, message: impl Into<String>) {
+        self.table(
+            "changes",
+            &[] as &[&str],
+            std::iter::empty::<[Field; 0]>(),
+            IfEmpty::Nothing,
+        );
+        self.outcome(
+            "result",
+            Field::with_display("nothing_to_do", message),
+            Outcome::NothingToDo,
+        );
+    }
+
+    /// Warn about a risk of the command, e.g. before confirming a dangerous change. Human
+    /// output shows a warning box on stderr; JSON collects the messages in a top-level
+    /// `warnings` array, also part of the plan document emitted by
+    /// [`confirm`](OutputFormatter::confirm).
+    fn warning(&mut self, message: &str);
+
+    /// One key/value row in the current scope: `key: value` in JSON; in human output a
+    /// `Label: value` row, aligned with the adjacent `field` rows (skipped like in
+    /// `detail`).
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no command writes single fields yet")
+    )]
+    fn field(&mut self, key: &str, field: Field);
+
+    /// Start the `section` list of nested items (JSON: an array of objects, `[]` when
+    /// empty). Describe each item on the formatter returned by [`Items::item`]. Items
+    /// and the list are attached when finished or dropped, which gives this formatter
+    /// back. Human
+    /// output indents each item under a ` - ` marker.
+    fn start_items(&mut self, section: &str) -> Items<'_, Self>
+    where
+        Self: Sized,
+    {
+        self.begin_items(section);
+        Items { parent: self }
+    }
+
+    /// Hooks behind [`start_items`](OutputFormatter::start_items), which callers use
+    /// instead: they open and close the list, and each item in it.
+    fn begin_items(&mut self, section: &str);
+    fn begin_item(&mut self);
+    fn end_item(&mut self);
+    fn end_items(&mut self);
+
     /// A journal-style timeline of indexed entries. Human output renders ENTRY / NAME /
-    /// WHEN columns with detail lines and optional payload blocks (head/tail elision
-    /// per `scope`); JSON emits `section` as an array of the rows' `record`s.
-    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope);
+    /// WHEN columns with detail lines and optional payload blocks (elision markers per
+    /// `scope`), then the `status` line (even without rows); JSON emits `section` as
+    /// `{"entries": [the rows' records], "omitted": [{"from", "to", "count"}]}`, and the
+    /// `status` record's sections next to it.
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    );
 
     /// A list of items. Human output renders a header row, the items' columns aligned,
     /// and each item's detail lines under it; JSON emits `section` as an array of the
-    /// items' serialized form.
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()>;
+    /// items' serialized form. `if_empty` says what human output shows when there are
+    /// no items.
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()>;
 
-    /// Suggest a read-only follow-up command, ready to run (real ids filled in).
+    /// Suggest a follow-up command, ready to run (real ids filled in).
     /// `description` completes "Run `command` to …". Human output shows the
     /// accumulated steps in one tip at [`finish`](OutputFormatter::finish); JSON emits
-    /// them as a top-level `next_steps` array, with ` --json` appended to `command`.
-    fn next_step(&mut self, command: &str, description: &str);
+    /// them as a top-level `next_steps` array, with ` --json` appended to `command`
+    /// unless `formatting` is [`IncludeFormatting::No`].
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting);
 
     /// Gate a change on confirmation, after the planned changes were written to this
     /// formatter. Returns `Ok(())` when the command should go on and apply them.
@@ -247,8 +369,146 @@ pub trait OutputFormatter {
     ///   the final document carries `"dry_run": false, "applied": true`.
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()>;
 
+    /// Report the command's failure, with the next steps suggested so far. Human output
+    /// goes to stderr (`Error: …`, the docs link, the causes, then a tip with the next
+    /// steps); JSON prints
+    /// `{"error": {"kind", "message", "docs_url"?, "causes"?, "next_steps"?}}` on stdout.
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()>;
+
     /// Flush the output. The JSON formatter emits its accumulated document here.
     fn finish(self) -> anyhow::Result<()>;
+}
+
+/// A list of nested items being written, see [`OutputFormatter::start_items`]. It is
+/// attached to the parent formatter when finished or dropped.
+#[must_use = "an unused list is attached empty right away"]
+pub struct Items<'a, F: OutputFormatter> {
+    parent: &'a mut F,
+}
+
+impl<F: OutputFormatter> Items<'_, F> {
+    /// Start the next item: describe it on the returned formatter.
+    pub fn item(&mut self) -> Item<'_, F> {
+        self.parent.begin_item();
+        Item {
+            parent: &mut *self.parent,
+        }
+    }
+
+    /// Attach the list to the parent formatter (same as dropping it).
+    pub fn finish(self) {}
+}
+
+impl<F: OutputFormatter> Drop for Items<'_, F> {
+    fn drop(&mut self) {
+        self.parent.end_items();
+    }
+}
+
+/// One item of an [`Items`] list, attached to it when finished or dropped. The
+/// command-level calls (`next_step`, `confirm`, `error`) go to the
+/// parent formatter.
+#[must_use = "an unused item is attached empty right away"]
+pub struct Item<'a, F: OutputFormatter> {
+    parent: &'a mut F,
+}
+
+impl<F: OutputFormatter> OutputFormatter for Item<'_, F> {
+    fn title(&mut self, icon: &str, title: &str) {
+        self.parent.title(icon, title)
+    }
+
+    fn detail<K: AsRef<str>>(
+        &mut self,
+        section: &str,
+        rows: impl IntoIterator<Item = impl Borrow<(K, Field)>>,
+    ) {
+        self.parent.detail(section, rows)
+    }
+
+    fn table(
+        &mut self,
+        section: &str,
+        headers: &[impl AsRef<str>],
+        rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
+    ) {
+        self.parent.table(section, headers, rows, if_empty)
+    }
+
+    fn value(&mut self, section: &str, field: Field) {
+        self.parent.value(section, field)
+    }
+
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome) {
+        self.parent.outcome(section, field, outcome)
+    }
+
+    fn warning(&mut self, message: &str) {
+        self.parent.warning(message)
+    }
+
+    fn field(&mut self, key: &str, field: Field) {
+        self.parent.field(key, field)
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        self.parent.begin_items(section)
+    }
+
+    fn begin_item(&mut self) {
+        self.parent.begin_item()
+    }
+
+    fn end_item(&mut self) {
+        self.parent.end_item()
+    }
+
+    fn end_items(&mut self) {
+        self.parent.end_items()
+    }
+
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        self.parent.journal(section, rows, scope, status)
+    }
+
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
+        self.parent.list(section, items, if_empty)
+    }
+
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        self.parent.next_step(command, description, formatting)
+    }
+
+    fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
+        self.parent.confirm(dry_run, prompt)
+    }
+
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        self.parent.error(error)
+    }
+
+    /// Attach the item to its list (same as dropping it).
+    fn finish(self) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
+impl<F: OutputFormatter> Drop for Item<'_, F> {
+    fn drop(&mut self) {
+        self.parent.end_item();
+    }
 }
 
 /// The formatter selected for the current invocation (see [`Formatter::new`]): statically
@@ -286,24 +546,64 @@ impl OutputFormatter for Formatter {
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
     ) {
-        dispatch!(self.table(section, headers, rows))
+        dispatch!(self.table(section, headers, rows, if_empty))
     }
 
     fn value(&mut self, section: &str, field: Field) {
         dispatch!(self.value(section, field))
     }
 
-    fn journal(&mut self, section: &str, rows: &[JournalRow], scope: JournalScope) {
-        dispatch!(self.journal(section, rows, scope))
+    fn outcome(&mut self, section: &str, field: Field, outcome: Outcome) {
+        dispatch!(self.outcome(section, field, outcome))
     }
 
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
-        dispatch!(self.list(section, items))
+    fn warning(&mut self, message: &str) {
+        dispatch!(self.warning(message))
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
-        dispatch!(self.next_step(command, description))
+    fn field(&mut self, key: &str, field: Field) {
+        dispatch!(self.field(key, field))
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        dispatch!(self.begin_items(section))
+    }
+
+    fn begin_item(&mut self) {
+        dispatch!(self.begin_item())
+    }
+
+    fn end_item(&mut self) {
+        dispatch!(self.end_item())
+    }
+
+    fn end_items(&mut self) {
+        dispatch!(self.end_items())
+    }
+
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        dispatch!(self.journal(section, rows, scope, status))
+    }
+
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
+        dispatch!(self.list(section, items, if_empty))
+    }
+
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        dispatch!(self.next_step(command, description, formatting))
     }
 
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
@@ -312,6 +612,10 @@ impl OutputFormatter for Formatter {
 
     fn finish(self) -> anyhow::Result<()> {
         dispatch!(self.finish())
+    }
+
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        dispatch!(self.error(error))
     }
 }
 
@@ -329,12 +633,26 @@ pub struct DryRun {
 /// The current command line with `--dry-run` removed and `--yes` added: the command
 /// that applies the previewed changes.
 fn apply_command() -> String {
-    let mut args: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|arg| arg != "--dry-run" && arg != "--yes" && arg != "-y")
-        .collect();
-    args.insert(0, "restate".to_owned());
+    let mut args = command_args(|arg| matches!(arg, "--dry-run" | "--yes" | "-y"));
     args.push("--yes".to_owned());
+    join_command(args)
+}
+
+/// The current command line without `--json`, to suggest as a next step (JSON output
+/// appends `--json` again): e.g. to retry after a concurrent change.
+pub(crate) fn rerun_command() -> String {
+    join_command(command_args(|arg| arg == "--json"))
+}
+
+/// `restate` and the current arguments, without those `drop` matches.
+fn command_args(drop: impl Fn(&str) -> bool) -> Vec<String> {
+    std::iter::once("restate".to_owned())
+        .chain(std::env::args().skip(1).filter(|arg| !drop(arg)))
+        .collect()
+}
+
+/// `args` as one shell command line, secrets redacted.
+fn join_command(args: Vec<String>) -> String {
     redact_secrets(args)
         .iter()
         .map(|arg| shell_quote(arg))
@@ -374,7 +692,7 @@ fn redact_secrets(args: Vec<String>) -> Vec<String> {
 }
 
 /// Single-quote `arg` for a POSIX shell when it contains anything but safe characters.
-fn shell_quote(arg: &str) -> String {
+pub(crate) fn shell_quote(arg: &str) -> String {
     let safe = |c: char| c.is_ascii_alphanumeric() || "-_./:=@,+%".contains(c);
     if !arg.is_empty() && arg.chars().all(safe) {
         arg.to_owned()
@@ -409,25 +727,62 @@ impl Default for Formatter {
 }
 
 /// JSON key holding the [`OutputFormatter::next_step`] suggestions.
-pub(crate) const NEXT_STEPS: &str = "next_steps";
+const NEXT_STEPS: &str = "next_steps";
+/// JSON key holding the [`OutputFormatter::warning`] messages.
+const WARNINGS: &str = "warnings";
 
 /// Human rendering of a next step: "Run `command` to description.".
-pub(crate) fn next_step_line(command: &str, description: &str) -> String {
+fn next_step_line(command: &str, description: &str) -> String {
     format!("Run `{command}` to {description}.")
 }
 
-/// JSON rendering of a next step, with ` --json` appended so the agent's next call
-/// stays structured too.
-pub(crate) fn next_step_json(command: &str, description: &str) -> Value {
+/// Whether the JSON rendering of a [`OutputFormatter::next_step`] appends ` --json` to
+/// its command, so the agent's next call stays structured too. `No` is for commands
+/// where ` --json` makes no sense (e.g. `--help`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IncludeFormatting {
+    Yes,
+    No,
+}
+
+/// How human output shows an [`OutputFormatter::outcome`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// The command did what was asked (`✅`/`[OK]:` on stdout).
+    Success,
+    /// There was nothing to change, e.g. the query matched nothing or the rule is already
+    /// absent: still a success (`ℹ️`/`[NOOP]:` on stdout).
+    NothingToDo,
+    /// The command could not do what was asked (`❌`/`[ERR]:` on stderr).
+    #[expect(dead_code, reason = "no command reports a failed outcome yet")]
+    Failure,
+}
+
+/// What human output shows for an empty [`OutputFormatter::list`] or
+/// [`OutputFormatter::table`]. JSON always emits `[]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IfEmpty<'a> {
+    /// Nothing, e.g. when the surrounding output already says it.
+    Nothing,
+    /// This message, where the rows would be.
+    Say(&'a str),
+}
+
+/// JSON rendering of a next step.
+fn next_step_json(command: &str, description: &str, formatting: IncludeFormatting) -> Value {
+    let command = match formatting {
+        IncludeFormatting::Yes => format!("{command} --json"),
+        IncludeFormatting::No => command.to_owned(),
+    };
     serde_json::json!({
-        "command": format!("{command} --json"),
+        "command": command,
         "description": description,
     })
 }
 
 /// Print accumulated next-step lines as one tip on stderr, separated from the output
 /// above by a blank line (no-op when empty).
-pub(crate) fn print_next_steps(lines: &[String]) {
+fn print_next_steps(lines: &[String]) {
     if !lines.is_empty() {
         restate_cli_util::c_eprintln!();
         restate_cli_util::c_tip!("{}", lines.join("\n"));
@@ -438,117 +793,46 @@ pub(crate) fn print_next_steps(lines: &[String]) {
 #[derive(Default)]
 pub struct HumanFormatter {
     next_steps: Vec<String>,
+    /// How many items the current output is nested in.
+    depth: usize,
+    /// Items started so far in each open list, to separate them with a blank line.
+    item_counts: Vec<usize>,
+    /// The next line opens an item, so it gets the ` - ` marker.
+    item_start: bool,
+    /// `field` rows not printed yet, so adjacent ones align in one table.
+    fields: Vec<(String, Field)>,
+    /// Something was printed already, so a top-level title needs a blank line above.
+    printed: bool,
 }
 
-impl OutputFormatter for HumanFormatter {
-    fn title(&mut self, icon: &str, title: &str) {
-        // `c_title!` builds its own format string, so the text is a single argument.
-        restate_cli_util::c_title!(icon, title);
-    }
-
-    fn detail<K: AsRef<str>>(
-        &mut self,
-        _section: &str,
-        rows: impl IntoIterator<Item = impl Borrow<(K, Field)>>,
-    ) {
-        let mut table = Table::new_styled();
-        for row in rows {
-            let (key, field) = row.borrow();
-            table.add_kv_row(
-                &format!("{}:", humanize_label(key.as_ref())),
-                field.to_cell(),
-            );
-        }
-        restate_cli_util::c_println!("{table}");
-    }
-
-    fn table(
-        &mut self,
-        _section: &str,
-        headers: &[impl AsRef<str>],
-        rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
-    ) {
-        let mut rows = rows.into_iter().peekable();
-        // An empty table would be a lone header row; JSON still gets `[]`.
-        if rows.peek().is_none() {
-            return;
-        }
-        let mut table = Table::new_styled();
-        table.set_styled_header(headers.iter().map(|h| header_label(h.as_ref())).collect());
-        for row in rows {
-            table.add_row(row.as_ref().iter().map(Field::to_cell).collect::<Vec<_>>());
-        }
-        restate_cli_util::c_println!("{table}");
-    }
-
-    fn value(&mut self, _section: &str, field: Field) {
-        // `c_println!` expands with a trailing semicolon, so call it in statement
-        // position rather than as a match-arm expression.
-        let rendered = match field.style {
-            Some(style) => Styled(style, field.human_string()).to_string(),
-            None => field.human_string(),
-        };
-        // Indented like the rows of detail tables and lists.
-        for line in rendered.lines() {
-            restate_cli_util::c_println!(" {line}");
+impl HumanFormatter {
+    /// Print `text` on stdout, indented to the current depth.
+    /// The [`IfEmpty`] message of an empty list or table, indented like its rows.
+    fn empty(&mut self, if_empty: IfEmpty) {
+        if let IfEmpty::Say(message) = if_empty {
+            self.println(&format!(" {message}"));
         }
     }
 
-    fn list<T: ListItem>(&mut self, _section: &str, items: &[T]) -> anyhow::Result<()> {
-        if items.is_empty() {
-            return Ok(());
-        }
-        let headers: Vec<String> = T::HEADERS.iter().map(|h| header_label(h)).collect();
-        let rows: Vec<Vec<String>> = items
-            .iter()
-            .map(|item| item.columns().iter().map(Field::human_display).collect())
-            .collect();
-        let mut widths: Vec<usize> = headers.iter().map(|h| measure_text_width(h)).collect();
-        for row in &rows {
-            for (width, cell) in widths.iter_mut().zip(row) {
-                *width = (*width).max(measure_text_width(cell));
+    fn println(&mut self, text: &str) {
+        for line in text.lines() {
+            if line.is_empty() {
+                restate_cli_util::c_println!();
+                continue;
             }
-        }
-        // Columns separated by two spaces; the last one isn't padded.
-        let line = |cells: &[String]| {
-            let mut out = String::from(" ");
-            for (i, (cell, width)) in cells.iter().zip(&widths).enumerate() {
-                out.push_str(cell);
-                if i + 1 < cells.len() {
-                    out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
-                }
+            let mut prefix = "  ".repeat(self.depth);
+            if std::mem::take(&mut self.item_start) {
+                // Lines start with a space, so ` -` lines up with the item's other rows.
+                prefix.truncate(prefix.len() - 2);
+                prefix.push_str(" -");
             }
-            out
-        };
-
-        let bold_headers: Vec<String> = headers
-            .iter()
-            .map(|h| dialoguer::console::style(h).bold().to_string())
-            .collect();
-        restate_cli_util::c_println!("{}", line(&bold_headers));
-        for (row, item) in rows.iter().zip(items) {
-            restate_cli_util::c_println!("{}", line(row));
-            let details = item.details();
-            for (i, detail) in details.iter().enumerate() {
-                if detail.trim().is_empty() {
-                    // A blank line inside a multi-line detail keeps the bracket going.
-                    restate_cli_util::c_println!("   │");
-                    continue;
-                }
-                let branch = if i + 1 == details.len() { "└" } else { "│" };
-                restate_cli_util::c_println!(
-                    "   {branch} {}",
-                    dialoguer::console::style(detail).dim()
-                );
-            }
+            restate_cli_util::c_println!("{prefix}{line}");
+            self.printed = true;
         }
-        Ok(())
     }
 
-    fn journal(&mut self, _section: &str, rows: &[JournalRow], scope: JournalScope) {
-        if rows.is_empty() {
-            return;
-        }
+    /// The rows of [`OutputFormatter::journal`], with the column header.
+    fn journal_rows(&mut self, rows: &[JournalRow], scope: JournalScope) {
         // WHEN: the first shown entry's age, then each entry's offset from it.
         let base = rows.iter().find_map(|row| row.appended_at);
         // Zero-pad indices to the widest one (`[07]`), so the entry types line up.
@@ -578,63 +862,271 @@ impl OutputFormatter for HumanFormatter {
                 ]
             })
             .collect();
-        let headers = ["ENTRY", "NAME", "WHEN"].map(str::to_owned);
-        let mut widths = headers.clone().map(|h| h.len());
-        for row in &cells {
-            for (width, cell) in widths.iter_mut().zip(row) {
-                *width = (*width).max(measure_text_width(cell));
-            }
-        }
-        let line = |cells: &[String; 3]| {
-            let mut out = String::from(" ");
-            for (i, (cell, width)) in cells.iter().zip(widths).enumerate() {
-                out.push_str(cell);
-                if i + 1 < cells.len() {
-                    out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
-                }
-            }
-            out.trim_end().to_owned()
-        };
-
-        restate_cli_util::c_println!(
-            "{}",
-            line(&headers.map(|h| dialoguer::console::style(h).bold().to_string()))
-        );
-        let mut previous_index: Option<u64> = None;
+        let headers = ["ENTRY", "NAME", "WHEN"];
+        let columns = Columns::new(&headers, &cells);
+        self.println(&columns.header(&headers));
+        let mut omitted = omitted_entries(rows, scope).into_iter().peekable();
         for (row, cells) in rows.iter().zip(&cells) {
-            if matches!(scope, JournalScope::Preview)
-                && let Some(previous) = previous_index
-                && row.index > previous + 1
-            {
-                let hidden = row.index - previous - 1;
-                restate_cli_util::c_println!("   · · ·   ({hidden} more)");
+            if let Some(gap) = omitted.next_if(|gap| gap.to + 1 == row.index) {
+                self.println(&format!("   · · ·   ({} more)", gap.count));
             }
-            restate_cli_util::c_println!("{}", line(cells));
+            // NAME and WHEN can be empty, which would leave trailing padding.
+            self.println(columns.line(cells).trim_end());
             for (i, detail) in row.details.iter().enumerate() {
                 let branch = if i + 1 == row.details.len() {
                     "└"
                 } else {
                     "├"
                 };
-                restate_cli_util::c_println!(
+                self.println(&format!(
                     "   {branch} {}",
                     dialoguer::console::style(detail).dim()
-                );
+                ));
             }
             if let Some(payload) = &row.payload {
                 for payload_line in payload.lines() {
-                    restate_cli_util::c_println!("     {payload_line}");
+                    self.println(&format!("     {payload_line}"));
                 }
             }
-            previous_index = Some(row.index);
         }
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
+    /// Print the buffered `field` rows as one key/value table.
+    fn flush_fields(&mut self) {
+        if self.fields.is_empty() {
+            return;
+        }
+        let mut table = Table::new_styled();
+        for (key, field) in std::mem::take(&mut self.fields) {
+            if field.is_hidden() {
+                continue;
+            }
+            table.add_kv_row(&format!("{}:", humanize_label(&key)), field.to_cell());
+        }
+        self.println(&table.to_string());
+    }
+}
+
+/// Left-aligned columns sized to their widest cell, as used by `list` and `journal`.
+struct Columns(Vec<usize>);
+
+impl Columns {
+    fn new(headers: &[impl AsRef<str>], rows: &[impl AsRef<[String]>]) -> Self {
+        let mut widths: Vec<usize> = headers
+            .iter()
+            .map(|h| measure_text_width(h.as_ref()))
+            .collect();
+        for row in rows {
+            for (width, cell) in widths.iter_mut().zip(row.as_ref()) {
+                *width = (*width).max(measure_text_width(cell));
+            }
+        }
+        Self(widths)
+    }
+
+    /// The bold header row; widths were measured on the unstyled text.
+    fn header(&self, headers: &[impl AsRef<str>]) -> String {
+        let bold: Vec<String> = headers
+            .iter()
+            .map(|h| dialoguer::console::style(h.as_ref()).bold().to_string())
+            .collect();
+        self.line(&bold)
+    }
+
+    /// Columns separated by two spaces; the last one isn't padded.
+    fn line(&self, cells: &[String]) -> String {
+        let mut out = String::from(" ");
+        for (i, (cell, width)) in cells.iter().zip(&self.0).enumerate() {
+            out.push_str(cell);
+            if i + 1 < cells.len() {
+                out.push_str(&" ".repeat(width - measure_text_width(cell) + 2));
+            }
+        }
+        out
+    }
+}
+
+impl OutputFormatter for HumanFormatter {
+    fn title(&mut self, icon: &str, title: &str) {
+        self.flush_fields();
+        if self.depth == 0 {
+            // Separated from the output above, but not from the command line.
+            if self.printed {
+                restate_cli_util::c_println!();
+            }
+            // The icon renders empty without colors; don't leave a leading space then.
+            let icon = Icon(icon, "").to_string();
+            let title = if icon.is_empty() {
+                format!("{title}:")
+            } else {
+                format!("{icon} {title}:")
+            };
+            restate_cli_util::c_println!("{title}");
+            restate_cli_util::c_println!("{}", "―".repeat(title.width_cjk()));
+            self.printed = true;
+            return;
+        }
+        let title = format!("{title}:");
+        let underline = "―".repeat(measure_text_width(&title));
+        self.println(&format!("\n {title}\n {underline}"));
+    }
+
+    fn detail<K: AsRef<str>>(
+        &mut self,
+        _section: &str,
+        rows: impl IntoIterator<Item = impl Borrow<(K, Field)>>,
+    ) {
+        self.flush_fields();
+        for row in rows {
+            let (key, field) = row.borrow();
+            self.fields.push((key.as_ref().to_owned(), field.clone()));
+        }
+        self.flush_fields();
+    }
+
+    fn table(
+        &mut self,
+        _section: &str,
+        headers: &[impl AsRef<str>],
+        rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        if_empty: IfEmpty,
+    ) {
+        self.flush_fields();
+        let mut rows = rows.into_iter().peekable();
+        // An empty table would be a lone header row; JSON still gets `[]`.
+        if rows.peek().is_none() {
+            self.empty(if_empty);
+            return;
+        }
+        let mut table = Table::new_styled();
+        table.set_styled_header(headers.iter().map(|h| header_label(h.as_ref())).collect());
+        for row in rows {
+            table.add_row(row.as_ref().iter().map(Field::to_cell).collect::<Vec<_>>());
+        }
+        self.println(&table.to_string());
+    }
+
+    fn outcome(&mut self, _section: &str, field: Field, outcome: Outcome) {
+        self.flush_fields();
+        let message = field.human_display();
+        match outcome {
+            Outcome::Success => restate_cli_util::c_success!("{message}"),
+            Outcome::NothingToDo => restate_cli_util::c_noop!("{message}"),
+            Outcome::Failure => restate_cli_util::c_error!("{message}"),
+        }
+        self.printed = true;
+    }
+
+    fn warning(&mut self, message: &str) {
+        self.flush_fields();
+        if self.printed {
+            restate_cli_util::c_eprintln!();
+        }
+        restate_cli_util::c_warn!("{message}");
+        self.printed = true;
+    }
+
+    fn value(&mut self, _section: &str, field: Field) {
+        self.flush_fields();
+        if field.json_only {
+            return;
+        }
+        // Indented like the rows of detail tables and lists.
+        for line in field.human_display().lines() {
+            self.println(&format!(" {line}"));
+        }
+    }
+
+    fn field(&mut self, key: &str, field: Field) {
+        self.fields.push((key.to_owned(), field));
+    }
+
+    fn begin_items(&mut self, _section: &str) {
+        self.flush_fields();
+        self.item_counts.push(0);
+    }
+
+    fn begin_item(&mut self) {
+        self.flush_fields();
+        if let Some(count) = self.item_counts.last_mut() {
+            *count += 1;
+            if *count > 1 {
+                restate_cli_util::c_println!();
+            }
+        }
+        self.depth += 1;
+        self.item_start = true;
+    }
+
+    fn end_item(&mut self) {
+        self.flush_fields();
+        self.depth -= 1;
+        self.item_start = false;
+    }
+
+    fn end_items(&mut self) {
+        self.item_counts.pop();
+    }
+
+    fn list<T: ListItem>(
+        &mut self,
+        _section: &str,
+        items: &[T],
+        if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
+        self.flush_fields();
+        if items.is_empty() {
+            self.empty(if_empty);
+            return Ok(());
+        }
+        let headers: Vec<String> = T::HEADERS.iter().map(|h| header_label(h)).collect();
+        let rows: Vec<Vec<String>> = items
+            .iter()
+            .map(|item| item.columns().iter().map(Field::human_display).collect())
+            .collect();
+        let columns = Columns::new(&headers, &rows);
+        self.println(&columns.header(&headers));
+        for (row, item) in rows.iter().zip(items) {
+            self.println(&columns.line(row));
+            let details = item.details();
+            for (i, detail) in details.iter().enumerate() {
+                if detail.trim().is_empty() {
+                    // A blank line inside a multi-line detail keeps the bracket going.
+                    self.println("   │");
+                    continue;
+                }
+                let branch = if i + 1 == details.len() { "└" } else { "│" };
+                self.println(&format!(
+                    "   {branch} {}",
+                    dialoguer::console::style(detail).dim()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn journal(
+        &mut self,
+        _section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        self.flush_fields();
+        if !rows.is_empty() {
+            self.journal_rows(rows, scope);
+        }
+        if let Some(status) = status {
+            self.println(&format!(" >> {}", status.display));
+        }
+    }
+
+    fn next_step(&mut self, command: &str, description: &str, _formatting: IncludeFormatting) {
         self.next_steps.push(next_step_line(command, description));
     }
 
     fn confirm(&mut self, dry_run: &DryRun, prompt: &str) -> anyhow::Result<()> {
+        self.flush_fields();
         if dry_run.dry_run {
             restate_cli_util::c_eprintln!();
             restate_cli_util::c_tip!(
@@ -647,11 +1139,32 @@ impl OutputFormatter for HumanFormatter {
         confirm_or_exit(prompt)
     }
 
-    fn finish(self) -> anyhow::Result<()> {
+    fn finish(mut self) -> anyhow::Result<()> {
+        self.flush_fields();
         if self.next_steps.is_empty() {
             // Keep the shell prompt off the last line of output (the next-steps tip
             // brings its own leading blank line).
             restate_cli_util::c_println!();
+        }
+        print_next_steps(&self.next_steps);
+        Ok(())
+    }
+
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        self.flush_fields();
+        restate_cli_util::c_eprintln!("{}{}", Styled(Style::Danger, "Error: "), error.message());
+        if let Some(docs_url) = error.docs_url() {
+            restate_cli_util::c_eprintln!("  -> See {}", Styled(Style::Info, docs_url));
+        }
+        let causes: Vec<_> = error.causes().collect();
+        if !causes.is_empty() {
+            restate_cli_util::c_eprintln!();
+            restate_cli_util::c_eprintln!("{}", Styled(Style::Warn, "Caused by:"));
+            let last = causes.len() - 1;
+            for (i, cause) in causes.iter().enumerate() {
+                let symbol = if i == last { "└─" } else { "├─" };
+                restate_cli_util::c_eprintln!("  {symbol} {cause}");
+            }
         }
         print_next_steps(&self.next_steps);
         Ok(())
@@ -662,10 +1175,54 @@ impl OutputFormatter for HumanFormatter {
 #[derive(Default)]
 pub struct JsonFormatter {
     doc: Map<String, Value>,
+    /// The open [`start_items`](OutputFormatter::start_items) lists and items, innermost
+    /// last: sections go to the innermost open item, else to `doc`.
+    open: Vec<Open>,
     next_steps: Vec<Value>,
+    warnings: Vec<Value>,
     /// `--yes` (or CI): [`confirm`](OutputFormatter::confirm) applies instead of
     /// emitting the plan.
     auto_confirm: bool,
+}
+
+/// An open list or item of the [`JsonFormatter`].
+enum Open {
+    Items { section: String, items: Vec<Value> },
+    Item(Map<String, Value>),
+}
+
+/// The JSON `error` object of a failed command, see [`OutputFormatter::error`].
+#[derive(Serialize)]
+struct ErrorReport {
+    kind: ErrorKind,
+    message: String,
+    /// Where the Restate error code is documented.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    docs_url: Option<String>,
+    /// The underlying errors, outermost first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    causes: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    next_steps: Vec<Value>,
+}
+
+/// Strip ANSI CSI escape sequences: messages may be styled for the terminal, even with
+/// `--json`.
+fn strip_ansi(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            for next in chars.by_ref() {
+                if next == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Keys the JSON formatter adds around a [`OutputFormatter::confirm`]ed change.
@@ -675,15 +1232,46 @@ const APPLIED: &str = "applied";
 impl JsonFormatter {
     fn insert(&mut self, section: &str, value: Value) {
         debug_assert!(
-            ![NEXT_STEPS, DRY_RUN, APPLIED, "hint", "apply_command"].contains(&section),
+            ![
+                NEXT_STEPS,
+                WARNINGS,
+                DRY_RUN,
+                APPLIED,
+                "hint",
+                "apply_command"
+            ]
+            .contains(&section),
             "`{section}` is a reserved section"
         );
-        self.doc.insert(section.to_owned(), value);
+        let target = match self.open.last_mut() {
+            Some(Open::Item(item)) => item,
+            _ => &mut self.doc,
+        };
+        target.insert(section.to_owned(), value);
     }
 
-    /// The final document: every section, plus `next_steps` when any were added.
+    /// The failure document: `error`, with the next steps nested in it.
+    fn error_document(self, error: &RestateCliError) -> Value {
+        let report = ErrorReport {
+            kind: error.kind(),
+            message: strip_ansi(error.message()),
+            docs_url: error.docs_url(),
+            causes: error
+                .causes()
+                .map(|cause| strip_ansi(&cause.to_string()))
+                .collect(),
+            next_steps: self.next_steps,
+        };
+        serde_json::json!({ "error": report })
+    }
+
+    /// The final document: every section, plus `warnings` and `next_steps` when any
+    /// were added.
     fn into_document(self) -> Value {
         let mut doc = self.doc;
+        if !self.warnings.is_empty() {
+            doc.insert(WARNINGS.to_owned(), Value::Array(self.warnings));
+        }
         if !self.next_steps.is_empty() {
             doc.insert(NEXT_STEPS.to_owned(), Value::Array(self.next_steps));
         }
@@ -716,6 +1304,7 @@ impl OutputFormatter for JsonFormatter {
         section: &str,
         headers: &[impl AsRef<str>],
         rows: impl IntoIterator<Item = impl AsRef<[Field]>>,
+        _if_empty: IfEmpty,
     ) {
         let arr = rows
             .into_iter()
@@ -735,7 +1324,49 @@ impl OutputFormatter for JsonFormatter {
         self.insert(section, field.value);
     }
 
-    fn list<T: ListItem>(&mut self, section: &str, items: &[T]) -> anyhow::Result<()> {
+    fn outcome(&mut self, section: &str, field: Field, _outcome: Outcome) {
+        self.insert(section, field.value);
+    }
+
+    fn warning(&mut self, message: &str) {
+        self.warnings.push(Value::from(strip_ansi(message)));
+    }
+
+    fn field(&mut self, key: &str, field: Field) {
+        self.insert(key, field.value);
+    }
+
+    fn begin_items(&mut self, section: &str) {
+        self.open.push(Open::Items {
+            section: section.to_owned(),
+            items: Vec::new(),
+        });
+    }
+
+    fn begin_item(&mut self) {
+        self.open.push(Open::Item(Map::new()));
+    }
+
+    fn end_item(&mut self) {
+        if let Some(Open::Item(item)) = self.open.pop()
+            && let Some(Open::Items { items, .. }) = self.open.last_mut()
+        {
+            items.push(Value::Object(item));
+        }
+    }
+
+    fn end_items(&mut self) {
+        if let Some(Open::Items { section, items }) = self.open.pop() {
+            self.insert(&section, Value::Array(items));
+        }
+    }
+
+    fn list<T: ListItem>(
+        &mut self,
+        section: &str,
+        items: &[T],
+        _if_empty: IfEmpty,
+    ) -> anyhow::Result<()> {
         let items = items
             .iter()
             .map(serde_json::to_value)
@@ -744,14 +1375,29 @@ impl OutputFormatter for JsonFormatter {
         Ok(())
     }
 
-    fn journal(&mut self, section: &str, rows: &[JournalRow], _scope: JournalScope) {
-        // Elision is a human affordance; JSON emits every provided entry.
-        let arr = rows.iter().map(|row| row.record.clone()).collect();
-        self.insert(section, Value::Array(arr));
+    fn journal(
+        &mut self,
+        section: &str,
+        rows: &[JournalRow],
+        scope: JournalScope,
+        status: Option<JournalStatus>,
+    ) {
+        let entries: Vec<Value> = rows.iter().map(|row| row.record.clone()).collect();
+        self.insert(
+            section,
+            serde_json::json!({
+                "entries": entries,
+                "omitted": omitted_entries(rows, scope),
+            }),
+        );
+        for (key, value) in status.into_iter().flat_map(|status| status.record) {
+            self.insert(&key, value);
+        }
     }
 
-    fn next_step(&mut self, command: &str, description: &str) {
-        self.next_steps.push(next_step_json(command, description));
+    fn next_step(&mut self, command: &str, description: &str, formatting: IncludeFormatting) {
+        self.next_steps
+            .push(next_step_json(command, description, formatting));
     }
 
     fn confirm(&mut self, dry_run: &DryRun, _prompt: &str) -> anyhow::Result<()> {
@@ -786,21 +1432,26 @@ impl OutputFormatter for JsonFormatter {
         restate_cli_util::c_println!("{rendered}");
         Ok(())
     }
+
+    fn error(&mut self, error: &RestateCliError) -> anyhow::Result<()> {
+        let rendered = serde_json::to_string_pretty(&std::mem::take(self).error_document(error))?;
+        restate_cli_util::c_println!("{rendered}");
+        Ok(())
+    }
 }
 
-/// `snake_case` / `kebab-case` machine key → `Title Case` human label.
+/// `snake_case` / `kebab-case` machine key → `Sentence case` human label.
 fn humanize_label(key: &str) -> String {
-    key.split(['_', '-'])
+    let label = key
+        .split(['_', '-'])
         .filter(|word| !word.is_empty())
-        .map(|word| {
-            let mut chars = word.chars();
-            match chars.next() {
-                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                None => String::new(),
-            }
-        })
         .collect::<Vec<_>>()
-        .join(" ")
+        .join(" ");
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// Machine key → `UPPER CASE` table header.
@@ -839,11 +1490,37 @@ pub fn journal_time(t: DateTime<Local>) -> String {
     t.format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
+/// Asserts that every human header of `item` is also a key of its JSON form, so both
+/// output formats use the same vocabulary.
+#[cfg(test)]
+pub(crate) fn assert_headers_are_json_keys<T: ListItem>(item: &T) {
+    let value = serde_json::to_value(item).unwrap();
+    for header in T::HEADERS {
+        assert!(
+            value.get(header).is_some(),
+            "header `{header}` is not a key of {value}"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn columns_pad_to_widest_cell_except_last() {
+        let rows = [
+            ["[0]: Input".to_owned(), String::new(), "5s ago".to_owned()],
+            ["[1]: Run".to_owned(), "load".to_owned(), String::new()],
+        ];
+        let columns = Columns::new(&["ENTRY", "NAME", "WHEN"], &rows);
+
+        assert_eq!(columns.line(&rows[0]), " [0]: Input        5s ago");
+        // An empty last cell leaves the padding, which `journal` trims.
+        assert_eq!(columns.line(&rows[1]), " [1]: Run    load  ");
+    }
 
     #[test]
     fn json_formatter_builds_sectioned_document() {
@@ -862,23 +1539,92 @@ mod tests {
             "handlers",
             &["handler", "public"],
             &[vec![Field::new("greet"), Field::new(true)]],
+            IfEmpty::Nothing,
         );
+        jf.outcome(
+            "result",
+            Field::with_display("created", "Created service 'greeter'"),
+            Outcome::Success,
+        );
+        jf.warning("Overwrites service 'greeter'");
         let value = jf.into_document();
 
+        assert_eq!(value["result"], json!("created"));
         assert_eq!(value["service"]["name"], json!("greeter"));
         assert_eq!(value["service"]["revision"], json!(3));
         assert_eq!(value["handlers"][0]["handler"], json!("greet"));
         assert_eq!(value["handlers"][0]["public"], json!(true));
+        assert_eq!(value[WARNINGS], json!(["Overwrites service 'greeter'"]));
         assert!(value.get("ignored").is_none());
         assert!(value.get(NEXT_STEPS).is_none());
+    }
+
+    #[test]
+    fn json_items_nest_objects_and_forward_next_steps() {
+        let mut jf = JsonFormatter::default();
+        let mut services = jf.start_items("services");
+        let mut service = services.item();
+        service.field("name", Field::styled("Greeter", Style::Info));
+        service.table(
+            "handlers",
+            &["handler"],
+            &[vec![Field::new("greet")]],
+            IfEmpty::Nothing,
+        );
+        let mut tags = service.start_items("tags");
+        let mut tag = tags.item();
+        tag.field("tag", Field::new("beta"));
+        tag.finish().unwrap();
+        tags.finish();
+        service.next_step(
+            "restate services list",
+            "list services",
+            IncludeFormatting::Yes,
+        );
+        service.finish().unwrap();
+        services.finish();
+        jf.start_items("empty").finish();
+        // Dropping attaches too.
+        {
+            let mut dropped = jf.start_items("dropped");
+            dropped.item().field("name", Field::new("Counter"));
+        }
+        jf.value("id", Field::new("dp_1"));
+        let value = jf.into_document();
+
+        assert_eq!(
+            value,
+            json!({
+                "services": [{
+                    "name": "Greeter",
+                    "handlers": [{"handler": "greet"}],
+                    "tags": [{"tag": "beta"}],
+                }],
+                "empty": [],
+                "dropped": [{"name": "Counter"}],
+                "id": "dp_1",
+                NEXT_STEPS: [{
+                    "command": "restate services list --json",
+                    "description": "list services",
+                }],
+            })
+        );
     }
 
     #[test]
     fn json_next_steps_are_collected_with_json_flag() {
         let mut jf = JsonFormatter::default();
         jf.value("id", Field::new("inv_1"));
-        jf.next_step("restate invocations journal inv_1", "see the full journal");
-        jf.next_step("restate services list", "list services");
+        jf.next_step(
+            "restate invocations journal inv_1",
+            "see the full journal",
+            IncludeFormatting::Yes,
+        );
+        jf.next_step(
+            "restate services list",
+            "list services",
+            IncludeFormatting::Yes,
+        );
         let value = jf.into_document();
 
         assert_eq!(value["id"], json!("inv_1"));
@@ -894,13 +1640,14 @@ mod tests {
 
     #[test]
     fn labels_are_derived_from_machine_keys() {
-        assert_eq!(humanize_label("deployment_id").as_str(), "Deployment Id");
+        assert_eq!(humanize_label("deployment_id").as_str(), "Deployment id");
         assert_eq!(header_label("deployment-type").as_str(), "DEPLOYMENT TYPE");
     }
 
     #[test]
-    fn json_journal_emits_every_record_ignoring_elision() {
-        let rows: Vec<JournalRow> = (0..3)
+    fn json_journal_emits_every_record_the_omitted_ranges_and_its_status() {
+        let rows: Vec<JournalRow> = [0, 1, 5]
+            .into_iter()
             .map(|index| JournalRow {
                 index,
                 appended_at: None,
@@ -912,13 +1659,30 @@ mod tests {
             })
             .collect();
 
+        let status = JournalStatus {
+            display: "running".to_owned(),
+            record: json!({ "status": "running", "completion": null })
+                .as_object()
+                .cloned()
+                .unwrap(),
+        };
+
         let mut jf = JsonFormatter::default();
-        // Preview would print elision markers in human output; JSON keeps all rows.
-        jf.journal("journal", &rows, JournalScope::Preview);
+        jf.journal("journal", &rows, JournalScope::Preview, Some(status));
         let value = Value::Object(jf.doc);
 
-        assert_eq!(value["journal"].as_array().map(Vec::len), Some(3));
-        assert_eq!(value["journal"][2]["index"], json!(2));
+        assert_eq!(
+            value["journal"]["entries"].as_array().map(Vec::len),
+            Some(3)
+        );
+        assert_eq!(value["journal"]["entries"][2]["index"], json!(5));
+        assert_eq!(
+            value["journal"]["omitted"],
+            json!([{"from": 2, "to": 4, "count": 3}])
+        );
+        // The status sections sit next to the journal, flat.
+        assert_eq!(value["status"], json!("running"));
+        assert_eq!(value["completion"], Value::Null);
     }
 
     #[test]
@@ -960,6 +1724,7 @@ mod tests {
                     tags: vec![],
                 },
             ],
+            IfEmpty::Say("No items."),
         )
         .unwrap();
 
@@ -967,6 +1732,43 @@ mod tests {
         assert_eq!(
             jf.into_document(),
             json!({"items": [{"name": "a", "tags": [1]}, {"name": "b", "tags": []}]})
+        );
+    }
+
+    #[test]
+    fn json_error_document_nests_next_steps_and_omits_empty_fields() {
+        let err = RestateCliError::from_error(
+            ErrorKind::Network,
+            &*anyhow::anyhow!("\u{1b}[31mtcp connect error\u{1b}[0m").context("Unable to connect"),
+        );
+        let mut jf = JsonFormatter::default();
+        jf.next_step(
+            "restate whoami",
+            "check the admin URL",
+            IncludeFormatting::Yes,
+        );
+        assert_eq!(
+            jf.error_document(&err),
+            json!({"error": {
+                "kind": "network",
+                "message": "Unable to connect",
+                "causes": ["tcp connect error"],
+                "next_steps": [{"command": "restate whoami --json", "description": "check the admin URL"}],
+            }})
+        );
+        assert_eq!(
+            JsonFormatter::default().error_document(&RestateCliError::not_found("nope")),
+            json!({"error": {"kind": "not_found", "message": "nope"}})
+        );
+    }
+
+    #[test]
+    fn nothing_to_do_emits_empty_plan_and_result() {
+        let mut jf = JsonFormatter::default();
+        jf.nothing_to_do("No state found for Counter");
+        assert_eq!(
+            jf.into_document(),
+            json!({"changes": [], "result": "nothing_to_do"})
         );
     }
 

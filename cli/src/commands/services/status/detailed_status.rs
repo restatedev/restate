@@ -10,21 +10,16 @@
 
 use anyhow::Result;
 use indicatif::ProgressBar;
-use serde_json::Value;
 
-use restate_cli_util::CliContext;
-use restate_cli_util::c_title;
-
-use super::{
-    Status, locked_keys_json, render_locked_keys, render_services_status, services_status_json,
-};
+use super::{Status, render_locked_keys, render_services_status};
 use crate::clients::datafusion_helpers::{
     get_locked_keys, get_service_invocations, get_service_status,
 };
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::fmt::{Field, Formatter, OutputFormatter};
+use crate::ui::fmt::{IfEmpty, OutputFormatter};
 
 pub async fn run_detailed_status(
+    f: &mut impl OutputFormatter,
     service_name: &str,
     opts: &Status,
     metas_client: AdminClient,
@@ -58,48 +53,14 @@ pub async fn run_detailed_status(
     };
     progress.finish_and_clear();
 
-    if CliContext::get().json_output() {
-        let mut f = Formatter::new();
-        f.value(
-            "services",
-            Field::json(services_status_json(
-                std::slice::from_ref(&service),
-                &status_map,
-            )),
-        );
-        if let Some(locked_keys) = &locked_keys {
-            f.value("locked_keys", Field::json(locked_keys_json(locked_keys)));
-        }
-        if !active.is_empty() {
-            let recent = active
-                .iter()
-                .map(serde_json::to_value)
-                .collect::<Result<Vec<Value>, _>>()?;
-            f.value("recent_invocations", Field::json(Value::Array(recent)));
-        }
-        return f.finish();
+    render_services_status(f, std::slice::from_ref(&service), &status_map);
+    if let Some(keys) = &locked_keys {
+        render_locked_keys(f, keys, opts);
     }
-
-    // Render Summary
-    c_title!("📷", "Summary");
-    render_services_status(vec![service], status_map).await?;
-
-    if let Some(locked_keys) = &locked_keys {
-        c_title!("📨", "Active Keys");
-        render_locked_keys(
-            locked_keys,
-            opts.locked_keys_limit,
-            opts.locked_key_held_threshold_second,
-        );
-    }
-
     // Sample of active invocations
     if !active.is_empty() {
-        c_title!("🚂", "Recent Invocations");
-        let mut f = Formatter::new();
-        f.list("invocations", &active)?;
-        f.finish()?;
+        f.title("🚂", "Recent Invocations");
+        f.list("recent_invocations", &active, IfEmpty::Nothing)?;
     }
-
     Ok(())
 }

@@ -26,10 +26,11 @@ use super::output::Console;
 
 #[derive(clap::Args, Clone, Collect, Debug)]
 pub struct Watch {
-    /// Watch mode. Continuously refreshing the output.
+    /// Watch mode: re-run the command and refresh its output until interrupted. Can't be
+    /// combined with --json
     #[clap(short, global = true)]
     watch: bool,
-    /// Watch interval in seconds
+    /// Refresh interval of watch mode (-w), in seconds
     #[clap(short = 'n', default_value = "1.0")]
     interval: f32,
 }

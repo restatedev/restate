@@ -114,7 +114,8 @@ mod tests {
     use crate::scan::{PhysicalScan, TableScan};
     use crate::{DB_PREFIX_LENGTH, ScanMode, TableKind, convert_to_upper_bound};
 
-    struct TestKey(u64, u64);
+    /// Same layout as invocation status keys: partition key and a 16 bytes id
+    struct TestKey(u64, u128);
 
     impl EncodeTableKey for TestKey {
         const TABLE: TableKind = TableKind::InvocationStatus;
@@ -123,11 +124,11 @@ mod tests {
         fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
             Self::KEY_KIND.serialize(bytes);
             bytes.put_u64(self.0);
-            bytes.put_u64(self.1);
+            bytes.put_u128(self.1);
         }
 
         fn serialized_length(&self) -> usize {
-            KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<u64>() * 2
+            KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<u64>() + std::mem::size_of::<u128>()
         }
     }
 
@@ -220,14 +221,22 @@ mod tests {
         assert_eq!(
             scan_mode(TableScan::RangeInclusive(
                 TestKey(1, 0),
-                TestKey(1, u64::MAX),
+                TestKey(1, u128::MAX),
+            )),
+            ScanMode::TotalOrder
+        );
+        // Same partition key, but the ids differ within the prefix extractor length
+        assert_eq!(
+            scan_mode(TableScan::RangeInclusive(
+                TestKey(1, 0),
+                TestKey(1, 1 << 64)
             )),
             ScanMode::TotalOrder
         );
     }
 
     #[test]
-    fn single_partition_inclusive_key_range_stays_within_prefix() {
+    fn inclusive_key_range_sharing_extractor_prefix_stays_within_prefix() {
         assert_eq!(
             scan_mode(TableScan::RangeInclusive(TestKey(1, 0), TestKey(1, 9))),
             ScanMode::WithinPrefix

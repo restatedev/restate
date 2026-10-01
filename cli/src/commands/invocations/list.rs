@@ -30,7 +30,7 @@ use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::{
     InvocationState, find_and_count_active_invocations, invocation_status_filter,
 };
-use crate::ui::fmt::{Formatter, OutputFormatter};
+use crate::ui::fmt::{Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 /// Timestamp to order `invocations list` by.
 #[derive(ValueEnum, Clone, Copy, Debug)]
@@ -44,7 +44,9 @@ pub enum OrderBy {
 /// Sort direction.
 #[derive(ValueEnum, Clone, Copy, Debug)]
 pub enum SortOrder {
+    /// Newest first
     Desc,
+    /// Oldest first
     Asc,
 }
 
@@ -120,53 +122,55 @@ impl TypedValueParser for StatusParser {
     }
 }
 
+/// List invocations, most recently changed first
+///
+/// Completed invocations are hidden unless --all or --status completed is passed. Filters
+/// combine: e.g. `--service Cart --status backing-off` lists the retrying invocations of Cart.
+/// Use `restate invocations describe <id>` to see details of a single invocation
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate invocations list --service checkout --status backing-off,paused",
+        "restate invocations list Cart/u1 --all --limit 10 --json",
+        "restate invocations list --completion-result failure    # failed completed invocations",
+    ],
+    learn_more: "https://docs.restate.dev/services/invocation/managing-invocations#lifecycle",
+))]
 pub struct List {
-    /// Only list invocations matching this query: an invocation id, or a target exact
-    /// match or prefix, e.g.:
-    /// * `invocationId`
-    /// * `serviceName`
-    /// * `serviceName/handler`
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `virtualObjectName/key/handler`
-    /// * `workflowName`
-    /// * `workflowName/key`
-    /// * `workflowName/key/handler`
-    ///
-    /// Combines with the other filters.
-    #[clap(verbatim_doc_comment)]
+    /// Only list the invocations matching this query. Combines with the other filters
+    #[arg(long_help = super::QUERY_LONG_HELP)]
     query: Option<String>,
-    /// Service to list invocations for
+    /// Filter by service, virtual object or workflow name
     #[clap(long, value_delimiter = ',')]
     service: Vec<String>,
-    /// Filter by invocation on this handler name
+    /// Filter by handler name
     #[clap(long, value_delimiter = ',')]
     handler: Vec<String>,
-    /// Show all invocations, including the completed ones that are hidden by default. This overrides the `status` filter.
+    /// Include completed invocations, hidden by default. Overrides --status
     #[clap(long)]
     all: bool,
-    /// Filter by status(es)
+    /// Filter by status, comma-separated. Completed invocations are hidden unless selected here or with --all
     #[clap(long, ignore_case = true, value_delimiter = ',', value_parser = StatusParser)]
     status: Vec<InvocationState>,
     /// Filter completed invocations by result: 'success' or 'failure'. Implies --status=completed.
     #[clap(long, ignore_case = true, conflicts_with_all = ["all", "status"])]
     completion_result: Option<CompletionResult>,
-    /// Filter by deployment ID
+    /// Filter by the deployment the invocations run on (`dp_...`)
     #[clap(long, visible_alias = "dp", value_delimiter = ',')]
     deployment: Vec<String>,
-    /// Only list invocations on keyed services only
+    /// Only list invocations of virtual objects and workflows
     #[clap(long)]
     virtual_objects_only: bool,
-    /// Filter by invocations on this service key
+    /// Filter by virtual object or workflow key
     #[clap(long, value_delimiter = ',')]
     key: Vec<String>,
     /// Limit the number of results
     #[clap(long, default_value = "100")]
     limit: usize,
-    /// Find zombie invocations (invocations pinned to removed deployments)
+    /// Only list zombie invocations: those running on a deployment that was removed, which
+    /// can't make progress until resumed on another deployment
     #[clap(long)]
     zombie: bool,
     /// Which timestamp to order the results by
@@ -288,11 +292,16 @@ async fn list(env: &CliEnv, opts: &List) -> Result<()> {
     results.truncate(opts.limit);
 
     let mut f = Formatter::new();
-    f.list("invocations", &results)?;
+    f.list(
+        "invocations",
+        &results,
+        IfEmpty::Say("No invocations found."),
+    )?;
     if let Some(inv) = results.first() {
         f.next_step(
             &format!("restate invocations describe {}", inv.id),
             "inspect the first invocation's status, progress, and journal",
+            IncludeFormatting::Yes,
         );
     }
 
