@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-mod schema;
+pub(crate) mod schema;
 mod table;
 
 pub use schema::BifrostReadStreamsBuilder;
