@@ -428,7 +428,10 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
         let request = request.into_inner();
-        let session = match self.cluster_query_engine.create_session(SessionOptions {}) {
+        let session = match self
+            .cluster_query_engine
+            .create_session(SessionOptions::default())
+        {
             Ok(session) => session,
             Err(e @ SessionError::EngineDisabled) => {
                 return Err(Status::unimplemented(e.to_string()));

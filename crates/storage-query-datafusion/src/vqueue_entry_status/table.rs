@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_sharding::PartitionKey;
@@ -29,51 +29,44 @@ use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBui
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueue_entry_status::row::append_vqueue_entry_status_row;
 use crate::vqueue_entry_status::schema::{
-    SysVqueueEntryStatusBuilder, sys_vqueue_entry_status_sort_order,
+    SysVqueueEntryStatusBuilder, SysVqueueEntryStatusTable, sys_vqueue_entry_status_sort_order,
 };
 
-const NAME: &str = "sys_vqueue_entry_status";
+impl SysVqueueEntryStatusTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysVqueueEntryStatusBuilder::schema();
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = SysVqueueEntryStatusBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Large)
+            .with_partition_key()
+            .with_primary_key("entry_id")
+            .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
+            // This can be wrong in some rare cases, but the assumption is that
+            // the number of vqueue entries is bigger than the number of vqueues
+            .with_foreign_key("vqueue_id", RowEstimate::Small);
 
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Large)
-        .with_partition_key()
-        .with_primary_key("entry_id")
-        .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
-        // This can be wrong in some rare cases, but the assumption is that
-        // the number of vqueue entries is bigger than the number of vqueues
-        .with_foreign_key("vqueue_id", RowEstimate::Small);
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            sys_vqueue_entry_status_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_grouped_vqueue_entry_id("entry_id")
+                .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
+        )
+        .with_statistics(statistics.build());
 
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        sys_vqueue_entry_status_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_grouped_vqueue_entry_id("entry_id")
-            .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
-    )
-    .with_statistics(statistics.build());
+        Arc::new(table)
+    }
 
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VQueueEntryStatusScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<VQueueEntryStatusScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]
