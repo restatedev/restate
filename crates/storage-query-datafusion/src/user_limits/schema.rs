@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_user_limits(partition_key));
 
-define_table!(sys_user_limits(
+define_table!(
+    /// Counters of the concurrency limits set by rules.
+    ///
+    /// One row per counter, with its current usage, its limit, the rule defining it and how many vqueues are waiting on it.
+    sys_user_limits(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

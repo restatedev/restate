@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_vqueue_meta(partition_key));
 
-define_table!(sys_vqueue_meta(
+define_table!(
+    /// Metadata and statistics of each vqueue.
+    ///
+    /// Number of entries per stage, latest activity timestamps, and moving averages of wait, run and blocking times.
+    sys_vqueue_meta(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

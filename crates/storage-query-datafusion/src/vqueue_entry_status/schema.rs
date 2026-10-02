@@ -14,7 +14,11 @@ use crate::table_macro::*;
 
 define_sort_order!(sys_vqueue_entry_status(partition_key));
 
-define_table!(sys_vqueue_entry_status(
+define_table!(
+    /// Status of every vqueue entry.
+    ///
+    /// One row per entry (an invocation or a state mutation), with its stage, its attempts and how long it was blocked on each resource.
+    sys_vqueue_entry_status(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

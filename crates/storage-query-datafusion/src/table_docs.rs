@@ -289,7 +289,10 @@ pub fn sys_invocation_table_docs() -> OwnedTableDocs {
 
     OwnedTableDocs {
         name: Cow::Borrowed("sys_invocation"),
-        description: Cow::Borrowed(""),
+        description: Cow::Borrowed(
+            "All invocations, whatever their status. One row per invocation, with its target and \
+             caller, lifecycle timestamps, and the retry and failure details of the current attempt.",
+        ),
         columns,
     }
 }

@@ -12,7 +12,11 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(sys_service(
+define_table!(
+    /// Registered services.
+    ///
+    /// One row per service, with its type, whether it is public, and the latest deployment serving it.
+    sys_service(
     /// The name of the registered user service.
     name: DataType::LargeUtf8,
 

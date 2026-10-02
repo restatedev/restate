@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_journal_events(partition_key));
 
-define_table!(sys_journal_events (
+define_table!(
+    /// Events that happened during an invocation's execution.
+    ///
+    /// Events are transient errors, pauses and suspensions. They are not journal entries; use `after_journal_entry_index` to place them between them.
+    sys_journal_events(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
