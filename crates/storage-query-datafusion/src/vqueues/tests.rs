@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::mocks::*;
-use crate::row;
-
 use datafusion::arrow::array::{LargeStringArray, TimestampMillisecondArray, UInt32Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -19,35 +16,41 @@ use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryKind, EntryMetadata, EntryValue, Stage, Status, WriteVQueueTable,
-    stats::EntryStatistics,
+    EntryContext, EntryId, EntryKey, EntryKind, EntryMetadata, EntryStateRef, EntryValue, Stage,
+    Status, WriteVQueueTable, stats::EntryStatistics,
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{EntryTargetRef, Seq, VQueueId};
 use restate_util_string::ToReString;
 
+use crate::mocks::*;
+use crate::row;
+
 async fn select_entry_ids(engine: &mut MockQueryEngine, query: &str) -> Vec<String> {
-    let records = engine
+    let batches = engine
         .execute(query.to_owned())
         .await
         .unwrap()
         .stream
         .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
-        .await
-        .remove(0)
-        .unwrap();
+        .await;
 
-    let mut ids = records
-        .column_by_name("entry_id")
-        .unwrap()
-        .as_any()
-        .downcast_ref::<LargeStringArray>()
-        .unwrap()
-        .iter()
-        .flatten()
-        .map(str::to_string)
-        .collect::<Vec<_>>();
+    let mut ids = Vec::new();
+    for records in batches {
+        let records = records.unwrap();
+        ids.extend(
+            records
+                .column_by_name("entry_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<LargeStringArray>()
+                .unwrap()
+                .iter()
+                .flatten()
+                .map(str::to_string),
+        );
+    }
     ids.sort();
     ids
 }
@@ -104,7 +107,7 @@ async fn get_vqueue_entry_value_fields() {
         .execute(
             "SELECT stage, status, num_attempts, num_pauses, num_suspensions, num_yields, \
             created_at, transitioned_at, first_attempt_at, latest_attempt_at, first_runnable_at, \
-            run_at, deployment FROM sys_vqueues WHERE stage = 'inbox' ORDER BY sequence_number",
+            run_at, deployment, entry_id, canonical_id FROM sys_vqueues WHERE stage = 'inbox' ORDER BY sequence_number",
         )
         .await
         .unwrap()
@@ -134,6 +137,8 @@ async fn get_vqueue_entry_value_fields() {
                 "first_runnable_at" => TimestampMillisecondArray: eq(value.stats.first_runnable_at.as_u64() as i64),
                 "run_at" => TimestampMillisecondArray: eq(key.run_at().as_unix_millis().as_u64() as i64),
                 "deployment" => LargeStringArray: eq("dp_123"),
+                "entry_id" => LargeStringArray: eq(key.entry_id().display(qid.partition_key()).to_string()),
+                "canonical_id" => LargeStringArray: eq(key.to_canonical_entry_id(qid.partition_key()).to_string()),
             }
         ))
     );
@@ -232,7 +237,14 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
             false,
             MillisSinceEpoch::new(1_744_002_000_000 + u64::from(index)),
             u64::from(index),
-            EntryId::new(EntryKind::Invocation, [index + 1; 16]),
+            EntryId::new(
+                if index % 2 == 0 {
+                    EntryKind::Invocation
+                } else {
+                    EntryKind::StateMutation
+                },
+                [index + 1; 16],
+            ),
         );
         let stage = if index == 2 {
             Stage::Paused
@@ -255,13 +267,16 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
         if index < 4 {
             // Point lookups must use the status index; these rows are absent
             // from the stage table so a stage scan cannot satisfy the query.
-            tx.put_vqueue_entry_status(
-                &qid,
-                stage,
-                &key,
-                &value.metadata,
-                value.stats,
-                value.status,
+            tx.create_vqueue_entry_status(
+                &EntryContext {
+                    qid: &qid,
+                    target: &EntryTargetRef::Service {
+                        scope: None,
+                        service: "test",
+                        handler: "handler",
+                    },
+                },
+                EntryStateRef::from_value(stage, &key, &value),
             );
         } else {
             // NOT IN must retain the stage-scan path; these rows are absent
@@ -277,31 +292,75 @@ async fn vqueue_entry_id_point_query_and_not_in_fallback() {
         .iter()
         .map(|key| key.entry_id().display(qid.partition_key()).to_string())
         .collect::<Vec<_>>();
-    let got = select_entry_ids(
-        &mut engine,
-        &format!(
-            "SELECT entry_id FROM sys_vqueues WHERE entry_id IN ('{}', '{}', '{}') AND stage = 'inbox'",
-            entry_ids[0], entry_ids[1], entry_ids[2]
-        ),
-    )
-    .await;
-
-    let mut expected = vec![entry_ids[0].clone(), entry_ids[1].clone()];
-    expected.sort();
-    assert_eq!(got, expected);
-
-    let excluded = entry_ids[0..4]
+    let canonical_ids = keys
         .iter()
-        .map(|entry_id| format!("'{entry_id}'"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let got = select_entry_ids(
-        &mut engine,
-        &format!("SELECT entry_id FROM sys_vqueues WHERE entry_id NOT IN ({excluded})"),
-    )
-    .await;
+        .map(|key| key.to_canonical_entry_id(qid.partition_key()).to_string())
+        .collect::<Vec<_>>();
+    for (column, ids) in [("entry_id", &entry_ids), ("canonical_id", &canonical_ids)] {
+        let got = select_entry_ids(
+            &mut engine,
+            &format!(
+                "SELECT {column} AS entry_id FROM sys_vqueues WHERE {column} IN ('{}', '{}', '{}') AND stage = 'inbox'",
+                ids[0], ids[1], ids[2]
+            ),
+        )
+        .await;
 
-    let mut expected = vec![entry_ids[4].clone(), entry_ids[5].clone()];
-    expected.sort();
-    assert_eq!(got, expected);
+        let mut expected = vec![ids[0].clone(), ids[1].clone()];
+        expected.sort();
+        assert_eq!(got, expected);
+
+        let excluded = ids[0..4]
+            .iter()
+            .map(|id| format!("'{id}'"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let got = select_entry_ids(
+            &mut engine,
+            &format!(
+                "SELECT {column} AS entry_id FROM sys_vqueues WHERE {column} NOT IN ({excluded})"
+            ),
+        )
+        .await;
+
+        let mut expected = vec![ids[4].clone(), ids[5].clone()];
+        expected.sort();
+        assert_eq!(got, expected);
+    }
+
+    assert_eq!(
+        select_entry_ids(
+            &mut engine,
+            &format!(
+                "SELECT entry_id FROM sys_vqueues WHERE canonical_id = '{}' AND entry_id = '{}'",
+                canonical_ids[0], entry_ids[0]
+            ),
+        )
+        .await,
+        vec![entry_ids[0].clone()]
+    );
+
+    let wrong_sequence = keys[0]
+        .to_canonical_entry_id(qid.partition_key())
+        .with_seq(Seq::MAX);
+    assert!(
+        select_entry_ids(
+            &mut engine,
+            &format!("SELECT entry_id FROM sys_vqueues WHERE canonical_id = '{wrong_sequence}'"),
+        )
+        .await
+        .is_empty()
+    );
+
+    assert!(
+        select_entry_ids(
+            &mut engine,
+            &format!(
+                "SELECT entry_id FROM sys_vqueues WHERE entry_id = '{}' AND canonical_id = '{wrong_sequence}'",
+                entry_ids[0]
+            ),
+        )
+        .await
+        .is_empty()
+    );
 }

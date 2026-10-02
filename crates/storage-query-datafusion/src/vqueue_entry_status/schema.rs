@@ -130,4 +130,8 @@ define_table!(sys_vqueue_entry_status(
 
     /// Total time spent blocked on deployment concurrency capacity across all attempts.
     total_blocked_on_deployment_concurrency: DataType::Duration,
+
+    /// Canonical identifier of the entry: its resource ID followed by `_` and
+    /// its sequence number.
+    canonical_id: DataType::LargeUtf8,
 ));

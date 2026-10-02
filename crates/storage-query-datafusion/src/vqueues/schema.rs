@@ -86,4 +86,8 @@ define_table!(sys_vqueues(
     /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
     /// `id` in `sys_deployment` for dynamic filter pushdown.
     deployment: DataType::LargeUtf8,
+
+    /// Canonical identifier of the entry: its resource ID followed by `_` and
+    /// its sequence number.
+    canonical_id: DataType::LargeUtf8,
 ));
