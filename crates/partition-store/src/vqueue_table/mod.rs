@@ -47,7 +47,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_types::identifiers::BaseEntryId;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueId};
+use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId};
 
 use self::entry::entry_status_header_from_raw;
 use self::inbox::InboxKeyRef;
@@ -404,10 +404,13 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         self.raw_put_cf(KeyKind::VQueueInput, key_buffer, value);
     }
 
-    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, seq: impl Into<Seq>, id: &EntryId) {
+    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, id: &CanonicalEntryId) {
         let key_buf = {
-            let seq = seq.into();
-            let key = InputPayloadKeyRef::builder().qid(qid).seq(&seq).id(id);
+            let seq = id.seq();
+            let key = InputPayloadKeyRef::builder()
+                .qid(qid)
+                .seq(&seq)
+                .id(id.as_entry_id());
             let key_buf = self.cleared_key_buffer_mut(key.serialized_length());
             key.serialize_to(key_buf);
             key_buf.split()
