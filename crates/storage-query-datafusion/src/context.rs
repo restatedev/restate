@@ -111,10 +111,12 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
 }
 
 impl DataFusionQueryEngine<ClusterOperator> {
+    /// Registers cluster tables and resolves unqualified queries in `restate.cluster`.
     pub async fn with_cluster_tables(
         env: DataFusionEnv,
         tables: ClusterTables,
     ) -> Result<Arc<dyn QueryEngine<ClusterOperator>>, BuildError> {
+        let env = env.with_default_catalog_and_schema("restate", "cluster");
         Self::with_tables(env, None, tables).await
     }
 }
@@ -190,11 +192,149 @@ mod tests {
     use datafusion::arrow::util::display::array_value_to_string;
     use datafusion::prelude::SessionContext;
     use futures::TryStreamExt;
+    use tokio::sync::watch;
 
+    use restate_core::MetadataKind;
+    use restate_core::test_env::TestCoreEnv;
     use restate_storage_query_api::errors::SessionError;
     use restate_storage_query_api::{AdminUser, QueryEngine, QueryOptions, SessionOptions};
+    use restate_types::Version;
+    use restate_types::cluster::cluster_state::LegacyClusterState;
 
-    use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter};
+    use crate::catalog::{ClusterTables, RegisterTable, UserTables};
+    use crate::remote_query_scanner_manager::RemoteScannerManager;
+
+    use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter, SelectPartitionsFromMetadata};
+
+    #[restate_core::test]
+    async fn cluster_namespace_preserves_unqualified_queries_and_user_catalog_isolation() {
+        let core = TestCoreEnv::create_with_single_node(1, 1).await;
+        core.metadata
+            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
+            .await
+            .unwrap();
+        core.metadata
+            .wait_for_version(MetadataKind::Logs, Version::MIN)
+            .await
+            .unwrap();
+        let partition_count = core.metadata.partition_table_snapshot().len();
+        let log_count = core.metadata.logs_snapshot().iter().count();
+        assert!(partition_count > 0 && log_count > 0);
+
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let scanners = RemoteScannerManager::local_only(core.metadata.clone());
+        let (_tx, cluster_state) = watch::channel(Arc::new(LegacyClusterState::empty()));
+        let cluster = DataFusionQueryEngine::with_cluster_tables(
+            env.clone(),
+            ClusterTables::new(Default::default(), cluster_state.clone(), scanners.clone()),
+        )
+        .await
+        .unwrap();
+        let user = DataFusionQueryEngine::with_user_tables(
+            env.clone(),
+            None,
+            UserTables::new(SelectPartitionsFromMetadata, scanners.clone()),
+        )
+        .await
+        .unwrap();
+
+        async fn query_value<T>(engine: &dyn QueryEngine<T>, sql: &str) -> String {
+            let session = engine.create_session(SessionOptions::default()).unwrap();
+            let batches: Vec<_> = session
+                .execute(sql, QueryOptions {})
+                .await
+                .unwrap()
+                .stream
+                .try_collect()
+                .await
+                .unwrap();
+            assert_eq!(
+                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                1
+            );
+            array_value_to_string(batches[0].column(0), 0).unwrap()
+        }
+
+        for table in [
+            "partitions",
+            "cluster.partitions",
+            "restate.cluster.partitions",
+        ] {
+            assert_eq!(
+                query_value(cluster.as_ref(), &format!("SELECT COUNT(*) FROM {table}")).await,
+                partition_count.to_string()
+            );
+        }
+        for table in ["logs_tail_segments", "restate.cluster.logs_tail_segments"] {
+            assert_eq!(
+                query_value(cluster.as_ref(), &format!("SELECT COUNT(*) FROM {table}")).await,
+                log_count.to_string()
+            );
+        }
+
+        let schema_query = "SELECT DISTINCT table_schema FROM information_schema.tables \
+            WHERE table_catalog = 'restate' AND table_schema <> 'information_schema'";
+        assert_eq!(query_value(cluster.as_ref(), schema_query).await, "cluster");
+        assert_eq!(query_value(user.as_ref(), schema_query).await, "public");
+
+        let cluster_session = cluster.create_session(SessionOptions::default()).unwrap();
+        for table in ["public.partitions", "restate.public.partitions"] {
+            assert!(
+                cluster_session
+                    .execute(&format!("SELECT * FROM {table}"), QueryOptions {})
+                    .await
+                    .is_err()
+            );
+        }
+        let user_session = user.create_session(SessionOptions::default()).unwrap();
+        assert!(
+            user_session
+                .execute("SELECT * FROM restate.cluster.partitions", QueryOptions {})
+                .await
+                .is_err()
+        );
+
+        // Cluster registration must keep its namespace even in a public-default session.
+        let mixed = SessionContext::new_with_state(env.build_session_state().unwrap());
+        UserTables::new(SelectPartitionsFromMetadata, scanners.clone())
+            .register(&mixed)
+            .await
+            .unwrap();
+        // A conflicting public name must neither be overwritten nor bind into the cluster view.
+        mixed
+            .sql("CREATE VIEW logs AS SELECT -1 AS marker")
+            .await
+            .unwrap();
+        let public = mixed.catalog("restate").unwrap().schema("public").unwrap();
+        let mut public_before = public.table_names();
+        public_before.sort();
+        ClusterTables::new(Default::default(), cluster_state, scanners)
+            .register(&mixed)
+            .await
+            .unwrap();
+        let mut public_after = public.table_names();
+        public_after.sort();
+        assert_eq!(public_after, public_before);
+
+        for (sql, expected) in [
+            ("SELECT marker FROM logs", "-1".to_owned()),
+            (
+                "SELECT COUNT(*) FROM cluster.partitions",
+                partition_count.to_string(),
+            ),
+            (
+                "SELECT COUNT(*) FROM restate.cluster.logs_tail_segments",
+                log_count.to_string(),
+            ),
+        ] {
+            let batches = mixed.sql(sql).await.unwrap().collect().await.unwrap();
+            assert_eq!(
+                array_value_to_string(batches[0].column(0), 0).unwrap(),
+                expected,
+                "{sql}"
+            );
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn sessions_share_catalog_and_admission_but_reject_runtime_mutations() {
