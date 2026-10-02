@@ -12,6 +12,8 @@ on:
   push:
     branches:
       - main
+      - release/*
+      # Keep CI on existing maintenance branches during the naming transition.
       - release-*
 
 jobs:
