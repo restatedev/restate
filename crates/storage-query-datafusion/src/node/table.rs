@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::TableReference;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -27,25 +26,22 @@ use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 use super::row::append_node_row;
-use super::schema::NodeBuilder;
+use super::schema::{NodeBuilder, NodeTable};
 
-pub fn register_self(
-    ctx: &SessionContext,
-    metadata: Metadata,
-    cluster_state: ClusterState,
-) -> datafusion::common::Result<()> {
-    let nodes_table = GenericTableProvider::new(
-        NodeBuilder::schema(),
-        Arc::new(NodesScanner {
-            metadata,
-            cluster_state,
-        }),
-    );
-    ctx.register_table(
-        TableReference::full("restate", "cluster", "nodes"),
-        Arc::new(nodes_table),
-    )
-    .map(|_| ())
+impl NodeTable {
+    pub(crate) fn create_provider(
+        metadata: Metadata,
+        cluster_state: ClusterState,
+    ) -> Arc<dyn TableProvider> {
+        let nodes_table = GenericTableProvider::new(
+            NodeBuilder::schema(),
+            Arc::new(NodesScanner {
+                metadata,
+                cluster_state,
+            }),
+        );
+        Arc::new(nodes_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]

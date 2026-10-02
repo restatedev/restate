@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use codederror::CodedError;
-use datafusion::catalog::CatalogProviderList;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
@@ -25,14 +24,14 @@ use restate_core::Metadata;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
 use restate_storage_query_api::{
     AdminUser, ClusterOperator, NodeWarnings, QueryEngine, QueryOptions, QueryResult, QuerySession,
-    SessionOptions,
+    SessionOptions, SessionTable,
 };
 use restate_types::config::ThrottlingOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 
-use crate::catalog::{ClusterTables, RegisterTable, UserTables};
+use crate::catalog::{ClusterTables, RegisterTable, TableInventoryBuilder, UserTables};
 use crate::environment::DataFusionEnv;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
@@ -49,10 +48,10 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError>;
 }
 
-/// Shared runtime, initialized catalog, and session-admission policy.
+/// Shared provider inventory, default SQL exposure, and session-admission policy.
 pub struct DataFusionQueryEngine<T> {
     env: DataFusionEnv,
-    catalog: Arc<dyn CatalogProviderList>,
+    tables: Vec<SessionTable>,
     rate_limiter: Option<RateLimiter>,
     _phantom: PhantomData<T>,
 }
@@ -71,10 +70,11 @@ impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
         }
-        let mut state = self.env.build_session_state()?;
-        state.register_catalog_list(Arc::clone(&self.catalog));
+        let ctx = self
+            .env
+            .create_session(opts.tables.as_deref().unwrap_or(&self.tables))?;
         Ok(Arc::new(RestateQuerySession {
-            ctx: SessionContext::new_with_state(state),
+            ctx,
             _opts: opts,
             _phantom: PhantomData,
         }))
@@ -122,24 +122,32 @@ impl DataFusionQueryEngine<ClusterOperator> {
 }
 
 impl<T: Send + Sync + 'static> DataFusionQueryEngine<T> {
-    /// Registers a catalog once. Local source capabilities must already be registered separately.
+    /// Registers providers once. Local source capabilities must already be registered separately.
     pub async fn with_tables<K: RegisterTable>(
         env: DataFusionEnv,
         rate_limit: Option<&ThrottlingOptions>,
         tables: K,
     ) -> Result<Arc<dyn QueryEngine<T>>, BuildError> {
-        let state = env.build_session_state()?;
-        let catalog = Arc::clone(state.catalog_list());
-        let bootstrap = SessionContext::new_with_state(state);
-        tables.register(&bootstrap).await?;
+        let mut inventory = TableInventoryBuilder::new(&env);
+        tables.register(&mut inventory).await?;
+        let tables = inventory.finish();
+        Ok(Self::from_inventory(env, rate_limit, tables))
+    }
+
+    /// Creates an engine over an existing inventory. Unavailable selected identities are omitted.
+    pub fn from_inventory(
+        env: DataFusionEnv,
+        rate_limit: Option<&ThrottlingOptions>,
+        tables: Vec<SessionTable>,
+    ) -> Arc<dyn QueryEngine<T>> {
         let rate_limiter = rate_limit
             .map(|limit| RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock));
-        Ok(Arc::new(Self {
+        Arc::new(Self {
             env,
-            catalog,
+            tables,
             rate_limiter,
             _phantom: PhantomData,
-        }))
+        })
     }
 }
 
@@ -197,11 +205,14 @@ mod tests {
     use restate_core::MetadataKind;
     use restate_core::test_env::TestCoreEnv;
     use restate_storage_query_api::errors::SessionError;
-    use restate_storage_query_api::{AdminUser, QueryEngine, QueryOptions, SessionOptions};
+    use restate_storage_query_api::{
+        AdminUser, QueryEngine, QueryOptions, SessionOptions, SessionTable,
+    };
     use restate_types::Version;
     use restate_types::cluster::cluster_state::LegacyClusterState;
 
-    use crate::catalog::{ClusterTables, RegisterTable, UserTables};
+    use crate::catalog::{ClusterTables, UserTables};
+    use crate::partition::schema::PartitionTable;
     use crate::remote_query_scanner_manager::RemoteScannerManager;
 
     use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter, SelectPartitionsFromMetadata};
@@ -294,27 +305,17 @@ mod tests {
                 .is_err()
         );
 
-        // Cluster registration must keep its namespace even in a public-default session.
-        let mixed = SessionContext::new_with_state(env.build_session_state().unwrap());
-        UserTables::new(SelectPartitionsFromMetadata, scanners.clone())
-            .register(&mixed)
-            .await
-            .unwrap();
-        // A conflicting public name must neither be overwritten nor bind into the cluster view.
+        // Reuse the prebound view under an alias without exposing its base tables.
+        let selection = vec![
+            SessionTable::for_table::<PartitionTable>("restate.cluster.partitions"),
+            SessionTable::new("logs_tail_segments", "restate.public.tail"),
+        ];
+        let mixed = env.create_session(&selection).unwrap();
         mixed
             .sql("CREATE VIEW logs AS SELECT -1 AS marker")
             .await
             .unwrap();
-        let public = mixed.catalog("restate").unwrap().schema("public").unwrap();
-        let mut public_before = public.table_names();
-        public_before.sort();
-        ClusterTables::new(Default::default(), cluster_state, scanners)
-            .register(&mixed)
-            .await
-            .unwrap();
-        let mut public_after = public.table_names();
-        public_after.sort();
-        assert_eq!(public_after, public_before);
+        assert!(mixed.table_provider("restate.cluster.logs").await.is_err());
 
         for (sql, expected) in [
             ("SELECT marker FROM logs", "-1".to_owned()),
@@ -322,10 +323,7 @@ mod tests {
                 "SELECT COUNT(*) FROM cluster.partitions",
                 partition_count.to_string(),
             ),
-            (
-                "SELECT COUNT(*) FROM restate.cluster.logs_tail_segments",
-                log_count.to_string(),
-            ),
+            ("SELECT COUNT(*) FROM tail", log_count.to_string()),
         ] {
             let batches = mixed.sql(sql).await.unwrap().collect().await.unwrap();
             assert_eq!(
@@ -334,25 +332,58 @@ mod tests {
                 "{sql}"
             );
         }
+        let selected = user
+            .create_session(SessionOptions {
+                tables: Some(selection),
+            })
+            .unwrap();
+        let batches: Vec<_> = selected
+            .execute("SELECT COUNT(*) FROM tail", QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            array_value_to_string(batches[0].column(0), 0).unwrap(),
+            log_count.to_string()
+        );
+        assert!(
+            selected
+                .execute("SELECT * FROM state", QueryOptions {})
+                .await
+                .is_err()
+        );
+        assert!(
+            user_session
+                .execute("SELECT * FROM tail", QueryOptions {})
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test(start_paused = true)]
-    async fn sessions_share_catalog_and_admission_but_reject_runtime_mutations() {
+    async fn sessions_share_providers_and_admission_but_reject_runtime_mutations() {
         let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
         let first = env.build_session_state().unwrap();
         let second = env.build_session_state().unwrap();
         assert_ne!(first.session_id(), second.session_id());
         assert!(Arc::ptr_eq(first.runtime_env(), second.runtime_env()));
-        let catalog = Arc::clone(first.catalog_list());
         let bootstrap = SessionContext::new_with_state(first);
         bootstrap
             .sql("CREATE VIEW total AS SELECT SUM(n) AS n FROM (VALUES (1), (2), (3)) AS t(n)")
             .await
             .unwrap();
+        env.register_provider(
+            "total".into(),
+            bootstrap.table_provider("total").await.unwrap(),
+        )
+        .unwrap();
         drop(bootstrap);
         let manager = DataFusionQueryEngine::<AdminUser> {
             env,
-            catalog,
+            tables: vec![SessionTable::new("total", "total")],
             rate_limiter: Some(RateLimiter::new(
                 gardal::Limit::per_hour(NonZeroU32::new(1).unwrap())
                     .with_burst(NonZeroU32::new(2).unwrap()),
