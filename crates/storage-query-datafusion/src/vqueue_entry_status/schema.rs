@@ -18,7 +18,9 @@ define_table!(sys_vqueue_entry_status(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 
-    /// Identifier of the entry.
+    /// Resource identifier of the entry: an invocation ID or a state mutation
+    /// ID, without its sequence number. Use `canonical_id` to distinguish
+    /// incarnations of the same resource.
     ///
     /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
     /// `id` in `sys_invocation_status` for dynamic filter pushdown.
@@ -130,4 +132,8 @@ define_table!(sys_vqueue_entry_status(
 
     /// Total time spent blocked on deployment concurrency capacity across all attempts.
     total_blocked_on_deployment_concurrency: DataType::Duration,
+
+    /// Canonical identifier of the entry: its resource ID followed by `_` and
+    /// its sequence number.
+    canonical_id: DataType::LargeUtf8,
 ));
