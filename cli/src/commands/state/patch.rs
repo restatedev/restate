@@ -17,7 +17,8 @@ use restate_cli_util::{CliContext, c_println, c_title};
 
 use crate::cli_env::CliEnv;
 use crate::commands::state::util::{
-    as_json, compute_version, from_json, get_current_state, pretty_print_json, update_state,
+    as_json, compute_version, from_json, get_current_state, pretty_print_json, state_get_command,
+    update_state,
 };
 use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
@@ -52,6 +53,11 @@ pub struct Patch {
     /// Virtual object or workflow key
     key: String,
 
+    /// Scope of the virtual object or workflow, as set by the scoped ingress endpoint
+    /// (`/restate/scope/<scope>/...`). Omit to target the unscoped instance
+    #[clap(long)]
+    scope: Option<String>,
+
     /// RFC 6902 JSON Patch, applied to the JSON object of state key to value, e.g.
     /// `[{"op": "add", "path": "/items", "value": []}]` sets the state key `items`
     #[arg(short, long)]
@@ -65,7 +71,8 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     let patch = serde_json::from_str::<json_patch::Patch>(&opts.patch)
         .map_err(|e| anyhow::anyhow!("Parsing JSON patch: {}", e))?;
 
-    let current_state = get_current_state(&env, &opts.service, &opts.key, false).await?;
+    let current_state =
+        get_current_state(&env, &opts.service, &opts.key, opts.scope.as_deref(), false).await?;
     let current_version = compute_version(&current_state);
 
     let old_state = as_json(current_state, opts.binary)?;
@@ -79,6 +86,7 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     f.detail(
         "state",
         &[
+            ("scope", Field::new(opts.scope.as_deref())),
             ("service", Field::new(opts.service.clone())),
             ("key", Field::new(opts.key.clone())),
             ("force", Field::new(opts.force)),
@@ -114,14 +122,22 @@ pub async fn patch(State(env): State<CliEnv>, opts: &Patch) -> Result<()> {
     } else {
         Some(current_version)
     };
-    update_state(&env, version, &opts.service, &opts.key, modified_state).await?;
+    update_state(
+        &env,
+        version,
+        &opts.service,
+        &opts.key,
+        opts.scope.as_deref(),
+        modified_state,
+    )
+    .await?;
 
     if !json {
         c_println!();
         c_println!("Successfully submitted state update.");
     }
     f.next_step(
-        &format!("restate state get {} {}", opts.service, opts.key),
+        &state_get_command(&opts.service, &opts.key, opts.scope.as_deref()),
         "check the state once the mutation is processed",
         IncludeFormatting::Yes,
     );
