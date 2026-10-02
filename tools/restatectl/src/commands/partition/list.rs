@@ -297,9 +297,23 @@ fn render_mode(
             .add_attribute(Attribute::Bold),
         (RunMode::Leader, true, true) => Cell::new("Leader").fg(Color::Red),
         (RunMode::Follower, true, _) => Cell::new("Follower"),
-        (_, false, false) => Cell::new(format!("{detailed}->{planned}")).fg(Color::Magenta),
-        (_, false, true) => Cell::new(format!("{detailed}->{planned}")).fg(Color::Red),
+        (_, false, outdated) => Cell::new(format!(
+            "{}->{}",
+            detailed_mode_label(detailed),
+            detailed_mode_label(planned.into())
+        ))
+        .fg(if outdated { Color::Red } else { Color::Magenta }),
         (RunMode::Unknown, _, _) => Cell::new("UNKNOWN").fg(Color::Red),
+    }
+}
+
+fn detailed_mode_label(mode: DetailedRunMode) -> &'static str {
+    match mode {
+        DetailedRunMode::Unknown => "UNKNOWN",
+        DetailedRunMode::Candidate => "Candidate",
+        DetailedRunMode::Follower => "Follower",
+        DetailedRunMode::BecomingLeader => "Becoming Leader",
+        DetailedRunMode::Leader => "Leader",
     }
 }
 
