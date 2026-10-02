@@ -220,6 +220,11 @@ where
         // Killed/Failed are known upfront, End/Completed are refined from the output below
         let mut end_status = match &reason {
             EndInvocationReason::Killed => vqueue_table::Status::Killed,
+            EndInvocationReason::Failed(err)
+                if err.code == restate_types::errors::codes::ABORTED =>
+            {
+                vqueue_table::Status::Cancelled
+            }
             EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
             EndInvocationReason::End | EndInvocationReason::Completed(_) => {
                 vqueue_table::Status::Succeeded

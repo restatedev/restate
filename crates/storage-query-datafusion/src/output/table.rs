@@ -83,11 +83,9 @@ impl ScanLocalPartition for OutputScanner {
 
 impl From<InvocationIdFilter> for ScanOutputTableRange {
     fn from(value: InvocationIdFilter) -> Self {
-        if let Some(selection) = value.invocation_ids {
-            let (start, last) = selection.bounds();
-            ScanOutputTableRange::InvocationId(start..=last)
-        } else {
-            ScanOutputTableRange::PartitionKey(value.partition_keys)
+        match value.invocation_ids {
+            Some(selection) => ScanOutputTableRange::InvocationIdSet(selection.ids),
+            None => ScanOutputTableRange::PartitionKey(value.partition_keys),
         }
     }
 }

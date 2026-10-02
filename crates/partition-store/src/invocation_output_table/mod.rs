@@ -8,7 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
+use std::collections::BTreeSet;
+use std::ops::ControlFlow;
+
+use bytes::BytesMut;
+use futures::FutureExt;
+use rocksdb::ReadOptions;
+
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::output_table::{
     ReadInvocationOutputTable, ScanInvocationOutputTable, ScanOutputTableRange,
     WriteInvocationOutputTable,
@@ -21,7 +28,7 @@ use restate_types::sharding::{PartitionKey, WithPartitionKey};
 
 use crate::TableKind::InvocationOutput;
 use crate::error::break_on_err;
-use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 define_table_key!(
@@ -33,26 +40,36 @@ define_table_key!(
     )
 );
 
+impl InvocationOutputKey {
+    pub const fn serialized_length_fixed() -> usize {
+        KeyKind::SERIALIZED_LENGTH
+            + std::mem::size_of::<PartitionKey>()
+            + InvocationUuid::RAW_BYTES_LEN
+    }
+}
+
+/// Maximum number of invocation-output keys passed to one RocksDB multi-get call.
+/// Kept low since each value holds a (potentially large) invocation output payload.
+const INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE: usize = 25;
+
+#[inline]
+fn create_invocation_output_key(invocation_id: &InvocationId) -> InvocationOutputKey {
+    InvocationOutputKey {
+        partition_key: invocation_id.partition_key(),
+        invocation_uuid: invocation_id.invocation_uuid(),
+    }
+}
+
 fn put_output<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
     output_message: &ResponseResult,
 ) -> Result<()> {
-    let key = InvocationOutputKey {
-        partition_key: invocation_id.partition_key(),
-        invocation_uuid: invocation_id.invocation_uuid(),
-    };
-
-    storage.put_kv_proto(key, output_message)
+    storage.put_kv_proto(create_invocation_output_key(invocation_id), output_message)
 }
 
 fn delete_output<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) -> Result<()> {
-    let key = InvocationOutputKey {
-        partition_key: invocation_id.partition_key(),
-        invocation_uuid: invocation_id.invocation_uuid(),
-    };
-
-    storage.delete_key(&key)
+    storage.delete_key(&create_invocation_output_key(invocation_id))
 }
 
 fn get_invocation_output<S: StorageAccess>(
@@ -60,12 +77,92 @@ fn get_invocation_output<S: StorageAccess>(
     invocation_id: &InvocationId,
 ) -> Result<Option<ResponseResult>> {
     let _x = RocksDbReadPerfGuard::new("get-output");
-    let outbox_key = InvocationOutputKey {
-        partition_key: invocation_id.partition_key(),
-        invocation_uuid: invocation_id.invocation_uuid(),
-    };
+    storage.get_value_proto(create_invocation_output_key(invocation_id))
+}
 
-    storage.get_value_proto(outbox_key)
+fn multi_get_invocation_output<F>(
+    store: &PartitionStore,
+    ids: BTreeSet<InvocationId>,
+    mut f: F,
+) -> impl Future<Output = Result<()>> + Send
+where
+    F: FnMut((InvocationId, ResponseResult)) -> ControlFlow<()> + Send + Sync + 'static,
+{
+    const KEY_LEN: usize = InvocationOutputKey::serialized_length_fixed();
+
+    let rocksdb = store.partition_db().rocksdb().clone();
+    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
+
+    async move {
+        rocksdb
+            .run_background_read_op(
+                "df-invocation-output",
+                StorageTaskKind::MultiGet,
+                Priority::Low,
+                move |raw_db| -> Result<()> {
+                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
+                        return Err(StorageError::Generic(anyhow::anyhow!(
+                            "column family {cf_name} not found for invocation-output multi-get"
+                        )));
+                    };
+
+                    let batch_capacity = ids.len().min(INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE);
+                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+
+                    let mut readopts = ReadOptions::default();
+                    readopts.set_async_io(true);
+                    readopts.set_optimize_multiget_for_io(true);
+
+                    let mut ids = ids.into_iter();
+                    loop {
+                        key_buf.clear();
+                        batch_ids.clear();
+
+                        for id in ids.by_ref().take(INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE) {
+                            EncodeTableKey::serialize_to(
+                                &create_invocation_output_key(&id),
+                                &mut key_buf,
+                            );
+                            batch_ids.push(id);
+                        }
+
+                        if batch_ids.is_empty() {
+                            break;
+                        }
+
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized InvocationOutputKey should have KEY_LEN"
+                        );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
+
+                        for (id, result) in batch_ids.iter().zip(results) {
+                            let Some(value) =
+                                result.map_err(|e| StorageError::Generic(e.into()))?
+                            else {
+                                continue;
+                            };
+                            let output = ResponseResult::decode(&mut value.as_ref())?;
+
+                            if f((*id, output)).is_break() {
+                                return Ok(());
+                            }
+                        }
+
+                        if batch_ids.len() < INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE {
+                            break;
+                        }
+                    }
+
+                    Ok(())
+                },
+            )
+            .await
+            .map_err(|_| StorageError::OperationalError)?
+    }
 }
 
 impl ReadInvocationOutputTable for PartitionStore {
@@ -79,12 +176,16 @@ impl ReadInvocationOutputTable for PartitionStore {
 
 impl ScanInvocationOutputTable for PartitionStore {
     fn for_each_output<
-        F: FnMut((InvocationId, ResponseResult)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
+        F: FnMut((InvocationId, ResponseResult)) -> ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
         range: ScanOutputTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
+        if let ScanOutputTableRange::InvocationIdSet(ids) = range {
+            return Ok(multi_get_invocation_output(self, ids, f).boxed());
+        }
+
         let scan = match range {
             ScanOutputTableRange::PartitionKey(partition_key) => {
                 TableScan::ScanPartitionKeyRange::<InvocationOutputKeyBuilder>(partition_key)
@@ -100,25 +201,29 @@ impl ScanInvocationOutputTable for PartitionStore {
 
                 TableScan::RangeInclusive(start, end)
             }
+            ScanOutputTableRange::InvocationIdSet(_) => unreachable!("handled above"),
         };
 
-        self.iterator_for_each(
-            "df-invocation-output",
-            Priority::Low,
-            scan,
-            move |(mut key, mut value)| {
-                let output_key = break_on_err(InvocationOutputKey::deserialize_from(&mut key))?;
-                let (partition_key, invocation_uuid) = output_key.split();
-                let output = break_on_err(ResponseResult::decode(&mut value))?;
+        let scan_fut = self
+            .iterator_for_each(
+                "df-invocation-output",
+                Priority::Low,
+                scan,
+                move |(mut key, mut value)| {
+                    let output_key = break_on_err(InvocationOutputKey::deserialize_from(&mut key))?;
+                    let (partition_key, invocation_uuid) = output_key.split();
+                    let output = break_on_err(ResponseResult::decode(&mut value))?;
 
-                f((
-                    InvocationId::from_parts(partition_key, invocation_uuid),
-                    output,
-                ))
-                .map_break(Ok)
-            },
-        )
-        .map_err(|_| StorageError::OperationalError)
+                    f((
+                        InvocationId::from_parts(partition_key, invocation_uuid),
+                        output,
+                    ))
+                    .map_break(Ok)
+                },
+            )
+            .map_err(|_| StorageError::OperationalError)?;
+
+        Ok(scan_fut.boxed())
     }
 }
 

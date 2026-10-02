@@ -87,11 +87,14 @@ async fn get_outputs() {
         )
     );
 
-    // Exercises the invocation id pushdown, which scans a narrow key range instead of
-    // the whole partition.
+    // Exercises the invocation id pushdown, which multi-gets the requested ids instead of
+    // scanning the whole partition. Ids without a stored output are skipped.
+    let missing_id = InvocationId::mock_random();
     let records = query(
         &engine,
-        &format!("SELECT id, result FROM sys_invocation_output WHERE id = '{success_id}'"),
+        &format!(
+            "SELECT id, result FROM sys_invocation_output WHERE id IN ('{success_id}', '{missing_id}')"
+        ),
     )
     .await;
 
