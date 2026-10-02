@@ -1404,14 +1404,14 @@ where
             ExitStatus::Killed => Status::Killed,
             ExitStatus::Failure((code, message)) => {
                 if code == restate_types::errors::codes::ABORTED {
-                    // If message is non None, it means this failure message is an embedded result
+                    // If message is non None, it means this failure message is an `inlined` result
                     // and in that case we must check the message body to detect if it's cancelled
                     // of killed.
                     //
-                    // If None, it must be a Failure, because otherwise it would have
-                    // ExitStatus::Cancelled or Killed, if it was cancelled, or killed
+                    // If None, it must be a Canceled, because otherwise it would have
+                    // ExitStatus::Killed
                     match message {
-                        None => Status::Failed,
+                        None => Status::Cancelled,
                         Some(message) => {
                             // Special handling for cancel/kill. Definitely not ideal, but the current
                             // design leaves me with no other options.

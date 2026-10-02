@@ -219,6 +219,7 @@ impl PersistedFeatures {
                 .then_some("preflight_invocation_termination_retention"),
             self.inconsistent_state_mutation_cleanup
                 .then_some("inconsistent_state_mutation_cleanup"),
+            self.write_output_table.then_some("write_output_table"),
         ]
         .into_iter()
         .flatten()

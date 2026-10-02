@@ -217,48 +217,62 @@ where
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
-        let output = match &reason {
-            EndInvocationReason::Completed(output) => match &output.result {
-                OutputResult::Success(bytes) => ResponseResult::Success(bytes.clone()),
-                OutputResult::Failure(failure) => ResponseResult::Failure(failure.clone().into()),
-            },
-            EndInvocationReason::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
-            EndInvocationReason::Failed(error) => ResponseResult::Failure(error.clone()),
-            EndInvocationReason::End => {
-                // If we receive and End. It means the output has already
-                // been written to the journal table. We need to load this out
-                let Some(output) = response_cache.read_last_output_entry_result(ctx).await? else {
-                    warn!(
-                        "Invocation completed without an output entry. This is not supported yet."
-                    );
-                    return Ok(());
-                };
-                output
-            }
-        };
-
-        if is_write_output_table_enabled {
-            ctx.storage.put_output(&invocation_id, &output)?;
-        }
-
-        let end_status = match &reason {
+        // Killed/Failed are known upfront, End/Completed are refined from the output below
+        let mut end_status = match &reason {
             EndInvocationReason::Killed => vqueue_table::Status::Killed,
             EndInvocationReason::Failed(_) => vqueue_table::Status::Failed,
-            EndInvocationReason::End | EndInvocationReason::Completed(_) => match &output {
-                ResponseResult::Success(_) => vqueue_table::Status::Succeeded,
-                ResponseResult::Failure(err) => {
-                    if err.code == restate_types::errors::codes::ABORTED {
-                        vqueue_table::Status::Cancelled
-                    } else {
-                        vqueue_table::Status::Failed
-                    }
-                }
-            },
+            EndInvocationReason::End | EndInvocationReason::Completed(_) => {
+                vqueue_table::Status::Succeeded
+            }
         };
 
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
+            let output = match &reason {
+                EndInvocationReason::Completed(output) => match &output.result {
+                    OutputResult::Success(bytes) => ResponseResult::Success(bytes.clone()),
+                    OutputResult::Failure(failure) => {
+                        ResponseResult::Failure(failure.clone().into())
+                    }
+                },
+                EndInvocationReason::Killed => ResponseResult::Failure(KILLED_INVOCATION_ERROR),
+                EndInvocationReason::Failed(error) => ResponseResult::Failure(error.clone()),
+                EndInvocationReason::End => {
+                    // If we receive and End. It means the output has already
+                    // been written to the journal table. We need to load this out
+                    //
+                    // todo: If we return now because an output was not found this means this invocation
+                    // will always remain in "invoked" state. This is specially bad for VOs because the VO
+                    // will remain locked forever.
+                    // Maybe it's possible to synthesis an empty (Void) output here instead of returning Ok(())
+                    let Some(output) = response_cache.read_last_output_entry_result(ctx).await?
+                    else {
+                        warn!(
+                            "Invocation completed without an output entry. This is not supported yet."
+                        );
+                        return Ok(());
+                    };
+                    output
+                }
+            };
+
+            if is_write_output_table_enabled && !completion_retention.is_zero() {
+                ctx.storage.put_output(&invocation_id, &output)?;
+            }
+
+            if let (
+                EndInvocationReason::End | EndInvocationReason::Completed(_),
+                ResponseResult::Failure(err),
+            ) = (&reason, &output)
+            {
+                end_status = if err.code == restate_types::errors::codes::ABORTED {
+                    vqueue_table::Status::Cancelled
+                } else {
+                    vqueue_table::Status::Failed
+                };
+            }
+
             let response_result_ref = match is_write_output_table_enabled {
                 // always inline, we can't reference the output entry
                 false => match reason {
@@ -327,14 +341,12 @@ where
                 ctx.do_store_completed_invocation(invocation_id, completed_invocation)?;
             }
         } else {
+            // Just notify Ok, no need to read the output entry
             ctx.emit_invocation_end_span(
                 &invocation_id,
                 &invocation_target,
                 &invocation_metadata.journal_metadata.span_context,
-                match &output {
-                    ResponseResult::Success(_) => Ok(()),
-                    ResponseResult::Failure(err) => Err(err),
-                },
+                Ok(()),
             );
         }
 

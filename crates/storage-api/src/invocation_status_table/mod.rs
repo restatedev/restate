@@ -726,7 +726,7 @@ pub enum ExitStatus {
     // Failure from embedded failures will
     // also hold an error message.
     // todo(azmy): drop the message once we no longer support
-    // embedded Failure result
+    // inlined Failure result
     Failure((InvocationErrorCode, Option<Cow<'static, str>>)),
 }
 
@@ -740,7 +740,7 @@ pub enum CompletionStatus {
 pub enum ResponseResultRef {
     Killed,
     Completed(CompletionStatus),
-    // Embedded success/failure status
+    // Inlined success/failure status
     // Only for backward compatibility
     // with older invocation status
     // (write_result_reference feature disabled)
