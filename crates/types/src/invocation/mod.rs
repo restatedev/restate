@@ -1208,6 +1208,12 @@ pub struct RestartAsNewInvocationRequest {
     pub patch_deployment_id: Option<DeploymentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// Span context of the new invocation, created by the leader proposing this request.
+    /// Absent if proposed by an older leader.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_context: Option<ServiceInvocationSpanContext>,
 }
 
 impl WithInvocationId for RestartAsNewInvocationRequest {

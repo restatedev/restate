@@ -8,22 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use metrics::histogram;
 use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::WriteJournalTable;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{
     EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
-use restate_types::identifiers::InvocationId;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::client::PurgeInvocationResponse;
 use restate_types::invocation::{
     InvocationMutationResponseSink, InvocationTargetType, WorkflowHandlerType,
@@ -32,24 +35,32 @@ use restate_types::sharding::WithPartitionKey;
 use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
+use crate::metric_definitions::PARTITION_CLEANER_PURGE_DELAY;
 use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeCommand<'a> {
     pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// Whether this purge was proposed by the leader's cleaner. A purge is proposed by the cleaner
+    /// if it's self-proposed and has no sink. Admin API uses ingestion client but uses
+    /// Dedup::None, so it won't be considered a cleaner purge.
+    pub is_cleaner_purge: bool,
 }
 
 impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPurgeCommand<'_>
 where
     S: WriteJournalTable
+        + ReadJournalTable
+        + WriteTimerTable
         + ReadInvocationStatusTable
         + ReadVQueueTable
         + WriteVQueueTable
         + WriteLockTable
         + WriteInvocationStatusTable
         + WriteStateTable
+        + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
         + WriteJournalEventsTable,
@@ -59,15 +70,29 @@ where
         let OnPurgeCommand {
             invocation_id,
             response_sink,
+            is_cleaner_purge,
         } = self;
+
+        if is_cleaner_purge {
+            ctx.action_collector.push(Action::CleanerPurgeApplied);
+        }
+
         match ctx.get_invocation_status(invocation_id).await? {
-            InvocationStatus::Completed(CompletedInvocation {
-                ref vqueue_id,
-                invocation_target,
-                journal_metadata,
-                pinned_deployment,
-                ..
-            }) => {
+            InvocationStatus::Completed(completed) => {
+                if is_cleaner_purge && let Some(expiry_time) = completed.completion_expiry_time() {
+                    histogram!(PARTITION_CLEANER_PURGE_DELAY)
+                        .record(MillisSinceEpoch::now().duration_since(expiry_time));
+                }
+
+                let CompletedInvocation {
+                    ref vqueue_id,
+                    invocation_target,
+                    journal_metadata,
+                    pinned_deployment,
+                    idempotency_key,
+                    ..
+                } = completed;
+
                 // delete the vqueue entry information.
                 if let Some(vqueue_id) = vqueue_id {
                     let entry_id = EntryId::from(invocation_id);
@@ -126,6 +151,10 @@ where
                         invocation_id,
                         journal_metadata.length,
                         pinned_service_protocol_version,
+                        InvocationUuid::is_deterministic(
+                            &invocation_target,
+                            idempotency_key.as_deref(),
+                        ),
                     )
                     .await?;
                 }

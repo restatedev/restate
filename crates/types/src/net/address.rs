@@ -331,8 +331,16 @@ mod utoipa_schema {
     use utoipa::openapi::{Object, RefOr, Schema, Type};
 
     impl<P: ListenerPort> ToSchema for AdvertisedAddress<P> {
+        // This is only the prefix of the OpenAPI component name. Because `AdvertisedAddress` is
+        // generic, utoipa appends the schema name of `P` when it registers the component, e.g.
+        // `AdvertisedAddress_HttpIngressPort`. Every port therefore gets its own component, which
+        // is needed because the description and examples in `compose` depend on `P`. The name
+        // contains no dashes, which client generators reject.
+        //
+        // To expose an `AdvertisedAddress<P>` for a new port `P` in the Admin API, derive
+        // `utoipa::ToSchema` for `P`, as `HttpIngressPort` does.
         fn name() -> Cow<'static, str> {
-            format!("AdvertisedAddress-{}", P::NAME).into()
+            "AdvertisedAddress".into()
         }
     }
 

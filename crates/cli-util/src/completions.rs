@@ -12,7 +12,6 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 use clap_complete::{Shell, generate};
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::{c_println, c_success};
@@ -21,12 +20,19 @@ use crate::{c_println, c_success};
 #[macro_export]
 macro_rules! completion_commands {
     ($app_type:ty) => {
-        /// Generate shell completions
+        /// Generate or install shell completions
         #[derive(cling::prelude::Run, cling::prelude::Subcommand, Clone, Debug)]
         pub enum Completions {
-            /// Generate completions to stdout
+            /// Print the completion script for a shell to stdout
             Generate(Generate),
-            /// Install completions automatically to shell configuration
+            /// Write the completion script to the shell's user completion directory
+            ///
+            /// Writes (or overwrites, so it's safe to re-run) the script into
+            /// `~/.local/share/bash-completion/completions` (bash),
+            /// `~/.local/share/zsh/site-functions` or `~/.zsh/completions` (zsh), or
+            /// `~/.config/fish/completions` (fish); no shell config file is edited. For
+            /// PowerShell it prints the script and how to add it to your profile. Elvish is
+            /// not supported: use `generate`.
             Install(Install),
         }
 
@@ -35,7 +41,7 @@ macro_rules! completion_commands {
         )]
         #[cling(run = "run_generate")]
         pub struct Generate {
-            /// Shell to generate completions for (auto-detect if not specified)
+            /// Shell to generate completions for. Detected from $SHELL if omitted, else bash
             #[clap(value_enum)]
             shell: Option<clap_complete::Shell>,
         }
@@ -45,7 +51,7 @@ macro_rules! completion_commands {
         )]
         #[cling(run = "run_install")]
         pub struct Install {
-            /// Shell to install completions for (auto-detect if not specified)
+            /// Shell to install completions for. Detected from $SHELL if omitted, else bash
             #[clap(value_enum)]
             shell: Option<clap_complete::Shell>,
         }
@@ -146,7 +152,11 @@ pub fn generate_completions<T: CompletionProvider>(shell: Option<Shell>) -> Resu
     let binary_name = T::completion_binary_name();
     let mut cmd = T::command();
 
-    generate(detected_shell, &mut cmd, &binary_name, &mut io::stdout());
+    // Render into a buffer and print through the broken-pipe-safe sink, so that
+    // `restate completions generate <shell> | head` doesn't panic on EPIPE.
+    let mut buffer = Vec::new();
+    generate(detected_shell, &mut cmd, &binary_name, &mut buffer);
+    crate::c_print!("{}", String::from_utf8_lossy(&buffer));
     Ok(())
 }
 

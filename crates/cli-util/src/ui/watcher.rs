@@ -26,10 +26,11 @@ use super::output::Console;
 
 #[derive(clap::Args, Clone, Collect, Debug)]
 pub struct Watch {
-    /// Watch mode. Continuously refreshing the output.
+    /// Watch mode: re-run the command and refresh its output until interrupted. Can't be
+    /// combined with --json
     #[clap(short, global = true)]
     watch: bool,
-    /// Watch interval in seconds
+    /// Refresh interval of watch mode (-w), in seconds
     #[clap(short = 'n', default_value = "1.0")]
     interval: f32,
 }
@@ -42,6 +43,12 @@ impl Watch {
     {
         if !self.watch {
             return what().await;
+        }
+        if crate::CliContext::get().json_output() {
+            return Err(crate::exit::BadInput(
+                "watch mode (-w) cannot be combined with --json; poll the command instead".into(),
+            )
+            .into());
         }
         // Redirect console output to in-memory buffer
         let console = Console::in_memory();

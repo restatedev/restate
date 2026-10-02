@@ -17,12 +17,9 @@ use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Config {
-    /// List the configured environments in the CLI config file
+    // Commands are documented on their own struct.
     ListEnvironments(list_environments::ListEnvironments),
-    /// Set the current environment in $RESTATE_CONFIG_HOME/environment
     UseEnvironment(use_environment::UseEnvironment),
-    /// Dump the current content of the CLI config file
     View(view::View),
-    /// Edit the CLI config file
     Edit(edit::Edit),
 }

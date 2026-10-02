@@ -504,7 +504,8 @@ fn to_deployment_response(
             protocol_type,
             address,
             auth,
-        } => DeploymentResponse::Http {
+        } => DeploymentResponse::Http(HttpDeploymentResponse {
+            ty: HttpDeploymentType::Http,
             id,
             uri: address,
             protocol_type,
@@ -521,12 +522,13 @@ fn to_deployment_response(
                 .collect(),
             info,
             auth: auth.map(Into::into),
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DeploymentResponse::Lambda {
+        } => DeploymentResponse::Lambda(LambdaDeploymentResponse {
+            ty: LambdaDeploymentType::Lambda,
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -542,7 +544,7 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
-        },
+        }),
     }
 }
 
@@ -566,7 +568,8 @@ fn to_detailed_deployment_response(
             protocol_type,
             address,
             auth,
-        } => DetailedDeploymentResponse::Http {
+        } => DetailedDeploymentResponse::Http(HttpDetailedDeploymentResponse {
+            ty: HttpDeploymentType::Http,
             id,
             uri: address,
             protocol_type,
@@ -580,12 +583,13 @@ fn to_detailed_deployment_response(
             services,
             info,
             auth: auth.map(Into::into),
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DetailedDeploymentResponse::Lambda {
+        } => DetailedDeploymentResponse::Lambda(LambdaDetailedDeploymentResponse {
+            ty: LambdaDeploymentType::Lambda,
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -598,7 +602,7 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
-        },
+        }),
     }
 }
 

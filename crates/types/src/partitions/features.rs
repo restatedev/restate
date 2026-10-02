@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -69,6 +69,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.7.8*
     EnablePreflightInvocationTerminationRetention = 5,
+    /// Remove all pending state mutations. State mutations enqueued before v1.8.0 could be
+    /// stored under different ids on different replicas (#5416). Afterwards, all replicas store
+    /// state mutations under the same ids.
+    ///
+    /// *Since v1.8.0*
+    EnableInconsistentStateMutationCleanup = 6,
 }
 
 impl PartitionFeatureChange {
@@ -87,6 +93,7 @@ impl PartitionFeatureChange {
             Self::EnableUniqueRandomSeeds => &RESTATE_VERSION_1_7_0,
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
+            Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -111,6 +118,9 @@ impl PartitionFeatureChange {
                 &mut features.preflight_invocation_termination_retention,
                 true,
             ),
+            Self::EnableInconsistentStateMutationCleanup => {
+                !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
+            }
         }
     }
 }
@@ -167,6 +177,13 @@ pub struct PersistedFeatures {
     /// *Since v1.7.8*
     #[bilrost(tag(5))]
     pub preflight_invocation_termination_retention: bool,
+
+    /// Pending state mutations from before v1.8.0 have been removed, so all replicas store
+    /// state mutations under the same ids.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(6))]
+    pub inconsistent_state_mutation_cleanup: bool,
 }
 
 impl PersistedFeatures {
@@ -182,6 +199,8 @@ impl PersistedFeatures {
                 .then_some("vqueues_skip_completed"),
             self.preflight_invocation_termination_retention
                 .then_some("preflight_invocation_termination_retention"),
+            self.inconsistent_state_mutation_cleanup
+                .then_some("inconsistent_state_mutation_cleanup"),
         ]
         .into_iter()
         .flatten()

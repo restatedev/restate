@@ -839,6 +839,13 @@ impl CompletedInvocation {
             .completed_transition_time()
             .map(|base| base + self.completion_retention_duration)
     }
+
+    /// Expiration time of the journal of the [`InvocationStatus::Completed`], if any.
+    pub fn journal_expiry_time(&self) -> Option<MillisSinceEpoch> {
+        self.timestamps
+            .completed_transition_time()
+            .map(|base| base + self.journal_retention_duration)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -885,7 +892,7 @@ pub trait ScanInvocationStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 
-    fn filter_map_invocation_status_ranged_lazy<
+    fn filter_map_invocation_status_lazy<
         O: Send + 'static,
         E: Into<anyhow::Error>,
         F: for<'a> FnMut(
@@ -896,7 +903,9 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
-        key_range: KeyRange,
+        // Invocation id to start the scan from (inclusive). If `None`, the scan starts from the
+        // beginning of the partition key range.
+        from: Option<InvocationId>,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
 }

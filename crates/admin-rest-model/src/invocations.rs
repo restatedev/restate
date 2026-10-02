@@ -14,7 +14,6 @@ use serde::{Deserialize, Serialize};
 
 /// Specifies which deployment to use when resuming or restarting an invocation.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub enum PatchDeploymentId {
     /// Keep the currently pinned deployment
     #[default]
@@ -26,6 +25,28 @@ pub enum PatchDeploymentId {
     /// Use a specific deployment ID
     #[serde(untagged)]
     Id(String),
+}
+
+// On the wire this is a plain string, which the derived schema can't express because
+// utoipa doesn't support variant-level `#[serde(untagged)]` (https://github.com/juhaku/utoipa/pull/1521).
+#[cfg(feature = "schema")]
+impl utoipa::PartialSchema for PatchDeploymentId {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        utoipa::openapi::ObjectBuilder::new()
+            .schema_type(utoipa::openapi::schema::Type::String)
+            .description(Some(
+                "Which deployment to use: `keep` to keep the currently pinned deployment, \
+                 `latest` to use the latest deployment, or a specific deployment ID.",
+            ))
+            .into()
+    }
+}
+
+#[cfg(feature = "schema")]
+impl utoipa::ToSchema for PatchDeploymentId {
+    fn name() -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("PatchDeploymentId")
+    }
 }
 
 impl PatchDeploymentId {

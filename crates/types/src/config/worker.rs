@@ -63,11 +63,28 @@ pub struct WorkerOptions {
     ///
     /// In order to clean up completed invocations, that is invocations invoked with an idempotency id, or workflows,
     /// Restate periodically scans among the completed invocations to check whether they need to be removed or not.
-    /// This interval sets the expected full sweep cycle of the cleaner. Internally, the cleaner divides this interval
-    /// into smaller sweeps each scanning a subset of the database.
-    ///
-    /// Default: 1 hour.
+    /// This interval sets the scan interval of the cleanup procedure. Default: 1 hour.
     cleanup_interval: NonZeroFriendlyDuration,
+
+    /// # Cleanup max in-flight purges
+    ///
+    /// The maximum number of purges the cleanup procedure keeps in flight per partition, i.e.
+    /// proposed to the log but not yet applied. Higher values let the cleanup procedure purge
+    /// completed invocations faster, but can increase tail latencies of other operations in
+    /// the system while it's being processed.
+    ///
+    /// If purging is not keeping up with the rate of completed invocations, consider increasing
+    /// this value further. This is mostly relevant in deployments with high (100ms+) base write to read
+    /// latency baseline (e.g. multi-regional deployments).
+    ///
+    /// Default: 32
+    ///
+    /// Since v1.8.0
+    #[serde(
+        default = "serde_helpers::cleanup_max_in_flight_purges_default",
+        skip_serializing_if = "serde_helpers::is_cleanup_max_in_flight_purges_default"
+    )]
+    cleanup_max_in_flight_purges: NonZeroU32,
 
     pub storage: StorageOptions,
 
@@ -184,6 +201,20 @@ pub struct WorkerOptions {
     /// Since v1.7.3
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub self_proposal_queue_memory_limit: NonZeroByteCount,
+
+    /// # VQueue metadata cache size
+    ///
+    /// The target number of VQueue metadata entries to cache per partition. Each entry uses
+    /// approximately 300 bytes. Active VQueues remain cached even when this target is exceeded.
+    ///
+    /// Default: 32,000 (approximately 9 MiB per partition)
+    ///
+    /// Since v1.8.0
+    #[serde(
+        default = "serde_helpers::vqueue_metadata_cache_size_default",
+        skip_serializing_if = "serde_helpers::is_vqueue_metadata_cache_default"
+    )]
+    vqueue_metadata_cache_size: u32,
 }
 
 impl WorkerOptions {
@@ -208,8 +239,16 @@ impl WorkerOptions {
         self.cleanup_interval.into()
     }
 
+    pub fn cleanup_max_in_flight_purges(&self) -> NonZeroU32 {
+        self.cleanup_max_in_flight_purges
+    }
+
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
+    }
+
+    pub const fn vqueue_metadata_cache_capacity(&self) -> usize {
+        self.vqueue_metadata_cache_size as usize
     }
 }
 
@@ -219,6 +258,7 @@ impl Default for WorkerOptions {
             internal_queue_length: NonZeroUsize::new(1000).expect("Non zero number"),
             num_timers_in_memory_limit: None,
             cleanup_interval: NonZeroFriendlyDuration::from_secs_unchecked(60 * 60),
+            cleanup_max_in_flight_purges: serde_helpers::cleanup_max_in_flight_purges_default(),
             storage: StorageOptions::default(),
             disable_scheduler: false,
             invoker: Default::default(),
@@ -251,6 +291,7 @@ impl Default for WorkerOptions {
             self_proposal_queue_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
             ),
+            vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
         }
     }
 }
@@ -789,6 +830,38 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
 
+    /// # Enable L6 filters
+    ///
+    /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
+    /// Other levels continue to use Bloom filters. Disabled by default.
+    ///
+    /// L6 holds most of the keys, so these filters are about 4x smaller with
+    /// `rocksdb-disable-whole-key-filtering` set.
+    ///
+    /// Takes effect when partition stores are opened and applies to newly generated SST files.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_enable_l6_filters: bool,
+
+    /// # Disable whole-key filtering
+    ///
+    /// Build partition-store filters from key prefixes only, instead of prefixes and whole keys.
+    /// Filters get much smaller and point lookups still use the prefix filters. Files written
+    /// before v1.8 have no usable prefix filters for point lookups, so only set this once
+    /// compaction has rewritten them.
+    ///
+    /// Takes effect when partition stores are opened and applies to newly generated SST files.
+    ///
+    /// Temporary: this option will be removed in v1.9.0 (or earlier), when disabling whole-key
+    /// filtering becomes the default.
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_disable_whole_key_filtering: bool,
+
     /// # Disable compact-on-deletion collector
     ///
     /// When set to `true`, disables RocksDB's CompactOnDeletionCollector for partition stores.
@@ -810,6 +883,8 @@ pub struct StorageOptions {
     /// for compaction.
     ///
     /// Larger windows detect sparser deletion patterns but increase scanning overhead.
+    ///
+    /// Default is 50000
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_window",
@@ -820,8 +895,12 @@ pub struct StorageOptions {
     /// # Compact-on-deletion tombstone count trigger
     ///
     /// Minimum number of tombstones within the sliding window that triggers compaction.
-    /// With default values (window=1000, count=100), compaction triggers when at least 10%
-    /// of keys in any window are tombstones.
+    /// With default values (window=50000, count=30000), compaction triggers when roughly 60%
+    /// of keys in any window are tombstones. The effective window is the configured size rounded
+    /// up to a multiple of 128. Set the count higher than this effective window to disable the
+    /// sliding-window trigger.
+    ///
+    /// Default is 30000
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_count",
@@ -837,6 +916,8 @@ pub struct StorageOptions {
     ///
     /// Valid range is (0.0, 1.0]. Values outside this range disable ratio-based triggering,
     /// relying solely on the sliding window.
+    ///
+    /// Default is 0.5
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_ratio",
@@ -850,7 +931,10 @@ pub struct StorageOptions {
     /// marking the file for compaction. Files smaller than this threshold are ignored even if
     /// they exceed the deletion count or ratio triggers.
     ///
-    /// Set to 0 to disable the minimum file size check (default).
+    /// Set to 0 to disable the minimum file size check.
+    ///
+    /// Default is 32 MiB (half of the default `rocksdb-max-file-size`) to reduce compaction churn
+    /// triggered by small files in non-bottom-most levels.
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(
         skip_serializing_if = "serde_helpers::is_default_compact_on_deletions_min_sst_file_size",
@@ -1052,6 +1136,8 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_enable_l6_filters: false,
+            rocksdb_disable_whole_key_filtering: false,
             rocksdb_disable_compact_on_deletion: false,
             rocksdb_compact_on_deletions_window: serde_helpers::default_compact_on_deletions_window(
             ),
@@ -1101,8 +1187,9 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
 pub struct SnapshotsOptions {
     /// # Snapshot destination URL
     ///
-    /// Base URL for cluster snapshots. Currently only supports the `s3://` protocol scheme.
-    /// S3-compatible object stores must support ETag-based conditional writes.
+    /// Base URL for cluster snapshots, using the `s3://`, `gs://` or `az://` protocol scheme.
+    /// S3-compatible object stores must support ETag-based conditional writes. For `gs://`,
+    /// credentials come from the environment, as for a `gs://` metadata path.
     ///
     /// Default: `None`
     pub destination: Option<String>,
@@ -1218,13 +1305,29 @@ impl SnapshotsOptions {
 }
 
 mod serde_helpers {
-    use std::num::NonZeroUsize;
+    use std::num::{NonZeroU32, NonZeroUsize};
 
     use restate_util_bytecount::ByteCount;
 
+    pub const fn cleanup_max_in_flight_purges_default() -> NonZeroU32 {
+        NonZeroU32::new(32).unwrap()
+    }
+
+    pub fn is_cleanup_max_in_flight_purges_default(v: &NonZeroU32) -> bool {
+        *v == cleanup_max_in_flight_purges_default()
+    }
+
+    pub const fn vqueue_metadata_cache_size_default() -> u32 {
+        32_000
+    }
+
+    pub const fn is_vqueue_metadata_cache_default(i: &u32) -> bool {
+        *i == vqueue_metadata_cache_size_default()
+    }
+
     pub const fn default_compact_on_deletions_window() -> NonZeroUsize {
-        // SAFETY: 1000 is non-zero
-        unsafe { NonZeroUsize::new_unchecked(1000) }
+        // SAFETY: 50_000 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(50_000) }
     }
 
     pub fn is_default_compact_on_deletions_window(v: &NonZeroUsize) -> bool {
@@ -1232,8 +1335,8 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_count() -> NonZeroUsize {
-        // SAFETY: 100 is non-zero
-        unsafe { NonZeroUsize::new_unchecked(100) }
+        // SAFETY: 30_000 is non-zero
+        unsafe { NonZeroUsize::new_unchecked(30_000) }
     }
 
     pub fn is_default_compact_on_deletions_count(v: &NonZeroUsize) -> bool {
@@ -1241,7 +1344,7 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_ratio() -> f64 {
-        0.25
+        0.5
     }
 
     pub fn is_default_compact_on_deletions_ratio(v: &f64) -> bool {
@@ -1249,7 +1352,7 @@ mod serde_helpers {
     }
 
     pub const fn default_compact_on_deletions_min_sst_file_size() -> ByteCount {
-        ByteCount::<true>::new(0)
+        ByteCount::<true>::new(32 * 1024 * 1024)
     }
 
     pub fn is_default_compact_on_deletions_min_sst_file_size(v: &ByteCount) -> bool {

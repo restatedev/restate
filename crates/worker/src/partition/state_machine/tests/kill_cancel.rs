@@ -119,7 +119,7 @@ async fn run_kill_inboxed_invocation(features: PersistedFeatures) -> anyhow::Res
     assert_that!(
         actions,
         all!(
-            contains(matchers::actions::forward_kill_invocation_response(
+            contains(matchers::actions::kill_invocation_reply(
                 request_id,
                 KillInvocationResponse::Ok
             )),
@@ -190,15 +190,17 @@ async fn terminate_scheduled_invocation(
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(rpc_id),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Failure(
-                match termination_flavor {
-                    TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
-                    TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
-                }
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(rpc_id),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Failure(
+                    match termination_flavor {
+                        TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
+                        TerminationFlavor::Cancel => CANCELED_INVOCATION_ERROR,
+                    }
+                ))
+            })))
         }))
     );
 
@@ -479,7 +481,7 @@ async fn cancel_suspended_invocation() -> Result<(), Error> {
     assert_that!(
         actions,
         all!(
-            contains(matchers::actions::forward_cancel_invocation_response(
+            contains(matchers::actions::cancel_invocation_reply(
                 request_id,
                 CancelInvocationResponse::Appended
             )),

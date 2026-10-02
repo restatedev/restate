@@ -17,8 +17,10 @@ mod datafusion_http_client;
 mod errors;
 
 pub use self::admin_client::AdminClient;
-pub use self::admin_client::Error as MetasClientError;
 pub use self::admin_client::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
 pub use self::admin_interface::Deployment;
 pub use self::admin_interface::{AdminClientInterface, batch_execute};
 pub use self::datafusion_http_client::DataFusionHttpClient;
+#[cfg(test)]
+pub(crate) use self::errors::ApiErrorBody;
+pub use self::errors::{ApiError, ClientError, error_docs_url};

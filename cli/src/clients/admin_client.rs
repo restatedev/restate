@@ -17,7 +17,6 @@ use std::time::Duration;
 use anyhow::bail;
 use http::StatusCode;
 use serde::{Serialize, de::DeserializeOwned};
-use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
@@ -30,21 +29,11 @@ use crate::build_info;
 use crate::cli_env::CliEnv;
 use crate::clients::AdminClientInterface;
 
-use super::errors::ApiError;
+use super::errors::{ApiError, ApiErrorBody, ClientError};
 
 /// Min/max supported admin API versions
 pub const MIN_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V2;
 pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
-
-#[derive(Error, Debug)]
-#[error(transparent)]
-pub enum Error {
-    // Error is boxed because ApiError can get quite large if the message body is large.
-    Api(#[from] Box<ApiError>),
-    #[error("(Protocol error) {0}")]
-    Serialization(#[from] serde_json::Error),
-    Network(#[from] reqwest::Error),
-}
 
 /// A lazy wrapper around a reqwest response that deserializes the body on
 /// demand and decodes our custom error body on non-2xx responses.
@@ -66,7 +55,7 @@ where
         self.inner.url()
     }
 
-    pub async fn into_body(self) -> Result<T, Error> {
+    pub async fn into_body(self) -> Result<T, ClientError> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
         if !self.status_code().is_success() {
@@ -74,11 +63,11 @@ where
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(Box::new(ApiError {
+            return Err(ClientError::Api(ApiError {
                 http_status_code,
-                url,
-                body: serde_json::from_str(&body)?,
-            })));
+                url: url.into(),
+                body: ApiErrorBody::parse(body),
+            }));
         }
 
         debug!("Response from {} ({})", url, http_status_code);
@@ -87,7 +76,7 @@ where
         Ok(serde_json::from_str(&body)?)
     }
 
-    pub async fn into_api_error(self) -> Result<ApiError, Error> {
+    pub async fn into_api_error(self) -> Result<ApiError, ClientError> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
 
@@ -96,21 +85,21 @@ where
         debug!("  {}", body);
         Ok(ApiError {
             http_status_code,
-            url,
-            body: serde_json::from_str(&body)?,
+            url: url.into(),
+            body: ApiErrorBody::parse(body),
         })
     }
 
-    pub async fn into_text(self) -> Result<String, Error> {
+    pub async fn into_text(self) -> Result<String, ClientError> {
         Ok(self.inner.text().await?)
     }
-    pub fn success_or_error(self) -> Result<StatusCode, Error> {
+    pub fn success_or_error(self) -> Result<StatusCode, ClientError> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
         info!("Response from {} ({})", url, http_status_code);
         match self.inner.error_for_status() {
             Ok(_) => Ok(http_status_code),
-            Err(e) => Err(Error::Network(e)),
+            Err(e) => Err(ClientError::Network(e)),
         }
     }
 }
@@ -189,17 +178,17 @@ impl AdminClient {
         // we couldn't validate the admin API. This could mean that the server is not running or
         // runs an old version which does not support version information. Query the health endpoint
         // to see whether the server is reachable and fail if not.
-        if client
+        // Keep the cause so the failure is classified (network vs. auth) for exit codes.
+        if let Err(err) = client
             .health()
             .await
-            .map_err(Into::into)
+            .map_err(ClientError::from)
             .and_then(|r| r.success_or_error())
-            .is_err()
         {
-            bail!(
-                "Unable to connect to the Restate server '{}'. Please make sure that it is running and reachable.",
+            return Err(anyhow::Error::new(err).context(format!(
+                "Unable to connect to the Restate server '{}'; make sure that it is running and reachable",
                 client.base_url
-            );
+            )));
         }
 
         c_warn!(

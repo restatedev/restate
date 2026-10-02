@@ -149,7 +149,7 @@ async fn assert_all_nodes_advertise_tls(
     Ok(advertised_addresses)
 }
 
-async fn grpc_node_identity_and_cluster_health(
+async fn grpc_node_identity(
     address: AdvertisedAddress<FabricPort>,
     networking: &NetworkingOptions,
 ) -> Result<(NodeId, String), tonic::Status> {
@@ -160,11 +160,7 @@ async fn grpc_node_identity_and_cluster_health(
         .node_id
         .ok_or_else(|| tonic::Status::failed_precondition("node has not joined the cluster"))?
         .into();
-    let cluster_name = client
-        .cluster_health(())
-        .await
-        .map(|response| response.into_inner().cluster_name)?;
-    Ok((node_id, cluster_name))
+    Ok((node_id, ident.cluster_name))
 }
 
 fn with_http_scheme(address: &AdvertisedAddress<FabricPort>) -> AdvertisedAddress<FabricPort> {
@@ -237,19 +233,17 @@ async fn verify_tls_mode(
 
     for address in authorities {
         let networking = &cluster.nodes[0].config().networking;
-        let (node_id, actual_cluster_name) =
-            grpc_node_identity_and_cluster_health(address.clone(), networking)
-                .await
-                .map_err(anyhow::Error::from)
-                .into_test_result()?;
+        let (node_id, actual_cluster_name) = grpc_node_identity(address.clone(), networking)
+            .await
+            .map_err(anyhow::Error::from)
+            .into_test_result()?;
         assert_eq!(actual_cluster_name, cluster_name);
         assert!(
             contacted_nodes.insert(node_id),
             "{mode:?} contacted node {node_id} through more than one advertised address"
         );
 
-        let plaintext_result =
-            grpc_node_identity_and_cluster_health(with_http_scheme(&address), networking).await;
+        let plaintext_result = grpc_node_identity(with_http_scheme(&address), networking).await;
         assert_eq!(
             plaintext_result.is_ok(),
             accepts_plaintext,

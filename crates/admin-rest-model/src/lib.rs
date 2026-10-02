@@ -17,3 +17,10 @@ pub mod rules;
 pub mod services;
 pub mod subscriptions;
 pub mod version;
+
+/// `$ref` location of `T`'s component schema, for `#[schema(discriminator(mapping(...)))]`
+/// entries. Deriving it from the schema name keeps the mapping in sync with the referenced type.
+#[cfg(feature = "schema")]
+pub(crate) fn schema_ref<T: utoipa::ToSchema>() -> String {
+    utoipa::openapi::Ref::from_schema_name(T::name()).ref_location
+}

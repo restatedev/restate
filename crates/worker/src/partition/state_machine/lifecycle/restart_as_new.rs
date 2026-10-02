@@ -10,7 +10,6 @@
 
 use ahash::HashSet;
 use metrics::counter;
-use opentelemetry::trace::Span;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -42,7 +41,9 @@ use crate::metric_definitions::{
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::*;
-use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{
+    Action, CommandHandler, Error, RpcReply, StateMachineApplyContext,
+};
 
 pub struct OnRestartAsNewInvocationCommand {
     pub invocation_id: InvocationId,
@@ -50,6 +51,7 @@ pub struct OnRestartAsNewInvocationCommand {
     pub copy_prefix_up_to_index_included: EntryIndex,
     pub patch_deployment_id: Option<DeploymentId>,
     pub response_sink: Option<InvocationMutationResponseSink>,
+    pub span_context: Option<ServiceInvocationSpanContext>,
 }
 
 impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
@@ -65,11 +67,10 @@ impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
                 sink.request_id,
                 response
             );
-            self.action_collector
-                .push(Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: sink.request_id,
-                    response,
-                })
+            self.action_collector.push(Action::ReplyRpc {
+                request_id: sink.request_id,
+                reply: RpcReply::RestartAsNewInvocation(response),
+            })
         }
     }
 }
@@ -100,6 +101,7 @@ where
             copy_prefix_up_to_index_included,
             patch_deployment_id,
             response_sink,
+            span_context,
         } = self;
         // Retrieve completed status
         let completed_invocation = match ctx.get_invocation_status(&invocation_id).await? {
@@ -258,21 +260,21 @@ where
             pinned_deployment.deployment_id = new_deployment_id;
         }
 
-        // Prep tracing span
-        let restart_as_new_span = restate_tracing_instrumentation::info_invocation_span!(
-            relation = SpanRelation::Linked(
-                completed_invocation
-                    .journal_metadata
-                    .span_context
-                    .span_context()
-                    .clone(),
-            ),
-            prefix = "restart-as-new",
-            id = new_invocation_id,
-            target = completed_invocation.invocation_target,
-            tags = (restate.invocation.restart_as_new.original_invocation_id =
-                invocation_id.to_string())
-        );
+        // The span context is created by the leader when proposing the command. Commands proposed
+        // by older leaders don't carry it, so we start a new trace linked to the original
+        // invocation, which only depends on replicated state.
+        let span_context = span_context.unwrap_or_else(|| {
+            ServiceInvocationSpanContext::start(
+                &new_invocation_id,
+                SpanRelation::Linked(
+                    completed_invocation
+                        .journal_metadata
+                        .span_context
+                        .span_context()
+                        .clone(),
+                ),
+            )
+        });
 
         // Let's prep the PreFlightInvocationMetadata
         //
@@ -319,10 +321,7 @@ where
                 journal_metadata: JournalMetadata::new(
                     new_journal_index,
                     new_journal_commands,
-                    ServiceInvocationSpanContext::start(
-                        &new_invocation_id,
-                        SpanRelation::parent(restart_as_new_span.span_context()),
-                    ),
+                    span_context,
                 ),
                 pinned_deployment,
             }),
@@ -355,6 +354,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use opentelemetry::trace::{SpanContext, SpanId, TraceFlags, TraceId, TraceState};
 
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
     use googletest::prelude::*;
@@ -439,6 +440,7 @@ mod tests {
                     response_sink: Some(InvocationMutationResponseSink::Ingress(
                         IngressInvocationResponseSink { request_id },
                     )),
+                    span_context: None,
                 },
             ))
             .await;
@@ -446,12 +448,12 @@ mod tests {
         // Didn't happen, because previous invocation was not retained!
         assert_that!(
             actions,
-            all!(contains(pat!(
-                Action::ForwardRestartAsNewInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
-                }
-            )))
+            all!(contains(pat!(Action::ReplyRpc {
+                request_id: eq(request_id),
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::JournalIndexOutOfRange
+                )))
+            })))
         );
 
         test_env.shutdown().await;
@@ -499,6 +501,7 @@ mod tests {
                     response_sink: Some(InvocationMutationResponseSink::Ingress(
                         IngressInvocationResponseSink { request_id },
                     )),
+                    span_context: None,
                 },
             ))
             .await;
@@ -506,11 +509,13 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::Ok {
-                    new_invocation_id: new_id
-                })
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::Ok {
+                        new_invocation_id: new_id
+                    }
+                )))
             }))
         );
 
@@ -561,6 +566,17 @@ mod tests {
         // Restart as new with copy_prefix_up_to_index_included = 0
         let new_id = InvocationId::mock_generate(&invocation_target);
         let request_id = PartitionProcessorRpcRequestId::new();
+        // Span context created by the leader, which must be stored as is
+        let span_context = ServiceInvocationSpanContext::start(
+            &new_id,
+            SpanRelation::parent(SpanContext::new(
+                TraceId::from(1),
+                SpanId::from(2),
+                TraceFlags::SAMPLED,
+                false,
+                TraceState::default(),
+            )),
+        );
         let actions = test_env
             .apply(commands::RestartAsNewInvocationCommand::test_envelope(
                 RestartAsNewInvocationRequest {
@@ -571,6 +587,7 @@ mod tests {
                     response_sink: Some(InvocationMutationResponseSink::Ingress(
                         IngressInvocationResponseSink { request_id },
                     )),
+                    span_context: Some(span_context.clone()),
                 },
             ))
             .await;
@@ -578,25 +595,32 @@ mod tests {
         // We should invoke the new invocation and send OK back
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::Ok {
-                    new_invocation_id: new_id
-                })
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::Ok {
+                        new_invocation_id: new_id
+                    }
+                )))
             }))
         );
 
+        let new_status = test_env
+            .storage
+            .get_invocation_status(&new_id)
+            .await
+            .unwrap();
         assert_that!(
-            test_env
-                .storage
-                .get_invocation_status(&new_id)
-                .await
-                .unwrap(),
+            new_status,
             all!(
                 matchers::storage::is_variant(InvocationStatusDiscriminants::Invoked),
                 matchers::storage::has_journal_length(1),
                 matchers::storage::has_commands(1)
             )
+        );
+        assert_eq!(
+            new_status.get_journal_metadata().unwrap().span_context,
+            span_context
         );
 
         test_env.shutdown().await;
@@ -648,6 +672,7 @@ mod tests {
                     copy_prefix_up_to_index_included: 0,
                     patch_deployment_id: None,
                     response_sink: None,
+                    span_context: None,
                 },
             ))
             .await;
@@ -757,6 +782,7 @@ mod tests {
                     copy_prefix_up_to_index_included: 2,
                     patch_deployment_id: Some(new_deployment_id),
                     response_sink: None,
+                    span_context: None,
                 },
             ))
             .await;
@@ -843,6 +869,7 @@ mod tests {
                     copy_prefix_up_to_index_included: 0,
                     patch_deployment_id: Some(new_deployment_id),
                     response_sink: None,
+                    span_context: None,
                 },
             ))
             .await;
@@ -940,15 +967,18 @@ mod tests {
                     response_sink: Some(InvocationMutationResponseSink::Ingress(
                         IngressInvocationResponseSink { request_id },
                     )),
+                    span_context: None,
                 },
             ))
             .await;
 
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardRestartAsNewInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(RestartAsNewInvocationResponse::JournalIndexOutOfRange)
+                reply: pat!(RpcReply::RestartAsNewInvocation(eq(
+                    RestartAsNewInvocationResponse::JournalIndexOutOfRange
+                )))
             }))
         );
 

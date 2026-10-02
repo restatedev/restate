@@ -12,7 +12,7 @@ use std::str::FromStr;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use object_store::AttributeValue;
+use object_store::{AttributeValue, UpdateVersion};
 
 use restate_types::errors::GenericError;
 
@@ -32,18 +32,45 @@ pub enum VersionRepositoryError {
     Encoding(#[from] EncodingError),
 }
 
+/// The version of a stored value that conditional writes must match.
+///
+/// Object stores differ in what they match on: S3 compares the ETag, while GCS compares the
+/// object generation, which object_store reports as the object's `version`. The ETag is
+/// always present; the version is kept when the store reports one.
 #[derive(Debug, Eq, PartialEq, Hash, Clone)]
-pub(crate) struct Tag(ByteString);
+pub(crate) struct Tag {
+    e_tag: String,
+    version: Option<String>,
+}
 
 impl From<String> for Tag {
-    fn from(value: String) -> Self {
-        Tag(value.into())
+    fn from(e_tag: String) -> Self {
+        Tag {
+            e_tag,
+            version: None,
+        }
     }
 }
 
 impl Tag {
-    pub(crate) fn as_string(&self) -> String {
-        self.0.to_string()
+    /// Builds the tag from the ETag and version an object store reported for an object.
+    pub(crate) fn from_reported(
+        e_tag: Option<String>,
+        version: Option<String>,
+    ) -> Result<Self, VersionRepositoryError> {
+        let e_tag = e_tag.ok_or_else(|| {
+            VersionRepositoryError::UnexpectedCondition("expecting an ETag to be present".into())
+        })?;
+        Ok(Tag { e_tag, version })
+    }
+}
+
+impl From<Tag> for UpdateVersion {
+    fn from(tag: Tag) -> Self {
+        UpdateVersion {
+            e_tag: Some(tag.e_tag),
+            version: tag.version,
+        }
     }
 }
 

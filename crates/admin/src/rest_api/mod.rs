@@ -10,7 +10,6 @@
 
 //! This module implements the Meta API endpoint.
 
-mod cluster_health;
 mod deployments;
 mod error;
 mod handlers;
@@ -59,13 +58,12 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),
         (name = "vqueue", description = "Virtual queue management"),
-        (name = "cluster_health", description = "Cluster health"),
         (name = "health", description = "Admin API health"),
         (name = "version", description = "API Version"),
         (name = "introspection", description = "System introspection"),
         (name = "rule", description = "Limiter rule book management"),
     ),
-    components(responses(
+    components(schemas(ErrorDescriptionResponse), responses(
         error::meta_api_error::BadRequest,
         error::meta_api_error::NotFound,
         error::meta_api_error::MethodNotAllowed,
@@ -90,7 +88,6 @@ where
         OpenApiRouter::with_openapi(AdminApiDoc::openapi())
             .routes(routes!(health::health))
             .routes(routes!(version::version))
-            .routes(routes!(cluster_health::cluster_health))
             // Deployment endpoints
             .routes(routes!(deployments::list_deployments))
             .routes(routes!(deployments::create_deployment))

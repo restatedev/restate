@@ -10,6 +10,7 @@
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
+use crate::ui::fmt::DryRun;
 use anyhow::{Context, Result};
 use cling::prelude::*;
 use restate_admin_rest_model::services::ModifyServiceRequest;
@@ -18,8 +19,16 @@ use std::fs::File;
 use std::io;
 use tempfile::tempdir;
 
+/// Edit a service's configuration in $EDITOR (interactive)
+///
+/// Needs a terminal: from scripts and agents, use `restate services config patch` instead.
+/// Registering a new deployment of the service resets these settings to what the service
+/// code defines, or to the server defaults.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_edit")]
+#[command(after_help = after_help!(
+    learn_more: "https://docs.restate.dev/services/configuration",
+))]
 pub struct Edit {
     /// Service name
     service: String,
@@ -46,7 +55,10 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     )?;
 
     // Edit file
-    env.open_default_editor(&edit_file_path)?;
+    env.open_default_editor(
+        &edit_file_path,
+        "use `restate services config patch` instead",
+    )?;
 
     // Now load back file into string and parse it
     let modify_request: ModifyServiceRequest = toml::from_str(
@@ -54,8 +66,14 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     )
     .context("Cannot parse the edited config file")?;
 
-    super::patch::apply_service_configuration_patch(&opts.service, admin_client, modify_request)
-        .await
+    // Interactive (the user already reviewed the changes in the editor): no `--dry-run`.
+    super::patch::apply_service_configuration_patch(
+        &opts.service,
+        admin_client,
+        modify_request,
+        &DryRun::default(),
+    )
+    .await
 }
 
 // TODO generate this file from the JsonSchema

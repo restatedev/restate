@@ -10,33 +10,35 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
+use serde::Serialize;
 
 use restate_admin_rest_model::deployments::DeploymentResponse;
-use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::ui::watcher::Watch;
-use restate_cli_util::{c_error, c_println};
-use restate_types::identifiers::DeploymentId;
-use restate_types::schema::service::HandlerMetadata;
+use restate_types::identifiers::{DeploymentId, ServiceRevision};
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClientInterface, Deployment};
-use crate::ui::deployments::{render_deployment_type, render_deployment_url};
-use crate::ui::service_handlers::{icon_for_is_public, icon_for_service_type};
+use crate::error::RestateCliError;
+use crate::ui::deployments::render_deployment_url;
+use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, ListItem, OutputFormatter};
+use crate::ui::service_handlers::{service_type_label, service_type_machine, visibility_label};
 
+/// List the registered services, with their type, deployment and handlers
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "ls")]
 #[cling(run = "run_list")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate services list --json",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/services",
+))]
 pub struct List {
-    /// Show only publicly accessible services
+    /// Show only public services, the ones that can be called through the ingress
     #[clap(long)]
     public_only: bool,
-
-    //// Show additional columns
-    #[clap(long)]
-    extra: bool,
 
     #[clap(flatten)]
     watch: Watch,
@@ -50,13 +52,6 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
     let client = crate::clients::AdminClient::new(env).await?;
     let defs = client.get_services().await?.into_body().await?;
 
-    if defs.services.is_empty() {
-        c_error!(
-            "No services were found! Services are added by registering deployments with 'restate dep register'"
-        );
-        return Ok(());
-    }
-
     let deployments = client.get_deployments().await?.into_body().await?;
 
     let mut deployment_cache: HashMap<DeploymentId, DeploymentResponse> = HashMap::new();
@@ -66,62 +61,109 @@ async fn list(env: &CliEnv, list_opts: &List) -> Result<()> {
         deployment_cache.insert(deployment.id(), deployment);
     }
 
-    let mut table = Table::new_styled();
-    let mut header = vec![
-        "",
-        "NAME",
-        "REVISION",
-        "FLAVOR",
-        "DEPLOYMENT-TYPE",
-        "DEPLOYMENT-ID",
-    ];
-    if list_opts.extra {
-        header.push("ENDPOINT");
-        header.push("METHODS");
-    }
-    table.set_styled_header(header);
-
+    let mut items = Vec::new();
     for svc in defs.services {
         if list_opts.public_only && !svc.public {
             // Skip non-public services if users chooses to.
             continue;
         }
+        let deployment = deployment_cache.get(&svc.deployment_id).ok_or_else(|| {
+            RestateCliError::not_found(format!("Deployment {} not found", svc.deployment_id))
+        })?;
+        let (_, deployment, _) = Deployment::from_deployment_response(deployment.clone());
 
-        let public = icon_for_is_public(svc.public);
-        let flavor = icon_for_service_type(&svc.ty);
-
-        let deployment = deployment_cache
-            .get(&svc.deployment_id)
-            .with_context(|| format!("Deployment {} was not found!", svc.deployment_id))?;
-
-        let (deployment_id, deployment, _) =
-            Deployment::from_deployment_response(deployment.clone());
-
-        let mut row = vec![
-            public.to_string(),
-            svc.name,
-            svc.revision.to_string(),
-            flavor.to_string(),
-            render_deployment_type(&deployment),
-            deployment_id.to_string(),
-        ];
-        if list_opts.extra {
-            row.push(render_deployment_url(&deployment));
-            row.push(render_methods(svc.handlers.into_values().collect()));
-        }
-
-        table.add_row(row);
+        let mut handlers: Vec<String> = svc.handlers.into_values().map(|h| h.name).collect();
+        handlers.sort();
+        items.push(ServiceListItem {
+            revision: svc.revision,
+            service_type: service_type_machine(&svc.ty),
+            deployment_id: svc.deployment_id.to_string(),
+            endpoint: render_deployment_url(&deployment),
+            handlers,
+            visibility: visibility_label(svc.public),
+            service_type_label: service_type_label(&svc.ty),
+            name: svc.name,
+        });
     }
-    c_println!("{}", table);
-    Ok(())
+
+    let mut f = Formatter::new();
+    f.list(
+        "services",
+        &items,
+        IfEmpty::Say(
+            "No services were found for the given filters! Services are added by registering deployments with 'restate dep register'",
+        ),
+    )?;
+    if let Some(ServiceListItem {
+        name,
+        deployment_id,
+        ..
+    }) = items.first()
+    {
+        f.next_step(
+            &format!("restate services describe {name}"),
+            "see the service's handlers",
+            IncludeFormatting::Yes,
+        );
+        f.next_step(
+            &format!("restate deployments describe {deployment_id}"),
+            "see the deployment serving it",
+            IncludeFormatting::Yes,
+        );
+    }
+    f.finish()
 }
 
-fn render_methods(methods: Vec<HandlerMetadata>) -> String {
-    use std::fmt::Write as FmtWrite;
+#[derive(Serialize)]
+struct ServiceListItem {
+    name: String,
+    revision: ServiceRevision,
+    service_type: &'static str,
+    deployment_id: String,
+    endpoint: String,
+    handlers: Vec<String>,
+    visibility: &'static str,
+    #[serde(skip)]
+    service_type_label: &'static str,
+}
 
-    let mut out = String::new();
-    for method in methods {
-        writeln!(&mut out, "{}", method.name).unwrap();
+impl ListItem for ServiceListItem {
+    const HEADERS: &'static [&'static str] = &["name", "service_type"];
+
+    fn columns(&self) -> Vec<Field> {
+        vec![
+            Field::new(self.name.as_str()),
+            Field::new(self.service_type_label),
+        ]
     }
-    out
+
+    fn details(&self) -> Vec<String> {
+        let mut lines = vec![format!(
+            "deployment {} · {}",
+            self.deployment_id, self.endpoint
+        )];
+        if !self.handlers.is_empty() {
+            lines.push(format!("handlers {}", self.handlers.join(", ")));
+        }
+        lines
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn list_headers_are_json_keys() {
+        crate::ui::fmt::assert_headers_are_json_keys(&ServiceListItem {
+            name: "Greeter".to_owned(),
+            revision: 1,
+            service_type: "service",
+            deployment_id: String::new(),
+            endpoint: String::new(),
+            handlers: Vec::new(),
+            visibility: "public",
+            service_type_label: "Service",
+        });
+    }
 }

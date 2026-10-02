@@ -13,10 +13,10 @@ mod entries;
 mod lifecycle;
 mod utils;
 
-pub use actions::{Action, ActionCollector};
+pub use actions::{Action, ActionCollector, RpcReply};
 use restate_worker_api::processor::PartitionFeatures;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
 use std::ops::RangeBounds;
@@ -72,13 +72,14 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
     PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
 use restate_types::invocation::client::{
-    CancelInvocationResponse, InvocationOutputResponse, KillInvocationResponse,
+    CancelInvocationResponse, InvocationOutput, InvocationOutputResponse, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
+    SubmittedInvocationNotification,
 };
 use restate_types::invocation::{
     AttachInvocationRequest, IngressInvocationResponseSink, InvocationInput,
@@ -97,7 +98,7 @@ use restate_types::journal::enriched::{
 };
 use restate_types::journal::raw::{EntryHeader, RawEntryCodec, RawEntryCodecError};
 use restate_types::journal_v2;
-use restate_types::journal_v2::command::{OutputCommand, OutputResult};
+use restate_types::journal_v2::command::{OutputCommand, OutputResult, SleepCommand};
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
     CommandIndex, CommandType, CompletionId, EntryMetadata, InputCommand, NotificationId, Signal,
@@ -106,8 +107,8 @@ use restate_types::journal_v2::{
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::state_mut::ExternalStateMutation;
 use restate_types::state_mut::StateMutationVersion;
+use restate_types::state_mut::{ExternalStateMutation, StateMutationInput};
 use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
@@ -505,28 +506,38 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.on_terminate_invocation(inner.into()).await
             }
             CommandKind::PurgeInvocation => {
+                let is_self_proposal = matches!(envelope.dedup(), v2::Dedup::SelfProposal { .. });
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
+                let is_cleaner_purge = self.is_leader
+                    && is_self_proposal
+                    && purge_invocation_request.response_sink.is_none();
 
                 lifecycle::OnPurgeCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    is_cleaner_purge,
                 }
                 .apply(self)
                 .await?;
                 Ok(())
             }
             CommandKind::PurgeJournal => {
+                let is_self_proposal = matches!(envelope.dedup(), v2::Dedup::SelfProposal { .. });
                 let purge_invocation_request: PurgeInvocationRequest = envelope
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
+                let is_cleaner_purge = self.is_leader
+                    && is_self_proposal
+                    && purge_invocation_request.response_sink.is_none();
 
                 lifecycle::OnPurgeJournalCommand {
                     invocation_id: &purge_invocation_request.invocation_id,
                     response_sink: purge_invocation_request.response_sink,
+                    is_cleaner_purge,
                 }
                 .apply(self)
                 .await?;
@@ -579,6 +590,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         .copy_prefix_up_to_index_included,
                     response_sink: restart_as_new_invocation_request.response_sink,
                     patch_deployment_id: restart_as_new_invocation_request.patch_deployment_id,
+                    span_context: restart_as_new_invocation_request.span_context,
                 }
                 .apply(self)
                 .await?;
@@ -1022,12 +1034,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 "Sending ingress attach invocation for {invocation_id}, will run at: {execution_time:?}"
             );
 
-            self.action_collector
-                .push(Action::IngressSubmitNotification {
+            self.action_collector.push(Action::ReplyRpc {
+                request_id,
+                reply: RpcReply::Submitted(SubmittedInvocationNotification {
                     request_id,
                     execution_time,
                     is_new_invocation: true,
-                });
+                }),
+            });
         }
 
         Ok(())
@@ -1491,7 +1505,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     self.enqueue_into_inbox(InboxEntry::StateMutation(mutation))
                         .await?;
                 }
-                VirtualObjectStatus::Unlocked => Self::do_mutate_state(self, &mutation).await?,
+                VirtualObjectStatus::Unlocked => {
+                    Self::do_mutate_state(self, &mutation.into_parts().1).await?
+                }
             }
         }
 
@@ -1790,7 +1806,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteJournalEventsTable
-            + WriteLockTable,
+            + WriteLockTable
+            + ReadJournalTable
+            + journal_table_v2::ReadJournalTable
+            + WriteTimerTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1829,6 +1848,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 pinned_deployment
                     .as_ref()
                     .map(|pd| pd.service_protocol_version),
+                InvocationUuid::is_deterministic(
+                    &metadata.invocation_target,
+                    metadata.idempotency_key.as_deref(),
+                ),
             ))
         } else {
             None
@@ -1901,11 +1924,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_store_completed_invocation(invocation_id, completed_invocation)?;
         }
 
-        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
+        if let Some((journal_length, pinned_service_protocol_version, delete_pending_timers)) =
+            journal_to_drop
+        {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -1936,7 +1962,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + ReadJournalTable
+            + journal_table_v2::ReadJournalTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1973,6 +2001,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 pinned_deployment
                     .as_ref()
                     .map(|pd| pd.service_protocol_version),
+                InvocationUuid::is_deterministic(
+                    &metadata.invocation_target,
+                    metadata.idempotency_key.as_deref(),
+                ),
             ))
         } else {
             None
@@ -2047,11 +2079,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             self.do_store_completed_invocation(invocation_id, completed_invocation)?;
         }
 
-        if let Some((journal_length, pinned_service_protocol_version)) = journal_to_drop {
+        if let Some((journal_length, pinned_service_protocol_version, delete_pending_timers)) =
+            journal_to_drop
+        {
             self.do_drop_journal(
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -2088,7 +2123,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2126,7 +2162,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2401,6 +2438,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 lifecycle::OnPurgeCommand {
                     invocation_id,
                     response_sink: None,
+                    is_cleaner_purge: false,
                 }
                 .apply(self)
                 .await?;
@@ -2784,12 +2822,17 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteJournalEventsTable,
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         let invocation_target = invocation_metadata.invocation_target.clone();
         let journal_length = invocation_metadata.journal_metadata.length;
         let completion_retention = invocation_metadata.completion_retention_duration;
         let journal_retention = invocation_metadata.journal_retention_duration;
+        let delete_pending_timers = InvocationUuid::is_deterministic(
+            &invocation_target,
+            invocation_metadata.idempotency_key.as_deref(),
+        );
 
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
@@ -2890,6 +2933,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 &invocation_id,
                 journal_length,
                 pinned_service_protocol_version,
+                delete_pending_timers,
             )
             .await?;
         }
@@ -3010,16 +3054,44 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 self.run_invocation(qid, entry_key, wait_stats).await?;
             }
             vqueues::EntryKind::StateMutation => {
+                let partition_key = qid.partition_key();
+                let local_key;
+                let mut state_header = self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, entry_key.entry_id())
+                    .await?;
+
+                // State mutations enqueued before v1.8.0 got a random id on every replica (see
+                // #5416), so the id in the decision may not match the local one. In this case, we
+                // look the entry up by its position in the inbox, which is the same on all
+                // replicas. This isn't needed anymore once these state mutations were cleaned up.
+                let entry_key = if !self
+                    .processor
+                    .fsm()
+                    .features()
+                    .is_inconsistent_state_mutation_cleanup_enabled()
+                    && state_header.is_none()
+                    && let Some(key) = self
+                        .storage
+                        .find_inbox_state_mutation_key(qid, entry_key)
+                        .await?
+                {
+                    local_key = key;
+                    state_header = self
+                        .storage
+                        .get_vqueue_entry_status(partition_key, local_key.entry_id())
+                        .await?;
+                    &local_key
+                } else {
+                    entry_key
+                };
+
                 let mutation_id = entry_key
                     .entry_id()
-                    .to_state_mutation_id(qid.partition_key())
+                    .to_state_mutation_id(partition_key)
                     .unwrap();
 
-                let Some(state_header) = self
-                    .storage
-                    .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
-                    .await?
-                else {
+                let Some(state_header) = state_header else {
                     info!(
                         "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
                     );
@@ -3050,7 +3122,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
                 let Some(state_mutation) = self
                     .storage
-                    .get_vqueue_input_payload::<ExternalStateMutation>(
+                    .get_vqueue_input_payload::<StateMutationInput>(
                         qid,
                         entry_key.seq(),
                         entry_key.entry_id(),
@@ -3308,7 +3380,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         return Ok(());
                     }
                     InboxEntry::StateMutation(state_mutation) => {
-                        self.mutate_state(&state_mutation).await?;
+                        self.mutate_state(&state_mutation.into_parts().1).await?;
                     }
                 }
             }
@@ -4368,11 +4440,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
         };
 
-        self.action_collector.push(Action::IngressResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            invocation_id,
-            completion_expiry_time,
-            response,
+            reply: RpcReply::Output(InvocationOutput {
+                request_id,
+                invocation_id,
+                completion_expiry_time,
+                response,
+            }),
         });
     }
 
@@ -4393,9 +4468,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector.push(Action::ForwardCancelResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            response,
+            reply: RpcReply::CancelInvocation(response),
         });
     }
 
@@ -4416,9 +4491,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector.push(Action::ForwardKillResponse {
+        self.action_collector.push(Action::ReplyRpc {
             request_id,
-            response,
+            reply: RpcReply::KillInvocation(response),
         });
     }
 
@@ -4439,11 +4514,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPurgeInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PurgeInvocation(response),
+        });
     }
 
     fn reply_to_purge_journal(
@@ -4463,11 +4537,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPurgeJournalResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PurgeJournal(response),
+        });
     }
 
     fn reply_to_resume_invocation(
@@ -4487,11 +4560,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardResumeInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::ResumeInvocation(response),
+        });
     }
 
     fn reply_to_pause_invocation(
@@ -4511,11 +4583,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             response
         );
 
-        self.action_collector
-            .push(Action::ForwardPauseInvocationResponse {
-                request_id,
-                response,
-            });
+        self.action_collector.push(Action::ReplyRpc {
+            request_id,
+            reply: RpcReply::PauseInvocation(response),
+        });
     }
 
     fn send_submit_notification_if_needed(
@@ -4533,12 +4604,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 invocation_id,
             );
 
-            self.action_collector
-                .push(Action::IngressSubmitNotification {
+            self.action_collector.push(Action::ReplyRpc {
+                request_id,
+                reply: RpcReply::Submitted(SubmittedInvocationNotification {
                     request_id,
                     execution_time,
                     is_new_invocation,
-                });
+                }),
+            });
         }
     }
 
@@ -4900,14 +4973,26 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .map_err(Error::Storage)
     }
 
+    /// Drops the journal of the given invocation.
+    ///
+    /// If `delete_pending_timers` is set, the sleep timers of the journal that did not fire yet
+    /// are deleted too. This is required when the invocation id can be reused (see
+    /// [`InvocationUuid::is_deterministic`]), otherwise the leftover timers would complete
+    /// journal entries of the next invocation with the same id.
     async fn do_drop_journal(
         &mut self,
         invocation_id: &InvocationId,
         journal_length: EntryIndex,
         pinned_protocol_version: Option<ServiceProtocolVersion>,
+        delete_pending_timers: bool,
     ) -> Result<(), Error>
     where
-        S: WriteJournalTable + journal_table_v2::WriteJournalTable + WriteJournalEventsTable,
+        S: ReadJournalTable
+            + WriteJournalTable
+            + journal_table_v2::ReadJournalTable
+            + journal_table_v2::WriteJournalTable
+            + WriteJournalEventsTable
+            + WriteTimerTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4916,10 +5001,18 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         if pinned_protocol_version.is_none_or(|sp| sp < ServiceProtocolVersion::V4) {
+            if delete_pending_timers {
+                self.do_delete_pending_sleep_timers_v1(*invocation_id, journal_length)
+                    .await?;
+            }
             WriteJournalTable::delete_journal(self.storage, invocation_id, journal_length)
                 .map_err(Error::Storage)?;
         };
         if pinned_protocol_version.is_none_or(|sp| sp >= ServiceProtocolVersion::V4) {
+            if delete_pending_timers {
+                self.do_delete_pending_sleep_timers_v2(*invocation_id, journal_length)
+                    .await?;
+            }
             journal_table_v2::WriteJournalTable::delete_journal(
                 self.storage,
                 invocation_id,
@@ -4929,6 +5022,95 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         };
         WriteJournalEventsTable::delete_journal_events(self.storage, invocation_id)
             .map_err(Error::Storage)?;
+        Ok(())
+    }
+
+    /// Deletes the timers of all the sleep entries in the journal (v1) that are not completed yet.
+    ///
+    /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
+    /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
+    /// of an invocation.
+    async fn do_delete_pending_sleep_timers_v1(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
+    where
+        S: ReadJournalTable + WriteTimerTable,
+    {
+        let pending_sleeps: Vec<(EntryIndex, EnrichedRawEntry)> =
+            ReadJournalTable::get_journal(self.storage, &invocation_id, journal_length)?
+                .try_filter_map(|(journal_index, journal_entry)| async move {
+                    if let JournalEntry::Entry(journal_entry) = journal_entry
+                        && let EnrichedEntryHeader::Sleep {
+                            is_completed: false,
+                        } = journal_entry.header()
+                    {
+                        return Ok(Some((journal_index, journal_entry)));
+                    }
+                    Ok(None)
+                })
+                .try_collect()
+                .await?;
+
+        for (journal_index, journal_entry) in pending_sleeps {
+            assert!(let
+                Entry::Sleep(SleepEntry { wake_up_time, .. }) =
+                    ProtobufRawEntryCodec::deserialize(EntryType::Sleep, journal_entry.into_inner().1)?
+            );
+            let (timer_key, _) =
+                Timer::complete_journal_entry(wake_up_time, invocation_id, journal_index);
+            debug!(timer=?timer_key, "Purging leftover timer");
+            self.do_delete_timer(timer_key).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Deletes the timers of all the sleep commands in the journal (v2) that have no completion yet.
+    ///
+    /// Note: This is mitigation for the lack of canonical invocation id (so far) and this should be removed
+    /// once canonical IDs are used since this is a **heavy** process that requires reading the entire journal
+    /// of an invocation.
+    async fn do_delete_pending_sleep_timers_v2(
+        &mut self,
+        invocation_id: InvocationId,
+        journal_length: EntryIndex,
+    ) -> Result<(), Error>
+    where
+        S: journal_table_v2::ReadJournalTable + WriteTimerTable,
+    {
+        let mut sleeps = HashMap::new();
+        {
+            let mut journal = std::pin::pin!(journal_table_v2::ReadJournalTable::get_journal(
+                self.storage,
+                invocation_id,
+                journal_length,
+            )?);
+
+            while let Some((_, entry)) = journal.try_next().await? {
+                match &entry.inner {
+                    RawEntry::Command(cmd) if cmd.command_type() == CommandType::Sleep => {
+                        let sleep = cmd.decode::<ServiceProtocolV4Codec, SleepCommand>()?;
+                        sleeps.insert(sleep.completion_id, sleep.wake_up_time);
+                    }
+                    RawEntry::Notification(notification) => {
+                        if let NotificationId::CompletionId(completion_id) = notification.id() {
+                            sleeps.remove(&completion_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        for (completion_id, wake_up_time) in sleeps {
+            let (timer_key, _) =
+                Timer::complete_journal_entry(wake_up_time.as_u64(), invocation_id, completion_id);
+            debug!(timer=?timer_key, "Purging leftover timer");
+            self.do_delete_timer(timer_key).await?;
+        }
+
         Ok(())
     }
 
@@ -5064,7 +5246,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .push(Action::AbortInvocation { invocation_id });
     }
 
-    async fn do_mutate_state(&mut self, state_mutation: &ExternalStateMutation) -> Result<(), Error>
+    async fn do_mutate_state(&mut self, state_mutation: &StateMutationInput) -> Result<(), Error>
     where
         S: ReadStateTable + WriteStateTable,
     {
@@ -5112,12 +5294,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     async fn mutate_state(
         &mut self,
-        state_mutation: &ExternalStateMutation,
+        state_mutation: &StateMutationInput,
     ) -> StorageResult<vqueue_table::Status>
     where
         S: ReadStateTable + WriteStateTable,
     {
-        let ExternalStateMutation {
+        let StateMutationInput {
             service_id,
             version,
             state,
@@ -5287,7 +5469,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable + WriteFsmTable,
     {
         let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-        let service_id = &state_mutation.service_id;
+        let (id, input) = state_mutation.into_parts();
+        let service_id = &input.service_id;
         // we don't pass the limit key here yet
         let limit_key = LimitKey::None;
 
@@ -5301,8 +5484,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             scope: service_id.scope.clone(),
         };
 
-        // todo: Make this a use-facing ID, generated at ingress.
-        let entry_id = EntryId::from(StateMutationId::generate(service_id.partition_key()));
+        // The id must be the same on all replicas (see #5416). Use the id assigned by the admin api
+        // if present or otherwise derive it from the position of the command in the log.
+        let partition_key = service_id.partition_key();
+        let mutation_id = match id {
+            Some(id) => {
+                if self
+                    .storage
+                    .get_vqueue_entry_status(partition_key, &EntryId::from(&id))
+                    .await?
+                    .is_some()
+                {
+                    debug!("Ignoring duplicate state mutation {id} for {service_id}");
+                    return Ok(());
+                }
+                id
+            }
+            None => StateMutationId::from_parts(
+                partition_key,
+                0, // to make sure that future ids don't clash with this one as they are Ulids
+                u128::from(self.record_lsn.as_u64()),
+            ),
+        };
+        let entry_id = EntryId::from(mutation_id);
         let qid = VQueue::infer_vqueue_id_from_invocation(
             service_id.partition_key(),
             &target,
@@ -5329,7 +5533,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         );
 
         self.storage
-            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, state_mutation);
+            .put_vqueue_input_payload(&qid, self.record_lsn, &entry_id, input);
 
         Ok(())
     }

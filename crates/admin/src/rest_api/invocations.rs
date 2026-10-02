@@ -345,6 +345,7 @@ pub struct RestartAsNewInvocationQueryParams {
     /// By default the invocation restarts from the beginning (equivalent to 'from = 0'), retaining only the input of the original invocation.
     /// When greater than 0, the new invocation will copy the old journal prefix up to 'from' included, plus eventual completions for commands in the given prefix.
     /// If the journal prefix contains commands that have not been completed, this operation will fail.
+    #[param(value_type = Option<u32>)]
     pub from: Option<EntryIndex>,
     /// When restarting from journal prefix, provide a deployment id to use to replace the currently pinned deployment id.
     /// If 'latest', use the latest deployment id. If 'keep', keeps the pinned deployment id.

@@ -74,6 +74,8 @@ pub(crate) enum HandlerError {
     PrivateService,
     #[error("cannot read body: {0:?}")]
     Body(GenericError),
+    #[error("invalid request body: {0}")]
+    BadRequestBody(serde_json::Error),
     #[error("too many requests, the ingress is overloaded. Retry later.")]
     TooManyRequests,
     #[error("the invocation exists but has not completed yet")]
@@ -192,6 +194,7 @@ impl HandlerError {
             | HandlerError::LimitKeyWithoutScope
             | HandlerError::InvalidLimitKey(_)
             | HandlerError::BadScopeValue(_)
+            | HandlerError::BadRequestBody(_)
             | HandlerError::BadPath(_) => StatusCode::BAD_REQUEST,
             HandlerError::MethodNotAllowed => StatusCode::METHOD_NOT_ALLOWED,
             HandlerError::NotReady => StatusCode::from_u16(470).unwrap(),

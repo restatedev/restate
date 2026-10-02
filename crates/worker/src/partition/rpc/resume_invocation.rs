@@ -8,24 +8,20 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_types::identifiers::InvocationId;
-use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, ResumeInvocationRequest,
 };
-use restate_types::net::partition_processor::ResumeInvocationRpcResponse;
+use restate_types::net::partition_processor::{
+    ResumeInvocationRpcRequest, ResumeInvocationRpcResponse,
+};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-    pub(super) update_deployment_id: PatchDeploymentId,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<ResumeInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
 where
     // Needed for the non-VQueue path, which resolves the deployment here (see `handle`).
     TSchemas: DeploymentResolver,
@@ -33,12 +29,13 @@ where
 {
     async fn handle(
         self,
-        Request {
-            request_id,
+        ResumeInvocationRpcRequest {
+            header,
             invocation_id,
-            update_deployment_id,
-        }: Request,
-    ) -> Decision {
+            deployment_id: update_deployment_id,
+        }: ResumeInvocationRpcRequest,
+    ) -> Decision<ResumeInvocationRpcResponse> {
+        let request_id = header.request_id;
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
@@ -61,7 +58,7 @@ where
                 Decision::Propose(RpcProposal::new(
                     commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                         invocation_id,
-                        update_deployment_id: Some(update_deployment_id),
+                        update_deployment_id: Some(update_deployment_id.into()),
                         update_pinned_deployment_id: None,
                         run_at: None,
                         response_sink: Some(InvocationMutationResponseSink::Ingress(
@@ -78,7 +75,7 @@ where
                 Decision::Propose(RpcProposal::new(
                     commands::ResumeInvocationCommand::from(ResumeInvocationRequest {
                         invocation_id,
-                        update_deployment_id: Some(update_deployment_id),
+                        update_deployment_id: Some(update_deployment_id.into()),
                         update_pinned_deployment_id: None,
                         run_at: None,
                         response_sink: Some(InvocationMutationResponseSink::Ingress(
@@ -89,13 +86,13 @@ where
                 ))
             }
             Ok(InvocationStatus::Scheduled(_)) | Ok(InvocationStatus::Inboxed(_)) => {
-                Decision::Reply(Ok(ResumeInvocationRpcResponse::NotStarted.into()))
+                Decision::Reply(Ok(ResumeInvocationRpcResponse::NotStarted))
             }
             Ok(InvocationStatus::Completed(_)) => {
-                Decision::Reply(Ok(ResumeInvocationRpcResponse::Completed.into()))
+                Decision::Reply(Ok(ResumeInvocationRpcResponse::Completed))
             }
             Ok(InvocationStatus::Free) => {
-                Decision::Reply(Ok(ResumeInvocationRpcResponse::NotFound.into()))
+                Decision::Reply(Ok(ResumeInvocationRpcResponse::NotFound))
             }
             Err(storage_error) => Decision::Reply(Err(PartitionProcessorRpcError::Internal(
                 storage_error.to_string(),
@@ -115,6 +112,8 @@ mod tests {
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
     use restate_test_util::assert;
+    use restate_types::identifiers::InvocationId;
+    use restate_types::invocation::client::PatchDeploymentId;
     use restate_types::journal_v2::UnresolvedFuture;
     use restate_types::sharding::WithPartitionKey;
     use rstest::rstest;
@@ -154,13 +153,14 @@ mod tests {
     ) -> Decision {
         RpcHandler::handle(
             RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
-            Request {
-                request_id,
+            ResumeInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(request_id),
                 invocation_id,
-                update_deployment_id,
+                deployment_id: update_deployment_id.into(),
             },
         )
         .await
+        .map_response(Into::into)
     }
 
     /// A VQueue Invoked invocation is resumed by proposing the persisted ResumeInvocation command

@@ -12,6 +12,7 @@ use std::net::IpAddr;
 use std::num::NonZeroU64;
 use std::path::PathBuf;
 
+use clap::builder::TypedValueParser;
 use serde::Serialize;
 use serde_with::{serde_as, skip_serializing_none};
 
@@ -153,7 +154,7 @@ pub struct CommonOptionCliOverride {
 
     /// Tracing Endpoint
     ///
-    /// Specify the tracing endpoint to send traces to.
+    /// Specify the tracing endpoint to send user-invocation traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     #[clap(long, env = "RESTATE_TRACING_ENDPOINT", global = true)]
@@ -161,14 +162,17 @@ pub struct CommonOptionCliOverride {
 
     /// Runtime Tracing Endpoint
     ///
-    /// Overrides [`Self::tracing_endpoint`] for runtime traces
+    /// Deprecated and ignored; will be removed in v1.9.0.
     ///
-    /// Specify the tracing endpoint to send runtime traces to.
-    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
-    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
-    ///
-    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-    #[clap(long, env = "RESTATE_TRACING_RUNTIME_ENDPOINT", global = true)]
+    /// Since v1.8.0
+    #[clap(
+        long,
+        env = "RESTATE_TRACING_RUNTIME_ENDPOINT",
+        global = true,
+        hide = true,
+        value_parser = deprecated_tracing_option("--tracing-runtime-endpoint", clap::builder::StringValueParser::new())
+    )]
+    #[serde(skip_serializing)]
     pub tracing_runtime_endpoint: Option<String>,
 
     /// Services Tracing Endpoint
@@ -185,22 +189,23 @@ pub struct CommonOptionCliOverride {
 
     /// Distributed Tracing JSON Export Path
     ///
-    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
-    /// Each trace file will start with the `trace` prefix.
+    /// Deprecated and ignored; will be removed in v1.9.0.
     ///
-    /// If unset, no traces will be written to file.
-    ///
-    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
-    ///
-    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
-    #[clap(long, global = true)]
+    /// Since v1.8.0
+    #[clap(long, global = true, hide = true,
+        value_parser = deprecated_tracing_option("--tracing-json-path", clap::builder::PathBufValueParser::new()))]
+    #[serde(skip_serializing)]
     pub tracing_json_path: Option<PathBuf>,
 
     /// Tracing Filter
     ///
-    /// Distributed tracing exporter filter.
-    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    #[clap(long, global = true)]
+    /// Deprecated and ignored; will be removed in v1.9.0.
+    /// This never filtered user-invocation spans.
+    ///
+    /// Since v1.8.0
+    #[clap(long, global = true, hide = true,
+        value_parser = deprecated_tracing_option("--tracing-filter", clap::builder::StringValueParser::new()))]
+    #[serde(skip_serializing)]
     pub tracing_filter: Option<String>,
 
     /// Logging Filter
@@ -221,4 +226,50 @@ pub struct CommonOptionCliOverride {
     /// Disable ANSI terminal codes for logs. This is useful when the log collector doesn't support processing ANSI terminal codes.
     #[clap(long, global = true)]
     pub log_disable_ansi_codes: Option<bool>,
+}
+
+fn deprecated_tracing_option<P: TypedValueParser>(
+    name: &'static str,
+    parser: P,
+) -> impl TypedValueParser<Value = P::Value> {
+    parser.map(move |value| {
+        // Argument parsing happens before logging is initialized.
+        eprintln!("warning: {name} is deprecated and ignored; it will be removed in v1.9.0");
+        value
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::CommonOptionCliOverride;
+
+    #[test]
+    fn runtime_tracing_flags_are_accepted_but_not_forwarded_to_configuration() {
+        let options = CommonOptionCliOverride::try_parse_from([
+            "restate-server",
+            "--tracing-runtime-endpoint",
+            "http://unused:4317",
+            "--tracing-json-path",
+            "unused",
+            "--tracing-filter",
+            "trace",
+            "--tracing-endpoint",
+            "http://localhost:4317",
+        ])
+        .unwrap();
+        assert!(options.tracing_runtime_endpoint.is_some());
+        assert!(options.tracing_json_path.is_some());
+        assert!(options.tracing_filter.is_some());
+        let serialized = serde_json::to_value(options).unwrap();
+        assert_eq!(serialized["tracing-endpoint"], "http://localhost:4317");
+        for name in [
+            "tracing-runtime-endpoint",
+            "tracing-json-path",
+            "tracing-filter",
+        ] {
+            assert!(serialized.get(name).is_none());
+        }
+    }
 }

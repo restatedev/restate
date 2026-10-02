@@ -22,12 +22,9 @@ use cling::prelude::*;
 // smaller enum would trade for isn't worth the indirection.
 #[allow(clippy::large_enum_variant)]
 pub enum Deployments {
-    /// List the registered deployments
+    // Commands are documented on their own struct.
     List(list::List),
-    /// Add or update deployments through deployment discovery
     Register(register::Register),
-    /// Prints detailed information about a given deployment
     Describe(describe::Describe),
-    /// Remove a drained deployment
     Remove(remove::Remove),
 }

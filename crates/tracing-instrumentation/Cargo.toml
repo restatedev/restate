@@ -31,19 +31,15 @@ metrics = { workspace = true, optional = true }
 metrics-exporter-prometheus = { workspace = true, optional = true }
 nu-ansi-term = "0.50.3"
 opentelemetry = { workspace = true }
-opentelemetry-contrib = { workspace = true, features = ["jaeger_json_exporter", "rt-tokio"] }
-opentelemetry-otlp = { workspace = true, features = ["http-json", "http-proto", "reqwest-client", "tls", "tls-roots", "grpc-tonic"] }
+opentelemetry-otlp = { workspace = true, default-features = false, features = ["trace", "internal-logs", "http-json", "http-proto", "reqwest-client", "grpc-tonic"] }
 opentelemetry-semantic-conventions = { workspace = true, features = ["semconv_experimental"] }
 opentelemetry_sdk = { workspace = true, features = ["rt-tokio", "experimental_trace_batch_span_processor_with_async_runtime"] }
-# OpenTelemetry 0.31's HttpClient implementation requires Reqwest 0.12.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 thiserror = { workspace = true }
 tokio = { workspace = true, optional = true }
-tonic = { workspace = true, features = ["tls-native-roots"]}
+tonic = { workspace = true, features = ["tls-native-roots", "tls-ring"] }
 tracing = { workspace = true }
 tracing-appender = { version = "0.2.3", features = ["parking_lot"] }
 tracing-core = { version = "0.1" }
-tracing-opentelemetry = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["json"] }
 
 [dev-dependencies]

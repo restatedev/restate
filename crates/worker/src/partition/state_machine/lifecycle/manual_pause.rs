@@ -102,11 +102,11 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::state_machine::{Action, RpcReply};
     use googletest::prelude::{all, assert_that, contains, eq, not, pat};
     use restate_storage_api::invocation_status_table::{
         InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -139,9 +139,11 @@ mod tests {
         assert_that!(
             actions,
             all!(
-                contains(pat!(Action::ForwardPauseInvocationResponse {
+                contains(pat!(Action::ReplyRpc {
                     request_id: eq(request_id),
-                    response: eq(PauseInvocationResponse::Accepted)
+                    reply: pat!(RpcReply::PauseInvocation(eq(
+                        PauseInvocationResponse::Accepted
+                    )))
                 })),
                 // The invoker must be told to abort the still-running attempt.
                 contains(matchers::actions::abort_for_id(invocation_id)),
@@ -198,9 +200,11 @@ mod tests {
         assert_that!(
             actions,
             all!(
-                contains(pat!(Action::ForwardPauseInvocationResponse {
+                contains(pat!(Action::ReplyRpc {
                     request_id: eq(request_id),
-                    response: eq(PauseInvocationResponse::Accepted)
+                    reply: pat!(RpcReply::PauseInvocation(eq(
+                        PauseInvocationResponse::Accepted
+                    )))
                 })),
                 not(contains(matchers::actions::abort_for_id(invocation_id))),
             )
@@ -229,9 +233,11 @@ mod tests {
 
         assert_that!(
             actions,
-            contains(pat!(Action::ForwardPauseInvocationResponse {
+            contains(pat!(Action::ReplyRpc {
                 request_id: eq(request_id),
-                response: eq(PauseInvocationResponse::NotFound)
+                reply: pat!(RpcReply::PauseInvocation(eq(
+                    PauseInvocationResponse::NotFound
+                )))
             }))
         );
 

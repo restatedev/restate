@@ -37,19 +37,30 @@ Check that the e2e tests are passing:
 
 ## Releasing the Restate runtime
 
-1. Make sure that the version is set to the new release version `X.Y.Z`. fields in:
-  - [/Cargo.toml](/Cargo.toml)
-  - [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml)
-1. Make sure that [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) is updated if `X.Y.Z` changes the requirements for backward/forward compatible Restate versions.
-1. [Publish the unreleased release notes](/release-notes/README.md#release-process).
-1. Create a tag of the form `vX.Y.Z` and push it to the repository. The tag will trigger the [release.yml](/.github/workflows/release.yml) workflow which runs the unit tests, the e2e tests, creates the docker image of the runtime, builds the CLI/runtime binaries, and prepares a Github draft release.
-1. Manually publish the draft release created by the release automation [here](https://github.com/restatedev/restate/releases).
-1. Bump the version in the [Cargo.toml](/Cargo.toml) to the next patch version with a `-dev` suffix after the release. The `-dev` suffix is helpful for distinguishing between versions that are under development and those that are released.
-1. Upload the Grafana dashboards to the marketplace.
-  - Log into the grafana.com account.
-  - Navigate to My Account -> Org Settings -> My Dashboards.
-  - Click `Details` for the dashboard you want to update.
-  - Scroll to the bottom of the page and click `Upload Revision`.
+Prepare the release first, optionally cut release candidates for testing, then create the final release. Release candidates must be built from the prepared state so that they test what the final release ships.
+
+### Preparing the release
+
+1. Update [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) if `X.Y.Z` changes the backward/forward compatible Restate versions.
+1. [Publish the unreleased release notes](/release-notes/README.md#release-process) as `release-notes/vX.Y.Z.md`.
+
+### Creating release candidates (optional)
+
+Release candidates use the version `X.Y.Z-rc.N`, starting at `N = 1`.
+
+1. Set the version to `X.Y.Z-rc.N` in [/Cargo.toml](/Cargo.toml) and [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml), run `cargo check` to update [Cargo.lock](/Cargo.lock), and commit.
+1. Tag the commit as `vX.Y.Z-rc.N` and push the tag. The [release.yml](/.github/workflows/release.yml) workflow creates a Github pre-release and publishes the docker images and npm packages under `X.Y.Z-rc.N` (npm dist-tag `next`, docker `latest` is not moved). Homebrew is skipped for pre-releases.
+1. Set the version back to `X.Y.Z-dev`, or keep the rc version if the next candidate follows shortly.
+
+Repeat with an incremented `N` for every fix that needs validation. Update the release notes and compatibility information before the next candidate if a fix requires it.
+
+### Creating the final release
+
+1. Set the version to `X.Y.Z` in [/Cargo.toml](/Cargo.toml) and [charts/restate-helm/Chart.yaml](/charts/restate-helm/Chart.yaml).
+1. Tag the commit as `vX.Y.Z` and push the tag. The [release.yml](/.github/workflows/release.yml) workflow runs the unit and e2e tests, builds the binaries and docker images, creates the [Github release](https://github.com/restatedev/restate/releases), and publishes the docker images, npm packages and Homebrew formulae.
+1. Verify that the workflow succeeded and the artifacts are available.
+1. Bump the version to the next patch version with a `-dev` suffix to distinguish development builds from releases.
+1. Upload the Grafana dashboards to the marketplace: log into grafana.com, go to My Account -> Org Settings -> My Dashboards, open `Details` for the dashboard, and click `Upload Revision` at the bottom of the page.
 
 **Note:**
 Don't immediately create a release branch after a MAJOR/MINOR release.

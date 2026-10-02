@@ -86,6 +86,7 @@ pub struct ServiceMetadata {
     /// # Revision
     ///
     /// Latest revision of the service.
+    #[cfg_attr(feature = "utoipa-schema", schema(value_type = u32))]
     pub revision: ServiceRevision,
 
     /// # Public

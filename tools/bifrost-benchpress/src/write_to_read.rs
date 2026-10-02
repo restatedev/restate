@@ -103,6 +103,7 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
                     )?
                     .start("writer")?;
                 let sender = appender_handle.sender();
+                let mut capacity_poller = sender.capacity_poller();
                 let start = Instant::now();
                 for counter in 1..=args.num_records {
                     let start = Instant::now();
@@ -111,7 +112,7 @@ pub async fn run(_common_args: &Arguments, args: &WriteToReadOpts, bifrost: Bifr
                         blob: blob.clone(),
                     };
                     // enqueue() never blocks; apply back-pressure when the buffer is exhausted
-                    sender.wait_for_capacity().await;
+                    std::future::poll_fn(|cx| capacity_poller.poll_available(cx)).await;
                     sender.enqueue(record.with_no_keys()).unwrap();
                     append_latency.record(start.elapsed().as_nanos() as u64)?;
                     if counter % 10000 == 0 {
