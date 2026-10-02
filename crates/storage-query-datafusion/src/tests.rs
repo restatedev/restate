@@ -24,7 +24,8 @@ use googletest::unordered_elements_are;
 use restate_limiter::{Level, LimitKey};
 use restate_storage_api::Transaction;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, PreFlightInvocationMetadata,
+    ScheduledInvocation, WriteInvocationStatusTable,
 };
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::vqueue_table::stats::WaitStats;
@@ -38,6 +39,7 @@ use restate_types::journal_v2::NotificationId;
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::EntryId;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString, RestrictedValue};
@@ -309,6 +311,51 @@ async fn query_sys_invocation() {
         .remove(0)
         .unwrap();
     assert_rows(records);
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_projects_scheduled_start_at() {
+    let invocation_id = InvocationId::mock_random();
+    let scheduled_at = MillisSinceEpoch::new(1_767_225_600_000);
+    let scheduled_start_at = MillisSinceEpoch::new(1_767_229_200_000);
+    let mut metadata = PreFlightInvocationMetadata::mock();
+    metadata.execution_time = Some(scheduled_start_at);
+
+    let mut engine = MockQueryEngine::create().await;
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Scheduled(ScheduledInvocation::from_pre_flight_invocation_metadata(
+            metadata,
+            scheduled_at,
+        )),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute(format!(
+            "SELECT id, scheduled_start_at FROM sys_invocation WHERE id = '{invocation_id}'"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => LargeStringArray: eq(invocation_id.to_string()),
+                "scheduled_start_at" => TimestampMillisecondArray: eq(scheduled_start_at.as_u64() as i64),
+            }
+        ))
+    );
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
