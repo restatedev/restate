@@ -326,7 +326,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: restate.tar
       - name: Install restate snapshot
@@ -369,7 +369,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: restate.tar
       - name: Install restate snapshot
@@ -419,7 +419,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: restate.tar
       - name: Install restate snapshot

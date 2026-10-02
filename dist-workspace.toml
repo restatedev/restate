@@ -78,3 +78,7 @@ container = { image = "ghcr.io/restatedev/dev-tools:1.19.0", host = "aarch64-unk
 [dist.github-custom-runners.x86_64-unknown-linux-musl ]
 runner = "warp-ubuntu-latest-x64-32x"
 container = { image = "ghcr.io/restatedev/dev-tools:1.19.0", host = "x86_64-unknown-linux-musl" }
+
+# download-artifact < v6 can silently leave a truncated file behind when a download stalls
+[dist.github-action-commits]
+"actions/download-artifact" = "v8"
