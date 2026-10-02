@@ -16,7 +16,9 @@ use restate_errors::NotRunningError;
 use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
 use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
-use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
+use restate_types::invocation::{
+    FencingToken, InvocationTarget, ServiceInvocationSpanContext, Source,
+};
 use restate_types::journal_v2::CommandIndex;
 use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_types::time::MillisSinceEpoch;
@@ -82,6 +84,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
             MillisSinceEpoch::UNIX_EPOCH,
             0,
             JournalKind::V2,
+            Source::Internal,
         )))
     }
 
