@@ -10,17 +10,14 @@
 
 use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
 use figment::{
     Figment, Profile,
     providers::{Format, Serialized, Toml},
 };
 
-use restate_cli_util::c_println;
-
 use crate::{
     cli_env::{CliConfig, CliEnv, LOCAL_PROFILE},
-    console::StyledTable,
+    ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter},
 };
 
 /// List the environments of the CLI config file, marking the current one
@@ -47,36 +44,40 @@ pub async fn run_list_environments(
         figment = figment.merge(Toml::file_exact(env.config_file).nested());
     }
 
-    let mut table = Table::new_styled();
-    let header = vec!["CURRENT", "NAME", "ADMIN_BASE_URL"];
-    table.set_styled_header(header);
+    let profiles: Vec<Profile> = figment
+        .profiles()
+        .filter(|profile| *profile != Profile::Global && *profile != Profile::Default)
+        .cloned()
+        .collect();
 
-    for profile in figment.profiles() {
-        if profile == Profile::Global || profile == Profile::Default {
-            continue;
-        }
+    let rows: Vec<[Field; 3]> = profiles
+        .into_iter()
+        .map(|profile| {
+            let admin_base_url = figment
+                .clone()
+                .select(profile.clone())
+                .find_value("admin_base_url")
+                .ok()
+                .and_then(|url| url.as_str().map(str::to_owned));
+            let current = profile == env.environment;
 
-        let figment = figment.clone().select(profile.clone());
+            [
+                Field::with_display(current, if current { "*" } else { "" }),
+                Field::new(profile.as_str().as_str()),
+                Field::with_display(
+                    &admin_base_url,
+                    admin_base_url.as_deref().unwrap_or("(NONE)"),
+                ),
+            ]
+        })
+        .collect();
 
-        let admin_base_url = figment.find_value("admin_base_url").ok();
-
-        let current = if profile == env.environment { "*" } else { "" };
-
-        let row = vec![
-            Cell::new(current),
-            Cell::new(profile.as_str()),
-            Cell::new(
-                admin_base_url
-                    .as_ref()
-                    .and_then(|u| u.as_str())
-                    .unwrap_or("(NONE)"),
-            ),
-        ];
-
-        table.add_row(row);
-    }
-
-    c_println!("{}", table);
-
-    Ok(())
+    let mut f = Formatter::new();
+    f.table(
+        "environments",
+        &["current", "name", "admin_base_url"],
+        rows,
+        IfEmpty::Nothing,
+    );
+    f.finish()
 }
