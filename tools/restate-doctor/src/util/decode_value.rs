@@ -207,7 +207,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::ServiceStatus => decode_protobuf::<VirtualObjectStatus>(value),
         KeyKind::Timers => decode_protobuf::<Timer>(value),
         KeyKind::Promise | KeyKind::ScopedPromise => decode_protobuf::<Promise>(value),
-        KeyKind::Output => decode_protobuf::<ResponseResult>(value),
+        KeyKind::InvocationOutput => decode_protobuf::<ResponseResult>(value),
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),

@@ -10,7 +10,8 @@
 
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::output_table::{
-    ReadOutputTable, ScanOutputTable, ScanOutputTableRange, WriteOutputTable,
+    ReadInvocationOutputTable, ScanInvocationOutputTable, ScanOutputTableRange,
+    WriteInvocationOutputTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -18,14 +19,14 @@ use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::ResponseResult;
 use restate_types::sharding::{PartitionKey, WithPartitionKey};
 
-use crate::TableKind::Output;
+use crate::TableKind::InvocationOutput;
 use crate::error::break_on_err;
 use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 define_table_key!(
-    Output,
-    KeyKind::Output,
+    InvocationOutput,
+    KeyKind::InvocationOutput,
     InvocationOutputKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
@@ -54,7 +55,7 @@ fn delete_output<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId
     storage.delete_key(&key)
 }
 
-fn get_output<S: StorageAccess>(
+fn get_invocation_output<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<Option<ResponseResult>> {
@@ -67,13 +68,16 @@ fn get_output<S: StorageAccess>(
     storage.get_value_proto(outbox_key)
 }
 
-impl ReadOutputTable for PartitionStore {
-    async fn get_output(&mut self, invocation_id: &InvocationId) -> Result<Option<ResponseResult>> {
-        get_output(self, invocation_id)
+impl ReadInvocationOutputTable for PartitionStore {
+    async fn get_invocation_output(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<ResponseResult>> {
+        get_invocation_output(self, invocation_id)
     }
 }
 
-impl ScanOutputTable for PartitionStore {
+impl ScanInvocationOutputTable for PartitionStore {
     fn for_each_output<
         F: FnMut((InvocationId, ResponseResult)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
@@ -118,18 +122,25 @@ impl ScanOutputTable for PartitionStore {
     }
 }
 
-impl ReadOutputTable for PartitionStoreTransaction<'_> {
-    async fn get_output(&mut self, invocation_id: &InvocationId) -> Result<Option<ResponseResult>> {
-        get_output(self, invocation_id)
+impl ReadInvocationOutputTable for PartitionStoreTransaction<'_> {
+    async fn get_invocation_output(
+        &mut self,
+        invocation_id: &InvocationId,
+    ) -> Result<Option<ResponseResult>> {
+        get_invocation_output(self, invocation_id)
     }
 }
 
-impl WriteOutputTable for PartitionStoreTransaction<'_> {
-    fn put_output(&mut self, invocation_id: &InvocationId, result: &ResponseResult) -> Result<()> {
+impl WriteInvocationOutputTable for PartitionStoreTransaction<'_> {
+    fn put_invocation_output(
+        &mut self,
+        invocation_id: &InvocationId,
+        result: &ResponseResult,
+    ) -> Result<()> {
         put_output(self, invocation_id, result)
     }
 
-    fn delete_output(&mut self, invocation_id: &InvocationId) -> Result<()> {
+    fn delete_invocation_output(&mut self, invocation_id: &InvocationId) -> Result<()> {
         delete_output(self, invocation_id)
     }
 }

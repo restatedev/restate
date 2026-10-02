@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::output_table::{ScanOutputTable, ScanOutputTableRange};
+use restate_storage_api::output_table::{ScanInvocationOutputTable, ScanOutputTableRange};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
 

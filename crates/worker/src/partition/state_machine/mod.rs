@@ -50,7 +50,7 @@ use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::{OpaqueMessage, OutboxMessage, WriteOutboxTable};
-use restate_storage_api::output_table::{ReadOutputTable, WriteOutputTable};
+use restate_storage_api::output_table::{ReadInvocationOutputTable, WriteInvocationOutputTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -393,8 +393,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
-            + WriteOutputTable
-            + ReadOutputTable,
+            + WriteInvocationOutputTable
+            + ReadInvocationOutputTable,
     {
         match envelope.kind() {
             CommandKind::Unknown => Err(Error::UnknownCommandKind),
@@ -719,7 +719,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalTable
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
-            + ReadOutputTable,
+            + ReadInvocationOutputTable,
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
@@ -1057,7 +1057,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<Option<ServiceInvocation>, Error>
     where
         S: ReadInvocationStatusTable
-            + ReadOutputTable
+            + ReadInvocationOutputTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -1564,7 +1564,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1602,7 +1602,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1678,7 +1678,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteTimerTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1838,7 +1838,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteTimerTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1994,7 +1994,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalEventsTable
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -2157,7 +2157,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2199,7 +2199,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2433,8 +2433,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
-            + ReadOutputTable
-            + WriteOutputTable,
+            + ReadInvocationOutputTable
+            + WriteInvocationOutputTable,
     {
         let (key, value) = timer_value.into_inner();
         self.do_delete_timer(key).await?;
@@ -2565,7 +2565,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -2600,7 +2600,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteOutputTable,
+            + WriteInvocationOutputTable,
     {
         if matches!(
             (&invocation_status, &effect.kind),
@@ -2817,7 +2817,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteInboxTable
             + WriteVirtualObjectStatusTable
             + WriteJournalEventsTable
-            + WriteOutputTable
+            + WriteInvocationOutputTable
             + ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -4164,7 +4164,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<(), Error>
     where
         S: ReadInvocationStatusTable
-            + ReadOutputTable
+            + ReadInvocationOutputTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -4571,7 +4571,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn do_free_invocation(&mut self, invocation_id: &InvocationId) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteOutputTable,
+        S: WriteInvocationStatusTable + WriteInvocationOutputTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4585,7 +4585,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .features()
             .is_write_output_table_enabled()
         {
-            self.storage.delete_output(invocation_id)?;
+            self.storage.delete_invocation_output(invocation_id)?;
         }
 
         self.storage

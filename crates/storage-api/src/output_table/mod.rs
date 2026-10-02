@@ -17,8 +17,8 @@ use restate_types::sharding::KeyRange;
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
-pub trait ReadOutputTable {
-    fn get_output(
+pub trait ReadInvocationOutputTable {
+    fn get_invocation_output(
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<Option<ResponseResult>>> + Send;
@@ -34,7 +34,7 @@ pub enum ScanOutputTableRange {
     InvocationId(RangeInclusive<InvocationId>),
 }
 
-pub trait ScanOutputTable {
+pub trait ScanInvocationOutputTable {
     fn for_each_output<
         F: FnMut((InvocationId, ResponseResult)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
@@ -44,8 +44,12 @@ pub trait ScanOutputTable {
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait WriteOutputTable {
-    fn put_output(&mut self, invocation_id: &InvocationId, result: &ResponseResult) -> Result<()>;
+pub trait WriteInvocationOutputTable {
+    fn put_invocation_output(
+        &mut self,
+        invocation_id: &InvocationId,
+        result: &ResponseResult,
+    ) -> Result<()>;
 
-    fn delete_output(&mut self, invocation_id: &InvocationId) -> Result<()>;
+    fn delete_invocation_output(&mut self, invocation_id: &InvocationId) -> Result<()>;
 }

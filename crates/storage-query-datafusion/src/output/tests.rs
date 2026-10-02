@@ -16,7 +16,7 @@ use googletest::all;
 use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
-use restate_storage_api::output_table::WriteOutputTable;
+use restate_storage_api::output_table::WriteInvocationOutputTable;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
@@ -46,12 +46,12 @@ async fn get_outputs() {
 
     {
         let mut tx = engine.partition_store().transaction();
-        tx.put_output(
+        tx.put_invocation_output(
             &success_id,
             &ResponseResult::Success(Bytes::from_static(b"{\"greeting\":\"hi\"}")),
         )
         .unwrap();
-        tx.put_output(&failure_id, &ResponseResult::Failure(failure.clone()))
+        tx.put_invocation_output(&failure_id, &ResponseResult::Failure(failure.clone()))
             .unwrap();
         tx.commit().await.unwrap();
     }

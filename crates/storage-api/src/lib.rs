@@ -136,8 +136,8 @@ pub trait Transaction:
     + vqueue_table::ReadVQueueTable
     + vqueue_table::WriteVQueueTable
     + lock_table::WriteLockTable
-    + output_table::WriteOutputTable
-    + output_table::ReadOutputTable
+    + output_table::WriteInvocationOutputTable
+    + output_table::ReadInvocationOutputTable
     + Send
 {
     fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;

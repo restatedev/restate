@@ -13,7 +13,7 @@
 use anyhow::{Result, bail};
 use cling::prelude::*;
 use comfy_table::Table;
-use restate_partition_store::output_table::InvocationOutputKey;
+use restate_partition_store::invocation_output_table::InvocationOutputKey;
 use rocksdb::{IteratorMode, ReadOptions};
 use strum::VariantArray;
 
@@ -443,7 +443,7 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
         KeyKind::Lock => LockKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
-        KeyKind::Output => InvocationOutputKey::deserialize_from(&mut cursor)
+        KeyKind::InvocationOutput => InvocationOutputKey::deserialize_from(&mut cursor)
             .ok()
             .map(|k| format!("{k:?}")),
     };
