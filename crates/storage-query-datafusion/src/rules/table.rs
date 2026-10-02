@@ -10,12 +10,12 @@
 
 use super::row::append_rule_row;
 use super::schema::SysRulesBuilder;
-use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::common::DataFusionError;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -29,7 +29,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc::Sender;
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     metadata_store_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 ) -> datafusion::common::Result<()> {
@@ -40,7 +40,7 @@ pub(crate) fn register_self(
             rule_book_observer,
         }),
     );
-    ctx.register_non_partitioned_table("sys_rules", Arc::new(table))
+    ctx.register_table("sys_rules", Arc::new(table)).map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

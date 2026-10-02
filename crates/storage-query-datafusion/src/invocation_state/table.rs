@@ -8,165 +8,54 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::fmt::Debug;
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::DataFusionError;
-use datafusion::physical_plan::metrics::Time;
-use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use datafusion::physical_plan::{PhysicalExpr, SendableRecordBatchStream};
-use tokio::sync::mpsc::Sender;
+use datafusion::execution::context::SessionContext;
 
-use restate_partition_store::PartitionStoreManager;
-use restate_types::identifiers::PartitionId;
-use restate_types::sharding::KeyRange;
-use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::PartitionQueryAccess;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::invocation_state::row::append_invocation_state_row;
 use crate::invocation_state::schema::{SysInvocationStateBuilder, sys_invocation_state_sort_order};
+use crate::live_scanners::LivePartitionScanner;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
-use crate::table_providers::{PartitionedTableProvider, ScanPartition};
-use crate::table_util::Builder;
+use crate::table_providers::PartitionedTableProvider;
 
 const NAME: &str = "sys_invocation_state";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    status: Option<impl StatusHandle + Send + Sync + Debug + Clone + 'static>,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_partition_scanner = match status {
-        Some(status_handle) => {
-            let status_scanner = Arc::new(StatusScanner {
-                status_handle,
-                partition_store_manager,
-            }) as Arc<dyn ScanPartition>;
-            Some(status_scanner)
-        }
-        None => None,
-    };
-
     let schema = SysInvocationStateBuilder::schema();
     let statistics = TableStatisticsBuilder::new(schema.clone())
         .with_num_rows_estimate(RowEstimate::Small)
         .with_partition_key()
         .with_primary_key("id");
-
-    let status_table = PartitionedTableProvider::new(
+    let table = PartitionedTableProvider::new(
         partition_selector,
         schema,
         sys_invocation_state_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_partition_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     )
     .with_statistics(statistics.build());
-    ctx.register_partitioned_table(NAME, Arc::new(status_table))
+    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
 }
 
-async fn partition_key_range(
-    partition_store_manager: &PartitionStoreManager,
-    partition_id: PartitionId,
-) -> datafusion::common::Result<KeyRange> {
-    partition_store_manager
-        .get_local_partition_if_open(partition_id)
-        .await
-        .ok_or_else(|| {
-            let err = anyhow!("expecting a partition store");
-            DataFusionError::External(err.into())
-        })
-        .map(|partition| partition.key_range)
-}
-
-#[derive(derive_more::Debug, Clone)]
-struct StatusScanner<S> {
-    status_handle: S,
-    #[debug(skip)]
-    partition_store_manager: Arc<PartitionStoreManager>,
-}
-
-impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for StatusScanner<S> {
-    fn scan_partition(
-        &self,
-        partition_id: PartitionId,
-        range: KeyRange,
-        projection: SchemaRef,
-        _predicate: Option<Arc<dyn PhysicalExpr>>,
-        batch_size: usize,
-        limit: Option<usize>,
-        _elapsed_compute: Time,
-    ) -> anyhow::Result<SendableRecordBatchStream> {
-        let status = self.status_handle.clone();
-        let partition_store_manager = self.partition_store_manager.clone();
-        let schema = projection.clone();
-        let mut stream_builder = RecordBatchReceiverStream::builder(projection, 1);
-        let tx = stream_builder.tx();
-
-        let background_task = async move {
-            // Validate the partition store exists locally, then clamp the requested
-            // range to the partition's own key range.
-            let partition_range =
-                partition_key_range(&partition_store_manager, partition_id).await?;
-
-            // Filter the invoker status by the *requested* `range`, not the full
-            // partition range. An `id IN (...)` predicate expands into one point
-            // read per key, and several point reads can land on the same partition.
-            // Reading the full partition range on each would re-emit every in-flight
-            // invocation in that partition once per point read, which then gets
-            // multiplied by the `sys_invocation` view's join against this table.
-            let range = range.intersect(&partition_range).unwrap_or(range);
-            match limit {
-                Some(limit) => {
-                    for_each_state(
-                        schema,
-                        tx,
-                        status.read_status(range).await.take(limit),
-                        batch_size,
-                    )
-                    .await
-                }
-                None => {
-                    for_each_state(schema, tx, status.read_status(range).await, batch_size).await
-                }
-            }
-            Ok(())
-        };
-
-        stream_builder.spawn(background_task);
-        Ok(stream_builder.build())
-    }
-}
-
-async fn for_each_state<'a, I>(
-    schema: SchemaRef,
-    tx: Sender<datafusion::common::Result<RecordBatch>>,
-    rows: I,
-    batch_size: usize,
-) where
-    I: Iterator<Item = InvocationStatusReport> + 'a,
-{
-    let mut builder = SysInvocationStateBuilder::new(schema.clone());
-    for row in rows {
-        append_invocation_state_row(&mut builder, row);
-        if builder.num_rows() >= batch_size {
-            let batch = builder.finish_and_new();
-            if tx.send(batch).await.is_err() {
-                // not sure what to do here?
-                // the other side has hung up on us.
-                // we probably don't want to panic, is it will cause the entire process to exit
-                return;
-            }
-        }
-    }
-    if !builder.empty() {
-        let result = builder.finish();
-        let _ = tx.send(result).await;
-    }
+pub(crate) fn register_local_scanner(
+    access: Arc<dyn PartitionQueryAccess>,
+    manager: &RemoteScannerManager,
+) {
+    manager.register_partition_scanner(
+        NAME,
+        Arc::new(LivePartitionScanner::new(
+            access,
+            |access, partition, keys| access.scan_invoker_status(partition, keys),
+            append_invocation_state_row,
+        )),
+    );
 }
