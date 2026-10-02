@@ -461,7 +461,7 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
 
         let data_stream = WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
             query_result.stream,
-            request.query,
+            query_result.metadata,
         )
         .map_err(df_error_to_status)?
         .map(|item| {
