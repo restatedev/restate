@@ -24,10 +24,10 @@ define_table!(
         /// Node generation
         gen_node_id: DataType::Utf8,
 
-        /// Observed target run mode of partition (LEADER, FOLLOWER)
+        /// Observed target run mode of partition (leader, follower)
         target_mode: DataType::Utf8,
 
-        /// Effective partition run mode of partition (LEADER, BECOMING_LEADING, FOLLOWER)
+        /// Effective partition run mode of partition (candidate, becoming_leader, leader, follower)
         effective_mode: DataType::Utf8,
 
         /// Last updated

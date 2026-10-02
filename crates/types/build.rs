@@ -117,6 +117,10 @@ fn build_restate_proto(out_dir: &Path) -> std::io::Result<()> {
             "#[derive(::strum::Display, ::restate_encoding::NetSerde, ::bilrost::Enumeration)]",
         )
         .enum_attribute(
+            "DetailedRunMode",
+            "#[strum(serialize_all = \"snake_case\")]",
+        )
+        .enum_attribute(
             "BrokenReason",
             "#[derive(::strum::Display, ::restate_encoding::NetSerde, ::bilrost::Enumeration)]",
         )
