@@ -4,8 +4,9 @@
 
 ### What Changed
 
-Invocation output payloads now live in a dedicated partition-store table instead of being embedded
-in the invocation status record. A new SQL table, `sys_invocation_output`, exposes them:
+A new experimental option stores invocation output payloads in a dedicated table instead of
+embedding them in the invocation status record. When the option is enabled, a new SQL table,
+`sys_invocation_output`, exposes them:
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -22,16 +23,37 @@ inspector (`restate-doctor snapshot`).
 
 ### Why This Matters
 
-`sys_invocation_status` still reports *whether* an invocation completed successfully through its
-`completion_result` / `completion_failure` / `completion_failure_code` columns, but it no longer
-carries the response payload. `sys_invocation_output` is where the payload is now readable.
+Large responses no longer bloat the invocation status record. `sys_invocation_status` still
+reports *whether* an invocation completed successfully, and `sys_invocation_output` is where the
+response payload is readable.
 
 ### Impact on Users
 
-- Existing queries against `sys_invocation_status` keep working unchanged.
-- Queries that need the response body should join `sys_invocation_output` on `id`.
+Without the option, nothing changes and `sys_invocation_output` stays empty.
+
+With the option enabled, invocations that complete afterwards are reported differently in
+`sys_invocation_status`:
+
+- `completion_result` is `killed` for killed invocations (previously `failure`). Queries that
+  filter on `completion_result = 'failure'` to find killed invocations must also match `'killed'`.
+- `completion_failure` contains only the error code (e.g. `[500]`) and no longer includes the
+  error message. Read the message from `sys_invocation_output.failure_json` instead.
+- `completion_failure_code` is unchanged.
+
+Invocations that completed before the option was enabled keep their previous representation.
+
+Once enabled, the option cannot be turned off again: removing it from the configuration does not
+switch already-upgraded partitions back.
 
 ### Migration Guidance
+
+Enable the option on every node, after the whole cluster runs this version:
+
+```toml
+experimental-enable-write-output-table = true
+```
+
+Or via the environment variable `RESTATE_EXPERIMENTAL_ENABLE_WRITE_OUTPUT_TABLE=true`.
 
 Read the payload from the new table:
 

@@ -4579,7 +4579,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             "Effect: Free invocation"
         );
 
-        self.storage.delete_output(invocation_id)?;
+        if self
+            .processor
+            .fsm()
+            .features()
+            .is_write_output_table_enabled()
+        {
+            self.storage.delete_output(invocation_id)?;
+        }
 
         self.storage
             .delete_invocation_status(invocation_id)
