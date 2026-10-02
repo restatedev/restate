@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use enumset::EnumSet;
 use googletest::IntoTestResult;
-use rcgen::{CertificateParams, KeyPair};
+use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
 use tempfile::TempDir;
 use tracing::info;
 
@@ -34,20 +34,18 @@ use restate_types::replication::ReplicationProperty;
 
 mod common;
 
-fn generate_ca() -> (rcgen::Certificate, KeyPair) {
+fn generate_ca() -> CertifiedIssuer<'static, KeyPair> {
     let mut params = CertificateParams::new(Vec::<String>::new()).unwrap();
     params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     params
         .distinguished_name
         .push(rcgen::DnType::CommonName, "test-ca");
     let key_pair = KeyPair::generate().unwrap();
-    let cert = params.self_signed(&key_pair).unwrap();
-    (cert, key_pair)
+    CertifiedIssuer::self_signed(params, key_pair).unwrap()
 }
 
 fn generate_node_cert(
-    ca_cert: &rcgen::Certificate,
-    ca_key: &KeyPair,
+    ca_cert: &CertifiedIssuer<'_, KeyPair>,
     node_name: &str,
 ) -> (rcgen::Certificate, KeyPair) {
     // Test nodes bind and advertise loopback addresses, so the cert must carry
@@ -63,7 +61,7 @@ fn generate_node_cert(
         .distinguished_name
         .push(rcgen::DnType::CommonName, node_name);
     let node_key = KeyPair::generate().unwrap();
-    let node_cert = params.signed_by(&node_key, ca_cert, ca_key).unwrap();
+    let node_cert = params.signed_by(&node_key, ca_cert).unwrap();
     (node_cert, node_key)
 }
 
@@ -87,8 +85,7 @@ fn write_certs_to_dir(
 fn configure_tls_nodes(
     base_config: Configuration,
     tls_dir: &Path,
-    ca_cert: &rcgen::Certificate,
-    ca_key: &KeyPair,
+    ca_cert: &CertifiedIssuer<'_, KeyPair>,
     num_nodes: u32,
     mode: TlsMode,
 ) -> Vec<NodeSpec> {
@@ -105,9 +102,9 @@ fn configure_tls_nodes(
         let node_dir = tls_dir.join(&node_name);
         std::fs::create_dir_all(&node_dir).unwrap();
 
-        let (node_cert, node_key) = generate_node_cert(ca_cert, ca_key, &node_name);
+        let (node_cert, node_key) = generate_node_cert(ca_cert, &node_name);
         let (ca_path, cert_path, key_path) =
-            write_certs_to_dir(&node_dir, ca_cert, &node_cert, &node_key);
+            write_certs_to_dir(&node_dir, ca_cert.as_ref(), &node_cert, &node_key);
 
         *node.config_mut().common.fabric_tls_mut() = Some(FabricTlsOptions {
             mode,
@@ -152,7 +149,7 @@ async fn assert_all_nodes_advertise_tls(
     Ok(advertised_addresses)
 }
 
-async fn grpc_node_identity_and_cluster_health(
+async fn grpc_node_identity(
     address: AdvertisedAddress<FabricPort>,
     networking: &NetworkingOptions,
 ) -> Result<(NodeId, String), tonic::Status> {
@@ -163,11 +160,7 @@ async fn grpc_node_identity_and_cluster_health(
         .node_id
         .ok_or_else(|| tonic::Status::failed_precondition("node has not joined the cluster"))?
         .into();
-    let cluster_name = client
-        .cluster_health(())
-        .await
-        .map(|response| response.into_inner().cluster_name)?;
-    Ok((node_id, cluster_name))
+    Ok((node_id, ident.cluster_name))
 }
 
 fn with_http_scheme(address: &AdvertisedAddress<FabricPort>) -> AdvertisedAddress<FabricPort> {
@@ -178,12 +171,12 @@ fn with_http_scheme(address: &AdvertisedAddress<FabricPort>) -> AdvertisedAddres
         .expect("valid plaintext fabric address")
 }
 
-fn install_test_tls_client(tls_dir: &Path, ca_cert: &rcgen::Certificate, ca_key: &KeyPair) {
+fn install_test_tls_client(tls_dir: &Path, ca_cert: &CertifiedIssuer<'_, KeyPair>) {
     let client_dir = tls_dir.join("client");
     std::fs::create_dir_all(&client_dir).unwrap();
-    let (client_cert, client_key) = generate_node_cert(ca_cert, ca_key, "test-client");
+    let (client_cert, client_key) = generate_node_cert(ca_cert, "test-client");
     let (ca_path, cert_path, key_path) =
-        write_certs_to_dir(&client_dir, ca_cert, &client_cert, &client_key);
+        write_certs_to_dir(&client_dir, ca_cert.as_ref(), &client_cert, &client_key);
     let client_config = TlsClientConfig::new(
         Some(ClientIdentityFiles {
             cert_file: &cert_path,
@@ -201,8 +194,7 @@ fn install_test_tls_client(tls_dir: &Path, ca_cert: &rcgen::Certificate, ca_key:
 
 async fn verify_tls_mode(
     tls_dir: &Path,
-    ca_cert: &rcgen::Certificate,
-    ca_key: &KeyPair,
+    ca_cert: &CertifiedIssuer<'_, KeyPair>,
     mode: TlsMode,
     cluster_name: &str,
     accepts_plaintext: bool,
@@ -212,7 +204,7 @@ async fn verify_tls_mode(
     base_config.common.default_num_partitions = 1;
 
     let mode_tls_dir = tls_dir.join(cluster_name);
-    let nodes = configure_tls_nodes(base_config, &mode_tls_dir, ca_cert, ca_key, 3, mode);
+    let nodes = configure_tls_nodes(base_config, &mode_tls_dir, ca_cert, 3, mode);
 
     info!(?mode, "Starting 3-node cluster with fabric TLS");
     let cluster = Cluster::builder()
@@ -241,19 +233,17 @@ async fn verify_tls_mode(
 
     for address in authorities {
         let networking = &cluster.nodes[0].config().networking;
-        let (node_id, actual_cluster_name) =
-            grpc_node_identity_and_cluster_health(address.clone(), networking)
-                .await
-                .map_err(anyhow::Error::from)
-                .into_test_result()?;
+        let (node_id, actual_cluster_name) = grpc_node_identity(address.clone(), networking)
+            .await
+            .map_err(anyhow::Error::from)
+            .into_test_result()?;
         assert_eq!(actual_cluster_name, cluster_name);
         assert!(
             contacted_nodes.insert(node_id),
             "{mode:?} contacted node {node_id} through more than one advertised address"
         );
 
-        let plaintext_result =
-            grpc_node_identity_and_cluster_health(with_http_scheme(&address), networking).await;
+        let plaintext_result = grpc_node_identity(with_http_scheme(&address), networking).await;
         assert_eq!(
             plaintext_result.is_ok(),
             accepts_plaintext,
@@ -270,13 +260,12 @@ async fn verify_tls_mode(
 async fn fabric_tls_modes() -> googletest::Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let tls_dir = TempDir::new().unwrap();
-    let (ca_cert, ca_key) = generate_ca();
-    install_test_tls_client(tls_dir.path(), &ca_cert, &ca_key);
+    let ca_cert = generate_ca();
+    install_test_tls_client(tls_dir.path(), &ca_cert);
 
     verify_tls_mode(
         tls_dir.path(),
         &ca_cert,
-        &ca_key,
         TlsMode::Require,
         "fabric_tls_require",
         false,
@@ -285,7 +274,6 @@ async fn fabric_tls_modes() -> googletest::Result<()> {
     verify_tls_mode(
         tls_dir.path(),
         &ca_cert,
-        &ca_key,
         TlsMode::Prefer,
         "fabric_tls_prefer",
         true,

@@ -8,30 +8,43 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use metrics::histogram;
+use tracing::trace;
+
+use restate_clock::time::MillisSinceEpoch;
 use restate_storage_api::invocation_status_table::{
     InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
-use restate_storage_api::journal_table_v2::WriteJournalTable;
-use restate_types::identifiers::InvocationId;
+use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
+use restate_storage_api::timer_table::WriteTimerTable;
+use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::InvocationMutationResponseSink;
 use restate_types::invocation::client::PurgeInvocationResponse;
-use tracing::trace;
+
+use crate::metric_definitions::PARTITION_CLEANER_PURGE_DELAY;
+use crate::partition::processor::ProcessorContext;
+use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnPurgeJournalCommand<'a> {
     pub invocation_id: &'a InvocationId,
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// Whether this purge was proposed by the leader's cleaner. A purge is proposed by the cleaner
+    /// if it's self-proposed and has no sink. Admin API uses ingestion client but uses
+    /// Dedup::None, so it won't be considered a cleaner purge.
+    pub is_cleaner_purge: bool,
 }
 
 impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for OnPurgeJournalCommand<'_>
 where
     S: WriteJournalTable
+        + ReadJournalTable
+        + WriteTimerTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
+        + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WriteJournalEventsTable,
     P: ProcessorContext,
@@ -40,7 +53,13 @@ where
         let OnPurgeJournalCommand {
             invocation_id,
             response_sink,
+            is_cleaner_purge,
         } = self;
+
+        if is_cleaner_purge {
+            ctx.action_collector.push(Action::CleanerPurgeApplied);
+        }
+
         match ctx.get_invocation_status(invocation_id).await? {
             InvocationStatus::Completed(mut completed) => {
                 let pinned_service_protocol_version = completed
@@ -50,10 +69,18 @@ where
 
                 // If journal is not empty, clean it up
                 if completed.journal_metadata.length != 0 {
+                    if is_cleaner_purge && let Some(expiry_time) = completed.journal_expiry_time() {
+                        histogram!(PARTITION_CLEANER_PURGE_DELAY)
+                            .record(MillisSinceEpoch::now().duration_since(expiry_time));
+                    }
                     ctx.do_drop_journal(
                         invocation_id,
                         completed.journal_metadata.length,
                         pinned_service_protocol_version,
+                        InvocationUuid::is_deterministic(
+                            &completed.invocation_target,
+                            completed.idempotency_key.as_deref(),
+                        ),
                     )
                     .await?;
                 }
@@ -91,7 +118,6 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::TestEnv;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_end_effect, invoker_entry_effect, pinned_deployment,
@@ -99,6 +125,7 @@ mod tests {
     use crate::partition::state_machine::tests::matchers::storage::{
         has_commands, has_journal_length, is_variant,
     };
+    use crate::partition::state_machine::{Action, RpcReply};
     use bytes::Bytes;
     use bytestring::ByteString;
     use googletest::prelude::{all, assert_that, contains, eq, none, ok, pat, some};
@@ -107,7 +134,7 @@ mod tests {
     };
     use restate_storage_api::journal_table_v2::ReadJournalTable;
     use restate_types::identifiers::PartitionProcessorRpcRequestId;
-    use restate_types::invocation::client::InvocationOutputResponse;
+    use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
     use restate_types::invocation::{
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
@@ -155,13 +182,15 @@ mod tests {
         // Assert response
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         );
 
@@ -209,13 +238,15 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         );
 

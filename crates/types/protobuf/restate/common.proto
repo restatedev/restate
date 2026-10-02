@@ -22,6 +22,9 @@ enum ProtocolVersion {
   // Release in v1.6. Support custom `Record`
   // encoding that uses Bytes instead of PolyBytes
   V3 = 3;
+
+  // Release in v1.8. Support dedicated partition processor RPC messages
+  V4 = 4;
 }
 
 message NodeId {

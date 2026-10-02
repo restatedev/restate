@@ -850,6 +850,8 @@ pub enum Source {
     Subscription(SubscriptionId),
     Service(InvocationId, InvocationTarget),
     RestartAsNew(InvocationId),
+    // Since v1.8.0
+    Ingestion,
     /// Internal calls for the non-deterministic built-in services
     Internal,
 }
@@ -1206,6 +1208,12 @@ pub struct RestartAsNewInvocationRequest {
     pub patch_deployment_id: Option<DeploymentId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_sink: Option<InvocationMutationResponseSink>,
+    /// Span context of the new invocation, created by the leader proposing this request.
+    /// Absent if proposed by an older leader.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_context: Option<ServiceInvocationSpanContext>,
 }
 
 impl WithInvocationId for RestartAsNewInvocationRequest {
@@ -1597,6 +1605,7 @@ mod serde_hacks {
         Subscription(SubscriptionId),
         Service(InvocationId, InvocationTarget),
         RestartAsNew(InvocationId),
+        Ingestion,
         /// Internal calls for the non-deterministic built-in services
         Internal,
     }
@@ -1641,6 +1650,7 @@ mod serde_hacks {
                     Source::Subscription(sid) => super::Source::Subscription(sid),
                     Source::Service(id, target) => super::Source::Service(id, target),
                     Source::RestartAsNew(id) => super::Source::RestartAsNew(id),
+                    Source::Ingestion => super::Source::Ingestion,
                     Source::Internal => super::Source::Internal,
                 },
                 restate_version,
@@ -1694,6 +1704,7 @@ mod serde_hacks {
                     super::Source::Service(id, target) => Source::Service(id, target),
                     super::Source::Internal => Source::Internal,
                     super::Source::RestartAsNew(id) => Source::RestartAsNew(id),
+                    super::Source::Ingestion => Source::Ingestion,
                 },
             }
         }

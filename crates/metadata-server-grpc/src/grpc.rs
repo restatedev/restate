@@ -99,7 +99,7 @@ mod test {
 
     #[test]
     fn ulid_encoding() {
-        let id = ulid::Ulid::new();
+        let id = ulid::Ulid::generate();
         let encoded = Ulid::from(id);
         let decoded = ulid::Ulid::from(encoded);
 

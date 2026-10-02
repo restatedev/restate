@@ -11,16 +11,15 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_cli_util::c_title;
-
 use super::{Status, render_locked_keys, render_services_status};
 use crate::clients::datafusion_helpers::{
-    get_locked_keys_status, get_service_invocations, get_service_status,
+    get_locked_keys, get_service_invocations, get_service_status,
 };
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
-use crate::ui::invocations::render_invocation_compact;
+use crate::ui::fmt::{IfEmpty, OutputFormatter};
 
 pub async fn run_detailed_status(
+    f: &mut impl OutputFormatter,
     service_name: &str,
     opts: &Status,
     metas_client: AdminClient,
@@ -45,32 +44,23 @@ pub async fn run_detailed_status(
     let status_map = get_service_status(&sql_client, vec![service_name]).await?;
     let active =
         get_service_invocations(&sql_client, service_name, opts.sample_invocations_limit).await?;
+    let locked_keys = if is_stateful {
+        get_locked_keys(&sql_client, [service_name])
+            .await?
+            .filter(|keys| !keys.is_empty())
+    } else {
+        None
+    };
     progress.finish_and_clear();
 
-    // Render Summary
-    c_title!("📷", "Summary");
-    render_services_status(vec![service], status_map).await?;
-
-    if is_stateful {
-        let locked_keys = get_locked_keys_status(&sql_client, vec![service_name]).await?;
-        if !locked_keys.is_empty() {
-            c_title!("📨", "Active Keys");
-            render_locked_keys(
-                locked_keys,
-                opts.locked_keys_limit,
-                opts.locked_key_held_threshold_second,
-            )
-            .await?;
-        }
+    render_services_status(f, std::slice::from_ref(&service), &status_map);
+    if let Some(keys) = &locked_keys {
+        render_locked_keys(f, keys, opts);
     }
-
     // Sample of active invocations
     if !active.is_empty() {
-        c_title!("🚂", "Recent Invocations");
-        for inv in active {
-            render_invocation_compact(&inv);
-        }
+        f.title("🚂", "Recent Invocations");
+        f.list("recent_invocations", &active, IfEmpty::Nothing)?;
     }
-
     Ok(())
 }

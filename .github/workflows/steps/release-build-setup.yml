@@ -35,11 +35,11 @@
 # https://github.com/axodotdev/cargo-dist/issues/1571
 - name: Set up RUSTFLAGS (macOS)
   if: ${{ runner.os == 'macOS' }}
-  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
+  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable --cfg zerocopy_inline_always" >> "$GITHUB_ENV"
 
 - name: Set up RUSTFLAGS (Linux)
   if: ${{ runner.os == 'Linux' }}
-  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable" >> "$GITHUB_ENV"
+  run: echo RUSTFLAGS="-C force-unwind-tables --cfg uuid_unstable --cfg tokio_unstable --cfg zerocopy_inline_always" >> "$GITHUB_ENV"
 
 # These env vars are needed when cross-compiling
 - name: Set up cross-compilation env variables

@@ -99,6 +99,12 @@ mod tests {
         txn.commit().await.unwrap();
     }
 
+    async fn create_processor(storage: &mut PartitionStore) -> ProcessorRawContext {
+        ProcessorRawContext::create(SemanticRestateVersion::current(), storage, 16)
+            .await
+            .unwrap()
+    }
+
     /// Drives a `TruncateOutbox` record through the partition-command handler and
     /// commits the transaction, mirroring the `apply_partition_command` dispatch.
     async fn truncate(
@@ -106,10 +112,7 @@ mod tests {
         storage: &mut PartitionStore,
         index: MessageIndex,
     ) {
-        let envelope = TruncateOutboxCommand::test_envelope(TruncateOutboxCommand {
-            index,
-            partition_key_range: Keys::None,
-        });
+        let envelope = TruncateOutboxCommand::test_envelope(TruncateOutboxCommand { index });
         let record = DataRecord::new(
             NanosSinceEpoch::RESTATE_EPOCH,
             Keys::None,
@@ -132,10 +135,7 @@ mod tests {
     async fn initializes_outbox_head_from_storage() {
         let mut storage = open_store().await;
 
-        let mut processor =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
-                .await
-                .unwrap();
+        let mut processor = create_processor(&mut storage).await;
         assert_eq!(processor.outbox().outbox_tail(), 0);
 
         let mut txn = storage.transaction();
@@ -149,10 +149,7 @@ mod tests {
         assert_matches!(storage.get_outbox_message(0).await, Ok(None));
 
         populate_outbox(&mut storage, 3..=5).await;
-        let mut processor =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
-                .await
-                .unwrap();
+        let mut processor = create_processor(&mut storage).await;
         assert_eq!(processor.outbox().outbox_tail(), 6);
 
         truncate(&mut processor, &mut storage, 4).await;
@@ -165,10 +162,7 @@ mod tests {
     async fn truncates_and_reuses_outbox() {
         let mut storage = open_store().await;
         populate_outbox(&mut storage, 3..=5).await;
-        let mut processor =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
-                .await
-                .unwrap();
+        let mut processor = create_processor(&mut storage).await;
 
         // Truncating already-truncated outbox should be a no-op
         truncate(&mut processor, &mut storage, 2).await;
@@ -203,10 +197,7 @@ mod tests {
 
         // Simulating a restart
         // The Outbox is fully truncated at this point
-        let mut processor =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut storage)
-                .await
-                .unwrap();
+        let mut processor = create_processor(&mut storage).await;
         assert_eq!(processor.outbox().outbox_tail(), 7);
 
         let mut txn = storage.transaction();

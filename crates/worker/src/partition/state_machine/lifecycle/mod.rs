@@ -30,7 +30,6 @@ pub(super) use cancel::OnCancelCommand;
 pub(super) use event::ApplyEventCommand;
 pub(super) use manual_pause::OnManualPauseCommand;
 pub(super) use manual_resume::OnManualResumeCommand;
-pub(crate) use manual_resume::resolve_pinned_deployment;
 pub(super) use migrate_journal_table::VerifyOrMigrateJournalTableToV2Command;
 pub(super) use notify_get_invocation_output_response::OnNotifyGetInvocationOutputResponse;
 pub(super) use notify_invocation_response::OnNotifyInvocationResponse;

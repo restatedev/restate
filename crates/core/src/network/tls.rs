@@ -555,11 +555,11 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
         let ca_key = rcgen::KeyPair::generate().unwrap();
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_cert = rcgen::CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
 
         let node_params = rcgen::CertificateParams::new(vec!["node".to_owned()]).unwrap();
         let node_key = rcgen::KeyPair::generate().unwrap();
-        let node_cert = node_params.signed_by(&node_key, &ca_cert, &ca_key).unwrap();
+        let node_cert = node_params.signed_by(&node_key, &ca_cert).unwrap();
         // a different keypair than the one the certificate was issued for
         let wrong_key = rcgen::KeyPair::generate().unwrap();
 
@@ -739,17 +739,13 @@ B59DeVPRvHQIkadBguStiQ9FQQ==
             .distinguished_name
             .push(rcgen::DnType::CommonName, "test-ca");
         let ca_key = rcgen::KeyPair::generate().unwrap();
-        let ca_cert = ca_params.self_signed(&ca_key).unwrap();
+        let ca_cert = rcgen::CertifiedIssuer::self_signed(ca_params, ca_key).unwrap();
 
         let sign_leaf = |spiffe_id: &str| -> CertificateDer<'static> {
             let mut params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
             params.subject_alt_names = vec![rcgen::SanType::URI(spiffe_id.try_into().unwrap())];
             let key = rcgen::KeyPair::generate().unwrap();
-            params
-                .signed_by(&key, &ca_cert, &ca_key)
-                .unwrap()
-                .der()
-                .clone()
+            params.signed_by(&key, &ca_cert).unwrap().der().clone()
         };
 
         let mut root_store = RootCertStore::empty();

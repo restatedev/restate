@@ -68,8 +68,6 @@ impl EntryKey {
     ///
     /// The timestamp (run_at) is encoded in 63 bits.
     ///
-    /// The sequence number is encoded in 7 bytes (56 bits).
-    ///
     /// # Panics if `run_at` is larger than the maximum allowed value. Normal timestamps
     /// are safe to use.
     pub fn new(

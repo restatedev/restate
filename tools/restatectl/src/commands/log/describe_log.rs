@@ -10,7 +10,7 @@
 
 use anyhow::Context;
 use cling::prelude::*;
-use itertools::{Itertools, Position};
+use itertools::Itertools;
 use log::render_loglet_params;
 
 use restate_cli_util::_comfy_table::{Cell, Color, Table};
@@ -169,8 +169,7 @@ async fn describe_log(
         // Note: We check the tail_index because we might be displaying only a subset of segments
         // (--head, --tail, etc.). In that case, the last segment in `segments` is not necessarily
         // the actual tail segment of the chain.
-        let is_tail_segment = [Position::Last, Position::Only].contains(&position)
-            && segment.index() == chain.tail_index();
+        let is_tail_segment = position.is_last() && segment.index() == chain.tail_index();
 
         let created_at = match segment.config.created_at {
             None => Cell::new("--"),

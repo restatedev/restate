@@ -12,8 +12,6 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use pprof::criterion::{Output, PProfProfiler};
-use pprof::flamegraph::Options;
 
 use restate_limiter::LimitKey;
 use restate_types::Scope;
@@ -24,16 +22,6 @@ use restate_vqueues::generate_vqueue_id;
 #[cfg(not(target_env = "msvc"))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-pub fn flamegraph_options<'a>() -> Options<'a> {
-    #[allow(unused_mut)]
-    let mut options = Options::default();
-    if cfg!(target_os = "macos") {
-        // Ignore different thread origins to merge traces. This seems not needed on Linux.
-        options.base = vec!["__pthread_joiner_wake".to_string(), "_main".to_string()];
-    }
-    options
-}
 
 fn bench_generate_vqueue_id(c: &mut Criterion) {
     let partition_key: PartitionKey = 0xDEAD_BEEF_CAFE_F00D;
@@ -117,9 +105,5 @@ fn bench_generate_vqueue_id(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    name = benches;
-    config = Criterion::default().with_profiler(PProfProfiler::new(997, Output::Flamegraph(Some(flamegraph_options()))));
-    targets = bench_generate_vqueue_id
-);
+criterion_group!(benches, bench_generate_vqueue_id);
 criterion_main!(benches);

@@ -12,6 +12,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use futures::Stream;
+use futures::future::Either;
 use pin_project_lite::pin_project;
 
 /// A [`Stream`] that tracks **pinned** (non-reclaimable) memory.
@@ -63,6 +64,28 @@ where
 
     fn unpin_memory(self: Pin<&mut Self>, amount: usize) {
         self.get_mut().as_mut().unpin_memory(amount)
+    }
+}
+
+// Forwards pin/unpin to whichever arm is active, letting two different
+// [`PinnableMemoryStream`] implementations be returned from the same method.
+impl<A, B> PinnableMemoryStream for Either<A, B>
+where
+    A: PinnableMemoryStream,
+    B: PinnableMemoryStream<Item = A::Item>,
+{
+    fn pin_memory(self: Pin<&mut Self>, amount: usize) {
+        match self.as_pin_mut() {
+            Either::Left(s) => s.pin_memory(amount),
+            Either::Right(s) => s.pin_memory(amount),
+        }
+    }
+
+    fn unpin_memory(self: Pin<&mut Self>, amount: usize) {
+        match self.as_pin_mut() {
+            Either::Left(s) => s.unpin_memory(amount),
+            Either::Right(s) => s.unpin_memory(amount),
+        }
     }
 }
 

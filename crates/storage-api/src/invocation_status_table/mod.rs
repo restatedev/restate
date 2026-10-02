@@ -839,6 +839,13 @@ impl CompletedInvocation {
             .completed_transition_time()
             .map(|base| base + self.completion_retention_duration)
     }
+
+    /// Expiration time of the journal of the [`InvocationStatus::Completed`], if any.
+    pub fn journal_expiry_time(&self) -> Option<MillisSinceEpoch> {
+        self.timestamps
+            .completed_transition_time()
+            .map(|base| base + self.journal_retention_duration)
+    }
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -896,13 +903,11 @@ pub trait ScanInvocationStatusTable {
             + 'static,
     >(
         &self,
+        // Invocation id to start the scan from (inclusive). If `None`, the scan starts from the
+        // beginning of the partition key range.
+        from: Option<InvocationId>,
         f: F,
     ) -> Result<impl Stream<Item = Result<O>> + Send>;
-
-    /// Legacy invoked invocations are those that have not been migrated to vqueues
-    fn scan_legacy_invoked_invocations(
-        &self,
-    ) -> Result<impl Stream<Item = Result<InvokedInvocationStatusLite>> + Send>;
 }
 
 pub trait WriteInvocationStatusTable {

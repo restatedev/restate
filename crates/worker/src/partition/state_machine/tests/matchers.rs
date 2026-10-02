@@ -17,16 +17,13 @@ use restate_types::journal_v2::{Entry, EntryIndex, NotificationId};
 pub mod storage {
     use super::*;
 
-    use restate_service_protocol::codec::ProtobufRawEntryCodec;
     use restate_storage_api::inbox_table::{InboxEntry, SequenceNumberInboxEntry};
     use restate_storage_api::invocation_status_table::{
         InFlightInvocationMetadata, InvocationStatus, InvocationStatusDiscriminants,
     };
-    use restate_storage_api::journal_table::JournalEntry;
     use restate_types::deployment::PinnedDeployment;
     use restate_types::identifiers::{DeploymentId, InvocationId};
     use restate_types::invocation::InvocationTarget;
-    use restate_types::journal::Entry;
 
     pub fn has_journal_length(
         journal_length: EntryIndex,
@@ -62,12 +59,6 @@ pub mod storage {
                 eq(invocation_id)
             ))
         })
-    }
-
-    pub fn is_entry(entry: Entry) -> impl Matcher<ActualT = JournalEntry> {
-        pat!(JournalEntry::Entry(eq(
-            ProtobufRawEntryCodec::serialize_enriched(entry)
-        )))
     }
 
     pub fn is_variant(
@@ -106,33 +97,17 @@ pub mod storage {
 pub mod actions {
     use super::*;
 
-    use crate::partition::state_machine::Action;
+    use crate::partition::state_machine::{Action, RpcReply};
     use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
+    use restate_types::invocation::ResponseResult;
     use restate_types::invocation::client::{
         CancelInvocationResponse, KillInvocationResponse, PurgeInvocationResponse,
     };
-    use restate_types::invocation::{InvocationTarget, ResponseResult};
     use restate_types::journal_v2::Signal;
-
-    pub fn invoke_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
-        pat!(Action::Invoke {
-            invocation_id: eq(invocation_id)
-        })
-    }
 
     pub fn abort_for_id(invocation_id: InvocationId) -> impl Matcher<ActualT = Action> {
         pat!(Action::AbortInvocation {
             invocation_id: eq(invocation_id)
-        })
-    }
-
-    pub fn invoke_for_id_and_target(
-        invocation_id: InvocationId,
-        invocation_target: InvocationTarget,
-    ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-            invocation_target: eq(invocation_target)
         })
     }
 
@@ -163,49 +138,33 @@ pub mod actions {
         })
     }
 
-    pub fn forward_canceled_completion(entry_index: EntryIndex) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCompletion {
-            entry_index: eq(entry_index),
-        })
-    }
-
-    pub fn forward_cancel_invocation_response(
+    pub fn cancel_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         cancel_invocation_response: CancelInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCancelResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(cancel_invocation_response)
+            reply: pat!(RpcReply::CancelInvocation(eq(cancel_invocation_response)))
         })
     }
 
-    pub fn forward_kill_invocation_response(
+    pub fn kill_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         kill_invocation_response: KillInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardKillResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(kill_invocation_response)
+            reply: pat!(RpcReply::KillInvocation(eq(kill_invocation_response)))
         })
     }
 
-    pub fn forward_purge_invocation_response(
+    pub fn purge_invocation_reply(
         request_id: PartitionProcessorRpcRequestId,
         purge_invocation_response: PurgeInvocationResponse,
     ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardPurgeInvocationResponse {
+        pat!(Action::ReplyRpc {
             request_id: eq(request_id),
-            response: eq(purge_invocation_response)
-        })
-    }
-
-    pub fn forward_completion(
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) -> impl Matcher<ActualT = Action> {
-        pat!(Action::ForwardCompletion {
-            invocation_id: eq(invocation_id),
-            entry_index: eq(entry_index),
+            reply: pat!(RpcReply::PurgeInvocation(eq(purge_invocation_response)))
         })
     }
 

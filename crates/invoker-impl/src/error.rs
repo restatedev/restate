@@ -216,14 +216,8 @@ fn retry_after_display(after: &Option<Duration>) -> String {
 impl InvokerError {
     pub(crate) fn error_stacktrace(&self) -> Option<&str> {
         match self {
-            InvokerError::Sdk(s) => s
-                .error
-                .stacktrace()
-                .and_then(|s| if s.is_empty() { None } else { Some(s) }),
-            InvokerError::SdkV2(s) => s
-                .error
-                .stacktrace()
-                .and_then(|s| if s.is_empty() { None } else { Some(s) }),
+            InvokerError::Sdk(s) => s.error.stacktrace().filter(|&s| !s.is_empty()),
+            InvokerError::SdkV2(s) => s.error.stacktrace().filter(|&s| !s.is_empty()),
             _ => None,
         }
     }

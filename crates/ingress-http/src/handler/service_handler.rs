@@ -42,7 +42,8 @@ use super::path_parsing::{InvokeType, ServiceRequestType, TargetType};
 use super::tracing::prepare_tracing_span;
 use super::{APPLICATION_JSON, Handler};
 use crate::RequestDispatcher;
-use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
+use crate::handler::is_reserved_header_name;
+use crate::handler::responses::X_RESTATE_ID;
 use crate::metric_definitions::{
     INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED, REQUEST_ERROR,
     REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR,
@@ -185,7 +186,7 @@ where
             )
             && idempotency_key.is_none()
         {
-            idempotency_key = Some(Ulid::new().to_string().into());
+            idempotency_key = Some(Ulid::generate().to_string().into());
         }
 
         // Compute retention values
@@ -352,14 +353,7 @@ where
                     invocation_id,
                     execution_time: response
                         .execution_time
-                        .and_then(|m| {
-                            if m == MillisSinceEpoch::UNIX_EPOCH {
-                                // Ignore
-                                None
-                            } else {
-                                Some(m)
-                            }
-                        })
+                        .filter(|&m| m != MillisSinceEpoch::UNIX_EPOCH)
                         .map(SystemTime::from)
                         .map(Into::into),
                     status: if response.is_new_invocation {
@@ -387,11 +381,7 @@ fn parse_headers(parts: http::request::Parts) -> Result<Vec<Header>, HandlerErro
             continue;
         };
 
-        if k == header::CONNECTION
-            || k == header::HOST
-            || k == IDEMPOTENCY_KEY
-            || k == IDEMPOTENCY_EXPIRES
-        {
+        if is_reserved_header_name(&k) {
             continue;
         }
 

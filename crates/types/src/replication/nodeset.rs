@@ -365,12 +365,11 @@ fn write_nodes_decorated_display<'a, V: std::fmt::Display + 'a>(
     iter: impl Iterator<Item = (&'a PlainNodeId, &'a V)>,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
-    use itertools::Position;
     write!(f, "[")?;
     for (pos, (node_id, v)) in iter.with_position() {
-        match pos {
-            Position::Only | Position::Last => write!(f, "{node_id}({v})")?,
-            Position::First | Position::Middle => write!(f, "{node_id}({v}), ")?,
+        write!(f, "{node_id}({v})")?;
+        if !pos.is_last() {
+            write!(f, ", ")?;
         }
     }
     write!(f, "]")
@@ -380,12 +379,11 @@ fn write_nodes_decorated_debug<'a, V: std::fmt::Debug + 'a>(
     iter: impl Iterator<Item = (&'a PlainNodeId, &'a V)>,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
-    use itertools::Position;
     write!(f, "[")?;
     for (pos, (node_id, v)) in iter.with_position() {
-        match pos {
-            Position::Only | Position::Last => write!(f, "{node_id}({v:?})")?,
-            Position::First | Position::Middle => write!(f, "{node_id}({v:?}), ")?,
+        write!(f, "{node_id}({v:?})")?;
+        if !pos.is_last() {
+            write!(f, ", ")?;
         }
     }
     write!(f, "]")
@@ -395,12 +393,11 @@ fn write_nodes<'a>(
     iter: impl Iterator<Item = &'a PlainNodeId>,
     f: &mut std::fmt::Formatter<'_>,
 ) -> std::fmt::Result {
-    use itertools::Position;
     write!(f, "[")?;
     for (pos, node_id) in iter.with_position() {
-        match pos {
-            Position::Only | Position::Last => write!(f, "{node_id}")?,
-            Position::First | Position::Middle => write!(f, "{node_id}, ")?,
+        write!(f, "{node_id}")?;
+        if !pos.is_last() {
+            write!(f, ", ")?;
         }
     }
     write!(f, "]")

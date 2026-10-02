@@ -16,12 +16,20 @@ use cling::prelude::*;
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "env", alias = "environment")]
 pub enum Environments {
-    /// Set up the CLI to talk to this Environment
-    Configure(configure::Configure),
-    /// Interact with your environment as if it was running on localhost
+    /// Set up the CLI to talk to a Cloud environment, and select it
     ///
-    /// Provide a local port to expose to your environment with --local-port,
-    /// or remote ports to expose locally with --remote-port.
-    /// If no ports are provided, localhost:9080 and all remote ports will be tunneled.
+    /// Writes a section for it in the CLI config file, named after the Cloud environment unless
+    /// you pick another name when asked, and makes it the current environment (see
+    /// `restate config use-environment`). A section with the same name is updated, after
+    /// confirmation (or --yes). Needs `restate cloud login` first.
+    Configure(configure::Configure),
+    /// Connect a Cloud environment and this machine through a tunnel
+    ///
+    /// Uses the current environment (or -e), which must be a Cloud one. Exposes the
+    /// environment's ports (ingress 8080, admin 9070) on localhost, and lets the environment
+    /// call services running on this machine: register them with
+    /// `restate deployments register --tunnel-name <name> http://localhost:9080` (use your
+    /// service's URL). Runs until interrupted. By default, all remote ports are exposed and
+    /// inbound calls are allowed.
     Tunnel(tunnel::Tunnel),
 }

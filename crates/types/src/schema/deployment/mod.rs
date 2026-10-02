@@ -10,7 +10,7 @@
 
 pub mod http_auth;
 
-pub use http_auth::{GoogleIdTokenAuth, HttpAuth, derive_audience};
+pub use http_auth::{GoogleIdTokenAuth, GoogleIdTokenAuthError, HttpAuth, derive_audience};
 use restate_encoding::RestateEncoding;
 
 use std::collections::HashMap;
@@ -99,9 +99,7 @@ impl Deployment {
                     ..
                 },
                 DeploymentAddress::Http(HttpDeploymentAddress {
-                    uri: other_address,
-                    auth: _,
-                    ..
+                    uri: other_address, ..
                 }),
             ) => Self::semantic_eq_http(
                 this_address,
@@ -468,12 +466,16 @@ mod serde_tests {
             address: Uri::from_static("https://svc.example.com"),
             protocol_type: ProtocolType::BidiStream,
             http_version: http::Version::HTTP_2,
-            auth: Some(HttpAuth::GoogleIdToken(GoogleIdTokenAuth::new(
-                ByteString::from_static("https://svc.example.com"),
-                Some(ByteString::from_static(
-                    "caller@proj.iam.gserviceaccount.com",
-                )),
-            ))),
+            auth: Some(HttpAuth::GoogleIdToken(
+                GoogleIdTokenAuth::new(
+                    ByteString::from_static("https://svc.example.com"),
+                    Some(ByteString::from_static(
+                        "caller@proj.iam.gserviceaccount.com",
+                    )),
+                    None,
+                )
+                .unwrap(),
+            )),
         };
         let mut buf = bytes::BytesMut::default();
         StorageCodec::encode(&original, &mut buf).unwrap();

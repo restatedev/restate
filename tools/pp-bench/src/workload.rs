@@ -26,6 +26,7 @@
 
 use std::time::Instant;
 
+use bytes::BytesMut;
 use hdrhistogram::Histogram;
 
 use restate_cli_util::{c_println, c_success};
@@ -33,6 +34,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_types::SemanticRestateVersion;
+use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionId;
 use restate_types::logs::{Keys, Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
@@ -101,9 +103,15 @@ pub async fn run(
     // The state machine is stateless; per-partition state lives in the processor
     // context. Build it via the production init path, which hydrates the FSM,
     // dedup, outbox, and vqueue caches from the (empty) partition store.
-    let mut processor =
-        ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
-            .await?;
+    let vqueue_metadata_cache_capacity = Configuration::default()
+        .worker
+        .vqueue_metadata_cache_capacity();
+    let mut processor = ProcessorRawContext::create(
+        SemanticRestateVersion::current(),
+        &mut partition_store,
+        vqueue_metadata_cache_capacity,
+    )
+    .await?;
 
     let workload_name = format!("{:?}", opts.spec.workload);
     let batch_size = opts.batch_size;
@@ -132,6 +140,7 @@ pub async fn run(
         let warmup_batch_count = warmup.div_ceil(batch_size as u64);
         let mut cmds_applied: u64 = 0;
 
+        let mut arena = BytesMut::with_capacity(128 * 1024);
         for _ in 0..warmup_batch_count {
             let mut txn = partition_store.transaction();
             let batch_cmds = (batch_size as u64).min(warmup - cmds_applied);
@@ -143,6 +152,7 @@ pub async fn run(
                     DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
                     &mut action_collector,
                     false,
+                    &mut arena,
                 )
                 .await?;
                 lsn = lsn.next();
@@ -165,6 +175,7 @@ pub async fn run(
     let num_batches = num_commands.div_ceil(batch_size as u64);
     let mut total_cmds: u64 = 0;
 
+    let mut arena = BytesMut::with_capacity(128 * 1024);
     for _ in 0..num_batches {
         let batch_cmds = (batch_size as u64).min(num_commands - total_cmds);
         let batch_start = Instant::now();
@@ -178,6 +189,7 @@ pub async fn run(
                 DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
                 &mut action_collector,
                 false,
+                &mut arena,
             )
             .await?;
             lsn = lsn.next();

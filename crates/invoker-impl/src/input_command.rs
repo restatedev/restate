@@ -22,13 +22,6 @@ use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
 use restate_worker_api::resources::ReservedResources;
 // -- Input messages
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub(crate) struct InvokeCommand {
-    pub(super) invocation_id: InvocationId,
-    pub(super) fencing_token: FencingToken,
-    pub(super) invocation_target: InvocationTarget,
-}
-
 #[derive(derive_more::Debug)]
 pub(crate) struct VQueueInvokeCommand {
     pub(super) qid: VQueueId,
@@ -43,14 +36,7 @@ pub(crate) struct VQueueInvokeCommand {
 
 #[derive(Debug)]
 pub(crate) enum InputCommand {
-    Invoke(Box<InvokeCommand>),
     VQInvoke(Box<VQueueInvokeCommand>),
-    // TODO remove this when we remove journal v1
-    // Journal V1 doesn't support epochs nor trim and restart
-    Completion {
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    },
     Notification {
         invocation_id: InvocationId,
         entry_index: EntryIndex,
@@ -63,11 +49,6 @@ pub(crate) enum InputCommand {
 
     /// Abort specific invocation id (the current attempt, unconditionally).
     Abort {
-        invocation_id: InvocationId,
-    },
-
-    /// Retry now specific invocation id
-    RetryNow {
         invocation_id: InvocationId,
     },
 
@@ -88,21 +69,6 @@ pub struct InvokerHandle {
 }
 
 impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
-    fn invoke(
-        &mut self,
-        invocation_id: InvocationId,
-        fencing_token: FencingToken,
-        invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::Invoke(Box::new(InvokeCommand {
-                invocation_id,
-                fencing_token,
-                invocation_target,
-            })))
-            .map_err(|_| NotRunningError)
-    }
-
     fn vqueue_invoke(
         &mut self,
         qid: VQueueId,
@@ -123,19 +89,6 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
                 limit_key,
                 idempotency_key,
             })))
-            .map_err(|_| NotRunningError)
-    }
-
-    fn notify_completion(
-        &mut self,
-        invocation_id: InvocationId,
-        entry_index: EntryIndex,
-    ) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::Completion {
-                invocation_id,
-                entry_index,
-            })
             .map_err(|_| NotRunningError)
     }
 
@@ -176,12 +129,6 @@ impl restate_worker_api::invoker::InvokerHandle for InvokerHandle {
     fn abort_invocation(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
         self.input
             .send(InputCommand::Abort { invocation_id })
-            .map_err(|_| NotRunningError)
-    }
-
-    fn retry_invocation_now(&mut self, invocation_id: InvocationId) -> Result<(), NotRunningError> {
-        self.input
-            .send(InputCommand::RetryNow { invocation_id })
             .map_err(|_| NotRunningError)
     }
 

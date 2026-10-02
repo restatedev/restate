@@ -88,6 +88,30 @@ impl RecordCommit {
             },
         )
     }
+
+    /// Create a commit once the rx is resolved with result
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_resolver(rx: oneshot::Receiver<Result<(), CancelledError>>) -> Self {
+        Self { v: Some(()), rx }
+    }
+
+    /// Create a resolved [`RecordCommit`]
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn resolved() -> RecordCommit {
+        let (tx, rx) = oneshot::channel();
+        _ = tx.send(Ok(()));
+
+        RecordCommit { v: Some(()), rx }
+    }
+
+    /// Create a cancelled [`RecordCommit`]
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn cancelled() -> RecordCommit {
+        let (tx, rx) = oneshot::channel();
+        _ = tx.send(Err(CancelledError));
+
+        RecordCommit { v: Some(()), rx }
+    }
 }
 
 impl<V> RecordCommit<V> {

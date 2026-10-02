@@ -50,6 +50,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 smallvec = { workspace = true }
 static_assertions = { workspace = true }
+strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true, features = ["sync"] }
@@ -73,7 +74,6 @@ bytestring = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 paste = { workspace = true }
-pprof = { version = "0.15", features = ["criterion", "flamegraph", "frame-pointer"] }
 prost = { workspace = true }
 test-log = { workspace = true }
 tokio = { workspace = true, features = ["test-util"] }

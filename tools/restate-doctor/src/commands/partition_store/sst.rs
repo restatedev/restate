@@ -24,7 +24,8 @@ use restate_util_bytecount::ByteCount;
 use crate::app::GlobalOpts;
 use crate::util::colorize::{color_legend, colorize_key_hex};
 use crate::util::rocksdb::{
-    DbInfo, extract_file_number, open_partition_store_db, resolve_partition_store_path,
+    DbInfo, extract_file_number, non_empty_key, open_partition_store_db,
+    resolve_partition_store_path,
 };
 
 use super::PartitionStoreOpts;
@@ -114,14 +115,12 @@ fn run_with_explicit_cf(db_info: &DbInfo, cf_name: &str, files: &[u64]) -> Resul
         .cf_handle(cf_name)
         .ok_or_else(|| anyhow::anyhow!("Column family '{}' not found", cf_name))?;
 
-    let cf_meta = db_info.db.get_column_family_metadata_cf(&cf_handle);
-
     // Build a map of file number -> file metadata
     let mut file_map: HashMap<u64, FileInfo> = HashMap::new();
 
-    for level_ref in cf_meta.levels() {
+    for level_ref in db_info.cf_levels(&cf_handle) {
         let level = level_ref.level();
-        for file_ref in level_ref.files() {
+        for file_ref in level_ref.sst_files() {
             let filename = file_ref.relative_filename();
             if let Some(file_num) = extract_file_number(&filename) {
                 let live_info = db_info.get_live_file_info(&filename);
@@ -132,8 +131,8 @@ fn run_with_explicit_cf(db_info: &DbInfo, cf_name: &str, files: &[u64]) -> Resul
                         column_family: cf_name.to_string(),
                         level,
                         size: file_ref.size(),
-                        smallest_key: file_ref.smallest_key(),
-                        largest_key: file_ref.largest_key(),
+                        smallest_key: non_empty_key(file_ref.smallest_key()),
+                        largest_key: non_empty_key(file_ref.largest_key()),
                         num_entries: live_info.map(|i| i.num_entries),
                         num_deletions: live_info.map(|i| i.num_deletions),
                     },
@@ -216,10 +215,8 @@ fn run_with_auto_cf(db_info: &DbInfo, files: &[u64]) -> Result<()> {
 /// Get detailed file info from column family metadata
 fn get_file_info_from_cf(db_info: &DbInfo, cf_name: &str, filename: &str) -> Option<FileInfo> {
     let cf_handle = db_info.db.cf_handle(cf_name)?;
-    let cf_meta = db_info.db.get_column_family_metadata_cf(&cf_handle);
-
-    for level_ref in cf_meta.levels() {
-        for file_ref in level_ref.files() {
+    for level_ref in db_info.cf_levels(&cf_handle) {
+        for file_ref in level_ref.sst_files() {
             if file_ref.relative_filename() == filename {
                 let live_info = db_info.get_live_file_info(filename);
                 return Some(FileInfo {
@@ -227,8 +224,8 @@ fn get_file_info_from_cf(db_info: &DbInfo, cf_name: &str, filename: &str) -> Opt
                     column_family: cf_name.to_string(),
                     level: level_ref.level(),
                     size: file_ref.size(),
-                    smallest_key: file_ref.smallest_key(),
-                    largest_key: file_ref.largest_key(),
+                    smallest_key: non_empty_key(file_ref.smallest_key()),
+                    largest_key: non_empty_key(file_ref.largest_key()),
                     num_entries: live_info.map(|i| i.num_entries),
                     num_deletions: live_info.map(|i| i.num_deletions),
                 });

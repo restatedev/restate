@@ -140,7 +140,10 @@ where
 
 impl Display for Icon<'_, '_> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if CliContext::get().colors_enabled() {
+        // Emojis are human decoration: never emit them into `--json` output, even
+        // when colors are forced on.
+        let ctx = CliContext::get();
+        if ctx.colors_enabled() && !ctx.json_output() {
             write!(f, "{}", self.0)
         } else {
             write!(f, "{}", self.1)
@@ -241,9 +244,17 @@ pub trait StyledTable {
 /// // Only reaches here if user confirmed
 /// delete_all_data();
 /// ```
+///
+/// Fails with [`ConfirmationRequired`](crate::exit::ConfirmationRequired) when it
+/// cannot prompt (non-interactive without `--yes`), and with
+/// [`Aborted`](crate::exit::Aborted) when the user declines.
 pub fn confirm_or_exit(prompt: &str) -> anyhow::Result<()> {
+    let ctx = CliContext::get();
+    if !ctx.auto_confirm() && !ctx.is_interactive() {
+        return Err(crate::exit::ConfirmationRequired::default().into());
+    }
     if !confirm(prompt) {
-        return Err(anyhow::anyhow!("User aborted"));
+        return Err(crate::exit::Aborted::default().into());
     }
     Ok(())
 }
@@ -261,6 +272,15 @@ pub fn choose<T: ToString + std::fmt::Display>(
     prompt: &str,
     choices: &[T],
 ) -> anyhow::Result<usize> {
+    if !CliContext::get().can_prompt() {
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot show an interactive selection ({prompt:?}) with --yes or in \
+                 non-interactive mode. Provide the value via command-line arguments."
+            )),
+        }
+        .into());
+    }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Select::with_theme(&theme)
         .with_prompt(prompt)
@@ -277,6 +297,15 @@ pub fn choose<T: ToString + std::fmt::Display>(
 /// ```
 #[allow(dead_code)]
 pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
+    if !CliContext::get().can_prompt() {
+        return Err(crate::exit::Aborted {
+            reason: Some(format!(
+                "Cannot prompt for input ({prompt:?}) with --yes or in non-interactive mode. \
+                 Provide the value via command-line arguments."
+            )),
+        }
+        .into());
+    }
     let theme = dialoguer::theme::ColorfulTheme::default();
     Ok(dialoguer::Input::with_theme(&theme)
         .with_prompt(prompt)
@@ -303,13 +332,17 @@ pub fn input(prompt: &str, default: String) -> anyhow::Result<String> {
 /// ```
 pub fn confirm(prompt: &str) -> bool {
     let theme = dialoguer::theme::ColorfulTheme::default();
-    if CliContext::get().auto_confirm() {
-        c_println!(
+    let ctx = CliContext::get();
+    if ctx.auto_confirm() {
+        c_eprintln!(
             "{} {}",
             prompt,
             Styled(Style::Warn, "Auto-confirming --yes is set."),
         );
         true
+    } else if !ctx.is_interactive() {
+        c_error!("Refusing to prompt ({prompt:?}) in non-interactive mode. Pass --yes to proceed.");
+        false
     } else {
         dialoguer::Confirm::with_theme(&theme)
             .with_prompt(prompt)
@@ -345,9 +378,14 @@ macro_rules! _gecho {
             use $crate::_unicode_width::UnicodeWidthStr;
 
             let mut _lock = $crate::ui::output::$where();
-            let _icon = $crate::ui::console::Icon($icon, "");
+            // The icon renders empty without colors; don't leave a leading space then.
+            let _icon = $crate::ui::console::Icon($icon, "").to_string();
             let _ = writeln!(_lock);
-            let _message = format!("{_icon} {}:", $($arg)*);
+            let _message = if _icon.is_empty() {
+                format!("{}:", $($arg)*)
+            } else {
+                format!("{_icon} {}:", $($arg)*)
+            };
             let _ = writeln!(_lock, "{_message}");
             let _ = writeln!(_lock, "{:―<1$}", "", _message.width_cjk());
         }
@@ -439,6 +477,14 @@ macro_rules! c_success {
     };
 }
 
+/// A change command found nothing to do (e.g. its query matched nothing).
+#[macro_export]
+macro_rules! c_noop {
+    ($($arg:tt)*) => {
+        $crate::ui::console::_gecho!(@nl_with_prefix, ($crate::ui::stylesheet::NOOP_ICON), stdout, $($arg)*);
+    };
+}
+
 #[macro_export]
 macro_rules! c_error {
     ($($arg:tt)*) => {
@@ -446,15 +492,28 @@ macro_rules! c_error {
     };
 }
 
+/// The box behind [`c_warn!`] / [`c_tip!`], honoring the color setting (no ANSI
+/// attributes when colors are off).
+#[doc(hidden)]
+pub fn _notice_table(style: comfy_table::TableStyle) -> comfy_table::Table {
+    let mut table = comfy_table::Table::new();
+    table.load_style(style);
+    table.set_content_arrangement(comfy_table::ContentArrangement::Dynamic);
+    table.set_width(120);
+    if CliContext::get().colors_enabled() {
+        table.enforce_styling();
+    } else {
+        table.force_no_tty();
+    }
+    table
+}
+
 /// Warning Sign
 #[macro_export]
 macro_rules! c_warn {
     ($($arg:tt)*) => {
         {
-            let mut table = $crate::_comfy_table::Table::new();
-            table.load_preset($crate::_comfy_table::presets::UTF8_BORDERS_ONLY);
-            table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
-            table.set_width(120);
+            let mut table = $crate::ui::console::_notice_table($crate::_comfy_table::presets::UTF8_BORDERS_ONLY);
             let formatted = format!($($arg)*);
 
             table.add_row(vec![
@@ -471,10 +530,7 @@ macro_rules! c_warn {
 macro_rules! c_tip {
     ($($arg:tt)*) => {
         {
-            let mut table = $crate::_comfy_table::Table::new();
-            table.load_preset($crate::_comfy_table::presets::NOTHING);
-            table.set_content_arrangement($crate::_comfy_table::ContentArrangement::Dynamic);
-            table.set_width(120);
+            let mut table = $crate::ui::console::_notice_table($crate::_comfy_table::presets::NOTHING);
             let formatted = format!($($arg)*);
 
             table.add_row(vec![

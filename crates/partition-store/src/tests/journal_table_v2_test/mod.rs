@@ -21,7 +21,6 @@ use restate_storage_api::Transaction;
 use restate_storage_api::journal_table_v2::{
     NotificationEntryIndex, ReadJournalTable, WriteJournalTable,
 };
-use restate_test_util::let_assert;
 use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::{InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::raw::{RawCommandSpecificMetadata, RawNotificationResultVariant};
@@ -287,13 +286,13 @@ async fn call_journal() {
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.ty(), EntryType::Command(CommandType::Call));
     let cmd = entry.inner.try_as_command().unwrap();
-    let_assert!(RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+    restate_test_util::assert!(let RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
 
     // Second entry is one way call
     let entry = journal.next().await.unwrap().unwrap().1;
     assert_eq!(entry.ty(), EntryType::Command(CommandType::OneWayCall));
     let cmd = entry.inner.try_as_command().unwrap();
-    let_assert!(RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
+    restate_test_util::assert!(let RawCommandSpecificMetadata::CallOrSend(_) = cmd.command_specific_metadata());
 
     // No more entries
     assert!(journal.next().await.is_none());

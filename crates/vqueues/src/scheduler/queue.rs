@@ -19,6 +19,7 @@ use itertools::{EitherOrBoth, Itertools as _};
 use tokio::time::Instant;
 use tracing::trace;
 
+use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::vqueue_table::CursorError;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryValue, VQueueCursor, VQueueRunningCursor, VQueueStore,
@@ -643,6 +644,7 @@ impl<S: VQueueStore> Queue<S> {
         skip: &UnconfirmedAssignments,
         refill_mode: RefillMode,
     ) -> Result<(), CursorError> {
+        let _x = RocksDbReadPerfGuard::new("vqueue-refill-sync");
         let start = Instant::now();
         let mut reader = storage.new_inbox_reader(
             qid,
@@ -698,6 +700,7 @@ impl<S: VQueueStore> Queue<S> {
         let task_cancel = Arc::clone(&cancel);
 
         let handle = tokio::task::spawn_blocking(move || {
+            let _x = RocksDbReadPerfGuard::new("vqueue-refill-async");
             // collect and send the results at the end
             let mut results = Vec::with_capacity(INBOX_CACHE_CAPACITY);
 

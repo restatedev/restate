@@ -33,7 +33,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
 use tracing::error;
 
-use restate_rocksdb::{Priority, StorageTaskKind};
+use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
@@ -46,10 +46,12 @@ use restate_storage_api::vqueue_table::{
     ScanVQueueMetaTable,
 };
 use restate_types::sharding::{KeyRange, PartitionKey};
-use restate_types::vqueues::{EntryId, Seq, VQueueEntryId, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, Seq, VQueueEntryId, VQueueId};
 
 use self::entry::{EntryStatusKeyBuilder, entry_status_header_from_raw};
-use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyKind};
+use self::inbox::InboxKeyRef;
+use self::key_codec::HasLock;
+use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyKind};
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
@@ -226,12 +228,15 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
     ) -> VQueueDisposition {
         // Vqueues that was touched more than 1 hour ago will always be fully written.
         const HOUR_MS: u64 = const { 60 * 60 * 1000 };
-        // 1% Probability to perform a full write rather than a merge. (1 in a 100)
-        const DEFAULT_SAMPLE_RATE: u64 = const { u64::MAX / 100 };
+
+        // Otherwise, full writes are sampled with the configured probability
+        // rather than merged.
+        let full_write_threshold =
+            (self.settings().vqueue_meta_full_write_probability * u64::MAX as f64) as u64;
 
         // Mutate the VQueue metadata
         let was_active_before = meta.is_active();
-        let should_write_full = restate_util_random::pseudo_random() < DEFAULT_SAMPLE_RATE
+        let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
         meta.apply_update(update);
         let is_active_now = meta.is_active();
@@ -414,6 +419,7 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
 
 impl ReadVQueueTable for PartitionStoreTransaction<'_> {
     async fn get_vqueue(&self, qid: &VQueueId) -> Result<Option<VQueueMeta>, StorageError> {
+        let _x = RocksDbReadPerfGuard::new("get-vqueue-meta");
         let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
         MetaKeyRef::builder()
             .qid(qid)
@@ -430,6 +436,7 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         partition_key: PartitionKey,
         id: &EntryId,
     ) -> Result<Option<impl EntryStatusHeader + 'static>> {
+        let _x = RocksDbReadPerfGuard::new("get-vqueue-entry-status");
         let mut key_buffer = [0u8; EntryStatusKey::serialized_length_fixed()];
         EntryStatusKeyRef::builder()
             .partition_key(&partition_key)
@@ -443,6 +450,37 @@ impl ReadVQueueTable for PartitionStoreTransaction<'_> {
         let header = RawStatusHeader::decode_length_delimited(&mut raw_value.as_ref())?;
 
         Ok(Some(entry_status_header_from_raw(*id, header)))
+    }
+
+    async fn find_inbox_state_mutation_key(
+        &self,
+        qid: &VQueueId,
+        key: &EntryKey,
+    ) -> Result<Option<EntryKey>> {
+        let has_lock = HasLock::new(key.has_lock());
+        let run_at = key.run_at();
+        let seq = key.seq();
+        let prefix = InboxKeyRef::builder()
+            .qid(qid)
+            .has_lock(&has_lock)
+            .run_at(&run_at)
+            .seq(&seq);
+
+        // The seq of a state mutation is the lsn of its command. Other inbox entries with this seq
+        // can't exist: invocations enqueued by the state machine use the lsn of their own command,
+        // and migrated invocations use seq numbers from before the migration, which are smaller
+        // than any lsn after it.
+        let iterator = self.iterator_from(TableScan::Prefix(prefix))?;
+        let Some(raw_key) = iterator.key() else {
+            iterator
+                .status()
+                .map_err(|err| StorageError::Generic(err.into()))?;
+            return Ok(None);
+        };
+        let entry_key =
+            <EntryKey as KeyDecode>::decode(&mut &raw_key[InboxKey::offset_of_entry_key()..])?;
+
+        Ok((entry_key.kind() == EntryKind::StateMutation).then_some(entry_key))
     }
 
     async fn get_vqueue_input_payload<E>(
@@ -588,12 +626,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized MetaKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
@@ -752,12 +791,13 @@ where
                             break;
                         }
 
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
-                            key_buf.chunks_exact(KEY_LEN),
-                            true,
-                            &readopts,
+                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                        debug_assert!(
+                            remainder.is_empty(),
+                            "Each serialized EntryStatusKey should have KEY_LEN"
                         );
+
+                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =

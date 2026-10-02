@@ -12,10 +12,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ahash::{HashMap, HashMapExt};
-use enum_map::Enum;
 use futures::StreamExt;
 use futures::future::OptionFuture;
 use futures::stream::FuturesUnordered;
+use strum::EnumCount;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
@@ -106,7 +106,7 @@ impl Watchdog {
             chain_writer_tx,
             chain_writer_task,
             inbound,
-            live_providers: Vec::with_capacity(ProviderKind::LENGTH),
+            live_providers: Vec::with_capacity(ProviderKind::COUNT),
             in_flight_trim: None,
             pending_trims: HashMap::with_capacity(128),
             my_preferred_logs: HashMap::default(),
@@ -229,7 +229,7 @@ impl Watchdog {
                 && !self.pending_trims.is_empty()
                 && !shutdown_requested
             {
-                let trims = self.pending_trims.drain().collect();
+                let trims = std::mem::take(&mut self.pending_trims);
                 match self.spawn_trim(trims) {
                     Ok(task_handle) => self.in_flight_trim = Some(task_handle),
                     Err(ShutdownError) => {

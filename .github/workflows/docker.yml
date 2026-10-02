@@ -254,12 +254,18 @@ jobs:
       - name: Set OCI image version
         id: image-version
         run: |
-          # Cargo.toml is the single source of truth for the version, so the label
-          # agrees with what the binary reports: RestateVersion::current() uses
-          # CARGO_PKG_VERSION.
-          IMAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | \
-            jq -er --arg pkg "${{ inputs.cargoPackage }}" \
-              '.packages[] | select(.name == $pkg) | .version')
+          if [[ -f Cargo.toml ]]; then
+            # Cargo.toml is the single source of truth for the version, so the label
+            # agrees with what the binary reports: RestateVersion::current() uses
+            # CARGO_PKG_VERSION.
+            IMAGE_VERSION=$(cargo metadata --no-deps --format-version 1 | \
+              jq -er --arg pkg "${{ inputs.cargoPackage }}" \
+                '.packages[] | select(.name == $pkg) | .version')
+          else
+            # Non-Rust repositories (e.g. dev-tools) have no Cargo.toml; fall back
+            # to the version docker/metadata-action derived from the git ref.
+            IMAGE_VERSION="${{ steps.meta.outputs.version }}"
+          fi
 
           echo "version=${IMAGE_VERSION}" >> $GITHUB_OUTPUT
           echo "OCI image version: ${IMAGE_VERSION}"

@@ -10,15 +10,18 @@
 
 use std::error::Error;
 
-use vergen::EmitBuilder;
+use vergen_gitcl::{Build, Cargo, Emitter, Gitcl};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    EmitBuilder::builder()
-        .all_build()
-        .all_cargo()
-        .git_sha(true)
-        .git_commit_date()
-        .git_dirty(true)
+    let git = Gitcl::builder()
+        .sha(true)
+        .commit_date(true)
+        .dirty(true)
+        .build();
+    Emitter::default()
+        .add_instructions(&Build::all_build())?
+        .add_instructions(&Cargo::all_cargo())?
+        .add_instructions(&git)?
         .emit()?;
     Ok(())
 }

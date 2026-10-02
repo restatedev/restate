@@ -81,7 +81,7 @@ fn tagged_value_to_versioned_value(
     }?;
 
     trace!(
-        tag = %tag.as_string(),
+        ?tag,
         encoding = ?tagged_value.content.encoding,
         input_value_len = tagged_value.content.bytes.len(),
         output_encoded_len = versioned_value.encoded_len(),

@@ -11,7 +11,6 @@
 use std::future::pending;
 use std::io::Write;
 use std::num::NonZeroUsize;
-use std::sync::Arc;
 use std::{env, io};
 
 use anyhow::bail;
@@ -28,19 +27,13 @@ use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
-use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId};
-use restate_types::invocation::client::{
-    AttachInvocationResponse, CancelInvocationResponse, GetInvocationOutputResponse,
-    GetInvocationStatusResponse, InvocationClient, InvocationClientError, InvocationOutput,
-    KillInvocationResponse, PatchDeploymentId, PauseInvocationResponse, PurgeInvocationResponse,
-    RestartAsNewInvocationResponse, ResumeInvocationResponse, SubmittedInvocationNotification,
-};
-use restate_types::invocation::{
-    InvocationQuery, InvocationRequest, InvocationResponse, InvocationTermination,
-};
-use restate_types::journal_v2::{EntryIndex, Signal};
+use restate_types::identifiers::PartitionProcessorRpcRequestId;
+use restate_types::invocation::InvocationTermination;
 use restate_types::live::Constant;
 use restate_types::net::listener::Listeners;
+use restate_types::partition_processor::client::{
+    PartitionProcessorClient, PartitionProcessorClientError, PartitionProcessorRpc,
+};
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::kafka::KafkaCluster;
@@ -97,124 +90,12 @@ impl SubscriptionController for Mock {
     }
 }
 
-impl InvocationClient for Mock {
-    fn append_invocation_and_wait_submit_notification(
+impl PartitionProcessorClient for Mock {
+    fn send<R: PartitionProcessorRpc>(
         &self,
         _: PartitionProcessorRpcRequestId,
-        _: Arc<InvocationRequest>,
-    ) -> impl Future<Output = Result<SubmittedInvocationNotification, InvocationClientError>> + Send
-    {
-        pending()
-    }
-
-    fn append_invocation_and_wait_output(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: Arc<InvocationRequest>,
-    ) -> impl Future<Output = Result<InvocationOutput, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn attach_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationQuery,
-    ) -> impl Future<Output = Result<AttachInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn get_invocation_output(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationQuery,
-    ) -> impl Future<Output = Result<GetInvocationOutputResponse, InvocationClientError>> + Send
-    {
-        pending()
-    }
-
-    fn get_invocation_status(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<GetInvocationStatusResponse, InvocationClientError>> + Send
-    {
-        pending()
-    }
-
-    fn append_invocation_response(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationResponse,
-    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn append_signal(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-        _: Signal,
-    ) -> impl Future<Output = Result<(), InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn cancel_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<CancelInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn kill_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<KillInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn purge_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn purge_journal(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<PurgeInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn restart_as_new_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-        _: EntryIndex,
-        _: PatchDeploymentId,
-    ) -> impl Future<Output = Result<RestartAsNewInvocationResponse, InvocationClientError>> + Send
-    {
-        pending()
-    }
-
-    fn resume_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-        _: PatchDeploymentId,
-    ) -> impl Future<Output = Result<ResumeInvocationResponse, InvocationClientError>> + Send {
-        pending()
-    }
-
-    fn pause_invocation(
-        &self,
-        _: PartitionProcessorRpcRequestId,
-        _: InvocationId,
-    ) -> impl Future<Output = Result<PauseInvocationResponse, InvocationClientError>> + Send {
+        _: R,
+    ) -> impl Future<Output = Result<R::Response, PartitionProcessorClientError>> + Send {
         pending()
     }
 }
@@ -272,12 +153,12 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
 }
 
 fn render_table_docs(mut write: impl Write) -> io::Result<()> {
-    for table_doc in restate_storage_query_datafusion::table_docs::ALL_TABLE_DOCS {
-        render_table_doc(table_doc, &mut write)?;
+    // `all_table_docs()` yields every entry of ALL_TABLE_DOCS followed by the
+    // synthesized `sys_invocation` view, which is the single source of truth
+    // shared with the CLI's embedded reference.
+    for table_doc in table_docs::all_table_docs() {
+        render_table_doc(&table_doc, &mut write)?;
     }
-
-    // sys_invocation is a view which was not registered at table_docs::TABLE_DOCS
-    render_table_doc(&table_docs::sys_invocation_table_docs(), &mut write)?;
 
     Ok(())
 }
@@ -328,6 +209,7 @@ Tasks:
     generate-default-config: Generate default configuration.
     generate-rest-api-doc: Generate Rest API documentation. Make sure to have the port 8081 open.
     generate-table-docs: Generate default configuration.
+    generate-cli-sql-tables: Generate the SQL introspection reference embedded in the CLI.
 "
     );
 }
@@ -351,6 +233,7 @@ async fn main() -> anyhow::Result<()> {
                     .await?
             }
             "generate-table-docs" => generate_table_docs()?,
+            "generate-cli-sql-tables" => print!("{}", table_docs::render_cli_sql_tables()),
             invalid => {
                 print_help();
                 bail!("Invalid task name: {}", invalid)

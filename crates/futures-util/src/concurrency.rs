@@ -16,10 +16,46 @@ use std::task::{Context, Poll};
 use tokio::sync::Semaphore;
 use tokio_util::sync::PollSemaphore;
 
+/// Observes permits being taken from and returned to a limited [`Concurrency`] semaphore.
+///
+/// Observers are never notified for unlimited semaphores.
+pub trait PermitObserver: Send + Sync + 'static {
+    /// `permits` units were taken from the semaphore.
+    fn on_acquire(&self, permits: u32);
+    /// `permits` units were returned to the semaphore.
+    fn on_release(&self, permits: u32);
+}
+
+/// State shared between a limited [`Concurrency`] and the [`Permit`]s it handed out.
+struct Shared {
+    semaphore: Arc<Semaphore>,
+    observer: Option<Box<dyn PermitObserver>>,
+}
+
+impl Shared {
+    fn acquired(&self, permits: u32) {
+        if let Some(observer) = &self.observer {
+            observer.on_acquire(permits);
+        }
+    }
+
+    fn release(&self, permits: u32) {
+        // Notify before the units become acquirable again, so observers never see more units
+        // acquired than released while another task is racing to take them.
+        if let Some(observer) = &self.observer {
+            observer.on_release(permits);
+        }
+        self.semaphore.add_permits(permits as usize);
+    }
+}
+
 #[derive(Clone)]
 enum Inner {
     Unlimited,
-    Limited { semaphore: PollSemaphore },
+    Limited {
+        semaphore: PollSemaphore,
+        shared: Arc<Shared>,
+    },
 }
 
 /// Shareable concurrency semaphore.
@@ -38,11 +74,28 @@ impl Concurrency {
     /// If `limit` is `None`, the semaphore is unbounded and will return `unlimited` permits.
     /// Each returned permit can be split into unlimited number of permits again.
     pub fn new(limit: Option<NonZeroUsize>) -> Self {
+        Self::build(limit, None)
+    }
+
+    /// Like [`Self::new`], additionally notifying `observer` whenever permits are taken from or
+    /// returned to the semaphore. The observer is unused when `limit` is `None`.
+    pub fn with_observer(limit: Option<NonZeroUsize>, observer: impl PermitObserver) -> Self {
+        Self::build(limit, Some(Box::new(observer)))
+    }
+
+    fn build(limit: Option<NonZeroUsize>, observer: Option<Box<dyn PermitObserver>>) -> Self {
         match limit {
             None => Self(Inner::Unlimited),
-            Some(limit) => Self(Inner::Limited {
-                semaphore: PollSemaphore::new(Arc::new(Semaphore::new(limit.get()))),
-            }),
+            Some(limit) => {
+                let semaphore = Arc::new(Semaphore::new(limit.get()));
+                Self(Inner::Limited {
+                    semaphore: PollSemaphore::new(Arc::clone(&semaphore)),
+                    shared: Arc::new(Shared {
+                        semaphore,
+                        observer,
+                    }),
+                })
+            }
         }
     }
 
@@ -61,17 +114,15 @@ impl Concurrency {
     pub fn poll_acquire(&mut self, cx: &mut Context<'_>) -> Poll<Permit> {
         match &mut self.0 {
             Inner::Unlimited => Poll::Ready(Permit::new_unlimited()),
-            Inner::Limited { semaphore, .. } => semaphore.poll_acquire(cx).map(|owned_permit| {
-                // we never close the underlying semaphore.
-                let owned_permit = owned_permit.unwrap();
-                let permit = Permit {
-                    // We don't _ever_ close() this semaphore
-                    inner: Permits::Limited(NonZeroU32::new(1).unwrap()),
-                    semaphore: Arc::downgrade(owned_permit.semaphore()),
-                };
-                owned_permit.forget();
-                permit
-            }),
+            Inner::Limited { semaphore, shared } => {
+                semaphore.poll_acquire(cx).map(|owned_permit| {
+                    // we never close the underlying semaphore.
+                    let owned_permit = owned_permit.unwrap();
+                    // we take over the permit
+                    owned_permit.forget();
+                    Permit::new_limited(shared)
+                })
+            }
         }
     }
 
@@ -92,18 +143,16 @@ impl Concurrency {
                 existing.merge(Permit::new_unlimited());
                 Poll::Ready(())
             }
-            Inner::Limited { ref mut semaphore } => semaphore.poll_acquire(cx).map(|permit| {
+            Inner::Limited {
+                ref mut semaphore,
+                ref shared,
+            } => semaphore.poll_acquire(cx).map(|permit| {
                 // we never close the underlying semaphore.
                 let permit = permit.unwrap();
-                let semaphore = Arc::downgrade(permit.semaphore());
                 // we take over the permit
                 permit.forget();
 
-                existing.merge(Permit {
-                    // We don't _ever_ close() this semaphore
-                    inner: Permits::Limited(NonZeroU32::new(1).unwrap()),
-                    semaphore,
-                });
+                existing.merge(Permit::new_limited(shared));
             }),
         }
     }
@@ -129,7 +178,7 @@ enum Permits {
 #[clippy::has_significant_drop]
 pub struct Permit {
     inner: Permits,
-    semaphore: Weak<Semaphore>,
+    shared: Weak<Shared>,
 }
 
 impl std::fmt::Debug for Permit {
@@ -145,9 +194,9 @@ impl std::fmt::Debug for Permit {
 impl Drop for Permit {
     fn drop(&mut self) {
         if let Permits::Limited(permits) = self.inner
-            && let Some(semaphore) = self.semaphore.upgrade()
+            && let Some(shared) = self.shared.upgrade()
         {
-            semaphore.add_permits(permits.get() as usize);
+            shared.release(permits.get());
         }
     }
 }
@@ -157,7 +206,7 @@ impl Permit {
     pub const fn new_empty() -> Self {
         Self {
             inner: Permits::Empty,
-            semaphore: Weak::new(),
+            shared: Weak::new(),
         }
     }
 
@@ -167,7 +216,17 @@ impl Permit {
     const fn new_unlimited() -> Self {
         Self {
             inner: Permits::Unlimited,
-            semaphore: Weak::new(),
+            shared: Weak::new(),
+        }
+    }
+
+    /// A permit holding a single unit that was just taken from `shared`'s semaphore.
+    fn new_limited(shared: &Arc<Shared>) -> Self {
+        shared.acquired(1);
+        Self {
+            // We don't _ever_ close() this semaphore
+            inner: Permits::Limited(NonZeroU32::new(1).unwrap()),
+            shared: Arc::downgrade(shared),
         }
     }
 
@@ -186,12 +245,12 @@ impl Permit {
         match (&mut self.inner, std::mem::take(&mut other.inner)) {
             (Permits::Unlimited, p) | (Permits::Empty, p) => {
                 self.inner = p;
-                std::mem::swap(&mut self.semaphore, &mut other.semaphore);
+                std::mem::swap(&mut self.shared, &mut other.shared);
             }
             (Permits::Limited(l), Permits::Unlimited) => {
                 // attempt to return our taken limit to the pool
-                if let Some(semaphore) = std::mem::take(&mut self.semaphore).upgrade() {
-                    semaphore.add_permits(l.get() as usize);
+                if let Some(shared) = std::mem::take(&mut self.shared).upgrade() {
+                    shared.release(l.get());
                 }
                 self.inner = Permits::Unlimited;
             }
@@ -216,25 +275,84 @@ impl Permit {
                 self.inner = Permits::Empty;
                 Some(Self {
                     inner: Permits::Limited(limit),
-                    semaphore: std::mem::take(&mut self.semaphore),
+                    shared: std::mem::take(&mut self.shared),
                 })
             }
             Permits::Limited(limit) if n < limit.get() as usize => {
                 self.inner = Permits::Limited(NonZeroU32::new(limit.get() - n as u32).unwrap());
                 Some(Self {
                     inner: Permits::Limited(NonZeroU32::new(n as u32).unwrap()),
-                    semaphore: self.semaphore.clone(),
+                    shared: self.shared.clone(),
                 })
             }
             // compiler didn't figure out that we are already doing exhaustive matching
             Permits::Limited(_) => unreachable!(),
         }
     }
+
+    /// Returns the number of permits this holds.
+    ///
+    /// This returns `None` for **both** Unlimited and Empty cases. A distinction can be made
+    /// by calling `is_empty()` if needed.
+    pub fn permits(&self) -> Option<usize> {
+        match self.inner {
+            Permits::Unlimited | Permits::Empty => None,
+            Permits::Limited(limit) => Some(limit.get() as usize),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU32, Ordering};
+
     use super::*;
+
+    #[derive(Clone, Default)]
+    struct Counting {
+        acquired: Arc<AtomicU32>,
+        released: Arc<AtomicU32>,
+    }
+
+    impl PermitObserver for Counting {
+        fn on_acquire(&self, permits: u32) {
+            self.acquired.fetch_add(permits, Ordering::Relaxed);
+        }
+
+        fn on_release(&self, permits: u32) {
+            self.released.fetch_add(permits, Ordering::Relaxed);
+        }
+    }
+
+    #[tokio::test]
+    async fn observer_counts_units() {
+        let counting = Counting::default();
+        let mut concurrency =
+            Concurrency::with_observer(Some(NonZeroUsize::new(3).unwrap()), counting.clone());
+
+        let mut permit = concurrency.acquire().await;
+        concurrency.acquire_and_merge(&mut permit).await;
+        assert_eq!(permit.permits(), Some(2));
+        assert_eq!(counting.acquired.load(Ordering::Relaxed), 2);
+        assert_eq!(counting.released.load(Ordering::Relaxed), 0);
+
+        // splitting and merging back doesn't touch the semaphore
+        let other = permit.split(1).unwrap();
+        permit.merge(other);
+        assert_eq!(counting.released.load(Ordering::Relaxed), 0);
+
+        // a merged permit returns all of its units at once
+        drop(permit);
+        assert_eq!(counting.acquired.load(Ordering::Relaxed), 2);
+        assert_eq!(counting.released.load(Ordering::Relaxed), 2);
+
+        // unlimited semaphores never notify
+        let counting = Counting::default();
+        let mut unlimited = Concurrency::with_observer(None, counting.clone());
+        drop(unlimited.acquire().await);
+        assert_eq!(counting.acquired.load(Ordering::Relaxed), 0);
+        assert_eq!(counting.released.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn unlimited_concurrency() {

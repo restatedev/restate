@@ -21,14 +21,14 @@ use restate_core::{
 use restate_types::{
     identifiers::PartitionKey,
     live::Live,
-    logs::{HasRecordKeys, Keys},
+    logs::{BodyWithKeys, HasRecordKeys, Keys},
     net::ingest::IngestRecord,
     partitions::{FindPartition, PartitionTable, PartitionTableError},
     storage::{StorageCodec, StorageEncode},
 };
 
 use crate::{
-    RecordCommit, SessionOptions,
+    Ingestion, RecordCommit, SessionOptions,
     session::{SessionHandle, SessionManager},
 };
 
@@ -96,7 +96,6 @@ impl<T, V> IngestionClient<T, V> {
 impl<T, V> IngestionClient<T, V>
 where
     T: TransportConnect,
-    V: StorageEncode,
 {
     pub fn partition_routing(&self) -> &PartitionRouting {
         self.manager.partition_routing()
@@ -110,13 +109,26 @@ where
         self.manager.networking()
     }
 
-    /// Ingest a record with `partition_key`.
-    #[must_use]
-    pub fn ingest(
+    /// Once closed, calls to ingest will return [`IngestionError::Closed`].
+    /// Inflight records might still get committed.
+    pub fn close(&self) {
+        self.permits.close();
+        self.manager.close();
+    }
+}
+
+impl<T, V> Ingestion<V> for IngestionClient<T, V>
+where
+    T: TransportConnect,
+    V: StorageEncode,
+{
+    type Future = IngestFuture;
+
+    fn ingest(
         &mut self,
         partition_key: PartitionKey,
         record: impl Into<InputRecord<V>>,
-    ) -> IngestFuture {
+    ) -> Self::Future {
         let record = record.into().into_record(&mut self.arena);
 
         if record.estimate_size() > self.manager.options().record_size_limit.get() {
@@ -142,13 +154,6 @@ where
         let acquire = self.permits.clone().acquire_many_owned(budget as u32);
 
         IngestFuture::awaiting_permits(record, handle, acquire)
-    }
-
-    /// Once closed, calls to ingest will return [`IngestionError::Closed`].
-    /// Inflight records might still get committed.
-    pub fn close(&self) {
-        self.permits.close();
-        self.manager.close();
     }
 }
 
@@ -234,8 +239,8 @@ impl Future for IngestFuture {
 }
 
 pub struct InputRecord<T> {
-    keys: Keys,
-    record: T,
+    pub(crate) keys: Keys,
+    pub(crate) record: T,
 }
 
 impl<T> InputRecord<T>
@@ -263,11 +268,21 @@ where
 
 impl InputRecord<String> {
     #[cfg(test)]
-    fn from_str(s: impl Into<String>) -> Self {
+    pub fn from_str(s: impl Into<String>) -> Self {
         InputRecord {
             keys: Keys::None,
             record: s.into(),
         }
+    }
+}
+
+impl<T> From<BodyWithKeys<T>> for InputRecord<T>
+where
+    T: StorageEncode,
+{
+    fn from(value: BodyWithKeys<T>) -> Self {
+        let (keys, record) = value.split();
+        Self { keys, record }
     }
 }
 
@@ -302,7 +317,7 @@ mod test {
         },
     };
 
-    use crate::{CancelledError, IngestionClient, SessionOptions, client::InputRecord};
+    use crate::{CancelledError, Ingestion, IngestionClient, SessionOptions, client::InputRecord};
 
     async fn init_env(
         batch_size: usize,

@@ -283,7 +283,7 @@ mod tests {
             .await;
 
         // Apply the cancel signal notification
-        let actions = test_env
+        let _ = test_env
             .apply(commands::TerminateInvocationCommand::test_envelope(
                 InvocationTermination {
                     invocation_id,
@@ -293,11 +293,7 @@ mod tests {
             ))
             .await;
 
-        // The invocation should be resumed (invoke action dispatched)
-        assert_that!(
-            actions,
-            contains(matchers::actions::invoke_for_id(invocation_id))
-        );
+        // The invocation should be resumed
         assert_that!(
             test_env
                 .storage

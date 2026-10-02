@@ -21,24 +21,33 @@ cargo bench --package restate-benchmarks --bench throughput_parallel
 
 ## Profiling the benchmarks
 
-Prerequisites:
+Use an external profiler: [samply](https://github.com/mstange/samply) for an interactive
+profile, or [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph) for an SVG.
+Install the chosen tool with `cargo install --locked samply` or `cargo install --locked flamegraph`.
+On Linux, configure perf-event permissions as described in the profiler's documentation.
+The workspace's bench profile already enables debug symbols.
 
-* (Linux only) You need to set `kernel.perf_event_paranoid` to `-1` to allow perf collect all the events: `sudo sysctl kernel./perf_event_paranoid=-1`
+### Samply
 
-In order to profile the benchmarks select a benchmark and pass the `--profile-time=<time_to_run>` option:
+Build first, then profile the benchmark executable rather than Cargo. This example
+uses `jq` to select the executable from Cargo's JSON output:
 
 ```shell
-cargo bench --package restate-benchmarks --bench throughput_parallel -- --profile-time=30
+BENCHMARK=$(cargo bench -p restate-benchmarks --bench throughput_parallel --no-run --message-format=json |
+    jq -r 'select(.reason == "compiler-artifact" and .target.name == "throughput_parallel" and .executable != null) | .executable')
+samply record "$BENCHMARK" --bench 'throughput/parallel' --profile-time=30
 ```
 
-On MacOS you need to enable the frame-pointer feature:
+### Cargo-flamegraph
 
 ```shell
-cargo bench --package restate-benchmarks --features frame-pointer --bench throughput_parallel -- --profile-time=30
+cargo flamegraph -p restate-benchmarks --bench throughput_parallel -- --bench 'throughput/parallel' --profile-time=30
 ```
 
-This will profile the *throughput_parallel* benchmark for *30 s*.
-The profiler will generate a flamegraph under `target/criterion/<name_of_benchmark>/profile/flamegraph.svg`.
+This writes `flamegraph.svg` in the current directory. Criterion's `--profile-time`
+runs the selected workload for profiling without collecting benchmark statistics.
+It no longer generates an SVG by itself; the embedded `pprof` integration and its
+`frame-pointer` Cargo feature have been removed.
 
 ## Changing Restate's configuration
 

@@ -39,6 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
+use bytes::BytesMut;
 use futures::{FutureExt, StreamExt};
 use metrics::histogram;
 use tokio::sync::watch;
@@ -48,7 +49,7 @@ use tracing::{debug, error, instrument, trace, warn};
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{DataRecord, DataRecordError, LogEntry};
 use restate_core::network::{
-    Incoming, Oneshot, Reciprocal, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
+    Incoming, RawSvcRpc, Rpc, ServiceMessage, ServiceStream, TransportConnect, Verdict,
 };
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind, cancellation_token};
 use restate_ingestion_client::IngestionClient;
@@ -65,15 +66,19 @@ use restate_types::cluster::cluster_state::{PartitionProcessorStatus, RunMode};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::LeaderEpoch;
 use restate_types::logs::{self, Lsn, RecordDecodeError, SequenceNumber};
+use restate_types::net::RpcRequest;
 use restate_types::net::ingest::{
-    DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
+    self, DedupSequenceNrQueryRequest, DedupSequenceNrQueryResponse, ReceivedIngestRequest,
     ResponseStatus,
 };
 use restate_types::net::partition_processor::{
-    PartitionLeaderService, PartitionProcessorRpcError, PartitionProcessorRpcRequest,
-    PartitionProcessorRpcResponse,
+    AppendInvocationResponseRpcRequest, AppendInvocationRpcRequest, AppendSignalRpcRequest,
+    CancelInvocationRpcRequest, GetInvocationOutputRpcRequest, GetInvocationStatusRpcRequest,
+    KillInvocationRpcRequest, PartitionLeaderService, PartitionProcessorRpcError,
+    PartitionProcessorRpcRequest, PartitionProcessorWireRpc, PauseInvocationRpcRequest,
+    PurgeInvocationRpcRequest, PurgeJournalRpcRequest, RestartAsNewInvocationRpcRequest,
+    ResumeInvocationRpcRequest,
 };
-use restate_types::net::{RpcRequest, ingest};
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::retries::RetryPolicy;
 use restate_types::schema::Schema;
@@ -88,10 +93,9 @@ use restate_vqueues::context::HasVQueues;
 use restate_wal_protocol::control::{CurrentReplicaSetConfiguration, NextReplicaSetConfiguration};
 use restate_wal_protocol::v2::CommandScope;
 use restate_wal_protocol::{Envelope, v2};
-use restate_worker_api::invoker::InvokerHandle;
 use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
-use self::leadership::RpcProcessingPermit;
+use self::leadership::{CommitCallback, FromRpcReply, RpcProposalSender};
 use self::processor::commands::{
     AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
     UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
@@ -195,7 +199,7 @@ impl PartitionProcessorBuilder {
 
     pub async fn build<T>(
         self,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, v2::Envelope<v2::Raw>>,
         partition_db: PartitionDb,
     ) -> Result<PartitionProcessor<T>, ProcessorError>
     where
@@ -205,14 +209,22 @@ impl PartitionProcessorBuilder {
             target_leader_state_rx,
             network_svc_rx: rpc_rx,
             status_watch_tx,
-            node_ctx,
+            mut node_ctx,
         } = self;
 
         let mut partition_store = PartitionStore::from(partition_db);
 
-        let ctx =
-            ProcessorRawContext::create(SemanticRestateVersion::current(), &mut partition_store)
-                .await?;
+        let vqueue_metadata_cache_capacity = node_ctx
+            .config
+            .live_load()
+            .worker
+            .vqueue_metadata_cache_capacity();
+        let ctx = ProcessorRawContext::create(
+            SemanticRestateVersion::current(),
+            &mut partition_store,
+            vqueue_metadata_cache_capacity,
+        )
+        .await?;
 
         // Seed the cache with whatever we just loaded from the FSM
         // table, so a freshly-restarted PP doesn't briefly serve the
@@ -245,6 +257,7 @@ impl PartitionProcessorBuilder {
             network_leader_svc_rx: rpc_rx,
             status_watch_tx,
             leader_query_rx,
+            encoding_arena: BytesMut::new(),
         })
     }
 }
@@ -258,6 +271,7 @@ pub struct PartitionProcessor<T> {
     network_leader_svc_rx: ServiceStream<PartitionLeaderService>,
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
+    encoding_arena: BytesMut,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -572,8 +586,7 @@ where
             let config = self.node_ctx.config.live_load();
             let max_batching_size = config.worker.max_command_batch_size();
             let bytes_limit = config.worker.max_command_batch_bytes.as_usize();
-            let network_processing_permit =
-                self.leadership_state.try_reserve_rpc_processing_permit();
+            let rpc_proposal_sender = self.leadership_state.rpc_proposal_sender();
 
             tokio::select! {
                 _ = self.target_leader_state_rx.changed() => {
@@ -595,13 +608,13 @@ where
                     self.leadership_state.maybe_step_down(&mut self.ctx, new_state.current_leader_epoch, new_state.current_leader).await;
                     self.refresh_status(&mut durable_lsn_watch)?;
                 }
-                Some(msg) = self.network_leader_svc_rx.next(), if network_processing_permit.is_some() => {
+                Some(msg) = self.network_leader_svc_rx.next(), if rpc_proposal_sender.is_some() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
                         "network_leader_svc_rx",
                     );
                     // todo: replace the live schema with the leader's consistent schema
-                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, network_processing_permit.expect("guarded with is_some")).await;
+                    self.on_rpc(msg, live_schemas.live_load(), &last_applied_lsn_watch, rpc_proposal_sender.expect("guarded with is_some")).await;
                 }
                 _ = status_update_timer.tick() => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
@@ -700,7 +713,7 @@ where
                     // which are required by the scheduler when applying the scheduler events.
                     self.ctx.vqueues_mut().try_compact();
                 },
-                result = self.leadership_state.run(&mut self.ctx) => {
+                result = self.leadership_state.run(&mut self.ctx, config) => {
                     let _guard = SlowPartitionProcessorArmTracker::new(
                         partition_id,
                         "leadership_state.run",
@@ -748,42 +761,48 @@ where
             .handle_leader_query(self.ctx.vqueues(), leader_query_cmd);
     }
 
-    async fn on_pp_rpc_request(
+    async fn on_pp_rpc_request<Request>(
         &mut self,
-        response_tx: Reciprocal<
-            Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>,
-        >,
-        body: PartitionProcessorRpcRequest,
+        msg: Incoming<RawSvcRpc<PartitionLeaderService>>,
         schemas: &Schema,
-        permit: RpcProcessingPermit,
-    ) {
+        rpc_proposal_sender: RpcProposalSender,
+    ) where
+        Request: PartitionProcessorWireRpc,
+        Request::Ok: FromRpcReply,
+        for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request>,
+    {
+        let msg = msg.into_typed::<Request>();
+        let dequeued_at = MillisSinceEpoch::now();
+        // note: split_with_reservation() decodes the payload
+        let (response_tx, body, lease) = msg.split_with_reservation();
+        let header = body.header();
+        if let Some(sent_at) = header.sent_at
+            && dequeued_at.duration_since(sent_at) > HIGH_RPC_QUEUE_LATENCY_THRESHOLD
+        {
+            warn_ratelimited!(
+                10,
+                std::time::Duration::from_mins(1),
+                partition_id = u32::from(self.ctx.partition_id()),
+                "Detected high RPC queue latency of {}. This could indicate a slow partition processor loop.",
+                sent_at.elapsed().friendly()
+            );
+        }
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
             self.leadership_state.partition_id(),
             schemas,
             &mut self.partition_store,
         );
+
         let decision = rpc::RpcHandler::handle(context, body).await;
+        // todo: we should reject the proposals outside the key range of this partition
+        // possibly without decoding the payload.
 
         match decision {
-            rpc::Decision::Propose(proposal) => permit.buffer_rpc_proposal(proposal, response_tx),
-            rpc::Decision::Reply(reply) => response_tx.send(reply),
-            rpc::Decision::NotifyInvokerAndReply {
-                notification,
-                reply,
-            } => {
-                if let Some(invoker_handle) = self.leadership_state.invoker_handle() {
-                    match notification {
-                        rpc::InvokerNotification::RetryNow(invocation_id) => {
-                            let _ = invoker_handle.retry_invocation_now(invocation_id);
-                        }
-                        rpc::InvokerNotification::Pause(invocation_id) => {
-                            let _ = invoker_handle.pause_invocation(invocation_id);
-                        }
-                    }
-                }
-                response_tx.send(Ok(reply));
+            rpc::Decision::Propose(proposal) => {
+                rpc_proposal_sender.send_rpc_proposal::<Request>(proposal, response_tx, lease)
             }
+            rpc::Decision::Reply(reply) => response_tx.send(Request::wrap_response(reply)),
         }
     }
 
@@ -823,30 +842,111 @@ where
         msg: ServiceMessage<PartitionLeaderService>,
         schemas: &Schema,
         last_applied_lsn_watch: &watch::Receiver<Lsn>,
-        permit: RpcProcessingPermit,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
         match msg {
             ServiceMessage::Rpc(msg) if msg.msg_type() == PartitionProcessorRpcRequest::TYPE => {
-                let dequeued_at = MillisSinceEpoch::now();
-                let msg = msg.into_typed::<PartitionProcessorRpcRequest>();
-                // note: split() decodes the payload
-                let (response_tx, body) = msg.split();
-                if let Some(sent_at) = body.sent_at
-                    && dequeued_at.duration_since(sent_at) > HIGH_RPC_QUEUE_LATENCY_THRESHOLD
-                {
-                    warn_ratelimited!(
-                        10,
-                        std::time::Duration::from_mins(1),
-                        partition_id = u32::from(self.ctx.partition_id()),
-                        "Detected high RPC queue latency of {}. This could indicate a slow partition processor loop.",
-                        sent_at.elapsed().friendly()
-                    );
-                }
-                self.on_pp_rpc_request(response_tx, body, schemas, permit)
+                self.on_pp_rpc_request::<PartitionProcessorRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == AppendInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<AppendInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == GetInvocationOutputRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<GetInvocationOutputRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == GetInvocationStatusRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<GetInvocationStatusRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg)
+                if msg.msg_type() == AppendInvocationResponseRpcRequest::TYPE =>
+            {
+                self.on_pp_rpc_request::<AppendInvocationResponseRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == AppendSignalRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<AppendSignalRpcRequest>(msg, schemas, rpc_proposal_sender)
                     .await;
             }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == CancelInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<CancelInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == KillInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<KillInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PurgeInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PurgeInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PurgeJournalRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PurgeJournalRpcRequest>(msg, schemas, rpc_proposal_sender)
+                    .await;
+            }
+            ServiceMessage::Rpc(msg)
+                if msg.msg_type() == RestartAsNewInvocationRpcRequest::TYPE =>
+            {
+                self.on_pp_rpc_request::<RestartAsNewInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == ResumeInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<ResumeInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
+            ServiceMessage::Rpc(msg) if msg.msg_type() == PauseInvocationRpcRequest::TYPE => {
+                self.on_pp_rpc_request::<PauseInvocationRpcRequest>(
+                    msg,
+                    schemas,
+                    rpc_proposal_sender,
+                )
+                .await;
+            }
             ServiceMessage::Rpc(msg) if msg.msg_type() == ReceivedIngestRequest::TYPE => {
-                self.on_pp_ingest_request(msg.into_typed(), permit);
+                self.on_pp_ingest_request(msg.into_typed(), rpc_proposal_sender);
             }
             ServiceMessage::Rpc(msg) if msg.msg_type() == DedupSequenceNrQueryRequest::TYPE => {
                 self.wait_for_tail_then(
@@ -948,10 +1048,24 @@ where
     fn on_pp_ingest_request(
         &mut self,
         msg: Incoming<Rpc<ReceivedIngestRequest>>,
-        permit: RpcProcessingPermit,
+        rpc_proposal_sender: RpcProposalSender,
     ) {
-        let (reciprocal, request) = msg.split();
-        permit.buffer_forwarded_records(request.records, reciprocal);
+        let (reciprocal, request, lease) = msg.split_with_reservation();
+        let on_commit =
+            CommitCallback::from(move |result: Result<(), PartitionProcessorRpcError>| {
+                let status = match result {
+                    Ok(()) => ResponseStatus::Ack,
+                    Err(
+                        PartitionProcessorRpcError::NotLeader(of)
+                        | PartitionProcessorRpcError::LostLeadership(of),
+                    ) => ResponseStatus::NotLeader { of },
+                    Err(PartitionProcessorRpcError::Internal(msg)) => {
+                        ResponseStatus::Internal { msg }
+                    }
+                };
+                reciprocal.send(status.into());
+            });
+        rpc_proposal_sender.send_forwarded_records(request.records, on_commit, lease);
     }
 
     // --- Apply new commands/records
@@ -1033,6 +1147,7 @@ where
                     envelope,
                     action_collector,
                     self.leadership_state.is_leader(),
+                    &mut self.encoding_arena,
                 )
                 .await?;
                 Ok(NextStep::AdvanceLastAppliedLsn { lsn, dedup, scope })

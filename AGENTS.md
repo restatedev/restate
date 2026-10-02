@@ -48,7 +48,7 @@ If these rules conflict with normal behavior, always follow the rules above.
 1. Leverage Rust's niche optimization features when possible (e.g. Using Option<NonZeroU32> saves memory if zero is not a valid value).
 1. The use of `restate_clock::WallClock` is strongly encouraged over direct use of `std::time::SystemTime`
 1. Maintenance of unit-tests is an overhead we need to keep in check. When adding new tests, focus on high-signal tests and the most important paths instead of full coverage. For any given test, try and cover more than one assertion to reduce verbosity and the total number of test functions.
-1. Check release-notes/README.md and make sure to propose changes to release-notes/unreleased/ if needed. This is of paramount importance if you are making changes that break existing behavior or change current behavior in a way that require cooperation from our service users.
+1. Check release-notes/README.md and make sure to propose changes to release-notes/unreleased/ if needed. This is of paramount importance if you are making changes that break existing behavior. Keep release notes human readable and written from the user's perspective: what changes for them and what they need to do. Do not surface implementation details in release notes.
 1. Check crates/cli-util/README.md when doing CLI changes to make sure that you are adhering to the CLI style guide.
 1. New or deprecated config options must have `/// Since vX.Y.Z` in their doc comment.
 1. Use `ByteCount::from(value)` (from `restate_memory`) when displaying byte sizes in errors/logs.

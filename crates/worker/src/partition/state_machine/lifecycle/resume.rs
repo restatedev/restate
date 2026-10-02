@@ -15,7 +15,7 @@ use restate_types::identifiers::InvocationId;
 
 use crate::debug_if_leader;
 use crate::partition::processor::ProcessorContext;
-use crate::partition::state_machine::{Action, CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct ResumeInvocationCommand<'e> {
     pub invocation_id: InvocationId,
@@ -38,18 +38,12 @@ where
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Resume service"
         );
-        let invocation_target = metadata.invocation_target.clone();
 
         metadata.timestamps.update(ctx.record_created_at);
 
         if metadata.vqueue_id.is_some() {
             ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
-        } else {
-            ctx.action_collector.push(Action::Invoke {
-                invocation_id: self.invocation_id,
-                invocation_target,
-            });
         }
 
         *self.invocation_status = InvocationStatus::Invoked(metadata.clone());

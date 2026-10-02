@@ -12,7 +12,9 @@ use std::str::FromStr;
 
 use crate::errors::IdDecodeError;
 use crate::id_util::{IdDecoder, IdEncoder};
-use crate::identifiers::{InvocationId, InvocationUuid, PartitionKey, ResourceId, StateMutationId};
+use crate::identifiers::{
+    BaseEntryId, InvocationId, InvocationUuid, PartitionKey, ResourceId, StateMutationId,
+};
 
 use super::ParseError;
 
@@ -160,12 +162,19 @@ impl From<VQueueEntryId> for EntryId {
     strum::FromRepr,
     bilrost::Enumeration,
     strum::Display,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+    zerocopy::TryFromBytes,
+    zerocopy::Unaligned,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
 pub enum EntryKind {
-    /// Must not be used as input when encoding but it can be observed when decoding
-    /// if the raw bytes did not form a known entry kind.
+    /// Sentinel for an unspecified kind, not a usable queue entry.
+    /// Bilrost decoding maps unrecognized enumeration values to this variant.
+    /// Raw-byte decoding accepts its explicit zero discriminant but rejects
+    /// unrecognized discriminants instead of mapping them to `Unknown`.
     #[bilrost(0)]
     Unknown = 0x0,
     #[bilrost(1)]
@@ -218,9 +227,35 @@ mod bilrost_encoding {
     );
 }
 
+/// A resource kind and identifier remainder, without a partition key or sequence.
+///
+/// The 17-byte raw layout is `kind (1B) | remainder (16B)`. Use this local form
+/// when the partition key is supplied by the surrounding queue or storage key.
+/// Comparing two local IDs does not compare their partitions or incarnations.
+///
+/// [`Self::to_base_id`] attaches a partition key to obtain [`BaseEntryId`], which
+/// can then be combined with a sequence to obtain
+/// [`CanonicalEntryId`](crate::identifiers::CanonicalEntryId). See the
+/// [identifier module](crate::identifiers) for the identity and encoding model.
+///
+/// The raw byte layout is separate from this type's Bilrost message encoding.
 #[derive(
-    derive_more::Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash, bilrost::Message,
+    derive_more::Debug,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    PartialOrd,
+    Ord,
+    Hash,
+    bilrost::Message,
+    zerocopy::Immutable,
+    zerocopy::IntoBytes,
+    zerocopy::KnownLayout,
+    zerocopy::TryFromBytes,
+    zerocopy::Unaligned,
 )]
+#[repr(C)]
 pub struct EntryId {
     #[bilrost(tag(1), encoding(fixed))]
     kind: EntryKind,
@@ -239,6 +274,10 @@ impl EntryId {
         EntryKind::serialized_length_fixed() + Self::REMAINDER_LEN
     }
 
+    /// Creates a local entry ID from a known kind and a resource remainder.
+    ///
+    /// # Panics
+    /// Panics for [`EntryKind::Unknown`].
     pub fn new(kind: EntryKind, remainder: [u8; Self::REMAINDER_LEN]) -> Self {
         assert_ne!(kind, EntryKind::Unknown, "cannot build unknown entry id");
         Self { kind, remainder }
@@ -247,6 +286,19 @@ impl EntryId {
     #[inline]
     pub const fn kind(&self) -> EntryKind {
         self.kind
+    }
+
+    /// Borrows the raw kind/remainder layout; this is not a Bilrost message.
+    ///
+    /// # Panics
+    /// Panics if the kind is [`EntryKind::Unknown`].
+    pub fn as_bytes(&self) -> &[u8; Self::serialized_length_fixed()] {
+        assert_ne!(
+            self.kind,
+            EntryKind::Unknown,
+            "cannot encode unknown entry id"
+        );
+        zerocopy::transmute_ref!(self)
     }
 
     pub fn to_bytes(self) -> [u8; Self::serialized_length_fixed()] {
@@ -276,7 +328,7 @@ impl EntryId {
     }
 
     #[inline]
-    pub fn remainder_bytes(&self) -> &[u8; Self::REMAINDER_LEN] {
+    pub const fn remainder_bytes(&self) -> &[u8; Self::REMAINDER_LEN] {
         &self.remainder
     }
 
@@ -291,6 +343,11 @@ impl EntryId {
             partition_key,
             id: self,
         }
+    }
+
+    /// Adds the caller-supplied partition key without validating resource routing.
+    pub const fn to_base_id(self, partition_key: PartitionKey) -> BaseEntryId {
+        BaseEntryId::new(partition_key, self)
     }
 
     /// Returns the [`InvocationId`] if this is a [`EntryKind::Invocation`].
@@ -315,6 +372,13 @@ impl EntryId {
             )),
             _ => None,
         }
+    }
+}
+
+impl From<BaseEntryId> for EntryId {
+    #[inline]
+    fn from(id: BaseEntryId) -> Self {
+        id.to_entry_id()
     }
 }
 
@@ -363,23 +427,7 @@ pub struct EntryIdDisplay<'a> {
 
 impl std::fmt::Display for EntryIdDisplay<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.id.kind {
-            EntryKind::Unknown => f.write_str("Unknown"),
-            EntryKind::Invocation => std::fmt::Display::fmt(
-                &InvocationId::from_parts(
-                    self.partition_key,
-                    InvocationUuid::from_bytes(self.id.remainder),
-                ),
-                f,
-            ),
-            EntryKind::StateMutation => std::fmt::Display::fmt(
-                &StateMutationId::from_partition_key_and_bytes(
-                    self.partition_key,
-                    self.id.remainder,
-                ),
-                f,
-            ),
-        }
+        std::fmt::Display::fmt(&self.id.to_base_id(self.partition_key), f)
     }
 }
 
@@ -444,6 +492,8 @@ mod tests {
             );
             let parsed: VQueueEntryId = encoded.parse().expect("must parse its own Display output");
             assert_eq!(parsed, id, "round-trip mismatch for {encoded}");
+            let local = EntryId::from(parsed);
+            assert_eq!(local.display(id.partition_key()).to_string(), encoded);
             // The encoded prefix identifies the kind.
             let expected_prefix = match id.kind() {
                 EntryKind::Invocation => "inv_",

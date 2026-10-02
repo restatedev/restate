@@ -9,17 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::fsm_table::WriteFsmTable;
-use restate_storage_api::outbox_table::{OutboxMessage, WriteOutboxTable};
+use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_types::invocation::{NotifySignalRequest, ResponseResult};
 use restate_types::journal_v2::{
     CompleteAwakeableCommand, CompleteAwakeableId, CompleteAwakeableResult, Signal, SignalResult,
 };
+use restate_wal_protocol::v2::commands::{self, InvocationResponseCommand};
 
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::ApplyJournalCommandEffect;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
-use crate::partition::types::OutboxMessageExt;
 
 pub(super) type ApplyCompleteAwakeableCommand<'e> =
     ApplyJournalCommandEffect<'e, CompleteAwakeableCommand>;
@@ -31,21 +31,23 @@ where
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
-        ctx.do_enqueue_into_outbox(match self.entry.id {
+        match self.entry.id {
             CompleteAwakeableId::Old(old_awakeable_id) => {
                 let (invocation_id, entry_index) = old_awakeable_id.into_inner();
-                OutboxMessage::from_awakeable_completion(
+                let cmd = InvocationResponseCommand::from_awakeable_completion(
                     invocation_id,
                     entry_index,
                     match self.entry.result {
                         CompleteAwakeableResult::Success(s) => ResponseResult::Success(s),
                         CompleteAwakeableResult::Failure(f) => ResponseResult::Failure(f.into()),
                     },
-                )
+                );
+
+                ctx.do_enqueue_into_outbox(cmd)
             }
             CompleteAwakeableId::New(new_awakeable_id) => {
                 let (invocation_id, signal_id) = new_awakeable_id.into_inner();
-                OutboxMessage::NotifySignal(NotifySignalRequest {
+                let cmd = commands::NotifySignalCommand::from(NotifySignalRequest {
                     invocation_id,
                     signal: Signal::new(
                         signal_id,
@@ -54,10 +56,10 @@ where
                             CompleteAwakeableResult::Failure(f) => SignalResult::Failure(f),
                         },
                     ),
-                })
+                });
+                ctx.do_enqueue_into_outbox(cmd)
             }
-        })?;
-        Ok(())
+        }
     }
 }
 

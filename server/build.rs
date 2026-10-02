@@ -9,21 +9,26 @@
 // by the Apache License, Version 2.0.
 
 use std::error::Error;
-use vergen::EmitBuilder;
+
+use vergen_gitcl::{Build, Cargo, Emitter, Gitcl};
 
 fn main() -> Result<(), Box<dyn Error>> {
-    // Emit the instructions
-    EmitBuilder::builder()
-        .build_date()
-        .build_timestamp()
-        .cargo_features()
-        .cargo_opt_level()
-        .cargo_target_triple()
-        .cargo_debug()
-        .git_branch()
-        .git_commit_date()
-        .git_commit_timestamp()
-        .git_sha(true)
+    let cargo = Cargo::builder()
+        .features(true)
+        .opt_level(true)
+        .target_triple(true)
+        .debug(true)
+        .build();
+    let git = Gitcl::builder()
+        .branch(true)
+        .commit_date(true)
+        .commit_timestamp(true)
+        .sha(true)
+        .build();
+    Emitter::default()
+        .add_instructions(&Build::all_build())?
+        .add_instructions(&cargo)?
+        .add_instructions(&git)?
         .emit()?;
     Ok(())
 }

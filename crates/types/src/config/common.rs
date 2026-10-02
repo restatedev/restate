@@ -541,9 +541,9 @@ pub struct CommonOptions {
     /// # Rocksdb global disk write rate limiter
     ///
     /// This lets Rocksdb calibrates its IO operations to make the best use out of
-    /// the available IO bandwidth of the underlying storage device. Rocksdb will
-    /// auto-tune the rate according to the actual background IO workload and will
-    /// use this value as an upper bound.
+    /// the available IO bandwidth of the underlying storage device. By default, Rocksdb
+    /// auto-tunes the rate according to the actual background IO workload and uses this
+    /// value as an upper bound; see `rocksdb-write-rate-limiter-mode`.
     ///
     /// You can use a tool like `fio` to measure the actual IO bandwidth of your storage
     /// device (use block size of 64k, direct IO, and iodepth of 32 across 4 jobs to get a
@@ -559,6 +559,15 @@ pub struct CommonOptions {
     ///
     /// The default value assumes a fast NVMe with bandwidth of 7GiB (per second).
     pub rocksdb_max_write_rate_per_second: NonZeroByteCount,
+
+    /// # Rocksdb write rate limiter mode
+    ///
+    /// How the global write rate limiter applies `rocksdb-max-write-rate-per-second`.
+    ///
+    /// Takes effect on restart.
+    ///
+    /// Since v1.8.0
+    pub rocksdb_write_rate_limiter_mode: RocksDbWriteRateLimiterMode,
 
     /// # Total memory limit for rocksdb caches and memtables.
     ///
@@ -672,16 +681,6 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub experimental: Experimental,
-
-    /// # Explicitly disable the `controlled-idempotent-sharding`
-    ///
-    /// TODO: Removed in Restate v1.8. This is a stopgap solution to
-    /// fix e2e forward compatibility tests.
-    ///
-    /// Since v1.7
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    pub disable_controlled_idempotent_sharding: bool,
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -767,6 +766,15 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
+    /// # AWS-to-GCP workload identity federation
+    ///
+    /// Allows registering deployments that authenticate through a Google workload identity
+    /// provider. Deployment metadata written while this is enabled is not understood by Restate
+    /// v1.7, so enabling it makes rollback to v1.7 unsafe.
+    ///
+    /// Since v1.8.0
+    gcp_workload_identity_federation,
+
     /// # Migrate the unscoped promise table into its scoped variant
     ///
     /// When enabled, partition stores migrate every entry of the legacy unscoped
@@ -837,6 +845,24 @@ experimental! {
     ///
     /// Since v1.7.10
     vqueue_obsolete_cleanup,
+
+    /// # Enables the new invocation::Source::Ingestion
+    ///
+    /// This new source can be set by the ingestion API.
+    ///
+    /// Since v1.8.0
+    invocation_source_ingestion,
+
+    /// # Remove state mutations with inconsistent ids
+    ///
+    /// Before v1.8.0, replicas could store the same state mutation under different ids. When
+    /// enabled, partitions remove all state mutations that are still pending, so that all
+    /// replicas store state mutations under the same ids again.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.0.
+    ///
+    /// Since v1.8.0
+    inconsistent_state_mutation_cleanup,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -1060,6 +1086,7 @@ impl Default for CommonOptions {
             process_total_memory_size: None,
             rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
                 .unwrap(),
+            rocksdb_write_rate_limiter_mode: RocksDbWriteRateLimiterMode::default(),
             rocksdb_total_memory_size: NonZeroByteCount::try_from(2 * 1024 * 1024 * 1024).unwrap(), // 2GiB
             rocksdb_total_memtables_ratio: 0.85, // (85% of rocksdb-total-memory-size)
             rocksdb_low_priority_threads: None,
@@ -1080,9 +1107,30 @@ impl Default for CommonOptions {
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
             experimental: Experimental::default(),
-            disable_controlled_idempotent_sharding: false,
         }
     }
+}
+
+/// # Rocksdb write rate limiter mode
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "kebab-case")]
+pub enum RocksDbWriteRateLimiterMode {
+    /// # Auto-tuned
+    ///
+    /// Rocksdb adjusts the rate to the recent background IO demand, between 1/20 of
+    /// `rocksdb-max-write-rate-per-second` and the full value. Under sustained demand the
+    /// rate can increase by 5% roughly every 10 seconds, so after a quiet period a sudden
+    /// write burst can start near the lower bound and take minutes to reach the full rate.
+    #[default]
+    AutoTuned,
+    /// # Fixed
+    ///
+    /// Flushes and compactions share a fixed aggregate limit of
+    /// `rocksdb-max-write-rate-per-second`, with no ramp-up. It does not guarantee throughput
+    /// or reserve bandwidth for flushes. Use it when write bursts arrive faster than the
+    /// auto-tuner ramps up, and set the limit to what the storage device can sustain.
+    Fixed,
 }
 
 /// # Log format
@@ -1232,10 +1280,17 @@ pub enum MetadataClientKind {
         /// # Object store path for metadata storage
         ///
         /// This location will be used to persist cluster metadata. Takes the form of a URL
-        /// with `s3://` as the protocol and bucket name as the authority, plus an optional
-        /// prefix specified as the path component.
+        /// with `s3://` or `gs://` as the protocol and bucket name as the authority, plus
+        /// an optional prefix specified as the path component.
         ///
-        /// Example: `s3://bucket/prefix`
+        /// Examples: `s3://bucket/prefix`, `gs://bucket/prefix`
+        ///
+        /// For `gs://`, credentials come from the environment: a service account key named by
+        /// `GOOGLE_SERVICE_ACCOUNT` or given inline in `GOOGLE_SERVICE_ACCOUNT_KEY`, else
+        /// Application Default Credentials (`GOOGLE_APPLICATION_CREDENTIALS` or the `gcloud`
+        /// default file), else the instance metadata server. Workload identity federation
+        /// (`external_account`) credential files are not supported. The `aws-*` options apply
+        /// to `s3://` only.
         #[cfg_attr(feature = "schemars", schemars(with = "String"))]
         path: String,
 
@@ -1375,28 +1430,19 @@ impl TryFrom<MetadataClientKindShadow> for MetadataClientKind {
     feature = "schemars",
     schemars(title = "Tracing", description = "Options for tracing")
 )]
+#[derive(Default)]
 pub struct TracingOptions {
     /// # Tracing Endpoint
     ///
-    /// This is a shortcut to set both [`Self::tracing_runtime_endpoint`], and [`Self::tracing_services_endpoint`].
+    /// Default endpoint for user-invocation traces. Overridden by
+    /// [`Self::tracing_services_endpoint`].
     ///
-    /// Specify the tracing endpoint to send runtime traces to.
+    /// Specify the tracing endpoint to send user-invocation traces to.
     /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
     /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
     ///
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
     pub tracing_endpoint: Option<String>,
-
-    /// # Runtime Tracing Endpoint
-    ///
-    /// Overrides [`Self::tracing_endpoint`] for runtime traces
-    ///
-    /// Specify the tracing endpoint to send runtime traces to.
-    /// Traces will be exported using [OTLP gRPC](https://opentelemetry.io/docs/specs/otlp/#otlpgrpc)
-    /// through [opentelemetry_otlp](https://docs.rs/opentelemetry-otlp/0.12.0/opentelemetry_otlp/).
-    ///
-    /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
-    pub tracing_runtime_endpoint: Option<String>,
 
     /// # Services Tracing Endpoint
     ///
@@ -1409,24 +1455,6 @@ pub struct TracingOptions {
     /// To configure the sampling, please refer to the [opentelemetry autoconfigure docs](https://github.com/open-telemetry/opentelemetry-java/blob/main/sdk-extensions/autoconfigure/README.md#sampler).
     pub tracing_services_endpoint: Option<String>,
 
-    /// # Distributed Tracing JSON Export Path
-    ///
-    /// If set, an exporter will be configured to write traces to files using the Jaeger JSON format.
-    /// Each trace file will start with the `trace` prefix.
-    ///
-    /// If unset, no traces will be written to file.
-    ///
-    /// It can be used to export traces in a structured format without configuring a Jaeger agent.
-    ///
-    /// To inspect the traces, open the Jaeger UI and use the Upload JSON feature to load and inspect them.
-    pub tracing_json_path: Option<String>,
-
-    /// # Tracing Filter
-    ///
-    /// Distributed tracing exporter filter.
-    /// Check the [`RUST_LOG` documentation](https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html) for more details how to configure it.
-    pub tracing_filter: String,
-
     /// # Additional tracing headers
     ///
     /// Specify additional headers you want the system to send to the tracing endpoint (e.g.
@@ -1434,19 +1462,6 @@ pub struct TracingOptions {
     #[serde(skip_serializing_if = "SerdeableHeaderHashMap::is_empty")]
     #[serde(default)]
     pub tracing_headers: SerdeableHeaderHashMap,
-}
-
-impl Default for TracingOptions {
-    fn default() -> Self {
-        Self {
-            tracing_endpoint: None,
-            tracing_runtime_endpoint: None,
-            tracing_services_endpoint: None,
-            tracing_json_path: None,
-            tracing_filter: "info".to_owned(),
-            tracing_headers: SerdeableHeaderHashMap::default(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -1551,6 +1566,38 @@ mod tests {
         assert!(!serialized.contains("[networking.tls]"));
         let deserialized: CommonOptions = toml::from_str(&serialized).unwrap();
         assert!(deserialized.tls.is_some());
+    }
+
+    #[test]
+    fn rocksdb_write_rate_limiter_mode() {
+        let defaults = CommonOptions::default();
+        assert_eq!(
+            defaults.rocksdb_write_rate_limiter_mode,
+            RocksDbWriteRateLimiterMode::AutoTuned
+        );
+        let serialized = toml::to_string(&defaults).unwrap();
+        assert!(serialized.contains(r#"rocksdb-write-rate-limiter-mode = "auto-tuned""#));
+
+        let fixed: CommonOptions =
+            toml::from_str(&serialized.replace(r#""auto-tuned""#, r#""fixed""#)).unwrap();
+        assert_eq!(
+            fixed.rocksdb_write_rate_limiter_mode,
+            RocksDbWriteRateLimiterMode::Fixed
+        );
+    }
+
+    #[test]
+    fn gcp_federation_feature_uses_the_advertised_name() {
+        let mut experimental = Experimental::default();
+        assert!(!experimental.is_gcp_workload_identity_federation_enabled());
+
+        experimental.set_gcp_workload_identity_federation(true);
+        assert_eq!(
+            experimental
+                .features()
+                .get("gcp_workload_identity_federation"),
+            Some(&true)
+        );
     }
 
     #[test]

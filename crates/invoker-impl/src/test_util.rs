@@ -18,6 +18,7 @@ use restate_types::LimitKey;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::CommandIndex;
+use restate_types::schema::invocation_target::StatePreloadPolicy;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
@@ -111,8 +112,9 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
     }
 
     fn read_state_budgeted<'a>(
-        &'a self,
+        &'a mut self,
         _service_id: &ServiceId,
+        _eager_state_config: &StatePreloadPolicy,
         _budget: &'a mut LocalMemoryPool,
     ) -> Result<EagerState<Self::LocalMemoryPooledStateStream<'a>>, Self::Error> {
         Ok(EagerState::new_complete(IgnorePinnableMemoryStream::new(
@@ -125,15 +127,6 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
 pub struct MockInvokerHandle;
 
 impl InvokerHandle for MockInvokerHandle {
-    fn invoke(
-        &mut self,
-        _invocation_id: InvocationId,
-        _fencing_token: FencingToken,
-        _invocation_target: InvocationTarget,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
     fn vqueue_invoke(
         &mut self,
         _qid: VQueueId,
@@ -143,14 +136,6 @@ impl InvokerHandle for MockInvokerHandle {
         _invocation_target: InvocationTarget,
         _limit_key: LimitKey<ReString>,
         _idempotency_key: Option<ReString>,
-    ) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
-    fn notify_completion(
-        &mut self,
-        _invocation_id: InvocationId,
-        _entry_index: EntryIndex,
     ) -> Result<(), NotRunningError> {
         Ok(())
     }
@@ -177,13 +162,6 @@ impl InvokerHandle for MockInvokerHandle {
     }
 
     fn abort_invocation(&mut self, _invocation_id: InvocationId) -> Result<(), NotRunningError> {
-        Ok(())
-    }
-
-    fn retry_invocation_now(
-        &mut self,
-        _invocation_id: InvocationId,
-    ) -> Result<(), NotRunningError> {
         Ok(())
     }
 

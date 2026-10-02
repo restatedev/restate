@@ -56,15 +56,14 @@ bytesize = { workspace = true }
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap_complete = { workspace = true }
-clap-stdin = "0.6.0"
+clap-stdin = "0.8.1"
 cling = { workspace = true }
-dirs = { version = "5.0" }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
 diff = "0.1.13"
 futures = { workspace = true }
 itertools = { workspace = true }
-json-patch = "2.0.0"
+json-patch = "4.2.0"
 humantime = { workspace = true }
 prost-types = { workspace = true }
 rand = { workspace = true }
@@ -79,12 +78,7 @@ tonic = { workspace = true, features = ["transport", "zstd", "gzip"] }
 tracing = { workspace = true }
 
 [build-dependencies]
-vergen = { workspace = true, default-features = false, features = [
-    "build",
-    "git",
-    "gitcl",
-    "cargo",
-] }
+vergen-gitcl = { workspace = true }
 
 [dev-dependencies]
 restate-local-cluster-runner = { workspace = true }

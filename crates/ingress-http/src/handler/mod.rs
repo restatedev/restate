@@ -29,6 +29,7 @@ use enumset::EnumSet;
 use error::HandlerError;
 use futures::FutureExt;
 use futures::future::BoxFuture;
+use http::header;
 use http_body_util::Full;
 use hyper::http::HeaderValue;
 use hyper::{Request, Response};
@@ -49,6 +50,8 @@ use super::*;
 use crate::handler::path_parsing::{
     AwakeableRequestType, InvocationRequestType, ServiceRequestType, WorkflowRequestType,
 };
+use responses::IDEMPOTENCY_EXPIRES;
+use service_handler::IDEMPOTENCY_KEY;
 
 const APPLICATION_JSON: HeaderValue = HeaderValue::from_static("application/json");
 
@@ -235,4 +238,29 @@ impl InvocationTargetRequest {
             ),
         })
     }
+}
+
+/// Returns `true` if the ingress reserves this header name, meaning a
+/// caller-supplied header with this name must be dropped rather than forwarded
+/// to the service.
+///
+/// Reserved are the hop-by-hop `connection` and `host` headers, the idempotency
+/// headers the ingress derives itself, and the whole `x-restate-*` namespace
+/// (e.g. `x-restate-ingress-path`): forwarding caller values there would let
+/// the headers the ingress sets be spoofed.
+///
+/// Matching is case-insensitive. A [`http::HeaderName`] is always lowercase, but
+/// the ingestion protocol carries header names as arbitrary strings.
+pub(crate) fn is_reserved_header_name(key: impl AsRef<str>) -> bool {
+    const RESTATE_PREFIX: &[u8] = b"x-restate-";
+
+    let key = key.as_ref();
+    key.eq_ignore_ascii_case(header::CONNECTION.as_str())
+        || key.eq_ignore_ascii_case(header::HOST.as_str())
+        || key.eq_ignore_ascii_case(IDEMPOTENCY_KEY.as_str())
+        || key.eq_ignore_ascii_case(IDEMPOTENCY_EXPIRES.as_str())
+        || key
+            .as_bytes()
+            .get(..RESTATE_PREFIX.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(RESTATE_PREFIX))
 }

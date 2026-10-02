@@ -35,7 +35,7 @@ async fn start_and_complete_idempotent_invocation() {
     let request_id = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -46,10 +46,12 @@ async fn start_and_complete_idempotent_invocation() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Send output, then end
@@ -75,13 +77,15 @@ async fn start_and_complete_idempotent_invocation() {
     // Assert response and timeout
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Success(
-                invocation_target.clone(),
-                response_bytes.clone()
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })))
         }))
     );
 
@@ -148,13 +152,15 @@ async fn complete_already_completed_invocation() {
         .await;
     assert_that!(
         actions,
-        contains(pat!(Action::IngressResponse {
-            request_id: eq(request_id),
-            invocation_id: some(eq(invocation_id)),
-            response: eq(InvocationOutputResponse::Success(
-                invocation_target.clone(),
-                response_bytes.clone()
-            ))
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                request_id: eq(request_id),
+                invocation_id: some(eq(invocation_id)),
+                response: eq(InvocationOutputResponse::Success(
+                    invocation_target.clone(),
+                    response_bytes.clone()
+                ))
+            })))
         }))
     );
     test_env.shutdown().await;
@@ -173,7 +179,7 @@ async fn attach_with_service_invocation_command_while_executing() {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -186,10 +192,12 @@ async fn attach_with_service_invocation_command_while_executing() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation
@@ -204,7 +212,12 @@ async fn attach_with_service_invocation_command_while_executing() {
             ..ServiceInvocation::mock()
         }))
         .await;
-    assert_that!(actions, not(contains(pat!(Action::IngressResponse { .. }))));
+    assert_that!(
+        actions,
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+        })))
+    );
 
     // Send output
     let response_bytes = Bytes::from_static(b"123");
@@ -230,21 +243,25 @@ async fn attach_with_service_invocation_command_while_executing() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_1),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    request_id: eq(request_id_1),
+                    invocation_id: some(eq(invocation_id)),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         )
     );
@@ -273,7 +290,7 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
     };
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -287,10 +304,12 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation, but with a send call
@@ -310,11 +329,15 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
     assert_that!(
         actions,
         all!(
-            not(contains(pat!(Action::IngressResponse { .. }))),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id_2),
-                execution_time: none(),
-                is_new_invocation: eq(use_same_request_id),
+            not(contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+            }))),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id_2),
+                    execution_time: none(),
+                    is_new_invocation: eq(use_same_request_id),
+                })))
             }))
         )
     );
@@ -343,29 +366,35 @@ async fn attach_with_send_service_invocation(#[case] use_same_request_id: bool) 
     if use_same_request_id {
         assert_that!(
             actions,
-            contains(pat!(Action::IngressResponse {
-                request_id: eq(request_id_1),
-                invocation_id: some(eq(invocation_id)),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
-            }))
-        );
-    } else {
-        assert_that!(
-            actions,
-            all!(
-                contains(pat!(Action::IngressResponse {
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
                     request_id: eq(request_id_1),
                     invocation_id: some(eq(invocation_id)),
                     response: eq(InvocationOutputResponse::Success(
                         invocation_target.clone(),
                         response_bytes.clone()
                     ))
+                })))
+            }))
+        );
+    } else {
+        assert_that!(
+            actions,
+            all!(
+                contains(pat!(Action::ReplyRpc {
+                    reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                        request_id: eq(request_id_1),
+                        invocation_id: some(eq(invocation_id)),
+                        response: eq(InvocationOutputResponse::Success(
+                            invocation_target.clone(),
+                            response_bytes.clone()
+                        ))
+                    })))
                 })),
-                not(contains(pat!(Action::IngressResponse {
-                    request_id: eq(request_id_2)
+                not(contains(pat!(Action::ReplyRpc {
+                    reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                        request_id: eq(request_id_2)
+                    })))
                 }))),
             )
         );
@@ -410,16 +439,13 @@ async fn attach_inboxed_with_send_service_invocation() {
         .await;
     assert_that!(
         actions,
-        all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
-            }))),
-            contains(pat!(Action::IngressSubmitNotification {
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
                 request_id: eq(request_id_1),
                 execution_time: none(),
                 is_new_invocation: eq(true),
-            }))
-        )
+            })))
+        }))
     );
     // Invocation is inboxed
     assert_that!(
@@ -454,14 +480,15 @@ async fn attach_inboxed_with_send_service_invocation() {
     assert_that!(
         actions,
         all!(
-            not(contains(pat!(Action::Invoke {
-                invocation_id: eq(invocation_id),
+            not(contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
             }))),
-            not(contains(pat!(Action::IngressResponse { .. }))),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id_2),
-                execution_time: none(),
-                is_new_invocation: eq(false),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id_2),
+                    execution_time: none(),
+                    is_new_invocation: eq(false),
+                })))
             }))
         )
     );
@@ -481,7 +508,7 @@ async fn attach_command() {
     let request_id_2 = PartitionProcessorRpcRequestId::default();
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -494,10 +521,12 @@ async fn attach_command() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation, but with a send call
@@ -514,7 +543,9 @@ async fn attach_command() {
         .await;
     assert_that!(
         actions,
-        all!(not(contains(pat!(Action::IngressResponse { .. }))))
+        all!(not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+        }))))
     );
 
     // Send output
@@ -541,21 +572,25 @@ async fn attach_command() {
     assert_that!(
         actions,
         all!(
-            contains(pat!(Action::IngressResponse {
-                invocation_id: some(eq(invocation_id)),
-                request_id: eq(request_id_1),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    invocation_id: some(eq(invocation_id)),
+                    request_id: eq(request_id_1),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             })),
-            contains(pat!(Action::IngressResponse {
-                invocation_id: some(eq(invocation_id)),
-                request_id: eq(request_id_2),
-                response: eq(InvocationOutputResponse::Success(
-                    invocation_target.clone(),
-                    response_bytes.clone()
-                ))
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput {
+                    invocation_id: some(eq(invocation_id)),
+                    request_id: eq(request_id_2),
+                    response: eq(InvocationOutputResponse::Success(
+                        invocation_target.clone(),
+                        response_bytes.clone()
+                    ))
+                })))
             }))
         )
     );
@@ -572,7 +607,7 @@ async fn attach_command_without_blocking_inflight() {
     let invocation_id = InvocationId::generate(&invocation_target, Some(&idempotency_key));
 
     // Send fresh invocation with idempotency key
-    let actions = test_env
+    test_env
         .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
             invocation_id,
             invocation_target: invocation_target.clone(),
@@ -585,10 +620,12 @@ async fn attach_command_without_blocking_inflight() {
         }))
         .await;
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-        }))
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     // Latch to existing invocation without blocking on inflight invocation
@@ -612,7 +649,9 @@ async fn attach_command_without_blocking_inflight() {
                 1,
                 eq(ResponseResult::from(NOT_READY_INVOCATION_ERROR))
             )),
-            not(contains(pat!(Action::IngressResponse { .. })))
+            not(contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Output(pat!(InvocationOutput { .. })))
+            })))
         )
     );
 

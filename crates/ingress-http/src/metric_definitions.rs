@@ -14,6 +14,11 @@ use metrics::{Unit, describe_counter, describe_histogram};
 
 pub const HTTP_CONNECTION_CREATED: &str = "restate.ingress.http.connection_created.total";
 pub const HTTP_CONNECTION_DROPPED: &str = "restate.ingress.http.connection_dropped.total";
+pub const INGESTION_COMMITTED_RECORDS: &str = "restate.ingress.ingestion.committed_records.total";
+pub const INGESTION_INFLIGHT_BYTES: &str = "restate.ingress.ingestion.inflight_bytes.total";
+pub const INGESTION_AWAITING_PERMITS_BYTES: &str =
+    "restate.ingress.ingestion.awaiting_permits_bytes.total";
+pub const INGESTION_COMMITTED_BYTES: &str = "restate.ingress.ingestion.committed_bytes.total";
 
 pub const INGRESS_REQUESTS: &str = "restate.ingress.requests.total";
 // values of label `status` in INGRESS_REQUEST
@@ -48,5 +53,33 @@ pub(crate) fn describe_metrics() {
         HTTP_CONNECTION_DROPPED,
         Unit::Count,
         "Number of ingress incoming connections dropped"
+    );
+
+    describe_counter!(
+        INGESTION_COMMITTED_RECORDS,
+        Unit::Count,
+        "Number of ingested (committed) invocations via the ingestion API"
+    );
+
+    describe_counter!(
+        INGESTION_INFLIGHT_BYTES,
+        Unit::Count,
+        "Number of inflight bytes by the ingestion API"
+    );
+
+    // Both counters are cumulative: a record's size is added here when it's
+    // received, and to INGESTION_INFLIGHT_BYTES once it has been admitted for
+    // ingestion. The difference between the two is therefore the number of
+    // bytes currently waiting for a permit.
+    describe_counter!(
+        INGESTION_AWAITING_PERMITS_BYTES,
+        Unit::Count,
+        "Size of records waiting for ingestion permits"
+    );
+
+    describe_counter!(
+        INGESTION_COMMITTED_BYTES,
+        Unit::Count,
+        "Number of committed bytes by the ingestion API"
     );
 }

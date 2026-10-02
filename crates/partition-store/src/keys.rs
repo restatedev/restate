@@ -1099,7 +1099,6 @@ pub(crate) fn deserialize<T: KeyDecode, B: Buf>(source: &mut B) -> crate::Result
 mod tests {
     use super::*;
     use bytes::BytesMut;
-    use restate_test_util::let_assert;
     use strum::IntoEnumIterator;
 
     #[test]
@@ -1157,7 +1156,7 @@ mod tests {
 
         let result = DeduplicationTestKey::deserialize_from(&mut buffer);
 
-        let_assert!(Err(StorageError::Generic(err)) = result);
+        restate_test_util::assert!(let Err(StorageError::Generic(err)) = result);
         assert_eq!(
             err.to_string(),
             format!(
@@ -1180,7 +1179,7 @@ mod tests {
 
         let result = DeduplicationTestKey::deserialize_from(&mut buffer);
 
-        let_assert!(Err(StorageError::Generic(err)) = result);
+        restate_test_util::assert!(let Err(StorageError::Generic(err)) = result);
         assert_eq!(
             err.to_string(),
             format!("unknown key kind: {unknown_key_prefix:x?}")

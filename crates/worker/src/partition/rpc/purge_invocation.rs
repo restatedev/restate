@@ -8,35 +8,35 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, PurgeInvocationRequest,
 };
-use restate_wal_protocol::Command;
+use restate_types::net::partition_processor::{
+    PurgeInvocationRpcRequest, PurgeInvocationRpcResponse,
+};
+use restate_wal_protocol::v2::commands;
 
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-}
+use super::*;
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage> {
+impl<'a, TSchemas, TStorage> RpcHandler<PurgeInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
+{
     async fn handle(
         self,
-        Request {
-            request_id,
+        PurgeInvocationRpcRequest {
+            header,
             invocation_id,
-        }: Request,
-    ) -> Decision {
-        Decision::Propose(RpcProposal {
-            partition_key: invocation_id.partition_key(),
-            cmd: Command::PurgeInvocation(PurgeInvocationRequest {
+        }: PurgeInvocationRpcRequest,
+    ) -> Decision<PurgeInvocationRpcResponse> {
+        let request_id = header.request_id;
+        Decision::Propose(RpcProposal::new(
+            commands::PurgeInvocationCommand::from(PurgeInvocationRequest {
                 invocation_id,
                 response_sink: Some(InvocationMutationResponseSink::Ingress(
                     IngressInvocationResponseSink { request_id },
                 )),
             }),
-            reply_on: ReplyOn::Apply { request_id },
-        })
+            ReplyOn::Apply { request_id },
+        ))
     }
 }

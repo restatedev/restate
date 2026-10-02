@@ -69,6 +69,13 @@ impl RawEntry {
             RawEntry::Notification(notification) => notification.serialized_content(),
         }
     }
+
+    pub fn serialized_length(&self) -> usize {
+        match self {
+            RawEntry::Command(command) => command.serialized_length(),
+            RawEntry::Notification(notification) => notification.serialized_length(),
+        }
+    }
 }
 
 // -- Raw command
@@ -108,6 +115,10 @@ impl RawCommand {
 
     pub fn serialized_content(&self) -> Bytes {
         self.serialized_content.clone()
+    }
+
+    pub fn serialized_length(&self) -> usize {
+        self.serialized_content.len()
     }
 
     pub fn into_serialized_content(self) -> Bytes {
@@ -213,6 +224,10 @@ impl RawNotification {
 
     pub fn serialized_content(&self) -> Bytes {
         self.serialized_content.clone()
+    }
+
+    pub fn serialized_length(&self) -> usize {
+        self.serialized_content.len()
     }
 
     pub fn into_serialized_content(self) -> Bytes {

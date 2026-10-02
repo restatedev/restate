@@ -13,8 +13,7 @@ proc-macro = true
 [dependencies]
 proc-macro2 = { workspace = true }
 quote = { workspace = true }
-# todo replace with syn 2.0
-syn = { version = "1.0" }
+syn = { workspace = true }
 
 restate-workspace-hack = { workspace = true }
 

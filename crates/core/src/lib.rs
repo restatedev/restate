@@ -55,7 +55,7 @@ pub use metadata::{
     TargetVersion, migrate_metadata, spawn_metadata_manager,
 };
 pub use task_center::{
-    AsyncRuntime, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,
+    AsyncRuntime, Handle, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,
     TaskCenterBuildError, TaskCenterBuilder, TaskCenterFutureExt, TaskContext, TaskHandle, TaskId,
     TaskKind, cancellation_token, cancellation_watcher, is_cancellation_requested, my_node_id,
 };

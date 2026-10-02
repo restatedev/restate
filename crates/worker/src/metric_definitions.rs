@@ -44,11 +44,14 @@ pub const STARTUP_ERROR_STOP: &str = "startup-error";
 pub const GAP_STOP: &str = "log-gap-detected";
 pub const ERROR_STOP: &str = "error";
 
+pub const PARTITION_CLEANER_PURGE_DELAY: &str = "restate.partition.cleaner_purge_delay.seconds";
+
 pub const SNAPSHOT_AGE: &str = "restate.partition.snapshot_age.seconds";
 
 pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.total";
 
 pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal_entry_count.total";
+pub const USAGE_LEADER_JOURNAL_ENTRY_BYTES: &str = "restate.usage.leader_journal_entry_bytes.total";
 
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
@@ -82,6 +85,12 @@ pub(crate) fn describe_metrics() {
         "Number of actions the leader has performed"
     );
 
+    describe_histogram!(
+        PARTITION_CLEANER_PURGE_DELAY,
+        Unit::Seconds,
+        "Delay between the retention expiry of a completed invocation (or its journal) and the application of the cleaner's purge"
+    );
+
     describe_counter!(
         PARTITION_START,
         Unit::Count,
@@ -104,6 +113,12 @@ pub(crate) fn describe_metrics() {
         USAGE_LEADER_JOURNAL_ENTRY_COUNT,
         Unit::Count,
         "Count of specific journal entries processed by partition leaders"
+    );
+
+    describe_counter!(
+        USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+        Unit::Bytes,
+        "Total number of bytes of journal entries processed by partition leaders"
     );
 
     describe_histogram!(

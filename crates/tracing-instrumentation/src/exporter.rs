@@ -36,7 +36,6 @@ pub enum ExporterBuilder {
         protocol: Protocol,
     },
     Http {
-        client: reqwest::Client,
         headers: HashMap<String, String>,
         protocol: Protocol,
         endpoint: http::Uri,
@@ -108,11 +107,6 @@ impl ExporterBuilder {
                 }
             }
             Transport::Http => {
-                let client = reqwest::Client::builder()
-                    .use_rustls_tls() // match with_tonic with_tls_config
-                    .tls_built_in_root_certs(true) // match with_tonic with_tls_config
-                    .build()
-                    .map_err(|e| super::bad_endpoint(format!("build HTTP client: {e}")))?;
                 let string_headers: HashMap<String, String> = HashMap::from(tracing_headers)
                     .into_iter()
                     .map(|(k, v)| {
@@ -123,7 +117,6 @@ impl ExporterBuilder {
                     })
                     .collect();
                 ExporterBuilder::Http {
-                    client,
                     headers: string_headers,
                     protocol: use_protocol,
                     endpoint,
@@ -148,14 +141,14 @@ impl ExporterBuilder {
                 .build()
                 .map_err(|e| super::bad_endpoint(format!("build gRPC exporter: {e}")))?),
 
+            // The default reqwest client uses rustls with the platform's native roots, matching
+            // the tonic channel's TLS config.
             ExporterBuilder::Http {
-                client,
                 headers,
                 protocol,
                 endpoint,
             } => Ok(OTelSpanExporter::builder()
                 .with_http()
-                .with_http_client(client.clone())
                 .with_protocol(*protocol)
                 .with_headers(headers.clone())
                 .with_endpoint(endpoint.to_string())

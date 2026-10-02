@@ -247,11 +247,11 @@ where
 mod tests {
     use super::*;
 
-    use crate::partition::state_machine::Action;
     use crate::partition::state_machine::tests::fixtures::{
         invoker_entry_effect, invoker_suspended,
     };
     use crate::partition::state_machine::tests::{TestEnv, fixtures, matchers};
+    use crate::partition::state_machine::{Action, RpcReply};
     use crate::partition::types::InvokerEffectKind;
     use googletest::prelude::{all, assert_that, contains, eq, pat};
     use restate_storage_api::invocation_status_table::{
@@ -449,13 +449,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ReplyRpc {
+                request_id: eq(request_id),
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
+            }))
         );
         assert_that!(
             test_env
@@ -517,13 +514,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ReplyRpc {
+                request_id: eq(request_id),
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
+            }))
         );
         assert_that!(
             test_env
@@ -588,13 +582,10 @@ mod tests {
             .await;
         assert_that!(
             actions,
-            all!(
-                contains(matchers::actions::invoke_for_id(invocation_id)),
-                contains(pat!(Action::ForwardResumeInvocationResponse {
-                    request_id: eq(request_id),
-                    response: eq(ResumeInvocationResponse::Ok)
-                }))
-            )
+            contains(pat!(Action::ReplyRpc {
+                request_id: eq(request_id),
+                reply: pat!(RpcReply::ResumeInvocation(eq(ResumeInvocationResponse::Ok)))
+            }))
         );
         assert_that!(
             test_env

@@ -28,7 +28,7 @@ use restate_util_time::DurationExt;
 
 use super::{StorageFeature, StorageFeatures, VqueueMetadataCleanupV1Feature};
 use crate::migrations::MigrationError;
-use crate::scan::{PhysicalScan, TableScan};
+use crate::scan::TableScan;
 use crate::vqueue_table::MetaKey;
 use crate::{PartitionDb, PartitionStore, convert_to_upper_bound};
 
@@ -160,10 +160,7 @@ fn purge_chunk(
     let mut read_options = ReadOptions::default();
     read_options.fill_cache(false);
     let mut iterator = partition_db.scan(
-        PhysicalScan::from(
-            TableScan::ScanPartitionKeyRange::<MetaKey>(key_range),
-            &mut arena,
-        ),
+        TableScan::ScanPartitionKeyRange::<MetaKey>(key_range).encode(&mut arena),
         read_options,
     )?;
     if let Some(start_key) = start_key.as_deref() {

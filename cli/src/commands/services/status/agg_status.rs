@@ -11,13 +11,17 @@
 use anyhow::Result;
 use indicatif::ProgressBar;
 
-use restate_cli_util::{c_error, c_title};
+use serde_json::json;
+
+use restate_cli_util::c_error;
 
 use super::{Status, render_locked_keys, render_services_status};
-use crate::clients::datafusion_helpers::{get_locked_keys_status, get_service_status};
+use crate::clients::datafusion_helpers::{get_locked_keys, get_service_status};
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient};
+use crate::ui::fmt::{Field, OutputFormatter};
 
 pub async fn run_aggregated_status(
+    f: &mut impl OutputFormatter,
     opts: &Status,
     metas_client: AdminClient,
     sql_client: DataFusionHttpClient,
@@ -40,6 +44,7 @@ pub async fn run_aggregated_status(
         c_error!(
             "No services were found! Services are added by registering deployments with 'restate dep register'"
         );
+        f.value("services", Field::with_display(json!([]), ""));
         return Ok(());
     }
 
@@ -53,21 +58,15 @@ pub async fn run_aggregated_status(
 
     let status_map = get_service_status(&sql_client, all_service_names).await?;
 
-    let locked_keys = get_locked_keys_status(&sql_client, keyed.iter().map(|x| &x.name)).await?;
+    let locked_keys = get_locked_keys(&sql_client, keyed.iter().map(|x| &x.name))
+        .await?
+        .filter(|keys| !keys.is_empty());
     // Render UI
     progress.finish_and_clear();
-    // Render Status Table
-    c_title!("📷", "Summary");
-    render_services_status(services, status_map).await?;
-    // Render Locked Keys
-    if !locked_keys.is_empty() {
-        c_title!("📨", "Active Keys");
-        render_locked_keys(
-            locked_keys,
-            opts.locked_keys_limit,
-            opts.locked_key_held_threshold_second,
-        )
-        .await?;
+
+    render_services_status(f, &services, &status_map);
+    if let Some(keys) = &locked_keys {
+        render_locked_keys(f, keys, opts);
     }
     Ok(())
 }

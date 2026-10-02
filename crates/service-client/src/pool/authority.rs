@@ -226,7 +226,7 @@ where
                     let mut i = 0;
                     while i < candidates.len() {
                         let candidate = &mut candidates[i];
-                        if candidate.is_closed() {
+                        if candidate.is_retired() {
                             candidates.swap_remove_back(i);
                             continue;
                         }
@@ -279,7 +279,7 @@ where
                     let mut total_connections = 0usize;
 
                     for candidate in &inner.connections {
-                        if candidate.is_closed() {
+                        if candidate.is_retired() {
                             continue;
                         }
 
@@ -407,7 +407,7 @@ where
     ) -> Option<Connection<C>> {
         let epoch = inner.epoch;
         inner.with_upgraded(|inner| {
-            inner.connections.retain(|c| !c.is_closed());
+            inner.connections.retain(|c| !c.is_retired());
 
             if epoch != inner.epoch {
                 // List of connections has been updated by a different thread.

@@ -48,7 +48,7 @@ googletest = { workspace = true }
 
 [build-dependencies]
 prost-build = { workspace = true }
-prettyplease = "0.2"
+prettyplease = "0.3.0"
 serde_json = { workspace = true }
 syn = { workspace = true }
 typify = { workspace = true }

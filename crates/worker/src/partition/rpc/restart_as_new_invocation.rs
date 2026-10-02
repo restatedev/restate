@@ -10,43 +10,42 @@
 
 use super::*;
 
-use assert2::let_assert;
+use assert2::assert;
 use opentelemetry::trace::Span;
 
 use restate_service_protocol::codec::ProtobufRawEntryCodec as OldProtocolEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InvocationStatus, ReadInvocationStatusTable,
+};
 use restate_storage_api::journal_table as journal_table_v1;
 use restate_storage_api::journal_table_v2;
-use restate_types::identifiers::{EntryIndex, InvocationId, InvocationUuid, WithPartitionKey};
+use restate_types::identifiers::{InvocationId, InvocationUuid, WithPartitionKey};
 use restate_types::invocation::client::PatchDeploymentId;
 use restate_types::invocation::{
     IngressInvocationResponseSink, InvocationMutationResponseSink, InvocationRequestHeader,
-    InvocationRetention, RestartAsNewInvocationRequest, ServiceInvocation, ServiceType,
-    SpanRelation,
+    InvocationRetention, RestartAsNewInvocationRequest, ServiceInvocation,
+    ServiceInvocationSpanContext, ServiceType, SpanRelation,
 };
 use restate_types::journal as journal_v1;
 use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType};
-use restate_types::net::partition_processor::RestartAsNewInvocationRpcResponse;
+use restate_types::net::partition_processor::{
+    RestartAsNewInvocationRpcRequest, RestartAsNewInvocationRpcResponse,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::{invocation, journal_v2};
-
-pub(super) struct Request {
-    pub(super) request_id: PartitionProcessorRpcRequestId,
-    pub(super) invocation_id: InvocationId,
-    pub(super) copy_prefix_up_to_index_included: EntryIndex,
-    pub(super) patch_deployment_id: PatchDeploymentId,
-}
+use restate_wal_protocol::v2::commands;
 
 macro_rules! bail {
     ($err:expr) => {
         use RestartAsNewInvocationRpcResponse::*;
 
-        return Decision::Reply(Ok($err.into()));
+        return Decision::Reply(Ok($err));
     };
 }
 
-impl<'a, TSchemas, TStorage> RpcHandler<Request> for RpcContext<'a, TSchemas, TStorage>
+impl<'a, TSchemas, TStorage> RpcHandler<RestartAsNewInvocationRpcRequest>
+    for RpcContext<'a, TSchemas, TStorage>
 where
     TSchemas: DeploymentResolver,
     TStorage: ReadInvocationStatusTable
@@ -55,13 +54,15 @@ where
 {
     async fn handle(
         self,
-        Request {
-            request_id,
+        RestartAsNewInvocationRpcRequest {
+            header,
             invocation_id,
             copy_prefix_up_to_index_included,
             patch_deployment_id,
-        }: Request,
-    ) -> Decision {
+        }: RestartAsNewInvocationRpcRequest,
+    ) -> Decision<RestartAsNewInvocationRpcResponse> {
+        let request_id = header.request_id;
+        let patch_deployment_id = PatchDeploymentId::from(patch_deployment_id);
         // Reading from a non-leader partition processor can return stale results
         // (e.g. NotFound for an invocation that exists on the leader) because the
         // follower's local store may not have replayed all log entries yet.
@@ -171,7 +172,7 @@ where
                     return Ok(None);
                 }
 
-                let_assert!(
+                assert!(let
                     journal_v1::Entry::Input(journal_v1::InputEntry { value, headers }) = entry
                         .deserialize_entry_ref::<OldProtocolEntryCodec>()
                         .map_err(|e| PartitionProcessorRpcError::Internal(e.to_string()))?
@@ -195,19 +196,10 @@ where
             // --- We have both the old invocation status, and the input command. We're ready to rock!
 
             // Generate the tracing span
-            let restart_as_new_span = restate_tracing_instrumentation::info_invocation_span!(
-                relation = SpanRelation::Linked(
-                    completed_invocation
-                        .journal_metadata
-                        .span_context
-                        .span_context()
-                        .clone(),
-                ),
-                prefix = "restart-as-new",
-                id = new_invocation_id,
-                target = completed_invocation.invocation_target,
-                tags = (restate.invocation.restart_as_new.original_invocation_id =
-                    invocation_id.to_string())
+            let span_context = restart_as_new_span_context(
+                &completed_invocation,
+                invocation_id,
+                new_invocation_id,
             );
 
             // We copy in invocation_request_header the things we care about
@@ -220,8 +212,7 @@ where
                 completion_retention: completed_invocation.completion_retention_duration,
                 journal_retention: completed_invocation.journal_retention_duration,
             });
-            invocation_request_header
-                .with_related_span(SpanRelation::parent(restart_as_new_span.span_context()));
+            invocation_request_header.span_context = span_context;
 
             // Final bundling of the service invocation
             let invocation_request = InvocationRequest::new(invocation_request_header, payload);
@@ -231,17 +222,16 @@ where
             );
 
             // Propose the usual Invoke command
-            let cmd = Command::Invoke(Box::new(service_invocation));
+            let cmd = commands::InvokeCommand::from(service_invocation);
 
             // Propose and done
             // This path should be no longer needed once we switch to the journal v2 by default.
-            return Decision::Propose(RpcProposal {
-                partition_key: invocation_id.partition_key(),
+            return Decision::Propose(RpcProposal::new(
                 cmd,
-                reply_on: ReplyOn::Commit {
-                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id }.into(),
+                ReplyOn::Commit {
+                    response: RestartAsNewInvocationRpcResponse::Ok { new_invocation_id },
                 },
-            });
+            ));
         }
 
         // For Restart from prefix, the PP will actually execute the operation,
@@ -292,8 +282,7 @@ where
                             pinned_protocol_version: pinned_service_protocol as i32,
                             deployment_id: deployment.id,
                             supported_protocol_versions: deployment.supported_protocol_versions,
-                        }
-                        .into(),
+                        },
                     ));
                 }
                 Some(deployment.id)
@@ -359,7 +348,7 @@ where
         }
 
         // Pass the ball to the state machine, the PP will reply to the RPC request.
-        let cmd = Command::RestartAsNewInvocation(RestartAsNewInvocationRequest {
+        let cmd = commands::RestartAsNewInvocationCommand::from(RestartAsNewInvocationRequest {
             invocation_id,
             new_invocation_id,
             copy_prefix_up_to_index_included,
@@ -367,13 +356,44 @@ where
             response_sink: Some(InvocationMutationResponseSink::Ingress(
                 IngressInvocationResponseSink { request_id },
             )),
+            span_context: Some(restart_as_new_span_context(
+                &completed_invocation,
+                invocation_id,
+                new_invocation_id,
+            )),
         });
-        Decision::Propose(RpcProposal {
-            partition_key: invocation_id.partition_key(),
-            cmd,
-            reply_on: ReplyOn::Apply { request_id },
-        })
+
+        Decision::Propose(RpcProposal::new(cmd, ReplyOn::Apply { request_id }))
     }
+}
+
+/// Emits the restart-as-new span and returns the span context of the new invocation, a child of it.
+///
+/// This must happen here on the leader rather than in the state machine, because the emitted span
+/// gets random ids that end up in the new invocation's replicated state.
+fn restart_as_new_span_context(
+    completed_invocation: &CompletedInvocation,
+    invocation_id: InvocationId,
+    new_invocation_id: InvocationId,
+) -> ServiceInvocationSpanContext {
+    let restart_as_new_span = restate_tracing_instrumentation::info_invocation_span!(
+        relation = SpanRelation::Linked(
+            completed_invocation
+                .journal_metadata
+                .span_context
+                .span_context()
+                .clone(),
+        ),
+        prefix = "restart-as-new",
+        id = new_invocation_id,
+        target = completed_invocation.invocation_target,
+        tags =
+            (restate.invocation.restart_as_new.original_invocation_id = invocation_id.to_string())
+    );
+    ServiceInvocationSpanContext::start(
+        &new_invocation_id,
+        SpanRelation::parent(restart_as_new_span.span_context()),
+    )
 }
 
 #[cfg(test)]
@@ -395,6 +415,7 @@ mod tests {
         PreFlightInvocationMetadata, ScheduledInvocation,
     };
     use restate_storage_api::journal_table_v2::NotificationEntryIndex;
+    use restate_test_util::assert;
     use restate_test_util::rand;
     use restate_test_util::rand::bytestring;
     use restate_types::deployment::PinnedDeployment;
@@ -711,13 +732,14 @@ mod tests {
         is_leader: bool,
         schemas: &R,
         storage: &mut MockStorage,
-        request: Request,
+        request: RestartAsNewInvocationRpcRequest,
     ) -> Decision {
         RpcHandler::handle(
             RpcContext::new(is_leader, PartitionId::MIN, schemas, storage),
             request,
         )
         .await
+        .map_response(Into::into)
     }
 
     #[test(restate_core::test)]
@@ -751,29 +773,24 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id: old_invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
-        let (service_invocation, response) = match decision {
-            Decision::Propose(RpcProposal {
-                cmd: Command::Invoke(service_invocation),
-                reply_on: ReplyOn::Commit { response },
-                ..
-            }) => (service_invocation, response),
-            Decision::Propose(RpcProposal { cmd, .. }) => panic!("unexpected proposal: {cmd:?}"),
-            Decision::Reply(reply) => panic!("unexpected reply: {reply:?}"),
-            Decision::NotifyInvokerAndReply { .. } => {
-                panic!("unexpected invoker notification")
-            }
-        };
+
+        let (_, service_invocation_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::InvokeCommand>();
+
+        assert!(let ReplyOn::Commit { response } = reply_on);
+        let service_invocation: ServiceInvocation = service_invocation_command.into();
+
         assert_that!(
             service_invocation,
-            points_to(all!(
+            all!(
                 field!(ServiceInvocation.invocation_id, not(eq(old_invocation_id))),
                 field!(ServiceInvocation.argument, eq(payload_clone)),
                 field!(ServiceInvocation.headers, eq(headers_clone)),
@@ -783,7 +800,7 @@ mod tests {
                 ),
                 field!(ServiceInvocation.response_sink, none()),
                 field!(ServiceInvocation.submit_notification_sink, none()),
-            ))
+            )
         );
         assert_that!(
             response,
@@ -821,11 +838,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -860,11 +877,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -902,13 +919,14 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
                 patch_deployment_id: PatchDeploymentId::PinTo {
                     id: DeploymentId::new(),
-                },
+                }
+                .into(),
             },
         )
         .await;
@@ -942,11 +960,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
@@ -976,24 +994,25 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
         assert_eq!(request.patch_deployment_id, None);
+        // the leader creates the span context, so replicas don't have to
+        assert!(request.span_context.is_some());
     }
 
     #[test(restate_core::test)]
@@ -1021,24 +1040,25 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 0);
         assert_eq!(request.patch_deployment_id, None);
+        // the leader creates the span context, so replicas don't have to
+        assert!(request.span_context.is_some());
     }
 
     #[test(restate_core::test)]
@@ -1051,11 +1071,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1090,11 +1110,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1127,11 +1147,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1166,11 +1186,11 @@ mod tests {
             true,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;
@@ -1238,22 +1258,21 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 1);
         assert_eq!(request.patch_deployment_id, None);
     }
@@ -1285,22 +1304,21 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinToLatest,
+                patch_deployment_id: PatchDeploymentId::PinToLatest.into(),
             },
         )
         .await;
-        let Decision::Propose(RpcProposal {
-            cmd: Command::RestartAsNewInvocation(request),
-            reply_on: ReplyOn::Apply { .. },
-            ..
-        }) = decision
-        else {
-            panic!("expected an on-apply restart-as-new proposal");
-        };
+
+        let (_, restart_as_new_command, reply_on) =
+            decision.extract_as_rpc_proposal::<commands::RestartAsNewInvocationCommand>();
+
+        assert!(let ReplyOn::Apply { .. } = reply_on);
+        let request: RestartAsNewInvocationRequest = restart_as_new_command.into();
+
         assert_eq!(request.copy_prefix_up_to_index_included, 1);
         assert_eq!(request.patch_deployment_id, Some(latest_id));
     }
@@ -1330,11 +1348,11 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinTo { id },
+                patch_deployment_id: PatchDeploymentId::PinTo { id }.into(),
             },
         )
         .await;
@@ -1371,11 +1389,11 @@ mod tests {
             true,
             &registry,
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::PinTo { id: some_id },
+                patch_deployment_id: PatchDeploymentId::PinTo { id: some_id }.into(),
             },
         )
         .await;
@@ -1405,11 +1423,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1435,11 +1453,11 @@ mod tests {
             true,
             &MockDeploymentMetadataRegistry::default(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 1,
-                patch_deployment_id: PatchDeploymentId::KeepPinned,
+                patch_deployment_id: PatchDeploymentId::KeepPinned.into(),
             },
         )
         .await;
@@ -1462,11 +1480,11 @@ mod tests {
             false,
             &(),
             &mut storage,
-            Request {
-                request_id: Default::default(),
+            RestartAsNewInvocationRpcRequest {
+                header: PartitionProcessorRpcRequestHeader::new(Default::default()),
                 invocation_id,
                 copy_prefix_up_to_index_included: 0,
-                patch_deployment_id: Default::default(),
+                patch_deployment_id: PatchDeploymentId::default().into(),
             },
         )
         .await;

@@ -117,7 +117,10 @@ fn edit_template_properties(env: &CliEnv, name: &str) -> Result<HashMap<String, 
     )
     .context("failed to write the editor template")?;
 
-    env.open_default_editor(&path)?;
+    env.open_default_editor(
+        &path,
+        "pass the properties as KEY=VALUE arguments or via --from-file instead",
+    )?;
 
     let edited = std::fs::read_to_string(&path).context("failed to read the edited file")?;
     parse_librdkafka_properties(&edited)

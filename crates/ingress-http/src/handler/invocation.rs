@@ -9,14 +9,14 @@
 // by the Apache License, Version 2.0.
 
 use bytes::Bytes;
-use http::{Method, Request, Response};
+use http::{Method, Request, Response, header};
 use http_body_util::{BodyExt, Full};
 use serde::Serialize;
 use tracing::warn;
 
 use super::HandlerError;
 use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
-use super::{Handler, InvocationTargetRequest};
+use super::{APPLICATION_JSON, Handler, InvocationTargetRequest};
 use crate::RequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
 use restate_types::errors::{GenericError, InvocationError};
@@ -202,8 +202,8 @@ where
             .map_err(|e| HandlerError::Body(e.into()))?
             .to_bytes();
 
-        let target_request: InvocationTargetRequest = serde_json::from_slice(&body_bytes)
-            .map_err(|e| HandlerError::Body(anyhow::anyhow!("invalid request body: {e}").into()))?;
+        let target_request: InvocationTargetRequest =
+            serde_json::from_slice(&body_bytes).map_err(HandlerError::BadRequestBody)?;
 
         target_request.into_invocation_query()
     }
@@ -314,6 +314,7 @@ where
         .unwrap();
 
         Ok(Response::builder()
+            .header(header::CONTENT_TYPE, APPLICATION_JSON)
             .header(X_RESTATE_ID, invocation_id.to_string())
             .body(Full::new(body.into()))
             .unwrap())

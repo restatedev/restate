@@ -40,7 +40,6 @@
 //! 3. TTY detection (colors disabled if stdout is not a terminal)
 //! 4. `CLICOLOR_FORCE` environment variable (overrides all above if set)
 
-use std::env;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -51,7 +50,9 @@ use dotenvy::dotenv;
 use tracing::{info, warn};
 use tracing_log::AsTrace;
 
-use crate::opts::{CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts};
+use crate::opts::{
+    ColorMode, CommonOpts, ConfirmMode, NetworkOpts, TableStyle, TimeFormat, UiOpts,
+};
 use crate::os_env::OsEnv;
 
 static GLOBAL_CLI_CONTEXT: OnceLock<ArcSwap<CliContext>> = OnceLock::new();
@@ -68,6 +69,10 @@ pub struct CliContext {
     ui: UiOpts,
     pub network: NetworkOpts,
     colors_enabled: bool,
+    json_output: bool,
+    non_interactive: bool,
+    /// The `CI` environment variable is set to a truthy value.
+    ci: bool,
     loaded_dotenv: Option<PathBuf>,
 }
 
@@ -78,6 +83,9 @@ impl Default for CliContext {
             ui: Default::default(),
             network: Default::default(),
             colors_enabled: true,
+            json_output: false,
+            non_interactive: false,
+            ci: false,
             loaded_dotenv: None,
         }
     }
@@ -162,25 +170,46 @@ impl CliContext {
             .map(|x| x != "0")
             .unwrap_or_else(|| false);
 
-        let colorful = if force_colorful {
-            // CLICOLOR_FORCE is set, we enforce coloring
-            true
-        } else {
-            // We colorize only if it's a smart terminal (not TERM=dumb, nor pipe)
-            // and NO_COLOR is anything but "0"
-            let is_terminal = std::io::stdout().is_terminal();
-            is_terminal && smart_term && should_color
+        // The --color flag takes precedence over environment-based detection; `auto`
+        // falls back to CLICOLOR_FORCE / NO_COLOR / TERM / TTY detection.
+        let colorful = match opts.output.color {
+            ColorMode::Never => false,
+            ColorMode::Always => true,
+            ColorMode::Auto => {
+                if force_colorful {
+                    // CLICOLOR_FORCE is set, we enforce coloring
+                    true
+                } else {
+                    // We colorize only if it's a smart terminal (not TERM=dumb, nor pipe)
+                    // and NO_COLOR is anything but "0"
+                    let is_terminal = std::io::stdout().is_terminal();
+                    is_terminal && smart_term && should_color
+                }
+            }
         };
 
         // Ensure we follows our colorful setting in our console utilities
         // without passing the environment around.
         dialoguer::console::set_colors_enabled(colorful);
+        dialoguer::console::set_colors_enabled_stderr(colorful);
+
+        // Non-interactive when explicitly requested, when JSON output is selected
+        // (a prompt would corrupt/block the stream), when stdin isn't a terminal
+        // (e.g. piped/CI), or when the CI env variable is set.
+        let ci = os_env.get("CI").is_some_and(|v| is_truthy(&v));
+        let non_interactive = opts.confirm.non_interactive
+            || opts.output.json
+            || !std::io::stdin().is_terminal()
+            || ci;
 
         Self {
             confirm_mode: opts.confirm.clone(),
             ui: opts.ui.clone(),
             network: opts.network.clone(),
             colors_enabled: colorful,
+            json_output: opts.output.json,
+            non_interactive,
+            ci,
             loaded_dotenv: maybe_dotenv.ok(),
         }
     }
@@ -207,9 +236,9 @@ impl CliContext {
     ///
     /// Returns `true` if:
     /// - `--yes` / `-y` flag was passed
-    /// - `CI` environment variable is set
+    /// - `CI` environment variable is set (to anything but empty, `false` or `0`)
     pub fn auto_confirm(&self) -> bool {
-        self.confirm_mode.yes || env::var("CI").is_ok()
+        self.confirm_mode.yes || self.ci
     }
 
     /// Get the user's preferred table style.
@@ -236,6 +265,29 @@ impl CliContext {
         self.colors_enabled
     }
 
+    /// Whether command output should be rendered as JSON (`--json`) rather than
+    /// human-readable tables.
+    pub fn json_output(&self) -> bool {
+        self.json_output
+    }
+
+    /// Whether interactive prompts are allowed.
+    ///
+    /// Returns `false` when `--non-interactive` or `--json` was passed, when stdin is
+    /// not a terminal, or when the `CI` environment variable is on — in which case
+    /// prompts must fail fast instead of blocking.
+    pub fn is_interactive(&self) -> bool {
+        !self.non_interactive
+    }
+
+    /// Whether the command may ask for input (a selection or a text value). Like
+    /// [`is_interactive`](Self::is_interactive), but also `false` with `--yes`
+    /// ([`auto_confirm`](Self::auto_confirm)), which promises the command never waits
+    /// for input.
+    pub fn can_prompt(&self) -> bool {
+        self.is_interactive() && !self.auto_confirm()
+    }
+
     /// Get the connection timeout for network requests.
     pub fn connect_timeout(&self) -> std::time::Duration {
         Duration::from_millis(self.network.connect_timeout)
@@ -255,4 +307,13 @@ impl CliContext {
     pub fn loaded_dotenv(&self) -> Option<&Path> {
         self.loaded_dotenv.as_deref()
     }
+}
+
+/// Whether an environment flag like `CI` is on. CI providers set it to `true` (e.g.
+/// GitHub Actions: "Always set to `true`"), so empty, `false` and `0` count as off.
+fn is_truthy(value: &str) -> bool {
+    !matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "" | "false" | "0"
+    )
 }

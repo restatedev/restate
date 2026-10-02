@@ -8,24 +8,25 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable,
 };
 use restate_types::invocation::{ResponseResult, client};
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    GetInvocationStatusRpcRequest, GetInvocationStatusRpcResponse, PartitionProcessorRpcError,
 };
 
-pub(super) struct Request {
-    pub(super) invocation_id: InvocationId,
-}
+use super::*;
 
-impl<'a, TSchemas, Storage> RpcHandler<Request> for RpcContext<'a, TSchemas, Storage>
+impl<'a, TSchemas, Storage> RpcHandler<GetInvocationStatusRpcRequest>
+    for RpcContext<'a, TSchemas, Storage>
 where
     Storage: ReadInvocationStatusTable,
 {
-    async fn handle(self, Request { invocation_id }: Request) -> Decision {
+    async fn handle(
+        self,
+        GetInvocationStatusRpcRequest { invocation_id, .. }: GetInvocationStatusRpcRequest,
+    ) -> Decision<GetInvocationStatusRpcResponse> {
         if !self.is_leader {
             return Decision::Reply(Err(PartitionProcessorRpcError::NotLeader(
                 self.partition_id,
@@ -37,51 +38,41 @@ where
                 .get_invocation_status(&invocation_id)
                 .await
                 .map(|invocation_status| match invocation_status {
-                    InvocationStatus::Scheduled(_) => {
-                        PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                            state: client::InvocationState::Scheduled,
-                            error: None,
-                        })
-                    }
-                    InvocationStatus::Inboxed(_) => {
-                        PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                            state: client::InvocationState::Inboxed,
-                            error: None,
-                        })
-                    }
-                    InvocationStatus::Invoked(_) => {
-                        PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                            state: client::InvocationState::Invoked,
-                            error: None,
-                        })
-                    }
-                    InvocationStatus::Suspended { .. } => {
-                        PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                            state: client::InvocationState::Suspended,
-                            error: None,
-                        })
-                    }
-                    InvocationStatus::Paused(_) => {
-                        PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                            state: client::InvocationState::Paused,
-                            error: None,
-                        })
-                    }
+                    InvocationStatus::Scheduled(_) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Scheduled.into(),
+                        error: None,
+                    },
+                    InvocationStatus::Inboxed(_) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Inboxed.into(),
+                        error: None,
+                    },
+                    InvocationStatus::Invoked(_) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Invoked.into(),
+                        error: None,
+                    },
+                    InvocationStatus::Suspended { .. } => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Suspended.into(),
+                        error: None,
+                    },
+                    InvocationStatus::Paused(_) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Paused.into(),
+                        error: None,
+                    },
                     InvocationStatus::Completed(CompletedInvocation {
                         response_result: ResponseResult::Success(_),
                         ..
-                    }) => PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                        state: client::InvocationState::Succeeded,
+                    }) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Succeeded.into(),
                         error: None,
-                    }),
+                    },
                     InvocationStatus::Completed(CompletedInvocation {
                         response_result: ResponseResult::Failure(error),
                         ..
-                    }) => PartitionProcessorRpcResponse::Status(client::InvocationStatus {
-                        state: client::InvocationState::Failed,
-                        error: Some(error),
-                    }),
-                    InvocationStatus::Free => PartitionProcessorRpcResponse::NotFound,
+                    }) => GetInvocationStatusRpcResponse::Status {
+                        state: client::InvocationState::Failed.into(),
+                        error: Some(error.into()),
+                    },
+                    InvocationStatus::Free => GetInvocationStatusRpcResponse::NotFound,
                 })
                 .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
         )

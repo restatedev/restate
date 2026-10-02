@@ -14,7 +14,6 @@ use std::time::Duration;
 
 use http::StatusCode;
 use serde::{Serialize, de::DeserializeOwned};
-use thiserror::Error;
 use tracing::{debug, info};
 use url::Url;
 
@@ -23,17 +22,7 @@ use restate_cli_util::CliContext;
 use crate::build_info;
 use crate::cli_env::CliEnv;
 
-use super::super::errors::ApiError;
-
-#[derive(Error, Debug)]
-#[error(transparent)]
-pub enum Error {
-    // Error is boxed because ApiError can get quite large if the message body is large.
-    Api(#[from] Box<ApiError>),
-    #[error("(Protocol error) {0}")]
-    Serialization(#[from] serde_json::Error),
-    Network(#[from] reqwest::Error),
-}
+use super::super::errors::{ApiError, ApiErrorBody, ClientError};
 
 /// A lazy wrapper around a reqwest response that deserializes the body on
 /// demand and decodes our custom error body on non-2xx responses.
@@ -51,7 +40,7 @@ where
         self.inner.status()
     }
 
-    pub async fn into_body(self) -> Result<T, Error> {
+    pub async fn into_body(self) -> Result<T, ClientError> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
         if !self.status_code().is_success() {
@@ -59,11 +48,11 @@ where
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
             // Wrap the error into ApiError
-            return Err(Error::Api(Box::new(ApiError {
+            return Err(ClientError::Api(ApiError {
                 http_status_code,
-                url,
-                body: serde_json::from_str(&body).unwrap_or_else(|_| body.into()),
-            })));
+                url: url.into(),
+                body: ApiErrorBody::parse(body),
+            }));
         }
 
         debug!("Response from {} ({})", url, http_status_code);

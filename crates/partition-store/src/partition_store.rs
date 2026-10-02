@@ -35,7 +35,7 @@ use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
 use restate_types::logs::Lsn;
 use restate_types::partitions::Partition;
@@ -67,12 +67,25 @@ use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
 
-// Key prefix is 10 bytes (KeyKind(2) + PartitionKey/Id(8))
+// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8))
 pub(crate) const DB_PREFIX_LENGTH: usize =
     KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
 
 // If this changes, we need to know.
 const_assert_eq!(DB_PREFIX_LENGTH, 10);
+
+/// Length of the capped prefix extractor of partition-store column families: the key kind, the
+/// partition key and up to 10 more bytes, which tell apart the invocations and vqueues sharing a
+/// partition key. Keys shorter than this are their own prefix, so prefix seeks need prefixes of at
+/// least this length.
+///
+/// 20 bytes also cover the timestamp and 4 random bytes of ULID-based ids, and the sequence number
+/// of canonical entry ids. On an 18.7M-invocation partition store, it halved the block reads of
+/// cold journal scans on busy partition keys compared to 10 bytes (1.41 vs 2.72), for filters as
+/// large as with 13 bytes and 7% smaller than with 26 bytes. Shorter scans lose their filter:
+/// whole partition keys (2.39 vs 1.70 block reads) and the state of objects whose service name and
+/// key add up to less than 7 bytes (510 vs 13 µs).
+pub(crate) const PREFIX_EXTRACTOR_LENGTH: usize = 20;
 
 /// An internal representation of PartitionId that pads the underlying u16 into u64 to align with
 /// partition-key length. This should only be used as a replacement to PartitionId when
@@ -463,20 +476,9 @@ impl PartitionStore {
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
-        let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
-        Ok(async {
-            match rx.await {
-                Ok(storage_err) => Err(storage_err),
-                Err(_recv_err) => {
-                    // iterator was dropped without sending an error; this is actually a success condition
-                    Ok(())
-                }
-            }
-        })
+        self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
     }
 
     pub fn run_iterator<K: EncodeTableKey, O: Send + 'static>(
@@ -490,11 +492,11 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
-    pub fn iterator_filter_map<K: EncodeTableKey, O: Send + 'static>(
+    pub fn iterator_filter_map<K: EncodeTableKeyPrefix, O: Send + 'static>(
         &self,
         name: &'static str,
         priority: Priority,
@@ -505,19 +507,40 @@ impl PartitionStore {
         let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
-        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+        self.run_iterator_internal(name, priority, opts, scan.into(), on_iter)?;
         Ok(ReceiverStream::new(rx))
     }
 
-    fn run_iterator_internal<K: EncodeTableKeyPrefix>(
+    /// Starts an iterator from already-encoded bounds without re-encoding them.
+    pub(crate) fn iterator_for_each_physical(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        opts: ReadOptions,
+        scan: PhysicalScan<Bytes>,
+        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        let (tx, rx) = oneshot::channel();
+        let on_iter = Self::iterator_step_for_each(tx, f);
+        self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
+
+        Ok(async {
+            match rx.await {
+                Ok(storage_err) => Err(storage_err),
+                // The iterator completed without reporting a storage error.
+                Err(_recv_err) => Ok(()),
+            }
+        })
+    }
+
+    fn run_iterator_internal(
         &self,
         name: &'static str,
         priority: Priority,
         mut opts: ReadOptions,
-        scan: TableScan<K>,
+        scan: PhysicalScan<Bytes>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
-        let scan: PhysicalScan<Bytes> = scan.into();
         match scan {
             PhysicalScan::Prefix(table, prefix) => {
                 assert!(table.has_key_kind(&prefix));
@@ -599,6 +622,7 @@ impl PartitionStore {
         // If PartitionStore.storage_features() was never called before,
         // this will fetch the value and cache it.
         let storage_features = self.storage_features();
+        let settings = TransactionSettings::from(&Configuration::pinned().worker.storage);
 
         PartitionStoreTransaction {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
@@ -609,6 +633,7 @@ impl PartitionStore {
             meta: self.db.partition(),
             storage_features,
             snapshot,
+            settings,
         }
     }
 
@@ -937,13 +962,30 @@ impl ScanMode {
         S: AsRef<[u8]>,
         E: AsRef<[u8]>,
     {
-        let start_prefix = start.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
-        let end_prefix = end.as_ref().first_chunk::<DB_PREFIX_LENGTH>();
+        let start_prefix = start.as_ref().first_chunk::<PREFIX_EXTRACTOR_LENGTH>();
+        let end_prefix = end.as_ref().first_chunk::<PREFIX_EXTRACTOR_LENGTH>();
 
         if start_prefix.is_some() && start_prefix == end_prefix {
             ScanMode::WithinPrefix
         } else {
             ScanMode::TotalOrder
+        }
+    }
+}
+
+/// Tunables snapshotted from the configuration when a transaction is created.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct TransactionSettings {
+    /// Probability that a vqueue metadata update is written as a full value instead of a merge.
+    pub vqueue_meta_full_write_probability: f64,
+}
+
+impl From<&StorageOptions> for TransactionSettings {
+    fn from(opts: &StorageOptions) -> Self {
+        Self {
+            vqueue_meta_full_write_probability: opts
+                .vqueue_meta_full_write_probability
+                .clamp(0.0, 1.0),
         }
     }
 }
@@ -957,9 +999,14 @@ pub struct PartitionStoreTransaction<'a> {
     value_buffer: &'a mut BytesMut,
     storage_features: StorageFeatures,
     snapshot: Option<SnapshotWithThreadMode<'a, rocksdb::DB>>,
+    settings: TransactionSettings,
 }
 
 impl PartitionStoreTransaction<'_> {
+    pub(crate) fn settings(&self) -> &TransactionSettings {
+        &self.settings
+    }
+
     /// Clears up all buffered operations in the transaction buffer.
     pub fn clear(&mut self) {
         self.write_batch_with_index

@@ -308,7 +308,7 @@ impl DecoderState {
 mod tests {
     use super::*;
 
-    use restate_test_util::{assert, assert_eq, let_assert};
+    use restate_test_util::{assert, assert_eq};
 
     #[test]
     fn fill_decoder_with_several_messages() {
@@ -409,7 +409,7 @@ mod tests {
         let msg = encoder.encode(message);
 
         decoder.push(msg);
-        let_assert!(
+        assert!(let
             EncodingError::MessageSizeLimit(msg_size, limit) = decoder.consume_next().unwrap_err()
         );
         assert_eq!(msg_size, expected_msg_size);

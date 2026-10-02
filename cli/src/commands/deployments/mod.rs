@@ -17,13 +17,14 @@ use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 #[clap(visible_alias = "dp", alias = "deployment")]
+// `Register`'s GCP/Lambda auth flags make it much larger than its sibling variants, but this is a
+// short-lived CLI command struct constructed once per invocation, so the allocation churn a
+// smaller enum would trade for isn't worth the indirection.
+#[allow(clippy::large_enum_variant)]
 pub enum Deployments {
-    /// List the registered deployments
+    // Commands are documented on their own struct.
     List(list::List),
-    /// Add or update deployments through deployment discovery
     Register(register::Register),
-    /// Prints detailed information about a given deployment
     Describe(describe::Describe),
-    /// Remove a drained deployment
     Remove(remove::Remove),
 }

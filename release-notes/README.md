@@ -129,6 +129,7 @@ Skip release notes for:
 ### Writing Style
 
 - **Be clear and concise**: Users should quickly understand the change
+- **Write for users, not maintainers**: Describe what changes from the user's perspective, such as behavior, defaults, configuration, upgrade steps, and observable effects like startup time or resource usage. Implementation details (internal data structures, module names, algorithms, batching or locking strategies) belong in commit messages and code comments, not in release notes
 - **Focus on impact**: Explain what users need to know and do
 - **Provide examples**: Include configuration snippets or code examples
 - **Link to documentation**: Reference detailed docs when available

@@ -10,36 +10,55 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Table};
-use crossterm::style::Stylize;
 use itertools::Itertools;
-use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
-use restate_cli_util::{c_indent_table, c_println};
+use serde_json::Value;
+
+use restate_cli_util::ui::console::Styled;
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{CliContext, c_println};
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
 use crate::commands::state::util::{compute_version, update_state};
+use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
+/// Delete all the K/V state of a virtual object or workflow, or of one of its keys.
+///
+/// Shows the state keys that will be deleted, then deletes them after confirmation
+/// (preview with --dry-run, apply with --yes). To delete a single state key, use
+/// `restate state patch` with a `remove` operation.
+/// The change is queued behind the invocations running on that key: the command returns once
+/// it's submitted, before it's applied.
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_clear")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate state clear Cart/u1 --dry-run",
+        "restate state clear Cart --yes     # all Cart objects, whatever their key",
+    ],
+    learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
+))]
 pub struct Clear {
-    /// A string with either service name and key, or only the service name, e.g.:
-    /// * `virtualObjectName`
-    /// * `virtualObjectName/key`
-    /// * `workflowName`
-    /// * `workflowName/key`
+    /// Whose state to clear: `Name/key` for one virtual object or workflow key, or `Name` for
+    /// all of its keys at once
     query: String,
 
-    /// Force means, ignore the current version
+    /// Apply even if the state changed since it was read, overwriting those changes
     #[clap(long, short)]
     force: bool,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_clear(State(env): State<CliEnv>, opts: &Clear) -> Result<()> {
     clear(&env, opts).await
 }
+
+/// Columns of the `changes` plan table (one row per service key to clear).
+const CHANGE_HEADERS: [&str; 4] = ["service", "key", "state_keys", "operation"];
 
 async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
     let sql_client = crate::clients::DataFusionHttpClient::new(env).await?;
@@ -51,35 +70,51 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
 
     #[allow(clippy::mutable_key_type)]
     let services_state = get_state_keys(&sql_client, svc, key).await?;
+    let json = CliContext::get().json_output();
     if services_state.is_empty() {
-        bail!("No state found!");
+        let mut f = Formatter::new();
+        f.nothing_to_do(format!("No state found for {}", opts.query));
+        return f.finish();
     }
 
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["SERVICE/KEY", "STATE"]);
-    for (svc_id, svc_state) in &services_state {
-        table.add_row(vec![
-            Cell::new(format!("{}/{}", svc_id.service_name, svc_id.key)),
-            Cell::new(format!("[{}]", svc_state.keys().join(", "))),
-        ]);
+    let mut f = Formatter::new();
+    let rows: Vec<Vec<Field>> = services_state
+        .iter()
+        .sorted_by(|(a, _), (b, _)| (&a.service_name, &a.key).cmp(&(&b.service_name, &b.key)))
+        .map(|(svc_id, svc_state)| {
+            let state_keys: Vec<&String> = svc_state.keys().sorted().collect();
+            vec![
+                Field::styled(svc_id.service_name.to_string(), Style::Info),
+                Field::styled(svc_id.key.to_string(), Style::Info),
+                Field::with_display(
+                    Value::from_iter(state_keys.iter().map(|k| Value::from(k.as_str()))),
+                    format!("[{}]", state_keys.iter().join(", ")),
+                ),
+                Field::new("clear"),
+            ]
+        })
+        .collect();
+    f.table("changes", &CHANGE_HEADERS, &rows, IfEmpty::Nothing);
+
+    if !json {
+        c_println!();
+        c_println!(
+            "Going to {} all the aforementioned state entries.",
+            Styled(Style::Danger, "remove")
+        );
+        c_println!("About to submit the new state mutation to the system for processing.");
+        c_println!(
+            "If there are currently active invocations, then this mutation will be enqueued to be processed after them."
+        );
+        c_println!();
     }
-    c_indent_table!(0, table);
+    f.confirm(&opts.dry_run, "Are you sure?")?;
 
-    c_println!();
+    if !json {
+        c_println!();
+    }
 
-    c_println!(
-        "Going to {} all the aforementioned state entries.",
-        "remove".bold().red()
-    );
-    c_println!("About to submit the new state mutation to the system for processing.");
-    c_println!(
-        "If there are currently active invocations, then this mutation will be enqueued to be processed after them."
-    );
-    c_println!();
-    confirm_or_exit("Are you sure?")?;
-
-    c_println!();
-
+    let single_key = services_state.len() == 1;
     for (svc_id, svc_state) in services_state {
         let version = if opts.force {
             None
@@ -94,10 +129,18 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
             HashMap::default(),
         )
         .await?;
+        if single_key {
+            f.next_step(
+                &format!("restate state get {} {}", svc_id.service_name, svc_id.key),
+                "check the state once the mutation is processed",
+                IncludeFormatting::Yes,
+            );
+        }
     }
 
-    c_println!();
-    c_println!("Enqueued successfully for processing");
-
-    Ok(())
+    if !json {
+        c_println!();
+        c_println!("Enqueued successfully for processing");
+    }
+    f.finish()
 }

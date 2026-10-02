@@ -11,7 +11,6 @@
 use std::future::Future;
 
 use restate_types::identifiers::{InvocationId, ServiceId};
-use restate_types::sharding::KeyRange;
 
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
@@ -32,19 +31,6 @@ pub trait ReadVirtualObjectStatusTable {
         &mut self,
         service_id: &ServiceId,
     ) -> impl Future<Output = Result<VirtualObjectStatus>> + Send;
-}
-
-pub trait ScanVirtualObjectStatusTable {
-    fn for_each_virtual_object_status<
-        F: FnMut((ServiceId, VirtualObjectStatus)) -> std::ops::ControlFlow<()>
-            + Send
-            + Sync
-            + 'static,
-    >(
-        &self,
-        range: KeyRange,
-        f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
 pub trait WriteVirtualObjectStatusTable {

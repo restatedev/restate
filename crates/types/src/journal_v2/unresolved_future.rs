@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Debug};
 
-use itertools::{Itertools, Position};
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
 use crate::journal_v2::{NotificationId, SignalId, raw::RawNotificationResultVariant};
@@ -414,7 +414,7 @@ impl Debug for UnresolvedFuture {
 
         for (pos, future) in nested.iter().with_position() {
             write!(f, "{future:?}")?;
-            if matches!(pos, Position::First | Position::Middle) {
+            if !pos.is_last() {
                 write!(f, ", ")?;
             }
         }

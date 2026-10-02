@@ -11,14 +11,15 @@
 mod durability_tracker;
 mod fencing;
 mod leader_state;
+mod rpc;
 mod self_proposer;
+mod self_proposer_scheduler;
 pub mod trim_queue;
 
 use std::cmp::Ordering;
 use std::fmt::Debug;
 use std::mem;
 use std::str::FromStr;
-use std::sync::Arc;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
@@ -31,15 +32,11 @@ use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_impl::{
-    InvokerHandle as InvokerChannelServiceHandle, Service as InvokerService,
-};
+use restate_invoker_impl::Service as InvokerService;
+use restate_memory::MemoryLease;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
-use restate_storage_api::invocation_status_table::{
-    InvokedInvocationStatusLite, ScanInvocationStatusTable,
-};
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable};
 use restate_storage_api::timer_table::{ReadTimerTable, TimerKey};
 use restate_timer::TokioClock;
@@ -51,9 +48,9 @@ use restate_types::identifiers::{LeaderEpoch, PartitionId};
 use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
-use restate_types::net::ingest::{IngestRecord, IngestResponse, ResponseStatus};
+use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::{
-    PartitionProcessorRpcError, PartitionProcessorRpcResponse,
+    PartitionProcessorRpcError, PartitionProcessorWireRpc,
 };
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
@@ -62,23 +59,20 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
-use restate_vqueues::scheduler::{self};
 use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
-use restate_wal_protocol::control::{
-    AnnounceLeaderCommand, UpdatePartitionDurabilityCommand, VersionBarrierCommand,
-};
+use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
-use restate_wal_protocol::{Command, Envelope};
-use restate_worker_api::invoker::InvokerHandle;
+use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
 use restate_worker_api::{
     LeaderQueryCommand, LeaderQueryRequest, LeaderQueryResponse, LeaderQuerySender,
 };
 
 use self::durability_tracker::DurabilityTracker;
-use self::fencing::FencingTokens;
+use self::rpc::PendingReply;
+pub(crate) use self::rpc::{CommitCallback, FromRpcReply, RpcReciprocal};
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
-use crate::partition::cleaner::{self, Cleaner};
+use crate::partition::cleaner::Cleaner;
 use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
@@ -89,13 +83,11 @@ use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
-use super::{processor::*, rpc};
+use super::processor::*;
+use super::rpc::RpcProposal;
 
 type TimerService = restate_timer::TimerService<TimerKeyValue, TokioClock, TimerReader>;
 type InvokerStream = ReceiverStream<InvokerEffect>;
-type RpcReciprocal =
-    Reciprocal<Oneshot<Result<PartitionProcessorRpcResponse, PartitionProcessorRpcError>>>;
-type IngestReciprocal = Reciprocal<Oneshot<IngestResponse>>;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -146,33 +138,37 @@ pub(crate) enum TaskTermination {
     Failure(GenericError),
 }
 
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub(crate) enum LeaderEvent {
-    Scheduler(Result<scheduler::Decisions, StorageError>),
-    Invoker(InvokerEffect),
-    Shuffle(shuffle::OutboxTruncation),
-    Timer(TimerKeyValue),
-    Cleaner(cleaner::CleanerEffect),
-    PartitionMaintenance(UpdatePartitionDurabilityCommand),
-    UpsertSchema(Schema),
-    UpsertRuleBook(Arc<restate_limiter::RuleBook>),
-    NetworkService(NetworkServiceEvent),
-}
-
 #[derive(derive_more::Debug)]
-#[allow(clippy::large_enum_variant)]
 pub(crate) enum NetworkServiceEvent {
+    /// Propose a single command; `reply` decides when and how the caller is answered.
     RpcProposal {
-        proposal: rpc::RpcProposal,
-        #[debug(skip)]
-        reciprocal: RpcReciprocal,
+        keys: Keys,
+        cmd: ErasedCommand,
+        reply: PendingReply,
+        lease: MemoryLease,
     },
+    /// Forward already-built records; the caller is answered on commit.
     IngestRecords {
         records: Vec<IngestRecord>,
         #[debug(skip)]
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
+        lease: MemoryLease,
     },
+}
+
+impl NetworkServiceEvent {
+    fn fail(self, error: PartitionProcessorRpcError) {
+        match self {
+            NetworkServiceEvent::RpcProposal { reply, .. } => reply.fail(error),
+            NetworkServiceEvent::IngestRecords { on_commit, .. } => on_commit.call(Err(error)),
+        }
+    }
+
+    /// Replies to the caller with a NotLeader error. Only valid for events that were never
+    /// proposed, so the caller can safely retry against the new leader.
+    fn reject_not_leader(self, partition_id: PartitionId) {
+        self.fail(PartitionProcessorRpcError::NotLeader(partition_id))
+    }
 }
 
 enum State {
@@ -210,7 +206,7 @@ pub(crate) struct LeadershipState<T> {
     state: State,
 
     partition_id: PartitionId,
-    ingestion_client: IngestionClient<T, Envelope>,
+    ingestion_client: IngestionClient<T, Envelope<Raw>>,
     leader_query_tx: LeaderQuerySender,
 }
 
@@ -220,7 +216,7 @@ where
 {
     pub(crate) fn new(
         partition_id: PartitionId,
-        ingestion_client: IngestionClient<T, Envelope>,
+        ingestion_client: IngestionClient<T, Envelope<Raw>>,
         leader_query_tx: LeaderQuerySender,
     ) -> Self {
         Self {
@@ -248,18 +244,18 @@ where
         }
     }
 
-    pub(super) fn try_reserve_rpc_processing_permit(&self) -> Option<RpcProcessingPermit> {
-        match &self.state {
-            State::Leader(leader_state) => leader_state
-                .try_reserve_network_event_permit()
-                .map(RpcProcessingPermit::Leader),
-            State::Follower | State::Candidate { .. } => Some(RpcProcessingPermit::NonLeader {
-                partition_id: self.partition_id(),
-            }),
-            // In case of BecomingLeader we prefer to park RPC requests
-            // until we transition out of the current state.
-            State::BecomingLeader { .. } => None,
-        }
+    /// Returns `None` while in `BecomingLeader`, in which case RPC requests should be parked
+    /// until we transition out of the current state.
+    pub(super) fn rpc_proposal_sender(&self) -> Option<RpcProposalSender> {
+        let tx = match &self.state {
+            State::Leader(leader_state) => Some(leader_state.network_events_tx().clone()),
+            State::Follower | State::Candidate { .. } => None,
+            State::BecomingLeader { .. } => return None,
+        };
+        Some(RpcProposalSender {
+            tx,
+            partition_id: self.partition_id(),
+        })
     }
 
     #[instrument(level = "debug", skip_all, fields(leader_epoch = %leadership_info.leader_epoch))]
@@ -298,14 +294,14 @@ where
         let campaign_started_at = Instant::now();
         let leader_epoch = leadership_info.leader_epoch;
 
-        let announce_leader = Command::AnnounceLeader(Box::new(AnnounceLeaderCommand {
+        let announce_leader = AnnounceLeaderCommand {
             node_id: node_ctx.my_node_id(),
             leader_epoch,
             epoch_version: Some(leadership_info.version),
             partition_key_range: ctx.key_range(),
             current_config: Some(leadership_info.current_config),
             next_config: leadership_info.next_config,
-        }));
+        };
 
         let mut self_proposer = SelfProposer::new(
             ctx.log_id(),
@@ -313,7 +309,7 @@ where
             &node_ctx.bifrost,
         )?;
 
-        self_proposer.self_propose_unaccounted(ctx.key_range().start(), announce_leader)?;
+        self_proposer.self_propose_unaccounted(announce_leader)?;
 
         self.state = State::Candidate {
             campaign_started_at,
@@ -567,6 +563,19 @@ where
                     .push(PartitionFeatureChange::EnablePreflightInvocationTerminationRetention);
             }
 
+            if config
+                .common
+                .experimental
+                .is_inconsistent_state_mutation_cleanup_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_inconsistent_state_mutation_cleanup_enabled()
+            {
+                feature_changes
+                    .push(PartitionFeatureChange::EnableInconsistentStateMutationCleanup);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -578,15 +587,12 @@ where
                     .max(processor.fsm().min_restate_version())
                     .clone();
 
-                self_proposer.self_propose_unaccounted(
-                    processor.key_range().start(),
-                    Command::VersionBarrier(VersionBarrierCommand {
-                        version: barrier_version,
-                        partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
-                        human_reason: Some("Apply state-machine feature changes".to_owned()),
-                        feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
-                    }),
-                )?;
+                self_proposer.self_propose_unaccounted(VersionBarrierCommand {
+                    version: barrier_version,
+                    partition_key_range: Keys::RangeInclusive(processor.key_range().into()),
+                    human_reason: Some("Apply state-machine feature changes".to_owned()),
+                    feature_changes: feature_changes.iter().map(|c| c.id()).collect(),
+                })?;
 
                 // Switch to BecomingLeader state until we finish any pending tasks to enable the
                 // new features. We will transition us to an effective leader when the state
@@ -637,14 +643,11 @@ where
                     InvokerStorageReader::new(partition_store.clone()),
                     invoker_tx,
                     &config.worker.invoker.service_client,
-                    &config.worker.invoker,
                     schema,
-                    node_ctx.invoker_capacity.invocation_token_bucket.clone(),
                     node_ctx.invoker_capacity.action_token_bucket.clone(),
-                    node_ctx.invoker_capacity.memory_pool.clone(),
                 )?;
 
-            let mut invoker_handle = invoker.handle();
+            let invoker_handle = invoker.handle();
 
             // Register the direct invoker-status handle so DataFusion reads bypass
             // the partition processor's main select! loop. The guard is moved into
@@ -710,16 +713,7 @@ where
                 scheduler_service.on_rules_updated(initial_diff);
             }
 
-            let fencing_tokens = if processor.fsm().features().is_vqueues_enabled() {
-                // VQueues migration is atomic. Either all invocations have a vqueue id, or none of them do.
-                // As such, if the partition has the feature enabled, it means that we no longer have any "Invoked"
-                // invocation without a vqueue id. So the `resume_invoked_invocations` scan below would have skipped all
-                // invocations anyways.
-                FencingTokens::default()
-            } else {
-                Self::resume_invoked_invocations(&mut invoker_handle, partition_store).await?
-            };
-
+            assert!(processor.fsm().features().is_vqueues_enabled());
             let timer_service = TimerService::new(
                 TokioClock,
                 config.worker.num_timers_in_memory_limit(),
@@ -729,7 +723,7 @@ where
             let (shuffle_tx, shuffle_rx) = tokio::sync::watch::channel(None);
 
             let shuffle = Shuffle::new(
-                ShuffleMetadata::new(processor.partition_id(), leader_epoch),
+                ShuffleMetadata::new(processor.partition_id()),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
                 config.worker.internal_queue_length(),
@@ -745,6 +739,7 @@ where
                 partition_store.clone(),
                 processor.partition_id(),
                 config.worker.cleanup_interval(),
+                config.worker.cleanup_max_in_flight_purges(),
             );
 
             let cleaner_handle = cleaner.start()?;
@@ -808,7 +803,6 @@ where
                 invoker_task_guard.into_handle(),
                 self_proposer,
                 invoker_rx,
-                fencing_tokens,
                 shuffle_rx,
                 durability_tracker,
                 leader_query_guard,
@@ -819,46 +813,6 @@ where
         } else {
             unreachable!("Can only become the leader if I was the candidate before!");
         }
-    }
-
-    // This function is only called when vqueues are not enabled, in the vqueues world, the
-    // the scheduler takes care of resuming those invocations. This should be removed once
-    // we no longer have non-vqueues based invocations.
-    async fn resume_invoked_invocations(
-        invoker_handle: &mut InvokerChannelServiceHandle,
-        partition_store: &mut PartitionStore,
-    ) -> Result<FencingTokens, Error> {
-        let mut invoked_invocations = std::pin::pin!(
-            partition_store
-                .scan_legacy_invoked_invocations()
-                .map_err(Error::Storage)?
-        );
-
-        let start = tokio::time::Instant::now();
-        // Seed a fresh fencing token per resumed invocation so the leader accepts its effects and
-        // can later fence stragglers from a re-invoke. On a fresh term there are no in-flight
-        // stragglers yet, so the starting tokens only need to be distinct from the ones minted
-        // later, which they are (the counter keeps advancing).
-        let mut fencing_tokens = FencingTokens::default();
-        let mut count = 0usize;
-        while let Some(invoked_invocation) = invoked_invocations.next().await {
-            let InvokedInvocationStatusLite {
-                invocation_id,
-                invocation_target,
-            } = invoked_invocation?;
-            let fencing_token = fencing_tokens.mint(invocation_id);
-            invoker_handle
-                .invoke(invocation_id, fencing_token, invocation_target)
-                .map_err(Error::Invoker)?;
-            count += 1;
-        }
-        debug!(
-            "Leader partition resumed {} invocations in {:?}",
-            count,
-            start.elapsed(),
-        );
-
-        Ok(fencing_tokens)
     }
 
     async fn become_follower(&mut self) {
@@ -900,7 +854,11 @@ where
     /// * Follower: Nothing to do
     /// * Candidate: Monitor appender task
     /// * Leader: Await events and monitor appender task
-    pub async fn run(&mut self, ctx: impl Processor + HasVQueues) -> Result<(), Error> {
+    pub async fn run(
+        &mut self,
+        ctx: impl Processor + HasVQueues,
+        config: &Configuration,
+    ) -> Result<(), Error> {
         match &mut self.state {
             State::Follower => futures::future::pending().await,
             State::Candidate { self_proposer, .. }
@@ -910,15 +868,7 @@ where
                 .join_on_err()
                 .await
                 .expect_err("never should never be returned")),
-            State::Leader(leader_state) => leader_state.run(ctx).await,
-        }
-    }
-
-    // This is returned only if we're leaders (otherwise there's no messages to be sent to the invoker)
-    pub fn invoker_handle(&mut self) -> Option<&mut InvokerChannelServiceHandle> {
-        match &mut self.state {
-            State::Leader(leader_state) => Some(leader_state.invoker_handle()),
-            _ => None,
+            State::Leader(leader_state) => leader_state.run(ctx, config).await,
         }
     }
 }
@@ -991,41 +941,52 @@ impl shuffle::OutboxReader for OutboxReader {
     }
 }
 
-pub(super) enum RpcProcessingPermit {
-    Leader(tokio::sync::mpsc::OwnedPermit<NetworkServiceEvent>),
-    NonLeader { partition_id: PartitionId },
+/// Forwards RPC proposals to the leader's self-proposer, or rejects them with NotLeader if
+/// this partition processor isn't the leader.
+pub(super) struct RpcProposalSender {
+    // Note having a sender here indicates that this partition is not a leader.
+    tx: Option<mpsc::UnboundedSender<NetworkServiceEvent>>,
+    partition_id: PartitionId,
 }
 
-impl RpcProcessingPermit {
-    pub fn buffer_rpc_proposal(self, proposal: rpc::RpcProposal, reciprocal: RpcReciprocal) {
-        match self {
-            RpcProcessingPermit::NonLeader { partition_id } => {
-                reciprocal.send(Err(PartitionProcessorRpcError::NotLeader(partition_id)))
-            }
-            RpcProcessingPermit::Leader(permit) => {
-                permit.send(NetworkServiceEvent::RpcProposal {
-                    proposal,
-                    reciprocal,
-                });
-            }
-        }
+impl RpcProposalSender {
+    pub fn send_rpc_proposal<W>(
+        self,
+        proposal: RpcProposal<W::Ok>,
+        reciprocal: Reciprocal<Oneshot<W::Response>>,
+        lease: MemoryLease,
+    ) where
+        W: PartitionProcessorWireRpc,
+        W::Ok: FromRpcReply,
+    {
+        let (keys, cmd, reply_on) = proposal.into_parts();
+        self.send(NetworkServiceEvent::RpcProposal {
+            keys,
+            cmd,
+            reply: PendingReply::new::<W>(reply_on, reciprocal),
+            lease,
+        });
     }
 
-    pub fn buffer_forwarded_records(
+    pub fn send_forwarded_records(
         self,
         records: Vec<IngestRecord>,
-        reciprocal: IngestReciprocal,
+        on_commit: CommitCallback,
+        lease: MemoryLease,
     ) {
-        match self {
-            RpcProcessingPermit::NonLeader { partition_id } => {
-                reciprocal.send(ResponseStatus::NotLeader { of: partition_id }.into());
-            }
-            RpcProcessingPermit::Leader(permit) => {
-                permit.send(NetworkServiceEvent::IngestRecords {
-                    records,
-                    reciprocal,
-                });
-            }
+        self.send(NetworkServiceEvent::IngestRecords {
+            records,
+            on_commit,
+            lease,
+        });
+    }
+
+    fn send(self, event: NetworkServiceEvent) {
+        let Some(tx) = self.tx else {
+            return event.reject_not_leader(self.partition_id);
+        };
+        if let Err(e) = tx.send(event) {
+            e.0.reject_not_leader(self.partition_id);
         }
     }
 }
@@ -1038,7 +999,6 @@ mod tests {
     use test_log::test;
     use tokio_stream::StreamExt;
 
-    use assert2::let_assert;
     use restate_bifrost::Bifrost;
     use restate_core::network::Reciprocal;
     use restate_core::partitions::PartitionRouting;
@@ -1053,6 +1013,7 @@ mod tests {
     };
     use restate_types::invocation::FencingToken;
     use restate_types::logs::{KeyFilter, Lsn, SequenceNumber};
+    use restate_types::net::partition_processor::PartitionProcessorRpcRequest;
     use restate_types::partitions::state::PartitionReplicaSetStates;
     use restate_types::partitions::{
         Partition, PartitionConfiguration, PartitionFeatureChange, PersistedFeatures,
@@ -1060,13 +1021,13 @@ mod tests {
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, Version};
-    use restate_wal_protocol::Command;
-    use restate_wal_protocol::Envelope;
+    use restate_wal_protocol::control::AnnounceLeaderCommand;
     use restate_wal_protocol::invocation::PauseInvocationCommand;
+    use restate_wal_protocol::v2::{CommandKind, Envelope, Raw, commands};
     use restate_worker_api::invoker::capacity::InvokerCapacity;
     use restate_worker_api::invoker::{Effect, EffectKind, FencedEffect};
 
-    use crate::partition::leadership::{LeadershipState, State};
+    use crate::partition::leadership::{LeadershipState, RpcReciprocal, State};
     use crate::partition::processor::ProcessorRawContext;
     use crate::partition::types::InvokerEffect;
     use crate::partition::{LeadershipInfo, NodeContext};
@@ -1138,9 +1099,12 @@ mod tests {
             .expect("valid reader");
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<AnnounceLeaderCommand>();
 
-        let_assert!(Command::AnnounceLeader(announce_leader) = envelope.command);
+        let announce_leader = envelope.into_inner()?;
         assert_eq!(announce_leader.node_id, NODE_ID);
         assert_eq!(announce_leader.leader_epoch, leader_epoch);
         assert_eq!(announce_leader.partition_key_range, PARTITION_KEY_RANGE);
@@ -1162,8 +1126,11 @@ mod tests {
         assert!(matches!(state.state, State::BecomingLeader { .. }));
 
         let record = reader.next().await.unwrap()?;
-        let envelope = record.try_decode::<Envelope>().unwrap()?;
-        let_assert!(Command::VersionBarrier(barrier) = envelope.command);
+        let envelope = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<commands::VersionBarrierCommand>();
+        let barrier = envelope.into_inner()?;
         assert!(
             barrier
                 .feature_changes
@@ -1242,6 +1209,7 @@ mod tests {
                 vqueues_skip_completed: true,
                 unique_random_seeds: true,
                 preflight_invocation_termination_retention: true,
+                inconsistent_state_mutation_cleanup: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
@@ -1265,10 +1233,14 @@ mod tests {
             .expect("valid reader");
         let announce_leader = {
             let record = reader.next().await.unwrap()?;
-            let_assert!(
-                Command::AnnounceLeader(announce_leader) =
-                    record.try_decode::<Envelope>().unwrap()?.command
-            );
+
+            let announce_leader: commands::AnnounceLeaderCommand = record
+                .try_decode::<Envelope<Raw>>()
+                .unwrap()?
+                .into_typed::<AnnounceLeaderCommand>()
+                .into_inner()
+                .unwrap();
+
             announce_leader
         };
 
@@ -1302,14 +1274,17 @@ mod tests {
         // Pause: append the PauseInvocation command and clear the token (after the append).
         let request_id = PartitionProcessorRpcRequestId::new();
         let (reciprocal, _rx) = Reciprocal::mock();
-        let pause_cmd = Command::PauseInvocation(
-            PauseInvocationCommand {
-                invocation_id,
-                request_id: Some(request_id),
-            }
-            .bilrost_encode_to_bytes(),
+        let pause_cmd = PauseInvocationCommand {
+            invocation_id,
+            request_id: Some(request_id),
+        };
+
+        leader_state.propose_pause_and_fence(
+            request_id,
+            RpcReciprocal::new::<PartitionProcessorRpcRequest>(reciprocal),
+            invocation_id,
+            pause_cmd,
         );
-        leader_state.propose_pause_and_fence(request_id, reciprocal, invocation_id, pause_cmd);
         // The pause cleared the token, so attempt 1's token is no longer accepted.
         assert!(
             !leader_state
@@ -1344,15 +1319,19 @@ mod tests {
         let mut saw_pause = false;
         for _ in 0..3 {
             let record = reader.next().await.unwrap()?;
-            match record.try_decode::<Envelope>().unwrap()?.command {
-                Command::InvokerEffect(effect) => {
+            let envelope = record.try_decode::<Envelope<Raw>>().unwrap()?;
+            match envelope.kind() {
+                CommandKind::InvokerEffect => {
+                    let effect = envelope
+                        .into_typed::<commands::InvokerEffectCommand>()
+                        .into_inner()?;
                     assert_eq!(effect.invocation_id, invocation_id);
-                    let EffectKind::PinnedDeployment(pinned) = effect.kind else {
+                    let EffectKind::PinnedDeployment(pinned) = Effect::from(effect).kind else {
                         panic!("expected only PinnedDeployment effect kinds")
                     };
                     invoker_effect_deployments.push(pinned.deployment_id);
                 }
-                Command::PauseInvocation(_) => saw_pause = true,
+                CommandKind::PauseInvocation => saw_pause = true,
                 other => panic!("unexpected command appended: {other:?}"),
             }
         }

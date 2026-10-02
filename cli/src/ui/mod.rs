@@ -12,6 +12,7 @@ use indicatif::ProgressBar;
 
 pub mod datetime;
 pub mod deployments;
+pub mod fmt;
 pub mod invocations;
 pub mod service_handlers;
 

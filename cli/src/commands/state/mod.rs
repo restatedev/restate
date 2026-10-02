@@ -18,12 +18,9 @@ use cling::prelude::*;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum ServiceState {
-    /// Get the persisted state stored for a service key
+    // Commands are documented on their own struct.
     Get(get::Get),
-    /// Edit the persisted state stored for a service key
     Edit(edit::Edit),
-    /// Patch persisted key-value state for a service key
     Patch(patch::Patch),
-    /// Clear of the state of a given service
     Clear(clear::Clear),
 }

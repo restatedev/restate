@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{Unit, describe_counter};
+use metrics::{Unit, describe_counter, describe_gauge};
 
 pub const INVOCATION_CLIENT_REQUESTS: &str = "restate.invocation_client.requests.total";
+
+pub const INVOKER_CONCURRENCY_LIMIT: &str = "restate.invoker.concurrency_limit";
+pub const INVOKER_CONCURRENCY_SLOTS_ACQUIRED: &str = "restate.invoker.concurrency_slots.acquired";
+pub const INVOKER_CONCURRENCY_SLOTS_RELEASED: &str = "restate.invoker.concurrency_slots.released";
 
 // Values of label `status` in INVOCATION_CLIENT_REQUESTS.
 pub const STATUS_COMPLETED: &str = "completed";
@@ -26,5 +30,23 @@ pub fn describe_metrics() {
         INVOCATION_CLIENT_REQUESTS,
         Unit::Count,
         "Total partition processor RPC attempts made by the invocation client"
+    );
+
+    describe_gauge!(
+        INVOKER_CONCURRENCY_LIMIT,
+        Unit::Count,
+        "Node-wide limit of concurrently running invocations"
+    );
+
+    describe_counter!(
+        INVOKER_CONCURRENCY_SLOTS_ACQUIRED,
+        Unit::Count,
+        "Number of invoker concurrency slots handed out by the vqueues scheduler"
+    );
+
+    describe_counter!(
+        INVOKER_CONCURRENCY_SLOTS_RELEASED,
+        Unit::Count,
+        "Number of invoker concurrency slots returned to the vqueues scheduler"
     );
 }

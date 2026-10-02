@@ -299,9 +299,10 @@ impl VQueuesMetaCache {
         storage: &mut S,
         qid: &VQueueId,
     ) -> Result<Option<VQueueHandle>> {
-        if self.queues.contains_key(qid) {
-            return Ok(self.queues.get(qid).copied());
+        if let Some(handle) = self.queues.get(qid) {
+            return Ok(Some(*handle));
         }
+
         // Not in cache; consult storage.
         match storage.get_vqueue(qid).await? {
             None => Ok(None),

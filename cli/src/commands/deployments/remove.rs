@@ -10,39 +10,51 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::Table;
-use indoc::indoc;
+use serde_json::json;
 
 use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::ui::console::{Styled, StyledTable, confirm_or_exit};
-use restate_cli_util::ui::stylesheet::Style;
-use restate_cli_util::{c_eprintln, c_error, c_indentln, c_success};
+use restate_cli_util::{CliContext, c_eprintln, c_println, c_success};
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
 use crate::clients::{AdminClient, AdminClientInterface, Deployment};
-use crate::console::c_println;
+use crate::error::RestateCliError;
 use crate::ui::deployments::{
-    add_deployment_to_kv_table, calculate_deployment_status, render_active_invocations,
-    render_deployment_status,
+    DeploymentStatus, active_invocations_field, calculate_deployment_status,
+    deployment_info_fields, deployment_status_field, latest_service, service_item,
 };
-use crate::ui::service_handlers::icon_for_service_type;
+use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
 
+/// Remove a drained deployment
+///
+/// A deployment is drained when newer deployments serve the latest revision of all its
+/// services, and none of its invocations are still in flight (invocations keep running on the
+/// deployment they started on). Check with `restate deployments describe <id> --extra`.
+/// Removing a deployment that isn't drained is refused unless --force.
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]
 #[cling(run = "run_remove")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate deployments remove dp_14LsPzBd7Uuvbx8wA3wtKoD --dry-run",
+        "restate deployments list --extra --json \\",
+        "  | jq -r '.deployments[] | select(.status == \"Drained\") | .deployment_id'",
+    ],
+    learn_more: "https://docs.restate.dev/services/versioning",
+))]
 pub struct Remove {
-    /// Force removal of a deployment if it's not drained. This is dangeous and will
-    /// break in-flight invocations pinned to this deployment.
+    /// Remove the deployment even if it's not drained. Its in-flight invocations will fail,
+    /// and the services whose latest revision it serves become unavailable
     #[clap(long)]
     force: bool,
-    // TODO: Support inference of endpoint or ID, but this require the deployment
-    // ID to follow a more constrained format
-    /// Deployment ID
+    /// Deployment id (`dp_...`)
     deployment_id: String,
+
+    #[clap(flatten)]
+    dry_run: DryRun,
 }
 
 pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
@@ -83,109 +95,112 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         &latest_services,
     );
 
-    let mut table = Table::new_styled();
-    table.add_kv_row("ID:", deployment_id);
+    let mut deployment_fields = vec![(
+        "deployment_id".to_owned(),
+        Field::new(deployment_id.to_string()),
+    )];
+    deployment_fields.extend(deployment_info_fields(&deployment));
+    deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
+    deployment_fields.push((
+        "active_invocations".to_owned(),
+        active_invocations_field(total_active_inv),
+    ));
+    let mut f = Formatter::new();
+    f.title("📜", "Deployment Information");
+    f.detail("deployment", &deployment_fields);
 
-    add_deployment_to_kv_table(&deployment, &mut table);
-    table.add_kv_row("Status:", render_deployment_status(status));
-    table.add_kv_row("Invocations:", render_active_invocations(total_active_inv));
-    c_println!("{}", table);
-    c_println!("{}", Styled(Style::Info, "Services:"));
-    for service in deployment_services {
-        let Some(latest_service) = latest_services.get(&service.name) else {
-            // if we can't find this service in the latest set of service, something is off. A
-            // deployment cannot remove services defined by other deployment, so we should warn that
-            // this is happening.
-            c_eprintln!(
-                "Service {} is not found in the latest set of services. This is unexpected.",
-                service.name
-            );
+    f.title("🤖", "Services");
+    let mut items = f.start_items("services");
+    for service in &deployment_services {
+        let Some(latest_service) = latest_service(&latest_services, service) else {
             continue;
         };
-        c_indentln!(1, "- {}", Styled(Style::Info, &service.name));
-        c_indentln!(
-            2,
-            "Type: {:?} {}",
-            service.ty,
-            icon_for_service_type(&service.ty),
-        );
-        let latest_revision_message = if service.revision == latest_service.revision {
-            // We are latest.
-            format!("[{}]", Styled(Style::Success, "Latest"))
-        } else {
-            // Not latest
-            format!(
-                "[Latest {} is in deployment ID {}]",
-                Styled(Style::Success, latest_service.revision),
-                latest_service.deployment_id
-            )
-        };
-        c_indentln!(
-            2,
-            "Revision: {} {}",
-            service.revision,
-            latest_revision_message
-        );
+        let mut item = items.item();
+        service_item(&mut item, service, latest_service);
+        item.finish()?;
     }
-    c_println!();
+    items.finish();
+    // The plan, JSON-only: the human output already describes the deployment to remove.
+    f.value(
+        "changes",
+        Field::with_display(
+            json!([{"deployment_id": deployment_id.to_string(), "change": "delete"}]),
+            "",
+        ),
+    );
 
-    // Now, if this is a drained deployment, it's safe to remove. If not, we ask the user to use
-    // --force.
-    let safe = match status {
-        crate::ui::deployments::DeploymentStatus::Active => {
-            // unsafe to remove, use --force
-            c_error!(
-                indoc! {
-                    "Deployment is still {}. This means that it hosts the latest revision of some of
-                       your services as indicated above. Removing this deployment will cause those
-                       services to be unavailable and current or future invocations on them WILL fail.
-                "
-                },
-                Styled(Style::Success, "Active"),
-            );
-            false
-        }
-        crate::ui::deployments::DeploymentStatus::Draining => {
-            // unsafe to remove, use --force
-            c_error!(
-                indoc! {
-                "Deployment is still {}. There are {} invocations that will break if you proceed
-                    with this operation. Please make sure in-flight invocations are completed (deployment is Drained)
-                    or killed/cancelled before continuing.
-                "
-                },
-                Styled(Style::Warn, "Draining"),
-                Styled(Style::Warn, total_active_inv)
-            );
-            false
-        }
-        crate::ui::deployments::DeploymentStatus::Drained => {
-            // safe to remove
-            c_success!("The deployment is fully drained and is safe to remove");
-            true
-        }
+    let json = CliContext::get().json_output();
+    // Removing a deployment that isn't drained breaks invocations: refuse unless --force.
+    let risk = match status {
+        DeploymentStatus::Active => Some(
+            "Active. This means that it hosts the latest revision of some of your services as \
+             indicated above. Removing this deployment will cause those services to be unavailable \
+             and current or future invocations on them WILL fail."
+                .to_owned(),
+        ),
+        DeploymentStatus::Draining => Some(format!(
+            "Draining. There are {total_active_inv} invocations that will break if you proceed \
+             with this operation. Please make sure in-flight invocations are completed (deployment \
+             is Drained) or killed/cancelled before continuing."
+        )),
+        DeploymentStatus::Drained => None,
     };
-
-    if !safe && !opts.force {
-        bail!(
-            "If you accept the risk of breaking in-flight invocations, you can use {} to \
-                forcefully remove this deployment.",
-            Styled(Style::Notice, "--force"),
-        );
+    let force_step = format!("restate deployments remove {deployment_id} --force");
+    let force_description = "remove it anyway, if you accept that risk";
+    match risk {
+        Some(risk) if !opts.force && !opts.dry_run.dry_run => {
+            if !json {
+                // Keep the error apart from the services above it.
+                c_eprintln!();
+            }
+            return Err(RestateCliError::bad_input(format!(
+                "Deployment {deployment_id} is still {risk}"
+            ))
+            .with_next_step(force_step, force_description)
+            .into());
+        }
+        Some(risk) => {
+            let warning = if opts.force {
+                format!("Deployment is still {risk}")
+            } else {
+                f.next_step(&force_step, force_description, IncludeFormatting::Yes);
+                format!("Deployment is still {risk} Without --force, removing it will be refused.")
+            };
+            f.warning(&warning);
+        }
+        None if !json => {
+            c_println!();
+            c_success!("The deployment is fully drained and is safe to remove");
+        }
+        None => {}
     }
 
-    confirm_or_exit("Are you sure you want to remove this deployment?")?;
+    f.confirm(
+        &opts.dry_run,
+        "Are you sure you want to remove this deployment?",
+    )?;
 
     let result = client
         .remove_deployment(
-            &opts.deployment_id,
+            &deployment_id.to_string(),
             //TODO: Use opts.force when the server implements the false + validation case!
             true,
         )
         .await?;
     let _ = result.success_or_error()?;
 
-    c_println!();
-    c_success!("Deployment {} removed successfully", &opts.deployment_id);
-    Ok(())
+    f.outcome(
+        "result",
+        Field::with_display(
+            "removed",
+            format!("Deployment {deployment_id} removed successfully"),
+        ),
+        Outcome::Success,
+    );
+    f.next_step(
+        "restate deployments list",
+        "see the remaining deployments",
+        IncludeFormatting::Yes,
+    );
+    f.finish()
 }

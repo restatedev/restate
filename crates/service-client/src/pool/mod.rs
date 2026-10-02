@@ -143,8 +143,8 @@ where
                 match authority_pool.call(request).await {
                     Ok(result) => return Ok(result),
                     Err(conn::ConnectionError::Error(err)) => return Err(err),
-                    Err(conn::ConnectionError::PermitReclaimed(req)) => {
-                        debug!("H2 request lost stream permit, retrying");
+                    Err(conn::ConnectionError::Retry(req, reason)) => {
+                        debug!(reason, "H2 retrying unsent request");
                         request = req;
                     }
                 }

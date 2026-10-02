@@ -26,14 +26,9 @@ pub enum TableScan<K> {
     RangeInclusive(K, K),
 }
 
-pub(crate) enum PhysicalScan<B> {
-    Prefix(TableKind, B),
-    RangeExclusive(TableKind, ScanMode, B, B),
-}
-
-impl PhysicalScan<Bytes> {
-    pub fn from<K: EncodeTableKeyPrefix>(scan: TableScan<K>, arena: &mut BytesMut) -> Self {
-        match scan {
+impl<K: EncodeTableKeyPrefix> TableScan<K> {
+    pub(crate) fn encode(self, arena: &mut BytesMut) -> PhysicalScan<Bytes> {
+        match self {
             Prefix(key) => {
                 key.serialize_to(arena);
                 PhysicalScan::Prefix(K::TABLE, arena.split().freeze())
@@ -52,7 +47,7 @@ impl PhysicalScan<Bytes> {
                     // Not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end = end.freeze();
                 // RocksDB requires the exclusive upper bound to share the seek prefix when
@@ -84,7 +79,7 @@ impl PhysicalScan<Bytes> {
                     // not allowed to happen since we guarantee that KeyKind is
                     // always incrementable.
                     std::hint::cold_path();
-                    panic!("Key range end overflowed, start key {:x?}", &start);
+                    panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end_bytes = end_bytes.freeze();
                 PhysicalScan::RangeExclusive(K::TABLE, ScanMode::TotalOrder, start_bytes, end_bytes)
@@ -93,10 +88,15 @@ impl PhysicalScan<Bytes> {
     }
 }
 
+pub(crate) enum PhysicalScan<B> {
+    Prefix(TableKind, B),
+    RangeExclusive(TableKind, ScanMode, B, B),
+}
+
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();
-        PhysicalScan::from(scan, &mut arena)
+        scan.encode(&mut arena)
     }
 }
 
@@ -114,7 +114,8 @@ mod tests {
     use crate::scan::{PhysicalScan, TableScan};
     use crate::{DB_PREFIX_LENGTH, ScanMode, TableKind, convert_to_upper_bound};
 
-    struct TestKey(u64, u64);
+    /// Same layout as invocation status keys: partition key and a 16 bytes id
+    struct TestKey(u64, u128);
 
     impl EncodeTableKey for TestKey {
         const TABLE: TableKind = TableKind::InvocationStatus;
@@ -123,11 +124,11 @@ mod tests {
         fn serialize_to<B: BufMut>(&self, bytes: &mut B) {
             Self::KEY_KIND.serialize(bytes);
             bytes.put_u64(self.0);
-            bytes.put_u64(self.1);
+            bytes.put_u128(self.1);
         }
 
         fn serialized_length(&self) -> usize {
-            KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<u64>() * 2
+            KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<u64>() + std::mem::size_of::<u128>()
         }
     }
 
@@ -220,14 +221,22 @@ mod tests {
         assert_eq!(
             scan_mode(TableScan::RangeInclusive(
                 TestKey(1, 0),
-                TestKey(1, u64::MAX),
+                TestKey(1, u128::MAX),
+            )),
+            ScanMode::TotalOrder
+        );
+        // Same partition key, but the ids differ within the prefix extractor length
+        assert_eq!(
+            scan_mode(TableScan::RangeInclusive(
+                TestKey(1, 0),
+                TestKey(1, 1 << 64)
             )),
             ScanMode::TotalOrder
         );
     }
 
     #[test]
-    fn single_partition_inclusive_key_range_stays_within_prefix() {
+    fn inclusive_key_range_sharing_extractor_prefix_stays_within_prefix() {
         assert_eq!(
             scan_mode(TableScan::RangeInclusive(TestKey(1, 0), TestKey(1, 9))),
             ScanMode::WithinPrefix

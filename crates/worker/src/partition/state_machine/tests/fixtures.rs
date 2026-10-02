@@ -12,6 +12,7 @@ use bytes::Bytes;
 use googletest::prelude::*;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
 use restate_storage_api::journal_table::JournalEntry;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{
@@ -29,7 +30,6 @@ use restate_wal_protocol::v2;
 use restate_wal_protocol::v2::{Command, commands};
 use restate_worker_api::invoker::Effect;
 
-use crate::partition::state_machine::Action;
 use crate::partition::state_machine::tests::TestEnv;
 use crate::partition::types::InvokerEffectKind;
 
@@ -151,22 +151,23 @@ pub async fn mock_start_invocation_with_invocation_target(
 ) -> InvocationId {
     let invocation_id = InvocationId::mock_generate(&invocation_target);
 
-    let actions = state_machine
+    state_machine
         .apply(commands::InvokeCommand::test_envelope(
             ServiceInvocation::initialize(
                 invocation_id,
-                invocation_target.clone(),
+                invocation_target,
                 Source::Ingress(PartitionProcessorRpcRequestId::new()),
             ),
         ))
         .await;
 
     assert_that!(
-        actions,
-        contains(pat!(Action::Invoke {
-            invocation_id: eq(invocation_id),
-            invocation_target: eq(invocation_target),
-        }))
+        state_machine
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap(),
+        pat!(InvocationStatus::Invoked(_))
     );
 
     invocation_id

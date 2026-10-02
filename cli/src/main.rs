@@ -10,15 +10,17 @@
 
 #![allow(clippy::large_futures)]
 
-use cling::prelude::*;
 use std::io::Write;
+use std::process::ExitCode;
 
+use cling::prelude::*;
 use crossterm::execute;
-use restate_cli::CliApp;
 use rustls::crypto::aws_lc_rs;
 
+use restate_cli::{CliApp, Command};
+
 #[tokio::main(flavor = "multi_thread")]
-async fn main() -> ClingFinished<CliApp> {
+async fn main() -> ExitCode {
     // We need to install a crypto provider explicitly because the workspace hack activates the
     // ring as well aws_lc_rs rustls features. Unfortunately, these features are not additive. See
     // https://github.com/rustls/rustls/issues/1877. We can remove this line of code once all our
@@ -48,5 +50,29 @@ async fn main() -> ClingFinished<CliApp> {
         }
     });
 
-    Cling::parse_and_run().await
+    // Parse outside cling (as `Cling::parse_and_run` does) to keep the failed command
+    // around: it refines the next steps suggested on error.
+    let mut cmd = restate_cli::command();
+    let app = match cmd
+        .try_get_matches_from_mut(std::env::args_os())
+        .and_then(|matches| CliApp::from_arg_matches(&matches))
+    {
+        Ok(app) => app,
+        Err(err) => {
+            let err = err.format(&mut cmd);
+            return restate_cli::report_error(err.into(), None);
+        }
+    };
+    let command = app.cmd.clone();
+    let result = Cling::new(app).run().await.result();
+    if matches!(
+        command,
+        Command::KafkaClusters(_) | Command::Subscriptions(_)
+    ) {
+        restate_cli::kafka_integration_notice();
+    }
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => restate_cli::report_error(err, Some(&command)),
+    }
 }

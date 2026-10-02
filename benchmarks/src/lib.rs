@@ -18,7 +18,6 @@ use anyhow::anyhow;
 use futures_util::{TryFutureExt, future};
 use http::Uri;
 use http::header::CONTENT_TYPE;
-use pprof::flamegraph::Options;
 use tokio::net::TcpListener;
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
@@ -159,16 +158,6 @@ pub fn spawn_mock_service_endpoint(task_center_handle: &task_center::Handle) {
             .await
             .expect("mock service endpoint should start");
     });
-}
-
-pub fn flamegraph_options<'a>() -> Options<'a> {
-    #[allow(unused_mut)]
-    let mut options = Options::default();
-    if cfg!(target_os = "macos") {
-        // Ignore different thread origins to merge traces. This seems not needed on Linux.
-        options.base = vec!["_pthread_key_init_np".to_string(), "_main".to_string()];
-    }
-    options
 }
 
 pub fn restate_configuration() -> Configuration {

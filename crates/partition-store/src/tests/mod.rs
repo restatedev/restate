@@ -100,11 +100,7 @@ pub(crate) fn mock_random_service_invocation() -> Box<ServiceInvocation> {
 }
 
 pub(crate) fn mock_state_mutation(service_id: ServiceId) -> ExternalStateMutation {
-    ExternalStateMutation {
-        service_id,
-        version: None,
-        state: HashMap::default(),
-    }
+    ExternalStateMutation::new(service_id, None, HashMap::default())
 }
 
 pub(crate) async fn assert_stream_eq<T: Send + Debug + PartialEq + 'static>(

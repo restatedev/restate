@@ -24,7 +24,7 @@ clap = { workspace = true, features = ["derive", "env", "wrap_help", "color"] }
 clap_complete = { workspace = true }
 clap-verbosity-flag = { workspace = true }
 cling = { workspace = true }
-dirs = { version = "6.0" }
+dirs = { version = "7.0.0" }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 dialoguer = { workspace = true }

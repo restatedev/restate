@@ -21,6 +21,7 @@ use serde::Deserialize;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
+use restate_types::config::Configuration;
 use restate_types::deployment::{HttpDeploymentAddress, LambdaDeploymentAddress};
 use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision};
 use restate_types::schema;
@@ -105,14 +106,21 @@ where
         } => {
             validate_uri(&uri)?;
             let persisted_auth = if let Some(wire_auth) = auth {
+                validate_gcp_federation_admission(
+                    version,
+                    Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_gcp_workload_identity_federation_enabled(),
+                    &wire_auth,
+                )?;
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
                 validate_http_auth(&uri, headers_for_validation.as_ref())?;
-                Some(
-                    wire_auth
-                        .into_persisted(&uri)
-                        .map_err(|e| MetaApiError::InvalidField("auth.audience", e.to_string()))?,
-                )
+                let persisted = wire_auth
+                    .into_persisted(&uri)
+                    .map_err(|e| MetaApiError::InvalidField(e.field(), e.to_string()))?;
+                Some(persisted)
             } else {
                 None
             };
@@ -366,17 +374,20 @@ where
                 validate_uri(uri)?;
             }
 
-            // Validate the auth invariants against the post-merge (uri, additional_headers). PATCH
-            // preserves the persisted auth (see schema::registry::update_deployment); a PATCH that
-            // changes the URI to http:// or adds an X-Serverless-Authorization header must be
-            // rejected just like the equivalent register call would be.
+            // Validate the (uri, additional_headers) auth invariant against the post-merge
+            // values. PATCH preserves the persisted `auth` unchanged (see
+            // schema::registry::update_deployment) -- and `GoogleIdTokenAuth::new` guarantees any
+            // persisted auth already satisfies its own invariants, so only the uri/headers
+            // interaction needs re-checking here: a PATCH that changes the URI to http:// or adds
+            // an X-Serverless-Authorization header must be rejected just like the equivalent
+            // register call would be.
             let existing_deployment = state
                 .schema_registry
                 .get_deployment(deployment_id)
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
             if let DeploymentType::Http {
                 address: existing_uri,
-                auth: Some(_existing_auth),
+                auth: Some(_),
                 ..
             } = &existing_deployment.ty
             {
@@ -493,7 +504,8 @@ fn to_deployment_response(
             protocol_type,
             address,
             auth,
-        } => DeploymentResponse::Http {
+        } => DeploymentResponse::Http(HttpDeploymentResponse {
+            ty: HttpDeploymentType::Http,
             id,
             uri: address,
             protocol_type,
@@ -510,12 +522,13 @@ fn to_deployment_response(
                 .collect(),
             info,
             auth: auth.map(Into::into),
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DeploymentResponse::Lambda {
+        } => DeploymentResponse::Lambda(LambdaDeploymentResponse {
+            ty: LambdaDeploymentType::Lambda,
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -531,7 +544,7 @@ fn to_deployment_response(
                 .map(|(name, revision)| ServiceNameRevPair { name, revision })
                 .collect(),
             info,
-        },
+        }),
     }
 }
 
@@ -555,7 +568,8 @@ fn to_detailed_deployment_response(
             protocol_type,
             address,
             auth,
-        } => DetailedDeploymentResponse::Http {
+        } => DetailedDeploymentResponse::Http(HttpDetailedDeploymentResponse {
+            ty: HttpDeploymentType::Http,
             id,
             uri: address,
             protocol_type,
@@ -569,12 +583,13 @@ fn to_detailed_deployment_response(
             services,
             info,
             auth: auth.map(Into::into),
-        },
+        }),
         DeploymentType::Lambda {
             arn,
             assume_role_arn,
             compression,
-        } => DetailedDeploymentResponse::Lambda {
+        } => DetailedDeploymentResponse::Lambda(LambdaDetailedDeploymentResponse {
+            ty: LambdaDeploymentType::Lambda,
             id,
             arn,
             assume_role_arn: assume_role_arn.map(Into::into),
@@ -587,7 +602,7 @@ fn to_detailed_deployment_response(
             sdk_version,
             services,
             info,
-        },
+        }),
     }
 }
 
@@ -615,9 +630,65 @@ fn validate_uri(uri: &Uri) -> Result<(), MetaApiError> {
     Ok(())
 }
 
+#[allow(clippy::result_large_err)]
+fn validate_gcp_federation_admission(
+    version: AdminApiVersion,
+    feature_enabled: bool,
+    auth: &HttpAuth,
+) -> Result<(), MetaApiError> {
+    let requested = matches!(
+        auth,
+        HttpAuth::GoogleIdToken(auth) if auth.workload_identity_provider.is_some()
+    );
+    if !requested {
+        return Ok(());
+    }
+    // V5 prevents clients from mistaking an ignored provider field for ADC auth.
+    if version != AdminApiVersion::Unknown && version < AdminApiVersion::V5 {
+        return Err(MetaApiError::InvalidField(
+            "auth.workload_identity_provider",
+            "workload identity federation requires Admin API v5".to_owned(),
+        ));
+    }
+    if !feature_enabled {
+        return Err(MetaApiError::InvalidField(
+            "auth.workload_identity_provider",
+            "workload identity federation requires the server option \
+             experimental-enable-gcp-workload-identity-federation"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use bytestring::ByteString;
+
     use super::*;
+
+    fn federated_auth() -> HttpAuth {
+        HttpAuth::GoogleIdToken(GoogleIdTokenAuth {
+            impersonate_service_account: Some(ByteString::from_static(
+                "sa@example.iam.gserviceaccount.com",
+            )),
+            audience: None,
+            workload_identity_provider: Some(ByteString::from_static(
+                "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r",
+            )),
+        })
+    }
+
+    #[test]
+    fn federated_registration_requires_v5_and_the_experimental_feature() {
+        let auth = federated_auth();
+        validate_gcp_federation_admission(AdminApiVersion::V4, true, &auth)
+            .expect_err("Admin API v4 must reject the provider field");
+        validate_gcp_federation_admission(AdminApiVersion::V5, false, &auth)
+            .expect_err("the experimental feature must be enabled");
+        validate_gcp_federation_admission(AdminApiVersion::V5, true, &auth)
+            .expect("an enabled Admin API v5 server accepts federation");
+    }
 
     #[test]
     fn validate_uri_rejects_port_without_host() {

@@ -53,12 +53,13 @@ async fn run_send_with_delay(features: PersistedFeatures) {
     assert_that!(
         actions,
         all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true)
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true)
+                })))
             }))
         )
     );
@@ -72,14 +73,13 @@ async fn run_send_with_delay(features: PersistedFeatures) {
 
     assert_that!(
         actions,
-        all!(
-            contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(pat!(Action::IngressSubmitNotification {
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
                 request_id: eq(request_id),
                 execution_time: some(eq(wake_up_time)),
                 is_new_invocation: eq(true),
             })))
-        )
+        })))
     );
     assert_that!(
         test_env.storage.get_invocation_status(&invocation_id).await,
@@ -115,12 +115,13 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
     assert_that!(
         actions,
         all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true)
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true)
+                })))
             }))
         )
     );
@@ -139,14 +140,13 @@ async fn send_with_delay_where_experimental_feature_journal_table_v2_is_enabled_
 
     assert_that!(
         actions,
-        all!(
-            contains(matchers::actions::invoke_for_id(invocation_id)),
-            not(contains(pat!(Action::IngressSubmitNotification {
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
                 request_id: eq(request_id),
                 execution_time: some(eq(wake_up_time)),
                 is_new_invocation: eq(true),
             })))
-        )
+        })))
     );
     assert_that!(
         test_env.storage.get_invocation_status(&invocation_id).await,
@@ -188,12 +188,13 @@ async fn send_with_delay_to_locked_virtual_object() {
     assert_that!(
         actions,
         all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id),
-                execution_time: some(eq(wake_up_time)),
-                is_new_invocation: eq(true),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id),
+                    execution_time: some(eq(wake_up_time)),
+                    is_new_invocation: eq(true),
+                })))
             }))
         )
     );
@@ -217,14 +218,13 @@ async fn send_with_delay_to_locked_virtual_object() {
 
     assert_that!(
         actions,
-        all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            not(contains(pat!(Action::IngressSubmitNotification {
+        not(contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
                 request_id: eq(request_id),
                 execution_time: some(eq(wake_up_time)),
                 is_new_invocation: eq(true),
             })))
-        )
+        })))
     );
     assert_that!(
         test_env.storage.get_invocation_status(&invocation_id).await,
@@ -277,12 +277,13 @@ async fn send_with_delay_and_idempotency_key() {
     assert_that!(
         actions,
         all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
             contains(pat!(Action::RegisterTimer { .. })),
-            contains(pat!(Action::IngressSubmitNotification {
-                request_id: eq(request_id_1),
-                execution_time: eq(execution_time),
-                is_new_invocation: eq(true),
+            contains(pat!(Action::ReplyRpc {
+                reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
+                    request_id: eq(request_id_1),
+                    execution_time: eq(execution_time),
+                    is_new_invocation: eq(true),
+                })))
             }))
         )
     );
@@ -306,14 +307,13 @@ async fn send_with_delay_and_idempotency_key() {
         .await;
     assert_that!(
         actions,
-        all!(
-            not(contains(matchers::actions::invoke_for_id(invocation_id))),
-            contains(pat!(Action::IngressSubmitNotification {
+        contains(pat!(Action::ReplyRpc {
+            reply: pat!(RpcReply::Submitted(pat!(SubmittedInvocationNotification {
                 request_id: eq(request_id_2),
                 execution_time: eq(execution_time),
                 is_new_invocation: eq(false),
-            }))
-        )
+            })))
+        }))
     );
     test_env.shutdown().await;
 }

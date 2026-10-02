@@ -19,23 +19,39 @@ use convert_case::{Case, Casing};
 use futures::StreamExt;
 use octocrab::models::repos::Asset;
 use octocrab::repos::RepoHandler;
-use restate_cli_util::ui::console::input;
-use restate_cli_util::ui::stylesheet::Style;
+use serde_json::{Value, json};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 
-use crate::console::{Styled, c_println, choose};
+use restate_cli_util::ui::console::input;
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{CliContext, c_eprintln, c_tip};
 
+use crate::console::{Styled, c_println, c_title, choose};
+use crate::error::RestateCliError;
+use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
+
+/// Download an example project (aka template) into a new directory, or `--list` them
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_examples")]
+#[command(after_help = after_help!(
+    examples: [
+        "restate example --list --json",
+        "restate example typescript-hello-world --out ./hello",
+    ],
+))]
 pub struct Examples {
-    /// Output directory.
-    #[arg(long, alias = "out")]
+    /// List the available examples (grouped by language) without downloading anything.
+    /// Combine with --json for machine-readable output.
+    #[arg(long, short = 'l', conflicts_with_all = ["name", "output_directory"])]
+    list: bool,
+
+    /// Directory to download the example into
+    #[arg(long, visible_alias = "out")]
     output_directory: Option<PathBuf>,
 
-    /// Example name.
-    ///
-    /// If omitted, an interactive prompt will ask you which example to download.
+    /// Example name, as shown by `--list`. If omitted, you're asked to pick one, which fails
+    /// when prompting isn't possible (e.g. with --json)
     name: Option<String>,
 }
 
@@ -59,6 +75,12 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
     // ai-examples repo might not have releases yet, treat as empty
     let ai_examples_assets = ai_examples_release.map(|r| r.assets).unwrap_or_default();
 
+    // List-only mode: print the catalog without downloading anything.
+    if example_opts.list {
+        let languages = parse_available_examples(examples_assets, ai_examples_assets);
+        return list_examples(languages);
+    }
+
     let (selected_example, selected_repo) = if let Some(example) = &example_opts.name {
         // Check if the example exists, prefer examples repo if found in both
         let example_lowercase = example.to_lowercase();
@@ -74,10 +96,11 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
             (Some(asset), _) => (asset.clone(), ExampleRepo::Examples),
             (None, Some(asset)) => (asset.clone(), ExampleRepo::AiExamples),
             (None, None) => {
-                bail!(
-                    "Unknown example {}. Use `restate example` to navigate the list of examples.",
-                    example_lowercase
-                );
+                return Err(RestateCliError::not_found(format!(
+                    "Unknown example '{example_lowercase}'"
+                ))
+                .with_next_step("restate example --list", "see the available examples")
+                .into());
             }
         }
     } else {
@@ -96,22 +119,26 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
         (example.asset, example.repo)
     };
 
-    let output_dir = if let Some(out_dir) = &example_opts.output_directory {
-        out_dir.clone()
-    } else {
-        input(
-            "Output directory",
-            selected_example.name.trim_end_matches(".zip").to_owned(),
-        )?
-        .into()
+    let default_dir = selected_example.name.trim_end_matches(".zip");
+    let output_dir = match &example_opts.output_directory {
+        Some(out_dir) => out_dir.clone(),
+        None if !CliContext::get().can_prompt() => default_dir.into(),
+        None => input("Output directory", default_dir.to_owned())?.into(),
     };
+    if tokio::fs::try_exists(&output_dir).await? {
+        return Err(RestateCliError::bad_input(format!(
+            "Output directory {} already exists; pick another --output-directory or remove it",
+            output_dir.display()
+        ))
+        .into());
+    }
 
     let repo_handler = match selected_repo {
         ExampleRepo::Examples => examples_repo,
         ExampleRepo::AiExamples => ai_examples_repo,
     };
 
-    download_example(output_dir, repo_handler, selected_example).await
+    download_example(output_dir, repo_handler, selected_example, selected_repo).await
 }
 
 struct Language {
@@ -148,10 +175,71 @@ enum ExampleRepo {
     AiExamples,
 }
 
+impl ExampleRepo {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExampleRepo::Examples => "examples",
+            ExampleRepo::AiExamples => "ai-examples",
+        }
+    }
+}
+
 struct Example {
     display_name: String,
     asset: Asset,
     repo: ExampleRepo,
+}
+
+impl Example {
+    /// The identifier passed to `restate example <name>` (the asset name, no `.zip`).
+    fn id(&self) -> &str {
+        self.asset.name.trim_end_matches(".zip")
+    }
+}
+
+/// List the available examples grouped by language, honoring `--json`.
+fn list_examples(mut languages: Vec<Language>) -> Result<()> {
+    languages.sort_by(|a, b| a.display_name.cmp(&b.display_name));
+
+    let mut f = Formatter::new();
+    if let Some(example) = languages.iter().flat_map(|l| &l.examples).next() {
+        f.next_step(
+            &format!("restate example {}", example.id()),
+            "download that example (swap in any other listed name)",
+            IncludeFormatting::Yes,
+        );
+    }
+
+    if CliContext::get().json_output() {
+        let languages_json: Vec<Value> = languages
+            .iter()
+            .map(|language| {
+                let examples: Vec<Value> = language
+                    .examples
+                    .iter()
+                    .map(|example| {
+                        json!({
+                            "name": example.id(),
+                            "display_name": example.display_name,
+                            "repo": example.repo.as_str(),
+                        })
+                    })
+                    .collect();
+                json!({ "language": language.display_name, "examples": examples })
+            })
+            .collect();
+        f.value("templates", Field::new(Value::Array(languages_json)));
+        return f.finish();
+    }
+
+    for language in &languages {
+        c_title!("📦", &language.display_name);
+        for example in &language.examples {
+            c_println!("  {}  —  {}", example.id(), example.display_name);
+        }
+        c_println!();
+    }
+    f.finish()
 }
 
 impl fmt::Display for Example {
@@ -233,9 +321,10 @@ async fn download_example(
     out_dir_name: PathBuf,
     repo_handler: RepoHandler<'_>,
     asset: Asset,
+    repo: ExampleRepo,
 ) -> Result<()> {
-    // This fails if the directory already exists.
-    tokio::fs::create_dir(&out_dir_name)
+    let name = asset.name.trim_end_matches(".zip").to_owned();
+    tokio::fs::create_dir_all(&out_dir_name)
         .await
         .with_context(|| {
             format!(
@@ -243,7 +332,7 @@ async fn download_example(
                 out_dir_name.display()
             )
         })?;
-    c_println!("Created directory {}", out_dir_name.display());
+    c_eprintln!("Created directory {}", out_dir_name.display());
 
     let mut zip_out_file_path = PathBuf::from(&out_dir_name);
     zip_out_file_path.push("temp.zip");
@@ -261,7 +350,7 @@ async fn download_example(
             );
         }
     };
-    c_println!("Downloaded example zip in {}", zip_out_file_path.display());
+    c_eprintln!("Downloaded the example");
 
     // Unzip it
     if let Err(e) = unzip(&zip_out_file_path, &out_dir_name).await {
@@ -272,7 +361,7 @@ async fn download_example(
 
     // Remove the zip file
     if (tokio::fs::remove_file(&zip_out_file_path).await).is_err() {
-        c_println!(
+        c_eprintln!(
             "{} Couldn't cleanup the zip file {}",
             Styled(Style::Warn, "Warning:"),
             zip_out_file_path.display()
@@ -280,15 +369,29 @@ async fn download_example(
     }
 
     // Ready to rock!
-    c_println!(
-        "The example is ready in the directory {}",
-        Styled(Style::Success, out_dir_name.display())
+    let directory = std::path::absolute(&out_dir_name)?;
+    let readme = directory.join("README.md");
+    let mut f = Formatter::new();
+    f.detail(
+        "example",
+        &[
+            ("name", Field::new(name.as_str())),
+            (
+                "language",
+                Field::new(name.split('-').next().unwrap_or_default()),
+            ),
+            ("repo", Field::new(repo.as_str())),
+            (
+                "directory",
+                Field::styled(directory.display().to_string(), Style::Success),
+            ),
+            ("readme", Field::new(readme.display().to_string())),
+        ],
     );
-    c_println!(
-        "Look at the {}/README.md to get started!",
-        out_dir_name.display()
-    );
-
+    f.finish()?;
+    if !CliContext::get().json_output() {
+        c_tip!("Look at {} to get started!", readme.display());
+    }
     Ok(())
 }
 
