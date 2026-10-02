@@ -252,8 +252,8 @@ jobs:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
-  sdk-typescript-write-result-reference:
-    name: Run SDK-Typescript integration tests with Write Result Reference
+  sdk-typescript-write-output-table:
+    name: Run SDK-Typescript integration tests with Write Output Table
     permissions:
       contents: read
       issues: read
@@ -266,7 +266,7 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
-        RESTATE_EXPERIMENTAL_ENABLE_WRITE_RESULT_REFERENCE=true
+        RESTATE_experimental_enable_write_output_table=true
       testArtifactOutput: sdk-typescript-write-result-reference-test-report
 
   sdk-typescript-protocol-v7:
@@ -461,8 +461,8 @@ jobs:
                 - "dev.restate.sdktesting.tests.ForwardCompatibilityTest.*"
                 - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
-  e2e-write-result-reference:
-    name: Run E2E tests with Write Result Reference feature
+  e2e-write-output-table:
+    name: Run E2E tests with Write Output Table feature
     runs-on: warp-ubuntu-latest-x64-4x
     # we don't expect all tests to pass, that's why we continue on error
     continue-on-error: true
@@ -504,7 +504,7 @@ jobs:
           testArtifactOutput: e2e-test-vqueues-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
           envVars: |
-            RESTATE_EXPERIMENTAL_ENABLE_WRITE_RESULT_REFERENCE=true
+            RESTATE_experimental_enable_write_output_table=true
           # disable ForwardCompatibility tests, and only keep BackwardCompatibility
           exclusions: |
             exclusions:
