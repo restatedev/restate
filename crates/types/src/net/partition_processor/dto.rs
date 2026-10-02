@@ -288,7 +288,7 @@ pub struct InvocationOutput {
     invocation_id: Option<InvocationId>,
     #[bilrost(3)]
     completion_expiry_time: Option<MillisSinceEpoch>,
-    #[bilrost(oneof(4, 5))]
+    #[bilrost(oneof(4, 5, 6))]
     response: OutputResponse,
 }
 #[derive(bilrost::Oneof)]
@@ -304,6 +304,8 @@ pub(super) enum OutputResponse {
     },
     #[bilrost(tag(5))]
     Failure(InvocationError),
+    #[bilrost(tag(6), message)]
+    Gone,
 }
 impl From<invocation::client::InvocationOutput> for InvocationOutput {
     fn from(value: invocation::client::InvocationOutput) -> Self {
@@ -317,6 +319,7 @@ impl From<invocation::client::InvocationOutput> for InvocationOutput {
                     body,
                 },
                 InvocationOutputResponse::Failure(error) => OutputResponse::Failure(error.into()),
+                InvocationOutputResponse::Gone => OutputResponse::Gone,
             },
         }
     }
@@ -336,6 +339,7 @@ impl TryFrom<InvocationOutput> for crate::invocation::client::InvocationOutput {
                     InvocationOutputResponse::Success(target.try_into()?, body)
                 }
                 OutputResponse::Failure(error) => InvocationOutputResponse::Failure(error.into()),
+                OutputResponse::Gone => InvocationOutputResponse::Gone,
             },
         })
     }
