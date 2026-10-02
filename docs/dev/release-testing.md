@@ -43,6 +43,11 @@ Use automated results where they cover the scenario; test the remaining gaps. Ex
 
 - Test new or changed features, promoted experimental features, configuration, UI, and CLI/restatectl workflows.
 - Follow the documentation while testing; fix missing or confusing steps. Check upgrade guidance, configuration changes, and breaking-change notices.
+- Collect documentation gaps in a separate release documentation umbrella issue and stage fixes on the docs `release/X.Y` branch, following the [documentation staging process](release.md#staging-release-documentation).
+
+### Public APIs
+
+- Validate newly introduced or promoted non-experimental public APIs, including new request/response fields. Exercise successful requests and representative invalid inputs; check response bodies, status codes, and compatibility.
 
 ### Cloud and Kubernetes
 

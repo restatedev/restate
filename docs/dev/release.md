@@ -22,6 +22,8 @@ We follow [SemVer](https://semver.org/):
 
 Runtime and SDKs follow independent artifact versioning. Restate server and SDK compatibility is defined by the intersection of supported service protocol versions.
 
+Use `release/X.Y` for release branches across repositories (for example, `release/1.8`). Keep patch and release-candidate versions in tags.
+
 ## Pre-release
 
 Before releasing, make sure all the issues tagged with release-blocker have either been solved, or PRs are ready to solve them:
@@ -34,6 +36,15 @@ Check that the e2e tests are passing:
 * [Jepsen tests](https://github.com/restatedev/jepsen/actions)
 * [E2e verification runner](https://github.com/restatedev/e2e-verification-runner/actions)
 * [E2e tests](https://github.com/restatedev/e2e/actions/workflows/ci.yml)
+
+### Staging release documentation
+
+Prepare documentation alongside release testing in [docs-restate](https://github.com/restatedev/docs-restate):
+
+1. Create `release/X.Y` from docs `main` when release preparation starts.
+2. Target release-specific documentation PRs at `release/X.Y`. Keep changes individually reviewable.
+3. When refreshing generated references with the docs [pre-release workflow](https://github.com/restatedev/docs-restate/blob/main/.github/workflows/pre-release.yml), select the staging branch and a tagged runtime version. Check that the resulting PR targets the staging branch.
+4. Once the runtime release is available and the documentation is ready, merge a final PR from `release/X.Y` into docs `main` and delete the release branch.
 
 ## Releasing the Restate runtime
 
@@ -64,8 +75,8 @@ Repeat with an incremented `N` for every fix that needs validation. Update the r
 
 **Note:**
 Don't immediately create a release branch after a MAJOR/MINOR release.
-A release branch `release-MAJOR.MINOR` should only be created once a change to the storage formats, APIs or a new feature gets merged that should be shipped with the next MAJOR/MINOR release.
+A runtime maintenance branch `release/X.Y` should only be created once a change to the storage formats, APIs or a new feature gets merged that should be shipped with the next MAJOR/MINOR release.
 
 ## Post-release
 
-If you are releasing a new major/minor version of the runtime, please also create a new release of the [documentation](https://github.com/restatedev/docs-restate).
+If you are releasing a new major/minor version of the runtime, publish the staged [documentation](#staging-release-documentation) after the runtime release is available.
