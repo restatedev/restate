@@ -42,7 +42,9 @@ define_table!(sys_vqueues(
     /// Sequence number encoded in the queue ordering key.
     sequence_number: DataType::UInt64,
 
-    /// Identifier of the entry.
+    /// Resource identifier of the entry: an invocation ID or a state mutation
+    /// ID, without its sequence number. Use `canonical_id` to distinguish
+    /// incarnations of the same resource.
     ///
     /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
     /// `id` in `sys_invocation_status` for dynamic filter pushdown.
@@ -86,4 +88,8 @@ define_table!(sys_vqueues(
     /// Due to quirks in DataFusion, this should remain `LargeUtf8` to match
     /// `id` in `sys_deployment` for dynamic filter pushdown.
     deployment: DataType::LargeUtf8,
+
+    /// Canonical identifier of the entry: its resource ID followed by `_` and
+    /// its sequence number.
+    canonical_id: DataType::LargeUtf8,
 ));
