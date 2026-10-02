@@ -824,6 +824,69 @@ async fn inconsistent_state_mutation_cleanup() -> TestResult {
     Ok(())
 }
 
+/// A terminal failure reported by the invoker must classify ABORTED as cancelled in the retained
+/// vqueue entry, independently of the output table feature.
+#[test(restate_core::test)]
+async fn invoker_failure_retained_vqueue_status() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+
+    for (code, expected_status) in [
+        (codes::ABORTED, vqueue_table::Status::Cancelled),
+        (codes::INTERNAL, vqueue_table::Status::Failed),
+    ] {
+        let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+        test_env
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                completion_retention_duration: Duration::from_secs(120),
+                ..ServiceInvocation::mock()
+            }))
+            .await;
+
+        let entry_id = EntryId::from(invocation_id);
+        let header = test_env
+            .storage
+            .transaction()
+            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .await?
+            .expect("invocation must have a vqueue entry");
+        test_env
+            .apply_multiple([
+                run_decision(header.vqueue_id(), *header.entry_key()),
+                fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V4),
+                commands::InvokerEffectCommand::test_envelope(Effect {
+                    invocation_id,
+                    kind: InvokerEffectKind::Failed(InvocationError::new(code, "sdk error")),
+                }),
+            ])
+            .await;
+
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await?,
+            pat!(InvocationStatus::Completed(_))
+        );
+        let header = test_env
+            .storage
+            .transaction()
+            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .await?
+            .expect("retained invocation must keep its vqueue entry");
+        assert_eq!(header.stage(), Stage::Finished);
+        assert_eq!(header.status(), expected_status);
+    }
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;
