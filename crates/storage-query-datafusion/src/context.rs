@@ -19,7 +19,7 @@ use datafusion::execution::context::SQLOptions;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::SessionContext;
 use tokio::time::Instant;
-use tracing::instrument;
+use tracing::{info, instrument};
 
 use restate_core::Metadata;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
@@ -36,6 +36,7 @@ use restate_util_string::ReString;
 use crate::catalog::{ClusterTables, RegisterTable, TableInventoryBuilder, UserTables};
 use crate::diagnostics::QueryDiagnosticStream;
 use crate::environment::DataFusionEnv;
+use crate::sql::redact_statement;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
 
@@ -101,6 +102,7 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
         let planning_started = Instant::now();
         let state = self.ctx.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
+        let redacted_sql = redact_statement(&statement);
         let plan = state.statement_to_plan(statement).await?;
         SQLOptions::new()
             .with_allow_ddl(false)
@@ -113,8 +115,10 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
         let metadata = QueryMetadata {
             session_id: self.session_id.clone(),
             headers: self.opts.headers.clone(),
+            redacted_sql,
             planning_duration: planning_started.elapsed(),
         };
+        info!(target: "query_engine", session = %metadata.session_id, headers = ?metadata.headers, query = %metadata.redacted_sql, "Executing query");
         let node_warnings = collect_node_warnings(&physical_plan);
         let execution_started = Instant::now();
         let stream = execute_stream(Arc::clone(&physical_plan), task_ctx)?;
@@ -264,6 +268,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.metadata.session_id.as_str(), session.session_id());
+        assert_eq!(
+            result.metadata.redacted_sql.as_str(),
+            "SELECT SUM(n) FROM (VALUES (?), (?), (?)) AS t (n)"
+        );
         assert_eq!(result.metadata.headers["x-restate-query-client"], "ui");
         assert_eq!(
             result.metadata.headers["x-restate-query-origin"],
