@@ -129,6 +129,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         SerdesClient::new(service_client.clone()),
         ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
+        restate_storage_query_api::AdminUser::noop_query_engine(),
     );
 
     TaskCenter::spawn(

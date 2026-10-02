@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
@@ -21,7 +23,7 @@ use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, InvocationIdFilter};
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::{
@@ -37,16 +39,10 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 const NAME: &str = "sys_invocation_status";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        StatusScanner,
-    )) as Arc<dyn ScanPartition>;
-
     let schema = SysInvocationStatusBuilder::schema();
     let statistics = TableStatisticsBuilder::new(schema.clone())
         .with_num_rows_estimate(RowEstimate::Large)
@@ -59,13 +55,25 @@ pub(crate) fn register_self(
         partition_selector,
         schema,
         sys_invocation_status_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::default()
             .with_scope_or_service_key("scope", "target_service_key")
             .with_grouped_invocation_id("id"),
     )
     .with_statistics(statistics.build());
-    ctx.register_partitioned_table(NAME, Arc::new(status_table))
+    ctx.register_table(NAME, Arc::new(status_table)).map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        StatusScanner,
+    )) as Arc<dyn ScanPartition>;
+
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]
