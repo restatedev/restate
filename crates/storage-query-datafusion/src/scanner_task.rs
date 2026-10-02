@@ -29,7 +29,6 @@ use restate_types::net::remote_query_scanner::{
     ScannerBatch, ScannerFailure, ScannerId,
 };
 
-use crate::context::QueryContext;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::remote_query_scanner_server::ScannerMap;
 use crate::{decode_expr, decode_schema, encode_record_batch};
@@ -59,7 +58,7 @@ impl ScannerTask {
     /// Spawns the scanner task and registers the scanner in the scanners map.
     pub fn spawn(
         scanner_id: ScannerId,
-        query_context: &QueryContext,
+        ctx: Arc<TaskContext>,
         remote_scanner_manager: &RemoteScannerManager,
         peer: GenerationalNodeId,
         scanners: &Arc<ScannerMap>,
@@ -69,7 +68,6 @@ impl ScannerTask {
             .local_partition_scanner(&request.table)
             .context("not registered scanner for a table")?;
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
-        let ctx = query_context.task_ctx();
 
         let predicate = request
             .predicate
