@@ -29,6 +29,7 @@ use crate::ui::fmt::{Field, Formatter, IfEmpty, OutputFormatter};
     examples: [
         "restate state get Cart u1",
         "restate state get Cart u1 --plain | jq .items",
+        "restate state get Cart u1 --scope tenant-a",
     ],
     learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
 ))]
@@ -47,6 +48,11 @@ pub struct Get {
     /// Virtual object or workflow key
     key: String,
 
+    /// Scope of the virtual object or workflow, as set by the scoped ingress endpoint
+    /// (`/restate/scope/<scope>/...`). Omit to target the unscoped instance
+    #[clap(long)]
+    scope: Option<String>,
+
     #[clap(flatten)]
     watch: Watch,
 }
@@ -56,7 +62,8 @@ pub async fn run_get(State(env): State<CliEnv>, opts: &Get) -> Result<()> {
 }
 
 async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
-    let current_state = get_current_state(env, &opts.service, &opts.key, true).await?;
+    let current_state =
+        get_current_state(env, &opts.service, &opts.key, opts.scope.as_deref(), true).await?;
     if current_state.is_empty() {
         return Err(RestateCliError::not_found(format!(
             "State not found for {}/{}",
@@ -80,6 +87,7 @@ async fn get(env: &CliEnv, opts: &Get) -> Result<()> {
         f.detail(
             "info",
             &[
+                ("scope", Field::new(opts.scope.as_deref())),
                 ("service", Field::new(opts.service.as_str())),
                 ("key", Field::new(opts.key.as_str())),
             ],

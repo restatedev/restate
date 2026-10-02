@@ -17,7 +17,7 @@ use cling::Collect;
 
 use restate_types::config::DEFAULT_MESSAGE_SIZE_LIMIT;
 use restate_types::net::connect_opts::{
-    CommonClientConnectionOptions, GrpcConnectionOptions, MESSAGE_SIZE_OVERHEAD,
+    CommonClientConnectionOptions, GrpcConnectionOptions, Http2FlowControl, MESSAGE_SIZE_OVERHEAD,
 };
 
 const DEFAULT_CONNECT_TIMEOUT: u64 = 3_000;
@@ -165,8 +165,8 @@ impl CommonClientConnectionOptions for NetworkOpts {
         Duration::from_millis(self.connect_timeout)
     }
 
-    fn http2_adaptive_window(&self) -> bool {
-        true
+    fn http2_flow_control(&self) -> Http2FlowControl {
+        Http2FlowControl::Adaptive
     }
 }
 

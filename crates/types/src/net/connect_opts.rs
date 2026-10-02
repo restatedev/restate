@@ -26,13 +26,29 @@ pub trait GrpcConnectionOptions {
     /// wrapping when transmitted over the internal network.
     fn message_size_limit(&self) -> NonZeroUsize;
 }
+
+/// HTTP/2 flow control of a client connection.
+///
+/// hyper treats the two modes as mutually exclusive: enabling adaptive mode resets both windows
+/// to 64 KiB, and setting a window size turns adaptive mode off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Http2FlowControl {
+    /// Windows start at 64 KiB and grow with the measured bandwidth-delay product.
+    Adaptive,
+    /// Fixed windows, in bytes.
+    Fixed {
+        stream_window: u32,
+        connection_window: u32,
+    },
+}
+
 /// Helper trait to extract common client connection options from different configuration types.
 pub trait CommonClientConnectionOptions: GrpcConnectionOptions {
     fn connect_timeout(&self) -> Duration;
     fn request_timeout(&self) -> Option<Duration>;
     fn keep_alive_interval(&self) -> Duration;
     fn keep_alive_timeout(&self) -> Duration;
-    fn http2_adaptive_window(&self) -> bool;
+    fn http2_flow_control(&self) -> Http2FlowControl;
 }
 
 impl<T: GrpcConnectionOptions> GrpcConnectionOptions for &T {
@@ -61,8 +77,8 @@ where
         (*self).keep_alive_timeout()
     }
 
-    fn http2_adaptive_window(&self) -> bool {
-        (*self).http2_adaptive_window()
+    fn http2_flow_control(&self) -> Http2FlowControl {
+        (*self).http2_flow_control()
     }
 }
 
@@ -95,8 +111,8 @@ where
         (**self).keep_alive_timeout()
     }
 
-    fn http2_adaptive_window(&self) -> bool {
-        (**self).http2_adaptive_window()
+    fn http2_flow_control(&self) -> Http2FlowControl {
+        (**self).http2_flow_control()
     }
 }
 
@@ -126,8 +142,12 @@ impl CommonClientConnectionOptions for NetworkingOptions {
         self.http2_keep_alive_timeout.into()
     }
 
-    fn http2_adaptive_window(&self) -> bool {
-        self.http2_adaptive_window
+    fn http2_flow_control(&self) -> Http2FlowControl {
+        // Matches the fabric listener (`net_util::run_listener_loop`), which uses fixed windows.
+        Http2FlowControl::Fixed {
+            stream_window: self.stream_window_size(),
+            connection_window: self.connection_window_size(),
+        }
     }
 }
 
@@ -154,7 +174,7 @@ impl CommonClientConnectionOptions for MetadataClientOptions {
         self.keep_alive_timeout.into()
     }
 
-    fn http2_adaptive_window(&self) -> bool {
-        true
+    fn http2_flow_control(&self) -> Http2FlowControl {
+        Http2FlowControl::Adaptive
     }
 }

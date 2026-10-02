@@ -33,7 +33,7 @@ use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
 use restate_types::net::address::{AdvertisedAddress, GrpcPort};
 use restate_types::net::address::{ListenerPort, PeerNetAddress};
-use restate_types::net::connect_opts::CommonClientConnectionOptions;
+use restate_types::net::connect_opts::{CommonClientConnectionOptions, Http2FlowControl};
 use restate_types::net::listener::Listeners;
 
 use crate::network::tls::{TlsClientConfig, TlsServerConfig};
@@ -232,11 +232,12 @@ pub fn create_tonic_channel<
     }
 }
 
-fn apply_options<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
+/// Applies the common client options, including HTTP/2 flow control, to a tonic endpoint.
+pub(crate) fn apply_options<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
     endpoint: Endpoint,
     options: &T,
 ) -> Endpoint {
-    if let Some(request_timeout) = options.request_timeout() {
+    let endpoint = if let Some(request_timeout) = options.request_timeout() {
         endpoint.timeout(request_timeout)
     } else {
         endpoint
@@ -244,9 +245,21 @@ fn apply_options<T: CommonClientConnectionOptions + Send + Sync + ?Sized>(
     .connect_timeout(options.connect_timeout())
     .http2_keep_alive_interval(options.keep_alive_interval())
     .keep_alive_timeout(options.keep_alive_timeout())
-    .http2_adaptive_window(options.http2_adaptive_window())
     // this true by default, but this is to guard against any change in defaults
-    .tcp_nodelay(true)
+    .tcp_nodelay(true);
+
+    // tonic applies the window sizes before adaptive mode, and enabling adaptive mode resets both
+    // windows to 64 KiB, so each mode sets only its own knobs.
+    match options.http2_flow_control() {
+        Http2FlowControl::Adaptive => endpoint.http2_adaptive_window(true),
+        Http2FlowControl::Fixed {
+            stream_window,
+            connection_window,
+        } => endpoint
+            .http2_adaptive_window(false)
+            .initial_stream_window_size(stream_window)
+            .initial_connection_window_size(connection_window),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -351,7 +364,8 @@ where
                 builder
                     .http2()
                     .timer(hyper_util::rt::TokioTimer::default())
-                    .adaptive_window(network_options.http2_adaptive_window)
+                    // Fixed windows, as on the client end (`GrpcConnector`).
+                    .adaptive_window(false)
                     .initial_connection_window_size(network_options.connection_window_size())
                     .initial_stream_window_size(network_options.stream_window_size())
                     .keep_alive_interval(Some(network_options.http2_keep_alive_interval.into()))

@@ -479,6 +479,12 @@ impl<P: ListenerPort> Listeners<P> {
         tokio::select! {
             Some(tcp_connection) = tcp => {
                 let (tcp_stream, tcp_addr) = tcp_connection?;
+                // Responses are written as several small HTTP/2 or HTTP/1.1 frames. With Nagle's
+                // algorithm on, a small write behind an unacknowledged one waits for the peer's
+                // delayed ACK (40 ms on Linux). Outgoing connections disable it as well.
+                if let Err(err) = tcp_stream.set_nodelay(true) {
+                    debug!(%err, "Failed to set TCP_NODELAY on accepted connection from {tcp_addr}");
+                }
                 Ok((Either::Left(tcp_stream), SocketAddress::Socket(tcp_addr)))
             },
             Some(unix_connection) = uds => {

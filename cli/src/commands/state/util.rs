@@ -19,32 +19,24 @@ use base64::engine::{Engine, GeneralPurpose, GeneralPurposeConfig};
 use bytes::Bytes;
 use comfy_table::{Cell, Table};
 use itertools::Itertools;
-use restate_cli_util::c_warn;
-use serde::Deserialize;
 use serde_json::Value;
 
 use restate_admin_rest_model::services::ModifyServiceStateRequest;
+use restate_cli_util::c_warn;
 use restate_cli_util::ui::console::StyledTable;
 use restate_types::invocation::ServiceType;
 use restate_types::state_mut::StateMutationVersion;
-use serde_with::serde_as;
 
 use crate::cli_env::CliEnv;
-use crate::clients::{AdminClient, AdminClientInterface, ClientError};
+use crate::clients::datafusion_helpers::get_state_keys;
+use crate::clients::{AdminClient, AdminClientInterface, ClientError, DataFusionHttpClient};
 use crate::error::RestateCliError;
-
-#[serde_as]
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-pub struct StateEntriesQueryResult {
-    key: Option<String>,
-    #[serde_as(as = "Option<serde_with::hex::Hex>")]
-    value: Option<Vec<u8>>,
-}
 
 pub(crate) async fn get_current_state(
     env: &CliEnv,
     service: &str,
     key: &str,
+    scope: Option<&str>,
     allow_missing_service: bool,
 ) -> anyhow::Result<HashMap<String, Bytes>> {
     //
@@ -71,21 +63,12 @@ pub(crate) async fn get_current_state(
     //
     // 1. get the key-value pairs
     //
-    let sql_client = crate::clients::DataFusionHttpClient::from(client);
-    let sql = format!(
-        "select key, value from state where service_name = '{service}' and service_key = '{key}' ;"
-    );
-
-    let query_result_iter = sql_client
-        .run_json_query::<StateEntriesQueryResult>(sql)
-        .await?;
-    //
-    // 2. convert the state to a map from str keys -> byte values.
-    //
-    let mut user_state = HashMap::new();
-    for row in query_result_iter {
-        user_state.insert(row.key.expect("key"), row.value.expect("value").into());
-    }
+    let sql_client = DataFusionHttpClient::from(client);
+    let user_state = get_state_keys(&sql_client, service, Some(key), scope)
+        .await?
+        .into_values()
+        .next()
+        .unwrap_or_default();
 
     if let Some(err) = missing_service {
         // Without any leftover state, the unknown service is the actual failure.
@@ -105,20 +88,28 @@ pub(crate) async fn update_state(
     expected_version: Option<String>,
     service: &str,
     service_key: &str,
+    scope: Option<&str>,
     new_state: HashMap<String, Bytes>,
 ) -> anyhow::Result<()> {
-    // TODO(tillrohrmann): allow CLI state commands to specify scope
     let req = ModifyServiceStateRequest {
         version: expected_version,
         new_state,
         object_key: service_key.to_string(),
-        scope: None,
+        scope: scope.map(str::to_owned),
     };
 
     let client = AdminClient::new(env).await?;
     let _ = client.patch_state(service, req).await?.success_or_error()?;
 
     Ok(())
+}
+
+/// The `restate state get` command that shows the state of the given key.
+pub(crate) fn state_get_command(service: &str, key: &str, scope: Option<&str>) -> String {
+    match scope {
+        Some(scope) => format!("restate state get {service} {key} --scope {scope}"),
+        None => format!("restate state get {service} {key}"),
+    }
 }
 
 pub(crate) fn compute_version(user_state: &HashMap<String, Bytes>) -> String {

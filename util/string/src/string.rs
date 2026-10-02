@@ -440,6 +440,15 @@ impl From<ReString> for opentelemetry::StringValue {
     }
 }
 
+impl From<ReString> for Arc<str> {
+    fn from(value: ReString) -> Self {
+        match value.0 {
+            Inner::RefCounted(s) => s,
+            Inner::Inlined(s) => s.into(),
+        }
+    }
+}
+
 impl From<Arc<str>> for ReString {
     #[inline]
     fn from(s: Arc<str>) -> Self {
@@ -767,6 +776,22 @@ mod tests {
         let r = ReString::new(LONG);
         assert!(r.is_heap_allocated());
         assert_eq!(r.as_str(), LONG);
+    }
+
+    #[test]
+    fn into_arc_preserves_content_and_reuses_shared_storage() {
+        for value in [
+            ReString::from_static(""),
+            ReString::from_static("short"),
+            ReString::from_static(LONG),
+        ] {
+            let expected = value.as_str().to_owned();
+            let actual: Arc<str> = value.into();
+            assert_eq!(actual.as_ref(), expected);
+        }
+        let backing: Arc<str> = Arc::from(LONG);
+        let actual: Arc<str> = ReString::from(Arc::clone(&backing)).into();
+        assert!(Arc::ptr_eq(&backing, &actual));
     }
 
     /// Every constructor that may receive heap content must promote to

@@ -49,6 +49,11 @@ pub struct Edit {
 
     /// Virtual object or workflow key
     key: String,
+
+    /// Scope of the virtual object or workflow, as set by the scoped ingress endpoint
+    /// (`/restate/scope/<scope>/...`). Omit to target the unscoped instance
+    #[clap(long)]
+    scope: Option<String>,
 }
 
 pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
@@ -56,7 +61,8 @@ pub async fn run_edit(State(env): State<CliEnv>, opts: &Edit) -> Result<()> {
 }
 
 async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
-    let current_state = get_current_state(env, &opts.service, &opts.key, false).await?;
+    let current_state =
+        get_current_state(env, &opts.service, &opts.key, opts.scope.as_deref(), false).await?;
     let current_version = compute_version(&current_state);
 
     let tempdir = tempdir().context("unable to create a temporary directory")?;
@@ -84,6 +90,9 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
 
     let mut table = Table::new_styled();
     table.set_styled_header(vec!["", ""]);
+    if let Some(scope) = &opts.scope {
+        table.add_row(vec![Cell::new("Scope"), Cell::new(scope)]);
+    }
     table.add_row(vec![Cell::new("Service"), Cell::new(&opts.service)]);
     table.add_row(vec![Cell::new("Key"), Cell::new(&opts.key)]);
     table.add_row(vec![Cell::new("Force?"), Cell::new(opts.force)]);
@@ -118,7 +127,15 @@ async fn edit(env: &CliEnv, opts: &Edit) -> Result<()> {
     } else {
         Some(current_version)
     };
-    update_state(env, version, &opts.service, &opts.key, modified_state).await?;
+    update_state(
+        env,
+        version,
+        &opts.service,
+        &opts.key,
+        opts.scope.as_deref(),
+        modified_state,
+    )
+    .await?;
 
     //
     // done

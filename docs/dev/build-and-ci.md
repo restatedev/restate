@@ -111,7 +111,9 @@ The dev-tools image is versioned and pinned in consuming workflows. When updatin
 
 ### Main CI Pipeline (`ci.yml`)
 
-Triggered on: PRs, pushes to `main` and `release-*` branches, and as part of releases.
+Triggered on: PRs, pushes to `main` and `release/*` branches, and as part of releases. Existing `release-*` maintenance branches remain supported during the naming transition.
+
+`ci.yml` is maintained directly. Cargo-dist generates `release.yml`, which calls `ci.yml` through the `local-artifacts-jobs = ["./ci", ...]` configuration in `dist-workspace.toml`.
 
 **Jobs:**
 
