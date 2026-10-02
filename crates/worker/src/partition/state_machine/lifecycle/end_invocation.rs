@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use assert2::assert;
-use restate_storage_api::output_table::WriteOutputTable;
+use restate_storage_api::output_table::WriteInvocationOutputTable;
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
@@ -176,7 +176,7 @@ where
         + WriteTimerTable
         + ReadPromiseTable
         + WritePromiseTable
-        + WriteOutputTable,
+        + WriteInvocationOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -258,7 +258,7 @@ where
             };
 
             if is_write_output_table_enabled && !completion_retention.is_zero() {
-                ctx.storage.put_output(&invocation_id, &output)?;
+                ctx.storage.put_invocation_output(&invocation_id, &output)?;
             }
 
             if let (

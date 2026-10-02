@@ -25,7 +25,7 @@ use super::*;
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationStatusRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadOutputTable,
+    Storage: ReadInvocationStatusTable + ReadInvocationOutputTable,
 {
     async fn handle(
         self,
@@ -50,7 +50,7 @@ async fn handle<S>(
     invocation_id: &InvocationId,
 ) -> Result<GetInvocationStatusRpcResponse, StorageError>
 where
-    S: ReadInvocationStatusTable + ReadOutputTable,
+    S: ReadInvocationStatusTable + ReadInvocationOutputTable,
 {
     let invocation_status = storage.get_invocation_status(invocation_id).await?;
 
@@ -96,7 +96,7 @@ where
                 // since we have this already.
                 // Currently we have to get the full failure output to extract the full
                 // error.
-                match storage.get_output(invocation_id).await? {
+                match storage.get_invocation_output(invocation_id).await? {
                     None => GetInvocationStatusRpcResponse::NotFound,
                     Some(result) => {
                         let ResponseResult::Failure(error) = result else {

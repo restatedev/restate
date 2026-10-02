@@ -9,7 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::output_table::ReadOutputTable;
+use restate_storage_api::output_table::ReadInvocationOutputTable;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
@@ -28,7 +28,7 @@ use super::*;
 
 impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
-    TStorage: ReadInvocationStatusTable + ReadOutputTable,
+    TStorage: ReadInvocationStatusTable + ReadInvocationOutputTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -73,7 +73,7 @@ where
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationOutputRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadOutputTable,
+    Storage: ReadInvocationStatusTable + ReadInvocationOutputTable,
 {
     async fn handle(
         mut self,

@@ -29,7 +29,7 @@ use std::collections::VecDeque;
 use metrics::counter;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::output_table::WriteOutputTable;
+use restate_storage_api::output_table::WriteInvocationOutputTable;
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_worker_api::processor::{FsmAccess, PartitionFeatures};
 use tracing::debug;
@@ -119,7 +119,7 @@ where
     S: WriteInboxTable
         + WriteVirtualObjectStatusTable
         + WriteJournalEventsTable
-        + WriteOutputTable
+        + WriteInvocationOutputTable
         + WriteJournalTable
         + ReadJournalTable
         + journal_table_v1::WriteJournalTable
