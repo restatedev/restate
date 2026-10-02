@@ -18,10 +18,11 @@ use serde_json::Value;
 use restate_cli_util::ui::console::Styled;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, c_println};
+use restate_types::Scope;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::get_state_keys;
-use crate::commands::state::util::{compute_version, update_state};
+use crate::commands::state::util::{compute_version, state_get_command, update_state};
 use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
 /// Delete all the K/V state of a virtual object or workflow, or of one of its keys.
@@ -37,6 +38,7 @@ use crate::ui::fmt::{DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outpu
     examples: [
         "restate state clear Cart/u1 --dry-run",
         "restate state clear Cart --yes     # all Cart objects, whatever their key",
+        "restate state clear Cart/u1 --scope tenant-a --yes",
     ],
     learn_more: "https://docs.restate.dev/foundations/key-concepts#consistent-state",
 ))]
@@ -48,6 +50,11 @@ pub struct Clear {
     /// Apply even if the state changed since it was read, overwriting those changes
     #[clap(long, short)]
     force: bool,
+
+    /// Scope of the virtual object or workflow, as set by the scoped ingress endpoint
+    /// (`/restate/scope/<scope>/...`). Omit to target the unscoped instance
+    #[clap(long)]
+    scope: Option<String>,
 
     #[clap(flatten)]
     dry_run: DryRun,
@@ -69,7 +76,7 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
     };
 
     #[allow(clippy::mutable_key_type)]
-    let services_state = get_state_keys(&sql_client, svc, key).await?;
+    let services_state = get_state_keys(&sql_client, svc, key, opts.scope.as_deref()).await?;
     let json = CliContext::get().json_output();
     if services_state.is_empty() {
         let mut f = Formatter::new();
@@ -126,12 +133,17 @@ async fn clear(env: &CliEnv, opts: &Clear) -> Result<()> {
             version,
             &svc_id.service_name,
             &svc_id.key,
+            svc_id.scope.as_ref().map(Scope::as_str),
             HashMap::default(),
         )
         .await?;
         if single_key {
             f.next_step(
-                &format!("restate state get {} {}", svc_id.service_name, svc_id.key),
+                &state_get_command(
+                    &svc_id.service_name,
+                    &svc_id.key,
+                    svc_id.scope.as_ref().map(Scope::as_str),
+                ),
                 "check the state once the mutation is processed",
                 IncludeFormatting::Yes,
             );
