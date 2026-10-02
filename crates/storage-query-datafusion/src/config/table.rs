@@ -13,6 +13,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::TableReference;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
@@ -31,6 +32,7 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 use crate::table_util::Builder;
 
+// Also used as the wire scanner identifier; only SQL registration is schema-qualified.
 pub(crate) const TABLE_NAME: &str = "config";
 
 pub fn register_self(
@@ -48,8 +50,11 @@ pub fn register_self(
         local_scanner,
         TABLE_NAME,
     );
-    ctx.register_table(TABLE_NAME, Arc::new(config_table))
-        .map(|_| ())
+    ctx.register_table(
+        TableReference::full("restate", "cluster", TABLE_NAME),
+        Arc::new(config_table),
+    )
+    .map(|_| ())
 }
 
 pub fn create_scanner(metadata: Metadata, config: Live<Configuration>) -> Arc<dyn Scan> {
