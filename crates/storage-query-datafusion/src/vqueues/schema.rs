@@ -12,7 +12,11 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(sys_vqueues(
+define_table!(
+    /// Entries of each vqueue, by stage.
+    ///
+    /// One row per entry in a vqueue stage (inbox, running, paused, suspended or finished).
+    sys_vqueues(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

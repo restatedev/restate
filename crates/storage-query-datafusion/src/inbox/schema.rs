@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_inbox(partition_key));
 
-define_table!(sys_inbox(
+define_table!(
+    /// Invocations queued for a Virtual Object or Workflow key.
+    ///
+    /// Only one invocation runs at a time per key; the others wait here, ordered by `sequence_number`.
+    sys_inbox(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 

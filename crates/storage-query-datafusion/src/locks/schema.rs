@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_locks(partition_key));
 
-define_table!(sys_locks(
+define_table!(
+    /// Locks currently held on Virtual Object keys.
+    ///
+    /// One row per lock, with when it was acquired and the invocation (or other operation) holding it.
+    sys_locks(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(state(partition_key));
 
-define_table!(state(
+define_table!(
+    /// State of Virtual Objects and Workflows.
+    ///
+    /// One row per state key of each Virtual Object or Workflow instance.
+    state(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 

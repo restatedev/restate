@@ -14,7 +14,11 @@ use datafusion::arrow::datatypes::DataType;
 
 define_sort_order!(sys_promise(partition_key));
 
-define_table!(sys_promise(
+define_table!(
+    /// Durable promises of Workflows.
+    ///
+    /// One row per promise of a workflow instance, with its completion value or failure once completed.
+    sys_promise(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 

@@ -12,7 +12,11 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(sys_rules(
+define_table!(
+    /// Rules that limit concurrency.
+    ///
+    /// Each rule matches invocations by pattern and can cap how many of them run at the same time.
+    sys_rules(
     /// Rule pattern in canonical display form (e.g. `scope/*/tenant`).
     pattern: DataType::LargeUtf8,
 

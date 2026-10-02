@@ -16,7 +16,11 @@ use datafusion::arrow::datatypes::DataType;
 // than merged. We accept this compromise while the deprecated V1 journal is phased out.
 define_sort_order!(sys_journal(partition_key));
 
-define_table!(sys_journal (
+define_table!(
+    /// Journal entries of invocations.
+    ///
+    /// The journal records the steps an invocation took (calls, sleeps, state access, promises, ...), one row per entry, ordered by `index`.
+    sys_journal(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 
