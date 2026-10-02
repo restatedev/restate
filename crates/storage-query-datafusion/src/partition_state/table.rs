@@ -12,35 +12,31 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::TableReference;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::cluster::cluster_state::LegacyClusterState;
 use tokio::sync::mpsc::Sender;
-
 use tokio::sync::watch;
+
+use restate_types::cluster::cluster_state::LegacyClusterState;
 
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 use super::row::append_partition_row;
-use super::schema::PartitionStateBuilder;
+use super::schema::{PartitionStateBuilder, PartitionStateTable};
 
-pub fn register_self(
-    ctx: &SessionContext,
-    watch: watch::Receiver<Arc<LegacyClusterState>>,
-) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
-        PartitionStateBuilder::schema(),
-        Arc::new(PartitionStateScanner { watch }),
-    );
-    ctx.register_table(
-        TableReference::full("restate", "cluster", "partition_state"),
-        Arc::new(table),
-    )
-    .map(|_| ())
+impl PartitionStateTable {
+    pub(crate) fn create_provider(
+        watch: watch::Receiver<Arc<LegacyClusterState>>,
+    ) -> Arc<dyn TableProvider> {
+        let table = GenericTableProvider::new(
+            PartitionStateBuilder::schema(),
+            Arc::new(PartitionStateScanner { watch }),
+        );
+        Arc::new(table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]
