@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use ahash::{HashMap, HashMapExt};
 use anyhow::{Context, anyhow, bail};
+use arc_swap::ArcSwap;
 use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
 use object_store::{
@@ -32,7 +33,7 @@ use url::Url;
 use restate_clock::WallClock;
 use restate_core::Metadata;
 use restate_object_store_util::create_object_store_client;
-use restate_types::config::SnapshotsOptions;
+use restate_types::config::{Configuration, SnapshotsOptions};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
@@ -58,7 +59,12 @@ use super::{
 /// - `[<prefix>/]<partition_id>/{lsn}_{snapshot_id}/*.sst` - data files (explicitly named in `metadata.json`)
 #[derive(Clone)]
 pub struct SnapshotRepository {
-    object_store: Arc<dyn ObjectStore>,
+    /// Swapped out in the background when the destination's credentials/options change via a
+    /// configuration reload. Load a snapshot of the current client with `load_full()` at the
+    /// start of each operation rather than re-loading on every access, so that a single
+    /// multi-request operation (e.g. uploading all files of a snapshot) sees a consistent
+    /// client throughout.
+    object_store: Arc<ArcSwap<dyn ObjectStore>>,
     destination: Url,
     prefix: ObjectPath,
     staging_dir: PathBuf,
@@ -323,12 +329,16 @@ impl SnapshotRepository {
             &snapshots_options.object_store_retry_policy,
         )
         .await?;
+        let object_store: Arc<ArcSwap<dyn ObjectStore>> =
+            Arc::new(ArcSwap::new(object_store));
 
         // Best-effort cleanup of leftover snapshot staging directories from a previous run
         // (e.g. downloads interrupted by a hard crash mid-import, which the per-download RAII
         // guard cannot clean up). Safe here because no downloads are in flight at startup.
         // See https://github.com/restatedev/restate/issues/4838.
         Self::sweep_staging_dir(&staging_dir).await;
+
+        Self::spawn_object_store_reloader(Arc::clone(&object_store), destination.clone());
 
         Ok(Some(SnapshotRepository {
             object_store,
@@ -339,6 +349,54 @@ impl SnapshotRepository {
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
         }))
+    }
+
+    /// Watches for configuration reloads and rebuilds the object store client whenever
+    /// `[worker.snapshots]` options (e.g. S3 credentials) change, so that operators can pick up
+    /// updated credentials at runtime without a full restart. Only the client is rebuilt; the
+    /// destination URL captured at startup is not re-read, so this does not support changing the
+    /// snapshot destination itself via reload.
+    fn spawn_object_store_reloader(slot: Arc<ArcSwap<dyn ObjectStore>>, destination: Url) {
+        let _ = restate_core::TaskCenter::spawn_unmanaged_child(
+            restate_core::TaskKind::Background,
+            "snapshot-repository-object-store-reload",
+            Self::object_store_reload_loop(slot, destination),
+        );
+    }
+
+    /// Body of [`Self::spawn_object_store_reloader`], split into a named `async fn` (rather than
+    /// an inline block) so the non-terminating loop has an explicit `()` return type to coerce
+    /// into; an inline `async move { loop { .. } }` block passed straight into a generic
+    /// `spawn_unmanaged_child::<F, T>` call has no expression to pin down `T`, since the loop
+    /// never produces a value and the call site discards the result.
+    async fn object_store_reload_loop(slot: Arc<ArcSwap<dyn ObjectStore>>, destination: Url) {
+        let mut config_watch = Configuration::watcher();
+        let mut live_config = Configuration::live();
+
+        loop {
+            config_watch.changed().await;
+
+            let snapshots_options = &live_config.live_load().worker.snapshots;
+            match create_object_store_client(
+                destination.clone(),
+                &snapshots_options.object_store,
+                &snapshots_options.object_store_retry_policy,
+            )
+            .await
+            {
+                Ok(new_client) => {
+                    slot.store(new_client);
+                    info!("Reloaded snapshot repository object store client after configuration update");
+                }
+                Err(err) => {
+                    warn!(
+                        %err,
+                        "Failed to rebuild snapshot repository object store client after \
+                        configuration update, continuing to use the previous client"
+                    );
+                }
+            }
+        }
     }
 
     /// Removes any entries left over in the snapshot staging directory by a previous run.
@@ -405,12 +463,13 @@ impl SnapshotRepository {
             }
             Err(put_error) => {
                 metrics::counter!(SNAPSHOT_UPLOAD_FAILED).increment(1);
+                let object_store = self.object_store.load_full();
                 for filename in put_error.uploaded_files {
                     let path = put_error.full_snapshot_path.clone().join(filename);
 
                     // We disregard errors at this point; the snapshot repository pruning mechanism
                     // should catch these eventually.
-                    if let Err(err) = self.object_store.delete(&path).await {
+                    if let Err(err) = object_store.delete(&path).await {
                         info!(%err, "Failed to delete file from partially uploaded snapshot");
                     }
                 }
@@ -514,6 +573,7 @@ impl SnapshotRepository {
         local_snapshot_path: &Path,
         progress: &mut SnapshotUploadProgress,
     ) -> Result<(), PutSnapshotError> {
+        let object_store = self.object_store.load_full();
         let mut buf = BytesMut::new();
         for file in &snapshot.files {
             let filename = strip_leading_slash(&file.name);
@@ -522,7 +582,7 @@ impl SnapshotRepository {
             let put_result = put_snapshot_object(
                 local_snapshot_path.join(filename).as_path(),
                 &key,
-                &self.object_store,
+                &object_store,
                 &mut buf,
             )
             .await
@@ -631,6 +691,7 @@ impl SnapshotRepository {
         partition_id: PartitionId,
         snapshot_ref: &SnapshotReference,
     ) {
+        let object_store = self.object_store.load_full();
         let metadata_path = self
             .prefix
             .clone()
@@ -638,7 +699,7 @@ impl SnapshotRepository {
             .join(snapshot_ref.path.as_str())
             .join("metadata.json");
 
-        let metadata = match self.object_store.get(&metadata_path).await {
+        let metadata = match object_store.get(&metadata_path).await {
             Ok(data) => {
                 let bytes = match data.bytes().await {
                     Ok(b) => b,
@@ -672,7 +733,7 @@ impl SnapshotRepository {
             .map(|filename| self.snapshot_file_path(&metadata, strip_leading_slash(&filename.name)))
             .chain(std::iter::once(metadata_path))
         {
-            if let Err(err) = self.object_store.delete(&path).await
+            if let Err(err) = object_store.delete(&path).await
                 && !matches!(err, object_store::Error::NotFound { .. })
             {
                 warn!(%path, %err, "Failed to delete snapshot object");
@@ -716,9 +777,10 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
+        let object_store = self.object_store.load_full();
         let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
-        let latest = match self.object_store.get(&latest_path).await {
+        let latest = match object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
@@ -747,7 +809,7 @@ impl SnapshotRepository {
             .join(partition_id.to_string())
             .join(latest.path.as_str())
             .join("metadata.json");
-        let snapshot_metadata = self.object_store.get(&snapshot_metadata_path).await;
+        let snapshot_metadata = object_store.get(&snapshot_metadata_path).await;
 
         let snapshot_metadata = match snapshot_metadata {
             Ok(result) => result,
@@ -811,7 +873,7 @@ impl SnapshotRepository {
                 .join(filename);
             let local_path = snapshot_dir.path().join(filename);
             let concurrency_limiter = Arc::clone(&concurrency_limiter);
-            let object_store = Arc::clone(&self.object_store);
+            let object_store = Arc::clone(&object_store);
             let snapshot_id = snapshot_metadata.snapshot_id;
             let snapshot_filename = filename.to_owned();
 
@@ -900,9 +962,10 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
+        let object_store = self.object_store.load_full();
         let latest_path = self.latest_snapshot_pointer_path(partition_id);
 
-        let latest = match self.object_store.get(&latest_path).await {
+        let latest = match object_store.get(&latest_path).await {
             Ok(result) => result,
             Err(object_store::Error::NotFound { .. }) => {
                 debug!("Latest snapshot data not found in repository");
@@ -926,7 +989,8 @@ impl SnapshotRepository {
         path: &ObjectPath,
     ) -> anyhow::Result<Option<(LatestSnapshot, UpdateVersion)>> {
         debug!(%path, "Getting latest snapshot pointer for update");
-        match self.object_store.get(path).await {
+        let object_store = self.object_store.load_full();
+        match object_store.get(path).await {
             Ok(result) => {
                 let version = UpdateVersion {
                     e_tag: result.meta.e_tag.clone(),
