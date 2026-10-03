@@ -136,10 +136,9 @@ impl Loglet for LocalLoglet {
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError> {
         Ok(Box::pin(
-            LocalLogletReadStream::create(self, filter, from, to).await?,
+            LocalLogletReadStream::create(self, filter, from).await?,
         ))
     }
 
@@ -290,7 +289,7 @@ impl Loglet for LocalLoglet {
 
 #[cfg(test)]
 mod tests {
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use googletest::prelude::eq;
     use googletest::{IntoTestResult, assert_that, elements_are};
     use test_log::test;
@@ -395,10 +394,12 @@ mod tests {
 
         let key_filter = KeyFilter::Include(1);
         let read_stream = loglet
-            .create_read_stream(key_filter, LogletOffset::OLDEST, Some(offset))
+            .create_read_stream(key_filter, LogletOffset::OLDEST)
             .await?;
+        read_stream.notify_readable_tail(offset.next());
 
         let records: Vec<_> = read_stream
+            .take(2)
             .try_collect::<Vec<_>>()
             .await?
             .into_iter()
