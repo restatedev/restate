@@ -20,9 +20,9 @@ use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_rocksdb::RocksDbReadPerfGuard;
-use restate_types::logs::{KeyFilter, LogletOffset, OffsetWatch, SequenceNumber, TailState};
+use restate_types::logs::{KeyFilter, LogletOffset, OffsetWatch, SequenceNumber};
 
-use crate::loglet::{Loglet, LogletReadStream, OperationError};
+use crate::loglet::{LogletReadStream, OperationError};
 use crate::providers::local_loglet::LogStoreError;
 use crate::providers::local_loglet::record_format::decode_and_filter_record;
 use crate::{LogEntry, Result};
@@ -37,13 +37,10 @@ pub(crate) struct LocalLogletReadStream {
     serde_buffer: BytesMut,
     // the next record this stream will attempt to read
     read_pointer: LogletOffset,
-    /// stop when read_pointer is at or beyond this offset
-    last_known_tail: LogletOffset,
     readable_tail: OffsetWatch,
     readable_tail_updates: BoxStream<'static, LogletOffset>,
     last_readable_tail: LogletOffset,
     iterator: DBRawIteratorWithThreadMode<'static, DB>,
-    tail_watch: BoxStream<'static, TailState<LogletOffset>>,
     terminated: bool,
     // IMPORTANT: Do not reorder, this should be dropped last since `iterator` holds a reference
     // into the underlying database.
@@ -65,7 +62,7 @@ unsafe fn ignore_iterator_lifetime<'a>(
 }
 
 impl LocalLogletReadStream {
-    pub(crate) async fn create(
+    pub(crate) fn create(
         loglet: Arc<LocalLoglet>,
         filter: KeyFilter,
         from_offset: LogletOffset,
@@ -95,12 +92,6 @@ impl LocalLogletReadStream {
         );
 
         let log_store = &loglet.log_store;
-        let mut tail_watch = loglet.watch_tail();
-        let last_known_tail = tail_watch
-            .next()
-            .await
-            .expect("loglet watch returns tail pointer")
-            .offset();
         let readable_tail = OffsetWatch::default();
         let readable_tail_updates = Box::pin(readable_tail.to_stream());
         let last_readable_tail = readable_tail.get();
@@ -126,8 +117,6 @@ impl LocalLogletReadStream {
             read_pointer: from_offset,
             iterator: iter,
             terminated: false,
-            tail_watch,
-            last_known_tail,
             readable_tail,
             readable_tail_updates,
             last_readable_tail,
@@ -162,8 +151,15 @@ impl Stream for LocalLogletReadStream {
         }
 
         let perf_guard = RocksDbReadPerfGuard::new("local-loglet-next");
+        let mut filtered_from = None;
         loop {
             if self.read_pointer >= self.last_readable_tail {
+                if let Some(filtered_from) = filtered_from {
+                    return Poll::Ready(Some(Ok(LogEntry::new_filtered_gap(
+                        filtered_from,
+                        self.read_pointer.prev(),
+                    ))));
+                }
                 let maybe_readable_tail = match self.readable_tail_updates.poll_next_unpin(cx) {
                     Poll::Ready(tail) => tail,
                     Poll::Pending => {
@@ -182,36 +178,6 @@ impl Stream for LocalLogletReadStream {
                     }
                 }
             }
-            // Are we reading after commit offset?
-            // We are at tail. We need to wait until new records have been released.
-            if self.read_pointer >= self.last_known_tail {
-                let maybe_tail_state = match self.tail_watch.poll_next_unpin(cx) {
-                    Poll::Ready(t) => t,
-                    Poll::Pending => {
-                        perf_guard.forget();
-                        return Poll::Pending;
-                    }
-                };
-
-                match maybe_tail_state {
-                    Some(tail_state) => {
-                        // tail has been updated.
-                        self.last_known_tail = tail_state.offset();
-                        continue;
-                    }
-                    None => {
-                        // system shutdown. Or that the loglet has been unexpectedly shutdown.
-                        self.terminated = true;
-                        return Poll::Ready(Some(Err(OperationError::Shutdown(ShutdownError))));
-                    }
-                }
-            }
-            // tail has been updated.
-            let last_known_tail = self.last_known_tail;
-
-            // assert that we are behind tail
-            assert!(last_known_tail > self.read_pointer);
-
             // Trim point is the slot **before** the first readable record (if it exists)
             // trim point might have been updated since last time.
             let trim_point =
@@ -221,10 +187,11 @@ impl Stream for LocalLogletReadStream {
             assert!(self.read_pointer > LogletOffset::from(0));
 
             if self.read_pointer < head_offset {
-                let trim_gap = LogEntry::new_trim_gap(self.read_pointer, trim_point);
+                let gap_to = trim_point.min(self.last_readable_tail.prev());
+                let trim_gap = LogEntry::new_trim_gap(self.read_pointer, gap_to);
                 // next record should be beyond at the head
-                self.read_pointer = head_offset;
-                let key = RecordKey::new(self.loglet_id, trim_point);
+                self.read_pointer = gap_to.next();
+                let key = RecordKey::new(self.loglet_id, gap_to);
                 // park the iterator at the trim point, next iteration will seek it forward.
                 let key_bytes = key.encode_and_split(&mut self.serde_buffer);
                 self.iterator.seek(key_bytes);
@@ -259,7 +226,7 @@ impl Stream for LocalLogletReadStream {
                     loglet_id = self.loglet_id,
                     read_pointer = %self.read_pointer,
                     trim_point = %potentially_different_trim_point,
-                    last_known_tail = %self.last_known_tail,
+                    readable_tail = %self.last_readable_tail,
                     "poll_next() has moved to a non-existent record, that should not happen!"
                 );
                 panic!("poll_next() has moved to a non-existent record, that should not happen!");
@@ -291,7 +258,7 @@ impl Stream for LocalLogletReadStream {
             if let Some(record) = maybe_record {
                 return Poll::Ready(Some(Ok(LogEntry::new_data(key.offset, record))));
             }
-            // Didn't match, loop and read the next record if possible.
+            filtered_from.get_or_insert(key.offset);
         }
     }
 }
