@@ -643,6 +643,13 @@ impl QueryContext {
         })
     }
 
+    /// Allows statements such as `SET` to be executed. They mutate the shared session config, so
+    /// only enable this for single-user contexts (e.g. local debugging tools).
+    pub fn with_allow_statements(mut self) -> Self {
+        self.sql_options = self.sql_options.with_allow_statements(true);
+        self
+    }
+
     pub async fn execute(&self, sql: &str) -> Result<QueryResult, QueryError> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
