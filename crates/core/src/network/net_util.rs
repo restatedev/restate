@@ -354,8 +354,7 @@ where
                 drop(listeners);
                 break;
             }
-            incoming_connection = listeners.accept() => {
-                let (stream, peer_addr) = incoming_connection?;
+            (stream, peer_addr) = listeners.accept() => {
                 let socket_span = error_span!("SocketHandler", ?peer_addr);
 
                 let config = configuration.live_load();
