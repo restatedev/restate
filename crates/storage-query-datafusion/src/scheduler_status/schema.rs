@@ -14,7 +14,11 @@ use crate::table_macro::*;
 
 define_sort_order!(sys_scheduler(partition_key));
 
-define_table!(sys_scheduler(
+define_table!(
+    /// Scheduler state of each vqueue.
+    ///
+    /// Shows whether a vqueue is dormant, blocked or scheduled, what its head entry is waiting on, and how long it waited on each resource.
+    sys_scheduler(
     /// Internal column that is used for partitioning. Can be ignored.
     partition_key: DataType::UInt64,
 

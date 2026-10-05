@@ -12,7 +12,11 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_table!(sys_deployment(
+define_table!(
+    /// Registered deployments.
+    ///
+    /// A deployment is a version of your service(s) code that Restate calls.
+    sys_deployment(
     /// The ID of the service deployment.
     id: DataType::LargeUtf8,
 
