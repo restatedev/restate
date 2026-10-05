@@ -257,8 +257,7 @@ where
         // UDS
         loop {
             tokio::select! {
-                res = listeners.accept() => {
-                    let (stream, peer_addr) = res?;
+                (stream, peer_addr) = listeners.accept() => {
                     // Loaded per connection so that config updates apply to new connections
                     // without a restart. `handle_connection` doesn't await, so this borrow
                     // never crosses a yield point.
