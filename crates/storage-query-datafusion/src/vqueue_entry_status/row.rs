@@ -8,17 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_sharding::PartitionKey;
 use restate_storage_api::vqueue_table::RawStatusHeaderRef;
-use restate_types::vqueues::EntryId;
+use restate_types::identifiers::BaseEntryId;
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
 #[inline]
 pub(crate) fn append_vqueue_entry_status_row(
     builder: &mut SysVqueueEntryStatusBuilder,
-    partition_key: PartitionKey,
-    entry_id: &EntryId,
+    id: &BaseEntryId,
     header: &RawStatusHeaderRef<'_>,
 ) {
     let stats = &header.stats;
@@ -27,11 +25,11 @@ pub(crate) fn append_vqueue_entry_status_row(
     let mut row = builder.row();
 
     if row.is_partition_key_defined() {
-        row.partition_key(partition_key);
+        row.partition_key(id.partition_key());
     }
 
     if row.is_entry_id_defined() {
-        row.fmt_entry_id(entry_id.display(partition_key));
+        row.fmt_entry_id(id);
     }
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(&header.qid);
@@ -53,7 +51,7 @@ pub(crate) fn append_vqueue_entry_status_row(
     }
 
     if row.is_entry_kind_defined() {
-        row.fmt_entry_kind(entry_id.kind());
+        row.fmt_entry_kind(id.kind());
     }
 
     if row.is_created_at_defined() {
