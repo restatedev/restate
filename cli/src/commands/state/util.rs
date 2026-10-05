@@ -99,7 +99,11 @@ pub(crate) async fn update_state(
     };
 
     let client = AdminClient::new(env).await?;
-    let _ = client.patch_state(service, req).await?.success_or_error()?;
+    client
+        .patch_state(service, req)
+        .await?
+        .into_success_status()
+        .await?;
 
     Ok(())
 }

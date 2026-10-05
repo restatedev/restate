@@ -89,6 +89,8 @@ pub async fn run_pause(State(env): State<CliEnv>, opts: &Pause) -> Result<()> {
     let (succeeded, failed) = batch_execute(client, invocations, |client, invocation| async move {
         client
             .pause_invocation(&invocation.id)
+            .await?
+            .into_success_status()
             .await
             .map_err(anyhow::Error::from)
     })

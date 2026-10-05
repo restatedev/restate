@@ -32,7 +32,8 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
     client
         .resume_vqueue(&opts.vqueue_id.to_string())
         .await?
-        .success_or_error()?;
+        .into_success_status()
+        .await?;
 
     super::report_outcome(&opts.vqueue_id, "resumed", "Resumed")
 }

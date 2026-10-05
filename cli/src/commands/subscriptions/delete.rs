@@ -42,7 +42,8 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
     client
         .delete_subscription(&opts.id)
         .await?
-        .success_or_error()?;
+        .into_success_status()
+        .await?;
 
     c_success!("Subscription {} deleted", &opts.id);
     Ok(())

@@ -70,7 +70,8 @@ pub async fn run_delete(State(env): State<CliEnv>, opts: &Delete) -> Result<()> 
     client
         .delete_kafka_cluster(&opts.name, opts.force)
         .await?
-        .success_or_error()?;
+        .into_success_status()
+        .await?;
 
     c_success!("Kafka cluster {} deleted", &opts.name);
     Ok(())
