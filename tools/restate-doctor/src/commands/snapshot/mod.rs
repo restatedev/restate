@@ -121,6 +121,11 @@ pub struct SnapshotArgs {
 
     #[clap(long, default_value = "2147483648")]
     rocksdb_memory_budget: NonZeroUsize,
+
+    /// Memory limit for SQL query execution, e.g. `4GiB` (defaults to the server's query engine
+    /// default).
+    #[arg(long)]
+    query_memory_limit: Option<NonZeroByteCount>,
 }
 
 impl SnapshotArgs {
@@ -209,6 +214,9 @@ async fn run_snapshot_inner(args: &SnapshotArgs) -> anyhow::Result<()> {
         .worker
         .storage
         .set_rocksdb_memory_budget(NonZeroByteCount::new(args.rocksdb_memory_budget));
+    if let Some(limit) = args.query_memory_limit {
+        config.admin.query_engine.memory_size = limit.as_non_zero_usize();
+    }
 
     set_current_config(config.clone());
 
@@ -334,7 +342,8 @@ async fn run(
         ),
     )
     .await
-    .context("failed to build the query context")?;
+    .context("failed to build the query context")?
+    .with_allow_statements();
 
     match (&args.query, args.listen) {
         (Some(query), _) => repl::run_query(&query_context, query).await,
