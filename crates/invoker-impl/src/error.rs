@@ -208,7 +208,7 @@ impl fmt::Display for InvocationMemoryExhausted {
 
 fn retry_after_display(after: &Option<Duration>) -> String {
     match after {
-        Some(duration) => format!(" (retry after: {} seconds)", duration.as_secs()),
+        Some(duration) => format!(" (got retry-after header: {} seconds)", duration.as_secs()),
         None => String::new(),
     }
 }
