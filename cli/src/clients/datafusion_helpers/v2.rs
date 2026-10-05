@@ -11,18 +11,18 @@
 //! A set of common queries needed by the CLI
 
 use std::collections::HashMap;
-use std::fmt::Display;
+use std::fmt::{Display, Write};
 
 use anyhow::Result;
 use bytes::Bytes;
 use chrono::{DateTime, Local};
-use restate_types::SemanticRestateVersion;
 use serde::Deserialize;
 use serde_with::serde_as;
 
 use restate_types::identifiers::DeploymentId;
 use restate_types::identifiers::ServiceId;
 use restate_types::journal_events::Event;
+use restate_types::{Scope, SemanticRestateVersion};
 
 use super::{
     HandlerStateStats, Invocation, InvocationCompletion, InvocationState, JournalEntryRow,
@@ -855,6 +855,7 @@ pub async fn get_journal_events(
 #[serde_as]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct StateKeysQueryResult {
+    scope: Option<String>,
     service_name: String,
     service_key: String,
     key: String,
@@ -862,25 +863,46 @@ pub struct StateKeysQueryResult {
     value: Vec<u8>,
 }
 
+/// Fetch the K/V state of `service` (optionally of a single `key`) within `scope`, where
+/// `None` is the unscoped instance.
 pub(crate) async fn get_state_keys(
     client: &DataFusionHttpClient,
     service: &str,
     key: Option<&str>,
+    scope: Option<&str>,
 ) -> Result<HashMap<ServiceId, HashMap<String, Bytes>>> {
-    let filter = if let Some(k) = key {
-        format!("service_name = '{service}' AND service_key = '{k}'")
-    } else {
-        format!("service_name = '{service}'")
-    };
-    let sql = format!("SELECT service_name, service_key, key, value FROM state WHERE {filter}");
+    let mut filter = format!("service_name = '{service}'");
+    if let Some(k) = key {
+        write!(filter, " AND service_key = '{k}'")?;
+    }
+    // Scopes exist since v1.7.0, any 1.7.x including prereleases
+    let supports_scopes = client
+        .server_version()
+        .is_equal_or_newer_than(&SemanticRestateVersion::new(1, 6, u64::MAX));
+    match scope {
+        Some(scope) if supports_scopes => write!(filter, " AND scope = '{scope}'")?,
+        Some(_) => anyhow::bail!(
+            "Scopes need Restate server v1.7.0 or newer, the server is v{}",
+            client.server_version()
+        ),
+        None if supports_scopes => filter.push_str(" AND scope IS NULL"),
+        None => {}
+    }
+    let sql = format!(
+        "SELECT {}service_name, service_key, key, value FROM state WHERE {filter}",
+        if supports_scopes { "scope, " } else { "" }
+    );
     let query_result_iter = client.run_json_query::<StateKeysQueryResult>(sql).await?;
 
     #[allow(clippy::mutable_key_type)]
     let mut user_state: HashMap<ServiceId, HashMap<String, Bytes>> = HashMap::new();
     for row in query_result_iter {
         user_state
-            // todo(tillrohrmann) allow specifying the scope
-            .entry(ServiceId::new(None, row.service_name, row.service_key))
+            .entry(ServiceId::new(
+                row.scope.map(|s| Scope::try_non_interned(&s)).transpose()?,
+                row.service_name,
+                row.service_key,
+            ))
             .or_default()
             .insert(row.key, Bytes::from(row.value));
     }
