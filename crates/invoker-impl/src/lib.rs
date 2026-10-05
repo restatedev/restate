@@ -54,6 +54,7 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::sharding::KeyRange;
+use restate_types::time::MillisSinceEpoch;
 use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
@@ -91,6 +92,11 @@ fn fence(token: FencingToken, effect: Effect) -> FencedEffect {
         fencing_token: token,
         effect: Box::new(effect),
     }
+}
+
+/// Rounds up so the retry never starts before `retry_after` has passed.
+fn scheduler_resume_at(now: MillisSinceEpoch, retry_after: Duration) -> RoughTimestamp {
+    RoughTimestamp::from_unix_millis_ceil(now + retry_after)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1377,7 +1383,10 @@ where
                                     retry_count_since_last_stored_command,
                                 },
                                 error_event,
-                                resume_at: Some(RoughTimestamp::now() + retry_after),
+                                resume_at: Some(scheduler_resume_at(
+                                    MillisSinceEpoch::now(),
+                                    retry_after,
+                                )),
                             },
                         },
                     ))
@@ -2874,6 +2883,32 @@ mod tests {
                 .invocation_state_machine_manager
                 .resolve_invocation(&invocation_id)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn scheduler_retry_never_runs_before_the_retry_interval() {
+        let now = MillisSinceEpoch::new(1_767_225_600_999);
+        let retry_after = Duration::from_millis(2_999);
+
+        let resume_at = scheduler_resume_at(now, retry_after);
+
+        assert!(resume_at.as_unix_millis() >= now + retry_after);
+        assert_eq!(
+            resume_at.as_unix_millis(),
+            MillisSinceEpoch::new(1_767_225_604_000)
+        );
+    }
+
+    #[test]
+    fn scheduler_retry_on_a_whole_second_is_not_pushed_back() {
+        let now = MillisSinceEpoch::new(1_767_225_600_000);
+
+        let resume_at = scheduler_resume_at(now, Duration::from_secs(3));
+
+        assert_eq!(
+            resume_at.as_unix_millis(),
+            MillisSinceEpoch::new(1_767_225_603_000)
         );
     }
 }
