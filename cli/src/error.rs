@@ -476,7 +476,8 @@ mod tests {
 
     #[test]
     fn wrapped_http_errors_use_their_status() {
-        // `Envelope::success_or_error` wraps an HTTP error status as `Network`.
+        // `reqwest::Response::error_for_status` (e.g. in `cloud login`) wraps an HTTP error
+        // status as `Network`.
         let response = http::Response::builder().status(404).body("").unwrap();
         let err = reqwest::Response::from(response)
             .error_for_status()

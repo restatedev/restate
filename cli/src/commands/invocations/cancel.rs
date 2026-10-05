@@ -99,10 +99,12 @@ pub async fn run_cancel(State(env): State<CliEnv>, opts: &Cancel) -> Result<()> 
     let (succeeded, failed) =
         batch_execute(client, invocations, move |client, invocation| async move {
             if kill {
-                client.kill_invocation(&invocation.id).await
+                client.kill_invocation(&invocation.id).await?
             } else {
-                client.cancel_invocation(&invocation.id).await
+                client.cancel_invocation(&invocation.id).await?
             }
+            .into_success_status()
+            .await
             .map_err(anyhow::Error::from)
         })
         .await;
