@@ -12,6 +12,7 @@ use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use futures::future::OptionFuture;
 use itertools::Itertools;
@@ -20,6 +21,8 @@ use tokio::io;
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio_util::either::Either;
 use tracing::{debug, info};
+
+use restate_tracing::warn_ratelimited;
 
 use crate::config::{Configuration, ListenerOptions, TlsMode};
 use crate::nodes_config::Role;
@@ -470,7 +473,22 @@ impl<P: ListenerPort> Listeners<P> {
             .map(|listener| listener.local_addr().unwrap())
     }
 
-    pub async fn accept(
+    /// Accepts the next connection. Accept errors are logged and ignored. If you'd rather
+    /// handle the errors, use [`try_accept`].
+    ///
+    /// This method is cancel safe.
+    pub async fn accept(&mut self) -> (Either<TcpStream, UnixStream>, SocketAddress) {
+        loop {
+            match self.try_accept().await {
+                Ok(connection) => return connection,
+                Err(err) => {
+                    warn_ratelimited!(10, Duration::from_mins(1), %err, "Failed to accept connection");
+                }
+            }
+        }
+    }
+
+    pub async fn try_accept(
         &mut self,
     ) -> Result<(Either<TcpStream, UnixStream>, SocketAddress), std::io::Error> {
         let tcp = OptionFuture::from(self.tcp_listener.as_mut().map(|t| t.accept()));
