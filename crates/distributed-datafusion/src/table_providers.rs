@@ -1,0 +1,812 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+use std::fmt::{self, Debug, Display, Formatter};
+use std::pin::Pin;
+use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use async_trait::async_trait;
+use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::common::tree_node::TreeNodeRecursion;
+use datafusion::common::{DataFusionError, Statistics};
+use datafusion::datasource::{TableProvider, TableType};
+use datafusion::execution::context::TaskContext;
+use datafusion::logical_expr::{Expr, TableProviderFilterPushDown};
+use datafusion::physical_expr::EquivalenceProperties;
+use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
+use datafusion::physical_plan::filter_pushdown::{
+    FilterPushdownPhase, FilterPushdownPropagation, PushedDown,
+};
+use datafusion::physical_plan::metrics::{
+    BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet, Time,
+};
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PhysicalExpr, PlanProperties,
+    SendableRecordBatchStream,
+};
+use futures::stream::{self, Stream, StreamExt, TryStreamExt};
+
+use restate_types::identifiers::PartitionId;
+use restate_types::partition_table::Partition;
+use restate_types::sharding::KeyRange;
+
+use crate::access::{PrimaryKeyKind, PrimaryRead};
+use crate::context::SelectPartitions;
+use crate::filter::{PartitionKeySelector, PointReadFanout};
+use crate::placement::{PartitionPlacement, PartitionSource, StoragePlacementOptions};
+use crate::remote_query_scanner_manager::{PartitionLocation, PartitionedSource};
+use crate::selection;
+use crate::table_util::{find_sort_columns, make_ordering};
+
+pub trait ScanPartition: Send + Sync + Debug + 'static {
+    fn partition_source(&self) -> PartitionSource {
+        PartitionSource::Storage
+    }
+
+    /// Primary lookup capability exposed by the worker-local resource binding.
+    fn primary_key_kind(&self) -> Option<PrimaryKeyKind> {
+        None
+    }
+
+    /// Execute an already selected access path. Implementations must reject an
+    /// unsupported lookup rather than silently changing it into a scan.
+    #[allow(clippy::too_many_arguments)]
+    fn read_partition(
+        &self,
+        partition_id: PartitionId,
+        range: KeyRange,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        anyhow::ensure!(
+            matches!(access, PrimaryRead::Range),
+            "primary lookup is unavailable for this source"
+        );
+        self.scan_partition(
+            partition_id,
+            range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            elapsed_compute,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn scan_partition(
+        &self,
+        partition_id: PartitionId,
+        range: KeyRange,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream>;
+}
+
+#[derive(Debug)]
+pub(crate) struct PartitionedTableProvider<S> {
+    partition_selector: S,
+    schema: SchemaRef,
+    ordering: Vec<String>,
+    source: PartitionedSource,
+    partition_key_extractor: PartitionKeySelector,
+    statistics: Statistics,
+}
+
+impl<S> PartitionedTableProvider<S> {
+    pub(crate) fn new(
+        partition_selector: S,
+        schema: SchemaRef,
+        ordering: Vec<String>,
+        source: PartitionedSource,
+        partition_key_extractor: PartitionKeySelector,
+    ) -> Self {
+        let statistics = Statistics::new_unknown(&schema);
+        Self {
+            partition_selector,
+            schema,
+            ordering,
+            source,
+            partition_key_extractor,
+            statistics,
+        }
+    }
+
+    pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
+        Self { statistics, ..self }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct LogicalPartition {
+    physical_partitions: Vec<(PartitionId, Partition)>,
+}
+
+impl LogicalPartition {
+    fn new(physical_partitions: Vec<(PartitionId, Partition)>) -> Self {
+        Self {
+            physical_partitions,
+        }
+    }
+}
+
+fn physical_partitions_to_logical(
+    physical_partitions: Vec<(PartitionId, Partition)>,
+    target_partitions: usize,
+) -> Vec<LogicalPartition> {
+    if physical_partitions.len() <= target_partitions {
+        // don't bother to coalesce physical partitions together, just
+        // use them as-is.
+        return physical_partitions
+            .into_iter()
+            .map(|p| LogicalPartition::new(vec![p]))
+            .collect();
+    }
+
+    let mut logical_partitions = vec![LogicalPartition::new(Default::default()); target_partitions];
+    let mut logical_index = 0;
+
+    for partition in physical_partitions {
+        logical_partitions[logical_index]
+            .physical_partitions
+            .push(partition);
+        logical_index = (logical_index + 1) % target_partitions;
+    }
+
+    logical_partitions
+}
+
+#[async_trait]
+impl<S> TableProvider for PartitionedTableProvider<S>
+where
+    S: SelectPartitions,
+{
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        state: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let projected_schema = match projection {
+            Some(p) => SchemaRef::new(self.schema.project(p)?),
+            None => self.schema.clone(),
+        };
+
+        // as we report our filter pushdown as inexact, all columns needed for the filters will be in the projection
+        let filters = selection::physical_filters(filters, &projected_schema)?;
+        let (partition_keys, fanout) = self
+            .partition_key_extractor
+            .select_domain(&filters)
+            .map_err(|e| DataFusionError::External(e.into()))?;
+        let partition_ids = selection::unsigned_domain(&filters, "partition_id")
+            .map_err(|e| DataFusionError::External(e.into()))?;
+
+        let predicate = datafusion::physical_expr::conjunction_opt(filters);
+
+        let physical_partitions: Vec<(PartitionId, Partition)> = self
+            .partition_selector
+            .get_live_partitions()
+            .await
+            .map_err(DataFusionError::External)?
+            .into_iter()
+            .filter(|(id, _)| partition_ids.contains(&u64::from(*id)))
+            .flat_map(|(partition_id, partition)| {
+                let mut ranges: Vec<_> = partition_keys.key_ranges(partition.key_range).collect();
+                if (fanout == PointReadFanout::PerPartition || ranges.len() > 4096)
+                    && let (Some(first), Some(last)) = (ranges.first(), ranges.last())
+                {
+                    ranges = vec![KeyRange::new(first.start(), last.end())];
+                }
+                ranges
+                    .into_iter()
+                    .map(move |range| (partition_id, Partition::new(partition_id, range)))
+            })
+            .collect();
+
+        if physical_partitions.is_empty() {
+            return Ok(Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
+                projected_schema,
+            )));
+        }
+
+        let target_partitions = state.config().target_partitions();
+        let distributed = state
+            .config()
+            .get_extension::<crate::distributed::DistributedExecution>()
+            .is_some();
+        let placement = PartitionPlacement {
+            source: self.source.source,
+            options: state
+                .config()
+                .get_extension::<StoragePlacementOptions>()
+                .as_deref()
+                .copied()
+                .unwrap_or_default(),
+        };
+        // Retain the old scanner-RPC adapter only for callers that explicitly use
+        // a non-distributed environment with remote partitions.
+        let local = !distributed
+            && physical_partitions.iter().all(|(id, _)| {
+                matches!(
+                    self.source
+                        .manager
+                        .get_partition_target_node(*id, placement),
+                    Ok(PartitionLocation::Local)
+                )
+            });
+        if distributed || local {
+            return crate::distributed::source::TableScanExec::for_query(
+                self.source.clone(),
+                physical_partitions
+                    .into_iter()
+                    .map(|(id, p)| (id, p.key_range))
+                    .collect(),
+                placement,
+                target_partitions,
+                projected_schema,
+                Arc::new(self.statistics.clone().project(projection).to_inexact()),
+                self.ordering.clone(),
+                predicate,
+                limit,
+                local,
+            );
+        }
+
+        let logical_partitions =
+            physical_partitions_to_logical(physical_partitions, target_partitions);
+
+        let sort_columns = find_sort_columns(&self.ordering, &projected_schema);
+
+        let eq_properties = if sort_columns.is_empty() {
+            EquivalenceProperties::new(projected_schema.clone())
+        } else {
+            let ordering = make_ordering(sort_columns.clone());
+            EquivalenceProperties::new_with_orderings(projected_schema.clone(), [ordering])
+        };
+
+        let plan = PlanProperties::new(
+            eq_properties,
+            Partitioning::UnknownPartitioning(logical_partitions.len()),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        )
+        .with_scheduling_type(
+            // all our scan functions use RecordBatchReceiverStream to build the result, which is cooperative
+            datafusion::physical_plan::execution_plan::SchedulingType::Cooperative,
+        );
+
+        Ok(Arc::new(PartitionedExecutionPlan {
+            logical_partitions,
+            projected_schema,
+            limit,
+            predicate,
+            scanner: self.source.clone(),
+            plan: Arc::new(plan),
+            statistics: Arc::new(self.statistics.clone().project(projection)),
+            metrics: ExecutionPlanMetricsSet::new(),
+        }))
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
+        let res = filters
+            .iter()
+            // if we set this to exact, we might be able to remove a FilterExec higher up the plan.
+            // however, it means that fields we filter on won't end up in our projection, meaning we
+            // have to manage a projected schema and a filter schema - defer this complexity for
+            // future optimization.
+            .map(|_| TableProviderFilterPushDown::Inexact)
+            .collect();
+
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PartitionedExecutionPlan<T> {
+    logical_partitions: Vec<LogicalPartition>,
+    projected_schema: SchemaRef,
+    limit: Option<usize>,
+    predicate: Option<Arc<dyn PhysicalExpr>>,
+    scanner: T,
+    plan: Arc<PlanProperties>,
+    statistics: Arc<Statistics>,
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl<T> ExecutionPlan for PartitionedExecutionPlan<T>
+where
+    T: ScanPartition + Clone + Send,
+{
+    fn name(&self) -> &str {
+        "PartitionedExecutionPlan"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.projected_schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.plan
+    }
+
+    fn apply_expressions(
+        &self,
+        f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        datafusion::physical_plan::apply_expression_roots(self.predicate.iter(), f)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        new_children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        if !new_children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "PartitionedExecutionPlan does not support children".to_owned(),
+            ));
+        }
+
+        Ok(self)
+    }
+
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion::common::Result<Arc<Statistics>> {
+        Ok(self.statistics.clone())
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        let physical_partitions = self
+            .logical_partitions
+            .get(partition)
+            .expect("partition exists")
+            .physical_partitions
+            .to_vec();
+
+        let sequential_scanners_stream = stream::iter(physical_partitions)
+            .map({
+                let scanner = self.scanner.clone();
+                let schema = self.projected_schema.clone();
+                let limit = self.limit;
+                let predicate = self.predicate.clone();
+                let batch_size = context.session_config().batch_size();
+                let elapsed_compute = baseline_metrics.elapsed_compute().clone();
+                move |(partition_id, partition)| {
+                    scanner
+                        .scan_partition(
+                            partition_id,
+                            partition.key_range,
+                            schema.clone(),
+                            predicate.clone(),
+                            batch_size,
+                            limit,
+                            elapsed_compute.clone(),
+                        )
+                        .map_err(|e| DataFusionError::External(e.into()))
+                }
+            })
+            .try_flatten();
+
+        let metered = MeteredStream {
+            inner: sequential_scanners_stream,
+            baseline_metrics,
+        };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.projected_schema.clone(),
+            metered,
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn handle_child_pushdown_result(
+        &self,
+        phase: datafusion::physical_plan::filter_pushdown::FilterPushdownPhase,
+        child_pushdown_result: datafusion::physical_plan::filter_pushdown::ChildPushdownResult,
+        _config: &datafusion::config::ConfigOptions,
+    ) -> datafusion::error::Result<
+        datafusion::physical_plan::filter_pushdown::FilterPushdownPropagation<
+            Arc<dyn ExecutionPlan>,
+        >,
+    > {
+        if !matches!(phase, FilterPushdownPhase::Post) {
+            return Ok(FilterPushdownPropagation::if_all(child_pushdown_result));
+        }
+
+        // As in the static case above, the predicate *should* have the correct column indices,
+        // but bugs in datafusion can create mixups.
+        let mut filters: Vec<_> = child_pushdown_result
+            .parent_filters
+            .iter()
+            .map(|f| {
+                datafusion::physical_expr::utils::reassign_expr_columns(
+                    f.filter.clone(),
+                    &self.projected_schema,
+                )
+            })
+            .collect::<Result<_, _>>()?;
+
+        if let Some(predicate) = &self.predicate {
+            filters.push(predicate.clone());
+        }
+
+        let predicate = datafusion::physical_expr::conjunction(filters);
+        let mut plan = self.clone();
+        plan.predicate = Some(predicate);
+
+        Ok(FilterPushdownPropagation {
+            // we report all filters as unsupported as we don't guarantee to apply them exactly as there can be a delay before new filters are used
+            filters: child_pushdown_result
+                .parent_filters
+                .iter()
+                .map(|_| PushedDown::No)
+                .collect(),
+            updated_node: Some(Arc::new(plan)),
+        })
+    }
+}
+
+impl<T> DisplayAs for PartitionedExecutionPlan<T>
+where
+    T: Debug,
+{
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "PartitionedExecutionPlan: scanner={:?}, partitions={}, projection=[{}]",
+                    self.scanner,
+                    self.logical_partitions.len(),
+                    ProjectedColumns(&self.projected_schema),
+                )?;
+                if let Some(predicate) = &self.predicate {
+                    write!(f, ", predicate={predicate}")?;
+                }
+                if let Some(limit) = self.limit {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
+            }
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "scanner={:?}", self.scanner)?;
+                writeln!(f, "partitions={}", self.logical_partitions.len())?;
+                writeln!(
+                    f,
+                    "projection=[{}]",
+                    ProjectedColumns(&self.projected_schema)
+                )?;
+                if let Some(predicate) = &self.predicate {
+                    writeln!(f, "predicate={predicate}")?;
+                }
+                if let Some(limit) = self.limit {
+                    writeln!(f, "limit={limit}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+// Generic-based table provider that provides node-level or global data rather than
+// partition-keyed data.
+pub trait Scan: Debug + Send + Sync + 'static {
+    fn scan(
+        &self,
+        projection: SchemaRef,
+        filters: &[Expr],
+        batch_size: usize,
+        limit: Option<usize>,
+    ) -> SendableRecordBatchStream;
+}
+
+pub(crate) type ScannerRef = Arc<dyn Scan>;
+
+#[derive(Debug)]
+pub(crate) struct GenericTableProvider {
+    schema: SchemaRef,
+    scanner: ScannerRef,
+    statistics: Statistics,
+}
+
+impl GenericTableProvider {
+    pub(crate) fn new(schema: SchemaRef, scanner: ScannerRef) -> Self {
+        let statistics = Statistics::new_unknown(&schema);
+        Self {
+            schema,
+            scanner,
+            statistics,
+        }
+    }
+
+    pub(crate) fn with_statistics(self, statistics: Statistics) -> Self {
+        Self { statistics, ..self }
+    }
+}
+
+#[async_trait]
+impl TableProvider for GenericTableProvider {
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn datafusion::catalog::Session,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        let projected_schema = match projection {
+            Some(p) => SchemaRef::new(self.schema.project(p)?),
+            None => self.schema.clone(),
+        };
+
+        Ok(Arc::new(GenericExecutionPlan::new(
+            projected_schema,
+            filters,
+            limit,
+            Arc::clone(&self.scanner),
+            self.statistics.clone().project(projection),
+        )))
+    }
+
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&Expr],
+    ) -> datafusion::common::Result<Vec<TableProviderFilterPushDown>> {
+        let res = filters
+            .iter()
+            .map(|_| TableProviderFilterPushDown::Inexact)
+            .collect();
+
+        Ok(res)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct GenericExecutionPlan {
+    projected_schema: SchemaRef,
+    scanner: ScannerRef,
+    limit: Option<usize>,
+    filters: Vec<Expr>,
+    plan_properties: Arc<PlanProperties>,
+    statistics: Arc<Statistics>,
+    metrics: ExecutionPlanMetricsSet,
+}
+
+impl GenericExecutionPlan {
+    fn new(
+        projected_schema: SchemaRef,
+        filters: &[Expr],
+        limit: Option<usize>,
+        scanner: ScannerRef,
+        statistics: Statistics,
+    ) -> Self {
+        let eq_properties = EquivalenceProperties::new(projected_schema.clone());
+
+        let plan_properties = PlanProperties::new(
+            eq_properties,
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        );
+
+        Self {
+            projected_schema,
+            scanner,
+            limit,
+            filters: filters.to_vec(),
+            plan_properties: Arc::new(plan_properties),
+            statistics: Arc::new(statistics),
+            metrics: ExecutionPlanMetricsSet::new(),
+        }
+    }
+}
+
+impl ExecutionPlan for GenericExecutionPlan {
+    fn name(&self) -> &str {
+        "GenericExecutionPlan"
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.projected_schema.clone()
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        &self.plan_properties
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        // The scanner consumes logical filters, not physical expressions.
+        Ok(TreeNodeRecursion::Continue)
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        new_children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        if !new_children.is_empty() {
+            return Err(DataFusionError::Internal(
+                "GenericExecutionPlan does not support children".to_owned(),
+            ));
+        }
+
+        Ok(self)
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion::common::Result<SendableRecordBatchStream> {
+        let baseline_metrics = BaselineMetrics::new(&self.metrics, partition);
+
+        let inner = self.scanner.scan(
+            self.projected_schema.clone(),
+            &self.filters,
+            context.session_config().batch_size(),
+            self.limit,
+        );
+
+        let metered = MeteredStream {
+            inner,
+            baseline_metrics,
+        };
+
+        Ok(Box::pin(RecordBatchStreamAdapter::new(
+            self.projected_schema.clone(),
+            metered,
+        )))
+    }
+
+    fn metrics(&self) -> Option<MetricsSet> {
+        Some(self.metrics.clone_inner())
+    }
+
+    fn partition_statistics(&self, _: Option<usize>) -> datafusion::error::Result<Arc<Statistics>> {
+        Ok(self.statistics.clone())
+    }
+}
+
+impl DisplayAs for GenericExecutionPlan {
+    fn fmt_as(&self, t: DisplayFormatType, f: &mut Formatter) -> std::fmt::Result {
+        match t {
+            DisplayFormatType::Default | DisplayFormatType::Verbose => {
+                write!(
+                    f,
+                    "GenericExecutionPlan: scanner={:?}, projection=[{}]",
+                    self.scanner,
+                    ProjectedColumns(&self.projected_schema),
+                )?;
+                if !self.filters.is_empty() {
+                    write!(f, ", filters=[{}]", ExprList(&self.filters))?;
+                }
+                if let Some(limit) = self.limit {
+                    write!(f, ", limit={limit}")?;
+                }
+                Ok(())
+            }
+            DisplayFormatType::TreeRender => {
+                writeln!(f, "scanner={:?}", self.scanner)?;
+                writeln!(
+                    f,
+                    "projection=[{}]",
+                    ProjectedColumns(&self.projected_schema)
+                )?;
+                if !self.filters.is_empty() {
+                    writeln!(f, "filters=[{}]", ExprList(&self.filters))?;
+                }
+                if let Some(limit) = self.limit {
+                    writeln!(f, "limit={limit}")?;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Display helper: comma-separated column names from a schema.
+pub(crate) struct ProjectedColumns<'a>(pub(crate) &'a SchemaRef);
+
+impl Display for ProjectedColumns<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for field in self.0.fields() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}", field.name())?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Display helper: comma-separated logical expressions.
+struct ExprList<'a>(&'a [Expr]);
+
+impl Display for ExprList<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let mut first = true;
+        for expr in self.0 {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{expr}")?;
+            first = false;
+        }
+        Ok(())
+    }
+}
+
+/// Stream wrapper that records [`BaselineMetrics`] using [`BaselineMetrics::record_poll`].
+pub(crate) struct MeteredStream<S> {
+    pub(crate) inner: S,
+    pub(crate) baseline_metrics: BaselineMetrics,
+}
+
+impl<S> Stream for MeteredStream<S>
+where
+    S: Stream<Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>>
+        + Unpin,
+{
+    type Item = datafusion::common::Result<datafusion::arrow::record_batch::RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let poll = self.inner.poll_next_unpin(cx);
+        self.baseline_metrics.record_poll(poll)
+    }
+}
