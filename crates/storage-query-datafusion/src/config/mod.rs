@@ -11,5 +11,5 @@
 pub(crate) mod schema;
 mod table;
 
+pub use schema::ConfigTable;
 pub use table::create_scanner;
-pub use table::register_self;
