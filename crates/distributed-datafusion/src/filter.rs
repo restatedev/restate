@@ -33,16 +33,17 @@ use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
+use crate::selection::{self, Domain};
 
-pub trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
-    fn try_extract(
+pub(crate) trait PartitionKeyExtractor: Send + Sync + 'static + Debug {
+    fn try_extract_domain(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
-    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>>;
+    ) -> anyhow::Result<Domain<PartitionKey>>;
 }
 
-#[derive(Debug)]
-pub struct FirstMatchingPartitionKeyExtractor {
+#[derive(Debug, Default)]
+pub(crate) struct PartitionKeySelector {
     extractors: Vec<PartitionKeyExtractorEntry>,
 }
 
@@ -61,30 +62,25 @@ pub(crate) enum PointReadFanout {
     PerPartition,
 }
 
-/// The partition keys and fanout produced by the first matching extractor.
-#[derive(Debug)]
-pub(crate) struct PartitionKeySelection {
-    pub(crate) keys: BTreeSet<PartitionKey>,
-    pub(crate) fanout: PointReadFanout,
-}
-
-impl Default for FirstMatchingPartitionKeyExtractor {
-    fn default() -> Self {
-        let extractors = vec![PartitionKeyExtractorEntry {
-            extractor: Box::new(MatchingColumnExtractor::new(
-                "partition_key",
-                |value: &ScalarValue| match value {
-                    ScalarValue::UInt64(Some(v)) => Ok(*v),
-                    _ => anyhow::bail!("expected UInt64 partition key"),
-                },
-            )),
-            fanout: PointReadFanout::PerKey,
-        }];
-        Self { extractors }
+impl PartitionKeySelector {
+    /// Intersect every supported derivation; the Boolean analysis is shared with
+    /// node selection. A hash-derived key only supports equality, never ordering.
+    pub(crate) fn select_domain(
+        &self,
+        filters: &[Arc<dyn PhysicalExpr>],
+    ) -> anyhow::Result<(Domain<PartitionKey>, PointReadFanout)> {
+        let mut domain = selection::unsigned_domain(filters, "partition_key")?;
+        let mut fanout = PointReadFanout::PerKey;
+        for entry in &self.extractors {
+            let selected = entry.extractor.try_extract_domain(filters)?;
+            if !selected.is_all() && entry.fanout == PointReadFanout::PerPartition {
+                fanout = PointReadFanout::PerPartition;
+            }
+            domain = domain.intersect(selected);
+        }
+        Ok((domain, fanout))
     }
-}
 
-impl FirstMatchingPartitionKeyExtractor {
     pub fn with_scope(self, column_name: impl Into<String>) -> Self {
         // we only use the scope value if it's not empty, otherwise we cannot
         // rely on it to get the partition key.
@@ -243,7 +239,7 @@ impl FirstMatchingPartitionKeyExtractor {
         })
     }
 
-    pub fn append(self, extractor: impl PartitionKeyExtractor) -> Self {
+    pub(crate) fn append(self, extractor: impl PartitionKeyExtractor) -> Self {
         self.append_with_fanout(extractor, PointReadFanout::PerKey)
     }
 
@@ -257,33 +253,6 @@ impl FirstMatchingPartitionKeyExtractor {
             fanout,
         });
         self
-    }
-
-    pub(crate) fn try_extract_selection(
-        &self,
-        filters: &[Arc<dyn PhysicalExpr>],
-    ) -> anyhow::Result<Option<PartitionKeySelection>> {
-        for entry in &self.extractors {
-            if let Some(keys) = entry.extractor.try_extract(filters)? {
-                return Ok(Some(PartitionKeySelection {
-                    keys,
-                    fanout: entry.fanout,
-                }));
-            }
-        }
-
-        Ok(None)
-    }
-}
-
-impl PartitionKeyExtractor for FirstMatchingPartitionKeyExtractor {
-    fn try_extract(
-        &self,
-        filters: &[Arc<dyn PhysicalExpr>],
-    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        Ok(self
-            .try_extract_selection(filters)?
-            .map(|selection| selection.keys))
     }
 }
 
@@ -314,34 +283,22 @@ impl<F> PartitionKeyExtractor for MatchingColumnExtractor<F>
 where
     F: Fn(&ScalarValue) -> anyhow::Result<PartitionKey> + Send + Sync + 'static,
 {
-    /// Find an expression in the form of `$column_name = <literal>`.
-    /// Then use the provided extractor to convert the literal value to a partition_key.
-    fn try_extract(
+    fn try_extract_domain(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
-    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        for filter in filters {
-            let Some(inlist) = InList::parse(filter, 5) else {
-                continue;
-            };
-
-            // A negated list (`NOT IN`/`!=`) enumerates excluded values, so it
-            // cannot narrow the partition scan.
-            if inlist.col.name() != self.column_name || inlist.negated {
-                continue;
+    ) -> anyhow::Result<Domain<PartitionKey>> {
+        selection::column_domain(filters, &self.column_name, |op, value| {
+            if op != Operator::Eq {
+                return Ok(Domain::all());
             }
-
-            let mut list_keys = BTreeSet::new();
-
-            for value in &inlist.list {
-                let pk = (self.extractor)(value)?;
-                list_keys.insert(pk);
+            if value.is_null() {
+                return Ok(Domain::empty());
             }
-
-            return Ok(Some(list_keys));
-        }
-
-        Ok(None)
+            // A failed routing derivation is not a SQL predicate error. Keep
+            // the residual and scan broadly for unsupported literal values.
+            Ok((self.extractor)(value)
+                .map_or_else(|_| Domain::all(), |key| Domain::comparison(op, key)))
+        })
     }
 }
 
@@ -380,25 +337,26 @@ impl<E> PartitionKeyExtractor for WhenNullExtractor<E>
 where
     E: PartitionKeyExtractor,
 {
-    fn try_extract(
+    fn try_extract_domain(
         &self,
         filters: &[Arc<dyn PhysicalExpr>],
-    ) -> anyhow::Result<Option<BTreeSet<PartitionKey>>> {
-        // Only accept a bare top-level `IsNullExpr` against a `Column`. An `IsNullExpr`
-        // nested in `Or`/`Not`/etc. does not count: e.g. `(scope IS NULL OR scope IS NOT NULL)`
-        // would otherwise spuriously gate the inner extractor open.
-        let has_null_check = filters.iter().any(|filter| {
+    ) -> anyhow::Result<Domain<PartitionKey>> {
+        let conjuncts: Vec<_> = filters
+            .iter()
+            .flat_map(split_conjunction)
+            .cloned()
+            .collect();
+        let has_null_check = conjuncts.iter().any(|filter| {
             filter
                 .downcast_ref::<IsNullExpr>()
                 .and_then(|is_null| is_null.arg().downcast_ref::<Column>())
                 .is_some_and(|column| column.name() == self.null_column_name)
         });
-
-        if !has_null_check {
-            return Ok(None);
+        if has_null_check {
+            self.inner.try_extract_domain(&conjuncts)
+        } else {
+            Ok(Domain::all())
         }
-
-        self.inner.try_extract(filters)
     }
 }
 
@@ -724,10 +682,32 @@ mod tests {
     use restate_types::vqueues::VQueueId;
 
     use crate::filter::{
-        FirstMatchingPartitionKeyExtractor, InvocationIdFilter, PartitionKeyExtractor,
-        VQueueEntryIdFilter, VQueueFilter, VQueueMetaFilter,
+        InvocationIdFilter, PartitionKeySelector, VQueueEntryIdFilter, VQueueFilter,
+        VQueueMetaFilter,
     };
     use crate::partition_store_scanner::ScanLocalPartitionFilter;
+
+    impl PartitionKeySelector {
+        /// Retain the existing finite-set assertions against the shared selector.
+        fn try_extract(
+            &self,
+            filters: &[Arc<dyn PhysicalExpr>],
+        ) -> anyhow::Result<Option<BTreeSet<u64>>> {
+            let (domain, _) = self.select_domain(filters)?;
+            if domain.is_all() {
+                return Ok(None);
+            }
+            Ok(Some(
+                domain
+                    .key_ranges(KeyRange::FULL)
+                    .map(|range| {
+                        assert_eq!(range.start(), range.end(), "expected point selection");
+                        range.start()
+                    })
+                    .collect(),
+            ))
+        }
+    }
 
     fn col(name: &str) -> Arc<dyn PhysicalExpr> {
         Arc::new(Column::new(name, 0))
@@ -801,8 +781,7 @@ mod tests {
 
     #[test]
     fn service_key() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
         let service_id = ServiceId::new(None, "greeter", "key-1");
         let expected_key = service_id.partition_key();
@@ -818,8 +797,7 @@ mod tests {
 
     #[test]
     fn multiple_service_keys() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
         let service_id_1 = ServiceId::new(None, "greeter", "key-1");
         let service_id_2 = ServiceId::new(None, "greeter", "key-2");
@@ -842,8 +820,7 @@ mod tests {
 
     #[test]
     fn multiple_service_keys_ored() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
         let service_id_1 = ServiceId::new(None, "greeter", "key-1");
         let service_id_2 = ServiceId::new(None, "greeter", "key-2");
@@ -866,8 +843,7 @@ mod tests {
 
     #[test]
     fn multiple_service_keys_nested_or() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
         let service_id_1 = ServiceId::new(None, "greeter", "key-1");
         let service_id_2 = ServiceId::new(None, "greeter", "key-2");
@@ -902,31 +878,19 @@ mod tests {
 
     #[test]
     fn multiple_service_keys_too_deep_nesting() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
-        let got_keys = extractor
-            .try_extract(&[or(
-                or(
-                    eq(col("service_key"), utf8_lit("key-1")),
-                    or(
-                        eq(col("service_key"), utf8_lit("key-2")),
-                        or(
-                            eq(col("service_key"), utf8_lit("key-3")),
-                            eq(col("service_key"), utf8_lit("key-4")),
-                        ),
-                    ),
-                ),
-                eq(col("service_key"), utf8_lit("key-7")),
-            )])
-            .expect("extract");
+        let predicate = (0..100).fold(eq(col("service_key"), utf8_lit("key")), |expr, _| {
+            or(expr, eq(col("service_key"), utf8_lit("key")))
+        });
+        let got_keys = extractor.try_extract(&[predicate]).expect("extract");
 
         assert_eq!(None, got_keys);
     }
 
     #[test]
     fn invocation_id() {
-        let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
+        let extractor = PartitionKeySelector::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-2");
         let expected_key = invocation_id.partition_key();
@@ -942,7 +906,7 @@ mod tests {
 
     #[test]
     fn multiple_invocation_ids() {
-        let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
+        let extractor = PartitionKeySelector::default().with_invocation_id("id");
 
         let invocation_id_1 = make_invocation_id("key-1");
         let invocation_id_2 = make_invocation_id("key-2");
@@ -968,8 +932,7 @@ mod tests {
 
     #[test]
     fn vqueue_entry_id_invocation_id() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+        let extractor = PartitionKeySelector::default().with_vqueue_entry_id("head_entry_id");
 
         let invocation_id = make_invocation_id("key-2");
         let expected_key = invocation_id.partition_key();
@@ -988,8 +951,7 @@ mod tests {
 
     #[test]
     fn vqueue_entry_id_state_mutation_id() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_vqueue_entry_id("head_entry_id");
+        let extractor = PartitionKeySelector::default().with_vqueue_entry_id("head_entry_id");
 
         let state_mutation_id = StateMutationId::generate(42);
         let expected_key = state_mutation_id.partition_key();
@@ -1008,7 +970,7 @@ mod tests {
 
     #[test]
     fn invalid_in_list() {
-        let extractor = FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id");
+        let extractor = PartitionKeySelector::default().with_invocation_id("id");
 
         let invocation_id = make_invocation_id("key-1");
 
@@ -1023,9 +985,8 @@ mod tests {
         assert_eq!(None, got_keys);
     }
 
-    fn scope_or_service_key_extractor() -> FirstMatchingPartitionKeyExtractor {
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_scope_or_service_key("scope", "service_key")
+    fn scope_or_service_key_extractor() -> PartitionKeySelector {
+        PartitionKeySelector::default().with_scope_or_service_key("scope", "service_key")
     }
 
     #[test]
@@ -1230,8 +1191,7 @@ mod tests {
 
     #[test]
     fn partition_key_extractor_rejects_negated_in_list() {
-        let extractor =
-            FirstMatchingPartitionKeyExtractor::default().with_service_key("service_key");
+        let extractor = PartitionKeySelector::default().with_service_key("service_key");
 
         let got = extractor
             .try_extract(&[not_in_list("service_key", vec![utf8_lit("key-1")])])

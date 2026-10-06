@@ -3,9 +3,11 @@
 Experimental query-engine crate copied from `restate-storage-query-datafusion` at
 `08e715ceb960` (`[Datafusion][6/N]`). It shares `restate-storage-query-api` with the
 existing engine. `DataFusionEnv::with_distributed_execution` opts into owner-bound
-storage stages executed by `datafusion-distributed` over Restate RPC. Register
-`DistributedQueryServer` on the selected storage owner. This milestone supports
-one owner, including several output lanes from one installed task.
+source stages executed by `datafusion-distributed` over Restate RPC. Register
+`DistributedQueryServer` on each participating owner. Partition and node sources
+share predicate domains, source descriptors, and task transport. Partition work
+covers every selected owner even when query parallelism is smaller than owner count.
+Storage-placement options are validated by both the locator and worker binding.
 
 Distributed query tasks require network protocol V5 and query task protocol v1
 on every participating node. Installation checks the task version and output schema.
