@@ -40,7 +40,7 @@ impl SysSchedulerTable {
             partition_selector,
             schema,
             sys_scheduler_sort_order(),
-            remote_scanner_manager.create_live_scanner::<Self>(),
+            remote_scanner_manager.create_live_source::<Self>(),
             PartitionKeySelector::default()
                 .with_partitioned_resource_id::<VQueueId>("id")
                 .with_vqueue_entry_id("head_entry_id"),
