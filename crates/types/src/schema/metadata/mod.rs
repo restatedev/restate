@@ -709,10 +709,10 @@ struct Handler {
     name: String,
     #[bilrost(tag = 2)]
     target_ty: InvocationTargetType,
-    #[bilrost(tag = 3)]
-    input_rules: InputRules,
-    #[bilrost(tag = 4)]
-    output_rules: OutputRules,
+    #[bilrost(tag = 3, encoding(Arced))]
+    input_rules: Arc<InputRules>,
+    #[bilrost(tag = 4, encoding(Arced))]
+    output_rules: Arc<OutputRules>,
     /// Override of public for this handler. If unspecified, the `public` from `service` is used instead.
     #[bilrost(tag = 5)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1030,8 +1030,8 @@ impl InvocationTargetResolver for Schema {
             completion_retention,
             journal_retention,
             target_ty: handler.target_ty,
-            input_rules: handler.input_rules.clone(),
-            output_rules: handler.output_rules.clone(),
+            input_rules: Arc::clone(&handler.input_rules),
+            output_rules: Arc::clone(&handler.output_rules),
             deployment_status,
         })
     }

@@ -1346,14 +1346,16 @@ impl Handler {
                     Self::input_rules_from_schema(service_name, &handler.name, input_payload)
                 })
                 .transpose()?
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into(),
             output_rules: handler
                 .output
                 .map(|output_payload| {
                     Self::output_rules_from_schema(service_name, &handler.name, output_payload)
                 })
                 .transpose()?
-                .unwrap_or_default(),
+                .unwrap_or_default()
+                .into(),
             documentation: handler.documentation,
             metadata: handler.metadata,
             retry_policy_initial_interval,
