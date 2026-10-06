@@ -187,7 +187,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             true,
         )
         .await?;
-    let _ = result.success_or_error()?;
+    result.into_success_status().await?;
 
     f.outcome(
         "result",

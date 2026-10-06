@@ -98,6 +98,8 @@ pub async fn run_resume(State(env): State<CliEnv>, opts: &Resume) -> Result<()> 
         |client, (invocation, deployment)| async move {
             client
                 .resume_invocation(&invocation.id, deployment.as_deref())
+                .await?
+                .into_success_status()
                 .await
                 .map_err(anyhow::Error::from)
         },

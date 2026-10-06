@@ -85,6 +85,8 @@ pub async fn run_purge(State(env): State<CliEnv>, opts: &Purge) -> Result<()> {
     let (succeeded, failed) = batch_execute(client, invocations, |client, invocation| async move {
         client
             .purge_invocation(&invocation.id)
+            .await?
+            .into_success_status()
             .await
             .map_err(anyhow::Error::from)
     })

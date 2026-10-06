@@ -56,9 +56,17 @@ where
     }
 
     pub async fn into_body(self) -> Result<T, ClientError> {
+        let response = self.into_success_response().await?;
+        let body = response.text().await?;
+        debug!("  {}", body);
+        Ok(serde_json::from_str(&body)?)
+    }
+
+    /// Returns the response on 2xx, or the decoded [`ApiError`] otherwise.
+    async fn into_success_response(self) -> Result<reqwest::Response, ClientError> {
         let http_status_code = self.inner.status();
         let url = self.inner.url().clone();
-        if !self.status_code().is_success() {
+        if !http_status_code.is_success() {
             let body = self.inner.text().await?;
             info!("Response from {} ({})", url, http_status_code);
             info!("  {}", body);
@@ -69,11 +77,8 @@ where
                 body: ApiErrorBody::parse(body),
             }));
         }
-
         debug!("Response from {} ({})", url, http_status_code);
-        let body = self.inner.text().await?;
-        debug!("  {}", body);
-        Ok(serde_json::from_str(&body)?)
+        Ok(self.inner)
     }
 
     pub async fn into_api_error(self) -> Result<ApiError, ClientError> {
@@ -93,14 +98,10 @@ where
     pub async fn into_text(self) -> Result<String, ClientError> {
         Ok(self.inner.text().await?)
     }
-    pub fn success_or_error(self) -> Result<StatusCode, ClientError> {
-        let http_status_code = self.inner.status();
-        let url = self.inner.url().clone();
-        info!("Response from {} ({})", url, http_status_code);
-        match self.inner.error_for_status() {
-            Ok(_) => Ok(http_status_code),
-            Err(e) => Err(ClientError::Network(e)),
-        }
+
+    /// Returns the success status code on 2xx, or the decoded [`ApiError`] otherwise.
+    pub async fn into_success_status(self) -> Result<StatusCode, ClientError> {
+        Ok(self.into_success_response().await?.status())
     }
 }
 
@@ -179,12 +180,11 @@ impl AdminClient {
         // runs an old version which does not support version information. Query the health endpoint
         // to see whether the server is reachable and fail if not.
         // Keep the cause so the failure is classified (network vs. auth) for exit codes.
-        if let Err(err) = client
-            .health()
-            .await
-            .map_err(ClientError::from)
-            .and_then(|r| r.success_or_error())
-        {
+        let health = match client.health().await {
+            Ok(envelope) => envelope.into_success_status().await,
+            Err(err) => Err(err.into()),
+        };
+        if let Err(err) = health {
             return Err(anyhow::Error::new(err).context(format!(
                 "Unable to connect to the Restate server '{}'; make sure that it is running and reachable",
                 client.base_url
@@ -328,3 +328,32 @@ const _: () = {
     const fn assert_send<T: Send + Sync>() {}
     assert_send::<AdminClient>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn envelope(status: u16, body: &'static str) -> Envelope<()> {
+        let response = http::Response::builder().status(status).body(body).unwrap();
+        reqwest::Response::from(response).into()
+    }
+
+    #[tokio::test]
+    async fn into_success_status_accepts_empty_bodies_and_reports_server_errors() {
+        // Mutating endpoints answer 2xx with an empty body, which `into_body` can't parse.
+        assert_eq!(
+            envelope(202, "").into_success_status().await.unwrap(),
+            StatusCode::ACCEPTED
+        );
+        assert!(envelope(202, "").into_body().await.is_err());
+
+        let Err(ClientError::Api(err)) = envelope(409, r#"{"message":"not running"}"#)
+            .into_success_status()
+            .await
+        else {
+            panic!("expected an API error");
+        };
+        assert_eq!(err.http_status_code, StatusCode::CONFLICT);
+        assert_eq!(err.body.message(), "not running");
+    }
+}
