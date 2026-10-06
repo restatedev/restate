@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use codederror::CodedError;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
+use datafusion::logical_expr::{LogicalPlan, Statement};
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::SessionContext;
 use tokio::time::Instant;
@@ -35,7 +36,7 @@ use restate_util_string::ReString;
 
 use crate::catalog::{ClusterTables, RegisterTable, TableInventoryBuilder, UserTables};
 use crate::diagnostics::QueryDiagnosticStream;
-use crate::environment::DataFusionEnv;
+use crate::environment::{DataFusionEnv, QueryClock};
 use crate::sql::redact_statement;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
@@ -63,6 +64,7 @@ pub struct DataFusionQueryEngine<T> {
 pub struct RestateQuerySession<T> {
     ctx: SessionContext,
     session_id: ReString,
+    query_clock: Arc<QueryClock>,
     opts: SessionOptions,
     _phantom: PhantomData<T>,
 }
@@ -80,6 +82,7 @@ impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
             .create_session(opts.tables.as_deref().unwrap_or(&self.tables))?;
         Ok(Arc::new(RestateQuerySession {
             session_id: ctx.session_id().into(),
+            query_clock: Arc::clone(self.env.query_clock()),
             ctx,
             opts,
             _phantom: PhantomData,
@@ -93,14 +96,19 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
         &self.session_id
     }
 
-    #[instrument(target = "query_engine", level="debug", skip_all, fields(session = %self.session_id))]
+    #[instrument(target = "query_engine", level="debug", skip_all, fields(session = %self.session_id, query_ts))]
     async fn execute(
         &self,
         sql: &str,
         _opts: QueryOptions,
     ) -> Result<QueryResult, QueryExecutionError> {
         let planning_started = Instant::now();
-        let state = self.ctx.state();
+        let query_ts = self.query_clock.next();
+        tracing::Span::current().record("query_ts", query_ts.as_u64());
+        // Attach the timestamp to this execution's state, leaving the reusable
+        // session untouched. Planning and task contexts inherit the typed extension.
+        let mut state = self.ctx.state();
+        state.config_mut().set_extension(Arc::new(query_ts));
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let redacted_sql = redact_statement(&statement);
         let plan = state.statement_to_plan(statement).await?;
@@ -109,16 +117,28 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
             .with_allow_dml(false)
             .with_allow_statements(self.opts.allow_statements)
             .verify_plan(&plan)?;
-        let df = self.ctx.execute_logical_plan(plan).await?;
+        // Session mutations must persist across debugger commands. Queries,
+        // including EXECUTE, retain their isolated execution timestamp.
+        let ctx = match &plan {
+            LogicalPlan::Statement(
+                Statement::SetVariable(_)
+                | Statement::ResetVariable(_)
+                | Statement::Prepare(_)
+                | Statement::Deallocate(_),
+            ) => self.ctx.clone(),
+            _ => SessionContext::new_with_state(state),
+        };
+        let df = ctx.execute_logical_plan(plan).await?;
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df.create_physical_plan().await?;
         let metadata = QueryMetadata {
             session_id: self.session_id.clone(),
+            query_ts,
             headers: self.opts.headers.clone(),
             redacted_sql,
             planning_duration: planning_started.elapsed(),
         };
-        info!(target: "query_engine", session = %metadata.session_id, headers = ?metadata.headers, query = %metadata.redacted_sql, "Executing query");
+        info!(target: "query_engine", session = %metadata.session_id, query_ts = metadata.query_ts.as_u64(), headers = ?metadata.headers, query = %metadata.redacted_sql, "Executing query");
         let node_warnings = collect_node_warnings(&physical_plan);
         let execution_started = Instant::now();
         let stream = execute_stream(Arc::clone(&physical_plan), task_ctx)?;
@@ -220,16 +240,24 @@ impl SelectPartitions for SelectPartitionsFromMetadata {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::num::NonZeroU32;
     use std::sync::Arc;
     use std::time::Duration;
 
+    use datafusion::arrow::array::{RecordBatch, StringArray, UInt64Array};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
     use datafusion::arrow::util::display::array_value_to_string;
+    use datafusion::catalog::streaming::StreamingTable;
+    use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::streaming::PartitionStream;
     use datafusion::prelude::SessionContext;
     use futures::{StreamExt, TryStreamExt};
     use tokio::sync::watch;
 
+    use restate_clock::time::MillisSinceEpoch;
+    use restate_clock::{MockClock, UniqueTimestamp};
     use restate_core::MetadataKind;
     use restate_core::test_env::TestCoreEnv;
     use restate_storage_query_api::errors::SessionError;
@@ -246,9 +274,146 @@ mod tests {
 
     use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter, SelectPartitionsFromMetadata};
 
+    #[derive(Debug)]
+    struct QueryTimestampSource(SchemaRef);
+
+    impl PartitionStream for QueryTimestampSource {
+        fn schema(&self) -> &SchemaRef {
+            &self.0
+        }
+
+        fn execute(&self, context: Arc<TaskContext>) -> SendableRecordBatchStream {
+            let schema = Arc::clone(&self.0);
+            Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&schema),
+                futures::stream::once(async move {
+                    RecordBatch::try_new(
+                        schema,
+                        vec![
+                            Arc::new(StringArray::from(vec![context.session_id()])),
+                            Arc::new(UInt64Array::from(vec![
+                                context
+                                    .session_config()
+                                    .get_extension::<UniqueTimestamp>()
+                                    .expect("native query timestamp")
+                                    .as_u64(),
+                            ])),
+                        ],
+                    )
+                    .map_err(Into::into)
+                }),
+            ))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_timestamps_isolate_concurrent_executions_and_reach_source_tasks() {
+        let physical_time = MillisSinceEpoch::new(1_700_000_000_000);
+        let mock_clock = MockClock::with_timestamp(physical_time);
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, Some(2), &HashMap::new())
+            .unwrap()
+            .with_mock_clock(mock_clock.clone())
+            .unwrap();
+        let clock = Arc::clone(env.query_clock());
+        let other_env = env.clone();
+        assert!(Arc::ptr_eq(env.query_clock(), other_env.query_clock()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("session_id", DataType::Utf8, false),
+            Field::new("query_ts", DataType::UInt64, false),
+        ]));
+        let source = Arc::new(QueryTimestampSource(Arc::clone(&schema)));
+        env.register_provider(
+            "query_timestamp".into(),
+            Arc::new(StreamingTable::try_new(schema, vec![source.clone(), source]).unwrap()),
+        )
+        .unwrap();
+        let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(
+            env,
+            None,
+            vec![SessionTable::new("query_timestamp", "query_timestamp")],
+        );
+        let session = engine.create_session(SessionOptions::default()).unwrap();
+        // Planning failure still advances the shared HLC.
+        let before_failure = clock.snapshot();
+        assert!(session.execute("SELECT (", QueryOptions {}).await.is_err());
+        let after_failure = clock.snapshot();
+        assert!(after_failure > before_failure);
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let session = Arc::clone(&session);
+            tasks.spawn(async move {
+                // Independent references and execution partitions must share the timestamp.
+                let result = session
+                    .execute(
+                        "SELECT * FROM query_timestamp UNION ALL SELECT * FROM query_timestamp",
+                        QueryOptions {},
+                    )
+                    .await
+                    .unwrap();
+                let metadata = result.metadata;
+                let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+                assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+                for batch in batches {
+                    for row in 0..batch.num_rows() {
+                        assert_eq!(
+                            array_value_to_string(batch.column(0), row).unwrap(),
+                            metadata.session_id.as_str()
+                        );
+                        assert_eq!(
+                            batch
+                                .column(1)
+                                .as_any()
+                                .downcast_ref::<UInt64Array>()
+                                .unwrap()
+                                .value(row),
+                            metadata.query_ts.as_u64()
+                        );
+                    }
+                }
+                metadata.query_ts
+            });
+        }
+        let mut timestamps = BTreeSet::new();
+        while let Some(result) = tasks.join_next().await {
+            assert!(
+                timestamps.insert(result.unwrap()),
+                "query timestamp was reused"
+            );
+        }
+        assert_eq!(timestamps.len(), 8);
+        assert!(*timestamps.first().unwrap() > after_failure);
+        assert!(
+            timestamps
+                .iter()
+                .all(|ts| ts.to_unix_millis() == physical_time)
+        );
+
+        // A second engine created from an environment clone shares the same timeline.
+        mock_clock.advance_ms(10);
+        let other_engine =
+            DataFusionQueryEngine::<AdminUser>::from_inventory(other_env, None, vec![]);
+        let other = other_engine
+            .create_session(SessionOptions::default())
+            .unwrap();
+        let result = other.execute("SELECT 42", QueryOptions {}).await.unwrap();
+        assert_eq!(result.metadata.session_id.as_str(), other.session_id());
+        let timestamp = result.metadata.query_ts;
+        assert!(timestamp > *timestamps.last().unwrap());
+        assert_eq!(timestamp, clock.snapshot());
+        assert_eq!(
+            timestamp.to_unix_millis().as_u64(),
+            physical_time.as_u64() + 10
+        );
+        assert_ne!(session.session_id(), other.session_id());
+    }
+
     #[tokio::test(start_paused = true)]
     async fn diagnostics_follow_query_lifetime_independently_of_session() {
-        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
         let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(env, None, vec![]);
         let mut options = SessionOptions::default();
         options
@@ -288,6 +453,7 @@ mod tests {
         // Two executions on the same session must have separate progress.
         let cancelled = session.execute("SELECT 42", QueryOptions {}).await.unwrap();
         assert_eq!(result.metadata.session_id, cancelled.metadata.session_id);
+        assert_ne!(result.metadata.query_ts, cancelled.metadata.query_ts);
         drop(session);
         drop(cancelled.stream);
         assert_eq!(
@@ -342,7 +508,10 @@ mod tests {
         let log_count = core.metadata.logs_snapshot().iter().count();
         assert!(partition_count > 0 && log_count > 0);
 
-        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
         let scanners = RemoteScannerManager::local_only(core.metadata.clone());
         let (_tx, cluster_state) = watch::channel(Arc::new(LegacyClusterState::empty()));
         let cluster = DataFusionQueryEngine::with_cluster_tables(
@@ -476,7 +645,10 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn sessions_share_providers_and_admission_but_reject_runtime_mutations() {
-        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
         let first = env.build_session_state().unwrap();
         let second = env.build_session_state().unwrap();
         assert_ne!(first.session_id(), second.session_id());
