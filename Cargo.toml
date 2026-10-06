@@ -54,6 +54,7 @@ restate-clock = { path = "crates/clock" }
 restate-cloud-tunnel-client = { path = "crates/cloud-tunnel-client" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
+restate-distributed-datafusion = { path = "crates/distributed-datafusion" }
 restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }

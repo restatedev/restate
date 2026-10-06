@@ -7860,6 +7860,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-distributed-datafusion"
+version = "1.8.0-rc.1"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "dashmap",
+ "datafusion",
+ "datafusion-functions-json",
+ "datafusion-proto",
+ "derive_more",
+ "enumset",
+ "futures",
+ "gardal",
+ "googletest",
+ "itertools 0.15.0",
+ "parking_lot",
+ "paste",
+ "prost",
+ "restate-clock",
+ "restate-core",
+ "restate-limiter",
+ "restate-metadata-store",
+ "restate-partition-store",
+ "restate-platform",
+ "restate-rocksdb",
+ "restate-service-protocol",
+ "restate-service-protocol-v4",
+ "restate-sharding",
+ "restate-storage-api",
+ "restate-storage-query-api",
+ "restate-types",
+ "restate-util-string",
+ "restate-worker-api",
+ "restate-workspace-hack",
+ "schemars 1.2.2",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+]
+
+[[package]]
 name = "restate-doctor"
 version = "1.8.0-rc.1"
 dependencies = [
