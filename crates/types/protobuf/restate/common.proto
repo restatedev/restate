@@ -25,6 +25,9 @@ enum ProtocolVersion {
 
   // Release in v1.8. Support dedicated partition processor RPC messages
   V4 = 4;
+
+  // Release in v1.8. Support distributed query task RPC messages
+  V5 = 5;
 }
 
 message NodeId {
@@ -67,6 +70,7 @@ enum ServiceTag {
 
   // Data fusion
   REMOTE_DATA_FUSION_SERVICE = 86;
+  DISTRIBUTED_QUERY_SERVICE = 87;
 
   // Metadata management
   METADATA_MANAGER_SERVICE = 100;
