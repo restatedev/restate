@@ -20,8 +20,10 @@ mod tests;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
@@ -40,6 +42,28 @@ pub use worker::DistributedQueryServer;
 
 #[derive(Debug)]
 pub(crate) struct DistributedExecution;
+
+/// Runs last so EXPLAIN captures the same mandatory stages that queries execute.
+#[derive(Debug)]
+pub(crate) struct DistributedPlanRule;
+
+impl PhysicalOptimizerRule for DistributedPlanRule {
+    fn optimize(
+        &self,
+        input: Arc<dyn ExecutionPlan>,
+        _: &ConfigOptions,
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        plan(input)
+    }
+
+    fn name(&self) -> &str {
+        "restate_distributed_stages"
+    }
+
+    fn schema_check(&self) -> bool {
+        true
+    }
+}
 
 pub(crate) fn configure(config: &mut SessionConfig, network: impl NetworkSender) {
     config.set_extension(Arc::new(DistributedExecution));
