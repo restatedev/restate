@@ -18,7 +18,9 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use futures::{Stream, StreamExt, ready};
-use tracing::{Level, enabled, warn};
+use tracing::warn;
+
+use crate::QueryMetadata;
 
 pub trait RecordBatchWriter
 where
@@ -58,19 +60,19 @@ pub struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
     stream_writer: W,
-    query: String,
+    metadata: QueryMetadata,
 }
 
 impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     pub fn new(
         record_batch_stream: SendableRecordBatchStream,
-        query: String,
+        metadata: QueryMetadata,
     ) -> Result<Self, DataFusionError> {
         Ok(WriteRecordBatchStream {
             done: false,
             stream_writer: W::new(&record_batch_stream.schema())?,
             record_batch_stream,
-            query,
+            metadata,
         })
     }
 }
@@ -89,11 +91,10 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
             match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
-                    if enabled!(Level::DEBUG) {
-                        warn!(query = %self.query, %err, "Query failed");
-                    } else {
-                        warn!(%err, "Query failed");
-                    }
+                    // Error messages can embed literal values. Return the original
+                    // error to the caller, but log only the redacted diagnostic SQL.
+                    warn!(target: "query_engine", session = %self.metadata.session_id,
+                        query = %self.metadata.redacted_sql, "Query failed");
 
                     self.done = true;
                     Poll::Ready(Some(Err(err)))
