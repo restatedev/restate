@@ -38,7 +38,7 @@ impl SysUserLimitsTable {
             partition_selector,
             schema,
             sys_user_limits_sort_order(),
-            remote_scanner_manager.create_live_scanner::<Self>(),
+            remote_scanner_manager.create_live_source::<Self>(),
             PartitionKeySelector::default(),
         )
         .with_statistics(statistics.build());

@@ -39,7 +39,7 @@ impl SysInvocationStateTable {
             partition_selector,
             schema,
             sys_invocation_state_sort_order(),
-            remote_scanner_manager.create_live_scanner::<Self>(),
+            remote_scanner_manager.create_live_source::<Self>(),
             PartitionKeySelector::default().with_invocation_id("id"),
         )
         .with_statistics(statistics.build());
