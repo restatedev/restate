@@ -205,6 +205,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
     fn get_partition_target_node(
         &self,
         _partition_id: PartitionId,
+        _placement: crate::placement::PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation> {
         Ok(PartitionLocation::Local)
     }
