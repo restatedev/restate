@@ -26,4 +26,9 @@ primary-key lookups. Queries combining compatible ID filters can read a smaller
 set of records; `EXPLAIN VERBOSE` shows the selected access.
 Plain `EXPLAIN` summarizes storage access with lane counts and partition IDs;
 use `EXPLAIN VERBOSE` to inspect the full key ranges and lookup details.
+
 Detailed remote operator metrics are not yet available.
+
+The `restate sql` command can select the engine with `--engine v1` or `--engine v2`,
+and reports the engine that served each query next to the row count. Without the
+flag it keeps using the server's default engine.
