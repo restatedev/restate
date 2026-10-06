@@ -54,6 +54,7 @@ use restate_types::live::{Live, LiveLoad};
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::sharding::KeyRange;
+use restate_types::time::MillisSinceEpoch;
 use restate_util_time::DurationExt;
 use restate_worker_api::invoker::capacity::TokenBucket;
 use restate_worker_api::invoker::invocation_reader::InvocationReader;
@@ -1377,7 +1378,9 @@ where
                                     retry_count_since_last_stored_command,
                                 },
                                 error_event,
-                                resume_at: Some(RoughTimestamp::now() + retry_after),
+                                resume_at: Some(RoughTimestamp::from_unix_millis_ceil(
+                                    MillisSinceEpoch::now() + retry_after,
+                                )),
                             },
                         },
                     ))
