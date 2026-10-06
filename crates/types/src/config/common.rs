@@ -766,6 +766,26 @@ macro_rules! experimental {
 // `is_<name>_enabled()` / `set_<name>()` accessors, and the entry exposed (under the bare
 // name, without the `experimental_enable_` prefix) by the admin `/version` API.
 experimental! {
+    /// # Query engine v2 for staging
+    ///
+    /// Enables the experimental query task service and selection through
+    /// `X-Restate-Query-Engine: v2` on the admin query endpoint.
+    /// Enable on coordinators and query targets before starting the nodes.
+    /// Currently supports storage queries targeting a single owner.
+    ///
+    /// Since v1.8.0
+    query_engine_v2,
+
+    /// # Default to query engine v2
+    ///
+    /// Uses the experimental distributed engine (v2) for admin `/query` requests
+    /// without an `X-Restate-Query-Engine` header. Explicit `v1` or `v2` headers
+    /// override this default. Requires `experimental-enable-query-engine-v2`.
+    /// Read when the admin service starts; restart to change the default.
+    ///
+    /// Since v1.8.0
+    query_engine_v2_default,
+
     /// # AWS-to-GCP workload identity federation
     ///
     /// Allows registering deployments that authenticate through a Google workload identity
