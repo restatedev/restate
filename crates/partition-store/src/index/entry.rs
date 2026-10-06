@@ -11,7 +11,7 @@
 use std::cmp::Reverse;
 
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
-use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_storage_api::vqueue_table::Stage;
 use restate_types::ServiceName;
 use restate_types::identifiers::CanonicalEntryId;
 use restate_types::vqueues::Seq;
@@ -19,38 +19,66 @@ use restate_types::vqueues::Seq;
 use super::macros::define_secondary_index;
 
 define_secondary_index!(
-    /// Entries ordered by service, VQueue stage, and newest transition first.
-    EntryByServiceStage,
-    key: EntryByServiceStageKey {
-        service_name: ServiceName => str,
+    /// Find the most recently transitioned entries for a service within a VQueue stage.
+    ///
+    /// Ordering within a partition:
+    /// `stage ASC -> service_name ASC -> transitioned_at DESC -> canonical_id ASC`.
+    /// Fix stage and service to scan newest transitions first; across services,
+    /// entries are grouped by service rather than globally ordered by transition time.
+    EntryByStageService,
+    key: EntryByStageServiceKey {
         stage: Stage,
+        service_name: ServiceName => str,
         transitioned_at: Reverse<UniqueTimestamp>,
-        // todo: add status?
         canonical_id: CanonicalEntryId (primary_key),
     }
 );
 
 define_secondary_index!(
-    /// Entries ordered by stage and newest transition first.
+    /// Find the earliest next transitions for a service within a VQueue stage.
+    ///
+    /// Ordering within a partition:
+    /// `stage ASC -> service_name ASC -> next_at ASC -> seq ASC -> canonical_id ASC`.
+    /// Fix stage and service to scan earliest transitions first. Sequence breaks
+    /// same-second ties before the canonical ID's partition key.
+    EntryNextAtByStageService,
+    key: EntryNextAtByStageServiceKey {
+        stage: Stage,
+        service_name: ServiceName => str,
+        next_at: RoughTimestamp,
+        // Derived from canonical_id; repeated here to order across partition keys.
+        seq: Seq,
+        canonical_id: CanonicalEntryId (primary_key),
+    }
+);
+
+define_secondary_index!(
+    /// Find the most recently transitioned entries in a VQueue stage across services.
+    ///
+    /// Ordering within a partition:
+    /// `stage ASC -> transitioned_at DESC -> canonical_id ASC`.
+    /// Fix stage to scan newest transitions first without grouping by service.
     EntryByStage,
     key: EntryByStageKey {
         stage: Stage,
         transitioned_at: Reverse<UniqueTimestamp>,
-        status: Status,
         canonical_id: CanonicalEntryId (primary_key),
     }
 );
 
 define_secondary_index!(
-    /// Entries ordered by stage, next transition time, and ascending sequence.
-    /// Sequence breaks same-second ties before status and partition key.
+    /// Find the earliest next transitions in a VQueue stage across services.
+    ///
+    /// Ordering within a partition:
+    /// `stage ASC -> next_at ASC -> seq ASC -> canonical_id ASC`.
+    /// Fix stage to scan earliest transitions first without grouping by service.
+    /// Sequence breaks same-second ties before the canonical ID's partition key.
     EntryNextAtByStage,
     key: EntryNextAtByStageKey {
         stage: Stage,
         next_at: RoughTimestamp,
         // Derived from canonical_id; repeated here to order across partition keys.
         seq: Seq,
-        status: Status,
         canonical_id: CanonicalEntryId (primary_key),
     }
 );
@@ -66,14 +94,16 @@ mod tests {
 
     use super::*;
 
-    static_assertions::assert_impl_all!(EntryByServiceStageKey: SecondaryIndexKey);
+    static_assertions::assert_impl_all!(EntryByStageServiceKey: SecondaryIndexKey);
+    static_assertions::assert_impl_all!(EntryNextAtByStageServiceKey: SecondaryIndexKey);
     static_assertions::assert_impl_all!(EntryByStageKey: SecondaryIndexKey);
     static_assertions::assert_impl_all!(EntryNextAtByStageKey: SecondaryIndexKey);
-    static_assertions::assert_not_impl_any!(EntryByServiceStageKeyPrefix<Vec<u8>, 3>: SecondaryIndexKey);
-    static_assertions::assert_not_impl_any!(EntryByStageKeyPrefix<Vec<u8>, 3>: SecondaryIndexKey);
-    static_assertions::assert_not_impl_any!(EntryNextAtByStageKeyPrefix<Vec<u8>, 4>: SecondaryIndexKey);
+    static_assertions::assert_not_impl_any!(EntryByStageServiceKeyPrefix<Vec<u8>, 3>: SecondaryIndexKey);
+    static_assertions::assert_not_impl_any!(EntryNextAtByStageServiceKeyPrefix<Vec<u8>, 4>: SecondaryIndexKey);
+    static_assertions::assert_not_impl_any!(EntryByStageKeyPrefix<Vec<u8>, 2>: SecondaryIndexKey);
+    static_assertions::assert_not_impl_any!(EntryNextAtByStageKeyPrefix<Vec<u8>, 3>: SecondaryIndexKey);
     static_assertions::assert_type_eq_all!(
-        <EntryByServiceStage as SecondaryIndex>::PrimaryKey,
+        <EntryByStageService as SecondaryIndex>::PrimaryKey,
         CanonicalEntryId
     );
     static_assertions::assert_impl_all!(CanonicalEntryId: restate_storage_api::PrimaryKey);
@@ -86,7 +116,7 @@ mod tests {
             let id = BaseEntryId::new(3337, EntryId::new(kind, [42; EntryId::REMAINDER_LEN]))
                 .canonicalize(Seq::MAX);
             let at = UniqueTimestamp::try_from_parts(100, 7).unwrap();
-            let key = EntryByServiceStageKey::borrowed("svc", Stage::Running, Reverse(at), id);
+            let key = EntryByStageServiceKey::borrowed(Stage::Running, "svc", Reverse(at), id);
             assert_eq!(*key.primary_key(), id);
 
             let mut bytes = Vec::new();
@@ -98,24 +128,24 @@ mod tests {
             assert_eq!(&bytes[bytes.len() - id.as_bytes().len()..], id.as_bytes());
 
             let mut prefix = Vec::new();
-            let builder = EntryByServiceStageKey::prefix(partition, &mut prefix)
-                .service_name("svc")
+            let builder = EntryByStageServiceKey::prefix(partition, &mut prefix)
                 .stage(Stage::Running)
+                .service_name("svc")
                 .transitioned_at(Reverse(at));
             builder.canonical_id(id);
             assert_eq!(prefix, bytes);
 
             let (header, remaining) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
             assert_eq!(header.partition_id(), partition);
-            assert_eq!(header.index_id(), Some(IndexId::EntryByServiceStage));
+            assert_eq!(header.index_id(), Some(IndexId::EntryByStageService));
             assert_eq!(
                 header.index_id_raw(),
-                EntryByServiceStage::INDEX_ID.as_u32()
+                EntryByStageService::INDEX_ID.as_u32()
             );
             assert_eq!(IndexId::from_u32(0), None);
             assert_eq!(IndexId::from_u32(u32::MAX), None);
             let decoded = remaining
-                .into_decoder::<EntryByServiceStageKey>()
+                .into_decoder::<EntryByStageServiceKey>()
                 .decode_all()
                 .unwrap();
             assert_eq!(decoded.service_name.as_str(), "svc");
@@ -128,10 +158,10 @@ mod tests {
 
             let (_, remaining) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
             let (_, decoder) = remaining
-                .into_decoder::<EntryByServiceStageKey>()
-                .take_service_name()
+                .into_decoder::<EntryByStageServiceKey>()
+                .take_stage()
                 .unwrap();
-            let (_, decoder) = decoder.take_stage().unwrap();
+            let (_, decoder) = decoder.take_service_name().unwrap();
             let (time, decoder) = decoder.take_transitioned_at().unwrap();
             assert_eq!(time.as_bytes(), &(!at.as_u64()).to_be_bytes());
             assert_eq!(time.decode().unwrap(), Reverse(at));
@@ -143,7 +173,7 @@ mod tests {
                     IndexKeyPrefix::decode_prefix(&bytes[..bytes.len() - missing]).unwrap();
                 assert!(
                     remaining
-                        .into_decoder::<EntryByServiceStageKey>()
+                        .into_decoder::<EntryByStageServiceKey>()
                         .decode_all()
                         .is_err()
                 );
@@ -152,7 +182,7 @@ mod tests {
             let (_, remaining) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
             assert!(
                 remaining
-                    .into_decoder::<EntryByServiceStageKey>()
+                    .into_decoder::<EntryByStageServiceKey>()
                     .decode_all()
                     .is_err()
             );
@@ -185,7 +215,7 @@ mod tests {
         {
             let id = base.canonicalize(Seq::new(i as u64));
             let mut bytes = Vec::new();
-            EntryByStageKey::borrowed(Stage::Inbox, Reverse(at), Status::Scheduled, id)
+            EntryByStageKey::borrowed(Stage::Inbox, Reverse(at), id)
                 .encode_key(partition, &mut bytes);
             assert_eq!(
                 &bytes[bytes.len() - CanonicalEntryId::RAW_BYTES_LEN..],
@@ -201,15 +231,14 @@ mod tests {
                 (
                     decoded.stage,
                     decoded.transitioned_at,
-                    decoded.status,
                     *decoded.primary_key()
                 ),
-                (Stage::Inbox, Reverse(at), Status::Scheduled, id)
+                (Stage::Inbox, Reverse(at), id)
             );
             transitions.push((bytes, id));
 
             let mut bytes = Vec::new();
-            EntryNextAtByStageKey::borrowed(Stage::Inbox, next_at, id.seq(), Status::Scheduled, id)
+            EntryNextAtByStageKey::borrowed(Stage::Inbox, next_at, id.seq(), id)
                 .encode_key(partition, &mut bytes);
             assert_eq!(
                 &bytes[bytes.len() - CanonicalEntryId::RAW_BYTES_LEN..],
@@ -226,12 +255,31 @@ mod tests {
                     decoded.stage,
                     decoded.next_at,
                     decoded.seq,
-                    decoded.status,
                     *decoded.primary_key()
                 ),
-                (Stage::Inbox, next_at, id.seq(), Status::Scheduled, id)
+                (Stage::Inbox, next_at, id.seq(), id)
             );
             next_times.push((bytes, id));
+
+            let mut bytes = Vec::new();
+            EntryNextAtByStageServiceKey::borrowed(Stage::Inbox, "svc", next_at, id.seq(), id)
+                .encode_key(partition, &mut bytes);
+            let (prefix, payload) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
+            assert_eq!(prefix.index_id(), Some(IndexId::EntryNextAtByStageService));
+            let decoded = payload
+                .into_decoder::<EntryNextAtByStageServiceKey>()
+                .decode_all()
+                .unwrap();
+            assert_eq!(decoded.service_name.as_str(), "svc");
+            assert_eq!(
+                (
+                    decoded.stage,
+                    decoded.next_at,
+                    decoded.seq,
+                    decoded.canonical_id
+                ),
+                (Stage::Inbox, next_at, id.seq(), id)
+            );
         }
         transitions.sort();
         next_times.sort();
@@ -252,52 +300,48 @@ mod tests {
     }
 
     #[test]
-    fn next_at_sequence_precedes_status_and_partition_key() {
+    fn next_at_sequence_precedes_partition_key() {
         let partition = PartitionId::MIN;
         let mut previous = None;
         // Enumerate the intended order, including adjacent sequence values whose
-        // order conflicts with status and partition key at the loop boundaries.
+        // order conflicts with partition key at the loop boundaries.
         for stage in [Stage::Inbox, Stage::Running] {
             for next_at in [RoughTimestamp::RESTATE_EPOCH, RoughTimestamp::MAX] {
                 for seq in [Seq::MIN, Seq::new(255), Seq::new(256), Seq::MAX] {
-                    for status in [Status::Scheduled, Status::Started] {
-                        for partition_key in [0, u64::MAX] {
-                            let id = BaseEntryId::from(InvocationId::from_parts(
-                                partition_key,
-                                InvocationUuid::from_u128(1),
-                            ))
-                            .canonicalize(seq);
-                            let mut bytes = Vec::new();
-                            EntryNextAtByStageKey::borrowed(stage, next_at, id.seq(), status, id)
-                                .encode_key(partition, &mut bytes);
-                            if let Some(previous) = previous {
-                                assert!(previous < bytes);
-                            }
-
-                            let mut prefix = Vec::new();
-                            EntryNextAtByStageKey::prefix(partition, &mut prefix)
-                                .stage(stage)
-                                .next_at(next_at)
-                                .seq(id.seq())
-                                .status(status)
-                                .canonical_id(id);
-                            assert_eq!(prefix, bytes);
-
-                            let (_, payload) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
-                            let (_, decoder) = payload
-                                .into_decoder::<EntryNextAtByStageKey>()
-                                .take_stage()
-                                .unwrap();
-                            let (_, decoder) = decoder.take_next_at().unwrap();
-                            let (encoded_seq, decoder) = decoder.take_seq().unwrap();
-                            assert_eq!(encoded_seq.as_bytes(), &seq.as_u64().to_be_bytes());
-                            assert_eq!(encoded_seq.decode().unwrap(), seq);
-                            let (_, decoder) = decoder.take_status().unwrap();
-                            let decoded_id = decoder.take_canonical_id().unwrap().decode().unwrap();
-                            assert_eq!(decoded_id, id);
-                            assert_eq!(decoded_id.seq(), encoded_seq.decode().unwrap());
-                            previous = Some(bytes);
+                    for partition_key in [0, u64::MAX] {
+                        let id = BaseEntryId::from(InvocationId::from_parts(
+                            partition_key,
+                            InvocationUuid::from_u128(1),
+                        ))
+                        .canonicalize(seq);
+                        let mut bytes = Vec::new();
+                        EntryNextAtByStageKey::borrowed(stage, next_at, id.seq(), id)
+                            .encode_key(partition, &mut bytes);
+                        if let Some(previous) = previous {
+                            assert!(previous < bytes);
                         }
+
+                        let mut prefix = Vec::new();
+                        EntryNextAtByStageKey::prefix(partition, &mut prefix)
+                            .stage(stage)
+                            .next_at(next_at)
+                            .seq(id.seq())
+                            .canonical_id(id);
+                        assert_eq!(prefix, bytes);
+
+                        let (_, payload) = IndexKeyPrefix::decode_prefix(&bytes).unwrap();
+                        let (_, decoder) = payload
+                            .into_decoder::<EntryNextAtByStageKey>()
+                            .take_stage()
+                            .unwrap();
+                        let (_, decoder) = decoder.take_next_at().unwrap();
+                        let (encoded_seq, decoder) = decoder.take_seq().unwrap();
+                        assert_eq!(encoded_seq.as_bytes(), &seq.as_u64().to_be_bytes());
+                        assert_eq!(encoded_seq.decode().unwrap(), seq);
+                        let decoded_id = decoder.take_canonical_id().unwrap().decode().unwrap();
+                        assert_eq!(decoded_id, id);
+                        assert_eq!(decoded_id.seq(), encoded_seq.decode().unwrap());
+                        previous = Some(bytes);
                     }
                 }
             }
@@ -306,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    fn secondary_key_order_is_service_stage_newest_transition_then_primary_key() {
+    fn secondary_key_order_is_stage_service_newest_transition_then_primary_key() {
         let id = |partition, uuid| {
             BaseEntryId::from(InvocationId::from_parts(
                 partition,
@@ -352,13 +396,13 @@ mod tests {
             .iter()
             .map(|&(service, stage, at, id)| {
                 let mut bytes = Vec::new();
-                EntryByServiceStageKey::borrowed(service, stage, at, id)
+                EntryByStageServiceKey::borrowed(stage, service, at, id)
                     .encode_key(PartitionId::MIN, &mut bytes);
                 (bytes, (service, stage, at, id))
             })
             .collect();
         encoded.sort_by(|(a, _), (b, _)| a.cmp(b));
-        expected.sort_by_key(|&(service, stage, at, id)| (service, stage.as_str(), at, id));
+        expected.sort_by_key(|&(service, stage, at, id)| (stage.as_str(), service, at, id));
         assert_eq!(
             encoded.into_iter().map(|(_, row)| row).collect::<Vec<_>>(),
             expected
