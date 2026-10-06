@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::str::FromStr;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{cmp, fmt};
 
@@ -95,8 +96,9 @@ pub struct InvocationTargetMetadata {
     pub journal_retention: Duration,
 
     pub target_ty: InvocationTargetType,
-    pub input_rules: InputRules,
-    pub output_rules: OutputRules,
+    /// Shared with the schema registry, rules can embed large JSON schemas that are expensive to clone.
+    pub input_rules: Arc<InputRules>,
+    pub output_rules: Arc<OutputRules>,
 
     pub deployment_status: DeploymentStatus,
 }
