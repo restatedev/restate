@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-/// Defines an ordered key payload, its borrowed view, physical schema, and typed
+/// Defines an ordered key payload, borrowed encoding and decoding views, physical schema, and typed
 /// prefix/decoder steps. The caller supplies the table and fixed-prefix adapter.
 ///
 /// `start` writes the fixed identity from a borrowed context into a supplied
@@ -58,6 +58,24 @@ macro_rules! define_index_key {
         }
 
         paste::paste! {
+            /// A zero-copy view of all encoded fields, decoded individually on demand.
+            #[allow(dead_code)]
+            pub struct [<$key View>]<'a> {
+                $(pub $field: crate::keys::FieldDecoder<'a, $codec>,)+
+            }
+
+            #[allow(dead_code)]
+            impl<'a> crate::keys::KeyDecoder<'a, $key> {
+                /// Takes every field and rejects trailing bytes without materializing values.
+                pub fn take_all(mut self) -> crate::Result<[<$key View>]<'a>> {
+                    $(let $field = crate::keys::FieldDecoder::<$codec>::take(&mut self.remaining)?;)+
+                    if !self.remaining.is_empty() {
+                        return Err(restate_storage_api::StorageError::DataIntegrityError);
+                    }
+                    Ok([<$key View>] { $($field,)+ })
+                }
+            }
+
             #[allow(dead_code)]
             pub struct [<$key Ref>]<'a> {
                 $($field: crate::keys::macros::define_index_key!(@ref_type 'a; $codec $(; $borrowed)?),)+
