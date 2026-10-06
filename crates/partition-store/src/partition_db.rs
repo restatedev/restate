@@ -32,6 +32,7 @@ use restate_types::logs::Lsn;
 use restate_types::partitions::{CfName, Partition};
 use restate_util_bytecount::ByteCount;
 
+use crate::compaction_filter::PartitionCompactionFactory;
 use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
@@ -692,6 +693,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
 
         // Keys shorter than the cap are their own prefix, so every key is in the extractor's domain.
         cf_options.set_capped_prefix_extractor(crate::PREFIX_EXTRACTOR_LENGTH);
+        cf_options.set_compaction_filter_factory(PartitionCompactionFactory);
         cf_options.set_memtable_prefix_bloom_ratio(0.2);
         cf_options.set_memtable_whole_key_filtering(whole_key_filtering);
 
