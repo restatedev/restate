@@ -16,40 +16,145 @@ use zerocopy::IntoBytes;
 use restate_rocksdb::{IterAction, Priority};
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
-use restate_storage_api::index::EntryByService;
+use restate_storage_api::index::{
+    BusyVQueue as BusyVQueueTarget, EntryByService, EntryByStage, EntryByVirtualObject,
+    EntryNextAtByService, EntryNextAtByStage, EntryNextAtByVirtualObject,
+};
 use restate_types::sharding::KeyRange;
 
-use crate::keys::IndexKeyPrefix;
-use crate::keys::filter::KeyMatch;
+use crate::keys::filter::{IndexKeySchema, KeyMatch, PreparedKeyFilter};
+use crate::keys::{DecodeIndexKey, IndexKeyPrefix, KeyDecoder};
+use crate::stats::StatValueCodec;
+use crate::stats::aggregated::StageCounts;
 use crate::{PartitionStore, Result, break_on_err};
 
-use super::{EntryByStageService, EntryByStageServiceKey, EntryByStageServiceKeyView};
+use super::{
+    BusyVQueueKey, BusyVQueueKeyView, EntryByStageKey, EntryByStageKeyView, EntryByStageServiceKey,
+    EntryByStageServiceKeyView, EntryByVirtualObjectStageKey, EntryByVirtualObjectStageKeyView,
+    EntryNextAtByStageKey, EntryNextAtByStageKeyView, EntryNextAtByStageServiceKey,
+    EntryNextAtByStageServiceKeyView, EntryNextAtByVirtualObjectStageKey,
+    EntryNextAtByVirtualObjectStageKeyView, SecondaryIndexKey,
+};
+
+macro_rules! entry_scan {
+    ($method:ident, $target:ty, $key:ty, $view:ident) => {
+        /// Scans persisted index entries within the requested and owned key range.
+        /// Validates field boundaries and the canonical ID; other values remain lazy.
+        /// Native predicates run before materialization.
+        pub fn $method<F>(
+            &self,
+            range: KeyRange,
+            filter: &Filter<$target>,
+            mut f: F,
+        ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
+        where
+            F: for<'a> FnMut($view<'a>) -> ControlFlow<Result<()>> + Send + 'static,
+        {
+            self.scan_index(
+                range,
+                <$key>::prepare_filter(filter)?,
+                move |decoder, value, range| {
+                    if !value.is_empty() {
+                        return ControlFlow::Break(Err(StorageError::DataIntegrityError));
+                    }
+                    let view = break_on_err(decoder.take_all())?;
+                    let id = break_on_err(view.canonical_id.decode())?;
+                    // Enforce both the owned and requested partition-key ranges:
+                    // - After a partition split, a store imported from a wider-range
+                    //   snapshot can still contain entries outside its owned range.
+                    // - Query range pruning can request only a subset of this partition,
+                    //   excluding otherwise valid entries from this scan.
+                    // The physical index prefix alone does not enforce either bound.
+                    if !range.contains(&id.partition_key()) {
+                        return ControlFlow::Continue(());
+                    }
+                    f(view)
+                },
+            )
+        }
+    };
+}
 
 impl PartitionStore {
-    /// Scans persisted entry-index records within the requested and owned key range.
-    ///
-    /// Service, stage, canonical-ID, and millisecond timestamp predicates use the
-    /// shared ordered-key cursor. Timestamp bounds include all HLC logical counters.
-    /// The filter is prepared synchronously; the returned future does not borrow it.
-    /// Callback errors fail the scan and `Break(Ok(()))` stops it successfully.
-    /// Field boundaries are validated before invoking the callback; only the canonical
-    /// ID is decoded here to enforce the key range. Other fields remain lazy.
-    ///
-    /// This reads the index itself, without primary lookups or a completeness claim.
-    pub fn scan_entry_by_service<F>(
+    entry_scan!(
+        scan_entry_by_service,
+        EntryByService,
+        EntryByStageServiceKey,
+        EntryByStageServiceKeyView
+    );
+    entry_scan!(
+        scan_entry_by_stage,
+        EntryByStage,
+        EntryByStageKey,
+        EntryByStageKeyView
+    );
+    entry_scan!(
+        scan_entry_next_at_by_stage,
+        EntryNextAtByStage,
+        EntryNextAtByStageKey,
+        EntryNextAtByStageKeyView
+    );
+    entry_scan!(
+        scan_entry_next_at_by_service,
+        EntryNextAtByService,
+        EntryNextAtByStageServiceKey,
+        EntryNextAtByStageServiceKeyView
+    );
+    entry_scan!(
+        scan_entry_by_virtual_object,
+        EntryByVirtualObject,
+        EntryByVirtualObjectStageKey,
+        EntryByVirtualObjectStageKeyView
+    );
+    entry_scan!(
+        scan_entry_next_at_by_virtual_object,
+        EntryNextAtByVirtualObject,
+        EntryNextAtByVirtualObjectStageKey,
+        EntryNextAtByVirtualObjectStageKeyView
+    );
+
+    /// Scans covering queue-index records, including zero-count queues.
+    pub fn scan_busy_vqueues<F>(
         &self,
         range: KeyRange,
-        filter: &Filter<EntryByService>,
+        filter: &Filter<BusyVQueueTarget>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
-        F: for<'a> FnMut(EntryByStageServiceKeyView<'a>) -> ControlFlow<Result<()>>
+        F: for<'a> FnMut(BusyVQueueKeyView<'a>, StageCounts) -> ControlFlow<Result<()>>
             + Send
             + 'static,
     {
-        let prefix = IndexKeyPrefix::of::<EntryByStageService>(self.partition_id());
-        let cursor =
-            EntryByStageServiceKey::prepare_filter(filter)?.into_cursor(prefix.as_bytes())?;
+        self.scan_index(
+            range,
+            BusyVQueueKey::prepare_filter(filter)?,
+            move |decoder, value, range| {
+                let view = break_on_err(decoder.take_all())?;
+                if !range.contains(&break_on_err(view.vqueue_id.decode())?.partition_key()) {
+                    return ControlFlow::Continue(());
+                }
+                let counts = break_on_err(StageCounts::deserialize_from(value))?;
+                f(view, counts)
+            },
+        )
+    }
+
+    /// Shares physical scanning and filtering. The callback chooses lazy or owned
+    /// decoding and enforces the supplied intersection of requested and owned ranges.
+    fn scan_index<K, F>(
+        &self,
+        range: KeyRange,
+        filter: PreparedKeyFilter<K>,
+        mut f: F,
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, K, F>>
+    where
+        K: SecondaryIndexKey + DecodeIndexKey + IndexKeySchema + 'static,
+        F: for<'a> FnMut(KeyDecoder<'a, K>, &'a [u8], KeyRange) -> ControlFlow<Result<()>>
+            + Send
+            + 'static,
+    {
+        let prefix = IndexKeyPrefix::of::<K::Index>(self.partition_id());
+        let cursor = filter.into_cursor(prefix.as_bytes())?;
         let range = range.intersect(&self.partition_key_range());
         let future = range
             .zip(cursor)
@@ -70,24 +175,9 @@ impl PartitionStore {
                             }
                             KeyMatch::Done => return ControlFlow::Break(Ok(())),
                         }
-                        if !value.is_empty() {
-                            return ControlFlow::Break(Err(StorageError::DataIntegrityError));
-                        }
                         let (_, payload) = break_on_err(IndexKeyPrefix::decode_prefix(key))?;
-                        let view = break_on_err(
-                            payload.into_decoder::<EntryByStageServiceKey>().take_all(),
-                        )?;
-                        let id = break_on_err(view.canonical_id.decode())?;
-                        // Enforce both the owned and requested partition-key ranges:
-                        // - After a partition split, a store imported from a wider-range
-                        //   snapshot can still contain entries outside its owned range.
-                        // - Query range pruning can request only a subset of this partition,
-                        //   excluding otherwise valid entries from this scan.
-                        // The physical index prefix alone does not enforce either bound.
-                        if !range.contains(&id.partition_key()) {
-                            return ControlFlow::Continue(IterAction::Next);
-                        }
-                        f(view).map_continue(|()| IterAction::Next)
+                        f(payload.into_decoder::<K>(), value, range)
+                            .map_continue(|()| IterAction::Next)
                     },
                 )
             })
