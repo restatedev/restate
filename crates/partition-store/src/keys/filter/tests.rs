@@ -110,15 +110,22 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
         }
     }
 
+    let filter = |parent: &ValuePredicate<u64>,
+                  child: Option<&ValuePredicate<u64>>,
+                  prefix: Option<&str>| {
+        let mut filter = Filter::default().and(NavigationClause::Parent(copy_predicate(parent)));
+        if let Some(child) = child {
+            filter = filter.and(NavigationClause::Child(copy_predicate(child)));
+        }
+        if let Some(prefix) = prefix {
+            filter = filter.and(NavigationClause::LabelStartsWith(prefix.into()));
+        }
+        filter
+    };
+
     for (parent_case, parent) in predicates.iter().enumerate() {
         for (child_case, child) in predicates.iter().enumerate() {
             for prefix in [None, Some(""), Some("a"), Some("abcdefgh")] {
-                let mut filter = Filter::default()
-                    .and(NavigationClause::Parent(copy_predicate(parent)))
-                    .and(NavigationClause::Child(copy_predicate(child)));
-                if let Some(prefix) = prefix {
-                    filter = filter.and(NavigationClause::LabelStartsWith(prefix.into()));
-                }
                 let expected: Vec<_> = rows
                     .iter()
                     .filter(|((p, c, label), _)| {
@@ -131,39 +138,121 @@ fn lexicographic_navigation_agrees_with_cartesian_reference() {
                     .map(|(row, _)| *row)
                     .collect();
 
-                let mut actual = Vec::new();
-                if let Some(mut cursor) = NavigationKey::prepare_filter(&filter)
-                    .unwrap()
-                    .into_cursor(&[1])
-                    .unwrap()
-                {
-                    let mut position = 0;
-                    while let Some((row, key)) = rows.get(position) {
-                        if !cursor.scan().contains_key(key) {
-                            position += 1;
-                            continue;
+                // The complete filter is either static, or arrives as a live refinement
+                // of a static plan that only constrains the parent.
+                for live in [false, true] {
+                    let static_filter = if live {
+                        filter(parent, None, None)
+                    } else {
+                        filter(parent, Some(child), prefix)
+                    };
+                    let mut actual = Vec::new();
+                    if let Some(mut cursor) = NavigationKey::prepare_filter(&static_filter)
+                        .unwrap()
+                        .into_cursor(&[1])
+                        .unwrap()
+                    {
+                        if live {
+                            cursor.set_live(
+                                NavigationKey::prepare_filter(&filter(parent, Some(child), prefix))
+                                    .unwrap(),
+                            );
                         }
-                        match cursor.evaluate(key).unwrap() {
-                            KeyMatch::Match => {
-                                actual.push(*row);
+                        let mut position = 0;
+                        while let Some((row, key)) = rows.get(position) {
+                            if !cursor.scan().contains_key(key) {
                                 position += 1;
+                                continue;
                             }
-                            KeyMatch::Seek(target) => {
-                                assert!(target.as_ref() > key.as_slice());
-                                assert!(cursor.scan().contains_key(&target));
-                                assert!(target.starts_with(&[1]));
-                                position = rows
-                                    .partition_point(|(_, key)| key.as_slice() < target.as_ref());
+                            match cursor.evaluate(key).unwrap() {
+                                KeyMatch::Match => {
+                                    actual.push(*row);
+                                    position += 1;
+                                }
+                                KeyMatch::Seek(target) => {
+                                    assert!(target.as_ref() > key.as_slice());
+                                    assert!(cursor.scan().contains_key(&target));
+                                    assert!(target.starts_with(&[1]));
+                                    position = rows.partition_point(|(_, key)| {
+                                        key.as_slice() < target.as_ref()
+                                    });
+                                }
+                                KeyMatch::Done => break,
                             }
-                            KeyMatch::Done => break,
                         }
                     }
+                    assert_eq!(
+                        actual, expected,
+                        "parent case={parent_case}, child case={child_case}, prefix={prefix:?}, \
+                         live={live}"
+                    );
                 }
-                assert_eq!(
-                    actual, expected,
-                    "parent case={parent_case}, child case={child_case}, prefix={prefix:?}"
-                );
             }
         }
     }
+}
+
+#[test]
+fn live_threshold_seeks_past_rejected_group_suffixes() {
+    const GROUPS: u64 = 3;
+    const PER_GROUP: u64 = 2048;
+    const THRESHOLD: u64 = 100;
+    let mut rows = Vec::new();
+    for parent in 0..GROUPS {
+        for child in 0..PER_GROUP {
+            let mut key = Vec::new();
+            NavigationKey::prefix(1, &mut key)
+                .parent(parent)
+                .child(child)
+                .label(None::<&str>);
+            rows.push(((parent, child), key));
+        }
+    }
+    let mut cursor = NavigationKey::prepare_filter(&Filter::All)
+        .unwrap()
+        .into_cursor(&[1])
+        .unwrap()
+        .unwrap();
+    let mut position = 0;
+    let mut visited = 0;
+    let mut seeks = 0;
+    let mut actual = Vec::new();
+    while let Some((row, key)) = rows.get(position) {
+        visited += 1;
+        match cursor.evaluate(key).unwrap() {
+            KeyMatch::Match => {
+                actual.push(*row);
+                position += 1;
+                if actual.len() == THRESHOLD as usize {
+                    // Publish a threshold after reading the first group's prefix.
+                    cursor.set_live(
+                        NavigationKey::prepare_filter(&Filter::All.and(NavigationClause::Child(
+                            ValuePredicate::Range {
+                                lower: Unbounded,
+                                upper: Excluded(THRESHOLD),
+                            },
+                        )))
+                        .unwrap(),
+                    );
+                }
+            }
+            KeyMatch::Seek(target) => {
+                assert!(target.as_ref() > key.as_slice());
+                assert!(cursor.scan().contains_key(&target));
+                seeks += 1;
+                position = rows.partition_point(|(_, key)| key.as_slice() < target.as_ref());
+            }
+            KeyMatch::Done => break,
+        }
+    }
+    let expected: Vec<_> = rows
+        .iter()
+        .map(|(row, _)| *row)
+        .filter(|(_, child)| *child < THRESHOLD)
+        .collect();
+    assert_eq!(actual, expected);
+    // Reject each remaining group suffix with one key visit and one seek,
+    // independently of its length. Later groups still return their qualifying rows.
+    assert_eq!(visited, actual.len() + GROUPS as usize);
+    assert_eq!(seeks, GROUPS as usize);
 }

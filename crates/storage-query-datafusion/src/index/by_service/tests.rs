@@ -39,12 +39,13 @@ use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
 
 use crate::context::{PartitionTables, QueryContext, SelectPartitions};
+use crate::index::table::IndexFilter;
 use crate::mocks::MockQueryEngine;
 use crate::partition_store_scanner::{ScanLocalPartition, ScanLocalPartitionFilter};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 use super::schema::IdxEntryByServiceBuilder;
-use super::table::{EntryIndexFilter, EntryIndexScanner};
+use super::table::EntryIndexScanner;
 
 const MS: u64 = 1_744_000_000_000;
 
@@ -544,7 +545,7 @@ async fn native_constraints_survive_remote_predicates_and_skip_unselected_keys()
     )
     .unwrap();
     for predicate in [predicate, remote] {
-        let filter = EntryIndexFilter::new(KeyRange::FULL, Some(predicate));
+        let filter = IndexFilter::new(KeyRange::FULL, Some(predicate));
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         EntryIndexScanner::for_each_row(engine.partition_store(), filter, move |key| {
             sender.send(key.canonical_id.decode().unwrap()).unwrap();
