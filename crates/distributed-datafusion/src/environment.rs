@@ -64,13 +64,22 @@ pub struct DataFusionEnv {
 }
 
 impl DataFusionEnv {
-    /// Opts this environment into the experimental, single-owner task runtime.
+    /// Opts this environment into the experimental, owner-bound task runtime.
     /// Register [`crate::distributed::DistributedQueryServer`] on storage owners.
     pub fn with_distributed_execution(
         mut self,
         network: impl restate_core::network::NetworkSender,
     ) -> Self {
         crate::distributed::configure(&mut self.config, network);
+        self
+    }
+
+    /// Sets the storage serving policy passed through planning and worker binding.
+    pub fn with_storage_placement(
+        mut self,
+        options: crate::placement::StoragePlacementOptions,
+    ) -> Self {
+        self.config.set_extension(Arc::new(options));
         self
     }
 
