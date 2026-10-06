@@ -30,6 +30,7 @@ use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::ui::watcher::Watch;
 
 use crate::cli_env::CliEnv;
+use crate::clients::{DataFusionHttpClient, QueryEngine};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IfEmpty, IncludeFormatting, OutputFormatter};
 
@@ -64,6 +65,11 @@ pub struct Sql {
     /// Unlike --json, works with -w
     #[arg(long, alias = "ldjson")]
     pub jsonl: bool,
+
+    /// Query engine to run the query on. Defaults to the server's default engine; the
+    /// engine that served the query is reported with the row count.
+    #[arg(long, value_enum)]
+    pub engine: Option<QueryEngine>,
 }
 
 /// Examples and docs link, plus the list of tables in the long help.
@@ -73,6 +79,8 @@ fn sql_after_help(long: bool) -> String {
             "restate sql \"SELECT id, target FROM sys_invocation ORDER BY created_at DESC LIMIT 10\" --json",
             "# State of the Cart virtual object: service_key is the object key, key the state key",
             "restate sql \"SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'Cart'\"",
+            "# Compare the experimental distributed query engine against the default one",
+            "restate sql \"SELECT COUNT(*) FROM sys_invocation\" --engine v2",
             "restate sql describe sys_invocation",
         ],
         learn_more: "https://docs.restate.dev/references/sql-introspection",
@@ -143,7 +151,9 @@ async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {
 }
 
 async fn run_query(env: &CliEnv, sql_opts: &Sql, query: &str) -> Result<()> {
-    let client = crate::clients::DataFusionHttpClient::new(env).await?;
+    let client = DataFusionHttpClient::new(env)
+        .await?
+        .with_query_engine(sql_opts.engine);
     let start_time = Instant::now();
     let resp = client.run_arrow_query(query.to_owned()).await?;
 
@@ -205,10 +215,16 @@ async fn run_query(env: &CliEnv, sql_opts: &Sql, query: &str) -> Result<()> {
         }
     }
 
+    let engine = resp
+        .engine
+        .as_deref()
+        .map(|engine| format!(" on query engine {engine}"))
+        .unwrap_or_default();
     c_eprintln!(
-        "{} rows. Query took {:?}",
+        "{} rows. Query took {:?}{}",
         row_count,
-        Styled(Style::Notice, start_time.elapsed())
+        Styled(Style::Notice, start_time.elapsed()),
+        Styled(Style::Notice, engine)
     );
     Ok(())
 }
