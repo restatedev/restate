@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod compaction_filter;
 pub mod deduplication_table;
 mod durable_lsn_tracking;
 pub mod error;
 mod features;
 pub mod fsm_table;
 pub mod inbox_table;
+pub mod index;
 pub mod invocation_status_table;
 pub mod journal_events;
 pub mod journal_table;
@@ -33,6 +35,7 @@ pub mod scan;
 pub mod service_status_table;
 pub mod snapshots;
 pub mod state_table;
+pub mod stats;
 pub mod timer_table;
 pub mod vqueue_table;
 

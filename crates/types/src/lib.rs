@@ -150,6 +150,11 @@ impl ServiceName {
     }
 
     #[inline]
+    pub fn as_restring(&self) -> &ReString {
+        self.0.as_ref()
+    }
+
+    #[inline]
     pub fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
@@ -182,6 +187,12 @@ impl std::borrow::Borrow<str> for ServiceName {
 impl From<&str> for ServiceName {
     fn from(value: &str) -> Self {
         ServiceName::new(value)
+    }
+}
+
+impl From<ServiceName> for ReString {
+    fn from(value: ServiceName) -> Self {
+        value.0.into_restring()
     }
 }
 
