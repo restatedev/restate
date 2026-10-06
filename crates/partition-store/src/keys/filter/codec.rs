@@ -8,12 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::cmp::Reverse;
+
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::ValuePredicate;
-use restate_storage_api::vqueue_table::Stage;
+use restate_storage_api::vqueue_table::{Stage, Status};
 use restate_types::ServiceName;
 use restate_types::identifiers::CanonicalEntryId;
-use restate_types::vqueues::EntryKind;
+use restate_types::vqueues::{EntryKind, Seq, VQueueId};
 use restate_util_string::ReString;
 
 use crate::keys::predicate::PreparedIndexPredicate;
@@ -96,9 +98,46 @@ impl IndexFilterCodec for u64 {
     type Value = u64;
 }
 
+impl IndexFilterCodec for Seq {
+    type Value = u64;
+}
+
+impl IndexFilterCodec for VQueueId {
+    type Value = VQueueId;
+}
+
+impl IndexFilterCodec for Reverse<u64> {
+    type Value = u64;
+
+    fn prepare_value(
+        predicate: &ValuePredicate<u64>,
+        literals: &mut Vec<u8>,
+    ) -> crate::Result<PreparedFieldPredicate> {
+        let reversed = match predicate {
+            ValuePredicate::Equal(value) => ValuePredicate::Equal(Reverse(*value)),
+            ValuePredicate::In(values) => {
+                ValuePredicate::In(values.iter().copied().map(Reverse).collect())
+            }
+            ValuePredicate::Range { lower, upper } => ValuePredicate::Range {
+                lower: upper.as_ref().map(|value| Reverse(*value)),
+                upper: lower.as_ref().map(|value| Reverse(*value)),
+            },
+        };
+        Ok(PreparedFieldPredicate::Value(PreparedIndexPredicate::new(
+            &reversed, literals,
+        )))
+    }
+}
+
 impl IndexFilterCodec for Stage {
     // Stage keys use the mem-comparable encoding of their names. Arbitrary
     // strings are valid bounds even if they do not name a stage.
+    type Value = ReString;
+    const PREFIX_NULLABLE: Option<bool> = Some(false);
+}
+
+impl IndexFilterCodec for Status {
+    // Like stages, status fields sort by their encoded names rather than enum values.
     type Value = ReString;
     const PREFIX_NULLABLE: Option<bool> = Some(false);
 }
