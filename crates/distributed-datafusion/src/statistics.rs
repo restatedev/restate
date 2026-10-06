@@ -8,10 +8,33 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
+
 use datafusion::{
     arrow::datatypes::SchemaRef,
     common::{ColumnStatistics, Statistics, stats::Precision},
 };
+
+/// Retain planning hints while apportioning additive estimates across disjoint
+/// source work. Selection and residuals can reduce the rows returned, so these
+/// remain inexact. NDV is capped, not scaled, since values can recur on owners.
+pub(crate) fn estimate_source_statistics(
+    statistics: &Statistics,
+    fraction: f64,
+) -> Arc<Statistics> {
+    let mut statistics = statistics.clone().to_inexact();
+    statistics.num_rows = statistics.num_rows.with_estimated_selectivity(fraction);
+    statistics.total_byte_size = statistics
+        .total_byte_size
+        .with_estimated_selectivity(fraction);
+    for column in &mut statistics.column_statistics {
+        column.null_count = column.null_count.with_estimated_selectivity(fraction);
+        column.byte_size = column.byte_size.with_estimated_selectivity(fraction);
+        column.distinct_count = column.distinct_count.min(&statistics.num_rows);
+        column.sum_value = Precision::Absent;
+    }
+    Arc::new(statistics)
+}
 
 pub(super) const DEPLOYMENT_ROW_ESTIMATE: RowEstimate = RowEstimate::Tiny;
 pub(super) const SERVICE_ROW_ESTIMATE: RowEstimate = RowEstimate::Tiny;
