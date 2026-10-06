@@ -25,6 +25,7 @@ use restate_storage_api::vqueue_table::{
 };
 use restate_types::vqueues::VQueueId;
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::{PartitionKeySelector, VQueueFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -51,7 +52,9 @@ impl SysVqueuesTable {
             partition_selector,
             schema,
             Vec::new(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::VQueueEntry),
             PartitionKeySelector::default()
                 .with_grouped_vqueue_entry_id("entry_id")
                 .with_partitioned_resource_id::<VQueueId>("id"),
@@ -77,6 +80,7 @@ enum VQueueRow<'a> {
 }
 
 impl ScanLocalPartition for VQueuesScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::VQueueEntry);
     type Builder = SysVqueuesBuilder;
     type Item<'a> = VQueueRow<'a>;
     type ConversionError = std::convert::Infallible;
