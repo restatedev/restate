@@ -7948,6 +7948,7 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-limiter",
+ "restate-memory",
  "restate-metadata-store",
  "restate-partition-store",
  "restate-platform",
