@@ -74,6 +74,7 @@ pub(crate) mod mocks;
 #[cfg(test)]
 mod query_correctness;
 
+pub mod distributed;
 mod filter;
 pub mod remote_query_scanner_client;
 pub mod remote_query_scanner_manager;
