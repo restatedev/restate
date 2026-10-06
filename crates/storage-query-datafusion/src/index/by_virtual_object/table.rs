@@ -11,12 +11,14 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::index::EntryByVirtualObjectStageKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::index::EntryByVirtualObject;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::index::table::{IndexFilter, register};
 use crate::partition_store_scanner::ScanLocalPartition;
@@ -24,23 +26,32 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 use super::schema::IdxEntryByVirtualObjectBuilder;
 
+const NAME: &str = "_idx_entry_by_virtual_object";
+
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     selector: impl SelectPartitions,
-    manager: Arc<PartitionStoreManager>,
     remote: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    register::<EntryByVirtualObjectScanner>(
+    register(
         ctx,
         selector,
-        manager,
         remote,
-        "_idx_entry_by_virtual_object",
+        NAME,
         IdxEntryByVirtualObjectBuilder::schema(),
         FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
             .with_grouped_vqueue_entry_id("canonical_id")
             .with_grouped_vqueue_entry_id("entry_id"),
     )
+}
+
+pub(crate) fn register_local_scanner(
+    manager: Arc<PartitionStoreManager>,
+    remote: &RemoteScannerManager,
+) {
+    crate::index::table::register_local_scanner::<EntryByVirtualObjectScanner>(
+        manager, remote, NAME,
+    );
 }
 
 #[derive(Debug, Clone, Default)]

@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
@@ -20,7 +21,10 @@ use tokio::time::{Instant, MissedTickBehavior};
 use tracing::{debug, info};
 
 use restate_core::cancellation_watcher;
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_api::errors::SessionError;
+use restate_storage_query_api::{
+    AdminUser, QueryEngine, QueryOptions, QuerySession, SessionOptions,
+};
 use restate_util_time::DurationExt;
 
 use crate::metric_definitions::{
@@ -32,16 +36,16 @@ pub(crate) const STORAGE_QUERY: &str =
     "SELECT sum(key_length + value_length) AS total_state_size FROM state";
 
 pub struct StorageAccountingTask {
-    query_context: QueryContext,
+    query_engine: Arc<dyn QueryEngine<AdminUser>>,
     pub(crate) update_interval: Duration,
     last_reading_bytes: Option<u64>,
     last_reading_instant: Option<Instant>,
 }
 
 impl StorageAccountingTask {
-    pub fn new(query_context: QueryContext, update_interval: Duration) -> Self {
+    pub fn new(query_engine: Arc<dyn QueryEngine<AdminUser>>, update_interval: Duration) -> Self {
         Self {
-            query_context,
+            query_engine,
             update_interval,
             last_reading_bytes: None,
             last_reading_instant: None,
@@ -65,7 +69,18 @@ impl StorageAccountingTask {
             tokio::select! {
                 _ = update_interval.tick() => {
                     let start = Instant::now();
-                    if let Err(e) = self.collect_and_update_state_storage_metrics(start).await {
+                    let session = match self.query_engine.create_session(SessionOptions::default()) {
+                        Ok(session) => session,
+                        Err(SessionError::EngineDisabled) => {
+                            info!("Storage accounting collection stopped. Query engine is disabled!");
+                            break;
+                        }
+                        Err(error) => {
+                            info!(%error, "Storage accounting session creation failed");
+                            continue;
+                        }
+                    };
+                    if let Err(e) = self.collect_and_update_state_storage_metrics(session, start).await {
                         info!("Storage accounting collection failed: {}", e);
                     }
                     histogram!(USAGE_STATE_SIZE_ACCOUNTING_QUERY_DURATION_SECONDS).record(start.elapsed().as_secs_f64());
@@ -81,11 +96,11 @@ impl StorageAccountingTask {
 
     pub(crate) async fn collect_and_update_state_storage_metrics(
         &mut self,
+        session: Arc<dyn QuerySession<AdminUser>>,
         instant: Instant,
     ) -> anyhow::Result<()> {
-        let batches: Vec<RecordBatch> = self
-            .query_context
-            .execute(STORAGE_QUERY)
+        let batches: Vec<RecordBatch> = session
+            .execute(STORAGE_QUERY, QueryOptions {})
             .await?
             .stream
             .collect::<Vec<_>>()

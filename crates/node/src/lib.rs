@@ -33,14 +33,16 @@ use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind, migrate_met
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
-use restate_limiter::rule_book::RuleBookObserver;
 use restate_log_server::LogServerService;
-use restate_storage_query_datafusion::context::{NoTables, QueryContext};
+use restate_storage_query_datafusion::context::{
+    DataFusionQueryEngine, SelectPartitionsFromMetadata,
+};
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
+use restate_storage_query_datafusion::{DataFusionEnv, MetadataTables, UserTables};
 
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
@@ -101,6 +103,10 @@ pub enum BuildError {
     #[error("building partition-store-manager failed: {0}")]
     #[code(unknown)]
     PartitionStoreManager(#[from] restate_partition_store::BuildError),
+
+    #[error("building query engine failed: {0}")]
+    #[code(unknown)]
+    QueryEngine(#[from] restate_storage_query_datafusion::BuildError),
 
     #[error("building worker failed: {0}")]
     Worker(
@@ -348,6 +354,9 @@ impl Node {
                 .expect("Ingestion session options to build"),
         );
 
+        let datafusion_env = DataFusionEnv::from_options(&config.admin.query_engine)
+            .map_err(restate_storage_query_datafusion::BuildError::from)?;
+
         // Create a node-level RemoteScannerManager shared across all roles.
         // The partition locator routes partition-scoped scan RPCs to the right
         // node, and the RemoteQueryScannerServer below serves scan RPCs for
@@ -372,7 +381,7 @@ impl Node {
                     bifrost_svc.handle(),
                     ingestion_client.clone(),
                     metadata_manager.writer(),
-                    remote_scanner_manager.clone(),
+                    &remote_scanner_manager,
                 )
                 .await?,
             )
@@ -409,15 +418,9 @@ impl Node {
             remote_scanner_manager.register_node_scanner("config", local_scanner);
         }
 
-        // Create a minimal QueryContext for the remote scanner server — it only
-        // needs task_ctx() for physical expression deserialization.
-        let scanner_query_context = QueryContext::create(&config.admin.query_engine, NoTables)
-            .await
-            .expect("creating minimal QueryContext should not fail");
-
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
-            scanner_query_context,
-            remote_scanner_manager,
+            datafusion_env.clone(),
+            remote_scanner_manager.clone(),
             &mut router_builder,
         );
 
@@ -440,9 +443,25 @@ impl Node {
         };
 
         let admin_role = if config.has_role(Role::Admin) {
-            let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
-                Arc::new(worker_role.rule_book_cache_handle()) as Arc<dyn RuleBookObserver>
-            });
+            // get the processor manager which should be used to access partition stores, processor
+            // states, and other things.
+            let processor_manager = worker_role
+                .as_ref()
+                .map(|worker_role| worker_role.partition_processor_manager_handle());
+            let local_rule_book_observer =
+                processor_manager.as_ref().map(|pm| pm.rule_book_observer());
+
+            let query_engine = DataFusionQueryEngine::with_user_tables(
+                datafusion_env,
+                config.admin.query_engine.rate_limiting.as_ref(),
+                UserTables::new(SelectPartitionsFromMetadata, remote_scanner_manager)
+                    .with_metadata(MetadataTables::new(
+                        metadata.updateable_schema(),
+                        metadata_store_client.clone(),
+                        local_rule_book_observer.clone(),
+                    )),
+            )
+            .await?;
 
             Some(
                 AdminRole::create(
@@ -456,12 +475,9 @@ impl Node {
                     networking.clone(),
                     metadata,
                     metadata_manager.writer(),
-                    partition_store_manager.clone(),
                     &mut server_builder,
                     &mut address_book,
-                    worker_role
-                        .as_ref()
-                        .map(|worker_role| worker_role.storage_query_context().clone()),
+                    query_engine,
                     local_rule_book_observer,
                 )
                 .await?,
