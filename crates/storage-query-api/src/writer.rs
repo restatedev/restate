@@ -94,6 +94,7 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
                     // Error messages can embed literal values. Return the original
                     // error to the caller, but log only the redacted diagnostic SQL.
                     warn!(target: "query_engine", session = %self.metadata.session_id,
+                        query_ts = self.metadata.query_ts.as_u64(),
                         query = %self.metadata.redacted_sql, "Query failed");
 
                     self.done = true;
