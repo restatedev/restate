@@ -21,5 +21,9 @@ Eligible filters, aggregations, and sorts run at storage owners. Query paralleli
 now adapts to the selected storage work, up to the configured target, avoiding
 unnecessary fan-out for small or selective queries. Full-table counts and grouped
 summaries reduce data transfer, and sorting work is shared across storage owners.
-Detailed remote operator metrics are not yet available. Upgrade all participating
-prototype nodes together when trying this version.
+The experimental engine's query plans now distinguish table scans from batched
+primary-key lookups. Queries combining compatible ID filters can read a smaller
+set of records; `EXPLAIN VERBOSE` shows the selected access.
+Plain `EXPLAIN` summarizes storage access with lane counts and partition IDs;
+use `EXPLAIN VERBOSE` to inspect the full key ranges and lookup details.
+Detailed remote operator metrics are not yet available.
