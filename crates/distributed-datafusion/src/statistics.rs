@@ -16,12 +16,14 @@ use datafusion::{
 };
 
 /// Retain planning hints while apportioning additive estimates across disjoint
-/// source work. Selection and residuals can reduce the rows returned, so these
-/// remain inexact. NDV is capped, not scaled, since values can recur on owners.
+/// source work. These are never exact: selection, residuals and missing keys can
+/// all reduce the rows returned. NDV is capped, not scaled, since values can recur
+/// on different owners.
 pub(crate) fn estimate_source_statistics(
     statistics: &Statistics,
     fraction: f64,
-) -> Arc<Statistics> {
+    max_rows: Option<usize>,
+) -> datafusion::common::Result<Arc<Statistics>> {
     let mut statistics = statistics.clone().to_inexact();
     statistics.num_rows = statistics.num_rows.with_estimated_selectivity(fraction);
     statistics.total_byte_size = statistics
@@ -33,7 +35,7 @@ pub(crate) fn estimate_source_statistics(
         column.distinct_count = column.distinct_count.min(&statistics.num_rows);
         column.sum_value = Precision::Absent;
     }
-    Arc::new(statistics)
+    Ok(Arc::new(statistics.with_fetch(max_rows, 0, 1)?))
 }
 
 pub(super) const DEPLOYMENT_ROW_ESTIMATE: RowEstimate = RowEstimate::Tiny;
