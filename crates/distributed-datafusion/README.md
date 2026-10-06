@@ -10,3 +10,10 @@ Run the crate's baseline tests with:
 ```sh
 cargo nextest run -p restate-distributed-datafusion --all-features
 ```
+
+The differential correctness gate compares the candidate against independent
+fixture and broad primary-scan references:
+
+```sh
+cargo nextest run -p restate-distributed-datafusion --all-features query_correctness
+```
