@@ -40,7 +40,7 @@ pub struct IndexKeyPrefix {
     key_kind: [u8; 2],
     /// Zero padding that widens the persisted partition identifier to four bytes.
     padding: big_endian::U16,
-    /// The partition that owns the statistic.
+    /// The physical partition that owns the index entries.
     partition_id: big_endian::U16,
     /// The raw globally unique index identifier.
     idx_id: big_endian::U32,
@@ -53,7 +53,7 @@ impl IndexKeyPrefix {
     /// Length of the persisted prefix.
     pub const SERIALIZED_LENGTH: usize = size_of::<Self>();
 
-    /// Constructs the prefix for statistic `S` in a physical partition.
+    /// Constructs the prefix for index `I` in a physical partition.
     pub fn of<I: SecondaryIndex + ?Sized>(partition_id: PartitionId) -> Self {
         Self {
             key_kind: *KEY_KIND.as_bytes(),
@@ -67,7 +67,7 @@ impl IndexKeyPrefix {
         KeyKind::from_bytes(&self.key_kind)
     }
 
-    /// Returns the partition that owns the statistic.
+    /// Returns the physical partition that owns the index entries.
     pub fn partition_id(&self) -> PartitionId {
         PartitionId::from(self.partition_id.get())
     }
@@ -122,6 +122,16 @@ impl<'a> KeyDecoder<'a, IndexKeyPrefix, 0> {
                 _marker: std::marker::PhantomData,
             },
         ))
+    }
+}
+
+impl<'a> KeyDecoder<'a, IndexKeyPrefix, 1> {
+    /// Selects the payload decoder after the caller has checked the index identity.
+    pub fn into_decoder<C: DecodeIndexKey>(self) -> KeyDecoder<'a, C> {
+        KeyDecoder {
+            remaining: self.remaining,
+            _marker: std::marker::PhantomData,
+        }
     }
 }
 

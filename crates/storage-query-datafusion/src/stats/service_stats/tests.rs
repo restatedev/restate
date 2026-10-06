@@ -12,7 +12,7 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use datafusion::arrow::array::{Array, LargeStringArray, StringArray, UInt32Array, UInt64Array};
+use datafusion::arrow::array::{Array, LargeStringArray, StringArray, UInt64Array};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::functions::string::expr_fn::starts_with;
@@ -590,17 +590,9 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
     assert_eq!(deployment_rows, expected);
 
     let virtual_object_batches = select(&engine, "SELECT * FROM sys_virtual_object_stats").await;
-    let partition_id = u32::from(engine.partition_store().partition_id());
     let mut virtual_object_rows = Vec::new();
     for batch in virtual_object_batches {
-        let partitions = batch
-            .column_by_name("partition_id")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<UInt32Array>()
-            .unwrap();
-        assert_eq!(partitions.null_count(), 0);
-        assert!(partitions.values().iter().all(|id| *id == partition_id));
+        assert!(batch.column_by_name("partition_id").is_none());
         let scopes = batch
             .column_by_name("scope")
             .unwrap()
@@ -701,10 +693,6 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
     expected.sort();
     assert_eq!(virtual_object_rows, expected);
 
-    // The partition column works on its own and as a residual filter, including
-    // projections that omit every stored key dimension.
-    assert_eq!(row_count(&engine, &format!("SELECT partition_id FROM sys_virtual_object_stats WHERE partition_id = {partition_id}")).await, 3);
-    assert_eq!(row_count(&engine, &format!("SELECT num_running FROM sys_virtual_object_stats WHERE partition_id <> {partition_id}")).await, 0);
     assert_eq!(
         row_count(
             &engine,
@@ -1007,8 +995,8 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
     let mut first_gap = Vec::new();
     VirtualObjectLoadKey::prefix(partition, &mut first_gap)
         .service_name("B")
-        .key("gap")
         .scope(None::<&str>)
+        .key("gap")
         .handler(None::<&str>)
         .kind(EntryKind::Invocation)
         .partition_key(3337);

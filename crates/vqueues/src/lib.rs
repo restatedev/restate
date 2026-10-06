@@ -1612,6 +1612,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    mod index;
+
     use restate_core::TaskCenter;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;

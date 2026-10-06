@@ -49,7 +49,7 @@ Sources: [registration:52–62](../../crates/storage-query-datafusion/src/stats/
 [aggregate view:19–46](../../crates/storage-query-datafusion/src/stats/aggregated_stat_table.rs#L19-L46).
 
 `sys_virtual_object_stats` instead exposes partition-local counts directly and includes
-`partition_id` and `partition_key`. Its registration does not wrap the provider in the aggregate view,
+`partition_key`. Its registration does not wrap the provider in the aggregate view,
 so a `LIMIT` need not wait for cross-partition aggregation of all matching objects.
 Each stored VO stats key produces one row with `num_inbox`, `num_running`,
 `num_suspended`, `num_paused`, and `num_finished` counters. Absent stages are zero,
