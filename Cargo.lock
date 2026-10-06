@@ -7909,6 +7909,7 @@ dependencies = [
  "ulid",
  "url",
  "vergen-gitcl",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8517,6 +8518,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.15.0",
  "jiff",
  "metrics",
  "num-bigint 0.5.1",
@@ -8546,6 +8548,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "smallvec",
  "static_assertions",
  "strum",
  "tempfile",
@@ -8557,6 +8560,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8813,8 +8817,10 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
+ "enum-map",
  "futures",
  "opentelemetry",
+ "paste",
  "prost",
  "prost-build",
  "restate-clock",
@@ -8829,6 +8835,7 @@ dependencies = [
  "serde_with",
  "strum",
  "thiserror 2.0.20",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8846,6 +8853,7 @@ dependencies = [
  "datafusion-functions-json",
  "datafusion-proto",
  "derive_more",
+ "enum-map",
  "enumset",
  "futures",
  "gardal",
