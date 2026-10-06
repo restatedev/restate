@@ -274,6 +274,25 @@ const CASES: &[Case] = &[
         anchor: Anchor::None,
         outcome: ExpectedOutcome::Success,
     },
+    Case {
+        name: "descending-value-order",
+        sql: "SELECT partition_key, scope, service_name, service_key, key, value_length FROM state \
+              ORDER BY value_length DESC, partition_key, scope NULLS FIRST, service_name, service_key, key",
+        comparison: Comparison::Ordered,
+        expected_rows: 9,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "descending-value-topk-offset",
+        sql: "SELECT partition_key, scope, service_name, service_key, key, value_length FROM state \
+              ORDER BY value_length DESC, partition_key, scope NULLS FIRST, service_name, service_key, key \
+              LIMIT 4 OFFSET 2",
+        comparison: Comparison::Ordered,
+        expected_rows: 4,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
 ];
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1005,7 +1024,7 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
 pub(crate) async fn run_distributed_state_corpus(
     stores: &mut [restate_partition_store::PartitionStore],
     engine: &dyn QueryEngine<AdminUser>,
-) -> Vec<QueryMetadata> {
+) -> Result<Vec<QueryMetadata>, String> {
     let fixture = StateFixture::deterministic();
     let mut primary = Vec::new();
     for store in stores {
@@ -1019,14 +1038,14 @@ pub(crate) async fn run_distributed_state_corpus(
         let result = session.execute(case.sql, QueryOptions {}).await.unwrap();
         metadata.push(result.metadata.clone());
         if let Err(error) = run_case(case, &fixture, &primary, result).await {
-            panic!(
+            return Err(format!(
                 "remote correctness case {} failed: {error}\n{}",
                 case.name,
                 fixture.describe()
-            );
+            ));
         }
     }
-    metadata
+    Ok(metadata)
 }
 
 #[test]

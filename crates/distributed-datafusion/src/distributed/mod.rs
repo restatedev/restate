@@ -10,6 +10,8 @@
 
 //! Explicit, owner-bound stages backed by datafusion-distributed's task runtime.
 
+mod pushdown;
+mod requirements;
 mod source;
 mod transport;
 mod worker;
@@ -28,6 +30,8 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
 use datafusion::common::{Result, exec_err};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
+use datafusion::physical_plan::coop::CooperativeExec;
+use datafusion::physical_plan::repartition::RepartitionExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
 use datafusion::prelude::SessionConfig;
 use datafusion_distributed::{
@@ -44,19 +48,23 @@ pub(crate) use source::SourceExec;
 pub use worker::DistributedQueryServer;
 
 #[derive(Debug)]
-pub(crate) struct DistributedExecution;
+pub(crate) struct DistributedExecution {
+    pub operator_pushdown: bool,
+}
 
 /// Runs last so EXPLAIN captures the same mandatory stages that queries execute.
 #[derive(Debug)]
-pub(crate) struct DistributedPlanRule;
+pub(crate) struct DistributedPlanRule {
+    pub operator_pushdown: bool,
+}
 
 impl PhysicalOptimizerRule for DistributedPlanRule {
     fn optimize(
         &self,
         input: Arc<dyn ExecutionPlan>,
-        _: &ConfigOptions,
+        config: &ConfigOptions,
     ) -> Result<Arc<dyn ExecutionPlan>> {
-        plan(input)
+        plan_with_pushdown(input, self.operator_pushdown, config)
     }
 
     fn name(&self) -> &str {
@@ -69,7 +77,9 @@ impl PhysicalOptimizerRule for DistributedPlanRule {
 }
 
 pub(crate) fn configure(config: &mut SessionConfig, network: impl NetworkSender) {
-    config.set_extension(Arc::new(DistributedExecution));
+    config.set_extension(Arc::new(DistributedExecution {
+        operator_pushdown: true,
+    }));
     config.set_distributed_option_extension(runtime_config());
     config.set_distributed_channel_resolver(transport::RestateChannelResolver::new(network));
     config.set_distributed_worker_resolver(SourceOwnersOnly);
@@ -89,34 +99,73 @@ fn runtime_config() -> DistributedConfig {
 /// Install boundaries *after* ordinary optimization: the library's automatic
 /// finalizer intentionally elides 1:1 boundaries, which cannot express ownership.
 pub(crate) fn plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
+    plan_with_pushdown(plan, true, &ConfigOptions::default())
+}
+
+fn plan_with_pushdown(
+    plan: Arc<dyn ExecutionPlan>,
+    operator_pushdown: bool,
+    config: &ConfigOptions,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    if !plan.exists(|plan| Ok(plan.is::<SourceExec>()))? {
+        return Ok(plan);
+    }
+    // Normalize native requirements against available source lanes before
+    // forming stages. This removes speculative fan-out that can otherwise
+    // hide owner inputs from partition-local operators.
+    let plan = requirements::prepare(plan, config)?;
     let query_id = Uuid::new_v4();
     let mut stage_number = 0;
     let plan = plan
         .transform_up(|plan| {
             if !plan.is::<SourceExec>() {
+                if operator_pushdown && let Some(plan) = pushdown::push_into_sources(&plan)? {
+                    return Ok(Transformed::yes(plan));
+                }
                 return Ok(Transformed::no(plan));
             }
             stage_number += 1;
-            let boundary = NetworkCoalesceExec::try_new(plan, 1, 1)?;
-            let mut stage = boundary.input_stage().clone();
-            if let Stage::Local(local) = &mut stage {
-                local.query_id = query_id;
-                local.num = stage_number;
-            }
-            Ok(Transformed::yes(
-                boundary.with_input_stage(stage)? as Arc<dyn ExecutionPlan>
-            ))
+            Ok(Transformed::yes(owner_boundary(
+                plan,
+                query_id,
+                stage_number,
+            )?))
         })?
         .data;
     if stage_number == 0 {
         return Ok(plan);
     }
+    // Each owner is optimized with its own input budget; the coordinator sees
+    // only completed stage outputs and uses their combined budget.
+    let plan = requirements::finalize(plan, config)?;
     let plan = if plan.output_partitioning().partition_count() == 1 {
         plan
     } else {
         Arc::new(CoalescePartitionsExec::new(plan))
     };
     Ok(Arc::new(DistributedExec::new(plan)))
+}
+
+fn owner_boundary(
+    plan: Arc<dyn ExecutionPlan>,
+    query_id: Uuid,
+    number: usize,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    // The library replaces a task-root repartition with its producer head.
+    // A coalesce boundary uses ProducerHead::None, so protect owner-local
+    // redistribution from being mistaken for a removable network exchange.
+    let plan = if plan.is::<RepartitionExec>() {
+        Arc::new(CooperativeExec::new(plan)) as Arc<dyn ExecutionPlan>
+    } else {
+        plan
+    };
+    let boundary = NetworkCoalesceExec::try_new(plan, 1, 1)?;
+    let mut stage = boundary.input_stage().clone();
+    if let Stage::Local(local) = &mut stage {
+        local.query_id = query_id;
+        local.num = number;
+    }
+    Ok(boundary.with_input_stage(stage)? as Arc<dyn ExecutionPlan>)
 }
 
 fn worker_url(owner: GenerationalNodeId) -> Result<Url> {

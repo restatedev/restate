@@ -210,8 +210,9 @@ async fn single_owner_runtime_matches_independent_references() {
         let engine = fixture.engine(partitions, batch_size);
         let metadata =
             run_distributed_state_corpus(std::slice::from_mut(&mut fixture.store), engine.as_ref())
-                .await;
-        assert_eq!(metadata.len(), 12);
+                .await
+                .unwrap();
+        assert_eq!(metadata.len(), 14);
         assert!(
             metadata
                 .windows(2)

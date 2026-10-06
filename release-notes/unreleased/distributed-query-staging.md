@@ -17,5 +17,9 @@ Query responses identify the selected engine and include planning duration in th
 `Server-Timing` header. Use `EXPLAIN VERBOSE` and `EXPLAIN ANALYZE VERBOSE` to compare
 plans and execution. The experimental engine supports queries spanning multiple
 storage owners and prunes node queries by plain or exact generational node identity.
+Eligible filters, aggregations, and sorts run at storage owners. Query parallelism
+now adapts to the selected storage work, up to the configured target, avoiding
+unnecessary fan-out for small or selective queries. Full-table counts and grouped
+summaries reduce data transfer, and sorting work is shared across storage owners.
 Detailed remote operator metrics are not yet available. Upgrade all participating
 prototype nodes together when trying this version.
