@@ -91,6 +91,13 @@ impl DataFusionEnv {
         Ok(Self { runtime, config })
     }
 
+    /// Overrides the namespace used for catalog bootstrap and subsequent sessions.
+    /// Other environment clones retain their defaults and continue sharing the runtime.
+    pub(crate) fn with_default_catalog_and_schema(mut self, catalog: &str, schema: &str) -> Self {
+        self.config = self.config.with_default_catalog_and_schema(catalog, schema);
+        self
+    }
+
     /// Builds state for a new session using the shared runtime and a copy of the defaults.
     ///
     /// DataFusion generates a new session ID on each call. SQL functions and planners,
