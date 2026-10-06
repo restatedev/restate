@@ -256,6 +256,8 @@ pub(super) struct InvocationTask<DMR> {
     message_size_limit: NonZeroUsize,
     retry_count_since_last_stored_entry: u32,
     max_awaited_future_depth: usize,
+    /// `(invocation header, outbound header)` name pairs to forward for ingress invocations.
+    forwarded_invocation_headers: Vec<(HeaderName, HeaderName)>,
 
     // Invoker tx/rx
     schemas: Live<DMR>,
@@ -340,6 +342,7 @@ where
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
         max_awaited_future_depth: usize,
+        forwarded_invocation_headers: Vec<(HeaderName, HeaderName)>,
     ) -> Self {
         Self {
             client,
@@ -360,6 +363,7 @@ where
             limit_key,
             idempotency_key,
             max_awaited_future_depth,
+            forwarded_invocation_headers,
         }
     }
 
