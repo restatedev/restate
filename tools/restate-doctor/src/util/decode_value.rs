@@ -168,7 +168,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         // Raw bytes - user state, no decoding
         KeyKind::State | KeyKind::ScopedState => DecodedValue::raw_bytes(value.len()),
 
-        // TODO: Decode index-specific values once their layouts are defined.
+        // Secondary indexes are key-only; preserve any nonempty value as raw data.
         KeyKind::SecondaryIndex => DecodedValue::raw_bytes(value.len()),
 
         // Key-only tables (VQueue active have empty values)
