@@ -10,6 +10,8 @@
 
 use std::fmt::{Display, Formatter};
 
+use restate_util_string::ReString;
+
 use super::ServiceTag;
 use crate::GenerationalNodeId;
 use crate::identifiers::PartitionId;
@@ -39,7 +41,7 @@ pub struct RemoteQueryScannerOpen {
     #[bilrost(2)]
     pub range: crate::sharding::KeyRange,
     #[bilrost(3)]
-    pub table: String,
+    pub table: ReString,
     #[bilrost(tag(4), encoding(plainbytes))]
     pub projection_schema_bytes: Vec<u8>,
     #[bilrost(tag(5))]
@@ -159,3 +161,57 @@ define_rpc! {
 }
 bilrost_wire_codec!(RemoteQueryScannerClose);
 bilrost_wire_codec!(RemoteQueryScannerClosed);
+
+#[cfg(test)]
+mod tests {
+    use bilrost::{Message, OwnedMessage};
+
+    use super::*;
+
+    /// The pre-ReString wire representation. Keep field tags/types independent of the new one.
+    #[derive(Debug, PartialEq, Eq, bilrost::Message)]
+    struct LegacyOpen {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+        #[bilrost(2)]
+        range: crate::sharding::KeyRange,
+        #[bilrost(3)]
+        table: String,
+        #[bilrost(tag(4), encoding(plainbytes))]
+        projection_schema_bytes: Vec<u8>,
+        #[bilrost(5)]
+        limit: Option<u64>,
+        #[bilrost(6)]
+        batch_size: u64,
+        #[bilrost(7)]
+        predicate: Option<RemoteQueryScannerPredicate>,
+        #[bilrost(8)]
+        scanner_id: Option<ScannerId>,
+    }
+
+    #[test]
+    fn scanner_identity_remains_wire_compatible_with_string() {
+        for table in ["state", "sys_vqueue_entry_status", "bifrost_read_streams"] {
+            let legacy = LegacyOpen {
+                partition_id: PartitionId::MIN,
+                range: crate::sharding::KeyRange::new(1, 10),
+                table: table.to_owned(),
+                projection_schema_bytes: vec![1, 2, 3],
+                limit: Some(3),
+                batch_size: 128,
+                predicate: Some(RemoteQueryScannerPredicate {
+                    serialized_physical_expression: vec![4, 5],
+                }),
+                scanner_id: Some(ScannerId(GenerationalNodeId::new(1, 1), 42)),
+            };
+            let old_bytes = legacy.encode_to_bytes();
+            let current = RemoteQueryScannerOpen::decode(old_bytes.clone()).unwrap();
+            assert_eq!(current.table.as_str(), table);
+            assert_eq!(current.encode_to_bytes(), old_bytes);
+            assert_eq!(
+                LegacyOpen::decode(current.encode_to_bytes()).unwrap(),
+                legacy
+            );
+        }
+    }
+}

@@ -8,39 +8,43 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::row::append_rule_row;
-use super::schema::SysRulesBuilder;
-use crate::table_providers::{GenericTableProvider, Scan};
-use crate::table_util::Builder;
+use std::sync::Arc;
+
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::SchemaRef;
+use datafusion::catalog::TableProvider;
 use datafusion::common::DataFusionError;
-use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use tokio::sync::mpsc::Sender;
+
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_limiter::{PersistedRule, RuleBook, RulePattern};
 use restate_metadata_store::MetadataStoreClient;
 use restate_types::metadata_store::keys::RULE_BOOK_KEY;
 use restate_types::{Version, Versioned};
 use restate_util_string::ReString;
-use std::sync::Arc;
-use tokio::sync::mpsc::Sender;
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    metadata_store_client: MetadataStoreClient,
-    rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
-) -> datafusion::common::Result<()> {
-    let table = GenericTableProvider::new(
-        SysRulesBuilder::schema(),
-        Arc::new(RulesScanner {
-            metadata_store_client,
-            rule_book_observer,
-        }),
-    );
-    ctx.register_table("sys_rules", Arc::new(table)).map(|_| ())
+use super::row::append_rule_row;
+use super::schema::{SysRulesBuilder, SysRulesTable};
+use crate::table_providers::{GenericTableProvider, Scan};
+use crate::table_util::Builder;
+
+impl SysRulesTable {
+    pub(crate) fn create_provider(
+        metadata_store_client: MetadataStoreClient,
+        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
+    ) -> Arc<dyn TableProvider> {
+        let table = GenericTableProvider::new(
+            SysRulesBuilder::schema(),
+            Arc::new(RulesScanner {
+                metadata_store_client,
+                rule_book_observer,
+            }),
+        );
+        Arc::new(table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]
