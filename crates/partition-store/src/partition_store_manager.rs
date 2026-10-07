@@ -99,6 +99,34 @@ impl SharedState {
         cell
     }
 
+    /// Resolves the partition's local state and drops its column family while holding the cell's
+    /// write lock continuously.
+    ///
+    /// Keeping one guard across both steps is important: resolving
+    /// [`State::Unknown`](crate::partition_db::State::Unknown) and then reacquiring the lock to drop
+    /// the column family would let a concurrent open clone and return the partition database in
+    /// between, leaving that caller with a handle to a dropped column family.
+    async fn drop_cf(
+        &self,
+        partition: &Partition,
+        rocksdb: &Arc<RocksDb>,
+    ) -> Result<bool, RocksError> {
+        let cell = self.get_or_default(partition);
+        let mut state_guard = cell.inner.write().await;
+
+        // resolves `State::Unknown` so that a column family we have never opened in this process
+        // is still found (and dropped) below
+        if state_guard.is_unknown() {
+            cell.open_cf(&mut state_guard, rocksdb);
+        }
+
+        let existed = state_guard.db().is_some();
+        cell.drop_cf(&mut state_guard).await?;
+        drop(state_guard);
+
+        Ok(existed)
+    }
+
     /// Note: we only modify entries, never insert, from the event listener. If we don't find
     /// an existing entry for the partition, that means that the PartitionStoreManager doesn't
     /// know about it.
@@ -389,14 +417,8 @@ impl PartitionStoreManager {
     #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn drop_partition_store(&self, partition: &Partition) -> Result<bool, RocksError> {
         let rocksdb = self.open_rocksdb(partition).await?;
-        // resolves `State::Unknown` so that a column family we have never opened in this process
-        // is still found (and dropped) below
-        let cell = self.state.get_or_open(partition, &rocksdb).await;
 
-        let mut state_guard = cell.inner.write().await;
-        let existed = state_guard.db().is_some();
-        cell.drop_cf(&mut state_guard).await?;
-        drop(state_guard);
+        let existed = self.state.drop_cf(partition, &rocksdb).await?;
 
         // Note: we deliberately don't close the database here. In the multi-db layout this was its
         // only column family, so dropping `rocksdb` below closes it in the background, and
