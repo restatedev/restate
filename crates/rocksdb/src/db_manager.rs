@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
@@ -175,10 +176,7 @@ impl RocksDbManager {
     }
 
     pub async fn open_db(&'static self, db_spec: DbSpec) -> Result<Arc<RocksDb>, RocksError> {
-        if self
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.is_shutting_down() {
             return Err(RocksError::Shutdown(ShutdownError));
         }
 
@@ -186,15 +184,41 @@ impl RocksDbManager {
         let name = db_spec.name.clone();
         let path = db_spec.path.clone();
         let wrapper = RocksDb::open(self, db_spec).await?;
-        self.dbs
-            .write()
-            .insert(name.clone(), Arc::downgrade(&wrapper));
 
         debug!(
             db = %name,
             path = %path.display(),
             "Opened rocksdb database"
         );
+        Ok(wrapper)
+    }
+
+    pub(super) fn is_shutting_down(&self) -> bool {
+        self.shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Registers a newly opened database, or closes it if shutdown started while it was opening.
+    ///
+    /// This must run inside the storage-pool task that opened the database so that
+    /// [`Self::join_storage_pools`] waits until the database is either registered or closed.
+    pub(super) fn register_open_db(
+        &'static self,
+        db: RocksAccess,
+    ) -> Result<Arc<RocksDb>, RocksError> {
+        let mut dbs = self.dbs.write();
+        if self.is_shutting_down() {
+            drop(dbs);
+            db.shutdown();
+            return Err(RocksError::Shutdown(ShutdownError));
+        }
+
+        let name = db.name().clone();
+        let wrapper = Arc::new(RocksDb {
+            manager: self,
+            db: ManuallyDrop::new(db),
+        });
+        dbs.insert(name, Arc::downgrade(&wrapper));
         Ok(wrapper)
     }
 

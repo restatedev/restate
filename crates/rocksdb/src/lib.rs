@@ -125,24 +125,24 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenDb)
             .op(move || {
+                if manager.is_shutting_down() {
+                    return Err(RocksError::Shutdown(ShutdownError));
+                }
+
                 let _x = RocksDbReadPerfGuard::new("open-db");
-                RocksAccess::open_db(
+                let db = RocksAccess::open_db(
                     spec,
                     &manager.env,
                     &manager.write_buffer_manager,
                     &manager.cache,
                     &manager.rate_limiter,
-                )
+                )?;
+                manager.register_open_db(db)
             })
             .build()
             .unwrap();
 
-        let db = manager.async_spawn(task).await??;
-
-        Ok(Arc::new(Self {
-            manager,
-            db: ManuallyDrop::new(db),
-        }))
+        manager.async_spawn(task).await?
     }
 
     pub(crate) fn note_config_update(&self) {
