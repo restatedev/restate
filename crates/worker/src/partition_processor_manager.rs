@@ -1512,7 +1512,7 @@ where
                 // complete.
                 return;
             };
-            reciprocal.send(DropPartitionStoreResponse { result });
+            reciprocal.send(DropPartitionStoreResponse::from(result));
         });
     }
 

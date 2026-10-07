@@ -887,7 +887,7 @@ where
                 None,
             )
             .await?
-            .result
+            .into_result()
             .map_err(|e| anyhow!("{node_id} refused to drop its partition store: {e}"))
     }
 }
