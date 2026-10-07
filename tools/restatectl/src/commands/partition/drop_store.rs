@@ -12,7 +12,7 @@ use anyhow::bail;
 use cling::prelude::*;
 
 use restate_cli_util::ui::console::confirm_or_exit;
-use restate_cli_util::{CliContext, c_println, c_warn};
+use restate_cli_util::{CliContext, c_eprintln, c_noop, c_success, c_warn};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, DropPartitionStoreRequest, new_cluster_ctrl_client,
 };
@@ -82,7 +82,7 @@ async fn drop_partition_store(
 
     match broken_reason {
         Some(BrokenReason::AheadOfLog) => {
-            c_println!(
+            c_eprintln!(
                 "Node {} reports partition {} as broken: its local store is sealed because the \
                 applied LSN is ahead of the log tail.",
                 opts.node,
@@ -107,7 +107,7 @@ async fn drop_partition_store(
             );
         }
         None => {
-            c_println!(
+            c_eprintln!(
                 "Node {} is not running a partition processor for partition {}.",
                 opts.node,
                 opts.partition_id,
@@ -136,14 +136,14 @@ async fn drop_partition_store(
         .into_inner();
 
     if response.dropped {
-        c_println!(
-            "✅ Dropped node {}'s local copy of partition {}",
+        c_success!(
+            "Dropped node {}'s local copy of partition {}",
             opts.node,
             opts.partition_id
         );
     } else {
-        c_println!(
-            "✅ Node {} had no local copy of partition {} to drop",
+        c_noop!(
+            "Node {} had no local copy of partition {} to drop",
             opts.node,
             opts.partition_id
         );
