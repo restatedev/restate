@@ -17,6 +17,8 @@ pub(crate) const SNAPSHOT_UPLOAD_DURATION: &str =
     "restate.partition_store.snapshots.upload.duration.seconds";
 pub(crate) const SNAPSHOT_UPLOAD_BYTES: &str =
     "restate.partition_store.snapshots.upload.bytes.total";
+pub(crate) const SNAPSHOT_UPLOAD_REQUESTS_ACTIVE: &str =
+    "restate.partition_store.snapshots.upload.requests.active";
 pub(crate) const SNAPSHOT_EXPORT_ACTIVE: &str = "restate.partition_store.snapshots.export.active";
 pub(crate) const SNAPSHOT_EXPORT_QUEUED: &str = "restate.partition_store.snapshots.export.queued";
 pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
@@ -50,6 +52,12 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_UPLOAD_BYTES,
         Unit::Bytes,
         "Total bytes of partition snapshot data files uploaded to the snapshot repository, counted as each part completes"
+    );
+
+    describe_gauge!(
+        SNAPSHOT_UPLOAD_REQUESTS_ACTIVE,
+        Unit::Count,
+        "Snapshot upload requests (multipart parts or whole small files) in flight on this node; bounded by upload-parallelism"
     );
 
     describe_gauge!(

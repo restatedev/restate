@@ -13,16 +13,13 @@ use std::sync::Arc;
 
 use ahash::{HashMap, HashMapExt};
 use anyhow::{Context, anyhow, bail};
-use bytes::BytesMut;
 use object_store::path::Path as ObjectPath;
-use object_store::{
-    MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
-};
+use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tempfile::TempDir;
 use tokio::io;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio_util::io::StreamReader;
@@ -38,10 +35,10 @@ use restate_types::logs::{LogId, Lsn};
 use restate_types::nodes_config::ClusterFingerprint;
 use restate_types::time::MillisSinceEpoch;
 
+use super::upload::{UploadBudget, UploadFile};
 use super::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
 };
-use crate::metric_definitions::SNAPSHOT_UPLOAD_BYTES;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -64,13 +61,10 @@ pub struct SnapshotRepository {
     prefix: ObjectPath,
     staging_dir: PathBuf,
     num_retained: std::num::NonZeroU8,
+    upload_budget: UploadBudget,
     #[cfg(any(test, feature = "test-util"))]
     enable_cleanup: bool,
 }
-
-/// S3 and other stores require a certain minimum size for the parts of a multipart upload. It is an
-/// API error to attempt a multipart put below this size, apart from the final segment.
-const MULTIPART_UPLOAD_CHUNK_SIZE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Maximum number of concurrent downloads when getting snapshots from the repository.
 const DOWNLOAD_CONCURRENCY_LIMIT: usize = 8;
@@ -337,6 +331,7 @@ impl SnapshotRepository {
             prefix: ObjectPath::from(prefix),
             staging_dir,
             num_retained: snapshots_options.num_retained,
+            upload_budget: UploadBudget::new(snapshots_options),
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: snapshots_options.enable_cleanup,
         }))
@@ -515,22 +510,26 @@ impl SnapshotRepository {
         local_snapshot_path: &Path,
         progress: &mut SnapshotUploadProgress,
     ) -> Result<(), PutSnapshotError> {
-        let mut buf = BytesMut::new();
-        for file in &snapshot.files {
-            let filename = strip_leading_slash(&file.name);
-            let key = self.snapshot_file_path(snapshot, filename);
+        let files = snapshot
+            .files
+            .iter()
+            .map(|file| {
+                let filename = strip_leading_slash(&file.name);
+                UploadFile {
+                    name: file.name.clone(),
+                    path: local_snapshot_path.join(filename),
+                    key: self.snapshot_file_path(snapshot, filename),
+                    size: file.size as u64,
+                }
+            })
+            .collect();
 
-            let put_result = put_snapshot_object(
-                local_snapshot_path.join(filename).as_path(),
-                &key,
-                &self.object_store,
-                &mut buf,
-            )
+        if let Err(err) = self
+            .upload_budget
+            .upload(&self.object_store, files, |name| progress.push(name))
             .await
-            .map_err(|e| PutSnapshotError::from(e, progress.clone()))?;
-
-            debug!(etag = %put_result.e_tag.unwrap_or_default(), %key, "Put snapshot object completed");
-            progress.push(file.name.clone());
+        {
+            return Err(PutSnapshotError::from(err, progress.clone()));
         }
 
         let metadata_key = self.snapshot_file_path(snapshot, "metadata.json");
@@ -1048,67 +1047,6 @@ impl PutSnapshotError {
             error: error.into(),
             full_snapshot_path: progress.snapshot_complete_path,
             uploaded_files: progress.uploaded_files,
-        }
-    }
-}
-
-// The object_store `put_multipart` method does not currently support PutMode, so we don't pass this
-// at all; however since we upload snapshots to a unique path on every attempt, we don't expect any
-// conflicts to arise.
-async fn put_snapshot_object(
-    file_path: &Path,
-    key: &ObjectPath,
-    object_store: &Arc<dyn ObjectStore>,
-    buf: &mut BytesMut,
-) -> anyhow::Result<object_store::PutResult> {
-    debug!(path = ?file_path, "Putting snapshot object from local file");
-    let mut snapshot = tokio::fs::File::open(file_path).await?;
-
-    if snapshot.metadata().await?.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
-        let payload = PutPayload::from(tokio::fs::read(file_path).await?);
-        let size = payload.content_length() as u64;
-        let result = object_store.put(key, payload).await?;
-        metrics::counter!(SNAPSHOT_UPLOAD_BYTES).increment(size);
-        return Ok(result);
-    }
-
-    debug!("Performing multipart upload for {key}");
-    let mut upload = object_store.put_multipart(key).await?;
-
-    let result: anyhow::Result<_> = async {
-        loop {
-            let mut len = 0;
-            buf.reserve(MULTIPART_UPLOAD_CHUNK_SIZE_BYTES);
-
-            // Ensure full buffer unless at EOF
-            while buf.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES {
-                len = snapshot.read_buf(buf).await?;
-                if len == 0 {
-                    break;
-                }
-            }
-
-            if !buf.is_empty() {
-                let part = buf.split().freeze();
-                let part_size = part.len() as u64;
-                upload.put_part(PutPayload::from_bytes(part)).await?;
-                metrics::counter!(SNAPSHOT_UPLOAD_BYTES).increment(part_size);
-            }
-
-            if len == 0 {
-                break;
-            }
-        }
-        upload.complete().await.map_err(|e| anyhow!(e))
-    }
-    .await;
-
-    match result {
-        Ok(r) => Ok(r),
-        Err(err) => {
-            debug!("Aborting failed multipart upload");
-            upload.abort().await?;
-            Err(err)
         }
     }
 }
