@@ -75,7 +75,6 @@ impl Header {
             CommandKind::VQSchedulerDecisions
             | CommandKind::VQueuesPause
             | CommandKind::VQueuesResume
-            | CommandKind::PurgeVQueueMeta
             | CommandKind::PatchState
             | CommandKind::TerminateInvocation
             | CommandKind::PurgeInvocation
@@ -398,11 +397,14 @@ pub enum CommandKind {
     /// payload is bilrost encoded [`invocation::PauseInvocationCommand`]
     /// *Since v1.7.0
     PauseInvocation = 25,
-
-    /// Purge obsolete (fully-empty) vqueue metadata records.
-    /// payload is bilrost encoded [`vqueues::PurgeVQueueMetaCommand`]
-    /// *Since v1.7.9
-    PurgeVQueueMeta = 26,
+    // [RESERVED]
+    // Keep the number reserved since it can be misunderstood by v1.7.9-v1.7.13
+    // Purge obsolete (fully-empty) vqueue metadata records.
+    // payload is bilrost encoded [`vqueues::PurgeVQueueMetaCommand`]
+    // *Since v1.7.9 -> v1.7.13
+    // * This command was _never_ produced by production code.
+    //
+    // __RESERVED__ PurgeVQueueMeta = 26,
 }
 
 impl From<CommandKind> for u16 {

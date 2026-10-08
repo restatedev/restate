@@ -15,7 +15,7 @@ use tracing::{debug, trace};
 use restate_platform::hash::HashMap;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
-use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable, WriteVQueueTable};
+use restate_storage_api::vqueue_table::{ReadVQueueTable, ScanVQueueTable};
 use restate_types::sharding::PartitionKey;
 use restate_types::vqueues::VQueueId;
 
@@ -58,7 +58,9 @@ impl<'a> VQueuesMeta<'a> {
         self.inner
             .slab
             .iter()
-            .filter_map(|(key, Slot { qid, meta })| meta.is_active().then_some((key, qid, meta)))
+            .filter_map(|(key, Slot { qid, meta, .. })| {
+                meta.is_active().then_some((key, qid, meta))
+            })
     }
 
     pub fn num_active(&self) -> usize {
@@ -82,6 +84,16 @@ impl<'a> VQueuesMeta<'a> {
 pub struct Slot {
     qid: VQueueId,
     meta: VQueueMeta,
+    /// `Some` iff this slot belongs to the inactive list. A singleton has both
+    /// links set to `None`, so the outer option records membership explicitly.
+    inactive: Option<InactiveLinks>,
+}
+
+/// Intrusive linked-list of inactive slots.
+#[derive(Clone, Copy)]
+struct InactiveLinks {
+    prev: Option<VQueueHandle>,
+    next: Option<VQueueHandle>,
 }
 
 impl Slot {
@@ -99,14 +111,8 @@ impl Slot {
     pub fn meta(&self) -> &VQueueMeta {
         &self.meta
     }
-
-    #[inline(always)]
-    pub(super) fn split_mut(&mut self) -> (&VQueueId, &mut VQueueMeta) {
-        (&self.qid, &mut self.meta)
-    }
 }
 
-// Needs rewriting after the workload pattern becomes more clear.
 #[derive(Clone)]
 pub struct VQueuesMetaCache {
     queues: HashMap<VQueueId, VQueueHandle>,
@@ -114,13 +120,13 @@ pub struct VQueuesMetaCache {
     /// Purged slots detached from `queues` but retained until the scheduler has
     /// handled all events from the committed WAL batch.
     pending_purges: Vec<VQueueHandle>,
-    /// Soft cap; partition processor triggers `compact()` once `len()` reaches
-    /// this number. The slab/hashmap will still grow past this if compaction
-    /// frees nothing.
+    /// Soft cap; active queues and queues retained by the scheduler can exceed it.
     target_capacity: usize,
-    /// True if the meta cache is above it's target capacity and possibly contains compactable
-    /// entries.
-    should_run_compaction: bool,
+    /// Intrusive FIFO of inactive slots, excluding pending purges. Membership
+    /// changes never detach ID lookup or invalidate handles unless compaction is
+    /// triggered.
+    inactive_head: Option<VQueueHandle>,
+    inactive_tail: Option<VQueueHandle>,
 }
 
 impl VQueuesMetaCache {
@@ -132,43 +138,57 @@ impl VQueuesMetaCache {
         self.slab.get(key)
     }
 
-    pub fn get_mut(&mut self, key: VQueueHandle) -> Option<&mut Slot> {
-        self.slab.get_mut(key)
+    /// Mutates metadata and keeps eviction eligibility in sync. Mutable metadata
+    /// must not escape this closure: slots remain cached until the batch boundary.
+    pub(super) fn update_meta<R>(
+        &mut self,
+        handle: VQueueHandle,
+        update: impl FnOnce(&VQueueId, &mut VQueueMeta) -> R,
+    ) -> R {
+        let slot = self.slab.get_mut(handle).expect("cached vqueue has a slot");
+        let was_active = slot.meta.is_active();
+        let result = update(&slot.qid, &mut slot.meta);
+        let is_active = slot.meta.is_active();
+        if was_active != is_active {
+            if is_active {
+                self.unlink_inactive(handle);
+            } else {
+                self.link_inactive(handle);
+            }
+        }
+        result
     }
 
-    /// Deletes an obsolete, unpaused vqueue without loading uncached metadata.
-    ///
-    /// Cached slots are detached from ID lookup immediately but retained until
-    /// [`Self::try_compact`] so pending scheduler events can still use their handles.
-    /// Detaching also allows a later operation in the same storage batch to recreate
-    /// the queue with a new cache handle.
-    pub async fn purge_meta_if_obsolete<S: ReadVQueueTable + WriteVQueueTable>(
-        &mut self,
-        storage: &mut S,
-        qid: &VQueueId,
-    ) -> Result<bool> {
-        if let Some(handle) = self.queues.get(qid).copied() {
-            let slot = self.slab.get(handle).expect("cached vqueue has a slot");
-            if !slot.meta().is_obsolete() {
-                return Ok(false);
-            }
-
-            debug!(qid = %slot.vqueue_id(), "Purging obsolete vqueue metadata");
-            storage.delete_vqueue(qid);
-            self.defer_purge(handle);
-            return Ok(true);
+    fn link_inactive(&mut self, handle: VQueueHandle) {
+        let slot = self.slab.get_mut(handle).expect("cached vqueue has a slot");
+        debug_assert!(!slot.meta.is_active());
+        debug_assert!(slot.inactive.is_none());
+        slot.inactive = Some(InactiveLinks {
+            prev: self.inactive_tail,
+            next: None,
+        });
+        if let Some(tail) = self.inactive_tail {
+            self.slab[tail].inactive.as_mut().unwrap().next = Some(handle);
+        } else {
+            self.inactive_head = Some(handle);
         }
+        self.inactive_tail = Some(handle);
+    }
 
-        let Some(meta) = storage.get_vqueue(qid).await? else {
-            return Ok(false);
+    fn unlink_inactive(&mut self, handle: VQueueHandle) {
+        let Some(links) = self.slab[handle].inactive.take() else {
+            return;
         };
-        if !meta.is_obsolete() {
-            return Ok(false);
+        if let Some(prev) = links.prev {
+            self.slab[prev].inactive.as_mut().unwrap().next = links.next;
+        } else {
+            self.inactive_head = links.next;
         }
-
-        debug!(qid = %qid, "Purging obsolete vqueue metadata");
-        storage.delete_vqueue(qid);
-        Ok(true)
+        if let Some(next) = links.next {
+            self.slab[next].inactive.as_mut().unwrap().prev = links.prev;
+        } else {
+            self.inactive_tail = links.prev;
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -179,63 +199,55 @@ impl VQueuesMetaCache {
         self.slab.is_empty()
     }
 
-    /// Sweeps the cache and evicts entries whose vqueues are no longer needed.
-    /// A slot is safe to evict when its meta reports `!is_active()`. The scheduler
-    /// drops its handle eagerly on the events that flip the meta inactive
-    /// (`RemovedFromInbox`, `QueuePaused`), so meta inactivity implies the
-    /// scheduler has already released the handle. Returns the number of evicted
-    /// entries.
-    ///
-    /// Triggered automatically by `insert` once occupancy reaches
-    /// `target_capacity`, so steady-state operations never pay for compaction.
-    fn compact(&mut self) -> usize {
-        let mut evicted = 0;
-        self.slab.retain(|_handle, slot| {
-            if slot.meta.is_active() {
-                true
-            } else {
-                self.queues.remove(&slot.qid);
-                evicted += 1;
-                false
-            }
-        });
-        evicted
-    }
-
     pub(super) fn defer_purge(&mut self, handle: VQueueHandle) {
+        self.unlink_inactive(handle);
         let slot = self.slab.get(handle).expect("cached vqueue has a slot");
         let removed = self.queues.remove(slot.vqueue_id());
         debug_assert_eq!(removed, Some(handle));
         self.pending_purges.push(handle);
     }
 
-    /// Evicts pending purges, then runs compaction if the cache exceeds its target capacity and
-    /// possibly contains compactable entries. This must be called only after the scheduler has
-    /// handled all events emitted by the batch because those events refer to cache handles.
-    /// Returns the total number of evicted entries.
-    pub fn try_compact(&mut self) -> usize {
+    /// Evicts pending purges, then the oldest inactive queues allowed by
+    /// `can_evict` until occupancy reaches target capacity or the inactive list
+    /// is exhausted. Never scans active queues, even above the target.
+    ///
+    /// `can_evict` must exclude handles still tracked by the scheduler, which can
+    /// retain inactive queues while run assignments are awaiting confirmation.
+    /// Pending purges must already have been released by the scheduler.
+    /// Must be called only after the scheduler has handled all events emitted by
+    /// the batch because those events refer to cache handles. Returns the total
+    /// number of evicted entries.
+    pub fn try_compact(&mut self, mut can_evict: impl FnMut(VQueueHandle) -> bool) -> usize {
         let mut evicted = 0;
         for handle in self.pending_purges.drain(..) {
+            debug_assert!(
+                can_evict(handle),
+                "purged vqueue is still tracked by the scheduler"
+            );
             evicted += usize::from(self.slab.remove(handle).is_some());
         }
 
-        if self.should_run_compaction {
-            // disarm to prevent running compactions again until we are compactable again
-            self.should_run_compaction = false;
-
-            if self.slab.len() > self.target_capacity {
-                let compacted = self.compact();
-                if compacted == 0 {
-                    trace!(
-                        "vqueue cache at {} entries with no inactive queues to evict; cache will grow past target_capacity={}",
-                        self.slab.len(),
-                        self.target_capacity,
-                    );
-                } else {
-                    trace!("vqueue cache compaction freed {compacted} entries");
-                }
-                evicted += compacted;
+        let mut cursor = self.inactive_head;
+        while self.slab.len() > self.target_capacity {
+            let Some(handle) = cursor else {
+                break;
+            };
+            cursor = self.slab[handle].inactive.unwrap().next;
+            if !can_evict(handle) {
+                continue;
             }
+            self.unlink_inactive(handle);
+            let slot = self
+                .slab
+                .remove(handle)
+                .expect("inactive vqueue has a slot");
+            debug_assert!(!slot.meta.is_active());
+            let removed = self.queues.remove(&slot.qid);
+            debug_assert_eq!(removed, Some(handle));
+            evicted += 1;
+        }
+        if evicted > 0 {
+            trace!("vqueue cache compaction freed {evicted} entries");
         }
 
         evicted
@@ -248,7 +260,8 @@ impl VQueuesMetaCache {
             queues: HashMap::with_capacity(target_capacity),
             pending_purges: Vec::new(),
             target_capacity,
-            should_run_compaction: false,
+            inactive_head: None,
+            inactive_tail: None,
         }
     }
 
@@ -257,8 +270,8 @@ impl VQueuesMetaCache {
     /// `target_capacity` is the soft cap that drives compaction; the cache will
     /// still grow past it if compaction frees nothing.
     ///
-    /// From this point on, the cache remains in-sync with the storage state by
-    /// using the "apply_updates" method.
+    /// Subsequent metadata mutations maintain inactive-list membership through
+    /// [`Self::update_meta`].
     pub async fn create<S: ScanVQueueTable + Send + Sync + 'static>(
         storage: S,
         target_capacity: usize,
@@ -273,6 +286,7 @@ impl VQueuesMetaCache {
                     let key = slab.insert(Slot {
                         qid: qid.clone(),
                         meta,
+                        inactive: None,
                     });
                     // SAFETY: at batch load time we are guaranteed to observe every vqueue id only once.
                     unsafe { queues.insert_unique_unchecked(qid, key) };
@@ -290,7 +304,8 @@ impl VQueuesMetaCache {
             queues,
             pending_purges: Vec::new(),
             target_capacity,
-            should_run_compaction: false,
+            inactive_head: None,
+            inactive_tail: None,
         })
     }
 
@@ -310,18 +325,19 @@ impl VQueuesMetaCache {
         }
     }
 
-    /// Inserts a vqueue metadata unconditionally to the cache. The single point
-    /// of entry into the cache; marks the cache as compactable occupancy reaches the
-    /// configured `target_capacity`. Compaction only runs via [`self.try_compact`]
+    /// Inserts metadata and records eviction eligibility without evicting anything.
+    /// Compaction only runs via [`Self::try_compact`] at the batch boundary.
     pub(super) fn insert(&mut self, qid: VQueueId, meta: VQueueMeta) -> VQueueHandle {
-        if self.slab.len() >= self.target_capacity {
-            self.should_run_compaction = true;
-        }
+        let is_active = meta.is_active();
         let key = self.slab.insert(Slot {
             qid: qid.clone(),
             meta,
+            inactive: None,
         });
         self.queues.insert(qid, key);
+        if !is_active {
+            self.link_inactive(key);
+        }
         key
     }
 
@@ -376,8 +392,7 @@ mod tests {
     #[test]
     fn compact_evicts_inactive_and_keeps_active() {
         let now = ts(1_744_000_000_000);
-        // Use a high cap so insert() does not auto-compact during setup.
-        let mut cache = VQueuesMetaCache::new_empty(1024);
+        let mut cache = VQueuesMetaCache::new_empty(1);
 
         let qid_active = VQueueId::custom(1, "alive");
         let qid_inactive = VQueueId::custom(2, "dormant");
@@ -398,7 +413,7 @@ mod tests {
 
         assert_eq!(cache.len(), 3);
 
-        let evicted = cache.compact();
+        let evicted = cache.try_compact(|_| true);
 
         assert_eq!(evicted, 2);
         assert_eq!(cache.len(), 1);
@@ -415,28 +430,51 @@ mod tests {
     #[test]
     fn compact_on_empty_cache_is_noop() {
         let mut cache = VQueuesMetaCache::new_empty(1024);
-        assert_eq!(cache.compact(), 0);
+        assert_eq!(cache.try_compact(|_| true), 0);
         assert_eq!(cache.len(), 0);
     }
 
     #[test]
     fn compact_on_all_active_evicts_nothing() {
         let now = ts(1_744_000_000_000);
-        let mut cache = VQueuesMetaCache::new_empty(1024);
+        let mut cache = VQueuesMetaCache::new_empty(2);
         for i in 0..5 {
             let qid = VQueueId::custom(i, "q");
             let mut meta = empty_meta(now);
             enqueue_to_inbox(&mut meta, now);
             cache.insert(qid, meta);
         }
-        assert_eq!(cache.compact(), 0);
+        assert_eq!(cache.try_compact(|_| true), 0);
         assert_eq!(cache.len(), 5);
+        assert!(cache.inactive_head.is_none());
+        assert!(cache.inactive_tail.is_none());
+
+        // When active queues alone exceed the target, remove every inactive
+        // entry in this call, including more than the former per-batch cap.
+        for i in 0..512 {
+            cache.insert(VQueueId::custom(i, "dormant"), empty_meta(now));
+        }
+        assert_eq!(cache.try_compact(|_| true), 512);
+        assert_eq!(cache.len(), 5);
+        assert_inactive_list(&cache);
+
+        // Becoming inactive above target is sufficient to trigger eviction;
+        // no subsequent insertion or full sweep is necessary.
+        let qid = VQueueId::custom(0, "q");
+        let handle = cache.view().handle_for(&qid).unwrap();
+        cache.update_meta(handle, |_, meta| {
+            meta.apply_update(&Update::new(now, Action::PauseVQueue {}));
+        });
+        assert_eq!(cache.try_compact(|_| true), 1);
+        assert_eq!(cache.len(), 4);
+        assert!(cache.get(handle).is_none());
+        assert!(cache.view().handle_for(&qid).is_none());
+        assert_inactive_list(&cache);
     }
 
     #[test]
-    fn insert_marks_cache_as_compactable() {
+    fn eviction_removes_oldest_inactive_until_target() {
         let now = ts(1_744_000_000_000);
-        // Tiny cap so we can drive the compact path in two steps.
         let mut cache = VQueuesMetaCache::new_empty(3);
 
         // Fill with 3 inactive entries.
@@ -445,33 +483,58 @@ mod tests {
         }
         assert_eq!(cache.len(), 3);
 
-        // As long as the cache is not marked as compactable, running compactions should be a no-op.
-        assert!(!cache.should_run_compaction);
-        assert_eq!(cache.try_compact(), 0);
+        // Inactive entries remain cached at the target.
+        assert_eq!(cache.try_compact(|_| true), 0);
         assert_eq!(cache.len(), 3);
 
-        // The next insert should observe `len >= target_capacity` and mark the cache
-        // as compactable.
         let mut active_meta = empty_meta(now);
         enqueue_to_inbox(&mut active_meta, now);
         cache.insert(VQueueId::custom(99, "fresh"), active_meta);
 
-        assert!(cache.should_run_compaction);
-
-        // Try compaction should compact the cache now
-        cache.try_compact();
-        assert!(!cache.should_run_compaction);
-        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.try_compact(|_| true), 1);
+        assert_eq!(cache.len(), 3);
+        assert!(
+            cache
+                .view()
+                .handle_for(&VQueueId::custom(0, "stale"))
+                .is_none()
+        );
+        for i in 1..3 {
+            assert!(
+                cache
+                    .view()
+                    .handle_for(&VQueueId::custom(i, "stale"))
+                    .is_some()
+            );
+        }
         assert!(
             cache
                 .view()
                 .handle_for(&VQueueId::custom(99, "fresh"))
                 .is_some()
         );
+
+        let handles: Vec<_> = (0..512)
+            .map(|i| cache.insert(VQueueId::custom(i + 100, "stale"), empty_meta(now)))
+            .collect();
+        assert_eq!(cache.try_compact(|_| true), 512);
+        assert_eq!(cache.len(), 3);
+        // Keep the active queue and only the two newest inactive entries.
+        for (i, handle) in handles.into_iter().enumerate() {
+            assert_eq!(cache.get(handle).is_some(), i >= 510);
+        }
+        assert!(
+            cache
+                .view()
+                .handle_for(&VQueueId::custom(99, "fresh"))
+                .is_some()
+        );
+        assert_eq!(cache.try_compact(|_| true), 0);
+        assert_inactive_list(&cache);
     }
 
     #[test]
-    fn pending_purges_can_disarm_capacity_compaction() {
+    fn pending_purges_preserve_recreated_queue_and_target() {
         let now = ts(1_744_000_000_000);
         let mut cache = VQueuesMetaCache::new_empty(2);
 
@@ -481,17 +544,30 @@ mod tests {
         let mut active_meta = empty_meta(now);
         enqueue_to_inbox(&mut active_meta, now);
         let active = cache.insert(VQueueId::custom(3, "active"), active_meta);
-        assert!(cache.should_run_compaction);
-
         cache.defer_purge(purged);
-        assert_eq!(cache.try_compact(), 1);
+        assert_eq!(cache.try_compact(|_| true), 1);
 
-        assert!(!cache.should_run_compaction);
         assert_eq!(cache.len(), 2);
         assert!(cache.get(purged).is_none());
         assert!(cache.view().handle_for(&purged_qid).is_none());
         assert!(cache.get(retained).is_some());
         assert!(cache.get(active).is_some());
+        assert_inactive_list(&cache);
+
+        // Purging and recreating an ID in the same batch must not let eviction
+        // of the old handle remove the new mapping.
+        cache.defer_purge(retained);
+        let replacement_qid = VQueueId::custom(2, "retained");
+        let mut meta = empty_meta(now);
+        enqueue_to_inbox(&mut meta, now);
+        let replacement = cache.insert(replacement_qid.clone(), meta);
+        assert_ne!(replacement, retained);
+        assert!(cache.get(retained).is_some());
+        assert_eq!(cache.try_compact(|_| true), 1);
+        assert!(cache.get(retained).is_none());
+        assert_eq!(cache.view().handle_for(&replacement_qid), Some(replacement));
+        assert!(cache.get(replacement).is_some());
+        assert_inactive_list(&cache);
     }
 
     #[test]
@@ -513,5 +589,96 @@ mod tests {
         cache.insert(VQueueId::custom(2, "active"), meta);
 
         assert_eq!(cache.len(), 3);
+        assert_eq!(cache.try_compact(|_| true), 0);
+    }
+
+    fn assert_inactive_list(cache: &VQueuesMetaCache) {
+        let mut cursor = cache.inactive_head;
+        let mut prev = None;
+        let mut visited = Vec::new();
+        while let Some(handle) = cursor {
+            assert!(!visited.contains(&handle), "inactive list contains a cycle");
+            let slot = &cache.slab[handle];
+            assert!(!slot.meta.is_active());
+            assert_eq!(cache.queues.get(&slot.qid), Some(&handle));
+            let links = slot.inactive.unwrap();
+            assert_eq!(links.prev, prev);
+            visited.push(handle);
+            prev = Some(handle);
+            cursor = links.next;
+        }
+        assert_eq!(prev, cache.inactive_tail);
+        for (handle, slot) in &cache.slab {
+            let pending_purge = cache.pending_purges.contains(&handle);
+            assert_eq!(
+                slot.inactive.is_some(),
+                !slot.meta.is_active() && !pending_purge
+            );
+            assert_eq!(slot.inactive.is_some(), visited.contains(&handle));
+        }
+    }
+
+    #[test]
+    fn activity_transitions_unlink_and_relink_without_invalidating_handles() {
+        let now = ts(1_744_000_000_000);
+        let mut cache = VQueuesMetaCache::new_empty(0);
+        let mut handles = Vec::new();
+        for i in 0..4 {
+            handles.push(cache.insert(VQueueId::custom(i, "q"), empty_meta(now)));
+        }
+        assert_inactive_list(&cache);
+
+        // Remove middle, head, tail, then singleton by reactivating metadata.
+        for i in [1, 0, 3, 2] {
+            let handle = handles[i];
+            cache.update_meta(handle, |_, meta| enqueue_to_inbox(meta, now));
+            assert_inactive_list(&cache);
+            assert_eq!(
+                cache.view().handle_for(cache.slab[handle].vqueue_id()),
+                Some(handle)
+            );
+        }
+        assert_eq!(cache.try_compact(|_| true), 0);
+
+        // Pause and resume repeatedly within a batch. Neither operation should
+        // evict the slot, and unchanged activity must not duplicate membership.
+        for handle in &handles {
+            for action in [
+                Action::PauseVQueue {},
+                Action::PauseVQueue {},
+                Action::ResumeVQueue {},
+                Action::PauseVQueue {},
+                Action::ResumeVQueue {},
+            ] {
+                cache.update_meta(*handle, |_, meta| {
+                    meta.apply_update(&Update::new(now, action));
+                });
+                assert!(cache.get(*handle).is_some());
+                assert_inactive_list(&cache);
+            }
+        }
+        assert_eq!(cache.try_compact(|_| true), 0);
+
+        // Exercise unlinking pending purges at every list position too.
+        for handle in &handles {
+            cache.update_meta(*handle, |_, meta| {
+                meta.apply_update(&Update::new(now, Action::PauseVQueue {}));
+            });
+        }
+        for i in [1, 0, 3, 2] {
+            cache.defer_purge(handles[i]);
+            assert_inactive_list(&cache);
+        }
+        assert_eq!(cache.try_compact(|_| true), 4);
+        assert!(cache.is_empty());
+        assert_inactive_list(&cache);
+
+        // Slot reuse must start with fresh links despite the old generation.
+        let new_handle = cache.insert(VQueueId::custom(0, "q"), empty_meta(now));
+        assert!(handles.iter().all(|handle| cache.get(*handle).is_none()));
+        assert_inactive_list(&cache);
+        assert_eq!(cache.try_compact(|_| true), 1);
+        assert!(cache.get(new_handle).is_none());
+        assert_inactive_list(&cache);
     }
 }

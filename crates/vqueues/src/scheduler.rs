@@ -172,6 +172,14 @@ impl<S: VQueueStore> SchedulerService<S> {
         Ok(Self { state })
     }
 
+    /// Whether the scheduler still tracks this handle, even if its metadata is inactive.
+    pub fn contains_vqueue(&self, handle: VQueueHandle) -> bool {
+        match &self.state {
+            State::Active(scheduler) => scheduler.contains_vqueue(handle),
+            State::Disabled => false,
+        }
+    }
+
     pub fn on_inbox_event(&mut self, metas: VQueuesMeta<'_>, event: VQueueEvent) {
         if let State::Active(ref mut drr_scheduler) = self.state {
             drr_scheduler.as_mut().on_inbox_event(metas, event);
