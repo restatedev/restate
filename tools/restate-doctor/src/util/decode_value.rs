@@ -18,7 +18,8 @@ use bilrost::OwnedMessage;
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionSeal;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
-use restate_partition_store::keys::{DecodeTableKey, KeyKind};
+use restate_partition_store::index::IndexId;
+use restate_partition_store::keys::{DecodeTableKey, IndexKeyPrefix, KeyKind};
 use restate_partition_store::stats::aggregated::{StageCounts, StageStatusCounts};
 use restate_partition_store::stats::{StatKeyPrefix, StatKind, StatValueCodec};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
@@ -159,6 +160,12 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
     if key_kind == KeyKind::Stats {
         return decode_aggregated_stat_value(key, value);
     }
+    if key_kind == KeyKind::SecondaryIndex
+        && IndexKeyPrefix::decode_prefix(key)
+            .is_ok_and(|(prefix, _)| prefix.index_id() == Some(IndexId::BusyVQueue))
+    {
+        return decode_stage_counts(value);
+    }
 
     if value.is_empty() {
         return DecodedValue::empty();
@@ -168,7 +175,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         // Raw bytes - user state, no decoding
         KeyKind::State | KeyKind::ScopedState => DecodedValue::raw_bytes(value.len()),
 
-        // Secondary indexes are key-only; preserve any nonempty value as raw data.
+        // Unknown or key-only indexes: preserve any nonempty value as raw data.
         KeyKind::SecondaryIndex => DecodedValue::raw_bytes(value.len()),
 
         // Key-only tables (VQueue active have empty values)
@@ -239,18 +246,7 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 format!("expected {} bytes for a gauge value", size_of::<u64>()),
             ),
         },
-        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
-            Ok(value) => DecodedValue::decoded(
-                None,
-                value.serialized_len(),
-                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
-            ),
-            Err(_) => DecodedValue::error(
-                None,
-                value.len(),
-                "invalid stage-bucketed gauge value".to_owned(),
-            ),
-        },
+        StatKind::StageBucketedGauge => decode_stage_counts(value),
         StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
             Ok(value) => DecodedValue::decoded(
                 None,
@@ -263,6 +259,21 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 "invalid stage/status-bucketed gauge value".to_owned(),
             ),
         },
+    }
+}
+
+fn decode_stage_counts(value: &[u8]) -> DecodedValue {
+    match StageCounts::deserialize_from(value) {
+        Ok(value) => DecodedValue::decoded(
+            None,
+            value.serialized_len(),
+            format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+        ),
+        Err(_) => DecodedValue::error(
+            None,
+            value.len(),
+            "invalid stage-bucketed gauge value".to_owned(),
+        ),
     }
 }
 

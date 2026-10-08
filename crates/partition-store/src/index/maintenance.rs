@@ -29,24 +29,43 @@ impl PartitionStoreTransaction<'_> {
         old: Option<&K>,
         new: Option<&K>,
     ) {
+        self.update_covering_secondary_index(
+            old.map(|key| (key, &[][..])),
+            new.map(|key| (key, &[][..])),
+        );
+    }
+
+    /// Updates a covering index, including value-only changes at an unchanged key.
+    ///
+    /// Values are complete replacements. Even value-only changes use SingleDelete
+    /// followed by Put, preserving one Put per key lifetime. `old` must describe
+    /// the actual previous entry, including earlier changes in this transaction.
+    pub fn update_covering_secondary_index<K: SecondaryIndexKey>(
+        &mut self,
+        old: Option<(&K, &[u8])>,
+        new: Option<(&K, &[u8])>,
+    ) {
         if old.is_none() && new.is_none() {
             return;
         }
 
         let partition_id = self.partition_id();
-        let encoded_len = |key: &K| IndexKeyPrefix::SERIALIZED_LENGTH + key.encoded_len();
+        let encoded_len =
+            |(key, _): (&K, &[u8])| IndexKeyPrefix::SERIALIZED_LENGTH + key.encoded_len();
         let capacity = old.map_or(0, encoded_len) + new.map_or(0, encoded_len);
         let (keys, old_len) = {
             let buffer = self.cleared_key_buffer_mut(capacity);
-            if let Some(old) = old {
+            if let Some((old, _)) = old {
                 old.encode_key(partition_id, buffer);
             }
             let old_len = buffer.len();
-            if let Some(new) = new {
+            if let Some((new, _)) = new {
                 new.encode_key(partition_id, buffer);
             }
 
-            if old.is_some() && new.is_some() && buffer[..old_len] == buffer[old_len..] {
+            let same_key = old.is_some() && new.is_some() && buffer[..old_len] == buffer[old_len..];
+            if same_key && old.map(|(_, value)| value) == new.map(|(_, value)| value) {
+                // Same key and value. Nothing to be done here.
                 return;
             }
             (buffer.split(), old_len)
@@ -55,8 +74,8 @@ impl PartitionStoreTransaction<'_> {
         if old.is_some() {
             self.raw_single_delete_cf(KeyKind::SecondaryIndex, &keys[..old_len]);
         }
-        if new.is_some() {
-            self.raw_put_cf(KeyKind::SecondaryIndex, &keys[old_len..], []);
+        if let Some((_, value)) = new {
+            self.raw_put_cf(KeyKind::SecondaryIndex, &keys[old_len..], value);
         }
     }
 }
@@ -77,7 +96,7 @@ mod tests {
     use restate_types::sharding::{KeyRange, PartitionId};
     use restate_types::vqueues::{EntryId, EntryKind, Seq};
 
-    use crate::index::EntryByServiceStageKey;
+    use crate::index::EntryByStageServiceKey;
     use crate::scan::PhysicalScan;
     use crate::{PartitionStore, PartitionStoreManager, TableKind};
 
@@ -85,7 +104,7 @@ mod tests {
 
     async fn index_keys(store: &PartitionStore) -> Vec<Vec<u8>> {
         let mut prefix = Vec::new();
-        EntryByServiceStageKey::prefix(store.partition_id(), &mut prefix);
+        EntryByStageServiceKey::prefix(store.partition_id(), &mut prefix);
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
             .iterator_for_each_physical(
@@ -132,10 +151,10 @@ mod tests {
             ),
         )
         .canonicalize(id.seq());
-        let inbox = EntryByServiceStageKey::borrowed("svc", Stage::Inbox, Reverse(at), id);
-        let other = EntryByServiceStageKey::borrowed("svc", Stage::Inbox, Reverse(at), other_id);
-        let running = EntryByServiceStageKey::borrowed("svc", Stage::Running, Reverse(at), id);
-        let newer = EntryByServiceStageKey::borrowed("svc", Stage::Running, Reverse(later), id);
+        let inbox = EntryByStageServiceKey::borrowed(Stage::Inbox, "svc", Reverse(at), id);
+        let other = EntryByStageServiceKey::borrowed(Stage::Inbox, "svc", Reverse(at), other_id);
+        let running = EntryByStageServiceKey::borrowed(Stage::Running, "svc", Reverse(at), id);
+        let newer = EntryByStageServiceKey::borrowed(Stage::Running, "svc", Reverse(later), id);
         let encoded = |key: &_| {
             let mut bytes = Vec::new();
             SecondaryIndexKey::encode_key(key, partition, &mut bytes);
@@ -144,13 +163,13 @@ mod tests {
 
         let mut tx = store.transaction();
         let empty_size = tx.estimated_size_in_bytes();
-        tx.update_secondary_index::<EntryByServiceStageKey>(None, None);
+        tx.update_secondary_index::<EntryByStageServiceKey>(None, None);
         assert_eq!(tx.estimated_size_in_bytes(), empty_size);
         tx.update_secondary_index(None, Some(&inbox));
         tx.update_secondary_index(None, Some(&other));
         let inserted_size = tx.estimated_size_in_bytes();
         // Distinct objects encoding the same key must not issue a second Put.
-        let unchanged = EntryByServiceStageKey::borrowed("svc", Stage::Inbox, Reverse(at), id);
+        let unchanged = EntryByStageServiceKey::borrowed(Stage::Inbox, "svc", Reverse(at), id);
         tx.update_secondary_index(Some(&inbox), Some(&unchanged));
         assert_eq!(tx.estimated_size_in_bytes(), inserted_size);
         assert!(
