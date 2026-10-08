@@ -41,7 +41,7 @@ use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::{PartitionId, WithPartitionKey};
 use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::StorageCodec;
-use restate_types::vqueues::{EntryId, EntryKind};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetExt};
 use restate_types::{LimitKey, LockName, ServiceName};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
@@ -161,18 +161,23 @@ pub async fn remove_pending_state_mutations(
 
         if id.kind() == EntryKind::StateMutation {
             let base_id = id.to_base_id(qid.partition_key());
-            if let Ok(input) = StateMutationInput::decode(value) {
-                warn!(
-                    "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
-                    input.service_id,
-                );
-            }
+            let input = StateMutationInput::decode(value)?;
+            warn!(
+                "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
+                input.service_id,
+            );
 
             if let Some(header) = txn.get_vqueue_entry_status(&base_id).await? {
                 VQueue::<VQueueEvent, _>::get(&qid, &mut txn, cache, None)
                     .await?
                     .expect("vqueue of a pending state mutation must exist")
-                    .end(at, &header, Status::Killed, Duration::ZERO);
+                    .end(
+                        at,
+                        &header,
+                        &input.entry_target_ref(),
+                        Status::Killed,
+                        Duration::ZERO,
+                    );
             } else {
                 // Only the input payload is left
                 txn.delete_vqueue_input_payload(&qid, &base_id.canonicalize(seq));
@@ -301,6 +306,7 @@ async fn migrate_inboxes(
                     UniqueTimestamp::from_unix_millis_unchecked(
                         inboxed.metadata.timestamps.creation_time(),
                     ),
+                    &inboxed.metadata.invocation_target.entry_target_ref(),
                     // We use the original inbox sequence number to preserve ordering as best we
                     // can. One can formulate scenarios where this might diverge from the original
                     // inbox ordering in particular if the leader clock went backwards after restart
@@ -548,6 +554,7 @@ async fn migrate_scheduled_invocation(
     let seq = 0;
     vqueue.enqueue_new(
         entry_created_at,
+        &scheduled.metadata.invocation_target.entry_target_ref(),
         seq,
         scheduled.metadata.execution_time,
         EntryId::from(invocation_id),
