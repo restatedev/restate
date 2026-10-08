@@ -26,7 +26,7 @@ use restate_storage_api::vqueue_table::{
 use restate_types::vqueues::VQueueId;
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
+use crate::filter::{PartitionKeySelector, VQueueFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
@@ -52,7 +52,7 @@ impl SysVqueuesTable {
             schema,
             Vec::new(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_grouped_vqueue_entry_id("entry_id")
                 .with_partitioned_resource_id::<VQueueId>("id"),
         )
