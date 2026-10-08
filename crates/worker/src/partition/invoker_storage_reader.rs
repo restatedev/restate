@@ -11,6 +11,7 @@
 use std::pin::Pin;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::future::Either;
 use futures::{Stream, StreamExt, TryStreamExt};
 
@@ -77,6 +78,7 @@ where
     Storage: restate_storage_api::Storage
         + journal_table_v1::ReadJournalTable
         + journal_table_v2::ReadJournalTable
+        + ReadStateTable
         + Send
         + 'static,
 {
@@ -160,6 +162,23 @@ where
                 };
                 (entry, lease)
             }))
+        }
+    }
+
+    async fn read_state_entry_budgeted(
+        &mut self,
+        service_id: &ServiceId,
+        key: &ByteString,
+        budget: &mut LocalMemoryPool,
+    ) -> Result<Option<(Bytes, LocalMemoryLease)>, InvokerStorageReaderError> {
+        let stream =
+            self.0
+                .get_user_states_budgeted(service_id, std::slice::from_ref(key), budget)?;
+        let mut stream = std::pin::pin!(stream);
+        match stream.next().await {
+            Some(Ok((_, value, lease))) => Ok(Some((value, lease))),
+            Some(Err(err)) => Err(err.into()),
+            None => Ok(None),
         }
     }
 }

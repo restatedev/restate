@@ -165,6 +165,20 @@ mod tests {
     );
 
     roundtrip_test!(
+        get_state_ephemeral_command,
+        MessageHeader::new(GetStateEphemeralCommand, 10),
+        GetStateEphemeralCommand,
+        10
+    );
+
+    roundtrip_test!(
+        get_state_ephemeral_notification,
+        MessageHeader::new(GetStateEphemeralNotification, 10341),
+        GetStateEphemeralNotification,
+        10341
+    );
+
+    roundtrip_test!(
         custom_entry,
         MessageHeader::new(Custom(0xFC00), 10341),
         Custom(0xFC00),

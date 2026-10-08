@@ -9417,6 +9417,7 @@ name = "restate-worker-api"
 version = "1.8.0-rc.1"
 dependencies = [
  "bytes",
+ "bytestring",
  "codederror",
  "derive_more",
  "futures",

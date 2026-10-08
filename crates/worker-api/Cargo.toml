@@ -25,6 +25,7 @@ restate-types = { workspace = true }
 restate-util-string = { workspace = true }
 
 bytes = { workspace = true }
+bytestring = { workspace = true }
 codederror = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true, features = ["tokio"] }

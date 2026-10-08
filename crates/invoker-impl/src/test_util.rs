@@ -57,6 +57,15 @@ impl InvocationReader for EmptyStorageReader {
     ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, Infallible> {
         Ok(None)
     }
+
+    async fn read_state_entry_budgeted(
+        &mut self,
+        _service_id: &ServiceId,
+        _key: &bytestring::ByteString,
+        _budget: &mut LocalMemoryPool,
+    ) -> Result<Option<(Bytes, LocalMemoryLease)>, Infallible> {
+        Ok(None)
+    }
 }
 
 pub struct EmptyStorageReaderTransaction;
