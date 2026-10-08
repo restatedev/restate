@@ -88,10 +88,12 @@ use restate_worker_api::{ProcessorsManagerCommand, ProcessorsManagerHandle};
 use crate::metric_definitions::{
     ERROR_STOP, FLARE_REASON_AHEAD_OF_LOG, FLARE_REASON_MIGRATION_BARRIER,
     FLARE_REASON_SNAPSHOT_UNAVAILABLE, FLARE_REASON_VERSION_BARRIER, GAP_STOP, NORMAL_STOP,
-    NUM_ACTIVE_PARTITION_LEADERS, NUM_ACTIVE_PARTITIONS, NUM_PARTITIONS, PARTITION_APPLIED_LSN_LAG,
-    PARTITION_BLOCKED_FLARE, PARTITION_LABEL, PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG,
-    PARTITION_START, PARTITION_STOP, PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL,
-    SNAPSHOT_AGE, STARTUP_ERROR_STOP, TYPE_LABEL,
+    NUM_ACTIVE_PARTITION_LEADERS, NUM_ACTIVE_PARTITIONS, NUM_ACTIVE_SNAPSHOTS, NUM_PARTITIONS,
+    PARTITION_APPLIED_LSN_LAG, PARTITION_BLOCKED_FLARE, PARTITION_LABEL,
+    PARTITION_NUM_UNKNOWN_APPLIED_LSN_LAG, PARTITION_SNAPSHOT_AGE, PARTITION_SNAPSHOT_IN_PROGRESS,
+    PARTITION_SNAPSHOT_LSN_LAG, PARTITION_START, PARTITION_STOP,
+    PARTITION_TIME_SINCE_LAST_STATUS_UPDATE, REASON_LABEL, SNAPSHOT_AGE, STARTUP_ERROR_STOP,
+    TYPE_LABEL,
 };
 use crate::partition::{LeadershipInfo, NodeContext, ProcessorError};
 use crate::partition_processor_manager::processor_state::{
@@ -123,6 +125,8 @@ pub struct PartitionProcessorManager<T> {
 
     pending_snapshots: HashMap<PartitionId, PendingSnapshotTask>,
     latest_snapshots: HashMap<PartitionId, PartitionSnapshotStatus>,
+    /// Partitions with live per-partition snapshot gauges; used to retire them once leadership is lost.
+    snapshot_gauge_partitions: HashSet<PartitionId>,
     pending_snapshot_status_refreshes: HashSet<PartitionId>,
     snapshot_export_tasks: FuturesUnordered<TaskHandle<SnapshotResultInternal>>,
     snapshot_repository: Option<SnapshotRepository>,
@@ -274,6 +278,7 @@ where
             asynchronous_operations: JoinSet::default(),
             pending_snapshots: HashMap::default(),
             latest_snapshots: HashMap::default(),
+            snapshot_gauge_partitions: HashSet::default(),
             pending_snapshot_status_refreshes: HashSet::default(),
             snapshot_export_tasks: FuturesUnordered::default(),
             snapshot_repository,
@@ -1019,6 +1024,10 @@ where
         );
     }
 
+    fn report_active_snapshots(&self) {
+        gauge!(NUM_ACTIVE_SNAPSHOTS).set(self.pending_snapshots.len() as f64);
+    }
+
     fn on_create_snapshot_task_completed(&mut self, result: SnapshotResultInternal) {
         let (partition_id, response) = match result {
             Ok((partition_id, status)) => {
@@ -1037,6 +1046,43 @@ where
                 result = ?response,
                 "Snapshot task result received without a pending task!",
             )
+        }
+        self.report_active_snapshots();
+    }
+
+    /// Publishes per-partition snapshot freshness for partitions this node leads. Partitions
+    /// reported earlier that are no longer led get NaN age and lag (and 0 in progress) once and
+    /// are then forgotten, so a former leader never keeps exporting a misleading age.
+    fn report_partition_snapshot_gauges(&mut self) {
+        let mut led = HashSet::default();
+        for (partition_id, state) in &self.processor_states {
+            let Some(status) = state.partition_processor_status() else {
+                continue;
+            };
+            if status.effective_mode != RunMode::Leader {
+                continue;
+            }
+            let Some(latest_snapshot) = self.latest_snapshots.get(partition_id) else {
+                continue;
+            };
+            led.insert(*partition_id);
+
+            let label = partition_id.to_string();
+            let freshness = SnapshotFreshness::new(latest_snapshot, status.last_applied_log_lsn);
+            gauge!(PARTITION_SNAPSHOT_AGE, PARTITION_LABEL => label.clone())
+                .set(freshness.age_secs);
+            gauge!(PARTITION_SNAPSHOT_LSN_LAG, PARTITION_LABEL => label.clone())
+                .set(freshness.lsn_lag);
+            gauge!(PARTITION_SNAPSHOT_IN_PROGRESS, PARTITION_LABEL => label)
+                .set(f64::from(self.pending_snapshots.contains_key(partition_id)));
+        }
+
+        for partition_id in departed_partitions(&mut self.snapshot_gauge_partitions, led) {
+            let label = partition_id.to_string();
+            gauge!(PARTITION_SNAPSHOT_AGE, PARTITION_LABEL => label.clone()).set(f64::NAN);
+            gauge!(PARTITION_SNAPSHOT_LSN_LAG, PARTITION_LABEL => label.clone()).set(f64::NAN);
+            // 0, not NaN: node-level `sum` of in-progress snapshots must stay well-defined.
+            gauge!(PARTITION_SNAPSHOT_IN_PROGRESS, PARTITION_LABEL => label).set(0.0);
         }
     }
 
@@ -1069,6 +1115,8 @@ where
         let Some(snapshot_repository) = self.snapshot_repository.clone() else {
             return;
         };
+
+        self.report_partition_snapshot_gauges();
 
         let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
         let snapshot_interval = snapshots_options.snapshot_interval;
@@ -1234,6 +1282,7 @@ where
                             snapshot_id,
                             sender,
                         });
+                        self.report_active_snapshots();
                     }
                     Err(_shutdown) => {
                         if let Some(sender) = sender {
@@ -1608,6 +1657,48 @@ enum EventKind {
     SnapshotStatusUpdateSkipped,
 }
 
+/// Snapshot age and replay lag as published per partition.
+#[derive(Debug, PartialEq)]
+struct SnapshotFreshness {
+    /// NaN when the partition has no snapshot yet (the sentinel status carries no real timestamp).
+    age_secs: f64,
+    /// NaN while the applied LSN is unknown, rather than a lag that looks like a fresh snapshot.
+    lsn_lag: f64,
+}
+
+impl SnapshotFreshness {
+    fn new(latest_snapshot: &PartitionSnapshotStatus, applied_lsn: Option<Lsn>) -> Self {
+        let age_secs = if latest_snapshot.latest_snapshot_id == SnapshotId::INVALID {
+            f64::NAN
+        } else {
+            latest_snapshot
+                .latest_snapshot_created_at
+                .elapsed()
+                .as_secs_f64()
+        };
+        Self {
+            age_secs,
+            lsn_lag: applied_lsn.map_or(f64::NAN, |applied_lsn| {
+                applied_lsn
+                    .as_u64()
+                    .saturating_sub(latest_snapshot.latest_snapshot_lsn.as_u64())
+                    as f64
+            }),
+        }
+    }
+}
+
+/// Replaces `reported` with `led` and returns the partitions that were reported before but are not
+/// led any more.
+fn departed_partitions(
+    reported: &mut HashSet<PartitionId>,
+    led: HashSet<PartitionId>,
+) -> Vec<PartitionId> {
+    let departed = reported.difference(&led).copied().collect();
+    *reported = led;
+    departed
+}
+
 fn report_quantile_gauges(metric_name: &'static str, samples: &mut [u64]) {
     const PARTITION_METRIC_QUANTILES: [(&str, f64); 4] =
         [("0.5", 0.5), ("0.9", 0.9), ("0.99", 0.99), ("1.0", 1.0)];
@@ -1764,5 +1855,48 @@ mod tests {
         TaskCenter::shutdown_node("test completed", 0).await;
         RocksDbManager::get().shutdown().await;
         Ok(())
+    }
+
+    #[test]
+    fn snapshot_gauges_lag_and_departed_partitions() {
+        use super::{HashSet, SnapshotFreshness, departed_partitions};
+        use restate_clock::WallClock;
+        use restate_partition_store::snapshots::PartitionSnapshotStatus;
+        use restate_types::identifiers::SnapshotId;
+        use restate_types::logs::LogId;
+        let status = PartitionSnapshotStatus {
+            archived_lsn: Lsn::from(90),
+            latest_snapshot_lsn: Lsn::from(100),
+            latest_snapshot_id: SnapshotId::new(),
+            log_id: LogId::from(0u32),
+            latest_snapshot_created_at: WallClock::recent_ms(),
+        };
+        assert_eq!(
+            SnapshotFreshness::new(&status, Some(Lsn::from(250))).lsn_lag,
+            150.0
+        );
+        // Applied behind the snapshot (e.g. a fresh follower-turned-leader) saturates to zero.
+        assert_eq!(
+            SnapshotFreshness::new(&status, Some(Lsn::from(50))).lsn_lag,
+            0.0
+        );
+        // An unknown applied LSN must not read as a fresh snapshot.
+        assert!(SnapshotFreshness::new(&status, None).lsn_lag.is_nan());
+        // The no-snapshot sentinel has no meaningful age.
+        let sentinel = PartitionSnapshotStatus::none(LogId::from(0u32));
+        assert!(
+            SnapshotFreshness::new(&sentinel, Some(Lsn::from(10)))
+                .age_secs
+                .is_nan()
+        );
+
+        let (p1, p2) = (PartitionId::from(1u16), PartitionId::from(2u16));
+        let mut reported = [p1, p2].into_iter().collect::<HashSet<_>>();
+        let departed = departed_partitions(&mut reported, [p2].into_iter().collect::<HashSet<_>>());
+        assert_eq!(departed, vec![p1]);
+        assert_eq!(reported, [p2].into_iter().collect::<HashSet<_>>());
+        assert!(
+            departed_partitions(&mut reported, [p2].into_iter().collect::<HashSet<_>>()).is_empty()
+        );
     }
 }

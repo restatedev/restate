@@ -53,6 +53,13 @@ pub const USAGE_LEADER_ACTION_COUNT: &str = "restate.usage.leader_action_count.t
 pub const USAGE_LEADER_JOURNAL_ENTRY_COUNT: &str = "restate.usage.leader_journal_entry_count.total";
 pub const USAGE_LEADER_JOURNAL_ENTRY_BYTES: &str = "restate.usage.leader_journal_entry_bytes.total";
 
+// Per-partition snapshot gauges carry only the `partition` label and are reported by the node that
+// currently leads the partition. A node that stops leading it reports NaN age and lag, and 0 in
+// progress, so `max by (partition)` picks the leader and node-level `sum`s of in-progress hold.
+pub const PARTITION_SNAPSHOT_AGE: &str = "restate.partition.latest_snapshot.age.seconds";
+pub const PARTITION_SNAPSHOT_LSN_LAG: &str = "restate.partition.latest_snapshot.lsn_lag";
+pub const PARTITION_SNAPSHOT_IN_PROGRESS: &str = "restate.partition.snapshot_in_progress";
+pub const NUM_ACTIVE_SNAPSHOTS: &str = "restate.num_active_snapshots";
 pub const NUM_PARTITIONS: &str = "restate.num_partitions";
 pub const NUM_ACTIVE_PARTITIONS: &str = "restate.num_active_partitions";
 pub const NUM_ACTIVE_PARTITION_LEADERS: &str = "restate.num_active_partition_leaders";
@@ -125,6 +132,30 @@ pub(crate) fn describe_metrics() {
         PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
         Unit::Seconds,
         "Duration between the record commit time to read time"
+    );
+
+    describe_gauge!(
+        PARTITION_SNAPSHOT_AGE,
+        Unit::Seconds,
+        "Seconds since the latest snapshot of a partition was created, reported by the node leading the partition. NaN on nodes that do not lead it, and while the partition has no snapshot"
+    );
+
+    describe_gauge!(
+        PARTITION_SNAPSHOT_LSN_LAG,
+        Unit::Count,
+        "Number of log records applied by the partition leader since its latest snapshot (last applied LSN minus latest snapshot LSN). NaN on nodes that do not lead the partition, and while the applied LSN is unknown"
+    );
+
+    describe_gauge!(
+        PARTITION_SNAPSHOT_IN_PROGRESS,
+        Unit::Count,
+        "1 while a snapshot of the partition is being created by this node, 0 otherwise, including on nodes that no longer lead the partition"
+    );
+
+    describe_gauge!(
+        NUM_ACTIVE_SNAPSHOTS,
+        Unit::Count,
+        "Number of partition snapshots in progress on this node, whether automatic or requested"
     );
 
     describe_gauge!(
