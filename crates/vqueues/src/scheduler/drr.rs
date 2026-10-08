@@ -846,6 +846,54 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn same_batch_pause_and_resume_reuses_cached_handle() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(0);
+        let qid = test_qid(2_025);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        let mut scheduler = create_scheduler(rocksdb.partition_db(), &cache).await;
+        let handle = cache.view().handle_for(&qid).unwrap();
+        let at = UniqueTimestamp::try_from(1_200u64).unwrap();
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        {
+            let mut vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            vqueue.pause_queue(at);
+        }
+        assert!(!cache.get(handle).unwrap().meta().is_active());
+        assert_eq!(cache.view().handle_for(&qid), Some(handle));
+        {
+            let vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(vqueue.handle(), handle);
+            vqueue.resume_queue(at);
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        assert_eq!(cache.try_compact(), 0);
+        assert_eq!(cache.view().handle_for(&qid), Some(handle));
+        assert!(cache.get(handle).unwrap().meta().is_active());
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Ready(Ok(decision)) if decision.num_run() == 1
+        ));
+    }
+
+    #[restate_core::test]
     async fn purged_meta_is_retained_while_same_batch_recreation_uses_a_new_handle() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);

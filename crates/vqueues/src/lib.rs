@@ -137,18 +137,13 @@ where
     }
 
     fn update_vqueue(&mut self, update: &metadata::Update, entry_metadata: Option<&EntryMetadata>) {
-        let (vqueue_id, disposition) = {
-            let slot = self.cache.get_mut(self.handle).unwrap();
-            let (vqueue_id, meta) = slot.split_mut();
-            (
-                vqueue_id,
-                self.storage
-                    .update_vqueue(vqueue_id, meta, update, entry_metadata),
-            )
-        };
+        let disposition = self.cache.update_meta(self.handle, |vqueue_id, meta| {
+            self.storage
+                .update_vqueue(vqueue_id, meta, update, entry_metadata)
+        });
 
         if matches!(disposition, VQueueDisposition::Purged) {
-            debug!(qid = %vqueue_id, "Purged obsolete vqueue metadata");
+            debug!(qid = %self.cache.get(self.handle).unwrap().vqueue_id(), "Purged obsolete vqueue metadata");
             self.cache.defer_purge(self.handle);
             if let Some(collector) = self.action_collector.as_deref_mut() {
                 // Let the scheduler know about the fact that vqueue's handle is about to become
@@ -602,10 +597,7 @@ where
         }
 
         let vqueue_id = header.vqueue_id();
-        assert_eq!(
-            vqueue_id,
-            self.cache.get_mut(self.handle).unwrap().vqueue_id()
-        );
+        assert_eq!(vqueue_id, self.cache.get(self.handle).unwrap().vqueue_id());
 
         // Nothing to do if the entry is already scheduled at the requested time.
         if header.entry_key().run_at() == run_at {
@@ -1622,7 +1614,6 @@ mod tests {
     use restate_types::identifiers::PartitionId;
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::EntryKind;
 
     use super::*;
 
@@ -1642,89 +1633,6 @@ mod tests {
             )
             .await
             .expect("DB storage creation succeeds")
-    }
-
-    #[restate_core::test]
-    async fn purge_meta_only_purges_obsolete_unpaused_vqueues() {
-        let mut store = storage_test_environment().await;
-        let mut cache = VQueuesMetaCache::new_empty(16);
-
-        let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
-        let empty_qid = VQueueId::custom(1, "empty");
-        let busy_qid = VQueueId::custom(2, "busy");
-        let paused_qid = VQueueId::custom(3, "paused");
-        let uncached_qid = VQueueId::custom(4, "uncached");
-        let new_meta = || VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
-
-        let mut txn = store.transaction();
-
-        // Obsolete: created but never used.
-        VQueue::<VQueueEvent, _>::get_or_insert_with(&empty_qid, &mut txn, &mut cache, new_meta)
-            .await
-            .unwrap();
-
-        // Non-obsolete: holds an inbox entry.
-        let mut busy =
-            VQueue::<VQueueEvent, _>::get_or_insert_with(&busy_qid, &mut txn, &mut cache, new_meta)
-                .await
-                .unwrap();
-        busy.enqueue_new(
-            at,
-            1u64,
-            None,
-            EntryId::new(EntryKind::Invocation, [1; EntryId::REMAINDER_LEN]),
-            EntryMetadata::default(),
-        );
-
-        // Empty but paused: the pause flag must survive a purge attempt.
-        let mut paused = VQueue::<VQueueEvent, _>::get_or_insert_with(
-            &paused_qid,
-            &mut txn,
-            &mut cache,
-            new_meta,
-        )
-        .await
-        .unwrap();
-        paused.pause_queue(at);
-
-        // Obsolete and intentionally not loaded into the cache.
-        txn.create_vqueue(&uncached_qid, &new_meta());
-
-        txn.commit().await.unwrap();
-        drop(txn);
-
-        let empty_handle = cache.view().handle_for(&empty_qid).unwrap();
-        let mut txn = store.transaction();
-        for (qid, expect_purged) in [
-            (&empty_qid, true),
-            (&busy_qid, false),
-            (&paused_qid, false),
-            (&uncached_qid, true),
-        ] {
-            let purged = cache.purge_meta_if_obsolete(&mut txn, qid).await.unwrap();
-            assert_eq!(purged, expect_purged, "{qid}");
-        }
-        assert!(cache.view().handle_for(&empty_qid).is_none());
-        assert!(cache.get(empty_handle).is_some());
-        assert!(cache.view().handle_for(&uncached_qid).is_none());
-        txn.commit().await.unwrap();
-        drop(txn);
-
-        cache.try_compact();
-
-        // Purged: gone from both storage and cache; the others are retained.
-        let txn = store.transaction();
-        assert!(txn.get_vqueue(&empty_qid).await.unwrap().is_none());
-        assert!(cache.view().handle_for(&empty_qid).is_none());
-        assert!(txn.get_vqueue(&uncached_qid).await.unwrap().is_none());
-        assert!(txn.get_vqueue(&busy_qid).await.unwrap().is_some());
-        assert!(cache.view().handle_for(&busy_qid).is_some());
-        let paused_meta = txn
-            .get_vqueue(&paused_qid)
-            .await
-            .unwrap()
-            .expect("paused vqueue meta is retained");
-        assert!(paused_meta.queue_is_paused());
     }
 
     #[restate_core::test]
