@@ -887,6 +887,17 @@ experimental! {
     ///
     /// Since v1.8.0
     indexes_v1,
+
+    /// # Enables service protocol v8
+    ///
+    /// Set to `true` to enable the experimental service protocol v8,
+    /// adding support for reading state without recording it in the journal.
+    ///
+    /// Once enabled, you **cannot** roll back to previous versions
+    /// where v8 is not supported (< v1.8), as in-flight invocations might be pinned to v8.
+    ///
+    /// Since v1.8.0
+    protocol_v8,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
