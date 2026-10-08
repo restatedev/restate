@@ -90,6 +90,7 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
         query_manager: Arc<dyn QueryEngine<AdminUser>>,
+        distributed_query_engine: Option<Arc<dyn QueryEngine<AdminUser>>>,
         datafusion_env: DataFusionEnv,
         local_rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Result<Self, AdminRoleBuildError> {
@@ -131,6 +132,9 @@ impl<T: TransportConnect> AdminRole<T> {
 
         if let Some(observer) = local_rule_book_observer {
             admin = admin.with_rule_book_observer(observer);
+        }
+        if let Some(engine) = distributed_query_engine {
+            admin = admin.with_distributed_query_engine(engine);
         }
 
         let controller = if config.admin.is_cluster_controller_enabled() {
