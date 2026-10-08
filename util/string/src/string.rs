@@ -334,13 +334,19 @@ mod buf_alloc {
         let mut arc: Arc<[MaybeUninit<u8>]> = Arc::new_uninit_slice(len);
         // Fresh Arc has refcount 1 and no weak refs — `get_mut` always succeeds.
         let dest = Arc::get_mut(&mut arc).expect("fresh Arc has unique ownership");
-        // SAFETY: dest covers `len` MaybeUninit<u8>s. Treating as &mut [u8] is sound
-        // because copy_to_slice writes every byte before any read, and u8 has no
-        // validity requirement so `MaybeUninit<u8>` and `u8` share layout.
-        let dest_bytes =
-            unsafe { std::slice::from_raw_parts_mut(dest.as_mut_ptr().cast::<u8>(), len) };
-        buf.copy_to_slice(dest_bytes);
-        // SAFETY: copy_to_slice initialized all `len` bytes.
+        let mut offset = 0;
+        while offset < len {
+            let written = {
+                let source = buf.chunk();
+                let written = source.len().min(len - offset);
+                dest[offset..offset + written].write_copy_of_slice(&source[..written]);
+                written
+            };
+            assert!(written > 0, "buffer ended before requested length");
+            buf.advance(written);
+            offset += written;
+        }
+        // SAFETY: every element was initialized above.
         unsafe { arc.assume_init() }
     }
 
