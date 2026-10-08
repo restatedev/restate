@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -28,39 +28,31 @@ use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::filter::InvocationIdFilter;
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
-use crate::journal::schema::{SysJournalBuilder, sys_journal_sort_order};
+use crate::journal::schema::{SysJournalBuilder, SysJournalTable, sys_journal_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-const NAME: &str = "sys_journal";
+impl SysJournalTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let journal_table = PartitionedTableProvider::new(
+            partition_selector,
+            SysJournalBuilder::schema(),
+            sys_journal_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
+        );
+        Arc::new(journal_table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let journal_table = PartitionedTableProvider::new(
-        partition_selector,
-        SysJournalBuilder::schema(),
-        sys_journal_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
-    );
-    ctx.register_table(NAME, Arc::new(journal_table))
-        .map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        JournalScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<JournalScanner>::new(partition_store_manager)
+    }
 }
 
 // todo: fix this and box the large variant (JournalEntry is 304 bytes)
