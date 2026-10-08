@@ -11,6 +11,7 @@
 use std::future::Future;
 
 use bytes::Bytes;
+use bytestring::ByteString;
 use futures::Stream;
 
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, OutOfMemory, PinnableMemoryStream};
@@ -127,6 +128,19 @@ pub trait InvocationReader {
         journal_kind: JournalKind,
         budget: &mut LocalMemoryPool,
     ) -> impl Future<Output = Result<Option<(JournalEntry, LocalMemoryLease)>, Self::Error>> + Send;
+
+    /// Budget-gated, non-transactional point read of a single state entry.
+    ///
+    /// Used during the bidi-stream phase to answer ephemeral state reads (service protocol V8+),
+    /// which are not recorded in the journal. The read reflects the latest committed state.
+    ///
+    /// A [`LocalMemoryLease`] is acquired from `budget` for the value size *before* copying it.
+    fn read_state_entry_budgeted(
+        &mut self,
+        service_id: &ServiceId,
+        key: &ByteString,
+        budget: &mut LocalMemoryPool,
+    ) -> impl Future<Output = Result<Option<(Bytes, LocalMemoryLease)>, Self::Error>> + Send;
 }
 
 /// Read transaction to read information about invocations from the underlying storage.

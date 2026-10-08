@@ -88,6 +88,10 @@ const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v7");
 
 #[allow(clippy::declare_interior_mutable_const)]
+const SERVICE_PROTOCOL_VERSION_V8: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.v8");
+
+#[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
 
 /// Collects state entries from an [`EagerState`] stream into the START message, up to `size_limit`.
@@ -264,6 +268,8 @@ pub(super) struct InvocationTask<DMR> {
 
     // throttling
     action_token_bucket: Option<TokenBucket>,
+
+    allow_protocol_v8: bool,
 }
 
 /// This is needed to split the run_internal in multiple loop functions and have shortcircuiting.
@@ -340,6 +346,7 @@ where
         limit_key: LimitKey<ReString>,
         idempotency_key: Option<ReString>,
         max_awaited_future_depth: usize,
+        allow_protocol_v8: bool,
     ) -> Self {
         Self {
             client,
@@ -360,6 +367,7 @@ where
             limit_key,
             idempotency_key,
             max_awaited_future_depth,
+            allow_protocol_v8,
         }
     }
 
@@ -487,13 +495,16 @@ where
                 );
 
                 let chosen_service_protocol_version = shortcircuit!(
-                    ServiceProtocolVersion::pick(&deployment.supported_protocol_versions)
-                        .ok_or_else(|| {
-                            InvokerError::IncompatibleServiceEndpoint(
-                                deployment.id,
-                                deployment.supported_protocol_versions.clone(),
-                            )
-                        })
+                    ServiceProtocolVersion::pick(
+                        &deployment.supported_protocol_versions,
+                        self.allow_protocol_v8
+                    )
+                    .ok_or_else(|| {
+                        InvokerError::IncompatibleServiceEndpoint(
+                            deployment.id,
+                            deployment.supported_protocol_versions.clone(),
+                        )
+                    })
                 );
 
                 (
@@ -589,6 +600,7 @@ fn service_protocol_version_to_header_value(
         ServiceProtocolVersion::V5 => SERVICE_PROTOCOL_VERSION_V5,
         ServiceProtocolVersion::V6 => SERVICE_PROTOCOL_VERSION_V6,
         ServiceProtocolVersion::V7 => SERVICE_PROTOCOL_VERSION_V7,
+        ServiceProtocolVersion::V8 => SERVICE_PROTOCOL_VERSION_V8,
     }
 }
 
