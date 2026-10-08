@@ -98,3 +98,18 @@ async fn verify_restored_data(partition: &mut PartitionStore) {
         partition.get_applied_lsn().await.unwrap().unwrap()
     );
 }
+
+pub(crate) async fn export_failure_leaves_no_directory(mut partition_store: PartitionStore) {
+    insert_test_data(&mut partition_store).await;
+
+    let base = tempdir().unwrap();
+    let snapshot_id = SnapshotId::new();
+    let snapshot_dir = base.path().join(snapshot_id.to_string());
+    std::fs::create_dir(&snapshot_dir).unwrap();
+
+    partition_store
+        .create_local_snapshot(base.path(), None, snapshot_id)
+        .await
+        .expect_err("export into an existing directory fails");
+    assert!(!snapshot_dir.exists());
+}
