@@ -47,6 +47,9 @@ enum ServiceProtocolVersion {
   // * Semantic changes to Run proposal response, introduced ProposeRunCompletionAckMessage
   // * ErrorMessage.behavior to customize retry behavior
   V7 = 7;
+  // Added:
+  // * Ephemeral commands: GetStateEphemeralCommandMessage and GetStateEphemeralNotificationMessage
+  V8 = 8;
 }
 
 // --- Core frames ---
@@ -261,6 +264,40 @@ message AwaitingOnMessage {
 // This message will only ever be sent as response to ProposeRunCompletionMessage, and will be sent only in the PROCESSING phase of the protocol, never during REPLAY.
 message ProposeRunCompletionAckMessage {
   uint32 completion_id = 1;
+}
+
+// --- Ephemeral commands and Notifications ---
+
+// Ephemeral commands, as opposed to journaled commands, are not part of the journal:
+// neither the ephemeral command, nor its ephemeral notification are stored, nor replayed.
+// They don't count as journal entries, and they don't advance the command or notification indexes.
+//
+// Ephemeral commands use the message types 0x0200 - 0x02FF, ephemeral notifications 0x0300 - 0x03FF.
+//
+// The server can send ephemeral notifications only while the request stream is open,
+// so ephemeral commands are not available in request/response mode.
+// If the request stream gets closed while an ephemeral command is in-flight,
+// the SDK cannot suspend waiting for its notification: it fails the attempt instead.
+//
+// The SDK ignores ephemeral notifications for unknown ephemeral commands,
+// or for ephemeral commands sent in another attempt.
+
+// Ephemeral command to get state.
+//
+// Type: 0x0200 + 0
+message GetStateEphemeralCommandMessage {
+  uint32 ephemeral_completion_id = 1;
+  bytes key = 2;
+}
+
+// Notification of GetStateEphemeralCommandMessage.
+// Type: 0x0300 + 0
+message GetStateEphemeralNotificationMessage {
+  uint32 ephemeral_completion_id = 1;
+  oneof result {
+    Void void = 4;
+    Value value = 5;
+  }
 }
 
 // --- Commands and Notifications ---
