@@ -69,6 +69,7 @@ restate-types = { workspace = true, features = ["test-util"] }
 restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
 
+async-trait = { workspace = true }
 criterion = { workspace = true, features = ["async_tokio"] }
 googletest = { workspace = true }
 num-bigint = "0.5.1"

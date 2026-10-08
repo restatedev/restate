@@ -11,6 +11,7 @@
 mod metadata;
 mod repository;
 mod snapshot_task;
+mod upload;
 
 use std::path::Path;
 use std::sync::Arc;

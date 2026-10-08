@@ -1257,6 +1257,75 @@ pub struct SnapshotsOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub export_concurrency_limit: Option<NonZeroU32>,
 
+    /// # Automatic snapshot concurrency limit
+    ///
+    /// Bounds the number of partition snapshots this node will have in progress at any one time.
+    /// Automatic snapshots are only scheduled while the node is below this bound.
+    ///
+    /// Snapshots explicitly requested using `restatectl` are never refused by this limit, but they
+    /// do count against it while they run, so a burst of manual snapshots temporarily suspends
+    /// automatic scheduling.
+    ///
+    /// Raising this beyond `export-concurrency-limit` does not increase export parallelism: the
+    /// additional snapshot tasks are admitted, then wait for an export permit while still counting
+    /// against this limit.
+    ///
+    /// Uploads of all snapshots in progress share the node-wide `upload-parallelism` and
+    /// `upload-max-rate-per-second` budgets, so raising this limit lets more partitions progress
+    /// at once without raising upload bandwidth or memory. Each additional snapshot does keep its
+    /// local checkpoint, and the SST files it references, on disk until its upload completes.
+    ///
+    /// Default: 4
+    ///
+    /// Since v1.8.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automatic_snapshot_concurrency_limit: Option<NonZeroU32>,
+
+    /// # Snapshot upload parallelism
+    ///
+    /// Maximum number of snapshot upload requests (multipart parts, or whole files smaller than
+    /// `upload-part-size`) in flight on this node, shared fairly by all snapshots being uploaded.
+    ///
+    /// Each request holds one part-sized buffer, so this also bounds snapshot upload memory to
+    /// `upload-parallelism * upload-part-size` per node.
+    ///
+    /// Takes effect on restart.
+    ///
+    /// Default: 8
+    ///
+    /// Since v1.8.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_parallelism: Option<NonZeroU32>,
+
+    /// # Snapshot upload part size
+    ///
+    /// Size of the parts of a snapshot file multipart upload. Files smaller than this are uploaded
+    /// in a single request. Larger parts mean fewer requests, which object stores - GCS in
+    /// particular - handle more efficiently. Values below 5 MiB, the minimum that object stores
+    /// accept, are raised to it.
+    ///
+    /// Takes effect on restart.
+    ///
+    /// Default: 16 MiB
+    ///
+    /// Since v1.8.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_part_size: Option<NonZeroByteCount>,
+
+    /// # Snapshot upload rate limit
+    ///
+    /// Maximum rate, in bytes per second, at which this node reads local snapshot files for upload,
+    /// shared by all snapshots being uploaded. Snapshot files are read from the same disk as the
+    /// partition store, so this protects flushes and compactions from upload bursts.
+    ///
+    /// Takes effect on restart.
+    ///
+    /// Default: unlimited
+    ///
+    /// Since v1.8.0
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upload_max_rate_per_second: Option<NonZeroByteCount>,
+
     #[cfg(any(test, feature = "test-util"))]
     pub enable_cleanup: bool,
 }
@@ -1275,6 +1344,10 @@ impl Default for SnapshotsOptions {
             object_store_retry_policy: Self::default_retry_policy(),
             num_retained: default_num_retained(),
             export_concurrency_limit: None,
+            automatic_snapshot_concurrency_limit: None,
+            upload_parallelism: None,
+            upload_part_size: None,
+            upload_max_rate_per_second: None,
             #[cfg(any(test, feature = "test-util"))]
             enable_cleanup: true,
         }
@@ -1293,6 +1366,23 @@ impl SnapshotsOptions {
 
     pub fn export_concurrency_limit(&self) -> u32 {
         self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
+    }
+
+    pub fn automatic_snapshot_concurrency_limit(&self) -> usize {
+        self.automatic_snapshot_concurrency_limit
+            .map_or(4, |v| v.get() as usize)
+    }
+
+    pub fn upload_parallelism(&self) -> usize {
+        self.upload_parallelism.map_or(8, |v| v.get() as usize)
+    }
+
+    /// Multipart upload part size, never below the minimum that object stores accept for
+    /// non-final parts.
+    pub fn upload_part_size(&self) -> usize {
+        const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
+        self.upload_part_size
+            .map_or(16 * 1024 * 1024, |v| v.as_usize().max(MIN_PART_SIZE))
     }
 
     pub fn snapshots_base_dir(&self) -> PathBuf {
@@ -1384,6 +1474,23 @@ mod tests {
 
         let options: WorkerOptions = serde_json::from_value(value).unwrap();
         assert!(options.disable_scheduler);
+    }
+
+    #[test]
+    fn snapshot_upload_part_size_clamps_to_object_store_minimum() {
+        let min = 5 * 1024 * 1024;
+        let mut opts = SnapshotsOptions::default();
+        assert_eq!(opts.upload_part_size(), 16 * 1024 * 1024, "default");
+
+        opts.upload_part_size = Some(NonZeroByteCount::new(NonZeroUsize::new(1024).unwrap()));
+        assert_eq!(opts.upload_part_size(), min, "below the minimum is raised");
+
+        opts.upload_part_size = Some(NonZeroByteCount::new(NonZeroUsize::new(min * 8).unwrap()));
+        assert_eq!(
+            opts.upload_part_size(),
+            min * 8,
+            "above the minimum is kept"
+        );
     }
 
     #[test]
