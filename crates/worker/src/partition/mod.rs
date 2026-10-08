@@ -711,7 +711,9 @@ where
                     // Since we can apply multiple WAL commands before applying the actions we must not
                     // compact while applying the WAL commands as this could remove vqueue meta entries
                     // which are required by the scheduler when applying the scheduler events.
-                    self.ctx.vqueues_mut().try_compact();
+                    self.ctx.vqueues_mut().try_compact(|handle| {
+                        !self.leadership_state.contains_vqueue(handle)
+                    });
                 },
                 result = self.leadership_state.run(&mut self.ctx, config) => {
                     let _guard = SlowPartitionProcessorArmTracker::new(

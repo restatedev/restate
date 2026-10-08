@@ -526,7 +526,7 @@ mod tests {
     use restate_types::logs::Keys;
     use restate_types::storage::{PolyBytes, StorageCodec};
     use restate_wal_protocol::v1;
-    use restate_wal_protocol::vqueues::PurgeVQueueMetaCommand;
+    use restate_wal_protocol::vqueues::VQueuesPauseCommand;
 
     use super::*;
 
@@ -587,20 +587,19 @@ mod tests {
     }
 
     #[test]
-    fn scan_v2_only_command_and_filter() {
-        let envelope =
-            v2::Envelope::new(v2::Dedup::None, PurgeVQueueMetaCommand { vqueues: vec![] });
+    fn scan_v2_command_and_filter() {
+        let envelope = v2::Envelope::new(v2::Dedup::None, VQueuesPauseCommand { vqueues: vec![] });
         let mut buf = BytesMut::new();
         StorageCodec::encode(&envelope, &mut buf).unwrap();
         let body = buf.freeze();
         for decode in [false, true] {
             let info = scan_body(body.clone(), decode);
-            assert_eq!(info.command_name, "PurgeVQueueMeta");
+            assert_eq!(info.command_name, "VQueuesPause");
             assert_eq!(info.body_size, body.len());
             assert!(info.envelope_json.is_none());
             assert!(info.decode_error.is_none());
             assert_eq!(
-                resolve_command_name("purgevqueuemeta").unwrap(),
+                resolve_command_name("vqueuespause").unwrap(),
                 info.command_name
             );
         }
@@ -609,7 +608,8 @@ mod tests {
             assert_eq!(resolve_command_name(name).unwrap(), *name);
         }
         let error = resolve_command_name("not-a-command").unwrap_err();
-        assert!(error.to_string().contains("PurgeVQueueMeta"));
+        assert!(error.to_string().contains("VQueuesPause"));
+        assert!(resolve_command_name("purgevqueuemeta").is_err());
     }
 
     #[test]

@@ -59,7 +59,7 @@ use restate_types::storage::{StorageDecodeError, StorageEncodeError};
 use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
-use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueuesMeta};
+use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueueHandle, VQueuesMeta};
 use restate_wal_protocol::control::{AnnounceLeaderCommand, VersionBarrierCommand};
 use restate_wal_protocol::timer::TimerKeyValue;
 use restate_wal_protocol::v2::{Envelope, ErasedCommand, Raw};
@@ -874,6 +874,13 @@ where
 }
 
 impl<T> LeadershipState<T> {
+    pub fn contains_vqueue(&self, handle: VQueueHandle) -> bool {
+        match &self.state {
+            State::Leader(leader_state) => leader_state.contains_vqueue(handle),
+            State::Follower | State::Candidate { .. } | State::BecomingLeader { .. } => false,
+        }
+    }
+
     pub fn handle_leader_query(
         &self,
         metas: VQueuesMeta<'_>,
