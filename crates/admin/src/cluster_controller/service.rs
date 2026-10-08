@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use restate_bifrost::{Bifrost, MaybeSealedSegment};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
-    NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
+    NetworkSender, NetworkServerBuilder, Networking, RpcError, Swimlane, TransportConnect,
 };
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
 use restate_core::{cancellation_token, my_node_id};
@@ -52,7 +52,8 @@ use restate_types::logs::metadata::{
 use restate_types::logs::{self, LogId, LogletId, Lsn};
 use restate_types::net::node::NodeState;
 use restate_types::net::partition_processor_manager::{
-    CreateSnapshotRequest, DropPartitionStoreOutcome, DropPartitionStoreRequest, Snapshot,
+    CreateSnapshotRequest, DropPartitionStoreError, DropPartitionStoreOutcome,
+    DropPartitionStoreRequest, Snapshot,
 };
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::partition_table::{
@@ -188,6 +189,22 @@ pub struct ChainExtension {
     pub replication: Option<ReplicationProperty>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DropPartitionStoreRequestError {
+    #[error("node {0} is not alive, cannot drop its partition store")]
+    NodeNotAlive(PlainNodeId),
+    #[error("{node_id} refused to drop its partition store: {error}")]
+    Worker {
+        node_id: GenerationalNodeId,
+        error: DropPartitionStoreError,
+    },
+    #[error("failed to request a partition store drop from {node_id}: {error}")]
+    Rpc {
+        node_id: GenerationalNodeId,
+        error: RpcError,
+    },
+}
+
 #[derive(Debug)]
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<LegacyClusterState>>),
@@ -205,7 +222,8 @@ enum ClusterControllerCommand {
         partition_id: PartitionId,
         node_id: PlainNodeId,
         force: bool,
-        response_tx: oneshot::Sender<anyhow::Result<DropPartitionStoreOutcome>>,
+        response_tx:
+            oneshot::Sender<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>>,
     },
     UpdateClusterConfiguration {
         partition_replication: Option<ReplicationProperty>,
@@ -305,12 +323,13 @@ impl ClusterControllerHandle {
     }
 
     /// Asks a specific node to delete its local copy of a partition.
-    pub async fn drop_partition_store(
+    pub(crate) async fn drop_partition_store(
         &self,
         partition_id: PartitionId,
         node_id: PlainNodeId,
         force: bool,
-    ) -> Result<anyhow::Result<DropPartitionStoreOutcome>, ShutdownError> {
+    ) -> Result<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>, ShutdownError>
+    {
         let (response_tx, response_rx) = oneshot::channel();
 
         let _ = self
@@ -533,7 +552,9 @@ impl<T: TransportConnect> Service<T> {
         partition_id: PartitionId,
         node_id: PlainNodeId,
         force: bool,
-        response_tx: oneshot::Sender<anyhow::Result<DropPartitionStoreOutcome>>,
+        response_tx: oneshot::Sender<
+            Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>,
+        >,
     ) {
         let node = self
             .cluster_state_refresher
@@ -543,9 +564,7 @@ impl<T: TransportConnect> Service<T> {
             .map(|node| node.generational_node_id);
 
         let Some(node_id) = node else {
-            let _ = response_tx.send(Err(anyhow::anyhow!(
-                "Node {node_id} is not alive, cannot drop its partition store"
-            )));
+            let _ = response_tx.send(Err(DropPartitionStoreRequestError::NodeNotAlive(node_id)));
             return;
         };
 
@@ -874,8 +893,9 @@ where
         node_id: GenerationalNodeId,
         partition_id: PartitionId,
         force: bool,
-    ) -> anyhow::Result<DropPartitionStoreOutcome> {
-        self.network_sender
+    ) -> Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError> {
+        let response = self
+            .network_sender
             .call_rpc(
                 node_id,
                 Swimlane::default(),
@@ -886,9 +906,12 @@ where
                 Some(partition_id.into()),
                 None,
             )
-            .await?
+            .await
+            .map_err(|error| DropPartitionStoreRequestError::Rpc { node_id, error })?;
+
+        response
             .into_result()
-            .map_err(|e| anyhow!("{node_id} refused to drop its partition store: {e}"))
+            .map_err(|error| DropPartitionStoreRequestError::Worker { node_id, error })
     }
 }
 

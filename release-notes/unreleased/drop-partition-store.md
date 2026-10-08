@@ -34,6 +34,8 @@ single, guarded command.
   unless a snapshot exists.
 - Requires the targeted node to be alive.
 - Confirmation is skipped with `--yes` or when `CI` is set, as with other `restatectl` commands.
+- Once dispatched, the command is not automatically retried after a connection failure because
+  the drop might still have completed. Check the partition state before running it again.
 
 ### Migration Guidance
 
