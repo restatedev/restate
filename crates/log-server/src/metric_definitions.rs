@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use metrics::{Unit, describe_counter, describe_histogram};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub(crate) const LOG_SERVER_WRITE_BATCH_SIZE_BYTES: &str =
     "restate.log_server.write_batch_size_bytes";
@@ -16,6 +16,8 @@ pub(crate) const LOG_SERVER_WRITE_BATCH_SIZE_BYTES: &str =
 pub(crate) const LOG_SERVER_LOGLET_STARTED: &str = "restate.log_server.loglet_started.total";
 
 pub(crate) const LOG_SERVER_LOGLET_STOPPED: &str = "restate.log_server.loglet_stopped.total";
+
+pub(crate) const LOG_SERVER_NODESET_MEMBERSHIPS: &str = "restate.log_server.nodeset_memberships";
 
 // broken by label "status"
 // - "ok"       (accepted, stored)
@@ -47,5 +49,11 @@ pub(crate) fn describe_metrics() {
         LOG_SERVER_STORE_BYTES,
         Unit::Bytes,
         "Bytes received in STOREs broken down by status"
+    );
+
+    describe_gauge!(
+        LOG_SERVER_NODESET_MEMBERSHIPS,
+        Unit::Count,
+        "Number of current replicated log tails whose nodeset contains this log-server"
     );
 }
