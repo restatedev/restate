@@ -198,8 +198,8 @@ impl FirstMatchingPartitionKeyExtractor {
     /// Adds an invocation-id extractor whose matches are grouped into a single
     /// scan per Restate partition.
     ///
-    /// Only use this when the table's scanner re-fetches each id exactly via an
-    /// exact-id filter; range-scanning tables would read every intermediate key.
+    /// The scanner must enforce the ID predicate through exact reads or native
+    /// key filtering: the grouped range also contains intermediate partition keys.
     pub fn with_grouped_invocation_id(self, column_name: impl Into<String>) -> Self {
         self.append_with_fanout(
             Self::create_invocation_id_partition_key_extractor(column_name),
