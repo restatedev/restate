@@ -10,6 +10,7 @@
 
 use anyhow::bail;
 use cling::prelude::*;
+use tonic::{Code, Status};
 
 use restate_cli_util::ui::console::confirm_or_exit;
 use restate_cli_util::{CliContext, c_eprintln, c_noop, c_success, c_warn};
@@ -21,7 +22,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::protobuf::cluster::{BrokenReason, node_state};
 
-use crate::connection::ConnectionInfo;
+use crate::connection::{ConnectionInfo, NodeOperationError, SimpleStatusWrapper};
 
 #[derive(Run, Parser, Collect, Clone, Debug)]
 #[cling(run = "drop_partition_store")]
@@ -131,6 +132,7 @@ async fn drop_partition_store(
             new_cluster_ctrl_client(channel, &CliContext::get().network)
                 .drop_partition_store(request)
                 .await
+                .map_err(classify_drop_partition_store_status)
         })
         .await?
         .into_inner();
@@ -150,4 +152,42 @@ async fn drop_partition_store(
     }
 
     Ok(())
+}
+
+fn classify_drop_partition_store_status(status: Status) -> NodeOperationError {
+    let retry_elsewhere = status.code() == Code::Unimplemented;
+    let status = SimpleStatusWrapper::from(status);
+    if retry_elsewhere {
+        NodeOperationError::RetryElsewhere(status)
+    } else {
+        NodeOperationError::Terminal(status)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_retries_drop_store_when_the_admin_does_not_implement_it() {
+        assert!(matches!(
+            classify_drop_partition_store_status(Status::unimplemented("unsupported")),
+            NodeOperationError::RetryElsewhere(_)
+        ));
+
+        for status in [
+            Status::failed_precondition("processor running"),
+            Status::aborted("drop in progress"),
+            Status::not_found("unknown partition"),
+            Status::internal("drop failed"),
+            Status::unavailable("response lost"),
+            Status::deadline_exceeded("response timed out"),
+            Status::unknown("outcome unknown"),
+        ] {
+            assert!(matches!(
+                classify_drop_partition_store_status(status),
+                NodeOperationError::Terminal(_)
+            ));
+        }
+    }
 }
