@@ -308,7 +308,7 @@ where
         state_read: Option<StatePreloadPolicy>,
         mut http_stream_tx: InvokerBodySender,
         decoder_stream: &mut S,
-        invocation_reader: IR,
+        mut invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
@@ -389,7 +389,7 @@ where
                 self.bidi_stream_loop(
                     http_stream_tx,
                     decoder_stream,
-                    invocation_reader,
+                    &mut invocation_reader,
                     // The bidi stream loop will never read from a journal v1 as it will be migrated
                     // by the time the bidi stream loop needs to read notifications from it.
                     // todo remove once we drop support for journal v1
@@ -412,8 +412,13 @@ where
         // We don't have the invoker_rx, so we simply consume the response
         trace!("Sender side of the request has been dropped, now processing the response");
 
-        self.response_stream_loop(decoder_stream, attempt_span)
-            .await
+        self.response_stream_loop(
+            decoder_stream,
+            &mut invocation_reader,
+            outbound_budget,
+            attempt_span,
+        )
+        .await
     }
 
     fn prepare_request(
@@ -587,7 +592,7 @@ where
         &mut self,
         mut http_stream_tx: InvokerBodySender,
         http_stream_rx: &mut S,
-        mut invocation_reader: IR,
+        invocation_reader: &mut IR,
         journal_kind: JournalKind,
         replayed_journal_length: EntryIndex,
         outbound_budget: &mut LocalMemoryPool,
@@ -670,7 +675,14 @@ where
                         }
                         Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            shortcircuit!(self.handle_message(message_header, message, attempt_span));
+                            shortcircuit!(self.handle_message(
+                                message_header,
+                                message,
+                                Some(&mut http_stream_tx),
+                                invocation_reader,
+                                outbound_budget,
+                                attempt_span,
+                            ).await);
                         }
                     }
 
@@ -689,13 +701,16 @@ where
         }
     }
 
-    async fn response_stream_loop<S>(
+    async fn response_stream_loop<S, IR>(
         &mut self,
         http_stream_rx: &mut S,
+        invocation_reader: &mut IR,
+        outbound_budget: &mut LocalMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()>
     where
         S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+        IR: InvocationReader,
     {
         loop {
             tokio::select! {
@@ -709,7 +724,14 @@ where
                         }
                         Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
-                            shortcircuit!(self.handle_message(message_header, message, attempt_span));
+                            shortcircuit!(self.handle_message(
+                                message_header,
+                                message,
+                                None,
+                                invocation_reader,
+                                outbound_budget,
+                                attempt_span,
+                            ).await);
                         }
                     }
                 },
@@ -967,10 +989,14 @@ where
         self.command_index += 1;
     }
 
-    fn handle_message(
+    /// `http_stream_tx` is `None` once the request stream is closed.
+    async fn handle_message<IR: InvocationReader>(
         &mut self,
         mh: MessageHeader,
         message: Message,
+        http_stream_tx: Option<&mut InvokerBodySender>,
+        invocation_reader: &mut IR,
+        outbound_budget: &mut LocalMemoryPool,
         attempt_span: &mut ServiceSpan,
     ) -> TerminalLoopState<()> {
         trace!(
@@ -983,12 +1009,55 @@ where
             Message::Start { .. } => {
                 TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(MessageType::Start))
             }
-            Message::CommandAck(_) => TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(
-                MessageType::CommandAck,
-            )),
-            Message::ProposeRunCompletionAck(_) => TerminalLoopState::Failed(
-                InvokerError::UnexpectedMessageV4(MessageType::ProposeRunCompletionAck),
-            ),
+            // These we are only supposed to send from the runtime
+            m @ Message::CommandAck(_)
+            | m @ Message::ProposeRunCompletionAck(_)
+            | m @ Message::GetStateEphemeralNotification(_) => {
+                TerminalLoopState::Failed(InvokerError::UnexpectedMessageV4(m.ty()))
+            }
+            Message::GetStateEphemeralCommand(command) => {
+                let Some(http_stream_tx) = http_stream_tx else {
+                    // The request stream is closed already, so we can't answer anymore:
+                    // the SDK will notice the request stream closed and will fail the attempt on its own if it really needs this value to make progress.
+                    debug!(
+                        "Ignoring GetStateEphemeralCommandMessage, the request stream is closed"
+                    );
+                    return TerminalLoopState::Continue(());
+                };
+                let service_id = shortcircuit!(
+                    self.invocation_task
+                        .invocation_target
+                        .as_keyed_service_id()
+                        .ok_or(InvokerError::GetStateEphemeralCommandWithoutStateAccess)
+                );
+                let state_key = shortcircuit!(
+                    ByteString::try_from(command.key)
+                        .map_err(InvokerError::MalformedGetStateEphemeralCommand)
+                );
+
+                // Execute the read
+                let (value, lease) = match shortcircuit!(
+                    invocation_reader
+                        .read_state_entry_budgeted(&service_id, &state_key, outbound_budget)
+                        .await
+                        .map_err(InvokerError::from_state_reader)
+                ) {
+                    Some((value, lease)) => (Some(value), Some(lease)),
+                    None => (None, None),
+                };
+
+                // Write result back
+                shortcircuit!(self.write_with_lease(
+                    http_stream_tx,
+                    Message::new_get_state_ephemeral_notification(
+                        command.ephemeral_completion_id,
+                        value
+                    ),
+                    lease,
+                ));
+
+                TerminalLoopState::Continue(())
+            }
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on),
             Message::Error(e) => self.handle_error_message(e),
@@ -1492,7 +1561,9 @@ where
             | ServiceProtocolVersion::V4
             | ServiceProtocolVersion::V5
             | ServiceProtocolVersion::V6 => TerminalLoopState::SuspendedV2(future.flatten()),
-            ServiceProtocolVersion::V7 => TerminalLoopState::SuspendedV3(future),
+            ServiceProtocolVersion::V7 | ServiceProtocolVersion::V8 => {
+                TerminalLoopState::SuspendedV3(future)
+            }
         }
     }
 
