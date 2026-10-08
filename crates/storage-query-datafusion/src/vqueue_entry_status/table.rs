@@ -49,6 +49,7 @@ pub(crate) fn register_self(
         .with_num_rows_estimate(RowEstimate::Large)
         .with_partition_key()
         .with_primary_key("entry_id")
+        .with_primary_key("canonical_id")
         .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
         // This can be wrong in some rare cases, but the assumption is that
         // the number of vqueue entries is bigger than the number of vqueues
@@ -61,6 +62,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_grouped_vqueue_entry_id("entry_id")
+            .with_grouped_vqueue_entry_id("canonical_id")
             .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
     )
     .with_statistics(statistics.build());
