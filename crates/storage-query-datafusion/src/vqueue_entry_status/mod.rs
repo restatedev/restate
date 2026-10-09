@@ -12,7 +12,7 @@ mod row;
 pub(crate) mod schema;
 mod table;
 
-pub(crate) use table::register_self;
+pub(crate) use table::{register_local_scanner, register_self};
 
 #[cfg(test)]
 mod tests;
