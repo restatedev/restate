@@ -10,7 +10,7 @@
 
 use std::mem;
 
-use bytes::Buf;
+use bytes::{Buf, Bytes};
 use serde::de::{DeserializeOwned, Error as DeserializationError};
 use tracing::error;
 
@@ -81,4 +81,16 @@ fn decode_serde_from_json<T: DeserializeOwned, B: Buf>(buf: B) -> Result<T, serd
 
 pub fn decode_bilrost<T: bilrost::OwnedMessage, B: Buf>(buf: B) -> Result<T, StorageDecodeError> {
     T::decode(buf).map_err(|err| StorageDecodeError::DecodeValue(err.into()))
+}
+
+/// Utility method to decode a zstd compressed [`bilrost::OwnedMessage`] type
+pub fn decode_bilrost_zstd<T: bilrost::OwnedMessage, B: Buf>(
+    buf: B,
+) -> Result<T, StorageDecodeError> {
+    // bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer
+    // first before decoding the payload.
+    let uncompressed = zstd::decode_all(buf.reader())
+        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+    decode_bilrost(Bytes::from(uncompressed))
 }
