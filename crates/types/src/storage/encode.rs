@@ -88,3 +88,19 @@ pub fn encode_bilrost_writer<T: bilrost::Message, W: Write>(
 
     Ok(())
 }
+
+/// Utility method to encode a [`bilrost::Message`] type compressed with zstd
+pub fn encode_bilrost_zstd<T: bilrost::Message>(
+    value: &T,
+    buf: &mut BytesMut,
+) -> Result<(), StorageEncodeError> {
+    let mut compressor = zstd::Encoder::new(buf.writer(), 0)
+        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+    encode_bilrost_writer(value, &mut compressor)?;
+
+    compressor
+        .finish()
+        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+    Ok(())
+}
