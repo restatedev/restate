@@ -25,8 +25,8 @@ use restate_types::identifiers::JournalEntryId;
 use restate_types::storage::StoredRawEntry;
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::filter::InvocationIdFilter;
+use crate::filter::PartitionKeySelector;
 use crate::journal::row::{append_journal_row, append_journal_row_v2};
 use crate::journal::schema::{SysJournalBuilder, SysJournalTable, sys_journal_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -43,7 +43,7 @@ impl SysJournalTable {
             SysJournalBuilder::schema(),
             sys_journal_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
+            PartitionKeySelector::default().with_invocation_id("id"),
         );
         Arc::new(journal_table)
     }

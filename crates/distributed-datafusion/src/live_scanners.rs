@@ -21,6 +21,7 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 use restate_worker_api::{PartitionQueryAccess, PartitionQueryStream};
 
+use crate::placement::PartitionSource;
 use crate::table_providers::ScanPartition;
 use crate::table_util::Builder;
 
@@ -49,6 +50,10 @@ impl<B, R> LivePartitionScanner<B, R> {
 }
 
 impl<B: Builder + Send + 'static, R: Send + 'static> ScanPartition for LivePartitionScanner<B, R> {
+    fn partition_source(&self) -> PartitionSource {
+        PartitionSource::LeaderLive
+    }
+
     fn scan_partition(
         &self,
         partition_id: PartitionId,

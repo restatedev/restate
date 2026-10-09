@@ -21,7 +21,7 @@ use restate_types::sharding::KeyRange;
 use super::row::append_promise_row;
 use super::schema::{SysPromiseBuilder, SysPromiseTable, sys_promise_sort_order};
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -36,8 +36,7 @@ impl SysPromiseTable {
             SysPromiseBuilder::schema(),
             sys_promise_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
-                .with_scope_or_service_key("scope", "service_key"),
+            PartitionKeySelector::default().with_scope_or_service_key("scope", "service_key"),
         );
         Arc::new(table)
     }
