@@ -100,6 +100,59 @@ Rows are still read at execution time; this does not materialize data or create 
 The HTTP handler currently uses the default user-table selection. Custom session bindings are an
 internal API; no request header or HTTP parameter selects additional tables.
 
+### Query metadata and diagnostics
+
+`QuerySession::session_id()` exposes the server-generated session identity before planning.
+Each `QueryResult` includes fixed `QueryMetadata` (session ID, collected request headers, and planning
+duration) and an independently cloneable `Arc<dyn QueryDiagnostics>`. Clone the handle before
+moving the record-batch stream into a response writer; `snapshot()` returns owned values.
+
+`snapshot()` returns only output row/batch counts, status, execution wall time, and total wall
+time including planning. It is allocation-free and never traverses the physical plan. Total time
+starts at entry to `QuerySession::execute` and ends with the output stream; it excludes session
+creation and any subsequent response serialization. Consumer backpressure is included.
+
+`plan_metrics()` builds the physical operator tree with native DataFusion `MetricsSet`s only
+when requested. `storage-query-api::metrics` re-exports the native metrics API from
+`datafusion-physical-expr-common`. Names, labels, partitions, categories, and custom values are
+preserved without conversion. Each call reads the metric sets afresh because partitions can
+register metrics lazily. Set membership is snapshotted, but the contained counters remain live.
+`warnings()` independently copies node warnings; the gRPC warning response does not materialize
+operator metrics. Values are not aggregated across operators: summing output rows would double
+count, and compute time is not query wall time. Operator counters are read independently;
+they are not a globally atomic snapshot. Remote scanner internals are not included without
+additional protocol support.
+
+The output stream tracks `Running`, `Completed`, `Failed`, and `Cancelled`. It releases the
+execution stream before publishing a terminal state, including on early drop. Retaining a
+diagnostics handle retains the physical plan, not the execution stream. Terminal status and
+wall time describe the output stream's lifetime; asynchronous cleanup can still update operator
+metrics or warnings afterwards. Reading warnings does not drain them. Summary snapshots are
+copied values; detailed DataFusion metric sets retain live counters.
+
+HTTP `/query` and cluster query gRPC use the same internal diagnostic-context allow-list in
+`admin/src/query_context.rs`. These request headers are not part of the public OpenAPI contract:
+
+- `x-restate-query-client` (for example, `ui`)
+- `x-restate-query-origin` (for example, `built-in`)
+- `x-restatecloud-user-id`
+- `x-restatecloud-environment-id`
+- `x-restatecloud-caller-principal`
+
+The collected values are stored in `SessionOptions.headers` and carried into `QueryMetadata.headers`
+as a native `http::HeaderMap`. Header-name lookup is case-insensitive, repeated values are preserved,
+and values are retained without text conversion. Missing headers remain absent and headers outside
+the allow-list are not collected. These are opaque, caller-supplied diagnostic context, not
+authorization or admission inputs. The execution log includes the collected header map.
+
+Both transports return `x-restate-query-session-id` on successful responses; HTTP also includes it
+on planning and first-batch errors after session creation. Clients need to send these identifiers
+explicitly; the server does not infer them from SQL or user-agent strings.
+
+The snapshot API is the foundation for opt-in metrics delivery. The JSON/Arrow response bodies
+and gRPC messages do not yet carry metrics; defining the request flag and wire representation
+is a separate step. Existing gRPC node warnings are read through the diagnostics handle.
+
 ### Available tables
 
 **Partitioned tables** (data distributed across partitions by partition key):

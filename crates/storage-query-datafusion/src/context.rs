@@ -18,20 +18,23 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::SQLOptions;
 use datafusion::physical_plan::{ExecutionPlan, execute_stream};
 use datafusion::prelude::SessionContext;
+use tokio::time::Instant;
 use tracing::instrument;
 
 use restate_core::Metadata;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
 use restate_storage_query_api::{
-    AdminUser, ClusterOperator, NodeWarnings, QueryEngine, QueryOptions, QueryResult, QuerySession,
-    SessionOptions, SessionTable,
+    AdminUser, ClusterOperator, NodeWarnings, QueryEngine, QueryMetadata, QueryOptions,
+    QueryResult, QuerySession, SessionOptions, SessionTable,
 };
 use restate_types::config::ThrottlingOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
+use restate_util_string::ReString;
 
 use crate::catalog::{ClusterTables, RegisterTable, TableInventoryBuilder, UserTables};
+use crate::diagnostics::QueryDiagnosticStream;
 use crate::environment::DataFusionEnv;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
@@ -58,6 +61,7 @@ pub struct DataFusionQueryEngine<T> {
 
 pub struct RestateQuerySession<T> {
     ctx: SessionContext,
+    session_id: ReString,
     opts: SessionOptions,
     _phantom: PhantomData<T>,
 }
@@ -74,6 +78,7 @@ impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
             .env
             .create_session(opts.tables.as_deref().unwrap_or(&self.tables))?;
         Ok(Arc::new(RestateQuerySession {
+            session_id: ctx.session_id().into(),
             ctx,
             opts,
             _phantom: PhantomData,
@@ -83,12 +88,17 @@ impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
 
 #[async_trait]
 impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
-    #[instrument(target = "query_engine", level="debug", skip_all, fields(session = self.ctx.session_id()))]
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[instrument(target = "query_engine", level="debug", skip_all, fields(session = %self.session_id))]
     async fn execute(
         &self,
         sql: &str,
         _opts: QueryOptions,
     ) -> Result<QueryResult, QueryExecutionError> {
+        let planning_started = Instant::now();
         let state = self.ctx.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
         let plan = state.statement_to_plan(statement).await?;
@@ -100,11 +110,25 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
         let df = self.ctx.execute_logical_plan(plan).await?;
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df.create_physical_plan().await?;
+        let metadata = QueryMetadata {
+            session_id: self.session_id.clone(),
+            headers: self.opts.headers.clone(),
+            planning_duration: planning_started.elapsed(),
+        };
         let node_warnings = collect_node_warnings(&physical_plan);
-        let stream = execute_stream(physical_plan, task_ctx)?;
+        let execution_started = Instant::now();
+        let stream = execute_stream(Arc::clone(&physical_plan), task_ctx)?;
+        let (stream, diagnostics) = QueryDiagnosticStream::wrap(
+            stream,
+            physical_plan,
+            node_warnings,
+            planning_started,
+            execution_started,
+        );
         Ok(QueryResult {
             stream,
-            node_warnings,
+            metadata,
+            diagnostics,
         })
     }
 }
@@ -195,17 +219,19 @@ mod tests {
     use std::collections::HashMap;
     use std::num::NonZeroU32;
     use std::sync::Arc;
+    use std::time::Duration;
 
     use datafusion::arrow::util::display::array_value_to_string;
     use datafusion::prelude::SessionContext;
-    use futures::TryStreamExt;
+    use futures::{StreamExt, TryStreamExt};
     use tokio::sync::watch;
 
     use restate_core::MetadataKind;
     use restate_core::test_env::TestCoreEnv;
     use restate_storage_query_api::errors::SessionError;
     use restate_storage_query_api::{
-        AdminUser, QueryEngine, QueryOptions, SessionOptions, SessionTable,
+        AdminUser, QueryEngine, QueryOperatorStats, QueryOptions, QueryStatus, SessionOptions,
+        SessionTable,
     };
     use restate_types::Version;
     use restate_types::cluster::cluster_state::LegacyClusterState;
@@ -215,6 +241,83 @@ mod tests {
     use crate::remote_query_scanner_manager::RemoteScannerManager;
 
     use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter, SelectPartitionsFromMetadata};
+
+    #[tokio::test(start_paused = true)]
+    async fn diagnostics_follow_query_lifetime_independently_of_session() {
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(env, None, vec![]);
+        let mut options = SessionOptions::default();
+        options
+            .headers
+            .insert("x-restate-query-client", "ui".parse().unwrap());
+        options
+            .headers
+            .insert("x-restate-query-origin", "built-in".parse().unwrap());
+        let session = engine.create_session(options).unwrap();
+        let other = engine.create_session(SessionOptions::default()).unwrap();
+        assert_ne!(session.session_id(), other.session_id());
+        let result = session
+            .execute(
+                "SELECT SUM(n) FROM (VALUES (1), (2), (3)) AS t(n)",
+                QueryOptions {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.metadata.session_id.as_str(), session.session_id());
+        assert_eq!(result.metadata.headers["x-restate-query-client"], "ui");
+        assert_eq!(
+            result.metadata.headers["x-restate-query-origin"],
+            "built-in"
+        );
+        let before = result.diagnostics.snapshot();
+        assert_eq!(before.status, QueryStatus::Running);
+        assert_eq!(before.output_rows, 0);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let running = result.diagnostics.snapshot();
+        assert!(running.total_duration >= before.total_duration + Duration::from_secs(2));
+        assert!(running.execution_duration >= before.execution_duration + Duration::from_secs(2));
+
+        // Two executions on the same session must have separate progress.
+        let cancelled = session.execute("SELECT 42", QueryOptions {}).await.unwrap();
+        assert_eq!(result.metadata.session_id, cancelled.metadata.session_id);
+        drop(session);
+        drop(cancelled.stream);
+        assert_eq!(
+            cancelled.diagnostics.snapshot().status,
+            QueryStatus::Cancelled
+        );
+        assert_eq!(result.diagnostics.snapshot().status, QueryStatus::Running);
+
+        let mut stream = result.stream;
+        let mut rows = 0;
+        let mut batches = 0;
+        while let Some(batch) = stream.next().await {
+            rows += batch.unwrap().num_rows() as u64;
+            batches += 1;
+        }
+        let after = result.diagnostics.snapshot();
+        assert_eq!(after.status, QueryStatus::Completed);
+        assert_eq!(after.output_rows, rows);
+        assert_eq!(after.output_batches, batches);
+        assert_eq!(rows, 1);
+        assert_eq!(before.output_rows, 0);
+        fn has_output_metrics(plan: &QueryOperatorStats) -> bool {
+            plan.metrics
+                .as_ref()
+                .is_some_and(|metrics| metrics.output_rows().is_some_and(|n| n > 0))
+                || plan.children.iter().any(has_output_metrics)
+        }
+        assert!(has_output_metrics(&result.diagnostics.plan_metrics()));
+        assert!(
+            after.total_duration >= result.metadata.planning_duration + after.execution_duration
+        );
+        drop(stream);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let dropped = result.diagnostics.snapshot();
+        assert_eq!(dropped.status, QueryStatus::Completed);
+        assert_eq!(dropped.execution_duration, after.execution_duration);
+        assert_eq!(dropped.total_duration, after.total_duration);
+    }
 
     #[restate_core::test]
     async fn cluster_namespace_preserves_unqualified_queries_and_user_catalog_isolation() {
