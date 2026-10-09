@@ -370,7 +370,21 @@ where
                 .http2()
                 // hyper panics on keep-alive without a timer
                 .timer(hyper_util::rt::TokioTimer::default())
-                .adaptive_window(true)
+                // Explicit windows instead of `adaptive_window(true)`: a mitigation for h2's
+                // (>= 0.4.16) small-DATA-frame budget, which closes the connection with
+                // GOAWAY ENHANCE_YOUR_CALM "too_many_data_frames" once too many small
+                // (< 256 byte) DATA frames are buffered unread. h2 sizes that budget once, at
+                // connection setup, as half the initial connection window (min 25,600 bytes).
+                // adaptive_window starts every connection at the 64 KiB spec minimum, pinning
+                // the budget at ~32 KiB (~140 small frames) even after BDP grows the window.
+                // A 2 MiB connection window raises the budget to ~1 MiB.
+                //
+                // This is only a mitigation: a fast enough client can still exhaust the budget
+                // if the handler falls behind reading request bodies. The proper fixes are
+                // reading bodies promptly or configuring h2's `data_frame_budget` directly,
+                // which hyper doesn't expose yet.
+                .initial_connection_window_size(2 * 1024 * 1024)
+                .initial_stream_window_size(1024 * 1024)
                 .keep_alive_interval(keep_alive_interval)
                 .keep_alive_timeout(keep_alive_timeout);
 
