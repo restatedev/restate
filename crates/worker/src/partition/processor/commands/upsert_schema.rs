@@ -47,7 +47,7 @@ impl<P: Processor + HasFsmMut> ApplyPartitionCommand<UpsertSchemaCommand>
             debug!("Schema updated to version '{}'", upsert.schema.version());
             self.processor
                 .fsm_mut()
-                .set_schema(self.txn, Arc::new(upsert.schema));
+                .set_schema(self.txn, Arc::new(upsert.schema.into()));
         }
 
         Ok(NextStep::AdvanceLastAppliedLsn {
