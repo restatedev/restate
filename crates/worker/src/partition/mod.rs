@@ -774,6 +774,7 @@ where
         for<'a> rpc::RpcContext<'a, Schema, PartitionStore>: rpc::RpcHandler<Request>,
     {
         let msg = msg.into_typed::<Request>();
+        let received_at = msg.received_at();
         let dequeued_at = MillisSinceEpoch::now();
         // note: split_with_reservation() decodes the payload
         let (response_tx, body, lease) = msg.split_with_reservation();
@@ -801,9 +802,12 @@ where
         // possibly without decoding the payload.
 
         match decision {
-            rpc::Decision::Propose(proposal) => {
-                rpc_proposal_sender.send_rpc_proposal::<Request>(proposal, response_tx, lease)
-            }
+            rpc::Decision::Propose(proposal) => rpc_proposal_sender.send_rpc_proposal::<Request>(
+                proposal,
+                response_tx,
+                lease,
+                received_at,
+            ),
             rpc::Decision::Reply(reply) => response_tx.send(Request::wrap_response(reply)),
         }
     }
@@ -1052,6 +1056,7 @@ where
         msg: Incoming<Rpc<ReceivedIngestRequest>>,
         rpc_proposal_sender: RpcProposalSender,
     ) {
+        let received_at = msg.received_at();
         let (reciprocal, request, lease) = msg.split_with_reservation();
         let on_commit =
             CommitCallback::from(move |result: Result<(), PartitionProcessorRpcError>| {
@@ -1067,7 +1072,7 @@ where
                 };
                 reciprocal.send(status.into());
             });
-        rpc_proposal_sender.send_forwarded_records(request.records, on_commit, lease);
+        rpc_proposal_sender.send_forwarded_records(request.records, on_commit, lease, received_at);
     }
 
     // --- Apply new commands/records

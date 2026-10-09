@@ -1450,6 +1450,8 @@ mod tests {
         let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
+        assert_eq!(sender.notify_committed()?.await?, Lsn::INVALID);
+
         // Rapidly enqueue many records using enqueue
         let mut enqueued = 0;
         for i in 0..100 {
@@ -1463,7 +1465,9 @@ mod tests {
 
         // Wait for all to be committed
         let token = sender.notify_committed()?;
-        token.await?;
+        assert_eq!(token.await?, Lsn::from(100u64));
+        // A canary-only batch must retain the last committed LSN.
+        assert_eq!(sender.notify_committed()?.await?, Lsn::from(100u64));
 
         handle.drain().await?;
 

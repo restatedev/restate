@@ -19,7 +19,7 @@ use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
 use restate_memory::{MemoryLease, MemoryPool, NonZeroByteCount, PollMemoryPool};
-use restate_types::logs::Record;
+use restate_types::logs::{Lsn, Record, SequenceNumber};
 use restate_types::storage::StorageEncode;
 
 use crate::bifrost::PreferenceControl;
@@ -40,7 +40,7 @@ pub struct BackgroundAppender<T> {
     /// Reusable vector for buffering recv() operations
     current_batch: Batch,
     /// Reusable vector for callbacks of enqueue_with_notification calls
-    notif_buffer: Vec<oneshot::Sender<()>>,
+    notif_buffer: Vec<oneshot::Sender<Lsn>>,
 }
 
 impl<T: StorageEncode> BackgroundAppender<T> {
@@ -101,6 +101,7 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         } = self;
 
         let cancel_token = cancellation_token();
+        let mut committed_lsn = Lsn::INVALID;
         // to avoid a busy loop while draining.
         let mut draining = false;
 
@@ -126,7 +127,13 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                 current_batch.push(op);
             } else {
                 // Current batch is full, flush it first
-                Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer).await?;
+                Self::process_appends(
+                    &mut appender,
+                    &mut current_batch,
+                    &mut notif_buffer,
+                    &mut committed_lsn,
+                )
+                .await?;
                 // Then add the operation to the new (empty) batch
                 current_batch.push(op);
             }
@@ -145,15 +152,25 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                     }
                     Ok(op) => {
                         // Batch is full, flush it
-                        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer)
-                            .await?;
+                        Self::process_appends(
+                            &mut appender,
+                            &mut current_batch,
+                            &mut notif_buffer,
+                            &mut committed_lsn,
+                        )
+                        .await?;
                         // Add op to the next batch
                         current_batch.push(op);
                     }
                     Err(TryRecvError::Empty) => {
                         // No more messages available, flush current batch and wait for more
-                        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer)
-                            .await?;
+                        Self::process_appends(
+                            &mut appender,
+                            &mut current_batch,
+                            &mut notif_buffer,
+                            &mut committed_lsn,
+                        )
+                        .await?;
                         break 'opportunistic;
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -165,7 +182,13 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         }
 
         // Make sure to flush any remaining items before exiting.
-        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer).await?;
+        Self::process_appends(
+            &mut appender,
+            &mut current_batch,
+            &mut notif_buffer,
+            &mut committed_lsn,
+        )
+        .await?;
 
         Ok(())
     }
@@ -173,7 +196,8 @@ impl<T: StorageEncode> BackgroundAppender<T> {
     async fn process_appends(
         appender: &mut Appender<T>,
         buffered_records: &mut Batch,
-        notif_buffer: &mut Vec<oneshot::Sender<()>>,
+        notif_buffer: &mut Vec<oneshot::Sender<Lsn>>,
+        committed_lsn: &mut Lsn,
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(buffered_records.inner.len());
         // Holds the batch's memory leases until the append completes.
@@ -197,7 +221,7 @@ impl<T: StorageEncode> BackgroundAppender<T> {
 
         // Failure to append will stop the whole task
         if !batch.is_empty() {
-            appender.append_batch_erased(batch.into()).await?;
+            *committed_lsn = appender.append_batch_erased(batch.into()).await?;
         }
 
         // Records are durably appended, we can now drop the leases.
@@ -205,7 +229,7 @@ impl<T: StorageEncode> BackgroundAppender<T> {
 
         // Notify those who asked for a commit notification
         notif_buffer.drain(..).for_each(|tx| {
-            let _ = tx.send(());
+            let _ = tx.send(*committed_lsn);
         });
         // Clear buffers
         notif_buffer.clear();
@@ -517,13 +541,18 @@ impl<T: StorageEncode> LogSender<T> {
     }
 }
 
-/// A future that resolves when a record is committed by the background appender.
+/// A future that resolves to a committed LSN from the background appender.
+///
+/// The LSN is the end of the appender batch containing the notification: it covers
+/// every record preceding the notification, and may also cover later records in
+/// that batch. It is not necessarily the notified record's exact LSN. A notification
+/// before any records have been appended can return [`Lsn::INVALID`].
 pub struct CommitToken {
-    rx: oneshot::Receiver<()>,
+    rx: oneshot::Receiver<Lsn>,
 }
 
 impl std::future::Future for CommitToken {
-    type Output = Result<(), oneshot::error::RecvError>;
+    type Output = Result<Lsn, oneshot::error::RecvError>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -535,10 +564,10 @@ impl std::future::Future for CommitToken {
 
 enum AppendOperation {
     Enqueue(Record, MemoryLease),
-    EnqueueWithNotification(Record, oneshot::Sender<()>, MemoryLease),
+    EnqueueWithNotification(Record, oneshot::Sender<Lsn>, MemoryLease),
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
-    Canary(oneshot::Sender<()>),
+    Canary(oneshot::Sender<Lsn>),
 }
 
 impl AppendOperation {

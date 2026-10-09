@@ -202,6 +202,17 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub self_proposal_queue_memory_limit: NonZeroByteCount,
 
+    /// # Self-proposal in-flight windows
+    ///
+    /// Per-flow limits on records proposed to a partition's log but not yet applied.
+    /// A full window pauses that flow while other flows remain eligible. An input
+    /// batch is admitted as a unit and may exceed its window by one batch.
+    /// The cleaner uses `cleanup-max-in-flight-purges` instead.
+    ///
+    /// Since v1.8.0
+    #[serde(default)]
+    pub self_proposal_max_in_flight: SelfProposalMaxInFlight,
+
     /// # VQueue metadata cache size
     ///
     /// The target number of VQueue metadata entries to cache per partition. Each entry uses
@@ -291,7 +302,55 @@ impl Default for WorkerOptions {
             self_proposal_queue_memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
             ),
+            self_proposal_max_in_flight: SelfProposalMaxInFlight::default(),
             vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
+        }
+    }
+}
+
+/// Per-partition admission windows, released after local application of the log.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[serde(default, rename_all = "kebab-case")]
+pub struct SelfProposalMaxInFlight {
+    /// Invoker effects. Default: 256 records.
+    /// Since v1.8.0
+    pub invoker: NonZeroU32,
+    /// Fired timers. Default: 256 records.
+    /// Since v1.8.0
+    pub timer: NonZeroU32,
+    /// Outbox truncations. Default: 16 records.
+    /// Since v1.8.0
+    pub shuffle: NonZeroU32,
+    /// Schema updates. Default: 1 record.
+    /// Since v1.8.0
+    pub upsert_schema: NonZeroU32,
+    /// Rule-book updates. Default: 1 record.
+    /// Since v1.8.0
+    pub upsert_rule_book: NonZeroU32,
+    /// RPC proposals and forwarded ingestion. Default: 256 records.
+    /// Since v1.8.0
+    pub network_service: NonZeroU32,
+    /// Partition durability updates. Default: 16 records.
+    /// Since v1.8.0
+    pub partition_maintenance: NonZeroU32,
+    /// VQueue scheduling decisions. Default: 256 records.
+    /// Since v1.8.0
+    pub scheduler: NonZeroU32,
+}
+
+impl Default for SelfProposalMaxInFlight {
+    fn default() -> Self {
+        Self {
+            invoker: NonZeroU32::new(256).unwrap(),
+            timer: NonZeroU32::new(256).unwrap(),
+            shuffle: NonZeroU32::new(16).unwrap(),
+            upsert_schema: NonZeroU32::new(1).unwrap(),
+            upsert_rule_book: NonZeroU32::new(1).unwrap(),
+            network_service: NonZeroU32::new(256).unwrap(),
+            partition_maintenance: NonZeroU32::new(16).unwrap(),
+            scheduler: NonZeroU32::new(256).unwrap(),
         }
     }
 }
@@ -477,6 +536,17 @@ pub struct InvokerOptions {
     /// without throttling.
     pub action_throttling: Option<ThrottlingOptions>,
 
+    /// # Invocation task output queue length
+    ///
+    /// Maximum queued task outputs per invoker (partition leader). When full,
+    /// protocol runners await space instead of continuing to drain SDK output.
+    /// This bounds queued messages, not bytes or buffers retained by active tasks.
+    /// Changes take effect when the invoker is recreated. Default: 256.
+    ///
+    /// Since v1.8.0
+    #[serde(default = "serde_helpers::task_output_queue_length_default")]
+    pub task_output_queue_length: NonZeroUsize,
+
     /// # Memory limit
     ///
     /// Global memory budget for the invoker, shared across all partitions on this node.
@@ -657,6 +727,7 @@ impl Default for InvokerOptions {
             disable_eager_state: false,
             invocation_throttling: None,
             action_throttling: None,
+            task_output_queue_length: serde_helpers::task_output_queue_length_default(),
             memory_limit: NonZeroByteCount::new(
                 NonZeroUsize::new(1536 * 1024 * 1024).unwrap(), // 1.5 GiB
             ),
@@ -1326,6 +1397,10 @@ mod serde_helpers {
 
     use restate_util_bytecount::ByteCount;
 
+    pub const fn task_output_queue_length_default() -> NonZeroUsize {
+        NonZeroUsize::new(256).unwrap()
+    }
+
     pub const fn cleanup_max_in_flight_purges_default() -> NonZeroU32 {
         NonZeroU32::new(32).unwrap()
     }
@@ -1390,6 +1465,41 @@ mod tests {
     use std::path::Path;
 
     use super::*;
+
+    #[test]
+    fn self_proposal_windows_default_and_override() {
+        let mut value = serde_json::to_value(WorkerOptions::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("self-proposal-max-in-flight");
+        let defaults: WorkerOptions = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            defaults.self_proposal_max_in_flight,
+            SelfProposalMaxInFlight::default()
+        );
+        value["self-proposal-max-in-flight"] = serde_json::json!({"invoker": 1});
+        let options: WorkerOptions = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(options.self_proposal_max_in_flight.invoker.get(), 1);
+        assert_eq!(
+            options.self_proposal_max_in_flight.network_service.get(),
+            256
+        );
+        assert_eq!(options.self_proposal_max_in_flight.upsert_schema.get(), 1);
+        value["invoker"]
+            .as_object_mut()
+            .unwrap()
+            .remove("task-output-queue-length");
+        let options: WorkerOptions = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(options.invoker.task_output_queue_length.get(), 256);
+        value["invoker"]["task-output-queue-length"] = 0.into();
+        assert!(serde_json::from_value::<WorkerOptions>(value.clone()).is_err());
+        value["invoker"]["task-output-queue-length"] = 16.into();
+        let options: WorkerOptions = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(options.invoker.task_output_queue_length.get(), 16);
+        value["self-proposal-max-in-flight"]["invoker"] = 0.into();
+        assert!(serde_json::from_value::<WorkerOptions>(value).is_err());
+    }
 
     #[test]
     fn scheduler_is_enabled_by_default_and_can_be_disabled() {

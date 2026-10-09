@@ -208,6 +208,8 @@ impl MessageRouter {
         rpc_call: protobuf::network::RpcCall,
         connection: &Connection,
     ) -> Result<oneshot::Receiver<ReplyEnvelope>, RouterError> {
+        // Include service-memory admission and partition-mailbox waits.
+        let received_at = tokio::time::Instant::now();
         let target_service = rpc_call.service();
         trace!(
             peer = %connection.peer(),
@@ -233,6 +235,7 @@ impl MessageRouter {
             raw_rpc,
             connection.peer,
             PeerMetadataVersion::from(header),
+            received_at,
         );
 
         let op = ServiceOp::CallRpc(incoming);
@@ -256,6 +259,7 @@ impl MessageRouter {
         watch: protobuf::network::Watch,
         connection: &Connection,
     ) -> Result<watch::Receiver<WatchUpdateEnvelope>, RouterError> {
+        let received_at = tokio::time::Instant::now();
         let target_service = watch.service();
         trace!(
             "Received Watch request: {target_service}::{}",
@@ -280,6 +284,7 @@ impl MessageRouter {
             },
             connection.peer(),
             PeerMetadataVersion::from(header),
+            received_at,
         );
 
         let op = ServiceOp::Watch(incoming);
@@ -301,6 +306,7 @@ impl MessageRouter {
         unary: protobuf::network::Unary,
         connection: &Connection,
     ) -> Result<(), RouterError> {
+        let received_at = tokio::time::Instant::now();
         let target_service = unary.service();
         trace!("Received Unary call: {target_service}::{}", unary.msg_type);
 
@@ -319,6 +325,7 @@ impl MessageRouter {
             },
             connection.peer(),
             PeerMetadataVersion::from(header),
+            received_at,
         );
 
         let op = ServiceOp::Unary(incoming);
@@ -678,6 +685,7 @@ impl<S: Service> ServiceMessage<S> {
             raw_rpc,
             from_peer,
             peer_metadata.unwrap_or_default(),
+            tokio::time::Instant::now(),
         );
 
         tokio::spawn(async move {

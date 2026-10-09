@@ -83,6 +83,12 @@ pub use input_command::InvokerHandle;
 use restate_types::LimitKey;
 use restate_util_string::ReString;
 
+tokio::task_local! {
+    // Scoped to handling one task output, including awaited sends. Derived effects
+    // keep its timestamp; retry/control handling outside this scope has no timestamp.
+    static EFFECT_RECEIVED_AT: tokio::time::Instant;
+}
+
 /// Tags an [`Effect`] with the fencing token of the attempt that produced it (`ism.fencing_token`).
 ///
 /// The partition processor checks the token against its in-memory `fencing_tokens` map before
@@ -91,6 +97,7 @@ fn fence(token: FencingToken, effect: Effect) -> FencedEffect {
     FencedEffect {
         fencing_token: token,
         effect: Box::new(effect),
+        received_at: EFFECT_RECEIVED_AT.try_with(|instant| *instant).ok(),
     }
 }
 
@@ -118,7 +125,7 @@ trait InvocationTaskRunner<SR> {
         idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: SR,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: mpsc::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
@@ -164,7 +171,7 @@ where
         idempotency_key: Option<ReString>,
         retry_count_since_last_stored_entry: u32,
         storage_reader: IR,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: mpsc::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         task_pool: &mut JoinSet<()>,
         budget: LocalMemoryPool,
@@ -261,7 +268,13 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
 
         let (input_tx, input_rx) = mpsc::unbounded_channel();
         let (status_tx, status_rx) = mpsc::unbounded_channel();
-        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+        let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::channel(
+            Configuration::pinned()
+                .worker
+                .invoker
+                .task_output_queue_length
+                .get(),
+        );
 
         Self {
             input_tx,
@@ -378,8 +391,8 @@ struct ServiceInner<InvocationTaskRunner, Schemas, StorageReader> {
     >,
 
     // Channel to communicate with invocation tasks
-    invocation_tasks_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
-    invocation_tasks_rx: mpsc::UnboundedReceiver<InvocationTaskOutput>,
+    invocation_tasks_tx: mpsc::Sender<InvocationTaskOutput>,
+    invocation_tasks_rx: mpsc::Receiver<InvocationTaskOutput>,
 
     // Invocation task factory
     invocation_task_runner: InvocationTaskRunner,
@@ -448,7 +461,8 @@ where
                 let InvocationTaskOutput {
                     invocation_id,
                     fencing_token,
-                    inner
+                    inner,
+                    received_at,
                 } = invocation_task_msg;
                 // Fence stale task output: if the invocation was aborted and restarted, the
                 // in-flight state machine has moved to a newer epoch. Output from the old task
@@ -457,6 +471,7 @@ where
                 if self.invocation_state_machine_manager.is_stale_fencing_token(&invocation_id, fencing_token) {
                     trace!(restate.invocation.id = %invocation_id, "Dropping stale invoker task output from a previous attempt");
                 } else {
+                EFFECT_RECEIVED_AT.scope(received_at, async {
                 match inner {
                     InvocationTaskOutputInner::PinnedDeployment(deployment_metadata, has_changed) => {
                         self.handle_pinned_deployment(
@@ -508,6 +523,7 @@ where
                         self.handle_invocation_task_should_yield(invocation_id, oom, budget).await
                     }
                 };
+                }).await;
                 }
             },
             Some(expired) = self.retry_timers.next() => {
@@ -1682,7 +1698,7 @@ mod tests {
         ) {
             let (input_tx, input_rx) = mpsc::unbounded_channel();
             let (status_tx, status_rx) = mpsc::unbounded_channel();
-            let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::unbounded_channel();
+            let (invocation_tasks_tx, invocation_tasks_rx) = mpsc::channel(256);
             let (output_tx, output_rx) = mpsc::channel(1024);
 
             let service_inner = Self {
@@ -1756,7 +1772,7 @@ mod tests {
             InvocationId,
             InvocationTarget,
             IR,
-            mpsc::UnboundedSender<InvocationTaskOutput>,
+            mpsc::Sender<InvocationTaskOutput>,
             mpsc::UnboundedReceiver<Notification>,
         ) -> Fut,
         IR: InvocationReader + Clone + Send + Sync + 'static,
@@ -1772,7 +1788,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             storage_reader: IR,
-            invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            invoker_tx: mpsc::Sender<InvocationTaskOutput>,
             invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1806,7 +1822,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
-            _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            _invoker_tx: mpsc::Sender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1829,7 +1845,7 @@ mod tests {
             _idempotency_key: Option<ReString>,
             _retry_count_since_last_stored_entry: u32,
             _storage_reader: SR,
-            _invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+            _invoker_tx: mpsc::Sender<InvocationTaskOutput>,
             _invoker_rx: mpsc::UnboundedReceiver<Notification>,
             task_pool: &mut JoinSet<()>,
             _budget: LocalMemoryPool,
@@ -1926,6 +1942,45 @@ mod tests {
             .await
             .expect("task completes")
             .expect("task doesn't panic");
+    }
+
+    #[test(restate_core::test)]
+    async fn output_receive_time_survives_invoker_queues() {
+        let options = InvokerOptions::default();
+        let id = InvocationId::mock_random();
+        let token = FencingToken::default();
+        let (_input_tx, _status_tx, mut effects, mut service) =
+            ServiceInner::mock((), MockSchemas::default(), EmptyStorageReader);
+        service.handle_invoke(&options, id, token, InvocationTarget::mock_virtual_object());
+        let received_at = tokio::time::Instant::now() - Duration::from_secs(2);
+        assert!(
+            service
+                .invocation_tasks_tx
+                .send(InvocationTaskOutput {
+                    invocation_id: id,
+                    fencing_token: token,
+                    inner: InvocationTaskOutputInner::Closed,
+                    received_at,
+                })
+                .await
+                .is_ok()
+        );
+        service.step(&options).await;
+        let effect = effects.recv().await.unwrap();
+        assert_eq!(effect.received_at, Some(received_at));
+        assert!(matches!(effect.effect.kind, EffectKind::End));
+        assert!(
+            fence(
+                token,
+                Effect {
+                    invocation_id: id,
+                    kind: EffectKind::End
+                }
+            )
+            .received_at
+            .is_none()
+        );
+        service.invocation_tasks.shutdown().await;
     }
 
     #[test(restate_core::test)]

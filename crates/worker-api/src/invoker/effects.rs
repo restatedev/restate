@@ -41,6 +41,9 @@ pub struct Effect {
 pub struct FencedEffect {
     pub fencing_token: FencingToken,
     pub effect: Box<Effect>,
+    /// Local SDK output creation time, carried through both invoker queues. Not persisted.
+    /// Absent for effects originating from internal control or retry handling.
+    pub received_at: Option<tokio::time::Instant>,
 }
 
 #[derive(Debug, Clone)]
