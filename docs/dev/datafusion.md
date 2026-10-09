@@ -21,7 +21,7 @@ The query engine uses a two-tier architecture:
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Admin Node                              │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │                    QueryContext                           │  │
+│  │                 RestateQuerySession                       │  │
 │  │  - DataFusion SessionContext                              │  │
 │  │  - SQL parsing, planning, optimization                    │  │
 │  │  - Accumulations, joins, aggregations                     │  │
@@ -50,7 +50,9 @@ The query engine uses a two-tier architecture:
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `QueryContext` | `storage-query-datafusion/src/context.rs` | Central orchestrator wrapping DataFusion's `SessionContext` |
+| `DataFusionEnv` | `storage-query-datafusion/src/environment.rs` | Shared runtime and provider inventory |
+| `DataFusionQueryEngine` | `storage-query-datafusion/src/context.rs` | Session admission and default SQL exposure |
+| `RestateQuerySession` | `storage-query-datafusion/src/context.rs` | Request-owned DataFusion context and catalog |
 | `PartitionedTableProvider` | `storage-query-datafusion/src/table_providers.rs` | DataFusion `TableProvider` for partitioned tables |
 | `RemoteScannerManager` | `storage-query-datafusion/src/remote_query_scanner_manager.rs` | Routes scans to local or remote partitions |
 | `RemotePartitionsScanner` | `storage-query-datafusion/src/remote_query_scanner_manager.rs` | Decides local vs remote execution per partition |
@@ -60,7 +62,132 @@ The query engine uses a two-tier architecture:
 
 ### Tables
 
-Table names below are the registered SQL names (see `storage-query-datafusion/src/context.rs`).
+Table names below are unqualified SQL names (see `storage-query-datafusion/src/catalog/`).
+`UserTables` uses `restate.public` for the Admin HTTP `/query` endpoint and snapshot queries.
+`ClusterTables` uses `restate.cluster` for cluster-operations queries through gRPC, including
+`restatectl sql`. Each engine defaults to its own namespace, so `SELECT * FROM partitions`
+continues to work in `restatectl`; it can also be written as
+`SELECT * FROM restate.cluster.partitions`. Cluster tables are not exposed through HTTP `/query`.
+
+The catalog groups declare those default SQL names separately from provider construction.
+Remote scanner identifiers remain unqualified (for example, `loglet_workers`); SQL namespaces
+and aliases are separate from wire identities.
+
+### Provider inventory and session catalogs
+
+`DataFusionEnv` clones share a `DashMap` of stable identities to `Arc<dyn TableProvider>`, plus
+the DataFusion runtime and memory pool. Components populate the inventory when their dependencies
+are ready. Node initialization supplies the same environment to the HTTP engine and the cluster
+controller; the controller adds its providers when enabled. Duplicate identities are rejected.
+
+`QueryEngineTable` is the marker for a stable identity. `define_table!` generates these markers.
+Table implementations construct providers and local scanners; `UserTables` and `ClusterTables`
+populate the inventory through `TableInventoryBuilder` and declare their default SQL exposure.
+`DataFusionQueryEngine` retains that exposure list, not a shared catalog.
+
+For each session, `SessionOptions.tables` can replace the engine's default list with `SessionTable`
+bindings from inventory identities to SQL names. `None` selects the defaults; an empty list exposes
+no application tables. Missing inventory entries are omitted. The environment clones each available
+provider into fresh catalog/schema containers and releases every map guard before planning or
+execution. Later registrations affect new sessions; existing catalogs remain stable.
+
+Views are bound once during component registration against a temporary catalog of their dependencies.
+The resulting view provider is retained in the inventory. A session can expose a view under another
+name without exposing its base tables: the logical plan retains their provider references. This exposes
+the view's defined result, not session-specific restrictions on separately exposed base tables.
+Rows are still read at execution time; this does not materialize data or create a database snapshot.
+
+The HTTP handler currently uses the default user-table selection. Custom session bindings are an
+internal API; no request header or HTTP parameter selects additional tables.
+
+### Query metadata and diagnostics
+
+`QuerySession::session_id()` exposes the server-generated session identity before planning.
+Each `QueryResult` includes fixed `QueryMetadata` (session ID, query timestamp, collected request headers, redacted SQL, and planning
+duration) and an independently cloneable `Arc<dyn QueryDiagnostics>`. Clone the handle before
+moving the record-batch stream into a response writer; `snapshot()` returns owned values.
+
+Each `execute()` allocates a native `UniqueTimestamp` as `query_ts` before parsing. `DataFusionEnv`
+owns an atomic `HlcClock`; environment clones and their sessions share it. Failed planning attempts
+advance the clock too. The pair `(session_id, query_ts)` identifies an execution across independently
+created environments. Query execution requires the binary's `ClockUpkeep` to be running.
+Tests inject `MockClock` using `DataFusionEnv::with_mock_clock` (available through `test-util`),
+so they can freeze or advance physical time without an upkeep thread.
+
+`QueryMetadata.query_ts` retains the timestamp as a native value. The execution's cloned DataFusion
+session state carries it as a typed `SessionConfig` extension, inherited by planning and task contexts:
+`TaskContext::session_config().get_extension::<UniqueTimestamp>()`. Shared providers and the reusable
+session state do not hold a mutable current-query timestamp. Tracing and execution/failure logs emit its raw
+`u64` value alongside the session ID. Remote propagation and snapshot binding are follow-up work;
+the timestamp does not yet establish a storage snapshot or a consistent cluster-wide read cutoff.
+
+`snapshot()` returns only output row/batch counts, status, execution wall time, and total wall
+time including planning. It is allocation-free and never traverses the physical plan. Total time
+starts at entry to `QuerySession::execute` and ends with the output stream; it excludes session
+creation and any subsequent response serialization. Consumer backpressure is included.
+
+`plan_metrics()` builds the physical operator tree with native DataFusion `MetricsSet`s only
+when requested. `storage-query-api::metrics` re-exports the native metrics API from
+`datafusion-physical-expr-common`. Names, labels, partitions, categories, and custom values are
+preserved without conversion. Each call reads the metric sets afresh because partitions can
+register metrics lazily. Set membership is snapshotted, but the contained counters remain live.
+`warnings()` independently copies node warnings; the gRPC warning response does not materialize
+operator metrics. Values are not aggregated across operators: summing output rows would double
+count, and compute time is not query wall time. Operator counters are read independently;
+they are not a globally atomic snapshot. Remote scanner internals are not included without
+additional protocol support.
+
+The output stream tracks `Running`, `Completed`, `Failed`, and `Cancelled`. It releases the
+execution stream before publishing a terminal state, including on early drop. Retaining a
+diagnostics handle retains the physical plan, not the execution stream. Terminal status and
+wall time describe the output stream's lifetime; asynchronous cleanup can still update operator
+metrics or warnings afterwards. Reading warnings does not drain them. Summary snapshots are
+copied values; detailed DataFusion metric sets retain live counters.
+
+HTTP `/query` and cluster query gRPC use the same internal diagnostic-context allow-list in
+`admin/src/query_context.rs`. These request headers are not part of the public OpenAPI contract:
+
+- `x-restate-query-client` (for example, `ui`)
+- `x-restate-query-origin` (for example, `built-in`)
+- `x-restatecloud-user-id`
+- `x-restatecloud-environment-id`
+- `x-restatecloud-caller-principal`
+
+The collected values are stored in `SessionOptions.headers` and carried into `QueryMetadata.headers`
+as a native `http::HeaderMap`. Header-name lookup is case-insensitive, repeated values are preserved,
+and values are retained without text conversion. Missing headers remain absent and headers outside
+the allow-list are not collected. These are opaque, caller-supplied diagnostic context, not
+authorization or admission inputs. The execution log includes the collected header map.
+
+Both transports return `x-restate-query-session-id` on successful responses; HTTP also includes it
+on planning and first-batch errors after session creation. Clients need to send these identifiers
+explicitly; the server does not infer them from SQL or user-agent strings.
+
+The snapshot API is the foundation for opt-in metrics delivery. The JSON/Arrow response bodies
+and gRPC messages do not yet carry metrics; defining the request flag and wire representation
+is a separate step. Existing gRPC node warnings are read through the diagnostics handle.
+
+### SQL diagnostics
+
+The session parses SQL once with DataFusion's PostgreSQL dialect. A copy of that AST is visited
+to replace literal values (including strings, numbers, booleans, nulls, and placeholders) with `?`.
+The original AST is used for planning. The formatted diagnostic copy is stored as a `ReString` in
+`QueryMetadata.redacted_sql` and used by the execution and stream-failure logs.
+
+This is literal redaction, not identifier anonymization: table/column names, aliases, and type
+parameters such as `VARCHAR(123)` remain visible. Parser formatting discards comments and normalizes
+whitespace. The diagnostic SQL is not intended to be executable. Non-query statements and query
+forms with unsupported string-bearing clauses use `[SQL omitted]`; EXPLAIN retains its inner
+query shape but omits its options. A tokenization check of the formatted copy catches string literals
+in AST fields that the value visitor does not cover, such as wildcard ILIKE patterns and ENUM labels;
+those queries are omitted. Parsing failures produce no SQL log and never fall back to raw SQL.
+
+The HTTP/gRPC and snapshot-server stream writers retain query metadata instead of the original SQL.
+Their failure logs omit error text, which can itself contain literal values; the original errors
+are still returned to the caller. This does not redact arbitrary DataFusion plan/debug output or
+node warnings.
+
+### Available tables
 
 **Partitioned tables** (data distributed across partitions by partition key):
 - `sys_invocation_status` - Invocation metadata and status
@@ -105,13 +232,15 @@ SELECT * FROM sys_invocation_status WHERE id = 'inv_1abc...'
 
 ### 1. SQL Parsing and Planning
 
-The `QueryContext::execute` method handles SQL execution:
+The `RestateQuerySession::execute` method handles SQL execution after catalog construction:
 
 ```rust
 let statement = state.sql_to_statement(sql, &Dialect::PostgreSQL)?;
 let plan = state.statement_to_plan(statement).await?;
-let df = self.datafusion_context.execute_logical_plan(plan).await?;
-df.execute_stream().await
+let df = self.ctx.execute_logical_plan(plan).await?;
+let task_ctx = Arc::new(df.task_ctx());
+let physical_plan = df.create_physical_plan().await?;
+execute_stream(physical_plan, task_ctx)
 ```
 
 ### 2. Partition Key Extraction
@@ -165,7 +294,7 @@ When the partition is remote, `remote_scan_as_datafusion_stream` manages the RPC
 
 1. **Open scanner**:
    - Establish connection to target node
-   - Send `RemoteQueryScannerOpen` RPC with table name, schema, range, predicate, batch size
+    - Send `RemoteQueryScannerOpen` RPC with stable source identity, schema, range, predicate, batch size
    - Receive `ScannerId` back
 
 2. **Stream batches**:

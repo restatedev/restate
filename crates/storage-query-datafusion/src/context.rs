@@ -8,128 +8,38 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
 use std::fmt::Debug;
+use std::marker::PhantomData;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use codederror::CodedError;
-use tokio::sync::watch;
-use tracing::warn;
-
-use datafusion::catalog::TableProvider;
-use datafusion::common::TableReference;
 use datafusion::error::DataFusionError;
-use datafusion::execution::SessionStateBuilder;
-use datafusion::execution::TaskContext;
 use datafusion::execution::context::SQLOptions;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use datafusion::physical_plan::{ExecutionPlan, SendableRecordBatchStream, execute_stream};
-use datafusion::prelude::{SessionConfig, SessionContext};
+use datafusion::logical_expr::{LogicalPlan, Statement};
+use datafusion::physical_plan::{ExecutionPlan, execute_stream};
+use datafusion::prelude::SessionContext;
+use tokio::time::Instant;
+use tracing::{info, instrument};
 
-use restate_core::{Metadata, TaskCenter};
-use restate_limiter::rule_book::RuleBookObserver;
-use restate_metadata_store::MetadataStoreClient;
-use restate_partition_store::PartitionStoreManager;
-use restate_sharding::KeyRange;
-use restate_types::cluster::cluster_state::LegacyClusterState;
-use restate_types::config::Configuration;
-use restate_types::config::QueryEngineOptions;
+use restate_core::Metadata;
+use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
+use restate_storage_query_api::{
+    AdminUser, ClusterOperator, NodeWarnings, QueryEngine, QueryMetadata, QueryOptions,
+    QueryResult, QuerySession, SessionOptions, SessionTable,
+};
+use restate_types::config::ThrottlingOptions;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
-use restate_types::live::Live;
 use restate_types::partition_table::Partition;
-use restate_types::partitions::state::PartitionReplicaSetStates;
-use restate_types::schema::deployment::DeploymentResolver;
-use restate_types::schema::service::ServiceMetadataResolver;
-use restate_worker_api::invoker::StatusHandle;
-use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
+use restate_util_string::ReString;
 
-use crate::empty_invoker_status_handle::EmptyInvokerStatusHandle;
-use crate::node_fan_out::NodeWarnings;
-use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::catalog::{ClusterTables, RegisterTable, TableInventoryBuilder, UserTables};
+use crate::diagnostics::QueryDiagnosticStream;
+use crate::environment::{DataFusionEnv, QueryClock};
+use crate::sql::redact_statement;
 
 type RateLimiter = gardal::SharedTokenBucket<gardal::TokioClock>;
-
-#[derive(thiserror::Error, Debug)]
-pub enum QueryError {
-    #[error("Datafusion error: {0}")]
-    DataFusion(#[from] datafusion::common::DataFusionError),
-    #[error("Rate limited")]
-    RateLimited(#[from] gardal::RateLimited),
-}
-
-const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
-            ss.id,
-            ss.vqueue_id,
-            ss.target,
-            ss.target_service_name,
-            ss.target_service_key,
-            ss.target_handler_name,
-            ss.target_service_ty,
-            ss.scope,
-            ss.limit_key,
-            ss.idempotency_key,
-            ss.invoked_by,
-            ss.invoked_by_service_name,
-            ss.invoked_by_id,
-            ss.invoked_by_subscription_id,
-            ss.invoked_by_target,
-            ss.restarted_from,
-            ss.pinned_deployment_id,
-            ss.pinned_service_protocol_version,
-            ss.trace_id,
-            ss.journal_size,
-            ss.journal_commands_size,
-            ss.created_at,
-            ss.created_using_restate_version,
-            ss.modified_at,
-            ss.inboxed_at,
-            ss.scheduled_at,
-            ss.scheduled_start_at,
-            ss.running_at,
-            ss.completed_at,
-            ss.completion_retention,
-            ss.journal_retention,
-            ss.suspended_waiting_for_completions,
-            ss.suspended_waiting_for_signals,
-            ss.suspended_waiting_future_json,
-
-            sis.retry_count,
-            sis.last_start_at,
-            sis.next_retry_at,
-            sis.last_attempt_deployment_id,
-            sis.last_attempt_server,
-            sis.last_failure,
-            sis.last_failure_error_code,
-            sis.last_failure_related_entry_index,
-            sis.last_failure_related_entry_name,
-            sis.last_failure_related_entry_type,
-            sis.last_failure_related_command_index,
-            sis.last_failure_related_command_name,
-            sis.last_failure_related_command_type,
-            sis.last_awaiting_on_future_json,
-
-            arrow_cast(CASE
-                WHEN ss.status = 'inboxed' THEN 'pending'
-                WHEN ss.status = 'scheduled' THEN 'scheduled'
-                WHEN ss.status = 'completed' THEN 'completed'
-                WHEN ss.status = 'suspended' THEN 'suspended'
-                WHEN ss.status = 'paused' THEN 'paused'
-                WHEN sis.in_flight THEN 'running'
-                WHEN ss.status = 'invoked' AND retry_count > 0 THEN 'backing-off'
-                ELSE 'ready'
-            END, 'LargeUtf8') AS status,
-            ss.completion_result,
-            ss.completion_failure
-        FROM sys_invocation_state sis
-        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id";
-
-const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
-        l.* FROM logs AS l JOIN (
-            SELECT log_id, max(segment_index) AS segment_index FROM logs GROUP BY log_id
-        ) m
-        ON m.log_id=l.log_id AND l.segment_index=m.segment_index";
 
 #[derive(Debug, thiserror::Error, CodedError)]
 pub enum BuildError {
@@ -143,609 +53,163 @@ pub trait SelectPartitions: Send + Sync + Debug + 'static {
     async fn get_live_partitions(&self) -> Result<Vec<(PartitionId, Partition)>, GenericError>;
 }
 
-/// Allows grouping and registration of set of tables and views
-/// on the QueryContext.
-pub trait RegisterTable: Send + Sync + 'static {
-    fn register(&self, ctx: &QueryContext) -> impl Future<Output = Result<(), BuildError>>;
-}
-
-/// A leader-state introspection handle that extends invoker status queries with
-/// additional query methods for future leader-owned components.
-pub trait PartitionLeaderStatusHandle:
-    StatusHandle + Send + Sync + Debug + Clone + 'static
-{
-    type SchedulerStatus;
-    type SchedulerStatusIterator: Iterator<Item = Self::SchedulerStatus> + Send;
-
-    type UserLimitCounter;
-    type UserLimitCounterIterator: Iterator<Item = Self::UserLimitCounter> + Send;
-
-    fn read_scheduler_status(
-        &self,
-        keys: KeyRange,
-    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send;
-
-    fn read_user_limit_counters(
-        &self,
-        keys: KeyRange,
-    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send;
-}
-
-/// A no-op registerer that creates a minimal query context with no tables.
-/// Useful for nodes that only need to serve remote scanner RPCs (e.g.,
-/// log-server-only nodes), where only `task_ctx()` is needed.
-pub struct NoTables;
-
-impl RegisterTable for NoTables {
-    async fn register(&self, _ctx: &QueryContext) -> Result<(), BuildError> {
-        Ok(())
-    }
-}
-
-/// A query context registerer for user tables
-pub struct UserTables<P, S, D> {
-    partition_selector: P,
-    partition_store_manager: Arc<PartitionStoreManager>,
-    partition_leader_status: Option<S>,
-    schemas: Live<D>,
-    remote_scanner_manager: RemoteScannerManager,
-    metadata_store_client: MetadataStoreClient,
-    rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
-}
-
-impl<P, S, D> UserTables<P, S, D> {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        partition_selector: P,
-        partition_store_manager: Arc<PartitionStoreManager>,
-        partition_leader_status: Option<S>,
-        schemas: Live<D>,
-        remote_scanner_manager: RemoteScannerManager,
-        metadata_store_client: MetadataStoreClient,
-        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
-    ) -> Self {
-        Self {
-            partition_selector,
-            partition_store_manager,
-            partition_leader_status,
-            schemas,
-            remote_scanner_manager,
-            metadata_store_client,
-            rule_book_observer,
-        }
-    }
-}
-
-impl<P, S, D> RegisterTable for UserTables<P, S, D>
-where
-    P: SelectPartitions + Clone,
-    S: PartitionLeaderStatusHandle<
-            SchedulerStatus = SchedulerStatusEntry,
-            UserLimitCounter = UserLimitCounterEntry,
-        >,
-    D: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
-{
-    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
-        // ----- non partitioned tables -----
-        crate::deployment::register_self(ctx, self.schemas.clone())?;
-        crate::service::register_self(ctx, self.schemas.clone())?;
-        crate::rules::register_self(
-            ctx,
-            self.metadata_store_client.clone(),
-            self.rule_book_observer.clone(),
-        )?;
-        // ----- partition-key-based -----
-        crate::invocation_state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_leader_status.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::scheduler_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_leader_status.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::user_limits::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_leader_status.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::invocation_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::locks::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal_events::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::inbox::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::promise::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        // VQueues Tables
-        crate::vqueue_meta::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::by_service::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::service_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::deployment_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::virtual_object_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueue_entry_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueues::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-
-        ctx.datafusion_context.sql(SYS_INVOCATION_VIEW).await?;
-
-        Ok(())
-    }
-}
-
-pub struct ClusterTables {
-    cluster_state: restate_types::cluster_state::ClusterState,
-    replica_set_states: PartitionReplicaSetStates,
-    cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
-    remote_scanner_manager: RemoteScannerManager,
-}
-
-impl ClusterTables {
-    pub fn new(
-        replica_set_states: PartitionReplicaSetStates,
-        cluster_state_watch: watch::Receiver<Arc<LegacyClusterState>>,
-        remote_scanner_manager: RemoteScannerManager,
-    ) -> Self {
-        let cluster_state = TaskCenter::with_current(|tc| tc.cluster_state().clone());
-        Self {
-            cluster_state,
-            replica_set_states,
-            cluster_state_watch,
-            remote_scanner_manager,
-        }
-    }
-
-    /// Returns a reference to the remote scanner manager. This can be used to
-    /// register node-level scanners (e.g., log-server tables) after construction.
-    pub fn remote_scanner_manager(&self) -> &RemoteScannerManager {
-        &self.remote_scanner_manager
-    }
-}
-
-impl RegisterTable for ClusterTables {
-    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
-        let metadata = Metadata::current();
-        crate::node::register_self(ctx, metadata.clone(), self.cluster_state.clone())?;
-        crate::partition::register_self(ctx, metadata.clone(), self.replica_set_states.clone())?;
-        crate::partition_replica_set::register_self(
-            ctx,
-            metadata.clone(),
-            self.cluster_state.clone(),
-            self.replica_set_states.clone(),
-        )?;
-        crate::log::register_self(ctx, metadata.clone())?;
-        crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
-
-        // Node-fan-out tables
-        crate::loglet_worker::register_self(
-            ctx,
-            metadata.clone(),
-            self.remote_scanner_manager.clone(),
-            None, // local scanner is registered separately if this node is also a log-server
-        )?;
-        crate::bifrost_read_stream::register_self(
-            ctx,
-            metadata.clone(),
-            self.remote_scanner_manager.clone(),
-            None, // local scanner is registered separately by the node
-        )?;
-
-        if !Configuration::pinned().common.disable_config_sql_table {
-            crate::config::register_self(
-                ctx,
-                metadata,
-                self.remote_scanner_manager.clone(),
-                None, // local scanner is registered separately by the node
-            )?;
-        }
-
-        ctx.datafusion_context
-            .sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW)
-            .await?;
-
-        Ok(())
-    }
-}
-
-/// A query context registerer that exposes only the partition-store-backed tables.
-///
-/// Unlike [`UserTables`], it needs neither a schema registry nor a metadata-store client, so it can
-/// run against partition data with no live cluster behind it — e.g. a snapshot restored by an
-/// offline debugging tool. The leader-owned tables (`sys_scheduler_status`, `sys_user_limits`) are
-/// intentionally omitted: that state is ephemeral and never present in a snapshot. The invoker
-/// columns of `sys_invocation_state` are likewise leader-owned and resolve to nulls here, which is
-/// the truthful answer for a snapshot; the table is still registered because the `sys_invocation`
-/// view joins against it.
-pub struct PartitionTables<P> {
-    partition_selector: P,
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: RemoteScannerManager,
-}
-
-impl<P> PartitionTables<P> {
-    pub fn new(
-        partition_selector: P,
-        partition_store_manager: Arc<PartitionStoreManager>,
-        remote_scanner_manager: RemoteScannerManager,
-    ) -> Self {
-        Self {
-            partition_selector,
-            partition_store_manager,
-            remote_scanner_manager,
-        }
-    }
-}
-
-impl<P> RegisterTable for PartitionTables<P>
-where
-    P: SelectPartitions + Clone,
-{
-    async fn register(&self, ctx: &QueryContext) -> Result<(), BuildError> {
-        crate::invocation_state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            Some(EmptyInvokerStatusHandle),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::invocation_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::locks::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal_events::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::inbox::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::promise::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueue_meta::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::by_service::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::service_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::deployment_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::virtual_object_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueues::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            self.partition_store_manager.clone(),
-            &self.remote_scanner_manager,
-        )?;
-
-        ctx.datafusion_context.sql(SYS_INVOCATION_VIEW).await?;
-
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-pub struct QueryContext {
-    sql_options: SQLOptions,
-    datafusion_context: SessionContext,
+/// Shared provider inventory, default SQL exposure, and session-admission policy.
+pub struct DataFusionQueryEngine<T> {
+    env: DataFusionEnv,
+    tables: Vec<SessionTable>,
     rate_limiter: Option<RateLimiter>,
+    _phantom: PhantomData<T>,
 }
 
-impl QueryContext {
-    pub async fn create<T: RegisterTable>(
-        options: &QueryEngineOptions,
-        registerer: T,
-    ) -> Result<Self, BuildError> {
-        let ctx = QueryContext::new(
-            options.memory_size.get(),
-            options.tmp_dir.clone(),
-            options.query_parallelism(),
-            &options.datafusion_options,
-            options.rate_limiting.as_ref().map(|limit| {
-                RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock)
-            }),
-        )?;
+pub struct RestateQuerySession<T> {
+    ctx: SessionContext,
+    session_id: ReString,
+    query_clock: Arc<QueryClock>,
+    opts: SessionOptions,
+    _phantom: PhantomData<T>,
+}
 
-        registerer.register(&ctx).await?;
-
-        Ok(ctx)
-    }
-
-    /// A shortcut to create a query context with built in
-    /// UserTables
-    #[allow(clippy::too_many_arguments)]
-    pub async fn with_user_tables(
-        options: &QueryEngineOptions,
-        partition_selector: impl SelectPartitions + Clone,
-        partition_store_manager: Arc<PartitionStoreManager>,
-        partition_leader_status: Option<
-            impl PartitionLeaderStatusHandle<
-                SchedulerStatus = SchedulerStatusEntry,
-                UserLimitCounter = UserLimitCounterEntry,
-            >,
-        >,
-        schemas: Live<
-            impl DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
-        >,
-        remote_scanner_manager: RemoteScannerManager,
-        metadata_store_client: MetadataStoreClient,
-        rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
-    ) -> Result<QueryContext, BuildError> {
-        let tables = UserTables::new(
-            partition_selector,
-            partition_store_manager,
-            partition_leader_status,
-            schemas,
-            remote_scanner_manager,
-            metadata_store_client,
-            rule_book_observer,
-        );
-
-        Self::create(options, tables).await
-    }
-
-    pub(crate) fn register_partitioned_table(
+impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
+    fn create_session(
         &self,
-        name: impl Into<TableReference>,
-        provider: Arc<dyn TableProvider>,
-    ) -> Result<(), DataFusionError> {
-        self.datafusion_context
-            .register_table(name, provider)
-            .map(|_| ())
-    }
-    pub(crate) fn register_non_partitioned_table(
-        &self,
-        name: impl Into<TableReference>,
-        provider: Arc<dyn TableProvider>,
-    ) -> Result<(), DataFusionError> {
-        self.datafusion_context
-            .register_table(name, provider)
-            .map(|_| ())
-    }
-
-    fn new(
-        memory_limit: usize,
-        temp_folder: Option<String>,
-        default_parallelism: Option<usize>,
-        datafusion_options: &HashMap<String, String>,
-        rate_limiter: Option<RateLimiter>,
-    ) -> Result<Self, DataFusionError> {
-        //
-        // build the runtime
-        //
-        let mut runtime_config = RuntimeEnvBuilder::default();
-        runtime_config = runtime_config.with_memory_limit(memory_limit, 1.0);
-
-        if let Some(folder) = temp_folder {
-            runtime_config = runtime_config.with_temp_file_path(folder);
-        }
-        let runtime = runtime_config.build_arc().expect("runtime");
-        //
-        // build the session
-        //
-        let mut session_config = SessionConfig::new();
-        if let Some(target_partitions) = default_parallelism {
-            session_config = session_config.with_target_partitions(target_partitions);
-        }
-
-        session_config = session_config
-            .with_batch_size(128)
-            .with_information_schema(true)
-            .with_default_catalog_and_schema("restate", "public");
-
-        for (k, v) in datafusion_options {
-            session_config.options_mut().set(k, v)?;
-        }
-
-        //
-        // build the state
-        //
-        let state = SessionStateBuilder::new()
-            .with_config(session_config)
-            .with_runtime_env(runtime)
-            .with_default_features()
-            .build();
-
-        let mut ctx = SessionContext::new_with_state(state);
-
-        match datafusion_functions_json::register_all(&mut ctx) {
-            Ok(_) => {}
-            Err(err) => {
-                warn!("Unable to register json functions {}", err);
-            }
-        };
-
-        let sql_options = SQLOptions::new()
-            .with_allow_ddl(false)
-            .with_allow_dml(false)
-            .with_allow_statements(false);
-
-        Ok(Self {
-            sql_options,
-            datafusion_context: ctx,
-            rate_limiter,
-        })
-    }
-
-    /// Allows statements such as `SET` to be executed. They mutate the shared session config, so
-    /// only enable this for single-user contexts (e.g. local debugging tools).
-    pub fn with_allow_statements(mut self) -> Self {
-        self.sql_options = self.sql_options.with_allow_statements(true);
-        self
-    }
-
-    pub async fn execute(&self, sql: &str) -> Result<QueryResult, QueryError> {
+        opts: SessionOptions,
+    ) -> Result<Arc<dyn QuerySession<T>>, SessionError> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
         }
+        let ctx = self
+            .env
+            .create_session(opts.tables.as_deref().unwrap_or(&self.tables))?;
+        Ok(Arc::new(RestateQuerySession {
+            session_id: ctx.session_id().into(),
+            query_clock: Arc::clone(self.env.query_clock()),
+            ctx,
+            opts,
+            _phantom: PhantomData,
+        }))
+    }
+}
 
-        let state = self.datafusion_context.state();
+#[async_trait]
+impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    #[instrument(target = "query_engine", level="debug", skip_all, fields(session = %self.session_id, query_ts))]
+    async fn execute(
+        &self,
+        sql: &str,
+        _opts: QueryOptions,
+    ) -> Result<QueryResult, QueryExecutionError> {
+        let planning_started = Instant::now();
+        let query_ts = self.query_clock.next();
+        tracing::Span::current().record("query_ts", query_ts.as_u64());
+        // Attach the timestamp to this execution's state, leaving the reusable
+        // session untouched. Planning and task contexts inherit the typed extension.
+        let mut state = self.ctx.state();
+        state.config_mut().set_extension(Arc::new(query_ts));
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
+        let redacted_sql = redact_statement(&statement);
         let plan = state.statement_to_plan(statement).await?;
-        self.sql_options.verify_plan(&plan)?;
-        let df = self.datafusion_context.execute_logical_plan(plan).await?;
-
+        SQLOptions::new()
+            .with_allow_ddl(false)
+            .with_allow_dml(false)
+            .with_allow_statements(self.opts.allow_statements)
+            .verify_plan(&plan)?;
+        // Session mutations must persist across debugger commands. Queries,
+        // including EXECUTE, retain their isolated execution timestamp.
+        let ctx = match &plan {
+            LogicalPlan::Statement(
+                Statement::SetVariable(_)
+                | Statement::ResetVariable(_)
+                | Statement::Prepare(_)
+                | Statement::Deallocate(_),
+            ) => self.ctx.clone(),
+            _ => SessionContext::new_with_state(state),
+        };
+        let df = ctx.execute_logical_plan(plan).await?;
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df.create_physical_plan().await?;
-
-        // Collect NodeWarnings handles from any NodeFanOutExecutionPlan nodes
-        // in the plan tree before execution begins.
+        let metadata = QueryMetadata {
+            session_id: self.session_id.clone(),
+            query_ts,
+            headers: self.opts.headers.clone(),
+            redacted_sql,
+            planning_duration: planning_started.elapsed(),
+        };
+        info!(target: "query_engine", session = %metadata.session_id, query_ts = metadata.query_ts.as_u64(), headers = ?metadata.headers, query = %metadata.redacted_sql, "Executing query");
         let node_warnings = collect_node_warnings(&physical_plan);
-
-        let stream = execute_stream(physical_plan, task_ctx)?;
+        let execution_started = Instant::now();
+        let stream = execute_stream(Arc::clone(&physical_plan), task_ctx)?;
+        let (stream, diagnostics) = QueryDiagnosticStream::wrap(
+            stream,
+            physical_plan,
+            node_warnings,
+            planning_started,
+            execution_started,
+        );
         Ok(QueryResult {
             stream,
-            node_warnings,
+            metadata,
+            diagnostics,
         })
     }
+}
 
-    pub fn task_ctx(&self) -> Arc<TaskContext> {
-        self.datafusion_context.task_ctx()
+impl DataFusionQueryEngine<ClusterOperator> {
+    /// Registers cluster tables and resolves unqualified queries in `restate.cluster`.
+    pub async fn with_cluster_tables(
+        env: DataFusionEnv,
+        tables: ClusterTables,
+    ) -> Result<Arc<dyn QueryEngine<ClusterOperator>>, BuildError> {
+        let env = env.with_default_catalog_and_schema("restate", "cluster");
+        Self::with_tables(env, None, tables).await
     }
 }
 
-impl AsRef<SessionContext> for QueryContext {
-    fn as_ref(&self) -> &SessionContext {
-        &self.datafusion_context
+impl<T: Send + Sync + 'static> DataFusionQueryEngine<T> {
+    /// Registers providers once. Local source capabilities must already be registered separately.
+    pub async fn with_tables<K: RegisterTable>(
+        env: DataFusionEnv,
+        rate_limit: Option<&ThrottlingOptions>,
+        tables: K,
+    ) -> Result<Arc<dyn QueryEngine<T>>, BuildError> {
+        let mut inventory = TableInventoryBuilder::new(&env);
+        tables.register(&mut inventory).await?;
+        let tables = inventory.finish();
+        Ok(Self::from_inventory(env, rate_limit, tables))
+    }
+
+    /// Creates an engine over an existing inventory. Unavailable selected identities are omitted.
+    pub fn from_inventory(
+        env: DataFusionEnv,
+        rate_limit: Option<&ThrottlingOptions>,
+        tables: Vec<SessionTable>,
+    ) -> Arc<dyn QueryEngine<T>> {
+        let rate_limiter = rate_limit
+            .map(|limit| RateLimiter::new(gardal::Limit::from(limit.clone()), gardal::TokioClock));
+        Arc::new(Self {
+            env,
+            tables,
+            rate_limiter,
+            _phantom: PhantomData,
+        })
     }
 }
 
-/// Result of a SQL query execution, containing the record batch stream
-/// and any per-node warning collectors from fan-out execution plans.
-pub struct QueryResult {
-    pub stream: SendableRecordBatchStream,
-    pub node_warnings: Vec<NodeWarnings>,
+impl DataFusionQueryEngine<AdminUser> {
+    pub async fn with_user_tables(
+        env: DataFusionEnv,
+        rate_limit: Option<&ThrottlingOptions>,
+        tables: UserTables<impl SelectPartitions + Clone, impl RegisterTable>,
+    ) -> Result<Arc<dyn QueryEngine<AdminUser>>, BuildError> {
+        Self::with_tables(env, rate_limit, tables).await
+    }
 }
 
-/// Walks the physical plan tree and collects [`NodeWarnings`] handles from
-/// any [`NodeFanOutExecutionPlan`] nodes found.
 fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
     use crate::node_fan_out::NodeFanOutExecutionPlan;
-
     let mut warnings = Vec::new();
     let mut stack = vec![Arc::clone(plan)];
     while let Some(node) = stack.pop() {
@@ -759,7 +223,6 @@ fn collect_node_warnings(plan: &Arc<dyn ExecutionPlan>) -> Vec<NodeWarnings> {
     warnings
 }
 
-/// Newtype to add debug implementation which is required for [`SelectPartitions`].
 #[derive(Clone, derive_more::Debug)]
 pub struct SelectPartitionsFromMetadata;
 
@@ -772,5 +235,506 @@ impl SelectPartitions for SelectPartitionsFromMetadata {
                 .map(|(a, b)| (*a, b.clone()))
                 .collect()
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeSet, HashMap};
+    use std::num::NonZeroU32;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use datafusion::arrow::array::{RecordBatch, StringArray, UInt64Array};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+    use datafusion::arrow::util::display::array_value_to_string;
+    use datafusion::catalog::streaming::StreamingTable;
+    use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+    use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+    use datafusion::physical_plan::streaming::PartitionStream;
+    use datafusion::prelude::SessionContext;
+    use futures::{StreamExt, TryStreamExt};
+    use tokio::sync::watch;
+
+    use restate_clock::time::MillisSinceEpoch;
+    use restate_clock::{MockClock, UniqueTimestamp};
+    use restate_core::MetadataKind;
+    use restate_core::test_env::TestCoreEnv;
+    use restate_storage_query_api::errors::SessionError;
+    use restate_storage_query_api::{
+        AdminUser, QueryEngine, QueryOperatorStats, QueryOptions, QueryStatus, SessionOptions,
+        SessionTable,
+    };
+    use restate_types::Version;
+    use restate_types::cluster::cluster_state::LegacyClusterState;
+
+    use crate::catalog::{ClusterTables, UserTables};
+    use crate::partition::schema::PartitionTable;
+    use crate::remote_query_scanner_manager::RemoteScannerManager;
+
+    use super::{DataFusionEnv, DataFusionQueryEngine, RateLimiter, SelectPartitionsFromMetadata};
+
+    #[derive(Debug)]
+    struct QueryTimestampSource(SchemaRef);
+
+    impl PartitionStream for QueryTimestampSource {
+        fn schema(&self) -> &SchemaRef {
+            &self.0
+        }
+
+        fn execute(&self, context: Arc<TaskContext>) -> SendableRecordBatchStream {
+            let schema = Arc::clone(&self.0);
+            Box::pin(RecordBatchStreamAdapter::new(
+                Arc::clone(&schema),
+                futures::stream::once(async move {
+                    RecordBatch::try_new(
+                        schema,
+                        vec![
+                            Arc::new(StringArray::from(vec![context.session_id()])),
+                            Arc::new(UInt64Array::from(vec![
+                                context
+                                    .session_config()
+                                    .get_extension::<UniqueTimestamp>()
+                                    .expect("native query timestamp")
+                                    .as_u64(),
+                            ])),
+                        ],
+                    )
+                    .map_err(Into::into)
+                }),
+            ))
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn query_timestamps_isolate_concurrent_executions_and_reach_source_tasks() {
+        let physical_time = MillisSinceEpoch::new(1_700_000_000_000);
+        let mock_clock = MockClock::with_timestamp(physical_time);
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, Some(2), &HashMap::new())
+            .unwrap()
+            .with_mock_clock(mock_clock.clone())
+            .unwrap();
+        let clock = Arc::clone(env.query_clock());
+        let other_env = env.clone();
+        assert!(Arc::ptr_eq(env.query_clock(), other_env.query_clock()));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("session_id", DataType::Utf8, false),
+            Field::new("query_ts", DataType::UInt64, false),
+        ]));
+        let source = Arc::new(QueryTimestampSource(Arc::clone(&schema)));
+        env.register_provider(
+            "query_timestamp".into(),
+            Arc::new(StreamingTable::try_new(schema, vec![source.clone(), source]).unwrap()),
+        )
+        .unwrap();
+        let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(
+            env,
+            None,
+            vec![SessionTable::new("query_timestamp", "query_timestamp")],
+        );
+        let session = engine.create_session(SessionOptions::default()).unwrap();
+        // Planning failure still advances the shared HLC.
+        let before_failure = clock.snapshot();
+        assert!(session.execute("SELECT (", QueryOptions {}).await.is_err());
+        let after_failure = clock.snapshot();
+        assert!(after_failure > before_failure);
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..8 {
+            let session = Arc::clone(&session);
+            tasks.spawn(async move {
+                // Independent references and execution partitions must share the timestamp.
+                let result = session
+                    .execute(
+                        "SELECT * FROM query_timestamp UNION ALL SELECT * FROM query_timestamp",
+                        QueryOptions {},
+                    )
+                    .await
+                    .unwrap();
+                let metadata = result.metadata;
+                let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+                assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+                for batch in batches {
+                    for row in 0..batch.num_rows() {
+                        assert_eq!(
+                            array_value_to_string(batch.column(0), row).unwrap(),
+                            metadata.session_id.as_str()
+                        );
+                        assert_eq!(
+                            batch
+                                .column(1)
+                                .as_any()
+                                .downcast_ref::<UInt64Array>()
+                                .unwrap()
+                                .value(row),
+                            metadata.query_ts.as_u64()
+                        );
+                    }
+                }
+                metadata.query_ts
+            });
+        }
+        let mut timestamps = BTreeSet::new();
+        while let Some(result) = tasks.join_next().await {
+            assert!(
+                timestamps.insert(result.unwrap()),
+                "query timestamp was reused"
+            );
+        }
+        assert_eq!(timestamps.len(), 8);
+        assert!(*timestamps.first().unwrap() > after_failure);
+        assert!(
+            timestamps
+                .iter()
+                .all(|ts| ts.to_unix_millis() == physical_time)
+        );
+
+        // A second engine created from an environment clone shares the same timeline.
+        mock_clock.advance_ms(10);
+        let other_engine =
+            DataFusionQueryEngine::<AdminUser>::from_inventory(other_env, None, vec![]);
+        let other = other_engine
+            .create_session(SessionOptions::default())
+            .unwrap();
+        let result = other.execute("SELECT 42", QueryOptions {}).await.unwrap();
+        assert_eq!(result.metadata.session_id.as_str(), other.session_id());
+        let timestamp = result.metadata.query_ts;
+        assert!(timestamp > *timestamps.last().unwrap());
+        assert_eq!(timestamp, clock.snapshot());
+        assert_eq!(
+            timestamp.to_unix_millis().as_u64(),
+            physical_time.as_u64() + 10
+        );
+        assert_ne!(session.session_id(), other.session_id());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn diagnostics_follow_query_lifetime_independently_of_session() {
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
+        let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(env, None, vec![]);
+        let mut options = SessionOptions::default();
+        options
+            .headers
+            .insert("x-restate-query-client", "ui".parse().unwrap());
+        options
+            .headers
+            .insert("x-restate-query-origin", "built-in".parse().unwrap());
+        let session = engine.create_session(options).unwrap();
+        let other = engine.create_session(SessionOptions::default()).unwrap();
+        assert_ne!(session.session_id(), other.session_id());
+        let result = session
+            .execute(
+                "SELECT SUM(n) FROM (VALUES (1), (2), (3)) AS t(n)",
+                QueryOptions {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.metadata.session_id.as_str(), session.session_id());
+        assert_eq!(
+            result.metadata.redacted_sql.as_str(),
+            "SELECT SUM(n) FROM (VALUES (?), (?), (?)) AS t (n)"
+        );
+        assert_eq!(result.metadata.headers["x-restate-query-client"], "ui");
+        assert_eq!(
+            result.metadata.headers["x-restate-query-origin"],
+            "built-in"
+        );
+        let before = result.diagnostics.snapshot();
+        assert_eq!(before.status, QueryStatus::Running);
+        assert_eq!(before.output_rows, 0);
+        tokio::time::advance(Duration::from_secs(2)).await;
+        let running = result.diagnostics.snapshot();
+        assert!(running.total_duration >= before.total_duration + Duration::from_secs(2));
+        assert!(running.execution_duration >= before.execution_duration + Duration::from_secs(2));
+
+        // Two executions on the same session must have separate progress.
+        let cancelled = session.execute("SELECT 42", QueryOptions {}).await.unwrap();
+        assert_eq!(result.metadata.session_id, cancelled.metadata.session_id);
+        assert_ne!(result.metadata.query_ts, cancelled.metadata.query_ts);
+        drop(session);
+        drop(cancelled.stream);
+        assert_eq!(
+            cancelled.diagnostics.snapshot().status,
+            QueryStatus::Cancelled
+        );
+        assert_eq!(result.diagnostics.snapshot().status, QueryStatus::Running);
+
+        let mut stream = result.stream;
+        let mut rows = 0;
+        let mut batches = 0;
+        while let Some(batch) = stream.next().await {
+            rows += batch.unwrap().num_rows() as u64;
+            batches += 1;
+        }
+        let after = result.diagnostics.snapshot();
+        assert_eq!(after.status, QueryStatus::Completed);
+        assert_eq!(after.output_rows, rows);
+        assert_eq!(after.output_batches, batches);
+        assert_eq!(rows, 1);
+        assert_eq!(before.output_rows, 0);
+        fn has_output_metrics(plan: &QueryOperatorStats) -> bool {
+            plan.metrics
+                .as_ref()
+                .is_some_and(|metrics| metrics.output_rows().is_some_and(|n| n > 0))
+                || plan.children.iter().any(has_output_metrics)
+        }
+        assert!(has_output_metrics(&result.diagnostics.plan_metrics()));
+        assert!(
+            after.total_duration >= result.metadata.planning_duration + after.execution_duration
+        );
+        drop(stream);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        let dropped = result.diagnostics.snapshot();
+        assert_eq!(dropped.status, QueryStatus::Completed);
+        assert_eq!(dropped.execution_duration, after.execution_duration);
+        assert_eq!(dropped.total_duration, after.total_duration);
+    }
+
+    #[restate_core::test]
+    async fn cluster_namespace_preserves_unqualified_queries_and_user_catalog_isolation() {
+        let core = TestCoreEnv::create_with_single_node(1, 1).await;
+        core.metadata
+            .wait_for_version(MetadataKind::PartitionTable, Version::MIN)
+            .await
+            .unwrap();
+        core.metadata
+            .wait_for_version(MetadataKind::Logs, Version::MIN)
+            .await
+            .unwrap();
+        let partition_count = core.metadata.partition_table_snapshot().len();
+        let log_count = core.metadata.logs_snapshot().iter().count();
+        assert!(partition_count > 0 && log_count > 0);
+
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
+        let scanners = RemoteScannerManager::local_only(core.metadata.clone());
+        let (_tx, cluster_state) = watch::channel(Arc::new(LegacyClusterState::empty()));
+        let cluster = DataFusionQueryEngine::with_cluster_tables(
+            env.clone(),
+            ClusterTables::new(Default::default(), cluster_state.clone(), scanners.clone()),
+        )
+        .await
+        .unwrap();
+        let user = DataFusionQueryEngine::with_user_tables(
+            env.clone(),
+            None,
+            UserTables::new(SelectPartitionsFromMetadata, scanners.clone()),
+        )
+        .await
+        .unwrap();
+
+        async fn query_value<T>(engine: &dyn QueryEngine<T>, sql: &str) -> String {
+            let session = engine.create_session(SessionOptions::default()).unwrap();
+            let batches: Vec<_> = session
+                .execute(sql, QueryOptions {})
+                .await
+                .unwrap()
+                .stream
+                .try_collect()
+                .await
+                .unwrap();
+            assert_eq!(
+                batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                1
+            );
+            array_value_to_string(batches[0].column(0), 0).unwrap()
+        }
+
+        for table in [
+            "partitions",
+            "cluster.partitions",
+            "restate.cluster.partitions",
+        ] {
+            assert_eq!(
+                query_value(cluster.as_ref(), &format!("SELECT COUNT(*) FROM {table}")).await,
+                partition_count.to_string()
+            );
+        }
+        for table in ["logs_tail_segments", "restate.cluster.logs_tail_segments"] {
+            assert_eq!(
+                query_value(cluster.as_ref(), &format!("SELECT COUNT(*) FROM {table}")).await,
+                log_count.to_string()
+            );
+        }
+
+        let schema_query = "SELECT DISTINCT table_schema FROM information_schema.tables \
+            WHERE table_catalog = 'restate' AND table_schema <> 'information_schema'";
+        assert_eq!(query_value(cluster.as_ref(), schema_query).await, "cluster");
+        assert_eq!(query_value(user.as_ref(), schema_query).await, "public");
+
+        let cluster_session = cluster.create_session(SessionOptions::default()).unwrap();
+        for table in ["public.partitions", "restate.public.partitions"] {
+            assert!(
+                cluster_session
+                    .execute(&format!("SELECT * FROM {table}"), QueryOptions {})
+                    .await
+                    .is_err()
+            );
+        }
+        let user_session = user.create_session(SessionOptions::default()).unwrap();
+        assert!(
+            user_session
+                .execute("SELECT * FROM restate.cluster.partitions", QueryOptions {})
+                .await
+                .is_err()
+        );
+
+        // Reuse the prebound view under an alias without exposing its base tables.
+        let selection = vec![
+            SessionTable::for_table::<PartitionTable>("restate.cluster.partitions"),
+            SessionTable::new("logs_tail_segments", "restate.public.tail"),
+        ];
+        let mixed = env.create_session(&selection).unwrap();
+        mixed
+            .sql("CREATE VIEW logs AS SELECT -1 AS marker")
+            .await
+            .unwrap();
+        assert!(mixed.table_provider("restate.cluster.logs").await.is_err());
+
+        for (sql, expected) in [
+            ("SELECT marker FROM logs", "-1".to_owned()),
+            (
+                "SELECT COUNT(*) FROM cluster.partitions",
+                partition_count.to_string(),
+            ),
+            ("SELECT COUNT(*) FROM tail", log_count.to_string()),
+        ] {
+            let batches = mixed.sql(sql).await.unwrap().collect().await.unwrap();
+            assert_eq!(
+                array_value_to_string(batches[0].column(0), 0).unwrap(),
+                expected,
+                "{sql}"
+            );
+        }
+        let selected = user
+            .create_session(SessionOptions {
+                tables: Some(selection),
+                ..Default::default()
+            })
+            .unwrap();
+        let batches: Vec<_> = selected
+            .execute("SELECT COUNT(*) FROM tail", QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            array_value_to_string(batches[0].column(0), 0).unwrap(),
+            log_count.to_string()
+        );
+        assert!(
+            selected
+                .execute("SELECT * FROM state", QueryOptions {})
+                .await
+                .is_err()
+        );
+        assert!(
+            user_session
+                .execute("SELECT * FROM tail", QueryOptions {})
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sessions_share_providers_and_admission_but_reject_runtime_mutations() {
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
+        let first = env.build_session_state().unwrap();
+        let second = env.build_session_state().unwrap();
+        assert_ne!(first.session_id(), second.session_id());
+        assert!(Arc::ptr_eq(first.runtime_env(), second.runtime_env()));
+        let bootstrap = SessionContext::new_with_state(first);
+        bootstrap
+            .sql("CREATE VIEW total AS SELECT SUM(n) AS n FROM (VALUES (1), (2), (3)) AS t(n)")
+            .await
+            .unwrap();
+        env.register_provider(
+            "total".into(),
+            bootstrap.table_provider("total").await.unwrap(),
+        )
+        .unwrap();
+        drop(bootstrap);
+        let mut manager = DataFusionQueryEngine::<AdminUser> {
+            env,
+            tables: vec![SessionTable::new("total", "total")],
+            rate_limiter: Some(RateLimiter::new(
+                gardal::Limit::per_hour(NonZeroU32::new(1).unwrap())
+                    .with_burst(NonZeroU32::new(2).unwrap()),
+                gardal::TokioClock,
+            )),
+            _phantom: std::marker::PhantomData,
+        };
+        let a = manager.create_session(SessionOptions::default()).unwrap();
+        let b = manager.create_session(SessionOptions::default()).unwrap();
+        assert!(matches!(
+            manager.create_session(SessionOptions::default()),
+            Err(SessionError::RateLimited(_))
+        ));
+        for sql in [
+            "SET datafusion.runtime.memory_limit = '1G'",
+            "RESET datafusion.runtime.memory_limit",
+            "DROP VIEW total",
+        ] {
+            assert!(a.execute(sql, QueryOptions {}).await.is_err(), "{sql}");
+        }
+        for session in [a, b] {
+            let result = session
+                .execute("SELECT n FROM total", QueryOptions {})
+                .await
+                .unwrap();
+            drop(session);
+            let batches: Vec<_> = result.stream.try_collect().await.unwrap();
+            assert_eq!(array_value_to_string(batches[0].column(0), 0).unwrap(), "6");
+        }
+
+        // The snapshot debugger explicitly enables statements on reusable sessions.
+        // SET must persist there without changing defaults for another session.
+        manager.rate_limiter = None;
+        let session = manager
+            .create_session(SessionOptions {
+                allow_statements: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let other = manager.create_session(SessionOptions::default()).unwrap();
+        let setting = "SELECT value FROM information_schema.df_settings WHERE name = 'datafusion.execution.target_partitions'";
+        let before = other.execute(setting, QueryOptions {}).await.unwrap();
+        let before: Vec<_> = before.stream.try_collect().await.unwrap();
+        let original = array_value_to_string(before[0].column(0), 0).unwrap();
+        let changed = original.parse::<usize>().unwrap() + 1;
+        let set = format!("SET datafusion.execution.target_partitions = {changed}");
+        assert!(other.execute(&set, QueryOptions {}).await.is_err());
+        session
+            .execute(&set, QueryOptions {})
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert!(
+            session
+                .execute("DROP VIEW total", QueryOptions {})
+                .await
+                .is_err()
+        );
+        for (session, expected) in [(session, changed.to_string()), (other, original)] {
+            let result = session.execute(setting, QueryOptions {}).await.unwrap();
+            let batches: Vec<_> = result.stream.try_collect().await.unwrap();
+            assert_eq!(
+                array_value_to_string(batches[0].column(0), 0).unwrap(),
+                expected
+            );
+        }
     }
 }

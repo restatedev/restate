@@ -30,6 +30,19 @@ use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
     fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+
+    /// Like [`Self::new`], also receiving the live row predicate whose dynamic filters
+    /// may tighten during the scan. Filters that can apply them natively override this.
+    fn new_live(
+        range: KeyRange,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
+        _predicate: Option<&Arc<dyn PhysicalExpr>>,
+    ) -> Self
+    where
+        Self: Sized,
+    {
+        Self::new(range, access_predicate)
+    }
 }
 
 impl ScanLocalPartitionFilter for KeyRange {
@@ -62,17 +75,17 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
 }
 
 #[derive(Clone, derive_more::Debug)]
-pub struct LocalPartitionsScanner<S> {
+pub struct LocalPartitionsScanner<T> {
     #[debug(skip)]
     partition_store_manager: Arc<PartitionStoreManager>,
-    _marker: std::marker::PhantomData<S>,
+    _marker: std::marker::PhantomData<T>,
 }
 
-impl<S> LocalPartitionsScanner<S>
+impl<T> LocalPartitionsScanner<T>
 where
-    S: ScanLocalPartition,
+    T: ScanLocalPartition,
 {
-    pub fn new(partition_store_manager: Arc<PartitionStoreManager>, _scanner: S) -> Self {
+    pub fn new(partition_store_manager: Arc<PartitionStoreManager>) -> Self {
         Self {
             partition_store_manager,
             _marker: std::marker::PhantomData,
@@ -97,7 +110,7 @@ where
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        let filter = S::Filter::new(range, access_predicate);
+        let filter = S::Filter::new_live(range, access_predicate, predicate.as_ref());
         let partition_store_manager = self.partition_store_manager.clone();
         let mut stream_builder = RecordBatchReceiverStream::builder(projection.clone(), 1);
         let tx = stream_builder.tx();

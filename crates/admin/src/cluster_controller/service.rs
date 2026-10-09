@@ -34,11 +34,12 @@ use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind
 use restate_core::{cancellation_token, my_node_id};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_storage_query_datafusion::BuildError;
-use restate_storage_query_datafusion::context::{ClusterTables, QueryContext};
+use restate_storage_query_datafusion::context::DataFusionQueryEngine;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
+use restate_storage_query_datafusion::{ClusterTables, DataFusionEnv};
 use restate_types::cluster::cluster_state::LegacyClusterState;
 use restate_types::config::{AdminOptions, Configuration};
 use restate_types::health::HealthStatus;
@@ -101,6 +102,7 @@ where
         networking: Networking<T>,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
+        datafusion_env: DataFusionEnv,
     ) -> Result<Self, BuildError> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
@@ -127,8 +129,8 @@ where
             cluster_state_refresher.cluster_state_watcher().watch(),
             remote_scanner_manager,
         );
-        let cluster_query_context =
-            QueryContext::create(&options.admin.query_engine, cluster_tables).await?;
+        let cluster_query_engine =
+            DataFusionQueryEngine::with_cluster_tables(datafusion_env, cluster_tables).await?;
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
@@ -139,7 +141,7 @@ where
                     },
                     bifrost.clone(),
                     metadata_writer.clone(),
-                    cluster_query_context,
+                    cluster_query_engine,
                     replica_set_states.clone(),
                 )
                 .into_server(&configuration.live_load().networking),
@@ -1096,6 +1098,9 @@ mod tests {
             builder.networking.clone(),
             &mut NetworkServerBuilder::new(&mut address_book),
             builder.metadata_writer.clone(),
+            restate_storage_query_datafusion::DataFusionEnv::from_options(
+                &Configuration::default().admin.query_engine,
+            )?,
         )
         .await?;
 

@@ -31,16 +31,22 @@ use restate_core::network::{
 use restate_core::partitions::PartitionRouting;
 use restate_core::{Metadata, MetadataKind, MetadataWriter, TaskKind, migrate_metadata};
 use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_manager};
+use restate_distributed_datafusion as distributed_datafusion;
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
-use restate_limiter::rule_book::RuleBookObserver;
 use restate_log_server::LogServerService;
-use restate_storage_query_datafusion::context::{NoTables, QueryContext};
+use restate_storage_query_datafusion::bifrost_read_stream::BifrostReadStreamsTable;
+use restate_storage_query_datafusion::config::ConfigTable;
+use restate_storage_query_datafusion::context::{
+    DataFusionQueryEngine, SelectPartitionsFromMetadata,
+};
+use restate_storage_query_datafusion::loglet_worker::LogletWorkersTable;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
 };
 use restate_storage_query_datafusion::remote_query_scanner_server::RemoteQueryScannerServer;
+use restate_storage_query_datafusion::{DataFusionEnv, MetadataTables, UserTables};
 
 use restate_metadata_server::{
     BoxedMetadataServer, MetadataServer, MetadataStoreClient, ReadModifyWriteError,
@@ -102,6 +108,14 @@ pub enum BuildError {
     #[code(unknown)]
     PartitionStoreManager(#[from] restate_partition_store::BuildError),
 
+    #[error("building query engine failed: {0}")]
+    #[code(unknown)]
+    QueryEngine(#[from] restate_storage_query_datafusion::BuildError),
+
+    #[error("building distributed query engine failed: {0}")]
+    #[code(unknown)]
+    DistributedQueryEngine(#[from] distributed_datafusion::BuildError),
+
     #[error("building worker failed: {0}")]
     Worker(
         #[from]
@@ -155,6 +169,7 @@ pub struct Node {
     ingress_role: Option<IngressRole<GrpcConnector>>,
     log_server: Option<LogServerService>,
     datafusion_remote_scanner: RemoteQueryScannerServer,
+    distributed_query_server: Option<distributed_datafusion::distributed::DistributedQueryServer>,
     networking: Networking<GrpcConnector>,
     is_provisioned: bool,
     prometheus: Prometheus,
@@ -348,6 +363,9 @@ impl Node {
                 .expect("Ingestion session options to build"),
         );
 
+        let datafusion_env = DataFusionEnv::from_options(&config.admin.query_engine)
+            .map_err(restate_storage_query_datafusion::BuildError::from)?;
+
         // Create a node-level RemoteScannerManager shared across all roles.
         // The partition locator routes partition-scoped scan RPCs to the right
         // node, and the RemoteQueryScannerServer below serves scan RPCs for
@@ -372,7 +390,7 @@ impl Node {
                     bifrost_svc.handle(),
                     ingestion_client.clone(),
                     metadata_manager.writer(),
-                    remote_scanner_manager.clone(),
+                    &remote_scanner_manager,
                 )
                 .await?,
             )
@@ -387,7 +405,7 @@ impl Node {
                 log_server.active_worker_map().clone(),
                 metadata.clone(),
             );
-            remote_scanner_manager.register_node_scanner("loglet_workers", local_scanner);
+            remote_scanner_manager.register_node_scanner::<LogletWorkersTable>(local_scanner);
         }
 
         // Register bifrost_read_streams scanner — available on every node since
@@ -397,7 +415,7 @@ impl Node {
                 bifrost.read_stream_registry().clone(),
                 metadata.clone(),
             );
-            remote_scanner_manager.register_node_scanner("bifrost_read_streams", local_scanner);
+            remote_scanner_manager.register_node_scanner::<BifrostReadStreamsTable>(local_scanner);
         }
 
         // Register config scanner — available on every node.
@@ -406,20 +424,56 @@ impl Node {
                 metadata.clone(),
                 Configuration::live(),
             );
-            remote_scanner_manager.register_node_scanner("config", local_scanner);
+            remote_scanner_manager.register_node_scanner::<ConfigTable>(local_scanner);
         }
 
-        // Create a minimal QueryContext for the remote scanner server — it only
-        // needs task_ctx() for physical expression deserialization.
-        let scanner_query_context = QueryContext::create(&config.admin.query_engine, NoTables)
-            .await
-            .expect("creating minimal QueryContext should not fail");
-
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
-            scanner_query_context,
-            remote_scanner_manager,
+            datafusion_env.clone(),
+            remote_scanner_manager.clone(),
             &mut router_builder,
         );
+
+        let distributed_query = if config.common.experimental.is_query_engine_v2_enabled() {
+            let env =
+                distributed_datafusion::DataFusionEnv::from_options(&config.admin.query_engine)
+                    .map_err(distributed_datafusion::BuildError::from)?
+                    .with_distributed_execution(networking.clone());
+            let remote =
+                distributed_datafusion::remote_query_scanner_client::create_remote_scanner_service(
+                    networking.clone(),
+                );
+            let locator =
+                distributed_datafusion::remote_query_scanner_manager::create_partition_locator(
+                    PartitionRouting::new(replica_set_states.clone(), TaskCenter::current()),
+                    metadata.clone(),
+                );
+            let scanners =
+                distributed_datafusion::remote_query_scanner_manager::RemoteScannerManager::new(
+                    remote,
+                    locator,
+                    metadata.clone(),
+                );
+            if let Some(worker) = &worker_role {
+                distributed_datafusion::local_scanners::register_partition_scanners(
+                    Arc::clone(&partition_store_manager),
+                    &scanners,
+                );
+                distributed_datafusion::local_scanners::register_live_scanners(
+                    worker.partition_processor_manager_handle().query_access(),
+                    &scanners,
+                );
+            }
+            Some((env, scanners))
+        } else {
+            None
+        };
+        let distributed_query_server = distributed_query.as_ref().map(|(env, scanners)| {
+            distributed_datafusion::distributed::DistributedQueryServer::new(
+                env.clone(),
+                scanners.clone(),
+                &mut router_builder,
+            )
+        });
 
         let ingress_role = if config.has_role(Role::HttpIngress) {
             Some(IngressRole::create(
@@ -440,9 +494,48 @@ impl Node {
         };
 
         let admin_role = if config.has_role(Role::Admin) {
-            let local_rule_book_observer = worker_role.as_ref().map(|worker_role| {
-                Arc::new(worker_role.rule_book_cache_handle()) as Arc<dyn RuleBookObserver>
-            });
+            // get the processor manager which should be used to access partition stores, processor
+            // states, and other things.
+            let processor_manager = worker_role
+                .as_ref()
+                .map(|worker_role| worker_role.partition_processor_manager_handle());
+            let local_rule_book_observer =
+                processor_manager.as_ref().map(|pm| pm.rule_book_observer());
+
+            let query_engine = DataFusionQueryEngine::with_user_tables(
+                datafusion_env.clone(),
+                config.admin.query_engine.rate_limiting.as_ref(),
+                UserTables::new(SelectPartitionsFromMetadata, remote_scanner_manager)
+                    .with_metadata(MetadataTables::new(
+                        metadata.updateable_schema(),
+                        metadata_store_client.clone(),
+                        local_rule_book_observer.clone(),
+                    )),
+            )
+            .await?;
+
+            let distributed_query_engine = if let Some((env, scanners)) = distributed_query {
+                Some(
+                    distributed_datafusion::context::DataFusionQueryEngine::with_user_tables(
+                        env,
+                        config.admin.query_engine.rate_limiting.as_ref(),
+                        distributed_datafusion::UserTables::new(
+                            distributed_datafusion::context::SelectPartitionsFromMetadata,
+                            scanners,
+                        )
+                        .with_metadata(
+                            distributed_datafusion::MetadataTables::new(
+                                metadata.updateable_schema(),
+                                metadata_store_client.clone(),
+                                local_rule_book_observer.clone(),
+                            ),
+                        ),
+                    )
+                    .await?,
+                )
+            } else {
+                None
+            };
 
             Some(
                 AdminRole::create(
@@ -456,12 +549,11 @@ impl Node {
                     networking.clone(),
                     metadata,
                     metadata_manager.writer(),
-                    partition_store_manager.clone(),
                     &mut server_builder,
                     &mut address_book,
-                    worker_role
-                        .as_ref()
-                        .map(|worker_role| worker_role.storage_query_context().clone()),
+                    query_engine,
+                    distributed_query_engine,
+                    datafusion_env,
                     local_rule_book_observer,
                 )
                 .await?,
@@ -498,6 +590,7 @@ impl Node {
             worker_role,
             log_server,
             datafusion_remote_scanner,
+            distributed_query_server,
             server_builder,
             networking,
             is_provisioned,
@@ -681,6 +774,13 @@ impl Node {
             "datafusion-scan-server",
             self.datafusion_remote_scanner.run(),
         )?;
+        if let Some(server) = self.distributed_query_server {
+            TaskCenter::spawn(
+                TaskKind::SystemService,
+                "distributed-query-server",
+                server.run(),
+            )?;
+        }
 
         if let Some(log_server) = self.log_server {
             log_server.start(metadata_writer).await?;

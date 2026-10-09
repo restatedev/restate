@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::catalog::TableProvider;
+
 use restate_partition_store::keys::KeyDecoder;
 use restate_partition_store::stats::aggregated::{StageCounts, VirtualObjectLoadKey};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -20,7 +22,7 @@ use restate_storage_api::filter::Filter;
 use restate_storage_api::stats::virtual_object_load::VirtualObjectLoad;
 use restate_types::errors::ConversionError;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -28,38 +30,37 @@ use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilde
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 use super::row::append_virtual_object_stats_row;
-use super::schema::SysVirtualObjectStatsBuilder;
+use super::schema::{SysVirtualObjectStatsBuilder, SysVirtualObjectStatsTable};
 
-const NAME: &str = "sys_virtual_object_stats";
+impl SysVirtualObjectStatsTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysVirtualObjectStatsBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Large)
+            .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
 
-pub(crate) fn register_self(
-    ctx: &QueryContext,
-    partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VirtualObjectStatsScanner,
-    )) as Arc<dyn ScanPartition>;
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            Vec::new(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            // The typed filter applies the entire predicate rather than each point-read
+            // range, so selected keys must share one scan per physical partition.
+            FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition),
+        )
+        .with_statistics(statistics.build());
 
-    let schema = SysVirtualObjectStatsBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Large)
-        .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
+        Arc::new(table)
+    }
 
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        // The typed filter applies the entire predicate rather than each point-read
-        // range, so selected keys must share one scan per physical partition.
-        FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition),
-    )
-    .with_statistics(statistics.build());
-
-    ctx.register_partitioned_table(NAME, Arc::new(table))
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<VirtualObjectStatsScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

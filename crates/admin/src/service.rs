@@ -28,7 +28,8 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_types::config::AdminOptions;
+use restate_storage_query_api::{AdminUser, QueryEngine};
+use restate_types::config::{AdminOptions, Configuration};
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
@@ -51,7 +52,8 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     schema_registry: SchemaRegistry<Metadata, Discovery, Telemetry>,
     serdes_client: SerdesClient,
     invocation_client: Invocations,
-    query_context: Option<restate_storage_query_datafusion::context::QueryContext>,
+    query_engine: Arc<dyn QueryEngine<AdminUser>>,
+    distributed_query_engine: Option<Arc<dyn QueryEngine<AdminUser>>>,
     metadata_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
@@ -62,6 +64,7 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         listeners: Listeners<AdminPort>,
         metadata_writer: MetadataWriter,
@@ -70,6 +73,7 @@ where
         serdes_client: SerdesClient,
         service_discovery: ServiceDiscovery,
         telemetry_http_client: Option<HttpClient>,
+        query_engine: Arc<dyn QueryEngine<AdminUser>>,
     ) -> Self {
         let metadata_client = metadata_writer.raw_metadata_store_client().clone();
         Self {
@@ -82,19 +86,10 @@ where
             ),
             serdes_client,
             invocation_client,
-            query_context: None,
+            query_engine,
+            distributed_query_engine: None,
             metadata_client,
             rule_book_observer: None,
-        }
-    }
-
-    pub fn with_query_context(
-        self,
-        query_context: restate_storage_query_datafusion::context::QueryContext,
-    ) -> Self {
-        Self {
-            query_context: Some(query_context),
-            ..self
         }
     }
 
@@ -105,21 +100,35 @@ where
         }
     }
 
+    /// Enables per-request selection of the staging query engine.
+    pub fn with_distributed_query_engine(
+        mut self,
+        engine: Arc<dyn QueryEngine<AdminUser>>,
+    ) -> Self {
+        self.distributed_query_engine = Some(engine);
+        self
+    }
+
     pub async fn run(
         self,
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state = state::AdminServiceState::new(
+        let mut rest_state = state::AdminServiceState::new(
             self.schema_registry,
             self.serdes_client,
             self.invocation_client,
             self.ingestion_client,
             self.metadata_client.clone(),
-            self.query_context,
+            self.query_engine,
             self.rule_book_observer,
         );
+        rest_state.distributed_query_engine = self.distributed_query_engine;
+        rest_state.query_engine_v2_default = Configuration::pinned()
+            .common
+            .experimental
+            .is_query_engine_v2_default_enabled();
 
         let router = axum::Router::new();
 

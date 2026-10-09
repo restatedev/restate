@@ -21,11 +21,11 @@ use restate_admin::service::AdminService;
 use restate_core::partitions::PartitionRouting;
 use restate_core::{TaskCenter, TaskCenterBuilder, TestCoreEnv};
 use restate_core::{TaskCenterFutureExt, TaskKind};
+use restate_distributed_datafusion::table_docs;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_storage_query_datafusion::table_docs;
 use restate_types::config::Configuration;
 use restate_types::identifiers::PartitionProcessorRpcRequestId;
 use restate_types::invocation::InvocationTermination;
@@ -129,6 +129,7 @@ async fn generate_rest_api_doc() -> anyhow::Result<()> {
         SerdesClient::new(service_client.clone()),
         ServiceDiscovery::new(RetryPolicy::default(), service_client),
         None,
+        restate_storage_query_api::AdminUser::noop_query_engine(),
     );
 
     TaskCenter::spawn(

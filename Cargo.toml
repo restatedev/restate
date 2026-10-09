@@ -54,6 +54,7 @@ restate-clock = { path = "crates/clock" }
 restate-cloud-tunnel-client = { path = "crates/cloud-tunnel-client" }
 restate-core = { path = "crates/core" }
 restate-core-derive = { path = "crates/core/derive" }
+restate-distributed-datafusion = { path = "crates/distributed-datafusion" }
 restate-encoding = { path = "crates/encoding" }
 restate-errors = { path = "crates/errors" }
 restate-fs-util = { path = "crates/fs-util" }
@@ -82,6 +83,7 @@ restate-service-client = { path = "crates/service-client" }
 restate-service-protocol = { path = "crates/service-protocol" }
 restate-service-protocol-v4 = { path = "crates/service-protocol-v4" }
 restate-storage-api = { path = "crates/storage-api" }
+restate-storage-query-api = { path = "crates/storage-query-api" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-sharding = { path = "crates/sharding" }
 restate-util-bytecount = { path = "util/bytecount" }
@@ -156,6 +158,8 @@ datafusion = { version = "55.1.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-functions-json = { version = "0.55.2" }
+datafusion-distributed = { git = "https://github.com/datafusion-contrib/datafusion-distributed", rev = "6b937fb3ee9546c2e3c51ae30b7853a58fa22b45", default-features = false }
+datafusion-physical-expr-common = { version = "55.1.0", default-features = false }
 datafusion-proto = { version = "55.1.0", default-features = false }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", default-features = false }

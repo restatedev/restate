@@ -9,27 +9,29 @@
 // by the Apache License, Version 2.0.
 
 use std::borrow::Cow;
+use std::marker::PhantomData;
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::sync::Arc;
 
 use datafusion::common::ScalarValue;
+use datafusion::common::tree_node::{Transformed, TransformedResult, TreeNode, TreeNodeRecursion};
 use datafusion::functions::string::starts_with::StartsWithFunc;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{
-    BinaryExpr, Column, InListExpr, IsNullExpr, LikeExpr, Literal,
+    BinaryExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNullExpr, LikeExpr, Literal,
 };
 
 use restate_storage_api::filter::{
-    Filter, FilterLiteral, FilterTarget, FilterValue, LiteralConversionError, ValuePredicate,
-    ValuePredicateBuilder,
+    Filter, FilterLiteral, FilterTarget, FilterValue, LiteralConversionError, LiveFilter,
+    ValuePredicate, ValuePredicateBuilder,
 };
 use restate_types::sharding::KeyRange;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 
-use super::{InList, extract_column_literal, static_conjuncts};
+use super::{InList, contains_dynamic_filter, extract_column_literal, static_conjuncts};
 
 impl<T: FilterTarget> ScanLocalPartitionFilter for Filter<T> {
     /// Extracts static key constraints. The complete live predicate remains with
@@ -45,11 +47,102 @@ impl<T: FilterTarget> ScanLocalPartitionFilter for Filter<T> {
     }
 }
 
+/// Storage filters derived from snapshots of a live predicate.
+///
+/// A dynamic filter, such as a TopK threshold, only publishes constraints that are
+/// sound on their own: rows rejected by any snapshot are not needed by the query.
+/// Storage can therefore apply the latest snapshot before materializing rows.
+pub(crate) struct LivePredicate<T> {
+    range: KeyRange,
+    predicate: Arc<dyn PhysicalExpr>,
+    /// The predicate's dynamic nodes. The sum of their generations identifies a
+    /// snapshot, since generations only increase.
+    dynamic: Vec<Arc<dyn PhysicalExpr>>,
+    /// The generation already reflected by storage filters, if any.
+    generation: Option<u64>,
+    _target: PhantomData<fn() -> T>,
+}
+
+impl<T: FilterTarget> LivePredicate<T> {
+    /// Returns `None` if the live predicate cannot change. A fully static access
+    /// predicate is the live predicate's current snapshot (see
+    /// [`crate::table_providers::ScanPartition::scan_partition`]), so only later
+    /// generations add constraints beyond the static storage filter.
+    pub(crate) fn new(
+        range: KeyRange,
+        access_predicate: Option<&Arc<dyn PhysicalExpr>>,
+        predicate: Option<&Arc<dyn PhysicalExpr>>,
+    ) -> Option<Self> {
+        let predicate = predicate?;
+        let mut dynamic = Vec::new();
+        predicate
+            .apply(|expr| {
+                if expr.downcast_ref::<DynamicFilterPhysicalExpr>().is_some() {
+                    dynamic.push(Arc::clone(expr));
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })
+            .expect("traversal closure is infallible");
+        if dynamic.is_empty() {
+            return None;
+        }
+        let mut live = Self {
+            range,
+            predicate: Arc::clone(predicate),
+            dynamic,
+            generation: None,
+            _target: PhantomData,
+        };
+        if access_predicate.is_some_and(|access| !contains_dynamic_filter(access)) {
+            live.generation = Some(live.current_generation());
+        }
+        Some(live)
+    }
+
+    fn current_generation(&self) -> u64 {
+        self.dynamic
+            .iter()
+            .fold(0, |sum, expr| sum.wrapping_add(expr.snapshot_generation()))
+    }
+}
+
+impl<T: FilterTarget> LiveFilter<T> for LivePredicate<T> {
+    fn poll(&mut self) -> Option<Filter<T>> {
+        let generation = self.current_generation();
+        if self.generation == Some(generation) {
+            return None;
+        }
+        self.generation = Some(generation);
+        // Transport keeps dynamic nodes, so a remote worker's update wrapper holds
+        // decoded dynamic filters, possibly as its entire snapshot. Resolve every
+        // dynamic node, including those a snapshot exposes; static conjunct
+        // extraction ignores dynamic nodes.
+        let snapshot = Arc::clone(&self.predicate)
+            .transform_down(|mut expr| {
+                let mut transformed = false;
+                while let Some(snapshot) = expr.snapshot()? {
+                    expr = snapshot;
+                    transformed = true;
+                }
+                Ok(Transformed::new_transformed(expr, transformed))
+            })
+            .data()
+            .ok()?;
+        Some(<Filter<T> as ScanLocalPartitionFilter>::new(
+            self.range,
+            Some(snapshot),
+        ))
+    }
+}
+
 /// Converts one supported conjunct; `None` leaves it entirely as a residual.
 fn parse_clause<T: FilterTarget>(predicate: &Arc<dyn PhysicalExpr>) -> Option<T::Clause> {
     if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
         && *binary.op() == Operator::Or
     {
+        if let Some(clause) = parse_null_or::<T>(binary) {
+            return Some(clause);
+        }
         // DataFusion expands short IN lists into ORs. Only normalize unions of
         // literals on the same column; any unsupported arm keeps the whole OR residual.
         let values = InList::parse(predicate, 64)?;
@@ -75,38 +168,64 @@ fn parse_clause<T: FilterTarget>(predicate: &Arc<dyn PhysicalExpr>) -> Option<T:
             literal.value().try_as_str()??,
         );
     }
-    let (column, builder) = if let Some(is_null) = predicate.downcast_ref::<IsNullExpr>() {
-        let column = is_null.arg().downcast_ref::<Column>()?;
-        (column, LiteralPredicate::IsNull)
-    } else if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
-        && matches!(
-            binary.op(),
-            Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
-        )
-    {
-        let (column, literal, op) = if let Some((column, literal)) =
-            extract_column_literal(binary.left(), binary.right())
-        {
-            (column, literal, *binary.op())
-        } else {
-            let (column, literal) = extract_column_literal(binary.right(), binary.left())?;
-            (column, literal, binary.op().swap()?)
-        };
-        let builder = if op == Operator::Eq {
-            LiteralPredicate::Equal(literal.value())
-        } else {
-            LiteralPredicate::Comparison(op, literal.value())
-        };
-        (column, builder)
-    } else {
-        let in_list = predicate.downcast_ref::<InListExpr>()?;
-        if in_list.negated() {
-            return None;
-        }
-        let column = in_list.expr().downcast_ref::<Column>()?;
-        (column, LiteralPredicate::In(in_list.list()))
-    };
+    let (column, builder) = literal_predicate(predicate)?;
     T::value_clause(T::field_from_tag(column.name())?, builder)
+}
+
+/// Parses `col IS NULL OR <comparison on col>`. TopK dynamic filters take this
+/// form for NULLS FIRST orderings, including on fields that cannot be NULL.
+fn parse_null_or<T: FilterTarget>(or: &BinaryExpr) -> Option<T::Clause> {
+    let (is_null, other) = match (
+        or.left().downcast_ref::<IsNullExpr>(),
+        or.right().downcast_ref::<IsNullExpr>(),
+    ) {
+        (Some(is_null), _) => (is_null, or.right()),
+        (None, Some(is_null)) => (is_null, or.left()),
+        (None, None) => return None,
+    };
+    let column = is_null.arg().downcast_ref::<Column>()?;
+    let (other_column, builder) = literal_predicate(other)?;
+    if other_column.name() != column.name() {
+        return None;
+    }
+    T::value_clause(T::field_from_tag(column.name())?, NonNullOr(builder))
+}
+
+/// A column compared with literals, not yet bound to the field's value type.
+fn literal_predicate(predicate: &Arc<dyn PhysicalExpr>) -> Option<(&Column, LiteralPredicate<'_>)> {
+    Some(
+        if let Some(is_null) = predicate.downcast_ref::<IsNullExpr>() {
+            let column = is_null.arg().downcast_ref::<Column>()?;
+            (column, LiteralPredicate::IsNull)
+        } else if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
+            && matches!(
+                binary.op(),
+                Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
+            )
+        {
+            let (column, literal, op) = if let Some((column, literal)) =
+                extract_column_literal(binary.left(), binary.right())
+            {
+                (column, literal, *binary.op())
+            } else {
+                let (column, literal) = extract_column_literal(binary.right(), binary.left())?;
+                (column, literal, binary.op().swap()?)
+            };
+            let builder = if op == Operator::Eq {
+                LiteralPredicate::Equal(literal.value())
+            } else {
+                LiteralPredicate::Comparison(op, literal.value())
+            };
+            (column, builder)
+        } else {
+            let in_list = predicate.downcast_ref::<InListExpr>()?;
+            if in_list.negated() {
+                return None;
+            }
+            let column = in_list.expr().downcast_ref::<Column>()?;
+            (column, LiteralPredicate::In(in_list.list()))
+        },
+    )
 }
 
 /// Recognizes one literal prefix followed by an unescaped `%`.
@@ -201,6 +320,19 @@ impl ValuePredicateBuilder for LiteralPredicate<'_> {
     }
 }
 
+/// Builds the second arm of `col IS NULL OR <predicate>`. The NULL arm can only
+/// be dropped for value types that have no NULL; otherwise the OR stays residual.
+struct NonNullOr<'a>(LiteralPredicate<'a>);
+
+impl ValuePredicateBuilder for NonNullOr<'_> {
+    fn build<V: FilterValue>(self) -> Option<ValuePredicate<V>> {
+        match V::from_literal(FilterLiteral::Null) {
+            Err(LiteralConversionError::Unrepresentable) => self.0.build(),
+            Ok(_) | Err(LiteralConversionError::Unsupported) => None,
+        }
+    }
+}
+
 impl ValuePredicateBuilder for InList<'_> {
     fn build<V: FilterValue>(self) -> Option<ValuePredicate<V>> {
         if self.negated {
@@ -281,7 +413,7 @@ fn collect_values<'a, V: FilterValue>(
 
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeBounds;
+    use std::ops::{Bound, RangeBounds};
 
     use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, LargeStringArray};
     use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
@@ -739,6 +871,130 @@ mod tests {
         assert!(
             LiteralPredicate::Equal(&ScalarValue::UInt64(Some(1)))
                 .build::<ReString>()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn null_first_thresholds_preserve_nullable_and_mixed_column_predicates() {
+        fn threshold(filter: &Filter<ServiceLoad>) -> (Bound<&str>, Bound<&str>) {
+            let Filter::Predicates(fields) = filter else {
+                panic!("expected constraints")
+            };
+            let [Clause::ServiceName(ValuePredicate::Range { lower, upper })] =
+                fields.for_field(Field::ServiceName)
+            else {
+                panic!("expected a service range")
+            };
+            (
+                lower.as_ref().map(ReString::as_str),
+                upper.as_ref().map(ReString::as_str),
+            )
+        }
+
+        // TopK filters for NULLS FIRST orderings keep an impossible NULL arm on
+        // non-nullable fields; the NULL arm of a nullable field stays residual.
+        let topk = col("service_name")
+            .is_null()
+            .or(col("service_name").gt(string(Some("beta"))));
+        assert_eq!(threshold(&translate(topk)), (Excluded("beta"), Unbounded));
+        assert!(matches!(
+            translate(
+                col("handler")
+                    .is_null()
+                    .or(col("handler").gt(string(Some("beta"))))
+            ),
+            Filter::All
+        ));
+        assert!(matches!(
+            translate(
+                col("service_name")
+                    .is_null()
+                    .or(col("handler").gt(string(Some("beta"))))
+            ),
+            Filter::All
+        ));
+    }
+
+    #[test]
+    fn live_predicates_publish_new_local_and_remote_snapshots() {
+        let kind = |filter: &Filter<ServiceLoad>| {
+            let Filter::Predicates(fields) = filter else {
+                panic!("expected constraints")
+            };
+            match fields.for_field(Field::Kind) {
+                [] => None,
+                [Clause::Kind(ValuePredicate::Equal(kind))] => Some(*kind),
+                _ => panic!("expected kind equality"),
+            }
+        };
+        // Coordinator: the access predicate is the live predicate, whose dynamic
+        // conjuncts are absent from the static filter until the first snapshot.
+        let dynamic = Arc::new(DynamicFilterPhysicalExpr::new(
+            vec![Arc::new(Column::new("kind", 2))],
+            physical(lit(true)),
+        ));
+        let local: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(
+            physical(col("service_name").eq(string(Some("alpha")))),
+            Operator::And,
+            dynamic.clone(),
+        ));
+        let mut live =
+            LivePredicate::<ServiceLoad>::new(KeyRange::FULL, Some(&local), Some(&local)).unwrap();
+        let first = live.poll().unwrap();
+        assert_static_service(&first);
+        assert!(live.poll().is_none());
+        dynamic
+            .update(physical(col("kind").eq(string(Some("invocation")))))
+            .unwrap();
+        assert_eq!(kind(&live.poll().unwrap()), Some(EntryKind::Invocation));
+        assert!(live.poll().is_none());
+
+        // Remote worker: transport keeps dynamic nodes, so the decoded access
+        // predicate and every decoded update carry a detached copy of the TopK
+        // filter inside the worker's update wrapper.
+        let transport = |expr: &Arc<dyn PhysicalExpr>| {
+            crate::decode_expr(
+                &TaskContext::default(),
+                &schema(),
+                &crate::encode_expr(expr).unwrap(),
+            )
+            .unwrap()
+        };
+        let access = transport(&local);
+        let rows = Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), access.clone()));
+        let rows_expr = rows.clone() as Arc<dyn PhysicalExpr>;
+        let mut live =
+            LivePredicate::<ServiceLoad>::new(KeyRange::FULL, Some(&access), Some(&rows_expr))
+                .unwrap();
+        assert_eq!(kind(&live.poll().unwrap()), Some(EntryKind::Invocation));
+        assert!(live.poll().is_none());
+        dynamic
+            .update(physical(col("kind").eq(string(Some("state-mutation")))))
+            .unwrap();
+        rows.update(transport(&local)).unwrap();
+        assert_eq!(kind(&live.poll().unwrap()), Some(EntryKind::StateMutation));
+        // Without static conjuncts, the wrapper's snapshot is a dynamic node itself.
+        let bare = transport(&(dynamic as Arc<dyn PhysicalExpr>));
+        let rows_expr = Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), bare.clone()))
+            as Arc<dyn PhysicalExpr>;
+        let mut live =
+            LivePredicate::<ServiceLoad>::new(KeyRange::FULL, Some(&bare), Some(&rows_expr))
+                .unwrap();
+        assert_eq!(kind(&live.poll().unwrap()), Some(EntryKind::StateMutation));
+
+        // A fully static access predicate already reflects the wrapper's snapshot.
+        let access = physical(col("service_name").eq(string(Some("alpha"))));
+        let rows_expr = Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), access.clone()))
+            as Arc<dyn PhysicalExpr>;
+        let mut live =
+            LivePredicate::<ServiceLoad>::new(KeyRange::FULL, Some(&access), Some(&rows_expr))
+                .unwrap();
+        assert!(live.poll().is_none());
+
+        // Static predicates never change.
+        assert!(
+            LivePredicate::<ServiceLoad>::new(KeyRange::FULL, Some(&access), Some(&access))
                 .is_none()
         );
     }
