@@ -78,6 +78,7 @@ pub trait QuerySession<T>: Send + Sync {
     ///
     /// Use a session from [`QueryEngine::create_session`] to retain settings across executions or attach
     /// request metadata before planning. The returned stream can outlive the session handle.
+    /// Each execution allocates a distinct timestamp, exposed in [`QueryMetadata::query_ts`].
     async fn execute(
         &self,
         query: &str,
