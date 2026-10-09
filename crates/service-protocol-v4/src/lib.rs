@@ -35,6 +35,8 @@ pub mod proto {
         CommandAckMessage,
         ProposeRunCompletionMessage,
         ProposeRunCompletionAckMessage,
+        GetStateEphemeralCommandMessage,
+        GetStateEphemeralNotificationMessage,
         CallCommandMessage,
         OneWayCallCommandMessage,
         AwaitingOnMessage,
@@ -523,7 +525,9 @@ mod dto {
                     let suspension_v6 = self.as_suspension_v6();
                     prost::Message::encode(&suspension_v6, buf)?;
                 }
-                ServiceProtocolVersion::V7 => prost::Message::encode(self, buf)?,
+                ServiceProtocolVersion::V7 | ServiceProtocolVersion::V8 => {
+                    prost::Message::encode(self, buf)?
+                }
             };
 
             Ok(())
@@ -551,7 +555,9 @@ mod dto {
                     let suspension_v6 = self.as_suspension_v6();
                     prost::Message::encoded_len(&suspension_v6)
                 }
-                ServiceProtocolVersion::V7 => prost::Message::encoded_len(self),
+                ServiceProtocolVersion::V7 | ServiceProtocolVersion::V8 => {
+                    prost::Message::encoded_len(self)
+                }
             }
         }
     }
@@ -576,7 +582,9 @@ mod dto {
                 | ServiceProtocolVersion::V4
                 | ServiceProtocolVersion::V5
                 | ServiceProtocolVersion::V6 => SuspensionMessageV6::decode(buf)?.into(),
-                ServiceProtocolVersion::V7 => <SuspensionMessage as prost::Message>::decode(buf)?,
+                ServiceProtocolVersion::V7 | ServiceProtocolVersion::V8 => {
+                    <SuspensionMessage as prost::Message>::decode(buf)?
+                }
             };
 
             Ok(msg)

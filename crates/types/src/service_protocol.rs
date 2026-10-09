@@ -16,7 +16,7 @@ use std::ops::RangeInclusive;
 pub const MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V1;
 pub const MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
-    ServiceProtocolVersion::V7;
+    ServiceProtocolVersion::V8;
 
 pub const MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION: ServiceProtocolVersion =
     ServiceProtocolVersion::V5;
@@ -49,15 +49,21 @@ impl ServiceProtocolVersion {
     /// Pick the version to use for running an invocation
     pub fn pick(
         deployment_supported_versions: &RangeInclusive<i32>,
+        enable_protocol_v8: bool,
     ) -> Option<ServiceProtocolVersion> {
-        if *deployment_supported_versions.start()
-            <= i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION)
+        let max_version = if enable_protocol_v8 {
+            MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION
+        } else {
+            ServiceProtocolVersion::V7
+        };
+
+        if *deployment_supported_versions.start() <= i32::from(max_version)
             && *deployment_supported_versions.end()
                 >= i32::from(MIN_INFLIGHT_SERVICE_PROTOCOL_VERSION)
         {
             ServiceProtocolVersion::try_from(std::cmp::min(
                 *deployment_supported_versions.end(),
-                i32::from(MAX_INFLIGHT_SERVICE_PROTOCOL_VERSION),
+                i32::from(max_version),
             ))
             .ok()
         } else {
@@ -489,5 +495,31 @@ mod pb_into {
             // V3 protocol types don't carry scope
             ServiceId::new(None, workflow_name, workflow_key)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pick_v8_only_when_enabled() {
+        assert_eq!(
+            ServiceProtocolVersion::pick(&(5..=8), true),
+            Some(ServiceProtocolVersion::V8)
+        );
+        assert_eq!(
+            ServiceProtocolVersion::pick(&(5..=8), false),
+            Some(ServiceProtocolVersion::V7)
+        );
+        assert_eq!(
+            ServiceProtocolVersion::pick(&(5..=7), true),
+            Some(ServiceProtocolVersion::V7)
+        );
+        assert_eq!(ServiceProtocolVersion::pick(&(8..=8), false), None);
+        assert_eq!(
+            ServiceProtocolVersion::pick(&(8..=8), true),
+            Some(ServiceProtocolVersion::V8)
+        );
     }
 }
