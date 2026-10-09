@@ -29,6 +29,16 @@ const BOOSTS: [f32; 4] = [8.0, 5.0, 2.0, 0.5];
 /// Searches the names, descriptions and flags of every command, and the names, descriptions
 /// and columns of the SQL tables, and prints the best matches, best first: the command to run
 /// and a one-line description.
+#[derive(Debug, Clone, clap::ValueEnum, Default, PartialEq, Eq)]
+pub enum Source {
+    #[default]
+    All,
+    Cli,
+    Sql,
+    Docs,
+    Examples,
+}
+
 #[derive(Run, Parser, Collect, Clone)]
 #[cling(run = "run_search")]
 #[command(after_help = after_help!(
@@ -36,18 +46,25 @@ const BOOSTS: [f32; 4] = [8.0, 5.0, 2.0, 0.5];
         "restate search change the retention of a service",
         "restate search retry a failed invocation",
         "restate search journal table --json",
+        "restate search durable execution --source docs",
     ],
 ))]
 pub struct Search {
     /// Words to look for, or a description of what you want to do. Typos are tolerated
     #[arg(required = true)]
     query: Vec<String>,
+
+    /// Filter results by source
+    #[arg(long, default_value = "all")]
+    source: Source,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Command,
     SqlTable,
+    Doc,
+    Example,
 }
 
 /// A searchable command or SQL table.
@@ -59,10 +76,23 @@ struct Entry {
     description: String,
     /// The searched fields: names, summary, description and context (flags, columns).
     fields: [String; 4],
+    /// Original file path for debugging
+    source_path: String,
 }
 
 fn run_search(opts: &Search) -> Result<()> {
-    let index = build_index();
+    let mut index = build_index();
+    
+    if opts.source != Source::All {
+        index.retain(|e| match opts.source {
+            Source::Cli => e.kind == Kind::Command,
+            Source::Sql => e.kind == Kind::SqlTable,
+            Source::Docs => e.kind == Kind::Doc,
+            Source::Examples => e.kind == Kind::Example,
+            Source::All => true,
+        });
+    }
+
     let query = opts.query.join(" ");
     let results = Searcher::new(&index).search(&query);
 
@@ -89,6 +119,9 @@ fn run_search(opts: &Search) -> Result<()> {
         Some(top) if top.kind == Kind::SqlTable => {
             f.next_step(&top.command, "see its columns", IncludeFormatting::Yes)
         }
+        Some(top) if top.kind == Kind::Doc || top.kind == Kind::Example => {
+            f.next_step(&top.command, "read more online (if it were a real command)", IncludeFormatting::No)
+        }
         Some(top) => f.next_step(
             &format!("{} --help", top.command),
             "see its usage",
@@ -114,6 +147,7 @@ fn build_index() -> Vec<Entry> {
                 first_line(table.description)
             },
             fields: searchable([table.name, table.description, "", &columns.join(" ")]),
+            source_path: String::new(),
         });
     }
     entries
@@ -157,6 +191,7 @@ fn index_command(cmd: &clap::Command, path: String, entries: &mut Vec<Entry>) {
         command: path.clone(),
         description: first_line(&about),
         fields: searchable([&names, &about, &long_about, &context]),
+        source_path: String::new(),
     });
     for sub in cmd.get_subcommands() {
         if !sub.is_hide_set() && sub.get_name() != "help" {
@@ -324,6 +359,7 @@ mod tests {
     #[test]
     fn ranks_commands_and_tables() {
         let index = build_index();
+        
         let searcher = Searcher::new(&index);
         let top = |query: &str| {
             let e = searcher.search(query)[0];
@@ -352,3 +388,143 @@ mod tests {
         assert!(index.iter().all(|e| !e.command.contains(" help")));
     }
 }
+
+
+fn parse_markdown_file(path: &std::path::Path, kind: Kind, root: &std::path::Path, entries: &mut Vec<Entry>) {
+    let Ok(content) = std::fs::read_to_string(path) else { return };
+    
+    let rel_path = path.strip_prefix(root).unwrap_or(path);
+    let mut slug = rel_path.with_extension("").to_string_lossy().into_owned();
+    if slug.ends_with("/README") {
+        slug = slug.trim_end_matches("/README").to_string();
+    }
+    
+    let command_prefix = match kind {
+        Kind::Doc => format!("restate docs {}", slug),
+        Kind::Example => format!("restate example {}", slug),
+        _ => String::new(),
+    };
+
+    let mut current_title = String::new();
+    let mut current_content = String::new();
+    let mut frontmatter_desc = String::new();
+    let mut frontmatter_tags = String::new();
+    
+    let mut in_frontmatter = false;
+    let mut first_line_flag = true;
+    
+    for line in content.lines() {
+        let line_trimmed = line.trim();
+        if first_line_flag && line_trimmed == "---" {
+            in_frontmatter = true;
+            first_line_flag = false;
+            continue;
+        }
+        first_line_flag = false;
+        
+        if in_frontmatter {
+            if line_trimmed == "---" {
+                in_frontmatter = false;
+            } else if let Some(desc) = line_trimmed.strip_prefix("description:") {
+                frontmatter_desc = desc.trim().trim_matches('"').trim_matches('\'').to_string();
+            } else if let Some(tags) = line_trimmed.strip_prefix("keywords:") {
+                frontmatter_tags = tags.trim().trim_matches('[').trim_matches(']').to_string();
+            } else if let Some(title) = line_trimmed.strip_prefix("title:") {
+                current_title = title.trim().trim_matches('"').trim_matches('\'').to_string();
+            }
+            continue;
+        }
+        
+        if line.starts_with("## ") || line.starts_with("### ") || line.starts_with("# ") {
+            if !current_content.trim().is_empty() {
+                entries.push(Entry {
+                    kind,
+                    command: command_prefix.clone(),
+                    description: if !frontmatter_desc.is_empty() { frontmatter_desc.clone() } else { first_line(&current_content) },
+                    fields: searchable([current_title.as_str(), frontmatter_desc.as_str(), current_content.as_str(), frontmatter_tags.as_str()]),
+                    source_path: path.to_string_lossy().into_owned(),
+                });
+            }
+            current_title = line_trimmed.trim_start_matches('#').trim().to_string();
+            current_content.clear();
+        } else {
+            current_content.push_str(line);
+            current_content.push(' ');
+        }
+    }
+    
+    if !current_content.trim().is_empty() || entries.is_empty() {
+        entries.push(Entry {
+            kind,
+            command: command_prefix.clone(),
+            description: if !frontmatter_desc.is_empty() { frontmatter_desc.clone() } else { first_line(&current_content) },
+            fields: searchable([current_title.as_str(), frontmatter_desc.as_str(), current_content.as_str(), frontmatter_tags.as_str()]),
+            source_path: path.to_string_lossy().into_owned(),
+        });
+    }
+}
+
+fn index_docs(root: &std::path::Path, entries: &mut Vec<Entry>) {
+    let mut dirs_to_visit = vec![root.to_path_buf()];
+    while let Some(dir) = dirs_to_visit.pop() {
+        let Ok(read_dir) = std::fs::read_dir(&dir) else { continue };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name == "dev" {
+                    continue;
+                }
+                dirs_to_visit.push(path);
+            } else if path.extension().map_or(false, |ext| ext == "md" || ext == "mdx") {
+                parse_markdown_file(&path, Kind::Doc, root, entries);
+            }
+        }
+    }
+}
+
+fn index_examples(root: &std::path::Path, entries: &mut Vec<Entry>) {
+    let mut dirs_to_visit = vec![root.to_path_buf()];
+    while let Some(dir) = dirs_to_visit.pop() {
+        let Ok(read_dir) = std::fs::read_dir(&dir) else { continue };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name == ".git" || name == "node_modules" || name == "target" || name == "dist" {
+                    continue;
+                }
+                dirs_to_visit.push(path);
+            } else if path.file_name().map_or(false, |n| n == "README.md" || n == "readme.md") {
+                parse_markdown_file(&path, Kind::Example, root, entries);
+            }
+        }
+
+    #[test]
+    fn search_finds_known_doc_content() {
+        let index = build_index();
+        
+        // Assert that Docs and Examples are included
+        let has_docs = index.iter().any(|e| e.kind == Kind::Doc);
+        let has_examples = index.iter().any(|e| e.kind == Kind::Example);
+        assert!(has_docs, "Index should contain Doc entries");
+        assert!(has_examples, "Index should contain Example entries");
+
+        let searcher = Searcher::new(&index);
+        let results = searcher.search("durable execution");
+        assert!(!results.is_empty(), "Should find something for 'durable execution'");
+        let has_doc = results.iter().any(|e| e.kind == Kind::Doc);
+        assert!(has_doc, "Should return at least one Doc for 'durable execution'");
+    }
+
+    #[test]
+    fn integration_test_durable_execution_returns_docs() {
+        let index = build_index();
+        let searcher = Searcher::new(&index);
+        let results = searcher.search("durable execution");
+        assert!(!results.is_empty());
+        let top_kinds: Vec<_> = results.iter().take(3).map(|e| e.kind).collect();
+        assert!(top_kinds.contains(&Kind::Doc), "Top results should include a Doc");
+    }
+}
+
