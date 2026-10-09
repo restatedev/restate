@@ -146,6 +146,7 @@ struct DefaultInvocationTaskRunner<Schemas> {
     client: ServiceClient,
     schemas: Live<Schemas>,
     action_token_bucket: Option<TokenBucket>,
+    allow_protocol_v8: bool,
 }
 
 impl<IR, Schemas> InvocationTaskRunner<IR> for DefaultInvocationTaskRunner<Schemas>
@@ -189,6 +190,7 @@ where
                 limit_key,
                 idempotency_key,
                 opts.max_awaited_future_depth,
+                self.allow_protocol_v8,
             )
             .run(storage_reader, budget),
         )
@@ -273,6 +275,10 @@ impl<StorageReader, Schemas> Service<StorageReader, Schemas> {
                     client,
                     schemas: Live::clone(&schemas),
                     action_token_bucket,
+                    allow_protocol_v8: Configuration::pinned()
+                        .common
+                        .experimental
+                        .is_protocol_v8_enabled(),
                 },
                 schemas,
                 invocation_tasks: Default::default(),
