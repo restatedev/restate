@@ -736,8 +736,8 @@ enum RemoveNodeError {
     ConcurrentRequest(PlainNodeId),
     #[error("cannot remove the only member '{0}' of the metadata cluster")]
     OnlyMember(MemberId),
-    #[error("internal error: {0}")]
-    Internal(String),
+    #[error("reconfiguration was rejected")]
+    Rejected,
 }
 
 #[cfg(any(test, feature = "test-util"))]
