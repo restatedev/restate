@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use restate_bifrost::{Bifrost, MaybeSealedSegment};
 use restate_core::network::tonic_service_filter::{TonicServiceFilter, WaitForReady};
 use restate_core::network::{
-    NetworkSender, NetworkServerBuilder, Networking, Swimlane, TransportConnect,
+    NetworkSender, NetworkServerBuilder, Networking, RpcError, Swimlane, TransportConnect,
 };
 use restate_core::{Metadata, MetadataWriter, ShutdownError, TaskCenter, TaskKind};
 use restate_core::{cancellation_token, my_node_id};
@@ -51,7 +51,10 @@ use restate_types::logs::metadata::{
 };
 use restate_types::logs::{self, LogId, LogletId, Lsn};
 use restate_types::net::node::NodeState;
-use restate_types::net::partition_processor_manager::{CreateSnapshotRequest, Snapshot};
+use restate_types::net::partition_processor_manager::{
+    CreateSnapshotRequest, DropPartitionStoreError, DropPartitionStoreOutcome,
+    DropPartitionStoreRequest, Snapshot,
+};
 use restate_types::nodes_config::{NodesConfiguration, StorageState};
 use restate_types::partition_table::{
     self, PartitionReplication, PartitionTable, PartitionTableBuilder,
@@ -61,7 +64,7 @@ use restate_types::partitions::state::{MembershipState, PartitionReplicaSetState
 use restate_types::protobuf::common::AdminStatus;
 use restate_types::replicated_loglet::ReplicatedLogletParams;
 use restate_types::replication::{NodeSet, NodeSetChecker, ReplicationProperty};
-use restate_types::{GenerationalNodeId, NodeId, Version};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version};
 
 use crate::cluster_controller::cluster_state_refresher::ClusterStateRefresher;
 use crate::cluster_controller::grpc_svc_handler::ClusterCtrlSvcHandler;
@@ -186,6 +189,22 @@ pub struct ChainExtension {
     pub replication: Option<ReplicationProperty>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum DropPartitionStoreRequestError {
+    #[error("node {0} is not alive, cannot drop its partition store")]
+    NodeNotAlive(PlainNodeId),
+    #[error("{node_id} refused to drop its partition store: {error}")]
+    Worker {
+        node_id: GenerationalNodeId,
+        error: DropPartitionStoreError,
+    },
+    #[error("failed to request a partition store drop from {node_id}: {error}")]
+    Rpc {
+        node_id: GenerationalNodeId,
+        error: RpcError,
+    },
+}
+
 #[derive(Debug)]
 enum ClusterControllerCommand {
     GetClusterState(oneshot::Sender<Arc<LegacyClusterState>>),
@@ -198,6 +217,13 @@ enum ClusterControllerCommand {
         partition_id: PartitionId,
         min_target_lsn: Option<Lsn>,
         response_tx: oneshot::Sender<anyhow::Result<Snapshot>>,
+    },
+    DropPartitionStore {
+        partition_id: PartitionId,
+        node_id: PlainNodeId,
+        force: bool,
+        response_tx:
+            oneshot::Sender<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>>,
     },
     UpdateClusterConfiguration {
         partition_replication: Option<ReplicationProperty>,
@@ -294,6 +320,29 @@ impl ClusterControllerHandle {
         }
 
         Ok(create_snapshot_response)
+    }
+
+    /// Asks a specific node to delete its local copy of a partition.
+    pub(crate) async fn drop_partition_store(
+        &self,
+        partition_id: PartitionId,
+        node_id: PlainNodeId,
+        force: bool,
+    ) -> Result<Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>, ShutdownError>
+    {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        let _ = self
+            .tx
+            .send(ClusterControllerCommand::DropPartitionStore {
+                partition_id,
+                node_id,
+                force,
+                response_tx,
+            })
+            .await;
+
+        response_rx.await.map_err(|_| ShutdownError)
     }
 
     pub async fn update_cluster_configuration(
@@ -496,6 +545,44 @@ impl<T: TransportConnect> Service<T> {
         };
     }
 
+    /// Asks the given node to delete its local copy of the partition. Unlike snapshotting, the
+    /// target node is chosen by the operator: only that node's copy is affected.
+    fn spawn_drop_partition_store_task(
+        &self,
+        partition_id: PartitionId,
+        node_id: PlainNodeId,
+        force: bool,
+        response_tx: oneshot::Sender<
+            Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError>,
+        >,
+    ) {
+        let node = self
+            .cluster_state_refresher
+            .get_cluster_state()
+            .alive_nodes()
+            .find(|node| node.generational_node_id.as_plain() == node_id)
+            .map(|node| node.generational_node_id);
+
+        let Some(node_id) = node else {
+            let _ = response_tx.send(Err(DropPartitionStoreRequestError::NodeNotAlive(node_id)));
+            return;
+        };
+
+        let node_rpc_client = self.processor_manager_client.clone();
+        let _ = TaskCenter::spawn_child(
+            TaskKind::Disposable,
+            "drop-partition-store-response",
+            async move {
+                let _ = response_tx.send(
+                    node_rpc_client
+                        .drop_partition_store(node_id, partition_id, force)
+                        .await,
+                );
+                Ok(())
+            },
+        );
+    }
+
     fn on_cluster_cmd(&self, command: ClusterControllerCommand, state: &ClusterControllerState) {
         match command {
             ClusterControllerCommand::GetClusterState(tx) => {
@@ -532,6 +619,20 @@ impl<T: TransportConnect> Service<T> {
                     min_target_lsn,
                     response_tx,
                 );
+            }
+            ClusterControllerCommand::DropPartitionStore {
+                partition_id,
+                node_id,
+                force,
+                response_tx,
+            } => {
+                warn!(
+                    ?partition_id,
+                    %node_id,
+                    %force,
+                    "Drop partition store command received"
+                );
+                self.spawn_drop_partition_store_task(partition_id, node_id, force, response_tx);
             }
             ClusterControllerCommand::UpdateClusterConfiguration {
                 partition_replication,
@@ -785,6 +886,32 @@ where
             .await?
             .result
             .map_err(|e| anyhow!("Failed to create snapshot: {:?}", e))
+    }
+
+    pub async fn drop_partition_store(
+        &self,
+        node_id: GenerationalNodeId,
+        partition_id: PartitionId,
+        force: bool,
+    ) -> Result<DropPartitionStoreOutcome, DropPartitionStoreRequestError> {
+        let response = self
+            .network_sender
+            .call_rpc(
+                node_id,
+                Swimlane::default(),
+                DropPartitionStoreRequest {
+                    partition_id,
+                    force,
+                },
+                Some(partition_id.into()),
+                None,
+            )
+            .await
+            .map_err(|error| DropPartitionStoreRequestError::Rpc { node_id, error })?;
+
+        response
+            .into_result()
+            .map_err(|error| DropPartitionStoreRequestError::Worker { node_id, error })
     }
 }
 
