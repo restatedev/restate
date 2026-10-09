@@ -788,8 +788,10 @@ impl TaskCenterInner {
     /// Runs **only** after the inner main thread has completed work and no other owner exists for
     /// the runtime handle.
     fn drop_runtime(self: &Arc<Self>, name: ReString) {
-        let mut runtimes_guard = self.managed_runtimes.lock();
-        if let Some(runtime) = runtimes_guard.remove(&name) {
+        // Shutdown can wait for blocking tasks and run arbitrary task destructors.
+        // Release the registry lock first so other runtimes can start and stop.
+        let runtime = self.managed_runtimes.lock().remove(&name);
+        if let Some(runtime) = runtime {
             // We must be the only owner of runtime at this point.
             debug!("Runtime {} completed", name);
             let owner = Arc::into_inner(runtime.into_inner());
@@ -1364,6 +1366,47 @@ mod tests {
         assert!(logs_contain("Hello async"));
         assert!(logs_contain("Bye async"));
         assert!(start.elapsed() >= Duration::from_secs(10));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_shutdown_releases_registry_before_dropping_tasks() -> Result<()> {
+        struct CheckRegistryOnDrop {
+            tc: Handle,
+            result: Option<oneshot::Sender<bool>>,
+        }
+
+        impl Drop for CheckRegistryOnDrop {
+            fn drop(&mut self) {
+                let unlocked = self.tc.inner.managed_runtimes.try_lock().is_some();
+                let _ = self.result.take().unwrap().send(unlocked);
+            }
+        }
+
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let (result_tx, result_rx) = oneshot::channel();
+        let check = CheckRegistryOnDrop {
+            tc: tc.clone(),
+            result: Some(result_tx),
+        };
+        tc.start_runtime(
+            TaskKind::SystemService,
+            "shutdown-test",
+            None,
+            move || async {
+                tokio::spawn(async move {
+                    let _check = check;
+                    std::future::pending::<()>().await;
+                });
+            },
+        )?
+        .await;
+
+        assert!(result_rx.await?, "runtime shutdown held the registry lock");
+        assert!(tc.managed_runtime_metrics().is_empty());
         Ok(())
     }
 }
