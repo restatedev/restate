@@ -326,7 +326,7 @@ impl SchemaUpdater {
 
     fn into_inner(mut self) -> Schema {
         if self.modified {
-            self.schema.version = self.schema.version.next()
+            self.schema.unindexed.version = self.schema.unindexed.version.next()
         }
 
         self.schema
@@ -444,7 +444,7 @@ impl SchemaUpdater {
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
 
-        self.schema.deployments.insert(
+        self.schema.unindexed.deployments.insert(
             deployment_id,
             Deployment {
                 id: deployment_id,
@@ -712,7 +712,7 @@ impl SchemaUpdater {
         // * The user didn't ask for overwriting, and in this case we simply update the type and delivery options as requested
         // * The user asked for the overwriting, just allow everything, and it's their business to not break things
         if overwrite == Overwrite::No {
-            self.schema.deployments.insert(
+            self.schema.unindexed.deployments.insert(
                 deployment_id,
                 Deployment {
                     // We update only these 3 fields
@@ -819,7 +819,7 @@ impl SchemaUpdater {
                 computed_services.insert(service_name, Arc::new(service_revision));
             }
 
-            self.schema.deployments.insert(
+            self.schema.unindexed.deployments.insert(
                 deployment_id,
                 Deployment {
                     // We update all these fields
@@ -851,7 +851,7 @@ impl SchemaUpdater {
 
     /// Returns true if it was removed
     pub fn remove_deployment(&mut self, deployment_id: DeploymentId) -> bool {
-        if let Some(deployment) = self.schema.deployments.remove(&deployment_id) {
+        if let Some(deployment) = self.schema.unindexed.deployments.remove(&deployment_id) {
             for (_, service_metadata) in deployment.services {
                 match self
                     .schema
@@ -1014,7 +1014,7 @@ impl SchemaUpdater {
 
         let subscription = Subscription::new(id, source, sink, metadata);
 
-        self.schema.subscriptions.insert(id, subscription);
+        self.schema.unindexed.subscriptions.insert(id, subscription);
         self.mark_updated();
 
         Ok(id)
@@ -1022,7 +1022,13 @@ impl SchemaUpdater {
 
     // Returns true if it was removed
     pub fn remove_subscription(&mut self, subscription_id: SubscriptionId) -> bool {
-        if self.schema.subscriptions.remove(&subscription_id).is_some() {
+        if self
+            .schema
+            .unindexed
+            .subscriptions
+            .remove(&subscription_id)
+            .is_some()
+        {
             self.mark_updated();
             return true;
         }
@@ -1063,6 +1069,7 @@ impl SchemaUpdater {
         // Create and insert cluster
         let cluster = KafkaCluster::new(kafka_cluster_name.clone(), properties);
         self.schema
+            .unindexed
             .kafka_clusters
             .insert(kafka_cluster_name.to_string(), cluster);
         self.mark_updated();
@@ -1122,7 +1129,10 @@ impl SchemaUpdater {
             }
         }
 
-        self.schema.kafka_clusters.remove(kafka_cluster_name);
+        self.schema
+            .unindexed
+            .kafka_clusters
+            .remove(kafka_cluster_name);
         self.mark_updated();
         Ok(true)
     }
@@ -1136,7 +1146,12 @@ impl SchemaUpdater {
         check_ignored_kafka_properties(&properties);
 
         // Get cluster
-        let Some(cluster) = self.schema.kafka_clusters.get_mut(kafka_cluster_name) else {
+        let Some(cluster) = self
+            .schema
+            .unindexed
+            .kafka_clusters
+            .get_mut(kafka_cluster_name)
+        else {
             let config = Configuration::pinned();
             if config
                 .ingress
@@ -1220,7 +1235,7 @@ impl SchemaUpdater {
             return Ok(());
         };
         let deployment_id = active_service_revision.deployment_id;
-        let Some(deployment) = self.schema.deployments.get_mut(&deployment_id) else {
+        let Some(deployment) = self.schema.unindexed.deployments.get_mut(&deployment_id) else {
             return Ok(());
         };
         let Some(old_svc) = deployment.services.remove(svc_name) else {
