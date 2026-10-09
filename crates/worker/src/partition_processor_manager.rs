@@ -287,16 +287,12 @@ where
         }
     }
 
-    pub fn leader_handles_registry(&self) -> PartitionLeaderHandlesRegistry {
-        self.leader_handles_registry.clone()
-    }
-
     pub fn handle(&self) -> ProcessorsManagerHandle {
-        ProcessorsManagerHandle::new(self.tx.clone())
-    }
-
-    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
-        self.rule_book_cache.clone()
+        ProcessorsManagerHandle::new(
+            self.tx.clone(),
+            Arc::new(self.rule_book_cache.clone()),
+            Arc::new(self.leader_handles_registry.clone()),
+        )
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {

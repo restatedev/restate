@@ -11,12 +11,14 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::index::EntryByStageKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::index::EntryByStage;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::index::table::IndexFilter;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -29,15 +31,10 @@ use super::schema::IdxEntryByStageBuilder;
 const NAME: &str = "_idx_entry_by_stage";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        EntryByStageScanner,
-    )) as Arc<dyn ScanPartition>;
     let schema = IdxEntryByStageBuilder::schema();
     let statistics =
         TableStatisticsBuilder::new(schema.clone()).with_num_rows_estimate(RowEstimate::Large);
@@ -46,13 +43,24 @@ pub(crate) fn register_self(
         schema,
         // Local index order is not global order across physical partitions.
         Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME, scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
             .with_grouped_vqueue_entry_id("canonical_id")
             .with_grouped_vqueue_entry_id("entry_id"),
     )
     .with_statistics(statistics.build());
-    ctx.register_partitioned_table(NAME, Arc::new(table))
+    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        EntryByStageScanner,
+    )) as Arc<dyn ScanPartition>;
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]

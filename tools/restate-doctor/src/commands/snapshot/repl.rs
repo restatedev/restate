@@ -24,12 +24,12 @@ use rustyline::error::ReadlineError;
 use restate_cli_util::ui::console::{Styled, StyledTable};
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{c_eprintln, c_error, c_println};
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_api::{AdminUser, QueryOptions, QuerySession};
 
 /// Runs a single query, renders the result as a table, and reports timing.
-pub(crate) async fn run_query(ctx: &QueryContext, query: &str) -> Result<()> {
+pub(crate) async fn run_query(ctx: &dyn QuerySession<AdminUser>, query: &str) -> Result<()> {
     let start = Instant::now();
-    let result = ctx.execute(query).await?;
+    let result = ctx.execute(query, QueryOptions {}).await?;
     let batches: Vec<_> = result.stream.try_collect().await?;
 
     let mut table = Table::new_styled();
@@ -70,7 +70,7 @@ pub(crate) async fn run_query(ctx: &QueryContext, query: &str) -> Result<()> {
 }
 
 /// Starts the interactive SQL terminal, persisting history under the data directory.
-pub(crate) async fn run_repl(ctx: &QueryContext, data_dir: &Path) -> Result<()> {
+pub(crate) async fn run_repl(ctx: &dyn QuerySession<AdminUser>, data_dir: &Path) -> Result<()> {
     let history_path = data_dir.join(".snapshot-debugger-history");
     let mut editor = DefaultEditor::new()?;
     let _ = editor.load_history(&history_path);
