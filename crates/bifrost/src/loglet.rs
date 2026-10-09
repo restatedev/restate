@@ -19,7 +19,6 @@ pub use error::*;
 pub use provider::{Improvement, LogletProvider, LogletProviderFactory};
 
 use std::borrow::Cow;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Poll, ready};
 
@@ -77,13 +76,10 @@ pub trait Loglet: Send + Sync {
 
     /// Create a read stream that streams record from a single loglet instance.
     ///
-    /// `to`: The offset of the last record to be read (inclusive). If `None`, the
-    /// stream is an open-ended tailing read stream.
     async fn create_read_stream(
         self: Arc<Self>,
         filter: KeyFilter,
         from: LogletOffset,
-        to: Option<LogletOffset>,
     ) -> Result<SendableLogletReadStream, OperationError>;
 
     /// Create a stream watching the state of tail for this loglet
@@ -165,6 +161,9 @@ pub enum FindTailOptions {
 
 /// A stream of log records from a single loglet. Loglet streams are _always_ tailing streams.
 pub trait LogletReadStream: Stream<Item = Result<LogEntry<LogletOffset>, OperationError>> {
+    /// Advances the exclusive readable tail. Only lower offsets may be returned.
+    fn notify_readable_tail(&self, tail: LogletOffset) -> bool;
+
     /// Current read pointer. This points to the next offset to be read.
     fn read_pointer(&self) -> LogletOffset;
 
@@ -172,7 +171,7 @@ pub trait LogletReadStream: Stream<Item = Result<LogEntry<LogletOffset>, Operati
     fn is_terminated(&self) -> bool;
 }
 
-pub type SendableLogletReadStream = Pin<Box<dyn LogletReadStream + Send>>;
+pub type SendableLogletReadStream = std::pin::Pin<Box<dyn LogletReadStream + Send>>;
 
 pub struct LogletCommitResolver {
     tx: oneshot::Sender<Result<LogletOffset, AppendError>>,
