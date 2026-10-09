@@ -11,6 +11,7 @@
 pub mod address;
 pub mod codec;
 pub mod connect_opts;
+pub mod distributed_query;
 pub mod ingest;
 pub mod listener;
 pub mod log_server;
@@ -25,7 +26,7 @@ pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::ServiceTag;
 
 pub const MIN_SUPPORTED_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V2;
-pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V4;
+pub const CURRENT_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V5;
 
 pub trait Service: Send + Unpin + 'static {
     const TAG: ServiceTag;
@@ -96,6 +97,7 @@ macro_rules! default_wire_codec {
 
 /// Implements bilrost wire codec for a type
 /// - Message type
+/// - Optional minimum network protocol version (defaults to V2)
 ///
 /// Example:
 /// ```ignore
@@ -103,18 +105,21 @@ macro_rules! default_wire_codec {
 /// ```
 #[allow(unused_macros)]
 macro_rules! bilrost_wire_codec {
+    ($message:ty) => {
+        $crate::net::bilrost_wire_codec!($message, $crate::net::ProtocolVersion::V2);
+    };
     (
-        $message:ty
+        $message:ty, $min_version:path
     ) => {
         impl $crate::net::codec::WireEncode for $message {
             fn encode_to_bytes(
                 &self,
                 protocol_version: $crate::net::ProtocolVersion,
             ) -> Result<::bytes::Bytes, $crate::net::codec::EncodeError> {
-                if protocol_version < $crate::net::ProtocolVersion::V2 {
+                if protocol_version < $min_version {
                     Err($crate::net::codec::EncodeError::IncompatibleVersion {
                         type_tag: stringify!($message),
-                        min_required: $crate::net::ProtocolVersion::V2,
+                        min_required: $min_version,
                         actual: protocol_version,
                     })
                 } else {
@@ -133,6 +138,14 @@ macro_rules! bilrost_wire_codec {
             where
                 Self: Sized,
             {
+                if protocol_version < $min_version {
+                    return Err($crate::net::codec::EncodeError::IncompatibleVersion {
+                        type_tag: stringify!($message),
+                        min_required: $min_version,
+                        actual: protocol_version,
+                    }
+                    .into());
+                }
                 $crate::net::codec::decode_as_bilrost(buf, protocol_version)
             }
         }

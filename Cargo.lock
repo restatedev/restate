@@ -1255,6 +1255,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bincode"
+version = "1.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "bindgen"
 version = "0.72.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2239,6 +2248,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-queue"
+version = "0.3.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "03e8bd762f7479489c70ed6c768ddca99d7296857de437a68dcb2a94365b3fae"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-utils"
 version = "0.8.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2711,6 +2729,37 @@ dependencies = [
  "object_store 0.13.2",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "datafusion-distributed"
+version = "4.0.0"
+source = "git+https://github.com/datafusion-contrib/datafusion-distributed?rev=6b937fb3ee9546c2e3c51ae30b7853a58fa22b45#6b937fb3ee9546c2e3c51ae30b7853a58fa22b45"
+dependencies = [
+ "async-trait",
+ "bincode",
+ "bytes",
+ "chrono",
+ "crossbeam-queue",
+ "dashmap",
+ "datafusion",
+ "datafusion-proto",
+ "delegate",
+ "futures",
+ "http 1.5.0",
+ "itertools 0.14.0",
+ "moka",
+ "num-traits",
+ "pin-project",
+ "prost",
+ "rand 0.9.5",
+ "sketches-ddsketch",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tonic-prost",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3207,6 +3256,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10d60334b3b2e7c9d91ef8150abfb6fa4c1c39ebbcf4a81c2e346aad939fee3e"
 dependencies = [
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "delegate"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "780eb241654bf097afb00fc5f054a09b687dad862e485fdcf8399bb056565370"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -7860,6 +7920,62 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-distributed-datafusion"
+version = "1.8.0-rc.2"
+dependencies = [
+ "ahash",
+ "anyhow",
+ "async-trait",
+ "bilrost",
+ "bytes",
+ "bytestring",
+ "codederror",
+ "dashmap",
+ "datafusion",
+ "datafusion-distributed",
+ "datafusion-functions-json",
+ "datafusion-proto",
+ "derive_more",
+ "enumset",
+ "futures",
+ "gardal",
+ "googletest",
+ "http 1.5.0",
+ "itertools 0.15.0",
+ "parking_lot",
+ "paste",
+ "prost",
+ "restate-clock",
+ "restate-core",
+ "restate-limiter",
+ "restate-memory",
+ "restate-metadata-store",
+ "restate-partition-store",
+ "restate-platform",
+ "restate-rocksdb",
+ "restate-service-protocol",
+ "restate-service-protocol-v4",
+ "restate-sharding",
+ "restate-storage-api",
+ "restate-storage-query-api",
+ "restate-storage-query-datafusion",
+ "restate-types",
+ "restate-util-string",
+ "restate-worker-api",
+ "restate-workspace-hack",
+ "schemars 1.2.2",
+ "serde_json",
+ "strum",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "restate-doctor"
 version = "1.8.0-rc.2"
 dependencies = [
@@ -8452,6 +8568,7 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-core",
+ "restate-distributed-datafusion",
  "restate-futures-util",
  "restate-ingestion-client",
  "restate-ingress-http",
@@ -9457,6 +9574,7 @@ dependencies = [
  "serde_json",
  "serde_with",
  "simd-adler32",
+ "sketches-ddsketch",
  "slab",
  "smallvec",
  "syn 2.0.119",
@@ -10312,6 +10430,9 @@ name = "sketches-ddsketch"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c6f73aeb92d671e0cc4dca167e59b2deb6387c375391bc99ee743f326994a2b"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "slab"
@@ -12203,12 +12324,12 @@ dependencies = [
  "reqwest",
  "restate-admin",
  "restate-core",
+ "restate-distributed-datafusion",
  "restate-ingestion-client",
  "restate-metadata-server",
  "restate-service-client",
  "restate-service-protocol-v4",
  "restate-storage-query-api",
- "restate-storage-query-datafusion",
  "restate-types",
  "restate-worker",
  "restate-workspace-hack",
