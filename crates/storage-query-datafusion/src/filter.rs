@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod typed;
+
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeBounds;
@@ -16,11 +18,14 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use datafusion::common::ScalarValue;
+use datafusion::common::tree_node::TreeNode;
 use datafusion::logical_expr::Operator;
 use datafusion::physical_expr::split_conjunction;
 use datafusion::physical_expr_common::physical_expr::snapshot_physical_expr;
 use datafusion::physical_plan::PhysicalExpr;
-use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, IsNullExpr, Literal};
+use datafusion::physical_plan::expressions::{
+    BinaryExpr, Column, DynamicFilterPhysicalExpr, InListExpr, IsNullExpr, Literal,
+};
 use strum::EnumCount;
 
 use restate_storage_api::vqueue_table::Stage;
@@ -70,6 +75,13 @@ pub(crate) struct PartitionKeySelection {
 
 impl Default for FirstMatchingPartitionKeyExtractor {
     fn default() -> Self {
+        Self::partition_key(PointReadFanout::PerKey)
+    }
+}
+
+impl FirstMatchingPartitionKeyExtractor {
+    /// Extracts explicit `partition_key` predicates with the requested scan granularity.
+    pub(crate) fn partition_key(fanout: PointReadFanout) -> Self {
         let extractors = vec![PartitionKeyExtractorEntry {
             extractor: Box::new(MatchingColumnExtractor::new(
                 "partition_key",
@@ -78,13 +90,11 @@ impl Default for FirstMatchingPartitionKeyExtractor {
                     _ => anyhow::bail!("expected UInt64 partition key"),
                 },
             )),
-            fanout: PointReadFanout::PerKey,
+            fanout,
         }];
         Self { extractors }
     }
-}
 
-impl FirstMatchingPartitionKeyExtractor {
     pub fn with_scope(self, column_name: impl Into<String>) -> Self {
         // we only use the scope value if it's not empty, otherwise we cannot
         // rely on it to get the partition key.
@@ -477,6 +487,24 @@ fn extract_column_literal<'a>(
     Some((col, lit))
 }
 
+fn static_conjuncts(
+    predicate: Option<&Arc<dyn PhysicalExpr>>,
+) -> impl Iterator<Item = &Arc<dyn PhysicalExpr>> {
+    predicate
+        .into_iter()
+        .flat_map(split_conjunction)
+        .filter(|conjunct| !contains_dynamic_filter(conjunct))
+}
+
+/// Whether `expr` contains a [`DynamicFilterPhysicalExpr`] anywhere in its tree.
+///
+/// Such conjuncts may have changed since planning (e.g. TopK/join pushdown) so they must
+/// not be baked into static key constraints.
+fn contains_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> bool {
+    expr.exists(|e| Ok(e.downcast_ref::<DynamicFilterPhysicalExpr>().is_some()))
+        .expect("traversal closure is infallible")
+}
+
 #[derive(Debug, Clone)]
 pub struct VQueueFilter {
     pub partition_keys: KeyRange,
@@ -729,6 +757,7 @@ mod tests {
     use std::sync::Arc;
 
     use datafusion::common::ScalarValue;
+    use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
     use datafusion::physical_plan::PhysicalExpr;
     use datafusion::physical_plan::expressions::{
         BinaryExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, Literal,
@@ -1526,5 +1555,45 @@ mod tests {
         for id in ids {
             assert!(selection.ids.contains(&id));
         }
+    }
+
+    #[test]
+    fn completed_dynamic_filters_preserve_existing_lookups() {
+        let complete = |predicate| -> Arc<dyn PhysicalExpr> {
+            let filter = DynamicFilterPhysicalExpr::new(Vec::new(), predicate);
+            filter.mark_complete();
+            Arc::new(filter)
+        };
+        let id = make_invocation_id("key-1");
+        let filter = InvocationIdFilter::new(
+            FULL_RANGE,
+            Some(complete(in_list("id", vec![utf8_lit(id.to_string())]))),
+        );
+        assert_eq!(filter.invocation_ids.unwrap().ids, BTreeSet::from([id]));
+
+        let entry_id = BaseEntryId::from(id);
+        let canonical_id = entry_id.canonicalize(Seq::new(42));
+        let predicate = complete(and(
+            in_list("canonical_id", vec![utf8_lit(canonical_id.to_string())]),
+            eq(col("stage"), utf8_lit("paused")),
+        ));
+        let filter = VQueueFilter::new(FULL_RANGE, Some(predicate));
+        assert_eq!(filter.entry_ids.unwrap().ids, BTreeSet::from([entry_id]));
+        assert_eq!(filter.stages, Some(BTreeSet::from([Stage::Paused])));
+        let filter = VQueueEntryIdFilter::new(
+            FULL_RANGE,
+            Some(complete(in_list(
+                "entry_id",
+                vec![utf8_lit(entry_id.to_string())],
+            ))),
+        );
+        assert_eq!(filter.entry_ids.unwrap().ids, BTreeSet::from([entry_id]));
+
+        let id = VQueueId::custom(1, "q1");
+        let filter = VQueueMetaFilter::new(
+            FULL_RANGE,
+            Some(complete(in_list("id", vec![utf8_lit(id.to_string())]))),
+        );
+        assert_eq!(filter.ids.unwrap().ids, BTreeSet::from([id]));
     }
 }
