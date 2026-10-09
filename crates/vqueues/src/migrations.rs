@@ -160,7 +160,7 @@ pub async fn remove_pending_state_mutations(
         let (qid, seq, id) = InputPayloadKey::deserialize_from(&mut key)?.split();
 
         if id.kind() == EntryKind::StateMutation {
-            let partition_key = qid.partition_key();
+            let base_id = id.to_base_id(qid.partition_key());
             if let Ok(input) = StateMutationInput::decode(value) {
                 warn!(
                     "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
@@ -168,7 +168,7 @@ pub async fn remove_pending_state_mutations(
                 );
             }
 
-            if let Some(header) = txn.get_vqueue_entry_status(partition_key, &id).await? {
+            if let Some(header) = txn.get_vqueue_entry_status(&base_id).await? {
                 VQueue::<VQueueEvent, _>::get(&qid, &mut txn, cache, None)
                     .await?
                     .expect("vqueue of a pending state mutation must exist")
