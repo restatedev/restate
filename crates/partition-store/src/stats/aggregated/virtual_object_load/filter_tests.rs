@@ -46,8 +46,8 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             AggregatedStatsMut::new(&mut tx).increment_stage::<VirtualObjectLoad, _>(
                 VirtualObjectLoadKey::borrowed(
                     service,
-                    key,
                     None::<&str>,
+                    key,
                     None::<&str>,
                     EntryKind::Invocation,
                     3337,
@@ -65,8 +65,8 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             partition,
             VirtualObjectLoadKey::borrowed(
                 service,
-                key,
                 None::<&str>,
+                key,
                 None::<&str>,
                 EntryKind::Invocation,
                 3337,
@@ -75,10 +75,11 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         );
         bytes
     };
-    for (finite_parent, bounded_child, expected_visits) in [
+    for (finite_parent, bounded_child, fixed_scope, expected_visits) in [
         (
             true,
             false,
+            true,
             vec![
                 ("A", "9999a"),
                 ("A", "z"),
@@ -90,6 +91,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         (
             false,
             false,
+            true,
             vec![
                 ("A", "9999a"),
                 ("A", "z"),
@@ -104,9 +106,38 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         (
             true,
             true,
+            true,
             vec![
                 ("A", "9999a"),
                 ("A", "z"),
+                ("LargeState", "9999a"),
+                ("LargeState", "z"),
+            ],
+        ),
+        (
+            true,
+            false,
+            false,
+            vec![
+                ("A", "0001"),
+                ("A", "9999a"),
+                ("A", "z"),
+                ("B", "0001"),
+                ("LargeState", "0001"),
+                ("LargeState", "9999a"),
+                ("LargeState", "z"),
+            ],
+        ),
+        (
+            true,
+            true,
+            false,
+            vec![
+                ("A", "0001"),
+                ("A", "9999a"),
+                ("A", "z"),
+                ("B", "0001"),
+                ("LargeState", "0001"),
                 ("LargeState", "9999a"),
                 ("LargeState", "z"),
             ],
@@ -120,7 +151,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
                 upper: Included("LargeState".into()),
             }
         };
-        let filter = Filter::default()
+        let mut filter = Filter::default()
             .and(Clause::ServiceName(services))
             .and(Clause::Key(ValuePredicate::Range {
                 lower: Excluded("9999".into()),
@@ -130,6 +161,9 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
                     Unbounded
                 },
             }));
+        if fixed_scope {
+            filter = filter.and(Clause::Scope(ValuePredicate::Equal(None)));
+        }
         let expected: Vec<_> = ["A", "B", "LargeState"]
             .into_iter()
             .filter(|service| !finite_parent || *service != "B")
@@ -160,8 +194,9 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
         }
         assert_eq!(actual, expected);
 
-        // Observe raw RocksDB visits: the initial bound and finite parent jumps
-        // include the child's lower bound; continuous parents need one refinement.
+        // Observe raw RocksDB visits: with a fixed scope, the initial bound and
+        // finite parent jumps include the key's lower bound. Unconstrained scopes
+        // and continuous parents need refinement after discovering their value.
         let mut fixed = Vec::new();
         VirtualObjectLoadKey::prefix(partition, &mut fixed);
         let mut cursor = VirtualObjectLoadKey::prepare_filter(&filter)
@@ -197,11 +232,12 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             expected_visits
                 .into_iter()
                 .map(|(service, key)| encode(service, key))
-                .collect::<Vec<_>>()
+                .collect::<Vec<_>>(),
+            "finite_parent={finite_parent}, bounded_child={bounded_child}, fixed_scope={fixed_scope}"
         );
     }
 
-    // LIKE 'Large%' AND key > '9': verify that RocksDB itself stops before Largf,
+    // LIKE 'Large%' AND scope IS NULL AND key > '9': RocksDB stops before Largf,
     // without relying on cursor filtering or early termination in the callback.
     let keys = ["0001", "10000", "9998", "9999", "9999a", "z"];
     let mut tx = store.transaction();
@@ -210,8 +246,8 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
             AggregatedStatsMut::new(&mut tx).increment_stage::<VirtualObjectLoad, _>(
                 VirtualObjectLoadKey::borrowed(
                     service,
-                    key,
                     None::<&str>,
+                    key,
                     None::<&str>,
                     EntryKind::Invocation,
                     3337,
@@ -224,6 +260,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
     drop(tx);
     let filter = Filter::default()
         .and(Clause::ServiceNameStartsWith("Large".into()))
+        .and(Clause::Scope(ValuePredicate::Equal(None)))
         .and(Clause::Key(ValuePredicate::Range {
             lower: Excluded("9".into()),
             upper: Unbounded,
@@ -241,6 +278,7 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
     let mut expected_lower = Vec::new();
     VirtualObjectLoadKey::prefix(partition, &mut expected_lower)
         .service_name("Large")
+        .scope(None::<&str>)
         .key("9");
     // The terminal marker is incremented to exclude the exact key's suffix group.
     *expected_lower.last_mut().unwrap() += 1;

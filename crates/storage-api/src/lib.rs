@@ -13,6 +13,8 @@ use std::future::Future;
 use restate_memory::{NonZeroByteCount, OutOfMemory, OutOfMemoryKind};
 use restate_types::partitions::UnknownStorageVersion;
 
+pub use table::PrimaryKey;
+
 /// Storage error
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
