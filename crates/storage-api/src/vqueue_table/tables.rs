@@ -16,9 +16,7 @@ use restate_util_string::{EncodedMemCmpStr, encoded_mem_cmp_str};
 use super::RawStatusHeaderRef;
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
-use super::{
-    EntryContext, EntryId, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue,
-};
+use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -155,14 +153,11 @@ pub trait WriteVQueueTable {
     /// The `meta` **must** match the vqueue metadata on disk prior to the update,
     /// then it gets updated in place. Obsolete metadata is deleted atomically
     /// with the update and reported through the returned disposition.
-    ///
-    /// Pass `entry_metadata` if the update impacts a single entry.
     fn update_vqueue(
         &mut self,
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &super::metadata::Update,
-        entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition;
 
     /// Deletes a vqueue's metadata record.
