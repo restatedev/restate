@@ -42,15 +42,14 @@ impl restate_serde_util::MapAsVecItem for KafkaCluster {
     }
 }
 
-impl From<super::Schema> for Schema {
+impl From<SchemaUnindexed> for Schema {
     fn from(
-        super::Schema {
+        SchemaUnindexed {
             version,
             deployments,
             subscriptions,
             kafka_clusters,
-            ..
-        }: super::Schema,
+        }: SchemaUnindexed,
     ) -> Self {
         Self {
             deployments_v2: Some(deployments.into_values().collect()),
@@ -61,7 +60,7 @@ impl From<super::Schema> for Schema {
     }
 }
 
-impl From<Schema> for super::Schema {
+impl From<Schema> for SchemaUnindexed {
     fn from(
         Schema {
             deployments_v2,
@@ -74,9 +73,8 @@ impl From<Schema> for super::Schema {
             panic!("Missing required field `deployment_v2`")
         };
 
-        Self {
+        SchemaUnindexed {
             version,
-            active_service_revisions: ActiveServiceRevision::create_index(&deployments_v2),
             deployments: deployments_v2
                 .into_iter()
                 .map(|deployment| (deployment.id, deployment))

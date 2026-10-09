@@ -60,13 +60,13 @@ use crate::service_protocol::ServiceProtocolVersion;
 use crate::time::MillisSinceEpoch;
 use crate::{Version, Versioned, identifiers};
 
-/// Serializable data structure representing the schema registry
+/// The persisted part of the schema registry, without the derived in-memory indexes.
 ///
-/// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
+/// This is what gets stored in the metadata store. Use `Schema` for lookups.
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 #[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
-#[debug("Schema(version: {version})")]
-pub struct Schema {
+#[debug("SchemaUnindexed(version: {version})")]
+pub struct SchemaUnindexed {
     /// This gets bumped on each update.
     #[bilrost(tag(1))]
     version: Version,
@@ -74,30 +74,67 @@ pub struct Schema {
     #[bilrost(tag(2))]
     deployments: HashMap<DeploymentId, Deployment>,
 
-    // Bilrost does not serialize `active_service_revisions`. Instead, it is
-    // reconstructed during decoding, mirroring the behavior of the Serde proxy
-    // type `serde_hacks::Schema`. This reconstruction is implemented by
-    // `StorageDecode`.
-    //
-    // Consequently, this value is valid only after decoding with `StorageCodec`
-    // through the `StorageDecode` trait.
-    #[bilrost(ignore)]
-    active_service_revisions: HashMap<String, ActiveServiceRevision>,
     #[bilrost(tag(3))]
     subscriptions: HashMap<SubscriptionId, Subscription>,
     #[bilrost(tag(4))]
     kafka_clusters: HashMap<String, KafkaCluster>,
 }
 
-impl Default for Schema {
+/// Serializable data structure representing the schema registry
+///
+/// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
+#[derive(derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(from = "SchemaUnindexed", into = "SchemaUnindexed")]
+#[debug("Schema(version: {})", unindexed.version)]
+pub struct Schema {
+    unindexed: SchemaUnindexed,
+    /// Derived from `unindexed.deployments`, never persisted.
+    active_service_revisions: HashMap<String, ActiveServiceRevision>,
+}
+
+impl Default for SchemaUnindexed {
     fn default() -> Self {
         Self {
             version: Version::INVALID,
-            active_service_revisions: HashMap::default(),
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
         }
+    }
+}
+
+impl SchemaUnindexed {
+    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
+        for deployment in self.deployments.values() {
+            deployment.verify()?
+        }
+
+        Ok(())
+    }
+}
+
+impl From<SchemaUnindexed> for Schema {
+    fn from(unindexed: SchemaUnindexed) -> Self {
+        Self {
+            active_service_revisions: ActiveServiceRevision::create_index(
+                unindexed.deployments.values(),
+            ),
+            unindexed,
+        }
+    }
+}
+
+impl std::ops::Deref for Schema {
+    type Target = SchemaUnindexed;
+
+    fn deref(&self) -> &Self::Target {
+        &self.unindexed
+    }
+}
+
+impl From<Schema> for SchemaUnindexed {
+    fn from(schema: Schema) -> Self {
+        schema.unindexed
     }
 }
 
@@ -107,15 +144,7 @@ impl Schema {
     /// Note: this is currently only used by metadata migration
     /// to force update of the schema from v1.
     pub fn touch(&mut self) {
-        self.version = self.version.next();
-    }
-
-    pub fn verify(&self) -> Result<(), UnknownDeploymentType> {
-        for deployment in self.deployments.values() {
-            deployment.verify()?
-        }
-
-        Ok(())
+        self.unindexed.version = self.unindexed.version.next();
     }
 }
 
@@ -126,6 +155,12 @@ impl GlobalMetadata for Schema {
 
     fn into_container(self: Arc<Self>) -> MetadataContainer {
         MetadataContainer::Schema(self)
+    }
+}
+
+impl Versioned for SchemaUnindexed {
+    fn version(&self) -> Version {
+        self.version
     }
 }
 
@@ -144,15 +179,15 @@ mod storage {
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
     };
 
-    use super::Schema;
-    use crate::{config::Configuration, schema::metadata::ActiveServiceRevision, storage};
+    use super::{Schema, SchemaUnindexed};
+    use crate::{config::Configuration, storage};
 
     // It's unsafe to change the encoding during runtime because the StorageCodec might read
     // a different default_codec that what schema use if the config changes between the two
     // calls. Hence we keep this value here on first read.
     static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
 
-    impl StorageEncode for Schema {
+    impl StorageEncode for SchemaUnindexed {
         fn default_codec(&self) -> StorageCodecKind {
             let bilrost_encoding = ENABLED_SCHEMA_BILROST_ENCODING.get_or_init(|| {
                 Configuration::pinned()
@@ -189,16 +224,15 @@ mod storage {
         }
     }
 
-    impl StorageDecode for Schema {
+    impl StorageDecode for SchemaUnindexed {
         fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
         where
             Self: Sized,
         {
             match kind {
                 StorageCodecKind::FlexbuffersSerde => {
-                    let schema = storage::decode::decode_serde::<Schema, _>(buf, kind)?;
+                    let schema = storage::decode::decode_serde::<SchemaUnindexed, _>(buf, kind)?;
 
-                    // note: the rebuild of `active_service_revisions` is done in the serde_hacks deserializer
                     schema
                         .verify()
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
@@ -212,19 +246,36 @@ mod storage {
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
                     let uncompressed = Bytes::from(uncompressed);
-                    let mut schema = storage::decode::decode_bilrost::<Schema, _>(uncompressed)?;
+                    let schema =
+                        storage::decode::decode_bilrost::<SchemaUnindexed, _>(uncompressed)?;
 
                     schema
                         .verify()
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
 
-                    // rebuild active service index.
-                    schema.active_service_revisions =
-                        ActiveServiceRevision::create_index(schema.deployments.values());
                     Ok(schema)
                 }
                 _ => Err(StorageDecodeError::UnsupportedCodecKind(kind)),
             }
+        }
+    }
+
+    impl StorageEncode for Schema {
+        fn default_codec(&self) -> StorageCodecKind {
+            self.unindexed.default_codec()
+        }
+
+        fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+            self.unindexed.encode(buf)
+        }
+    }
+
+    impl StorageDecode for Schema {
+        fn decode<B: bytes::Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError>
+        where
+            Self: Sized,
+        {
+            SchemaUnindexed::decode(buf, kind).map(Into::into)
         }
     }
 }
