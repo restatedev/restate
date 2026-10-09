@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::keys::KeyDecoder;
 use restate_partition_store::stats::aggregated::{DeploymentLoadKey, StageCounts};
@@ -20,6 +20,7 @@ use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
 use restate_storage_api::stats::deployment_load::DeploymentLoad;
+use restate_storage_query_api::QueryEngineTable;
 use restate_types::errors::ConversionError;
 
 use crate::context::SelectPartitions;
@@ -33,43 +34,37 @@ use crate::stats::aggregated_stat_table::gauge_stat_sum_view;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 use super::row::append_deployment_stats_row;
-use super::schema::SysDeploymentStatsBuilder;
+use super::schema::{SysDeploymentStatsBuilder, SysDeploymentStatsTable};
 
-const NAME: &str = "sys_deployment_stats";
+impl SysDeploymentStatsTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> datafusion::common::Result<Arc<dyn TableProvider>> {
+        let schema = SysDeploymentStatsBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Small)
+            .with_foreign_key("deployment_id", DEPLOYMENT_ROW_ESTIMATE)
+            .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = SysDeploymentStatsBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Small)
-        .with_foreign_key("deployment_id", DEPLOYMENT_ROW_ESTIMATE)
-        .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
+        let raw_table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            Vec::new(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default(),
+        )
+        .with_statistics(statistics.build());
+        let table = gauge_stat_sum_view(&Self::identity(), Arc::new(raw_table))?;
 
-    let raw_table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default(),
-    )
-    .with_statistics(statistics.build());
-    let table = gauge_stat_sum_view(NAME, Arc::new(raw_table))?;
+        Ok(Arc::new(table))
+    }
 
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        DeploymentStatsScanner,
-    )) as Arc<dyn ScanPartition>;
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<DeploymentStatsScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

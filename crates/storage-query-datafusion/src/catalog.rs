@@ -11,21 +11,79 @@
 mod cluster_tables;
 mod user_tables;
 
-use datafusion::execution::context::SessionContext;
+use std::sync::Arc;
+
+use datafusion::catalog::TableProvider;
+use datafusion::common::TableReference;
+
+use restate_storage_query_api::{QueryEngineTable, SessionTable};
+use restate_util_string::ReString;
 
 pub use cluster_tables::ClusterTables;
 pub use user_tables::{MetadataTables, UserTables};
 
-use crate::BuildError;
+use crate::{BuildError, DataFusionEnv};
 
-/// Allows grouping and registration of set of tables and views
-/// in a bootstrap session's catalog.
+/// Populates the shared inventory and declares this component's default SQL exposure.
 pub trait RegisterTable: Send + Sync + 'static {
-    fn register(&self, ctx: &SessionContext) -> impl Future<Output = Result<(), BuildError>>;
+    fn register(
+        &self,
+        inventory: &mut TableInventoryBuilder<'_>,
+    ) -> impl Future<Output = Result<(), BuildError>>;
 }
 
 impl RegisterTable for () {
-    async fn register(&self, _ctx: &SessionContext) -> Result<(), BuildError> {
+    async fn register(&self, _inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
         Ok(())
+    }
+}
+
+/// Startup registration helper. Views bind once to providers from the same inventory.
+pub struct TableInventoryBuilder<'a> {
+    env: &'a DataFusionEnv,
+    tables: Vec<SessionTable>,
+}
+
+impl<'a> TableInventoryBuilder<'a> {
+    pub fn new(env: &'a DataFusionEnv) -> Self {
+        Self {
+            env,
+            tables: Vec::new(),
+        }
+    }
+
+    pub fn add<T: QueryEngineTable>(
+        &mut self,
+        schema: &str,
+        name: &str,
+        provider: Arc<dyn TableProvider>,
+    ) -> Result<(), BuildError> {
+        self.env.register_table::<T>(provider)?;
+        self.tables
+            .push(SessionTable::for_table::<T>(TableReference::full(
+                "restate", schema, name,
+            )));
+        Ok(())
+    }
+
+    pub async fn add_view(
+        &mut self,
+        identity: &'static str,
+        schema: &str,
+        sql: &str,
+    ) -> Result<(), BuildError> {
+        let bootstrap = self.env.create_session(&self.tables)?;
+        bootstrap.sql(sql).await?;
+        let name = TableReference::full("restate", schema, identity);
+        let provider = bootstrap.table_provider(name.clone()).await?;
+        self.env
+            .register_provider(ReString::from_static(identity), provider)?;
+        self.tables
+            .push(SessionTable::new(ReString::from_static(identity), name));
+        Ok(())
+    }
+
+    pub fn finish(self) -> Vec<SessionTable> {
+        self.tables
     }
 }
