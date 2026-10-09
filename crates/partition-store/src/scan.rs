@@ -93,9 +93,21 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) enum PhysicalScan<B> {
     Prefix(KeyKind, B),
     RangeExclusive(KeyKind, ScanMode, B, B),
+}
+
+impl<B: AsRef<[u8]>> PhysicalScan<B> {
+    /// Whether a potential seek target lies inside this scan's original bounds.
+    pub(crate) fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
+        let key = key.as_ref();
+        match self {
+            Self::Prefix(_, prefix) => key.starts_with(prefix.as_ref()),
+            Self::RangeExclusive(_, _, start, end) => start.as_ref() <= key && key < end.as_ref(),
+        }
+    }
 }
 
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {

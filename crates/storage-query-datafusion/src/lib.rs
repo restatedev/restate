@@ -16,6 +16,7 @@ pub mod bifrost_read_stream;
 pub mod config;
 mod deployment;
 mod inbox;
+mod index;
 mod invocation_state;
 mod invocation_status;
 mod journal;
@@ -36,6 +37,7 @@ mod scheduler_status;
 mod service;
 mod state;
 mod statistics;
+mod stats;
 #[cfg(feature = "table_docs")]
 pub mod table_docs;
 mod table_macro;
