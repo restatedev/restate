@@ -22,7 +22,8 @@ use restate_util_string::RestateString;
 
 use crate::TableKind::Locks;
 use crate::keys::{
-    DecodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyEncode, KeyKind, define_table_key,
+    DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyEncode, KeyKind,
+    define_table_key,
 };
 use crate::scan::TableScan;
 use crate::{
@@ -151,7 +152,7 @@ impl LoadLocks for PartitionDb {
         iterator_opts.set_iterate_upper_bound(key_buf);
 
         let rocksdb = self.rocksdb().inner().as_raw_db();
-        let cf = self.table_cf_handle(crate::TableKind::Locks);
+        let cf = self.cf_handle_for_key_kind(<LockKey as EncodeTableKey>::KEY_KIND);
         let mut it = rocksdb.raw_iterator_cf_opt(cf, iterator_opts);
         it.seek_to_first();
 
