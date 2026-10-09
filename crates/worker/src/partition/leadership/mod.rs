@@ -10,6 +10,7 @@
 
 mod durability_tracker;
 mod fencing;
+mod invoker;
 mod leader_state;
 mod rpc;
 mod self_proposer;
@@ -29,10 +30,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::network::{Oneshot, Reciprocal, TransportConnect};
-use restate_core::{Metadata, ShutdownError, TaskCenter, TaskKind};
+use restate_core::{ShutdownError, TaskCenter, TaskKind};
 use restate_errors::NotRunningError;
 use restate_ingestion_client::IngestionClient;
-use restate_invoker_impl::Service as InvokerService;
 use restate_memory::MemoryLease;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::StorageError;
@@ -45,7 +45,6 @@ use restate_types::cluster::cluster_state::RunMode;
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{LeaderEpoch, PartitionId};
-use restate_types::live::LiveLoadExt;
 use restate_types::logs::Keys;
 use restate_types::message::MessageIndex;
 use restate_types::net::ingest::IngestRecord;
@@ -54,9 +53,7 @@ use restate_types::net::partition_processor::{
 };
 use restate_types::partitions::PartitionFeatureChange;
 use restate_types::protobuf::cluster::DetailedRunMode;
-use restate_types::schema::Schema;
 use restate_types::storage::{StorageDecodeError, StorageEncodeError};
-use restate_util_string::format_restring;
 use restate_util_time::DurationExt;
 use restate_vqueues::context::{HasVQueues, HasVQueuesMut};
 use restate_vqueues::{RefillMode, ResourceManager, SchedulerService, VQueueHandle, VQueuesMeta};
@@ -68,12 +65,12 @@ use restate_worker_api::{
 };
 
 use self::durability_tracker::DurabilityTracker;
+use self::invoker::InvokerRuntime;
 use self::rpc::PendingReply;
 pub(crate) use self::rpc::{CommitCallback, FromRpcReply, RpcReciprocal};
 use self::trim_queue::{HasTrimQueue, LogTrimmer};
 use crate::partition::LeadershipInfo;
 use crate::partition::cleaner::Cleaner;
-use crate::partition::invoker_storage_reader::InvokerStorageReader;
 use crate::partition::leadership::leader_state::LeaderState;
 use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::processor::FsmAccess;
@@ -631,34 +628,19 @@ where
                 return Ok(());
             }
 
-            let schema = Metadata::with_current(|m| m.updateable_schema());
-
             let (invoker_tx, invoker_rx) = mpsc::channel(config.worker.internal_queue_length());
             let invoker_rx = ReceiverStream::new(invoker_rx);
 
-            let invoker: InvokerService<InvokerStorageReader<PartitionStore>, Schema> =
-                InvokerService::from_options(
-                    processor.partition_id(),
-                    processor.key_range(),
-                    InvokerStorageReader::new(partition_store.clone()),
-                    invoker_tx,
-                    &config.worker.invoker.service_client,
-                    schema,
-                    node_ctx.invoker_capacity.action_token_bucket.clone(),
-                )?;
-
-            let invoker_handle = invoker.handle();
-
-            // Register the direct invoker-status handle so DataFusion reads bypass
-            // the partition processor's main select! loop. The guard is moved into
-            // the invoker task's future below, binding the entry's lifetime to the
-            // invoker task: cancel or panic drops the future, drops the guard, and
-            // removes the entry.
-            let invoker_status_guard = node_ctx.leader_handles_registry.register_invoker_status(
+            let (invoker_handle, invoker_runtime) = InvokerRuntime::start(
                 processor.partition_id(),
                 processor.key_range(),
-                invoker.status_reader(),
-            );
+                partition_store.clone(),
+                invoker_tx,
+                &config.worker.invoker.service_client,
+                node_ctx.invoker_capacity.action_token_bucket.clone(),
+                node_ctx.leader_handles_registry.clone(),
+            )
+            .await?;
 
             // Register the leader-query channel separately so scheduler status (and
             // future user-limit counters) can be routed through the partition
@@ -671,15 +653,6 @@ where
                 processor.key_range(),
                 self.leader_query_tx.clone(),
             );
-
-            let invoker_name = format_restring!("invoker-{}", processor.partition_id());
-            let invoker_config = Configuration::live().map(|c| &c.worker.invoker);
-            let invoker_task_guard =
-                TaskCenter::spawn_unmanaged(TaskKind::SystemService, invoker_name, async move {
-                    let _invoker_status_guard = invoker_status_guard;
-                    invoker.run(invoker_config).await
-                })?
-                .into_guard();
 
             let scheduler_service = if config.worker.disable_scheduler {
                 warn!(
@@ -804,7 +777,7 @@ where
                 timer_service,
                 scheduler_service,
                 invoker_handle,
-                invoker_task_guard.into_handle(),
+                invoker_runtime,
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
@@ -1013,6 +986,7 @@ mod tests {
     use restate_bifrost::Bifrost;
     use restate_core::network::Reciprocal;
     use restate_core::partitions::PartitionRouting;
+    use restate_core::task_center::TaskCenterMonitoring;
     use restate_core::{TaskCenter, TestCoreEnv};
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_partition_store::PartitionStoreManager;
@@ -1172,9 +1146,106 @@ mod tests {
 
         assert!(matches!(state.state, State::Leader(_)));
 
+        let (_, runtime_metrics) = TaskCenter::current()
+            .managed_runtime_metrics()
+            .into_iter()
+            .find(|(name, _)| *name == "invoker-0")
+            .expect("leader owns an invoker runtime");
+        assert_eq!(runtime_metrics.num_workers(), 1);
+        assert_ne!(
+            runtime_metrics
+                .worker_thread_id(0)
+                .expect("runtime started"),
+            std::thread::current().id(),
+        );
+
         state.step_down().await;
 
         assert!(matches!(state.state, State::Follower));
+        assert!(
+            TaskCenter::current()
+                .managed_runtime_metrics()
+                .iter()
+                .all(|(name, _)| *name != "invoker-0")
+        );
+
+        // Reacquiring leadership must be able to reuse the runtime name immediately.
+        let leader_epoch = LeaderEpoch::from(2);
+        state
+            .run_for_leader(
+                &mut ctx,
+                &node_ctx,
+                Box::new(LeadershipInfo {
+                    version: Version::MIN,
+                    leader_epoch,
+                    current_config: PartitionConfiguration::default().into(),
+                    next_config: None,
+                }),
+            )
+            .await?;
+        let record = reader.next().await.unwrap()?;
+        let announce_leader = record
+            .try_decode::<Envelope<Raw>>()
+            .unwrap()?
+            .into_typed::<AnnounceLeaderCommand>()
+            .into_inner()?;
+        assert_eq!(announce_leader.leader_epoch, leader_epoch);
+        state
+            .on_announce_leader(&mut node_ctx, &mut ctx, &mut partition_store, leader_epoch)
+            .await?;
+        assert!(matches!(state.state, State::Leader(_)));
+        state.step_down().await;
+
+        // Construction errors must reach the processor after the runtime is cleaned up.
+        let mut options = Configuration::pinned()
+            .worker
+            .invoker
+            .service_client
+            .clone();
+        options.request_identity_private_key_pem_file = Some(std::path::PathBuf::new());
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let result = super::InvokerRuntime::start(
+            PARTITION_ID,
+            PARTITION_KEY_RANGE,
+            partition_store.clone(),
+            sender,
+            &options,
+            None,
+            node_ctx.leader_handles_registry.clone(),
+        )
+        .await;
+        assert!(matches!(result, Err(super::Error::InvokerBuild(_))));
+        assert!(
+            TaskCenter::current()
+                .managed_runtime_metrics()
+                .iter()
+                .all(|(name, _)| *name != "invoker-0")
+        );
+
+        // Dropping the owner during failed leadership setup must cancel the runtime too.
+        options.request_identity_private_key_pem_file = None;
+        let (sender, _receiver) = tokio::sync::mpsc::channel(1);
+        let (_, runtime) = super::InvokerRuntime::start(
+            PARTITION_ID,
+            PARTITION_KEY_RANGE,
+            partition_store.clone(),
+            sender,
+            &options,
+            None,
+            node_ctx.leader_handles_registry.clone(),
+        )
+        .await?;
+        drop(runtime);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while TaskCenter::current()
+                .managed_runtime_metrics()
+                .iter()
+                .any(|(name, _)| *name == "invoker-0")
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
 
         TaskCenter::current()
             .shutdown_node("test_completed", 0)
