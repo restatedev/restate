@@ -31,7 +31,7 @@ use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, ReadVQueueTable, Stage, Status,
     WriteVQueueTable,
 };
-use restate_storage_query_api::{QueryOptions, SessionOptions};
+use restate_storage_query_api::{QueryEngineTable, QueryOptions, SessionOptions};
 use restate_types::clock::{RoughTimestamp, UniqueTimestamp};
 use restate_types::config::{Configuration, QueryEngineOptions};
 use restate_types::errors::GenericError;
@@ -49,7 +49,7 @@ use crate::partition_store_scanner::{ScanLocalPartition, ScanLocalPartitionFilte
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::{DataFusionEnv, UserTables};
 
-use super::schema::IdxEntryByServiceBuilder;
+use super::schema::{IdxEntryByServiceBuilder, IdxEntryByServiceTable};
 use super::table::EntryIndexScanner;
 
 const MS: u64 = 1_744_000_000_000;
@@ -776,7 +776,7 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
     let ctx = engine.create_session(SessionOptions::default()).unwrap();
     assert!(
         scanners
-            .local_partition_scanner(super::table::NAME)
+            .local_partition_scanner(&IdxEntryByServiceTable::identity())
             .is_some()
     );
     let batches = ctx

@@ -13,9 +13,21 @@ mod engine;
 pub mod errors;
 mod writer;
 
+use std::any::Any;
+
+use restate_util_string::ReString;
+
 pub use catalog::{AdminUser, ClusterOperator};
 pub use engine::{
     NoOpQueryEngine, NodeWarning, NodeWarnings, QueryEngine, QueryOptions, QueryResult,
-    QuerySession, SessionOptions,
+    QuerySession, SessionOptions, SessionTable,
 };
 pub use writer::{RecordBatchWriter, WriteRecordBatchStream};
+
+/// A marker identifying a query source independently of its session-local SQL name.
+pub trait QueryEngineTable: Any + Send + Sync + Clone + std::fmt::Debug + 'static {
+    /// A stable unique identifier for this table. The identifier
+    /// must be consistent across all nodes and unique in its bare form
+    /// across catalogs and schema prefixes.
+    fn identity() -> ReString;
+}
