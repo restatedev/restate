@@ -15,15 +15,17 @@ use std::fmt;
 
 use ahash::HashMap;
 use futures::StreamExt;
-use tracing::{debug, info, trace};
+use tracing::{Level, debug, info, trace};
 
 use restate_core::network::{NetworkSender as _, Networking, Swimlane, TransportConnect};
 use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCenter, TaskKind};
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
-use restate_types::cluster::cluster_state::LegacyClusterState;
-use restate_types::cluster_state::ClusterState;
+use restate_types::cluster::cluster_state::{
+    LegacyClusterState, NodeState as LegacyNodeState, PartitionProcessorStatus, ReplayStatus,
+};
+use restate_types::cluster_state::{ClusterState, NodeState as GossipNodeState};
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
 use restate_types::metadata_store::keys::partition_processor_epoch_key;
@@ -43,7 +45,7 @@ use restate_types::replication::balanced_spread_selector::{
     BalancedSpreadSelector, SelectorOptions,
 };
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::{NodeId, PlainNodeId, Version, Versioned};
+use restate_types::{GenerationalNodeId, NodeId, PlainNodeId, Version, Versioned};
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -933,34 +935,65 @@ impl<T: TransportConnect> Scheduler<T> {
             return;
         }
 
-        let affinity = partition.leadership_policy.affinity.as_ref();
-
-        let best = partition
-            .current
-            .replica_set()
-            .iter()
-            .copied()
-            .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
-            .max_by_key(|node_id| {
-                let has_affinity =
-                    affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
-                let is_caught_up =
-                    legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
-                match (has_affinity, is_caught_up) {
-                    (true, true) => 3u8,
-                    (false, true) => 2,
-                    (true, false) => 1,
-                    (false, false) => 0,
-                }
-            });
+        let best = select_leader_candidate(
+            partition_id,
+            &partition.current,
+            partition.leadership_policy.affinity.as_ref(),
+            cluster_state,
+            legacy_cluster_state,
+            nodes_config,
+        );
 
         if let Some(best) = best
             && partition.target_leader != Some(best)
         {
-            debug!(
-                "Selecting node {} as partition processor leader for partition {partition_id}",
-                best
+            let winner = leader_candidate(
+                partition_id,
+                best,
+                cluster_state,
+                partition.leadership_policy.affinity.as_ref(),
+                legacy_cluster_state,
+                nodes_config,
             );
+            info!(
+                partition_id = %partition_id,
+                configuration_version = %partition.current.version(),
+                previous_target = ?partition.target_leader,
+                new_target = %best,
+                score = winner.score,
+                gossip_eligible = winner.gossip_eligible,
+                gossip_state = ?winner.gossip_state,
+                gossip_node_id = ?winner.gossip_node_id,
+                legacy_get_node_state = ?winner.legacy_node_state,
+                replay_status = ?winner.status.map(|status| status.replay_status),
+                legacy_node_generation = ?winner.legacy_node_generation,
+                "selected partition processor leader"
+            );
+
+            if tracing::enabled!(target: "restate_admin::cluster_controller::leader_election", Level::DEBUG)
+            {
+                let candidates = leader_candidates(
+                    partition_id,
+                    &partition.current,
+                    partition.leadership_policy.affinity.as_ref(),
+                    cluster_state,
+                    legacy_cluster_state,
+                    nodes_config,
+                );
+                debug!(
+                    target: "restate_admin::cluster_controller::leader_election",
+                    partition_id = %partition_id,
+                    configuration_version = %partition.current.version(),
+                    previous_target = ?partition.target_leader,
+                    new_target = %best,
+                    legacy_cluster_state_age_ms = ?legacy_cluster_state
+                        .last_refreshed
+                        .map(|last_refreshed| last_refreshed.elapsed().as_millis()),
+                    candidates = ?candidates,
+                    "partition processor leader election diagnostics"
+                );
+            }
+
             partition.target_leader = Some(best);
         }
 
@@ -1074,6 +1107,159 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
+/// Diagnostic snapshot of controller-visible candidate state; never used for selection.
+struct LeaderCandidate<'a> {
+    node_id: PlainNodeId,
+    gossip_eligible: bool,
+    gossip_node_id: Option<GenerationalNodeId>,
+    gossip_state: GossipNodeState,
+    legacy_node_generation: Option<GenerationalNodeId>,
+    legacy_node_state: LegacyNodeStatus,
+    has_affinity: bool,
+    status: Option<&'a PartitionProcessorStatus>,
+    score: u8,
+}
+
+impl fmt::Debug for LeaderCandidate<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut candidate = f.debug_struct("LeaderCandidate");
+        candidate
+            .field("node_id", &self.node_id)
+            .field("gossip_eligible", &self.gossip_eligible)
+            .field("gossip_node_id", &self.gossip_node_id)
+            .field("gossip_state", &self.gossip_state)
+            .field("legacy_get_node_state", &self.legacy_node_state)
+            .field("has_affinity", &self.has_affinity)
+            .field("has_processor_status", &self.status.is_some());
+
+        if let Some(status) = self.status {
+            candidate
+                .field("replay_status", &status.replay_status)
+                .field("status_age_ms", &status.updated_at.elapsed().as_millis())
+                .field("planned_mode", &status.planned_mode)
+                .field("effective_mode", &status.effective_mode())
+                .field("last_applied_log_lsn", &status.last_applied_log_lsn)
+                .field("durable_lsn", &status.durable_lsn)
+                .field("last_archived_log_lsn", &status.last_archived_log_lsn)
+                .field("target_tail_lsn", &status.target_tail_lsn)
+                .field(
+                    "last_record_applied_age_ms",
+                    &status
+                        .last_record_applied_at
+                        .map(|last_applied| last_applied.elapsed().as_millis()),
+                );
+        }
+
+        candidate
+            .field("score", &self.score)
+            .field("legacy_node_generation", &self.legacy_node_generation)
+            .finish()
+    }
+}
+
+#[derive(Debug)]
+enum LegacyNodeStatus {
+    Alive,
+    Dead,
+    Missing,
+}
+
+fn leader_candidates<'a>(
+    partition_id: &PartitionId,
+    configuration: &PartitionConfiguration,
+    affinity: Option<&LeaderAffinity>,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &'a LegacyClusterState,
+    nodes_config: &NodesConfiguration,
+) -> Vec<LeaderCandidate<'a>> {
+    configuration
+        .replica_set()
+        .iter()
+        .copied()
+        .map(|node_id| {
+            leader_candidate(
+                partition_id,
+                node_id,
+                cluster_state,
+                affinity,
+                legacy_cluster_state,
+                nodes_config,
+            )
+        })
+        .collect()
+}
+
+fn select_leader_candidate(
+    partition_id: &PartitionId,
+    configuration: &PartitionConfiguration,
+    affinity: Option<&LeaderAffinity>,
+    cluster_state: &ClusterState,
+    legacy_cluster_state: &LegacyClusterState,
+    nodes_config: &NodesConfiguration,
+) -> Option<PlainNodeId> {
+    configuration
+        .replica_set()
+        .iter()
+        .copied()
+        .filter(|node_id| cluster_state.is_alive(NodeId::from(*node_id)))
+        .max_by_key(|node_id| {
+            let has_affinity =
+                affinity.is_some_and(|a| matches_affinity(*node_id, a, nodes_config));
+            let is_caught_up =
+                legacy_cluster_state.is_partition_processor_active(partition_id, node_id);
+            leader_score(has_affinity, is_caught_up)
+        })
+}
+
+fn leader_score(has_affinity: bool, is_caught_up: bool) -> u8 {
+    match (has_affinity, is_caught_up) {
+        (true, true) => 3,
+        (false, true) => 2,
+        (true, false) => 1,
+        (false, false) => 0,
+    }
+}
+
+fn leader_candidate<'a>(
+    partition_id: &PartitionId,
+    node_id: PlainNodeId,
+    cluster_state: &ClusterState,
+    affinity: Option<&LeaderAffinity>,
+    legacy_cluster_state: &'a LegacyClusterState,
+    nodes_config: &NodesConfiguration,
+) -> LeaderCandidate<'a> {
+    let has_affinity = affinity.is_some_and(|a| matches_affinity(node_id, a, nodes_config));
+    let node = legacy_cluster_state.nodes.get(&node_id);
+    let (legacy_node_generation, legacy_node_state, status) = match node {
+        Some(LegacyNodeState::Alive(node)) => (
+            Some(node.generational_node_id),
+            LegacyNodeStatus::Alive,
+            node.partitions.get(partition_id),
+        ),
+        Some(LegacyNodeState::Dead(_)) => (None, LegacyNodeStatus::Dead, None),
+        None => (None, LegacyNodeStatus::Missing, None),
+    };
+    let (gossip_node_id, gossip_state) = cluster_state
+        .get_node_state_and_generation(node_id)
+        .map_or((None, GossipNodeState::Dead), |(node_id, state)| {
+            (Some(node_id), state)
+        });
+    let is_caught_up = status.is_some_and(|status| status.replay_status == ReplayStatus::Active);
+    let score = leader_score(has_affinity, is_caught_up);
+
+    LeaderCandidate {
+        node_id,
+        gossip_eligible: cluster_state.is_alive(NodeId::from(node_id)),
+        gossip_node_id,
+        gossip_state,
+        legacy_node_generation,
+        legacy_node_state,
+        has_affinity,
+        status,
+        score,
+    }
+}
+
 /// Returns `true` if the given node matches the leader affinity expression.
 fn matches_affinity(
     node_id: PlainNodeId,
@@ -1095,10 +1281,16 @@ fn matches_affinity(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
     use restate_core::network::FailingConnector;
+    use restate_types::cluster::cluster_state::{AliveNode, DeadNode, NodeState, ReplayStatus};
+    use restate_types::cluster_state::{ClusterState, NodeState as ClusterNodeState};
     use restate_types::metadata::Precondition;
     use restate_types::nodes_config::{Role, WorkerConfig};
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
+    use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, RestateVersion};
 
     use super::*;
@@ -1109,6 +1301,184 @@ mod tests {
             [PlainNodeId::from(node_id)].into_iter().collect(),
             HashMap::default(),
         )
+    }
+
+    fn leadership_test_cluster_state(node_ids: impl IntoIterator<Item = u32>) -> ClusterState {
+        let cluster_state = ClusterState::default();
+        let mut updater = cluster_state.clone().updater();
+        for node_id in node_ids {
+            updater.upsert_node_state(GenerationalNodeId::new(node_id, 1), ClusterNodeState::Alive);
+        }
+        cluster_state
+    }
+
+    fn leadership_test_legacy_state(
+        partition_id: PartitionId,
+        statuses: impl IntoIterator<Item = (u32, Option<ReplayStatus>)>,
+    ) -> LegacyClusterState {
+        let nodes = statuses
+            .into_iter()
+            .map(|(node_id, replay_status)| {
+                let partitions = replay_status
+                    .map(|replay_status| {
+                        let status = PartitionProcessorStatus {
+                            replay_status,
+                            last_applied_log_lsn: Some(101.into()),
+                            target_tail_lsn: Some(102.into()),
+                            ..PartitionProcessorStatus::default()
+                        };
+                        (partition_id, status)
+                    })
+                    .into_iter()
+                    .collect();
+                (
+                    PlainNodeId::from(node_id),
+                    NodeState::Alive(AliveNode {
+                        last_heartbeat_at: MillisSinceEpoch::now(),
+                        generational_node_id: GenerationalNodeId::new(node_id, 1),
+                        partitions,
+                        uptime: Duration::ZERO,
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        LegacyClusterState {
+            last_refreshed: None,
+            nodes_config_version: Version::INVALID,
+            partition_table_version: Version::INVALID,
+            logs_metadata_version: Version::INVALID,
+            nodes,
+        }
+    }
+
+    #[test]
+    fn missing_warm_follower_status_can_select_unready_replica() {
+        let partition_id = PartitionId::MIN;
+        let configuration = PartitionConfiguration::new(
+            ReplicationProperty::new_unchecked(2),
+            [PlainNodeId::from(2), PlainNodeId::from(1)]
+                .into_iter()
+                .collect(),
+            HashMap::default(),
+        );
+        let cluster_state = leadership_test_cluster_state([1, 2]);
+        let nodes_config = NodesConfiguration::new_for_testing();
+
+        let active_n2 = leadership_test_legacy_state(
+            partition_id,
+            [
+                (2, Some(ReplayStatus::Active)),
+                (1, Some(ReplayStatus::Starting)),
+            ],
+        );
+        let best = select_leader_candidate(
+            &partition_id,
+            &configuration,
+            None,
+            &cluster_state,
+            &active_n2,
+            &nodes_config,
+        );
+        assert_eq!(best, Some(PlainNodeId::from(2)));
+        let diagnostic = format!(
+            "{:?}",
+            leader_candidates(
+                &partition_id,
+                &configuration,
+                None,
+                &cluster_state,
+                &active_n2,
+                &nodes_config,
+            )
+        );
+        assert!(diagnostic.contains(
+            "node_id: N2, gossip_eligible: true, gossip_node_id: Some(N2:1), gossip_state: Alive, legacy_get_node_state: Alive, has_affinity: false, has_processor_status: true, replay_status: Active"
+        ));
+        assert!(diagnostic.contains(
+            "node_id: N1, gossip_eligible: true, gossip_node_id: Some(N1:1), gossip_state: Alive, legacy_get_node_state: Alive, has_affinity: false, has_processor_status: true, replay_status: Starting"
+        ));
+
+        let mut missing_n2 = leadership_test_legacy_state(
+            partition_id,
+            [(2, None), (1, Some(ReplayStatus::Starting))],
+        );
+        // The scheduler uses the gossip failure detector for eligibility and this legacy poll for
+        // processor status. A single failed legacy poll can therefore make an otherwise alive warm
+        // follower appear dead here while it remains eligible for election.
+        missing_n2.nodes.insert(
+            PlainNodeId::from(2),
+            NodeState::Dead(DeadNode {
+                last_seen_alive: Some(MillisSinceEpoch::now()),
+            }),
+        );
+        let initial_best = select_leader_candidate(
+            &partition_id,
+            &configuration,
+            None,
+            &cluster_state,
+            &missing_n2,
+            &nodes_config,
+        );
+        // Equal scores preserve the existing Iterator::max_by_key tie behavior: the later
+        // replica-set entry (N1) wins.
+        assert_eq!(initial_best, Some(PlainNodeId::from(1)));
+        let diagnostic = format!(
+            "{:?}",
+            leader_candidates(
+                &partition_id,
+                &configuration,
+                None,
+                &cluster_state,
+                &missing_n2,
+                &nodes_config,
+            )
+        );
+        assert!(
+            diagnostic.contains("node_id: N2, gossip_eligible: true, gossip_node_id: Some(N2:1), gossip_state: Alive, legacy_get_node_state: Dead, has_affinity: false, has_processor_status: false")
+        );
+        assert!(diagnostic.contains(
+            "node_id: N1, gossip_eligible: true, gossip_node_id: Some(N1:1), gossip_state: Alive, legacy_get_node_state: Alive, has_affinity: false, has_processor_status: true, replay_status: Starting"
+        ));
+
+        let eventual_best = select_leader_candidate(
+            &partition_id,
+            &configuration,
+            None,
+            &cluster_state,
+            &active_n2,
+            &nodes_config,
+        );
+        assert_eq!(eventual_best, Some(PlainNodeId::from(2)));
+
+        let failing_over_n2 = leadership_test_cluster_state([1, 2]);
+        failing_over_n2
+            .clone()
+            .updater()
+            .set_node_state(GenerationalNodeId::new(2, 1), ClusterNodeState::FailingOver);
+        let best = select_leader_candidate(
+            &partition_id,
+            &configuration,
+            None,
+            &failing_over_n2,
+            &active_n2,
+            &nodes_config,
+        );
+        assert_eq!(best, Some(PlainNodeId::from(1)));
+        let diagnostic = format!(
+            "{:?}",
+            leader_candidates(
+                &partition_id,
+                &configuration,
+                None,
+                &failing_over_n2,
+                &active_n2,
+                &nodes_config,
+            )
+        );
+        assert!(diagnostic.contains(
+            "node_id: N2, gossip_eligible: false, gossip_node_id: Some(N2:1), gossip_state: FailingOver, legacy_get_node_state: Alive, has_affinity: false, has_processor_status: true, replay_status: Active"
+        ));
     }
 
     #[tokio::test]
