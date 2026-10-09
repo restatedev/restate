@@ -18,6 +18,7 @@ use parking_lot::RwLock;
 #[cfg(target_os = "linux")]
 use rocksdb::MemoryAllocator;
 use rocksdb::{Cache, HyperClockCacheOptions, RateLimiter, RateLimiterMode, WriteBufferManager};
+use tokio::sync::Semaphore;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, error, info, warn};
 
@@ -43,13 +44,24 @@ pub struct RocksDbManager {
     pub(crate) cache: Cache,
     // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
     pub(crate) write_buffer_manager: WriteBufferManager,
-    dbs: RwLock<HashMap<DbName, Weak<RocksDb>>>,
+    db_registry: RwLock<DbRegistry>,
     shutting_down: AtomicBool,
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
     low_pri_pool: threadpool::ThreadPool,
     // Keep at the end of the struct to ensure it's dropped last
     pub(crate) env: rocksdb::Env,
+}
+
+#[derive(Debug, Default)]
+struct DbRegistry {
+    dbs: HashMap<DbName, Weak<RocksDb>>,
+    /// Databases whose shutdown is still running, keyed by name.
+    ///
+    /// RocksDB only releases a database directory's file lock once its shutdown completes, so
+    /// re-opening the same database has to wait for the in-flight close first. The semaphore
+    /// holds no permits and is closed by the shutdown task to release waiters.
+    closing_dbs: HashMap<DbName, Arc<Semaphore>>,
 }
 
 impl RocksDbManager {
@@ -130,14 +142,12 @@ impl RocksDbManager {
             .num_threads(opts.storage_low_priority_bg_threads().into())
             .build();
 
-        let dbs = RwLock::default();
-
         let manager = Self {
             env,
             rate_limiter,
             cache,
             write_buffer_manager,
-            dbs,
+            db_registry: RwLock::default(),
             shutting_down: AtomicBool::new(false),
             close_db_tasks: TaskTracker::default(),
             high_pri_pool,
@@ -157,18 +167,18 @@ impl RocksDbManager {
     }
 
     pub fn get_db(&self, name: DbName) -> Option<Arc<RocksDb>> {
-        let read_guard = self.dbs.upgradable_read();
-        let db = read_guard.get(&name)?.upgrade();
+        let read_guard = self.db_registry.upgradable_read();
+        let db = read_guard.dbs.get(&name)?.upgrade();
         if let Some(db) = db {
             Some(db)
         } else {
             let mut write_guard = parking_lot::RwLockUpgradableReadGuard::upgrade(read_guard);
             // clean it up unless someone else added it back
-            let db = write_guard.get(&name)?.upgrade();
+            let db = write_guard.dbs.get(&name)?.upgrade();
             match db {
                 Some(db) => Some(db),
                 None => {
-                    write_guard.remove(&name);
+                    write_guard.dbs.remove(&name);
                     None
                 }
             }
@@ -183,6 +193,11 @@ impl RocksDbManager {
         // get latest options
         let name = db_spec.name.clone();
         let path = db_spec.path.clone();
+
+        // A previous instance of this database may still be shutting down, in which case rocksdb
+        // has not released the directory's file lock yet and opening would fail.
+        self.wait_for_pending_close(&name).await;
+
         let wrapper = RocksDb::open(self, db_spec).await?;
 
         debug!(
@@ -206,9 +221,9 @@ impl RocksDbManager {
         &'static self,
         db: RocksAccess,
     ) -> Result<Arc<RocksDb>, RocksError> {
-        let mut dbs = self.dbs.write();
+        let mut db_registry = self.db_registry.write();
         if self.is_shutting_down() {
-            drop(dbs);
+            drop(db_registry);
             db.shutdown();
             return Err(RocksError::Shutdown(ShutdownError));
         }
@@ -218,7 +233,7 @@ impl RocksDbManager {
             manager: self,
             db: ManuallyDrop::new(db),
         });
-        dbs.insert(name, Arc::downgrade(&wrapper));
+        db_registry.dbs.insert(name, Arc::downgrade(&wrapper));
         Ok(wrapper)
     }
 
@@ -227,7 +242,10 @@ impl RocksDbManager {
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Release);
         self.shutdown().await;
-        self.dbs.write().clear();
+        let mut db_registry = self.db_registry.write();
+        db_registry.dbs.clear();
+        db_registry.closing_dbs.clear();
+        drop(db_registry);
         self.shutting_down
             .store(false, std::sync::atomic::Ordering::Release);
         Ok(())
@@ -253,7 +271,7 @@ impl RocksDbManager {
         builder.add_cache(&self.cache);
 
         if filter.is_empty() {
-            for db in self.dbs.read().values() {
+            for db in self.db_registry.read().dbs.values() {
                 let Some(db) = db.upgrade() else {
                     continue;
                 };
@@ -261,7 +279,7 @@ impl RocksDbManager {
             }
         } else {
             for key in filter {
-                if let Some(db) = self.dbs.read().get(key) {
+                if let Some(db) = self.db_registry.read().dbs.get(key) {
                     let Some(db) = db.upgrade() else {
                         continue;
                     };
@@ -288,36 +306,106 @@ impl RocksDbManager {
     }
 
     pub fn get_all_dbs(&self) -> Vec<Arc<RocksDb>> {
-        self.dbs.read().values().filter_map(Weak::upgrade).collect()
+        self.db_registry
+            .read()
+            .dbs
+            .values()
+            .filter_map(Weak::upgrade)
+            .collect()
+    }
+
+    /// Waits for an in-flight close of the named database to complete, if there is one.
+    async fn wait_for_pending_close(&self, name: &DbName) {
+        let Some(semaphore) = self.db_registry.read().closing_dbs.get(name).cloned() else {
+            return;
+        };
+
+        debug!(db = %name, "Waiting for the previous instance of this database to finish closing");
+        // never granted; resolves with an error once the shutdown task closes the semaphore
+        let _ = semaphore.acquire().await;
+    }
+
+    /// Marks the named database as closing. Callers must pass the returned semaphore to
+    /// [`Self::finish_pending_close`] once the shutdown has completed.
+    fn register_pending_close(&self, name: DbName) -> Arc<Semaphore> {
+        let semaphore = Arc::new(Semaphore::new(0));
+        let mut db_registry = self.db_registry.write();
+        db_registry.dbs.remove(&name);
+        db_registry.closing_dbs.insert(name, semaphore.clone());
+        semaphore
+    }
+
+    fn finish_pending_close(&self, name: &DbName, semaphore: &Arc<Semaphore>) {
+        {
+            let mut db_registry = self.db_registry.write();
+            // only clear our own registration; the database may have been opened and closed again
+            if db_registry
+                .closing_dbs
+                .get(name)
+                .is_some_and(|current| Arc::ptr_eq(current, semaphore))
+            {
+                db_registry.closing_dbs.remove(name);
+            }
+        }
+        // releases anyone that started waiting before we removed the entry above
+        semaphore.close();
     }
 
     /// Closes the database and waits for completion.
-    pub(crate) async fn close_db(&self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
+    pub(crate) async fn close_db(&'static self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
         let db = Arc::try_unwrap(db)?;
-        // unconditionally remove the db from the map
-        self.dbs.write().remove(db.name());
+        let name = db.name().clone();
+        let semaphore = self.register_pending_close(name.clone());
         let handle = self.close_db_tasks.spawn_blocking(move || {
             db.db.shutdown();
+            drop(db);
+            self.finish_pending_close(&name, &semaphore);
         });
         let _ = handle.await;
+        // Only now is the lock gone, so it is safe to let a waiting open proceed.
         Ok(())
     }
 
     /// Closes the database in the background
     ///
     /// This is intended to be used by the [`RocksDb`] instance Drop impl to close the database.
-    /// If the database has already been removed from the map, then we'll assume that the shutdown
-    /// routine has already been executed by a previous call to [`RocksDb::close`] or by
-    /// [`RocksDbManager`]'s shutdown routine.
+    /// If the database already has a close registration, then we'll assume that the shutdown
+    /// routine is being executed by a previous call to [`RocksDb::close`]. During manager
+    /// shutdown, an unregistered database has already been removed and shut down by
+    /// [`RocksDbManager::shutdown`].
     ///
     /// if you need to wait for the shutdown, then use [`RocksDb::close`] instead.
-    pub(crate) fn background_close_db(&self, db: RocksAccess) {
-        let Some(_db) = self.dbs.write().remove(db.name()) else {
-            // database has already been closed via other means
-            return;
+    pub(crate) fn background_close_db(&'static self, db: RocksAccess) {
+        let name = db.name().clone();
+        let semaphore = {
+            let mut db_registry = self.db_registry.write();
+            if db_registry.closing_dbs.contains_key(&name) {
+                // database has already been closed via other means
+                return;
+            }
+
+            // `get_db` may have removed the dead weak reference after the last `Arc` started
+            // dropping but before we acquired the registry lock. Unless the manager is shutting
+            // down, the missing entry does not mean that this `RocksAccess` is already closed.
+            if db_registry.dbs.remove(&name).is_none() && self.is_shutting_down() {
+                return;
+            }
+
+            // Opening this database again has to wait for this shutdown: rocksdb holds the
+            // directory's file lock until it completes.
+            let semaphore = Arc::new(Semaphore::new(0));
+            db_registry
+                .closing_dbs
+                .insert(name.clone(), semaphore.clone());
+            semaphore
         };
         self.close_db_tasks.spawn_blocking(move || {
             db.shutdown();
+            // Destroying the database is what releases its directory lock; `shutdown` above only
+            // flushes. Waiters must not be released before this, or their open fails with
+            // "lock hold by current process".
+            drop(db);
+            self.finish_pending_close(&name, &semaphore);
         });
     }
 
@@ -328,13 +416,14 @@ impl RocksDbManager {
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Release);
 
-        // Wait for storage tasks that are already running before draining `self.dbs`: a database
-        // that is still being opened has not been registered there yet (see `open_db`), so it
-        // would otherwise escape the close loop entirely.
+        // Wait for storage tasks that are already running before draining the database registry:
+        // a database that is still being opened has not been registered there yet (see
+        // `open_db`), so it would otherwise escape the close loop entirely.
         self.join_storage_pools().await;
 
         self.close_db_tasks.close();
-        for (name, db) in self.dbs.write().drain() {
+        let dbs = std::mem::take(&mut self.db_registry.write().dbs);
+        for (name, db) in dbs {
             let Some(db) = db.upgrade() else {
                 continue;
             };
@@ -381,12 +470,12 @@ impl RocksDbManager {
 
     /// Emergency shutdown is ongoing, this will ensure rocksdb's wal is fsynced.
     pub fn on_ungraceful_shutdown(&'static self) {
-        let Some(guard) = self.dbs.try_read_for(Duration::from_secs(1)) else {
+        let Some(guard) = self.db_registry.try_read_for(Duration::from_secs(1)) else {
             eprintln!("[rocksdb] couldn't acquire rwlock to flush in time");
             return;
         };
         // WAL first
-        for (name, db) in guard.iter() {
+        for (name, db) in &guard.dbs {
             let Some(db) = db.upgrade() else {
                 continue;
             };
@@ -398,14 +487,14 @@ impl RocksDbManager {
         }
 
         // Best effort normal shutdown
-        for db in guard.values() {
+        for db in guard.dbs.values() {
             let Some(db) = db.upgrade() else {
                 continue;
             };
             db.db.shutdown();
         }
 
-        if !guard.is_empty() {
+        if !guard.dbs.is_empty() {
             eprintln!("[rocksdb] flushed all!");
         }
     }
@@ -566,7 +655,7 @@ impl DbWatchdog {
 
         // Databases choose to react to config updates as they see fit.
         // e.g. set write_buffer_size
-        for db in self.manager.dbs.read().values() {
+        for db in self.manager.db_registry.read().dbs.values() {
             let Some(db) = db.upgrade() else {
                 continue;
             };
