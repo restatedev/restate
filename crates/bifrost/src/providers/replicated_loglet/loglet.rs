@@ -430,6 +430,11 @@ impl<T: TransportConnect> Loglet for ReplicatedLoglet<T> {
             start.elapsed());
         Ok(())
     }
+
+    fn notify_known_tail(&self, tail: LogletOffset) {
+        // `notify` only advances the offset and only adds the sealed bit, so this can't regress or unseal.
+        self.known_global_tail.notify(true, tail);
+    }
 }
 
 #[cfg(test)]
@@ -441,7 +446,7 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::network::NetworkServerBuilder;
+    use restate_core::network::{FailingConnector, NetworkServerBuilder, Networking};
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
@@ -458,6 +463,8 @@ mod tests {
     struct TestEnv {
         pub loglet: Arc<dyn Loglet>,
         pub record_cache: RecordCache,
+        /// Lets tests build extra client instances (e.g. a remote-sequencer follower).
+        pub networking: Networking<FailingConnector>,
     }
 
     async fn run_in_test_env<F, O>(
@@ -507,6 +514,7 @@ mod tests {
         let env = TestEnv {
             loglet,
             record_cache,
+            networking: node_env.networking.clone(),
         };
 
         future(env).await?;
@@ -708,6 +716,93 @@ mod tests {
         run_in_test_env(Configuration::default(), params, record_cache, |env| {
             crate::loglet::loglet_tests::seal_empty(env.loglet)
         })
+        .await
+    }
+
+    // A remote-sequencer follower's `known_global_tail` starts at `Open(OLDEST)` and nothing
+    // advances it on its own (no `PeriodicTailChecker` on an ad-hoc instance, and its remote
+    // sequencer never answers), so a read stream on it parks forever until `notify_known_tail`.
+    #[test(restate_core::test(start_paused = true))]
+    async fn follower_unfreezes_on_notify_known_tail() -> Result<()> {
+        use std::time::Duration;
+
+        use tokio_stream::StreamExt;
+
+        let loglet_id = LogletId::new_unchecked(122);
+        // The env's built-in loglet is the local sequencer (node 1); it writes the records.
+        let leader_params = ReplicatedLogletParams {
+            loglet_id,
+            sequencer: GenerationalNodeId::new(1, 1),
+            replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+            nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+        };
+        let record_cache = RecordCache::new(1_000_000);
+        run_in_test_env(
+            Configuration::default(),
+            leader_params,
+            record_cache,
+            |env| async move {
+                // 5 records through the local sequencer; exclusive tail becomes 6.
+                let batch: Arc<[Record]> = vec![
+                    ("record-1", Keys::Single(1)).into(),
+                    ("record-2", Keys::Single(2)).into(),
+                    ("record-3", Keys::Single(3)).into(),
+                    ("record-4", Keys::Single(4)).into(),
+                    ("record-5", Keys::Single(5)).into(),
+                ]
+                .into();
+                let last = env.loglet.enqueue_batch(batch).await?.await?;
+                assert_that!(last, eq(LogletOffset::new(5)));
+
+                // Second client for the same loglet with a non-local sequencer: a remote follower.
+                let follower = Arc::new(ReplicatedLoglet::new(
+                    LogId::new(1),
+                    SegmentIndex::from(1),
+                    ReplicatedLogletParams {
+                        loglet_id,
+                        sequencer: GenerationalNodeId::new(2, 1),
+                        replication: ReplicationProperty::new(NonZeroU8::new(1).unwrap()),
+                        nodeset: NodeSet::from_single(PlainNodeId::new(1)),
+                    },
+                    env.networking.clone(),
+                    env.record_cache.clone(),
+                ));
+                assert!(follower.sequencer.is_remote());
+                assert_that!(
+                    follower.last_known_global_tail(),
+                    eq(TailState::Open(LogletOffset::OLDEST))
+                );
+
+                let mut reader = follower
+                    .clone()
+                    .create_read_stream(KeyFilter::Any, LogletOffset::OLDEST, None)
+                    .await?;
+
+                // Parked: tail watch at OLDEST -> `can_advance()` false -> no read issued.
+                // The bounded read must time out (start_paused fires the timer immediately).
+                assert!(
+                    tokio::time::timeout(Duration::from_secs(5), reader.next())
+                        .await
+                        .is_err(),
+                    "follower must be parked before notify_known_tail"
+                );
+
+                // Feed the repaired tail in. With the trait no-op override the reader stays parked
+                // and the reads below time out.
+                follower.notify_known_tail(LogletOffset::new(6));
+
+                for i in 1..=5 {
+                    let record = tokio::time::timeout(Duration::from_secs(5), reader.next())
+                        .await
+                        .expect("reader must not hang after notify_known_tail")
+                        .expect("stream must not terminate early")?;
+                    assert_that!(record.sequence_number(), eq(LogletOffset::new(i)));
+                    assert!(record.is_data_record());
+                }
+
+                Ok(())
+            },
+        )
         .await
     }
 }
