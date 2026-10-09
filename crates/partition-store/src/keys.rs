@@ -264,7 +264,7 @@ pub trait EncodeTableKey {
 
 /// Types that can be decoded to an owned table key.
 pub trait DecodeTableKey: Sized + std::fmt::Debug + Send + 'static {
-    fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::Result<Self>;
+    fn deserialize_from(bytes: &mut &[u8]) -> crate::Result<Self>;
 }
 
 /// Types that can be encoded to perform a scan prefix in partition store.
@@ -578,7 +578,7 @@ macro_rules! define_table_key {
 
         impl crate::keys::DecodeTableKey for $key_name {
             #[inline]
-            fn deserialize_from<B: bytes::Buf>(bytes: &mut B) -> crate::Result<Self> {
+            fn deserialize_from(bytes: &mut &[u8]) -> crate::Result<Self> {
                 {
                     let key_kind = $crate::keys::KeyKind::deserialize(bytes)?;
 
@@ -628,7 +628,7 @@ impl<T: KeyEncode> KeyEncode for &T {
 }
 
 pub(crate) trait KeyDecode: Sized {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self>;
+    fn decode(source: &mut &[u8]) -> crate::Result<Self>;
 }
 
 impl KeyEncode for Bytes {
@@ -643,7 +643,7 @@ impl KeyEncode for Bytes {
 }
 
 impl KeyDecode for Bytes {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         read_delimited(source)
     }
 }
@@ -660,7 +660,7 @@ impl KeyEncode for ByteString {
 }
 
 impl KeyDecode for ByteString {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let bs = read_delimited(source)?;
 
         unsafe { Ok(ByteString::from_bytes_unchecked(bs)) }
@@ -679,7 +679,7 @@ impl KeyEncode for PaddedPartitionId {
 }
 
 impl KeyDecode for PaddedPartitionId {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(PaddedPartitionId::from(source.get_u64()))
     }
 }
@@ -696,7 +696,7 @@ impl KeyEncode for u128 {
 }
 
 impl KeyDecode for u128 {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(source.get_u128())
     }
 }
@@ -713,7 +713,7 @@ impl KeyEncode for UniqueTimestamp {
 }
 
 impl KeyDecode for UniqueTimestamp {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         UniqueTimestamp::try_from(source.get_u64()).map_err(|e| StorageError::Conversion(e.into()))
     }
 }
@@ -730,7 +730,7 @@ impl<const L: usize> KeyEncode for [u8; L] {
 }
 
 impl<const L: usize> KeyDecode for [u8; L] {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         if source.remaining() < L {
             return Err(StorageError::DataIntegrityError);
         }
@@ -752,7 +752,7 @@ impl KeyEncode for u64 {
 }
 
 impl KeyDecode for u64 {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(source.get_u64())
     }
 }
@@ -769,7 +769,7 @@ impl KeyEncode for u32 {
 }
 
 impl KeyDecode for u32 {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(source.get_u32())
     }
 }
@@ -786,7 +786,7 @@ impl KeyEncode for u8 {
 }
 
 impl KeyDecode for u8 {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(source.get_u8())
     }
 }
@@ -802,7 +802,7 @@ impl KeyEncode for &[u8] {
 }
 
 impl KeyDecode for &[u8] {
-    fn decode<B: Buf>(_source: &mut B) -> crate::Result<Self> {
+    fn decode(_source: &mut &[u8]) -> crate::Result<Self> {
         unimplemented!("could not decode into a slice u8");
     }
 }
@@ -820,8 +820,7 @@ impl KeyEncode for InvocationUuid {
 }
 
 impl KeyDecode for InvocationUuid {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
-        // note: this is a zero-copy when the source is bytes::Bytes.
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         if source.remaining() < InvocationUuid::RAW_BYTES_LEN {
             return Err(StorageError::DataIntegrityError);
         }
@@ -862,7 +861,7 @@ impl KeyEncode for ProducerId {
 }
 
 impl KeyDecode for ProducerId {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(match source.get_u8() {
             0 => {
                 let padded: PaddedPartitionId = KeyDecode::decode(source)?;
@@ -934,7 +933,7 @@ impl KeyEncode for TimerKeyKind {
 }
 
 impl KeyDecode for TimerKeyKind {
-    fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::partition_store::Result<Self> {
         if source.remaining() < mem::size_of::<u8>() {
             return Err(StorageError::Generic(anyhow!(
                 "TimerKind discriminator byte is missing"
@@ -1005,7 +1004,7 @@ impl KeyEncode for NotificationId {
 }
 
 impl KeyDecode for NotificationId {
-    fn decode<B: Buf>(source: &mut B) -> crate::partition_store::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::partition_store::Result<Self> {
         if source.remaining() < mem::size_of::<u8>() {
             return Err(StorageError::Generic(anyhow!(
                 "NotificationId discriminator byte is missing"
@@ -1050,26 +1049,16 @@ macro_rules! impl_string_key_codec {
         }
 
         impl KeyDecode for $t {
-            fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+            fn decode(source: &mut &[u8]) -> crate::Result<Self> {
                 let len = prost::encoding::decode_varint(source)
                     .map_err(|error| StorageError::Generic(error.into()))
                     .and_then(|len| {
                         usize::try_from(len).map_err(|err| StorageError::Generic(err.into()))
                     })?;
 
-                let mut string_data = source.take(len);
-
-                let result = if len <= string_data.chunk().len() {
-                    // SAFETY: previously serialized as valid UTF-8
-                    <$t>::from(unsafe { str::from_utf8_unchecked(&string_data.chunk()[..len]) })
-                } else {
-                    // Spread across multiple chunks; copy into a contiguous buffer.
-                    let string_data = string_data.copy_to_bytes(len);
-                    // SAFETY: previously serialized as valid UTF-8
-                    <$t>::from(unsafe { str::from_utf8_unchecked(&string_data) })
-                };
-
-                string_data.advance(len);
+                // SAFETY: previously serialized as valid UTF-8
+                let result = <$t>::from(unsafe { str::from_utf8_unchecked(&source[..len]) });
+                source.advance(len);
                 Ok(result)
             }
         }
@@ -1087,10 +1076,9 @@ fn write_delimited<B: BufMut>(source: impl AsRef<[u8]>, target: &mut B) {
 }
 
 #[inline]
-fn read_delimited<B: Buf>(source: &mut B) -> crate::Result<Bytes> {
+fn read_delimited(source: &mut &[u8]) -> crate::Result<Bytes> {
     let len = prost::encoding::decode_varint(source)
         .map_err(|error| StorageError::Generic(error.into()))?;
-    // note: this is a zero-copy when the source is bytes::Bytes.
     Ok(source.copy_to_bytes(len as usize))
 }
 
@@ -1100,7 +1088,7 @@ pub(crate) fn serialize<T: KeyEncode, B: BufMut>(what: &T, target: &mut B) {
 }
 
 #[inline]
-pub(crate) fn deserialize<T: KeyDecode, B: Buf>(source: &mut B) -> crate::Result<T> {
+pub(crate) fn deserialize<T: KeyDecode>(source: &mut &[u8]) -> crate::Result<T> {
     T::decode(source)
 }
 
@@ -1117,7 +1105,7 @@ mod tests {
         write_delimited(" ", &mut buf);
         write_delimited("world", &mut buf);
 
-        let mut got = buf.freeze();
+        let mut got = buf.as_ref();
         assert_eq!(read_delimited(&mut got).unwrap(), "hello");
         assert_eq!(read_delimited(&mut got).unwrap(), " ");
         assert_eq!(read_delimited(&mut got).unwrap(), "world");
@@ -1143,7 +1131,7 @@ mod tests {
         let mut buf = BytesMut::new();
         uuid.encode(&mut buf);
 
-        let mut got_bytes = buf.freeze();
+        let mut got_bytes = buf.as_ref();
 
         assert_eq!(got_bytes.len(), uuid.serialized_length());
         let got = InvocationUuid::decode(&mut got_bytes).expect("deserialization should work");
@@ -1163,7 +1151,7 @@ mod tests {
                 .expect("key prefix must be present"),
         );
 
-        let result = DeduplicationTestKey::deserialize_from(&mut buffer);
+        let result = DeduplicationTestKey::deserialize_from(&mut buffer.as_ref());
 
         restate_test_util::assert!(let Err(StorageError::Generic(err)) = result);
         assert_eq!(
@@ -1186,7 +1174,7 @@ mod tests {
             .expect("key prefix should be present")
             .put_slice(unknown_key_prefix);
 
-        let result = DeduplicationTestKey::deserialize_from(&mut buffer);
+        let result = DeduplicationTestKey::deserialize_from(&mut buffer.as_ref());
 
         restate_test_util::assert!(let Err(StorageError::Generic(err)) = result);
         assert_eq!(

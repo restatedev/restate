@@ -459,7 +459,7 @@ mod tests {
 
         let key = create_invocation_status_key(&expected_invocation_id).serialize();
 
-        let key = InvocationStatusKey::deserialize_from(&mut key.freeze()).unwrap();
+        let key = InvocationStatusKey::deserialize_from(&mut key.as_ref()).unwrap();
         let actual_invocation_id = InvocationId::from_parts(key.partition_key, key.invocation_uuid);
 
         assert_eq!(actual_invocation_id, expected_invocation_id);

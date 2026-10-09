@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::{Buf, BufMut};
+use bytes::BufMut;
 
 use restate_storage_api::StorageError;
 use restate_util_string::{MemCmpStr, MemCmpString, MemCmpStringError, MemCmpTarget};
@@ -26,7 +26,7 @@ impl<S: MemCmpTarget> KeyEncode for MemCmpString<S> {
 }
 
 impl<S: MemCmpTarget> KeyDecode for MemCmpString<S> {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Self::decode_from(source).map_err(map_decode_error)
     }
 }
