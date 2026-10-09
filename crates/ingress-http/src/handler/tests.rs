@@ -270,9 +270,9 @@ async fn call_service_with_get() {
             "greeter.Greeter",
             "greet",
             InvocationTargetMetadata {
-                input_rules: InputRules {
+                input_rules: Arc::new(InputRules {
                     input_validation_rules: vec![InputValidationRule::NoBodyAndContentType],
-                },
+                }),
                 ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
             },
         ),
@@ -1093,14 +1093,14 @@ async fn invalid_input() {
             "greeter.Greeter",
             "greet",
             InvocationTargetMetadata {
-                input_rules: InputRules {
+                input_rules: Arc::new(InputRules {
                     input_validation_rules: vec![InputValidationRule::ContentType {
                         content_type: InputContentType::MimeTypeAndSubtype(
                             "application".into(),
                             "json".into(),
                         ),
                     }],
-                },
+                }),
                 ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
             },
         ),
@@ -1168,14 +1168,14 @@ async fn set_custom_content_type_on_response() {
         "greeter.Greeter",
         "greet",
         InvocationTargetMetadata {
-            output_rules: OutputRules {
+            output_rules: Arc::new(OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_static("application/cbor"),
                     set_content_type_if_empty: false,
                     has_json_schema: false,
                 },
                 json_schema: None,
-            },
+            }),
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },
     );
@@ -1216,14 +1216,14 @@ async fn set_custom_content_type_on_empty_response() {
         "greeter.Greeter",
         "greet",
         InvocationTargetMetadata {
-            output_rules: OutputRules {
+            output_rules: Arc::new(OutputRules {
                 content_type_rule: OutputContentTypeRule::Set {
                     content_type: HeaderValue::from_static("application/protobuf"),
                     set_content_type_if_empty: true,
                     has_json_schema: false,
                 },
                 json_schema: None,
-            },
+            }),
             ..InvocationTargetMetadata::mock(InvocationTargetType::Service)
         },
     );

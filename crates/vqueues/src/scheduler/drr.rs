@@ -110,6 +110,10 @@ impl<S: VQueueStore> DRRScheduler<S> {
         }
     }
 
+    pub fn contains_vqueue(&self, handle: VQueueHandle) -> bool {
+        self.q.contains_key(handle)
+    }
+
     fn report(&mut self) {
         trace!(
             "DRR scheduler report: eligible={}, queue_states_len={}",
@@ -846,6 +850,137 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn compaction_preserves_unconfirmed_assignments_in_paused_queues() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(0);
+        let qid = test_qid(2_026);
+        let other_qid = test_qid(2_027);
+        let mut txn = rocksdb.transaction();
+        let key = enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        enqueue_entry(&mut txn, &mut cache, &other_qid, 2, 0, None).await;
+        txn.commit().await.unwrap();
+        drop(txn);
+        assert_eq!(cache.try_compact(|_| true), 0);
+
+        // Only the first queue gets an assignment; leave it unconfirmed.
+        let mut scheduler =
+            create_scheduler_with_concurrency(rocksdb.partition_db(), &cache, 1).await;
+        let Poll::Ready(Ok(decision)) = poll_scheduler(Pin::new(&mut scheduler), cache.view())
+        else {
+            panic!("expected a run decision");
+        };
+        assert_eq!(run_keys(&decision), vec![key]);
+        let handle = cache.view().handle_for(&qid).unwrap();
+        let other_handle = cache.view().handle_for(&other_qid).unwrap();
+
+        // Put the protected queue at the head of the inactive list, followed by
+        // an evictable queue. Processing every event does not release the first.
+        let at = UniqueTimestamp::try_from(1_200u64).unwrap();
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        for qid in [&qid, &other_qid] {
+            VQueue::get(qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap()
+                .pause_queue(at);
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+        for event in events.drain(..) {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        assert!(!cache.get(handle).unwrap().meta().is_active());
+        assert!(scheduler.contains_vqueue(handle));
+        assert!(!scheduler.contains_vqueue(other_handle));
+        assert_eq!(
+            cache.try_compact(|handle| !scheduler.contains_vqueue(handle)),
+            1
+        );
+        assert_eq!(cache.view().handle_for(&qid), Some(handle));
+        assert!(cache.get(other_handle).is_none());
+        assert_eq!(scheduler.iter_status(cache.view()).count(), 1);
+        assert_eq!(
+            cache.try_compact(|handle| !scheduler.contains_vqueue(handle)),
+            0
+        );
+
+        // Removing the assigned inbox entry rejects the outstanding assignment.
+        // The paused queue remains in storage but can now leave the cache.
+        let mut txn = rocksdb.transaction();
+        let header = read_header(&txn, &qid, key.entry_id()).await;
+        VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+            .await
+            .unwrap()
+            .unwrap()
+            .pause_entry(at, &header);
+        txn.commit().await.unwrap();
+        drop(txn);
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        assert!(!scheduler.contains_vqueue(handle));
+        assert_eq!(
+            cache.try_compact(|handle| !scheduler.contains_vqueue(handle)),
+            1
+        );
+        assert!(cache.get(handle).is_none());
+        assert!(cache.view().handle_for(&qid).is_none());
+        assert_eq!(scheduler.iter_status(cache.view()).count(), 0);
+    }
+
+    #[restate_core::test]
+    async fn same_batch_pause_and_resume_reuses_cached_handle() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(0);
+        let qid = test_qid(2_025);
+
+        let mut txn = rocksdb.transaction();
+        enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        let mut scheduler = create_scheduler(rocksdb.partition_db(), &cache).await;
+        let handle = cache.view().handle_for(&qid).unwrap();
+        let at = UniqueTimestamp::try_from(1_200u64).unwrap();
+        let mut events = Vec::new();
+        let mut txn = rocksdb.transaction();
+        {
+            let mut vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            vqueue.pause_queue(at);
+        }
+        assert!(!cache.get(handle).unwrap().meta().is_active());
+        assert_eq!(cache.view().handle_for(&qid), Some(handle));
+        {
+            let vqueue = VQueue::get(&qid, &mut txn, &mut cache, Some(&mut events))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(vqueue.handle(), handle);
+            vqueue.resume_queue(at);
+        }
+        txn.commit().await.unwrap();
+        drop(txn);
+
+        for event in events {
+            scheduler.on_inbox_event(cache.view(), event);
+        }
+        assert_eq!(
+            cache.try_compact(|handle| !scheduler.contains_vqueue(handle)),
+            0
+        );
+        assert_eq!(cache.view().handle_for(&qid), Some(handle));
+        assert!(cache.get(handle).unwrap().meta().is_active());
+        assert!(matches!(
+            poll_scheduler(Pin::new(&mut scheduler), cache.view()),
+            Poll::Ready(Ok(decision)) if decision.num_run() == 1
+        ));
+    }
+
+    #[restate_core::test]
     async fn purged_meta_is_retained_while_same_batch_recreation_uses_a_new_handle() {
         let mut rocksdb = storage_test_environment().await;
         let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
@@ -894,7 +1029,10 @@ mod tests {
         assert!(scheduler.q.get(old_handle).is_none());
         assert!(scheduler.q.get(new_handle).is_some());
 
-        assert_eq!(cache.try_compact(), 1);
+        assert_eq!(
+            cache.try_compact(|handle| !scheduler.contains_vqueue(handle)),
+            1
+        );
         assert!(cache.get(old_handle).is_none());
         assert_eq!(cache.view().handle_for(&qid), Some(new_handle));
         let txn = rocksdb.transaction();

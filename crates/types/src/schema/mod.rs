@@ -32,7 +32,7 @@ pub mod registry;
 pub mod service;
 pub mod subscriptions;
 
-pub use metadata::Schema;
+pub use metadata::{Schema, SchemaUnindexed};
 
 #[derive(Clone, Copy)]
 pub enum Redaction {

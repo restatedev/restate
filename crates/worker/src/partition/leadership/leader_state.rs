@@ -47,7 +47,7 @@ use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Vers
 use restate_vqueues::VQueueEvent;
 use restate_vqueues::context::HasVQueues;
 use restate_vqueues::scheduler::Decisions;
-use restate_vqueues::{SchedulerService, VQueuesMeta};
+use restate_vqueues::{SchedulerService, VQueueHandle, VQueuesMeta};
 use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
 #[cfg(test)]
@@ -218,6 +218,10 @@ impl LeaderState {
             cmd.keys(),
             cmd.inner(),
         );
+    }
+
+    pub fn contains_vqueue(&self, handle: VQueueHandle) -> bool {
+        self.scheduler.contains_vqueue(handle)
     }
 
     pub fn read_scheduler_status(

@@ -26,8 +26,12 @@ use super::super::epoch_metadata::{signal_sync_epoch_metadata, update_epoch_meta
 #[cling(run = "freeze_placement")]
 pub struct FreezeOpts {
     /// Partition id or range, e.g. "0", "1-4"
-    #[arg(required = true)]
+    #[arg(required_unless_present = "all", conflicts_with = "all")]
     partition_id: Vec<RangeParam<u16>>,
+
+    /// Freeze automatic placement for all partitions
+    #[arg(long)]
+    all: bool,
 
     /// Reason for freezing automatic placement
     #[arg(long, required = true)]
@@ -36,10 +40,18 @@ pub struct FreezeOpts {
 
 async fn freeze_placement(connection: &ConnectionInfo, opts: &FreezeOpts) -> anyhow::Result<()> {
     let partition_table = connection.get_partition_table().await?;
+    let partition_ids: Vec<_> = if opts.all {
+        partition_table.iter_ids().copied().collect()
+    } else {
+        opts.partition_id
+            .iter()
+            .flatten()
+            .map(PartitionId::new_unchecked)
+            .collect()
+    };
     let mut updated = Vec::new();
 
-    for id in opts.partition_id.iter().flatten() {
-        let partition_id = PartitionId::new_unchecked(id);
+    for partition_id in partition_ids {
         if !partition_table.contains(&partition_id) {
             error!("Partition {partition_id} does not exist, skipping.");
             continue;
