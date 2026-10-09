@@ -173,7 +173,7 @@ impl Versioned for Schema {
 mod storage {
     use std::sync::OnceLock;
 
-    use bytes::{BufMut, Bytes, BytesMut};
+    use bytes::BytesMut;
 
     use restate_platform::storage::{
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
@@ -209,15 +209,7 @@ mod storage {
                     storage::encode::encode_serde(self, buf, self.default_codec())
                 }
                 StorageCodecKind::ZstdBilrostDefault => {
-                    let mut compressor = zstd::Encoder::new(buf.writer(), 0)
-                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
-                    storage::encode::encode_bilrost_writer(self, &mut compressor)?;
-
-                    compressor
-                        .finish()
-                        .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
-
-                    Ok(())
+                    storage::encode::encode_bilrost_zstd(self, buf)
                 }
                 _ => unreachable!("unsupported StorageCodecKind"),
             }
@@ -240,14 +232,7 @@ mod storage {
                     Ok(schema)
                 }
                 StorageCodecKind::ZstdBilrostDefault => {
-                    // Unfortunately bilrost can only decode from a bytes::Buf, so we need to uncompress the entire buffer first
-                    // before decode payload as bilrost.
-                    let uncompressed = zstd::decode_all(buf.reader())
-                        .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
-
-                    let uncompressed = Bytes::from(uncompressed);
-                    let schema =
-                        storage::decode::decode_bilrost::<SchemaUnindexed, _>(uncompressed)?;
+                    let schema = storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
 
                     schema
                         .verify()

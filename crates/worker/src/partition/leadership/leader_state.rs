@@ -926,7 +926,7 @@ impl LeaderEventHandler for Schema {
                 .self_proposer
                 .self_propose(commands::UpsertSchemaCommand {
                     partition_key_range: Keys::RangeInclusive(state.partition_key_range.into()),
-                    schema: self,
+                    schema: self.into(),
                 })
         } else {
             Ok(NOOP_BYTES_WRITTEN)

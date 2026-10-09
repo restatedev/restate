@@ -825,8 +825,10 @@ experimental! {
 
     /// # Use bilrost encoding for schemas
     ///
-    /// When enabled, will use zstd compressed bilrost encoding
-    /// encoding instead of the default flexbuffers
+    /// When enabled, schema metadata and schema updates written to the
+    /// partition log use zstd compressed bilrost encoding instead of the
+    /// default flexbuffers. Nodes older than v1.8.0 cannot read either,
+    /// so only enable once all nodes run v1.8.0 or newer.
     ///
     /// This will be default from v1.9.0
     ///
