@@ -7909,6 +7909,7 @@ dependencies = [
  "ulid",
  "url",
  "vergen-gitcl",
+ "zerocopy",
 ]
 
 [[package]]

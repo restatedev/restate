@@ -93,6 +93,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) enum PhysicalScan<B> {
     Prefix(KeyKind, B),
     RangeExclusive(KeyKind, ScanMode, B, B),
