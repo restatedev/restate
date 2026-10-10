@@ -15,12 +15,14 @@ mod snapshot_task;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::metric_definitions::{SNAPSHOT_EXPORT_ACTIVE, SNAPSHOT_EXPORT_QUEUED};
 use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
 pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
+use metrics::gauge;
 use tokio::sync::Semaphore;
 use tracing::{debug, instrument};
 
@@ -65,11 +67,14 @@ impl Snapshots {
     ) -> Result<LocalPartitionSnapshot, SnapshotError> {
         let partition_id = partition_store.partition_id();
 
+        let queued = InFlightGauge::enter(SNAPSHOT_EXPORT_QUEUED);
         let _permit = self
             .concurrency_limit
             .acquire()
             .await
             .expect("we never close the semaphore");
+        drop(queued);
+        let _active = InFlightGauge::enter(SNAPSHOT_EXPORT_ACTIVE);
 
         partition_store
             .create_local_snapshot(snapshot_base_path, min_target_lsn, snapshot_id)
@@ -121,5 +126,21 @@ impl Snapshots {
             }
         };
         Ok(snapshot)
+    }
+}
+
+/// Keeps a gauge in step with the lifetime of the work it counts, including on cancellation.
+struct InFlightGauge(&'static str);
+
+impl InFlightGauge {
+    fn enter(name: &'static str) -> Self {
+        gauge!(name).increment(1);
+        Self(name)
+    }
+}
+
+impl Drop for InFlightGauge {
+    fn drop(&mut self) {
+        gauge!(self.0).decrement(1);
     }
 }

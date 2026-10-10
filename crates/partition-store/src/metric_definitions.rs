@@ -15,6 +15,10 @@ pub(crate) const SNAPSHOT_UPLOAD_FAILED: &str =
     "restate.partition_store.snapshots.upload.failed.total";
 pub(crate) const SNAPSHOT_UPLOAD_DURATION: &str =
     "restate.partition_store.snapshots.upload.duration.seconds";
+pub(crate) const SNAPSHOT_UPLOAD_BYTES: &str =
+    "restate.partition_store.snapshots.upload.bytes.total";
+pub(crate) const SNAPSHOT_EXPORT_ACTIVE: &str = "restate.partition_store.snapshots.export.active";
+pub(crate) const SNAPSHOT_EXPORT_QUEUED: &str = "restate.partition_store.snapshots.export.queued";
 pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
     "restate.partition_store.snapshots.download.duration.seconds";
 pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
@@ -40,6 +44,24 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_UPLOAD_DURATION,
         Unit::Seconds,
         "Duration of partition snapshot upload operations"
+    );
+
+    describe_counter!(
+        SNAPSHOT_UPLOAD_BYTES,
+        Unit::Bytes,
+        "Total bytes of partition snapshot data files uploaded to the snapshot repository, counted as each part completes"
+    );
+
+    describe_gauge!(
+        SNAPSHOT_EXPORT_ACTIVE,
+        Unit::Count,
+        "Number of partition snapshot exports currently running on this node"
+    );
+
+    describe_gauge!(
+        SNAPSHOT_EXPORT_QUEUED,
+        Unit::Count,
+        "Number of partition snapshot exports waiting for an export concurrency slot on this node"
     );
 
     describe_histogram!(
