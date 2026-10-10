@@ -627,25 +627,34 @@ impl PartitionStore {
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
-        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
+        let snapshot_dir = SnapshotDir::new(snapshot_base_path.join(snapshot_id.to_string()));
 
-        let export_files = self
+        let export_files = match self
             .db
             .rocksdb()
             .clone()
-            .export_cf(self.db.partition().cf_name().into(), snapshot_dir.clone())
+            .export_cf(
+                self.db.partition().cf_name().into(),
+                snapshot_dir.path().to_path_buf(),
+            )
             .await
-            .map_err(|e| StorageError::SnapshotExport(e.into()))?;
+        {
+            Ok(export_files) => export_files,
+            Err(err) => {
+                snapshot_dir.remove().await;
+                return Err(StorageError::SnapshotExport(err.into()));
+            }
+        };
 
         trace!(
             cf_name = %self.db.partition().cf_name(),
             %applied_lsn,
             "Exported column family snapshot to {:?}",
-            snapshot_dir
+            snapshot_dir.path()
         );
 
         Ok(LocalPartitionSnapshot {
-            base_dir: SnapshotDir::new(snapshot_dir),
+            base_dir: snapshot_dir,
             files: export_files.get_files(),
             db_comparator_name: export_files.get_db_comparator_name(),
             log_id: self.db.partition().log_id(),
