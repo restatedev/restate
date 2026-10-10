@@ -42,7 +42,7 @@ use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::{EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
-    SpanRelation,
+    Source, SpanRelation,
 };
 use restate_types::journal;
 use restate_types::journal_v2::command::{
@@ -139,7 +139,7 @@ where
     /// its config, or `None` for fully lazy state.
     pub async fn run<Txn, IR>(
         mut self,
-        txn: Txn,
+        mut txn: Txn,
         journal_metadata: JournalMetadata,
         state_read: Option<StatePreloadPolicy>,
         deployment: Deployment,
@@ -150,6 +150,26 @@ where
         Txn: InvocationReaderTransaction,
         IR: InvocationReader,
     {
+        let forwarded_headers = if forwards_invocation_headers(&journal_metadata.source)
+            && !self.invocation_task.forwarded_invocation_headers.is_empty()
+        {
+            let input_headers = shortcircuit!(
+                read_input_headers(
+                    &mut txn,
+                    &self.invocation_task.invocation_id,
+                    journal_metadata.journal_kind,
+                    outbound_budget,
+                )
+                .await
+            );
+            select_forwarded_headers(
+                &self.invocation_task.forwarded_invocation_headers,
+                &input_headers,
+            )
+        } else {
+            Vec::new()
+        };
+
         let mut attempt_span = restate_tracing_instrumentation::create_invocation_attempt_span(
             &self.invocation_task.invocation_id,
             &self.invocation_task.invocation_target,
@@ -198,6 +218,7 @@ where
             &self.invocation_task.invocation_id,
             attempt_span.span_context(),
             self.invocation_task.invocation_target.key(),
+            forwarded_headers,
         );
 
         // Initialize the response stream state
@@ -423,6 +444,7 @@ where
         invocation_id: &InvocationId,
         parent_span_context: &SpanContext,
         service_key: Option<&ByteString>,
+        forwarded_headers: Vec<(HeaderName, HeaderValue)>,
     ) -> (InvokerBodySender, Request<InvokerBodyType>) {
         // Use an unbounded channel: backpressure is provided by the memory budget
         // (each frame's Bytes embeds a LocalMemoryLease via from_owner) rather than
@@ -486,6 +508,10 @@ where
         };
 
         headers.extend(deployment_metadata.additional_headers);
+
+        for (name, value) in forwarded_headers {
+            headers.entry(name).or_insert(value);
+        }
 
         let mut request_parts = Parts::new(Method::Post, address, path, headers);
         if let Some(service_key) = service_key {
@@ -1572,6 +1598,81 @@ pub struct InvokeRequest {
     parameter: Bytes,
 }
 
+/// Reads the headers of the invocation's input command, journal entry 0.
+/// Only ingress invocations forward headers. Other sources carry headers their caller picked, e.g.
+/// a service sets the headers of the invocations it makes with `ctx.call`.
+fn forwards_invocation_headers(source: &Source) -> bool {
+    match source {
+        Source::Ingress(_) => true,
+        Source::Subscription(_)
+        | Source::Service(..)
+        | Source::RestartAsNew(_)
+        | Source::Ingestion
+        | Source::Internal => false,
+    }
+}
+
+async fn read_input_headers<Txn: InvocationReaderTransaction>(
+    txn: &mut Txn,
+    invocation_id: &InvocationId,
+    journal_kind: JournalKind,
+    budget: &mut LocalMemoryPool,
+) -> Result<Vec<Header>, InvokerError> {
+    let mut journal = txn
+        .read_journal_budgeted(invocation_id, 1, journal_kind, budget)
+        .map_err(InvokerError::from_journal_reader)?;
+    match journal
+        .next()
+        .await
+        .transpose()
+        .map_err(InvokerError::from_journal_reader)?
+    {
+        Some((entry, _lease)) => input_headers(entry),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn input_headers(entry: JournalEntry) -> Result<Vec<Header>, InvokerError> {
+    Ok(match entry {
+        JournalEntry::JournalV2(entry) => {
+            entry
+                .inner
+                .decode::<ServiceProtocolV4Codec, InputCommand>()?
+                .headers
+        }
+        JournalEntry::JournalV1(entry) => {
+            match entry.deserialize_entry::<ProtobufRawEntryCodec>()? {
+                journal::Entry::Input(input_entry) => input_entry.headers,
+                _ => Vec::new(),
+            }
+        }
+        JournalEntry::JournalV1Completion(_) => Vec::new(),
+    })
+}
+
+/// Picks the first value of each forwarded header from the invocation's input headers, renamed
+/// to its outbound name. Headers missing from the input are skipped.
+fn select_forwarded_headers(
+    forwarded_invocation_headers: &[(HeaderName, HeaderName)],
+    input_headers: &[Header],
+) -> Vec<(HeaderName, HeaderValue)> {
+    forwarded_invocation_headers
+        .iter()
+        .filter_map(|(name, forwarded_name)| {
+            let header = input_headers
+                .iter()
+                .find(|header| header.name.eq_ignore_ascii_case(name.as_str()))?;
+            match HeaderValue::from_str(&header.value) {
+                Ok(value) => Some((forwarded_name.clone(), value)),
+                Err(_) => {
+                    debug!(header.name = %name, "Skipping forwarded invocation header with an invalid value");
+                    None
+                }
+            }
+        })
+        .collect()
+}
+
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
     request: InvokeRequest,
@@ -1784,5 +1885,154 @@ where
                 Err(e) => return Poll::Ready(Some(Err(e.into()))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use restate_types::identifiers::{PartitionProcessorRpcRequestId, SubscriptionId};
+    use restate_types::journal::raw::RawEntryCodec;
+    use restate_types::schema::Schema;
+    use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+    use restate_types::time::MillisSinceEpoch;
+
+    use super::*;
+
+    fn header_name(name: &'static str) -> HeaderName {
+        HeaderName::from_static(name)
+    }
+
+    #[test]
+    fn only_ingress_invocations_forward_headers() {
+        assert!(forwards_invocation_headers(&Source::Ingress(
+            PartitionProcessorRpcRequestId::new()
+        )));
+
+        let invocation_id = InvocationId::mock_random();
+        for source in [
+            Source::Subscription(SubscriptionId::new()),
+            Source::Service(invocation_id, InvocationTarget::mock_service()),
+            Source::RestartAsNew(invocation_id),
+            Source::Ingestion,
+            Source::Internal,
+        ] {
+            assert!(!forwards_invocation_headers(&source), "{source:?}");
+        }
+    }
+
+    #[test]
+    fn select_forwarded_headers_takes_first_value_under_outbound_name() {
+        let input_headers = vec![
+            Header::new("x-forwarded-user", "alice"),
+            Header::new("X-Request-Id", "req-1"),
+            Header::new("authorization", "Bearer secret"),
+            Header::new("x-forwarded-user", "mallory"),
+            Header::new("x-invalid", "line\nbreak"),
+        ];
+
+        let selected = select_forwarded_headers(
+            &[
+                (
+                    header_name("x-forwarded-user"),
+                    header_name("restate-forwarded-x-forwarded-user"),
+                ),
+                (header_name("x-request-id"), header_name("x-request-id")),
+                (header_name("x-missing"), header_name("x-missing")),
+                (header_name("x-invalid"), header_name("x-invalid")),
+            ],
+            &input_headers,
+        );
+
+        assert_eq!(
+            selected,
+            vec![
+                (
+                    header_name("restate-forwarded-x-forwarded-user"),
+                    HeaderValue::from_static("alice")
+                ),
+                (
+                    header_name("x-request-id"),
+                    HeaderValue::from_static("req-1")
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn input_headers_reads_journal_v1_and_v2_input_entries() {
+        let headers = vec![Header::new("x-forwarded-user", "alice")];
+
+        let v2_entry = JournalEntry::JournalV2(StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            Entry::Command(
+                InputCommand {
+                    headers: headers.clone(),
+                    payload: Bytes::new(),
+                    name: Default::default(),
+                }
+                .into(),
+            )
+            .encode::<ServiceProtocolV4Codec>(),
+        ));
+        assert_eq!(input_headers(v2_entry).unwrap(), headers);
+
+        let v1_entry = JournalEntry::JournalV1(
+            ProtobufRawEntryCodec::serialize_as_input_entry(headers.clone(), Bytes::new())
+                .erase_enrichment(),
+        );
+        assert_eq!(input_headers(v1_entry).unwrap(), headers);
+    }
+
+    #[test]
+    fn prepare_request_never_replaces_headers_already_set() {
+        let mut deployment = Deployment::mock();
+        deployment.additional_headers = HashMap::from([(
+            header_name("x-tenant"),
+            HeaderValue::from_static("from-deployment"),
+        )]);
+
+        let (_http_stream_tx, request) = ServiceProtocolRunner::<Schema>::prepare_request(
+            PathAndQuery::from_static("/invoke/Greeter/greet"),
+            deployment,
+            ServiceProtocolVersion::V5,
+            &InvocationId::mock_random(),
+            &SpanContext::empty_context(),
+            None,
+            vec![
+                (
+                    http::header::CONTENT_TYPE,
+                    HeaderValue::from_static("text/plain"),
+                ),
+                (
+                    header_name("x-tenant"),
+                    HeaderValue::from_static("from-client"),
+                ),
+                (
+                    header_name("restate-forwarded-x-forwarded-user"),
+                    HeaderValue::from_static("alice"),
+                ),
+            ],
+        );
+
+        let headers = request.headers();
+        assert_eq!(
+            headers
+                .get_all(http::header::CONTENT_TYPE)
+                .iter()
+                .collect::<Vec<_>>(),
+            [&service_protocol_version_to_header_value(
+                ServiceProtocolVersion::V5
+            )]
+        );
+        assert_eq!(
+            headers.get_all("x-tenant").iter().collect::<Vec<_>>(),
+            [&HeaderValue::from_static("from-deployment")]
+        );
+        assert_eq!(
+            headers.get("restate-forwarded-x-forwarded-user"),
+            Some(&HeaderValue::from_static("alice"))
+        );
     }
 }

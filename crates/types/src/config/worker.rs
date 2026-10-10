@@ -39,6 +39,29 @@ const MIN_ROCKSDB_MEMORY: NonZeroByteCount =
 const X_RESTATE_CLUSTER_NAME: http::HeaderName =
     http::HeaderName::from_static("x-restate-cluster-name");
 
+/// Headers the invoker or its service client set on invocation requests, plus hop-by-hop
+/// headers. `x-restate-*` is checked separately.
+const RESERVED_INVOCATION_HEADERS: [http::HeaderName; 18] = [
+    http::header::CONTENT_TYPE,
+    http::header::CONTENT_LENGTH,
+    http::header::CONTENT_ENCODING,
+    http::header::ACCEPT,
+    http::header::ACCEPT_ENCODING,
+    http::header::HOST,
+    http::header::CONNECTION,
+    http::header::TE,
+    http::header::TRAILER,
+    http::header::TRANSFER_ENCODING,
+    http::header::UPGRADE,
+    http::header::PROXY_AUTHENTICATE,
+    http::header::PROXY_AUTHORIZATION,
+    http::HeaderName::from_static("keep-alive"),
+    http::HeaderName::from_static("proxy-connection"),
+    http::HeaderName::from_static("traceparent"),
+    http::HeaderName::from_static("tracestate"),
+    http::HeaderName::from_static("x-serverless-authorization"),
+];
+
 // Max successive merges are disabled by default to reduce the CPU during
 // writes/flushes.
 const DEFAULT_MAX_SUCCESSIVE_MERGES: u16 = 0;
@@ -541,6 +564,45 @@ pub struct InvokerOptions {
     ///
     /// Since v1.7.3
     pub max_awaited_future_depth: usize,
+
+    /// # Forward invocation headers
+    ///
+    /// Names of request headers received by the HTTP ingress that the invoker also sends to the
+    /// service deployment as request headers. Without this, invocation headers reach the
+    /// service only inside the invocation's input.
+    ///
+    /// Only invocations that came in through the HTTP ingress forward headers. Invocations made
+    /// by other services, Kafka subscriptions, restarts and the ingestion API never do. This
+    /// requires `experimental-enable-invocation-source-ingestion`, since without it the
+    /// ingestion API marks its invocations as ingress invocations. Set that flag on every node
+    /// that runs the ingress, not only on the workers.
+    ///
+    /// Headers missing from the invocation are skipped. A forwarded header never replaces a
+    /// header Restate or the deployment already sets, and names that collide with Restate's own
+    /// request headers (e.g. `content-type`, `traceparent`, `x-restate-*`) are rejected.
+    ///
+    /// Default: empty, no headers are forwarded.
+    ///
+    /// Since v1.8.0
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        with = "serde_with::As::<Vec<restate_serde_util::HeaderNameSerde>>"
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
+    pub forward_invocation_headers: Vec<http::HeaderName>,
+
+    /// # Forwarded header prefix
+    ///
+    /// Optional prefix added to the names in `forward-invocation-headers` when they are sent to
+    /// the service deployment. With `restate-forwarded-`, `x-forwarded-user` is sent as
+    /// `restate-forwarded-x-forwarded-user`.
+    ///
+    /// Default: none, names are sent unchanged.
+    ///
+    /// Since v1.8.0
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_forwarded_prefix: Option<String>,
 }
 
 impl InvokerOptions {
@@ -570,6 +632,43 @@ impl InvokerOptions {
             .and_then(|v| NonZeroUsize::new(v.as_usize()))
             .map(NonZeroByteCount::new)
             .unwrap_or_else(|| NonZeroByteCount::new(self.message_size_limit()))
+    }
+
+    /// `(invocation header, outbound header)` name pairs for `forward-invocation-headers`.
+    /// Names that are invalid once prefixed are left out; config validation rejects them.
+    pub fn forwarded_invocation_headers(&self) -> Vec<(http::HeaderName, http::HeaderName)> {
+        self.forward_invocation_headers
+            .iter()
+            .filter_map(|name| Some((name.clone(), self.forwarded_header_name(name).ok()?)))
+            .collect()
+    }
+
+    fn forwarded_header_name(&self, name: &http::HeaderName) -> Result<http::HeaderName, String> {
+        match &self.header_forwarded_prefix {
+            Some(prefix) => http::HeaderName::try_from(format!("{prefix}{name}"))
+                .map_err(|_| format!("'{prefix}{name}' is not a valid header name")),
+            None => Ok(name.clone()),
+        }
+    }
+
+    pub(crate) fn validate_forwarded_headers(&self) -> Result<(), String> {
+        for name in &self.forward_invocation_headers {
+            let forwarded_name = self.forwarded_header_name(name)?;
+
+            let set_by_restate = RESERVED_INVOCATION_HEADERS.contains(&forwarded_name)
+                || forwarded_name.as_str().starts_with("x-restate-")
+                || self
+                    .service_client
+                    .additional_request_headers
+                    .as_ref()
+                    .is_some_and(|headers| headers.contains_key(&forwarded_name));
+            if set_by_restate {
+                return Err(format!(
+                    "'{forwarded_name}' is set by Restate on invocation requests"
+                ));
+            }
+        }
+        Ok(())
     }
 
     /// Resolved eager state size limit in bytes. After `merge()`, this is guaranteed
@@ -664,6 +763,8 @@ impl Default for InvokerOptions {
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
             service_client: ServiceClientOptions::default(),
             max_awaited_future_depth: 1000,
+            forward_invocation_headers: Vec::new(),
+            header_forwarded_prefix: None,
         }
     }
 }
@@ -1384,6 +1485,60 @@ mod tests {
 
         let options: WorkerOptions = serde_json::from_value(value).unwrap();
         assert!(options.disable_scheduler);
+    }
+
+    #[test]
+    fn forwarded_invocation_headers_apply_prefix() {
+        let mut value = serde_json::to_value(InvokerOptions::default()).unwrap();
+        value["forward-invocation-headers"] =
+            serde_json::json!(["X-Forwarded-User", "x-request-id"]);
+        value["header-forwarded-prefix"] = "restate-forwarded-".into();
+        let options: InvokerOptions = serde_json::from_value(value).unwrap();
+
+        assert_eq!(options.validate_forwarded_headers(), Ok(()));
+        assert_eq!(
+            options.forwarded_invocation_headers(),
+            vec![
+                (
+                    http::HeaderName::from_static("x-forwarded-user"),
+                    http::HeaderName::from_static("restate-forwarded-x-forwarded-user"),
+                ),
+                (
+                    http::HeaderName::from_static("x-request-id"),
+                    http::HeaderName::from_static("restate-forwarded-x-request-id"),
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn forwarded_invocation_headers_reject_names_restate_sets() {
+        let mut options = InvokerOptions::default();
+        options.service_client.additional_request_headers = Some(
+            std::collections::HashMap::from([(
+                http::HeaderName::from_static("x-tenant"),
+                http::HeaderValue::from_static("acme"),
+            )])
+            .into(),
+        );
+
+        for (name, prefix) in [
+            ("content-type", None),
+            ("accept-encoding", None),
+            ("proxy-authorization", None),
+            ("traceparent", None),
+            ("x-restate-invocation-id", None),
+            ("x-tenant", None),
+            ("invocation-id", Some("x-restate-")),
+            ("x-forwarded-user", Some("not a header ")),
+        ] {
+            options.forward_invocation_headers = vec![http::HeaderName::from_static(name)];
+            options.header_forwarded_prefix = prefix.map(str::to_owned);
+            assert!(
+                options.validate_forwarded_headers().is_err(),
+                "{prefix:?} + {name} must be rejected"
+            );
+        }
     }
 
     #[test]

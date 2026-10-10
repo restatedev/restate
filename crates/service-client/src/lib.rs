@@ -317,6 +317,10 @@ impl<B> Request<B> {
     pub fn path(&self) -> &PathAndQuery {
         &self.head.path
     }
+
+    pub fn headers(&self) -> &HeaderMap<HeaderValue> {
+        &self.head.headers
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
