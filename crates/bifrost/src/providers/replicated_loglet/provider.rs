@@ -13,6 +13,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use dashmap::DashMap;
+use metrics::gauge;
 use tokio::task::JoinSet;
 use tracing::{debug, info, warn};
 
@@ -89,6 +90,8 @@ impl<T: TransportConnect> LogletProviderFactory for Factory<T> {
 
     async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
         metric_definitions::describe_metrics();
+        gauge!(metric_definitions::BIFROST_RECORD_SIZE_LIMIT)
+            .set(Configuration::pinned().bifrost.record_size_limit().get() as f64);
         let provider = Arc::new(ReplicatedLogletProvider::new(
             self.networking,
             self.record_cache,

@@ -10,7 +10,7 @@
 
 /// Optional to have but adds description/help message to the metrics emitted to
 /// the metrics' sink.
-use metrics::{Unit, describe_counter, describe_histogram};
+use metrics::{Unit, describe_counter, describe_gauge, describe_histogram};
 
 pub(crate) const BIFROST_REPLICATED_READ_CACHE_HIT: &str =
     "restate.bifrost.replicatedloglet.read_record_cache_hit.total";
@@ -35,6 +35,7 @@ pub(crate) const BIFROST_SEQ_APPEND_WAVES: &str = "restate.bifrost.sequencer.app
 pub(crate) const BIFROST_SEQ_APPEND_WAVE_DURATION: &str =
     "restate.bifrost.sequencer.append_wave_duration.seconds";
 pub(crate) const BIFROST_SEQ_RECORD_SIZE: &str = "restate.bifrost.sequencer.record_size_bytes";
+pub(crate) const BIFROST_RECORD_SIZE_LIMIT: &str = "restate.bifrost.record_size_limit_bytes";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -107,5 +108,11 @@ pub(crate) fn describe_metrics() {
         BIFROST_SEQ_RECORD_SIZE,
         Unit::Bytes,
         "Distribution of record sizes sent by the sequencer"
+    );
+
+    describe_gauge!(
+        BIFROST_RECORD_SIZE_LIMIT,
+        Unit::Bytes,
+        "Maximum size of a single record that can be appended to Bifrost"
     );
 }
