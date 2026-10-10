@@ -8,13 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use super::*;
-
 use std::time::Duration;
 
 use prost::Message;
 
-use restate_storage_api::invocation_status_table::CompletedInvocation;
+use restate_storage_api::invocation_status_table::{CompletedInvocation, ResponseResultRef};
 use restate_storage_api::service_status_table::ReadVirtualObjectStatusTable;
 use restate_storage_api::timer_table::ReadTimerTable;
 use restate_types::deployment::PinnedDeployment;
@@ -25,6 +23,7 @@ use restate_types::invocation::{
 };
 use restate_types::service_protocol;
 
+use super::*;
 use crate::partition::state_machine::tests::matchers::actions::purge_invocation_reply;
 
 #[restate_core::test]
@@ -149,7 +148,7 @@ async fn start_workflow_method() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes.clone()))
+            response_result: eq(ResponseResultRef::Success(response_bytes.clone()))
         })))
     );
 
@@ -288,7 +287,7 @@ async fn attach_by_workflow_key() {
     assert_that!(
         invocation_status,
         pat!(InvocationStatus::Completed(pat!(CompletedInvocation {
-            response_result: eq(ResponseResult::Success(response_bytes.clone()))
+            response_result: eq(ResponseResultRef::Success(response_bytes.clone()))
         })))
     );
 

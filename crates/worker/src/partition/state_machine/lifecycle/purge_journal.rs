@@ -139,13 +139,20 @@ mod tests {
         InvocationTarget, PurgeInvocationRequest, ServiceInvocation, ServiceInvocationResponseSink,
     };
     use restate_types::journal_v2::{CommandType, OutputCommand, OutputResult};
+    use restate_types::partitions::PersistedFeatures;
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_wal_protocol::v2::{Command, commands};
+    use rstest::rstest;
     use std::time::Duration;
 
+    #[rstest]
     #[restate_core::test]
-    async fn purge_journal_then_invocation() {
-        let mut test_env = TestEnv::create().await;
+    async fn purge_journal_then_invocation(#[values(false, true)] write_output_table: bool) {
+        let mut test_env = TestEnv::create_with_features(PersistedFeatures {
+            write_output_table,
+            ..Default::default()
+        })
+        .await;
 
         let idempotency_key = ByteString::from_static("my-idempotency-key");
         let completion_retention = Duration::from_secs(60) * 60 * 24;
@@ -194,6 +201,13 @@ mod tests {
             }))
         );
 
+        // With the output table, the Output command is not written to the journal
+        let mut expected_commands = vec![CommandType::Input.into()];
+        if !write_output_table {
+            expected_commands.push(CommandType::Output.into());
+        }
+        let expected_length = expected_commands.len() as u32;
+
         // InvocationStatus contains completed
         assert_that!(
             test_env
@@ -202,17 +216,14 @@ mod tests {
                 .await,
             ok(all!(
                 is_variant(InvocationStatusDiscriminants::Completed),
-                has_commands(2),
-                has_journal_length(2)
+                has_commands(expected_length),
+                has_journal_length(expected_length)
             ))
         );
 
         // We also retain the journal here
         test_env
-            .verify_journal_components(
-                invocation_id,
-                [CommandType::Input.into(), CommandType::Output.into()],
-            )
+            .verify_journal_components(invocation_id, expected_commands)
             .await;
 
         // Now let's purge the journal

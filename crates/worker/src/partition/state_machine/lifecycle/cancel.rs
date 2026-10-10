@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use tracing::{debug, trace};
 
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -20,6 +21,7 @@ use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
+use restate_storage_api::output_table::WriteInvocationOutputTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
@@ -43,6 +45,7 @@ impl<'ctx, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s,
     for OnCancelCommand
 where
     S: WriteJournalTable
+        + WriteVirtualObjectStatusTable
         + ReadJournalTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
@@ -59,7 +62,8 @@ where
         + ReadVQueueTable
         + WriteVQueueTable
         + WriteLockTable
-        + WritePromiseTable,
+        + WritePromiseTable
+        + WriteInvocationOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {

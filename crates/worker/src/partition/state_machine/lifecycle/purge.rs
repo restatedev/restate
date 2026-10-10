@@ -20,6 +20,7 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
 use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
+use restate_storage_api::output_table::WriteInvocationOutputTable;
 use restate_storage_api::promise_table::WritePromiseTable;
 use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_api::timer_table::WriteTimerTable;
@@ -63,7 +64,8 @@ where
         + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteInvocationOutputTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
