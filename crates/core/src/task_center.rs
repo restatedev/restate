@@ -329,7 +329,8 @@ struct TaskCenterInner {
     #[cfg(any(test, feature = "test-util"))]
     pause_time: bool,
     default_runtime_handle: tokio::runtime::Handle,
-    managed_runtimes: Mutex<HashMap<ReString, OwnedRuntimeHandle>>,
+    // None reserves the name while the runtime is shutting down outside the registry lock.
+    managed_runtimes: Mutex<HashMap<ReString, Option<OwnedRuntimeHandle>>>,
     start_time: Instant,
     /// We hold on to the owned Runtime to ensure it's dropped when task center is dropped. If this
     /// is None, it means that it's the responsibility of the Handle owner to correctly drop
@@ -744,7 +745,7 @@ impl TaskCenterInner {
 
         runtimes_guard.insert(
             runtime_name.clone(),
-            OwnedRuntimeHandle::new(cancel.clone(), rt_handle.clone()),
+            Some(OwnedRuntimeHandle::new(cancel.clone(), rt_handle.clone())),
         );
 
         // release the lock.
@@ -788,8 +789,15 @@ impl TaskCenterInner {
     /// Runs **only** after the inner main thread has completed work and no other owner exists for
     /// the runtime handle.
     fn drop_runtime(self: &Arc<Self>, name: ReString) {
-        let mut runtimes_guard = self.managed_runtimes.lock();
-        if let Some(runtime) = runtimes_guard.remove(&name) {
+        // Shutdown can wait for blocking tasks and run arbitrary task destructors.
+        // Release the registry lock so other runtimes can start and stop, but keep
+        // this name reserved until teardown finishes and before publishing the result.
+        let runtime = self
+            .managed_runtimes
+            .lock()
+            .get_mut(&name)
+            .and_then(Option::take);
+        if let Some(runtime) = runtime {
             // We must be the only owner of runtime at this point.
             debug!("Runtime {} completed", name);
             let owner = Arc::into_inner(runtime.into_inner());
@@ -798,6 +806,7 @@ impl TaskCenterInner {
                 trace!("Runtime {} shutdown completed", name);
             }
         }
+        self.managed_runtimes.lock().remove(&name);
     }
 
     #[cfg(not(all(
@@ -838,7 +847,9 @@ impl TaskCenterInner {
             .managed_runtimes
             .lock()
             .iter()
-            .map(|(name, handle)| (name.to_string(), handle.runtime_handle().clone()))
+            .filter_map(|(name, handle)| {
+                Some((name.to_string(), handle.as_ref()?.runtime_handle().clone()))
+            })
             .collect();
         managed_runtimes.sort_by(|(left_name, _), (right_name, _)| left_name.cmp(right_name));
 
@@ -1214,14 +1225,16 @@ impl TaskCenterInner {
         let runtimes = self.managed_runtimes.lock();
         for (name, runtime) in runtimes.iter() {
             // asking the root task in the runtime to shutdown gracefully.
-            runtime.cancel();
-            trace!("Asked runtime {} to shutdown gracefully", name);
+            if let Some(runtime) = runtime {
+                runtime.cancel();
+                trace!("Asked runtime {} to shutdown gracefully", name);
+            }
         }
     }
 
     fn shutdown_managed_runtimes(self: &Arc<Self>) {
         let mut runtimes = self.managed_runtimes.lock();
-        for (_, runtime) in runtimes.drain() {
+        for runtime in runtimes.drain().filter_map(|(_, runtime)| runtime) {
             if let Some(runtime) = Arc::into_inner(runtime.into_inner()) {
                 // This really isn't doing much, but it's left here for completion.
                 // The reason is: If the runtime is still running, then it'll hold the Arc until it
@@ -1333,11 +1346,14 @@ pub fn is_cancellation_requested() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::mpsc;
 
     use googletest::prelude::*;
-    use restate_types::config::CommonOptionsBuilder;
     use tracing_test::traced_test;
+
+    use restate_types::config::CommonOptionsBuilder;
+
+    use super::*;
 
     #[tokio::test(start_paused = true)]
     #[traced_test]
@@ -1364,6 +1380,69 @@ mod tests {
         assert!(logs_contain("Hello async"));
         assert!(logs_contain("Bye async"));
         assert!(start.elapsed() >= Duration::from_secs(10));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn runtime_shutdown_reserves_name_without_holding_registry() -> Result<()> {
+        struct CheckRegistryOnDrop {
+            tc: Handle,
+            result: Option<oneshot::Sender<bool>>,
+            release: mpsc::Receiver<()>,
+        }
+
+        impl Drop for CheckRegistryOnDrop {
+            fn drop(&mut self) {
+                let unlocked = self.tc.inner.managed_runtimes.try_lock().is_some();
+                let _ = self.result.take().unwrap().send(unlocked);
+                // Hold teardown open until the test has checked the reservation and handle.
+                let _ = self.release.recv();
+            }
+        }
+
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let (result_tx, result_rx) = oneshot::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let check = CheckRegistryOnDrop {
+            tc: tc.clone(),
+            result: Some(result_tx),
+            release: release_rx,
+        };
+        let mut runtime = tc.start_runtime(
+            TaskKind::SystemService,
+            "shutdown-test",
+            None,
+            move || async {
+                tokio::spawn(async move {
+                    let _check = check;
+                    std::future::pending::<()>().await;
+                });
+            },
+        )?;
+
+        assert!(result_rx.await?, "runtime shutdown held the registry lock");
+        assert!((&mut runtime).now_or_never().is_none());
+        // A reservation doesn't expose a runtime to monitoring.
+        assert!(tc.managed_runtime_metrics().is_empty());
+        assert!(matches!(
+            tc.start_runtime(TaskKind::SystemService, "shutdown-test", None, || async {}),
+            Err(RuntimeError::AlreadyExists(_))
+        ));
+
+        // Other runtimes can both start and finish while this one is tearing down.
+        tc.start_runtime(TaskKind::SystemService, "other-runtime", None, || async {})?
+            .await;
+
+        release_tx.send(())?;
+        runtime.await;
+
+        // Awaiting the handle must make the same name immediately reusable.
+        tc.start_runtime(TaskKind::SystemService, "shutdown-test", None, || async {})?
+            .await;
+        assert!(tc.inner.managed_runtimes.lock().is_empty());
         Ok(())
     }
 }

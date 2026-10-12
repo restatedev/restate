@@ -38,7 +38,7 @@ impl TaskCenterMonitoring for Handle {
         let guard = self.inner.managed_runtimes.lock();
         guard
             .iter()
-            .map(|(k, v)| (k.clone(), v.runtime_handle().metrics()))
+            .filter_map(|(k, v)| Some((k.clone(), v.as_ref()?.runtime_handle().metrics())))
             .collect()
     }
 
