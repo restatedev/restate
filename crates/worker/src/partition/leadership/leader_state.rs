@@ -41,7 +41,7 @@ use restate_types::logs::BodyWithKeys;
 use restate_types::logs::Keys;
 use restate_types::net::ingest::IngestRecord;
 use restate_types::net::partition_processor::PartitionProcessorRpcError;
-use restate_types::schema::Schema;
+use restate_types::schema::SchemaUnindexed;
 use restate_types::sharding::KeyRange;
 use restate_types::{RESTATE_VERSION_1_7_0, SemanticRestateVersion, Version, Versioned, vqueues};
 use restate_vqueues::VQueueEvent;
@@ -434,7 +434,10 @@ impl LeaderState {
                         let current_version = ctx.fsm().schema_version();
                         // only upsert schema iff version is newer than current version
                         if current_version < new_version {
-                            FlowPoll::Ready(Metadata::with_current(|m| m.schema()).clone())
+                            // skip cloning the in-memory indexes, they are not persisted
+                            FlowPoll::Ready(Metadata::with_current(|m| {
+                                SchemaUnindexed::clone(&m.schema())
+                            }))
                         } else {
                             // The stream was ready, but no action is needed.
                             FlowPoll::Noop
@@ -919,7 +922,7 @@ impl LeaderEventHandler for CleanerEffect {
     }
 }
 
-impl LeaderEventHandler for Schema {
+impl LeaderEventHandler for SchemaUnindexed {
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0) {
             state

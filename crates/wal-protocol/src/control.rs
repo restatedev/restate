@@ -20,12 +20,11 @@ use restate_types::logs::{HasRecordKeys, Keys, Lsn, SequenceNumber};
 use restate_types::partitions::PartitionConfiguration;
 use restate_types::partitions::state::{MemberState, ReplicaSetState};
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::schema::Schema;
+use restate_types::schema::SchemaUnindexed;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{
     GenerationalNodeId, SemanticRestateVersion, Version, Versioned, bilrost_storage_encode_decode,
-    flexbuffers_storage_encode_decode,
 };
 
 /// Announcing a new leader. This message can be written by any component to make the specified
@@ -225,14 +224,62 @@ bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
 
 /// Consistently store schema across partition replicas.
 ///
+/// Uses the same encoding as [`SchemaUnindexed`]: flexbuffers by default, or zstd
+/// compressed bilrost if `experimental-enable-schema-bilrost-encoding` is set.
+///
 /// Since v1.6.0.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
 pub struct UpsertSchemaCommand {
+    #[bilrost(tag(1))]
     pub partition_key_range: Keys,
-    pub schema: Schema,
+    #[bilrost(tag(2))]
+    pub schema: SchemaUnindexed,
 }
 
-flexbuffers_storage_encode_decode!(UpsertSchemaCommand);
+mod upsert_schema_storage {
+    use bytes::{Buf, BytesMut};
+
+    use restate_types::storage::{
+        StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
+        decode, encode,
+    };
+
+    use super::UpsertSchemaCommand;
+
+    impl StorageEncode for UpsertSchemaCommand {
+        fn default_codec(&self) -> StorageCodecKind {
+            // follow the schema's own encoding so a single flag controls both
+            self.schema.default_codec()
+        }
+
+        fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageEncodeError> {
+            match self.default_codec() {
+                StorageCodecKind::FlexbuffersSerde => {
+                    encode::encode_serde(self, buf, StorageCodecKind::FlexbuffersSerde)
+                }
+                StorageCodecKind::ZstdBilrostDefault => encode::encode_bilrost_zstd(self, buf),
+                _ => unreachable!("unsupported StorageCodecKind"),
+            }
+        }
+    }
+
+    impl StorageDecode for UpsertSchemaCommand {
+        fn decode<B: Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError> {
+            let command: Self = match kind {
+                StorageCodecKind::FlexbuffersSerde => decode::decode_serde(buf, kind)?,
+                StorageCodecKind::ZstdBilrostDefault => decode::decode_bilrost_zstd(buf)?,
+                _ => return Err(StorageDecodeError::UnsupportedCodecKind(kind)),
+            };
+
+            command
+                .schema
+                .verify()
+                .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+            Ok(command)
+        }
+    }
+}
 
 impl HasRecordKeys for UpsertSchemaCommand {
     fn record_keys(&self) -> Keys {
@@ -278,5 +325,54 @@ impl UpsertRuleBookCommand {
 
     pub fn bilrost_decode<B: Buf>(buf: B) -> Result<Self, bilrost::DecodeError> {
         bilrost::OwnedMessage::decode(buf)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use restate_types::Versioned;
+    use restate_types::logs::Keys;
+    use restate_types::schema::Schema;
+    use restate_types::storage::{StorageCodecKind, encode};
+
+    use super::UpsertSchemaCommand;
+    use crate::v2::{CommandKind, Dedup, Envelope, Raw};
+
+    #[test]
+    fn upsert_schema_decodes_both_codecs() {
+        let mut schema = Schema::default();
+        schema.touch();
+        let command = UpsertSchemaCommand {
+            partition_key_range: Keys::RangeInclusive(10..=20),
+            schema: schema.into(),
+        };
+
+        for codec in [
+            StorageCodecKind::FlexbuffersSerde,
+            StorageCodecKind::ZstdBilrostDefault,
+        ] {
+            let mut buf = BytesMut::new();
+            match codec {
+                StorageCodecKind::FlexbuffersSerde => {
+                    encode::encode_serde(&command, &mut buf, codec).unwrap()
+                }
+                _ => encode::encode_bilrost_zstd(&command, &mut buf).unwrap(),
+            }
+
+            // the codec recorded in the envelope header drives the decoding
+            let (_, decoded) = Envelope::<Raw>::from_bytes_unchecked(
+                CommandKind::UpsertSchema,
+                codec,
+                Dedup::None,
+                buf.freeze(),
+            )
+            .into_typed::<UpsertSchemaCommand>()
+            .split()
+            .unwrap();
+            assert_eq!(decoded.partition_key_range, command.partition_key_range);
+            assert_eq!(decoded.schema.version(), command.schema.version());
+        }
     }
 }
