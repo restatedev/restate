@@ -69,8 +69,18 @@ async fn get_raw_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyh
 
     c_eprintln!("version: {version}");
 
-    stdout.write_all(&value.bytes)?;
-    stdout.flush()?;
+    success_on_broken_pipe(stdout.write_all(&value.bytes))?;
+    success_on_broken_pipe(stdout.flush())?;
 
     Ok(())
+}
+
+// Handles broken pipe gracefull so commands like this `get ... --raw | head -c 0)` should
+// succeed
+fn success_on_broken_pipe(result: Result<(), std::io::Error>) -> Result<(), std::io::Error> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        Err(err) => Err(err),
+    }
 }
