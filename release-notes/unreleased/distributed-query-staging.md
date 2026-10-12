@@ -31,3 +31,7 @@ Fixed queries returning more rows than requested by `LIMIT` without `ORDER BY`
 in the experimental engine, including limits inside subqueries.
 
 Detailed remote operator metrics are not yet available.
+
+The `restate sql` command can select the engine with `--engine v1` or `--engine v2`,
+and reports the engine that served each query next to the row count. Without the
+flag it keeps using the server's default engine.
