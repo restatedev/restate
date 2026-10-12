@@ -70,6 +70,7 @@ restate-memory = { workspace = true }
 restate-rocksdb = { workspace = true, features = ["test-util"] }
 restate-service-protocol = { workspace = true, features = ["test-util"] }
 restate-storage-api = { workspace = true, features = ["test-util"] }
+restate-storage-query-datafusion = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
 
 googletest = { workspace = true }
