@@ -18,7 +18,11 @@ use tokio_util::sync::CancellationToken;
 
 use restate_platform::prelude::ReString;
 
-/// A handle for a dedicated runtime managed by task-center
+/// A handle for a dedicated runtime managed by task-center.
+///
+/// Await this handle before starting a replacement. The runtime name is released
+/// before teardown, but this handle resolves only after the root future completes
+/// and the runtime shutdown call returns.
 pub struct RuntimeTaskHandle<T> {
     name: ReString,
     cancellation_token: CancellationToken,
