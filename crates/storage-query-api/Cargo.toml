@@ -13,6 +13,7 @@ default = []
 [dependencies]
 restate-workspace-hack = { workspace = true }
 
+restate-clock = { workspace = true }
 restate-platform = { workspace = true }
 restate-util-string = { workspace = true }
 
