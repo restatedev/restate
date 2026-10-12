@@ -60,7 +60,16 @@ The query engine uses a two-tier architecture:
 
 ### Tables
 
-Table names below are the registered SQL names (see `storage-query-datafusion/src/context.rs`).
+Table names below are unqualified SQL names (see `storage-query-datafusion/src/catalog/`).
+`UserTables` uses `restate.public` for the Admin HTTP `/query` endpoint and snapshot queries.
+`ClusterTables` uses `restate.cluster` for cluster-operations queries through gRPC, including
+`restatectl sql`. Each engine defaults to its own namespace, so `SELECT * FROM partitions`
+continues to work in `restatectl`; it can also be written as
+`SELECT * FROM restate.cluster.partitions`. Cluster tables are not exposed through HTTP `/query`.
+
+Cluster-table registrations and view definitions explicitly target `restate.cluster`, so their
+placement does not depend on the bootstrap session's default schema. Remote scanner identifiers
+remain unqualified (for example, `loglet_workers`); SQL namespaces are separate from wire names.
 
 **Partitioned tables** (data distributed across partitions by partition key):
 - `sys_invocation_status` - Invocation metadata and status
