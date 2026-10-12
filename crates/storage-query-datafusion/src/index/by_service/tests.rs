@@ -10,6 +10,7 @@
 
 use std::cmp::Reverse;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{Int64Array, LargeStringArray, TimestampMillisecondArray};
@@ -30,6 +31,7 @@ use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, ReadVQueueTable, Stage, Status,
     WriteVQueueTable,
 };
+use restate_storage_query_api::{QueryOptions, SessionOptions};
 use restate_types::clock::{RoughTimestamp, UniqueTimestamp};
 use restate_types::config::{Configuration, QueryEngineOptions};
 use restate_types::errors::GenericError;
@@ -37,12 +39,15 @@ use restate_types::identifiers::{BaseEntryId, CanonicalEntryId, InvocationId, In
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
+use restate_worker_api::OfflinePartitionQueryAccess;
 
-use crate::context::{PartitionTables, QueryContext, SelectPartitions};
+use crate::context::{DataFusionQueryEngine, SelectPartitions};
 use crate::index::table::IndexFilter;
+use crate::local_scanners::{register_live_scanners, register_partition_scanners};
 use crate::mocks::MockQueryEngine;
 use crate::partition_store_scanner::{ScanLocalPartition, ScanLocalPartitionFilter};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::{DataFusionEnv, UserTables};
 
 use super::schema::IdxEntryByServiceBuilder;
 use super::table::EntryIndexScanner;
@@ -751,12 +756,24 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
     options
         .datafusion_options
         .insert("datafusion.execution.target_partitions".into(), "1".into());
-    let ctx = QueryContext::create(
-        &options,
-        PartitionTables::new(partitions, manager, scanners.clone()),
+    register_partition_scanners(manager, &scanners);
+    register_live_scanners(
+        Arc::new(OfflinePartitionQueryAccess::new(
+            partitions
+                .0
+                .iter()
+                .map(|(id, partition)| (*id, partition.key_range)),
+        )),
+        &scanners,
+    );
+    let engine = DataFusionQueryEngine::with_user_tables(
+        DataFusionEnv::from_options(&options).unwrap(),
+        None,
+        UserTables::new(partitions, scanners.clone()),
     )
     .await
     .unwrap();
+    let ctx = engine.create_session(SessionOptions::default()).unwrap();
     assert!(
         scanners
             .local_partition_scanner(super::table::NAME)
@@ -765,6 +782,7 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
     let batches = ctx
         .execute(
             "SELECT canonical_id FROM _idx_entry_by_service ORDER BY transitioned_at DESC LIMIT 1",
+            QueryOptions {},
         )
         .await
         .unwrap()
@@ -786,7 +804,7 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
         expected[0], expected[1], expected[0]
     );
     let batches = ctx
-        .execute(&query)
+        .execute(&query, QueryOptions {})
         .await
         .unwrap()
         .stream

@@ -12,23 +12,23 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::live::Live;
 use tokio::sync::mpsc::Sender;
 
+use restate_types::live::Live;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 
 use super::schema::SysServiceBuilder;
-use crate::context::QueryContext;
 use crate::service::row::append_service_row;
 use crate::statistics::{SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     resolver: Live<impl ServiceMetadataResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
     let schema = SysServiceBuilder::schema();
@@ -41,7 +41,8 @@ pub(crate) fn register_self(
     )
     .with_statistics(statistics.build());
 
-    ctx.register_non_partitioned_table("sys_service", Arc::new(service_table))
+    ctx.register_table("sys_service", Arc::new(service_table))
+        .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

@@ -14,6 +14,7 @@ use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::error::DataFusionError;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -25,7 +26,6 @@ use restate_types::config::Configuration;
 use restate_types::live::Live;
 
 use super::schema::ConfigBuilder;
-use crate::context::QueryContext;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
@@ -34,7 +34,7 @@ use crate::table_util::Builder;
 pub(crate) const TABLE_NAME: &str = "config";
 
 pub fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     metadata: Metadata,
     remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
@@ -48,7 +48,8 @@ pub fn register_self(
         local_scanner,
         TABLE_NAME,
     );
-    ctx.register_non_partitioned_table(TABLE_NAME, Arc::new(config_table))
+    ctx.register_table(TABLE_NAME, Arc::new(config_table))
+        .map(|_| ())
 }
 
 pub fn create_scanner(metadata: Metadata, config: Live<Configuration>) -> Arc<dyn Scan> {

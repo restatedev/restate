@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -21,7 +22,6 @@ use restate_core::Metadata;
 use restate_types::cluster_state::ClusterState;
 use restate_types::nodes_config::NodesConfiguration;
 
-use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -29,7 +29,7 @@ use super::row::append_node_row;
 use super::schema::NodeBuilder;
 
 pub fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     metadata: Metadata,
     cluster_state: ClusterState,
 ) -> datafusion::common::Result<()> {
@@ -40,7 +40,8 @@ pub fn register_self(
             cluster_state,
         }),
     );
-    ctx.register_non_partitioned_table("nodes", Arc::new(nodes_table))
+    ctx.register_table("nodes", Arc::new(nodes_table))
+        .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]
