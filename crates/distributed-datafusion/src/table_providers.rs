@@ -43,6 +43,16 @@ use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
+    /// Stable identity and placement information for the opt-in task runtime.
+    fn distributed_source(
+        &self,
+    ) -> Option<(
+        restate_util_string::ReString,
+        &crate::remote_query_scanner_manager::RemoteScannerManager,
+    )> {
+        None
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn scan_partition(
         &self,
@@ -237,6 +247,33 @@ where
         let target_partitions = state.config().target_partitions();
         let logical_partitions =
             physical_partitions_to_logical(physical_partitions, target_partitions);
+
+        if state
+            .config()
+            .get_extension::<crate::distributed::DistributedExecution>()
+            .is_some()
+            && !logical_partitions.is_empty()
+            && let Some((table, manager)) = self.partition_scanner.distributed_source()
+        {
+            return Ok(Arc::new(crate::distributed::StorageScanExec::for_scan(
+                table,
+                manager,
+                logical_partitions
+                    .into_iter()
+                    .map(|lane| {
+                        lane.physical_partitions
+                            .into_iter()
+                            .map(|(id, p)| (id, p.key_range))
+                            .collect()
+                    })
+                    .collect(),
+                projected_schema,
+                Arc::new(self.statistics.clone().project(projection).to_inexact()),
+                self.ordering.clone(),
+                predicate,
+                limit,
+            )?));
+        }
 
         let sort_columns = find_sort_columns(&self.ordering, &projected_schema);
 
