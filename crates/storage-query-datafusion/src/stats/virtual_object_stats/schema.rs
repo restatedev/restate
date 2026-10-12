@@ -15,26 +15,20 @@ use crate::table_macro::*;
 define_table!(
     /// Partition-local VQueue entry counts grouped by virtual-object dimensions.
     sys_virtual_object_stats(
-        /// Physical partition containing these virtual-object statistics.
-        partition_id: DataType::UInt32,
-
         /// Name of the virtual-object service whose entries are counted.
         service_name: DataType::LargeUtf8,
 
-        /// Key of the virtual object whose entries are counted.
-        key: DataType::LargeUtf8,
-
         /// Scope of the virtual object. NULL for unscoped virtual objects.
         scope: DataType::LargeUtf8,
+
+        /// Key of the virtual object whose entries are counted.
+        key: DataType::LargeUtf8,
 
         /// Name of the handler. The handler is NULL for state mutations.
         handler: DataType::LargeUtf8,
 
         /// The kind of operation. One of `state-mutation` or `invocation`.
         kind: DataType::LargeUtf8,
-
-        /// Internal column that is used for partitioning virtual objects. Can be ignored.
-        partition_key: DataType::UInt64,
 
         /// The number of entries that are in the inbox. The inbox is the priority
         /// queue that the scheduler uses to choose which entries to run next.
@@ -52,5 +46,9 @@ define_table!(
         /// The number of entries that have finished processing and are pending
         /// deletion or archival.
         num_finished: DataType::UInt64,
+
+        /// Internal column that is used for partitioning virtual objects. Can be ignored.
+        partition_key: DataType::UInt64,
+
         )
 );

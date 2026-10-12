@@ -24,8 +24,8 @@ define_aggregated_stat!(
     value: StageGauge,
     key: VirtualObjectLoadKey(
         service_name: ServiceName => str,
-        key: ReString => str,
         scope: Option<ReString> => str,
+        key: ReString => str,
         handler: Option<ReString> => str,
         kind: EntryKind,
         partition_key: PartitionKey,
@@ -50,8 +50,8 @@ mod tests {
             partition_id,
             VirtualObjectLoadKey::borrowed(
                 "counter",
-                "object",
                 None::<&str>,
+                "object",
                 None::<&str>,
                 EntryKind::StateMutation,
                 3337,
@@ -68,34 +68,34 @@ mod tests {
                     builder.service_name("counter");
                 }
                 2 => {
-                    builder.service_name("counter").key("object");
+                    builder.service_name("counter").scope(None::<&str>);
                 }
                 3 => {
                     builder
                         .service_name("counter")
-                        .key("object")
-                        .scope(None::<&str>);
+                        .scope(None::<&str>)
+                        .key("object");
                 }
                 4 => {
                     builder
                         .service_name("counter")
-                        .key("object")
                         .scope(None::<&str>)
+                        .key("object")
                         .handler(None::<&str>);
                 }
                 5 => {
                     builder
                         .service_name("counter")
-                        .key("object")
                         .scope(None::<&str>)
+                        .key("object")
                         .handler(None::<&str>)
                         .kind(EntryKind::StateMutation);
                 }
                 _ => {
                     builder
                         .service_name("counter")
-                        .key("object")
                         .scope(None::<&str>)
+                        .key("object")
                         .handler(None::<&str>)
                         .kind(EntryKind::StateMutation)
                         .partition_key(3337);
@@ -108,12 +108,10 @@ mod tests {
         let mut null_scope = Vec::new();
         VirtualObjectLoadKey::prefix(partition_id, &mut null_scope)
             .service_name("counter")
-            .key("object")
             .scope(None::<&str>);
         let mut empty_scope = Vec::new();
         VirtualObjectLoadKey::prefix(partition_id, &mut empty_scope)
             .service_name("counter")
-            .key("object")
             .scope(Some(""));
         assert_ne!(null_scope, empty_scope);
     }
