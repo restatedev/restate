@@ -8566,6 +8566,7 @@ dependencies = [
  "restate-admin",
  "restate-bifrost",
  "restate-core",
+ "restate-distributed-datafusion",
  "restate-futures-util",
  "restate-ingestion-client",
  "restate-ingress-http",

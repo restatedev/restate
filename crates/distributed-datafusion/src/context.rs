@@ -120,15 +120,6 @@ impl<T: Send + Sync> QuerySession<T> for RestateQuerySession<T> {
         let df = ctx.execute_logical_plan(plan).await?;
         let task_ctx = Arc::new(df.task_ctx());
         let physical_plan = df.create_physical_plan().await?;
-        let physical_plan = if task_ctx
-            .session_config()
-            .get_extension::<crate::distributed::DistributedExecution>()
-            .is_some()
-        {
-            crate::distributed::plan(physical_plan)?
-        } else {
-            physical_plan
-        };
         let metadata = QueryMetadata {
             session_id: self.session_id.clone(),
             query_ts,
