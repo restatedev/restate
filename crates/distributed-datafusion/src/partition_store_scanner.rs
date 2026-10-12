@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use std::sync::Arc;
-use std::time::Instant;
 use std::{fmt::Debug, ops::ControlFlow};
 
 use anyhow::anyhow;
@@ -19,17 +18,34 @@ use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
+use tokio::time::Instant;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 
+use crate::access::{PrimaryKeyKind, PrimaryRead};
 use crate::table_providers::ScanPartition;
 use crate::table_util::BatchSender;
 
 pub trait ScanLocalPartitionFilter {
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self;
+
+    fn planned(
+        range: KeyRange,
+        access: &PrimaryRead,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+    ) -> anyhow::Result<Self>
+    where
+        Self: Sized,
+    {
+        anyhow::ensure!(
+            matches!(access, PrimaryRead::Range),
+            "primary lookup is unavailable for this source"
+        );
+        Ok(Self::new(range, predicate))
+    }
 }
 
 impl ScanLocalPartitionFilter for KeyRange {
@@ -39,6 +55,7 @@ impl ScanLocalPartitionFilter for KeyRange {
 }
 
 pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = None;
     type Builder: crate::table_util::Builder + Send;
     type Item<'a>: Send;
     type ConversionError;
@@ -89,7 +106,7 @@ where
     fn scan_partition(
         &self,
         partition_id: PartitionId,
-        range: KeyRange,
+        filter: S::Filter,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
@@ -115,18 +132,14 @@ where
             let mut batch_sender =
                 BatchSender::new(projection, tx, predicate.clone(), batch_size, limit);
 
-            S::for_each_row(
-                &partition_store,
-                S::Filter::new(range, predicate),
-                move |row| {
-                    elapsed_compute.start();
-                    match S::append_row(batch_sender.builder_mut(), row) {
-                        Ok(()) => {}
-                        err => return ControlFlow::Break(err),
-                    }
-                    batch_sender.send_if_needed().map_break(Ok)
-                },
-            )
+            S::for_each_row(&partition_store, filter, move |row| {
+                elapsed_compute.start();
+                match S::append_row(batch_sender.builder_mut(), row) {
+                    Ok(()) => {}
+                    err => return ControlFlow::Break(err),
+                }
+                batch_sender.send_if_needed().map_break(Ok)
+            })
             .map_err(|err| DataFusionError::External(err.into()))?
             .await
             .map_err(|err| DataFusionError::External(err.into()))?;
@@ -143,6 +156,33 @@ where
     S: ScanLocalPartition<Builder = RB>,
     RB: crate::table_util::Builder + Send + Sync + 'static,
 {
+    fn primary_key_kind(&self) -> Option<PrimaryKeyKind> {
+        S::PRIMARY_KEY
+    }
+
+    fn read_partition(
+        &self,
+        partition_id: PartitionId,
+        range: KeyRange,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        let filter = S::Filter::planned(range, &access, predicate.clone())?;
+        self.scan_partition(
+            partition_id,
+            filter,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            elapsed_compute,
+        )
+    }
+
     fn scan_partition(
         &self,
         partition_id: PartitionId,
@@ -155,7 +195,7 @@ where
     ) -> anyhow::Result<SendableRecordBatchStream> {
         self.scan_partition(
             partition_id,
-            range,
+            S::Filter::new(range, predicate.clone()),
             projection,
             predicate,
             batch_size,
@@ -183,7 +223,7 @@ impl ElapsedCompute {
 impl Drop for ElapsedCompute {
     fn drop(&mut self) {
         if let Some(start) = &self.start {
-            self.time.add_elapsed(*start)
+            self.time.add_duration(start.elapsed())
         }
     }
 }

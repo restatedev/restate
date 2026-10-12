@@ -10,7 +10,6 @@
 
 use std::collections::BTreeMap;
 use std::fmt::{Debug, Formatter};
-use std::marker::PhantomData;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -32,6 +31,7 @@ use restate_types::net::remote_query_scanner::{RemoteQueryScannerOpen, ScannerId
 use restate_types::sharding::KeyRange;
 use restate_util_string::ReString;
 
+use crate::access::PrimaryKeyKind;
 use crate::placement::{PartitionPlacement, PartitionSource};
 use crate::remote_query_scanner_client::{
     RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
@@ -230,14 +230,19 @@ impl RemoteScannerManager {
     }
 
     /// Creates a routing adapter without changing the node's registered local capabilities.
-    pub fn create_distributed_scanner<T: QueryEngineTable>(&self) -> impl ScanPartition + Clone {
-        RemotePartitionsScanner::<T>::new(self.clone())
+    pub(crate) fn create_partition_source<T: QueryEngineTable>(&self) -> PartitionedSource {
+        PartitionedSource {
+            table: T::identity(),
+            manager: self.clone(),
+            source: PartitionSource::Storage,
+            primary_key: None,
+        }
     }
 
-    pub fn create_live_scanner<T: QueryEngineTable>(&self) -> impl ScanPartition + Clone {
-        RemotePartitionsScanner::<T> {
+    pub(crate) fn create_live_source<T: QueryEngineTable>(&self) -> PartitionedSource {
+        PartitionedSource {
             source: PartitionSource::LeaderLive,
-            ..RemotePartitionsScanner::new(self.clone())
+            ..self.create_partition_source::<T>()
         }
     }
 
@@ -289,19 +294,17 @@ impl RemoteScannerManager {
 // ----- remote partition scanner -----
 
 #[derive(Clone, Debug)]
-pub struct RemotePartitionsScanner<T> {
-    manager: RemoteScannerManager,
-    source: PartitionSource,
-    _phantom: PhantomData<T>,
+pub(crate) struct PartitionedSource {
+    pub table: ReString,
+    pub manager: RemoteScannerManager,
+    pub source: PartitionSource,
+    pub primary_key: Option<PrimaryKeyKind>,
 }
 
-impl<T: QueryEngineTable> RemotePartitionsScanner<T> {
-    pub fn new(manager: RemoteScannerManager) -> Self {
-        Self {
-            manager,
-            source: PartitionSource::Storage,
-            _phantom: PhantomData,
-        }
+impl PartitionedSource {
+    pub(crate) fn with_primary_key(mut self, kind: PrimaryKeyKind) -> Self {
+        self.primary_key = Some(kind);
+        self
     }
 }
 
@@ -326,13 +329,11 @@ impl ScanPartition for ScanToScanPartitionAdapter {
     }
 }
 
-impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
+// Compatibility adapter for a non-distributed environment using the old scanner RPC.
+// Distributed and local-only planning build concrete access operators instead.
+impl ScanPartition for PartitionedSource {
     fn partition_source(&self) -> PartitionSource {
         self.source
-    }
-
-    fn distributed_source(&self) -> Option<(ReString, &RemoteScannerManager)> {
-        Some((T::identity(), &self.manager))
     }
 
     fn scan_partition(
@@ -353,7 +354,7 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
             },
         )? {
             PartitionLocation::Local => {
-                let scanner = self.manager.local_partition_scanner(&T::identity()).ok_or_else(
+                let scanner = self.manager.local_partition_scanner(&self.table).ok_or_else(
                     ||anyhow!("was expecting a local partition to be present on this node. It could be that this partition is being opened right now.")
                 )?;
                 Ok(scanner.scan_partition(
@@ -374,7 +375,7 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
                     scanner_id,
                     partition_id,
                     range,
-                    T::identity(),
+                    self.table.clone(),
                     projection,
                     predicate,
                     batch_size,

@@ -12,7 +12,7 @@
 
 mod pushdown;
 mod requirements;
-mod source;
+pub(crate) mod source;
 mod transport;
 mod worker;
 
@@ -44,7 +44,7 @@ use uuid::Uuid;
 use restate_core::network::NetworkSender;
 use restate_types::GenerationalNodeId;
 
-pub(crate) use source::SourceExec;
+pub(crate) use source::NodeScanExec;
 pub use worker::DistributedQueryServer;
 
 #[derive(Debug)]
@@ -107,7 +107,7 @@ fn plan_with_pushdown(
     operator_pushdown: bool,
     config: &ConfigOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if !plan.exists(|plan| Ok(plan.is::<SourceExec>()))? {
+    if !plan.exists(|plan| Ok(source::source_owner(plan.as_ref()).is_some()))? {
         return Ok(plan);
     }
     // Normalize native requirements against available source lanes before
@@ -118,7 +118,7 @@ fn plan_with_pushdown(
     let mut stage_number = 0;
     let plan = plan
         .transform_up(|plan| {
-            if !plan.is::<SourceExec>() {
+            if source::source_owner(plan.as_ref()).is_none() {
                 if operator_pushdown && let Some(plan) = pushdown::push_into_sources(&plan)? {
                     return Ok(Transformed::yes(plan));
                 }
@@ -192,11 +192,11 @@ impl RouteTaskHandler for SourceOwnersOnly {
                 }
                 let mut owner = None;
                 ev.task_specialized_plan.apply(|plan| {
-                    if let Some(source) = plan.downcast_ref::<SourceExec>() {
-                        if owner.is_some_and(|owner| owner != source.owner()) {
+                    if let Some(source_owner) = source::source_owner(plan.as_ref()) {
+                        if owner.is_some_and(|owner| owner != source_owner) {
                             return exec_err!("task contains conflicting source owners");
                         }
-                        owner = Some(source.owner());
+                        owner = Some(source_owner);
                     }
                     Ok(TreeNodeRecursion::Continue)
                 })?;
