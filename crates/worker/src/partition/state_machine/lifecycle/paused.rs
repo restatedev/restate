@@ -20,6 +20,7 @@ use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
+use restate_types::vqueues::EntryTargetExt;
 use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
@@ -113,7 +114,7 @@ where
         )
         .await?
         .expect("pausing in a non-existent vqueue")
-        .pause_entry(at, &header);
+        .pause_entry(at, &header, &metadata.invocation_target.entry_target_ref());
     }
 
     let mut invocation_status = InvocationStatus::Paused(metadata);

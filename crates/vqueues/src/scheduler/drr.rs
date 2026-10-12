@@ -497,8 +497,7 @@ mod tests {
     use restate_types::identifiers::{BaseEntryId, PartitionId, PartitionKey};
     use restate_types::partitions::Partition;
     use restate_types::sharding::KeyRange;
-    use restate_types::vqueues::VQueueId;
-    use restate_types::vqueues::{EntryId, EntryKind};
+    use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
     use restate_worker_api::BlockedResource;
 
     use crate::cache::VQueuesMetaCache;
@@ -520,6 +519,14 @@ mod tests {
 
     fn test_qid(partition_key: u64) -> VQueueId {
         VQueueId::custom(partition_key, "1")
+    }
+
+    fn entry_target() -> EntryTargetRef<'static> {
+        EntryTargetRef::Service {
+            scope: None,
+            service: "test",
+            handler: "handler",
+        }
     }
 
     async fn storage_test_environment() -> PartitionStore {
@@ -585,6 +592,7 @@ mod tests {
 
         vqueue.enqueue_new(
             created_at,
+            &entry_target(),
             seq,
             Some(run_at),
             entry_id,
@@ -622,7 +630,7 @@ mod tests {
         .await
         .expect("vqueue should be created");
 
-        vqueue.run_entry(at, &header, WaitStats::default())
+        vqueue.run_entry(at, &header, &entry_target(), WaitStats::default())
     }
 
     async fn reschedule(
@@ -654,7 +662,7 @@ mod tests {
         .await
         .expect("vqueue should be created");
 
-        vqueue.reschedule(&header, run_at, None);
+        vqueue.reschedule(&header, &entry_target(), run_at, None);
     }
 
     /// Parks a running entry into the Suspended stage.
@@ -685,7 +693,7 @@ mod tests {
         .await
         .expect("vqueue should be created");
 
-        vqueue.suspend_entry(at, &header);
+        vqueue.suspend_entry(at, &header, &entry_target());
     }
 
     async fn read_header(
@@ -913,7 +921,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
-            .pause_entry(at, &header);
+            .pause_entry(at, &header, &entry_target());
         txn.commit().await.unwrap();
         drop(txn);
         for event in events {
@@ -1007,6 +1015,7 @@ mod tests {
             vqueue.run_then_finish(
                 UniqueTimestamp::try_from(1_200u64).unwrap(),
                 &header,
+                &entry_target(),
                 WaitStats::default(),
                 Status::Succeeded,
             );

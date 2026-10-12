@@ -22,6 +22,7 @@ use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, SuspendedEvent};
 use restate_types::journal_v2::UnresolvedFuture;
+use restate_types::vqueues::EntryTargetExt;
 use restate_vqueues::VQueue;
 
 use crate::partition::processor::ProcessorContext;
@@ -134,7 +135,13 @@ where
                 )
                 .await?
                 .expect("suspending in a non-existent vqueue")
-                .suspend_entry(now, &header);
+                .suspend_entry(
+                    now,
+                    &header,
+                    &in_flight_invocation_metadata
+                        .invocation_target
+                        .entry_target_ref(),
+                );
             }
 
             invocation_status = InvocationStatus::Suspended {
