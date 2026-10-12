@@ -21,6 +21,7 @@ use std::time::Duration;
 use arc_swap::ArcSwapOption;
 use http::{HeaderName, HeaderValue};
 use restate_encoding::{Arced, RestateEncoding};
+use restate_platform::storage::{StorageCodecKind, StorageEncode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
@@ -78,6 +79,18 @@ pub struct SchemaUnindexed {
     subscriptions: HashMap<SubscriptionId, Subscription>,
     #[bilrost(tag(4))]
     kafka_clusters: HashMap<String, KafkaCluster>,
+
+    // Once schema is decoded using bilrost
+    // this flag will remain "true". Nodes
+    // that has it's configuration to use
+    // bilrost encoding not enabled will then
+    // also use the bilrost_encoding for the
+    // schema
+    // todo(azmy): remove in v1.9 once bilrost encoding
+    // becomes default for Schema
+    #[bilrost(tag(5))]
+    #[serde(skip)]
+    bilrost_encoded: bool,
 }
 
 /// Serializable data structure representing the schema registry
@@ -85,10 +98,20 @@ pub struct SchemaUnindexed {
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
 // TODO(azmy): Drop serde::Serialize and serde::Deserialize implementations along with serde for MetadataUpdate
 // in v1.9.0
-#[derive(derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    derive_more::Debug,
+    Clone,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+)]
 #[serde(from = "SchemaUnindexed", into = "SchemaUnindexed")]
 #[debug("Schema(version: {})", unindexed.version)]
 pub struct Schema {
+    #[deref]
+    #[deref_mut]
     unindexed: SchemaUnindexed,
     /// Derived from `unindexed.deployments`, never persisted.
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
@@ -101,6 +124,7 @@ impl Default for SchemaUnindexed {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
+            bilrost_encoded: false,
         }
     }
 }
@@ -113,6 +137,11 @@ impl SchemaUnindexed {
 
         Ok(())
     }
+
+    pub fn mark_bilrost_encoded(&mut self, force: bool) {
+        self.bilrost_encoded =
+            force || self.default_codec() == StorageCodecKind::ZstdBilrostDefault;
+    }
 }
 
 impl From<SchemaUnindexed> for Schema {
@@ -123,14 +152,6 @@ impl From<SchemaUnindexed> for Schema {
             ),
             unindexed,
         }
-    }
-}
-
-impl std::ops::Deref for Schema {
-    type Target = SchemaUnindexed;
-
-    fn deref(&self) -> &Self::Target {
-        &self.unindexed
     }
 }
 
@@ -201,7 +222,7 @@ mod storage {
                     .is_schema_bilrost_encoding_enabled()
             });
 
-            if *bilrost_encoding {
+            if *bilrost_encoding || self.bilrost_encoded {
                 StorageCodecKind::ZstdBilrostDefault
             } else {
                 StorageCodecKind::FlexbuffersSerde
@@ -237,8 +258,10 @@ mod storage {
                     Ok(schema)
                 }
                 StorageCodecKind::ZstdBilrostDefault => {
-                    let schema = storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
+                    let mut schema =
+                        storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
 
+                    schema.bilrost_encoded = true;
                     schema
                         .verify()
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;

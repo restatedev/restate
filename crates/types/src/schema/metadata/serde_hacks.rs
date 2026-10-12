@@ -49,6 +49,7 @@ impl From<SchemaUnindexed> for Schema {
             deployments,
             subscriptions,
             kafka_clusters,
+            bilrost_encoded: _,
         }: SchemaUnindexed,
     ) -> Self {
         Self {
@@ -81,6 +82,7 @@ impl From<Schema> for SchemaUnindexed {
                 .collect(),
             subscriptions,
             kafka_clusters,
+            bilrost_encoded: false,
         }
     }
 }

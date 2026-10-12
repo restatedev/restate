@@ -12,13 +12,14 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use http::{HeaderMap, HeaderValue, uri::PathAndQuery};
+use tracing::trace;
+
 use restate_core::{Metadata, MetadataWriter, TaskCenter, TaskKind};
 use restate_metadata_store::ReadModifyWriteError;
 use restate_service_client::HttpClient;
 use restate_types::live::Pinned;
 use restate_types::schema::Schema;
 use restate_types::schema::registry::SchemaRegistryError;
-use tracing::trace;
 
 #[derive(Clone)]
 pub struct MetadataService(pub(crate) MetadataWriter);
@@ -41,7 +42,8 @@ impl restate_types::schema::registry::MetadataService for MetadataService {
                     .map(|s| s.as_ref().clone())
                     .unwrap_or_default();
 
-                let (new_t, new_schema) = modify(schema)?;
+                let (new_t, mut new_schema) = modify(schema)?;
+                new_schema.mark_bilrost_encoded(false);
                 t = Some(new_t);
                 Ok(new_schema)
             })
