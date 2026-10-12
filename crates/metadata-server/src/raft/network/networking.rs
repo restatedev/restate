@@ -173,9 +173,10 @@ where
                     networking_options,
                     net_util::DNSResolution::Gai,
                 );
+                let mut network_client =
+                    new_metadata_server_network_client(channel, networking_options);
 
                 async move {
-                    let mut network_client = new_metadata_server_network_client(channel);
                     let (outgoing_tx, outgoing_rx) = mpsc::channel(128);
 
                     let mut request = ReceiverStream::new(outgoing_rx).into_streaming_request();
