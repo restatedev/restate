@@ -1472,7 +1472,7 @@ mod tests {
     }
 
     impl DecodeTableKey for String {
-        fn deserialize_from<B: Buf>(bytes: &mut B) -> crate::partition_store::Result<Self> {
+        fn deserialize_from(bytes: &mut &[u8]) -> crate::partition_store::Result<Self> {
             let key_kind = KeyKind::deserialize(bytes)?;
             assert_eq!(key_kind, Self::KEY_KIND);
 

@@ -730,9 +730,7 @@ async fn migrate_suspended_invocation(
 }
 
 #[inline]
-fn invocation_id_from_key_bytes<B: bytes::Buf>(
-    bytes: &mut B,
-) -> Result<InvocationId, StorageError> {
+fn invocation_id_from_key_bytes(bytes: &mut &[u8]) -> Result<InvocationId, StorageError> {
     let key = InvocationStatusKey::deserialize_from(bytes)?;
     Ok(InvocationId::from_parts(
         key.partition_key,
