@@ -106,7 +106,7 @@ impl ScanLocalPartition for VQueuesScanner {
                         }
 
                         let canonical_id = id.canonicalize(header.seq);
-                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
+                        f(VQueueRow::Status(&canonical_id, header)).map_break(|Ok(())| Ok(()))
                     },
                 )
                 .map(FutureExt::boxed);
