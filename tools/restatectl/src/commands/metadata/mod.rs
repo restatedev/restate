@@ -102,6 +102,16 @@ async fn get_value(
     connection: &ConnectionInfo,
     key: impl AsRef<str>,
 ) -> anyhow::Result<Option<GenericMetadataValue>> {
+    get_raw_value(connection, key)
+        .await?
+        .map(TryInto::try_into)
+        .transpose()
+}
+
+async fn get_raw_value(
+    connection: &ConnectionInfo,
+    key: impl AsRef<str>,
+) -> anyhow::Result<Option<VersionedValue>> {
     let key = key.as_ref();
     let response = connection
         .try_each(None, |channel| async {
@@ -113,10 +123,5 @@ async fn get_value(
         })
         .await?;
 
-    let response = response.into_inner();
-    let Some(value) = response.value else {
-        return Ok(None);
-    };
-
-    Ok(Some(value.try_into()?))
+    Ok(response.into_inner().value)
 }
