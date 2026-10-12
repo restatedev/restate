@@ -14,11 +14,11 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::physical_plan::PhysicalExpr;
 
 use restate_partition_store::PartitionStoreManager;
-use restate_storage_api::filter::{Filter, FilterTarget};
+use restate_storage_api::filter::{Filter, FilterTarget, LiveFilter};
 use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::{FirstMatchingPartitionKeyExtractor, LivePredicate};
 use crate::partition_store_scanner::{
     LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
 };
@@ -29,13 +29,26 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 pub(super) struct IndexFilter<T: FilterTarget> {
     pub range: KeyRange,
     pub predicate: Filter<T>,
+    /// Refines `predicate` with the query's dynamic filters during the scan.
+    pub live: Option<Box<dyn LiveFilter<T>>>,
 }
 
-impl<T: FilterTarget> ScanLocalPartitionFilter for IndexFilter<T> {
+impl<T: FilterTarget + 'static> ScanLocalPartitionFilter for IndexFilter<T> {
     fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        Self::new_live(range, access_predicate, None)
+    }
+
+    fn new_live(
+        range: KeyRange,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
+        predicate: Option<&Arc<dyn PhysicalExpr>>,
+    ) -> Self {
+        let live = LivePredicate::new(range, access_predicate.as_ref(), predicate)
+            .map(|live| Box::new(live) as Box<dyn LiveFilter<T>>);
         Self {
             range,
             predicate: Filter::new(range, access_predicate),
+            live,
         }
     }
 }
