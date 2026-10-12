@@ -47,6 +47,7 @@ pub use partition_store::*;
 pub use partition_store_manager::*;
 // re-export
 pub use restate_rocksdb::Priority;
+pub use restate_util_string::encoded_mem_cmp_str;
 
 use crate::scan::TableScan;
 
