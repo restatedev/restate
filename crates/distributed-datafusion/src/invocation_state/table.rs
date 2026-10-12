@@ -15,7 +15,7 @@ use datafusion::catalog::TableProvider;
 use restate_worker_api::PartitionQueryAccess;
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::invocation_state::row::append_invocation_state_row;
 use crate::invocation_state::schema::{
     SysInvocationStateBuilder, SysInvocationStateTable, sys_invocation_state_sort_order,
@@ -39,8 +39,8 @@ impl SysInvocationStateTable {
             partition_selector,
             schema,
             sys_invocation_state_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
+            remote_scanner_manager.create_live_scanner::<Self>(),
+            PartitionKeySelector::default().with_invocation_id("id"),
         )
         .with_statistics(statistics.build());
         Arc::new(table)

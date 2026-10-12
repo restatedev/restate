@@ -19,7 +19,7 @@ use restate_storage_api::inbox_table::{ScanInboxTable, SequenceNumberInboxEntry}
 use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::inbox::row::append_inbox_row;
 use crate::inbox::schema::{SysInboxBuilder, SysInboxTable, sys_inbox_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -36,7 +36,7 @@ impl SysInboxTable {
             SysInboxBuilder::schema(),
             sys_inbox_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_service_key("service_key")
                 .with_invocation_id("id"),
         );

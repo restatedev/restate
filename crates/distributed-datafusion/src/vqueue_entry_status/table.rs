@@ -22,7 +22,7 @@ use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatu
 use restate_types::vqueues::{EntryId, VQueueId};
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueEntryIdFilter};
+use crate::filter::{PartitionKeySelector, VQueueEntryIdFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
@@ -53,7 +53,7 @@ impl SysVqueueEntryStatusTable {
             schema,
             sys_vqueue_entry_status_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_grouped_vqueue_entry_id("entry_id")
                 .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
         )
