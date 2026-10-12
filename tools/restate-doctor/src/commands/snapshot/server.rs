@@ -36,11 +36,11 @@ use http::{HeaderMap, HeaderValue};
 use http_body::Frame;
 use http_body_util::StreamBody;
 use serde::{Deserialize, Serialize};
-use tracing::{Level, enabled, warn};
+use tracing::warn;
 
 use restate_cli_util::c_println;
 use restate_storage_query_api::errors::QueryExecutionError;
-use restate_storage_query_api::{AdminUser, QueryOptions, QuerySession};
+use restate_storage_query_api::{AdminUser, QueryMetadata, QueryOptions, QuerySession};
 
 /// SQL query request body, matching the admin `/query` endpoint.
 #[derive(Debug, Deserialize)]
@@ -109,7 +109,7 @@ async fn query(
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, payload.query)?
+            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, query_result.metadata)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
@@ -117,7 +117,7 @@ async fn query(
         _ => (
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 query_result.stream,
-                payload.query,
+                query_result.metadata,
             )?
             .map_ok(Frame::data)
             .right_stream(),
@@ -179,19 +179,19 @@ struct WriteRecordBatchStream<W> {
     done: bool,
     record_batch_stream: SendableRecordBatchStream,
     stream_writer: W,
-    query: String,
+    metadata: QueryMetadata,
 }
 
 impl<W: RecordBatchWriter> WriteRecordBatchStream<W> {
     fn new(
         record_batch_stream: SendableRecordBatchStream,
-        query: String,
+        metadata: QueryMetadata,
     ) -> Result<Self, DataFusionError> {
         Ok(WriteRecordBatchStream {
             done: false,
             stream_writer: W::new(&record_batch_stream.schema())?,
             record_batch_stream,
-            query,
+            metadata,
         })
     }
 }
@@ -210,11 +210,9 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
             match record_batch.and_then(|record_batch| self.stream_writer.write(&record_batch)) {
                 Ok(bytes) => Poll::Ready(Some(Ok(bytes))),
                 Err(err) => {
-                    if enabled!(Level::DEBUG) {
-                        warn!(query = %self.query, %err, "Query failed");
-                    } else {
-                        warn!(%err, "Query failed");
-                    }
+                    // Error text can contain literal values; preserve it only in the response.
+                    warn!(target: "query_engine", session = %self.metadata.session_id,
+                        query = %self.metadata.redacted_sql, "Query failed");
 
                     self.done = true;
                     Poll::Ready(Some(Err(err)))
