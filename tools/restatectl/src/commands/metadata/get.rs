@@ -14,7 +14,19 @@ use clap::Parser;
 use cling::{Collect, Run};
 
 use restate_cli_util::c_eprintln;
-use restate_types::Version;
+use restate_types::epoch::EpochMetadata;
+use restate_types::identifiers::PartitionId;
+use restate_types::logs::metadata::Logs;
+use restate_types::metadata_store::keys::{
+    BIFROST_CONFIG_KEY, NODES_CONFIG_KEY, PARTITION_PROCESSOR_EPOCH_PREFIX, PARTITION_TABLE_KEY,
+    SCHEMA_INFORMATION_KEY,
+};
+use restate_types::nodes_config::NodesConfiguration;
+use restate_types::partition_table::PartitionTable;
+use restate_types::protobuf::metadata::VersionedValue;
+use restate_types::schema::SchemaUnindexed;
+use restate_types::storage::{StorageCodec, StorageDecode};
+use restate_types::{Version, Versioned};
 
 use crate::commands::metadata::MetadataCommonOpts;
 use crate::connection::ConnectionInfo;
@@ -26,15 +38,43 @@ pub struct GetValueOpts {
     #[clap(flatten)]
     metadata: MetadataCommonOpts,
 
-    /// The key to get
+    /// The key to get. Without `--raw`, only well-known keys are supported:
+    /// nodes_config, bifrost_config, partition_table, schema_registry and
+    /// pp_epoch_<partition-id>. Use `--raw` to fetch any other key.
     #[arg(short, long)]
     key: String,
 
-    /// Write the stored value bytes to stdout as-is, without decoding. Nothing is
+    /// Write the stored value bytes to stdout as-is, without decoding. Works with
+    /// any key, including ones that cannot be decoded otherwise. Nothing is
     /// stripped: the output includes the storage encoding header. The value's
     /// version is printed to stderr.
     #[arg(long, default_value_t = false)]
     raw: bool,
+}
+
+/// Metadata keys whose values can be decoded into their typed representation.
+enum KnownKey {
+    NodesConfig,
+    Logs,
+    PartitionTable,
+    Schema,
+    Epoch,
+}
+
+impl KnownKey {
+    fn parse(key: &str) -> Option<Self> {
+        match key {
+            k if k == &*NODES_CONFIG_KEY => Some(Self::NodesConfig),
+            k if k == &*BIFROST_CONFIG_KEY => Some(Self::Logs),
+            k if k == &*PARTITION_TABLE_KEY => Some(Self::PartitionTable),
+            k if k == &*SCHEMA_INFORMATION_KEY => Some(Self::Schema),
+            k => k
+                .strip_prefix(PARTITION_PROCESSOR_EPOCH_PREFIX)
+                .and_then(|id| id.strip_prefix('_'))
+                .and_then(|id| id.parse::<PartitionId>().ok())
+                .map(|_| Self::Epoch),
+        }
+    }
 }
 
 async fn get_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::Result<()> {
@@ -42,12 +82,44 @@ async fn get_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::
         return get_raw_value(connection, opts).await;
     }
 
-    let value = super::get_value(connection, &opts.key).await?;
+    let Some(known_key) = KnownKey::parse(&opts.key) else {
+        anyhow::bail!(
+            "key '{}' is not a well-known metadata key and cannot be decoded; use --raw to fetch the stored bytes as-is",
+            opts.key
+        );
+    };
 
-    let value = serde_json::to_string_pretty(&value).map_err(|e| anyhow::anyhow!(e))?;
-    println!("{value}");
+    let Some(value) = super::get_raw_value(connection, &opts.key).await? else {
+        anyhow::bail!("key '{}' does not exist", opts.key);
+    };
+
+    let value = match known_key {
+        KnownKey::NodesConfig => decode_json::<NodesConfiguration>(value)?,
+        KnownKey::Logs => decode_json::<Logs>(value)?,
+        KnownKey::PartitionTable => decode_json::<PartitionTable>(value)?,
+        KnownKey::Schema => decode_json::<SchemaUnindexed>(value)?,
+        KnownKey::Epoch => decode_json::<EpochMetadata>(value)?,
+    };
+
+    println!("{}", serde_json::to_string_pretty(&value)?);
 
     Ok(())
+}
+
+fn decode_json<T: StorageDecode + Versioned + serde::Serialize>(
+    mut value: VersionedValue,
+) -> anyhow::Result<serde_json::Value> {
+    let version: Version = value
+        .version
+        .ok_or_else(|| anyhow::anyhow!("version is required"))?
+        .into();
+
+    let decoded: T = StorageCodec::decode(&mut value.bytes)?;
+    if decoded.version() != version {
+        anyhow::bail!("returned payload and metadata object versions must align");
+    }
+
+    Ok(serde_json::to_value(&decoded)?)
 }
 
 async fn get_raw_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::Result<()> {
