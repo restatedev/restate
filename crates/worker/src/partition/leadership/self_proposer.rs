@@ -11,7 +11,8 @@
 use futures::never::Never;
 
 use restate_bifrost::{
-    Bifrost, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy, InputRecord,
+    Bifrost, CommitToken, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy,
+    InputRecord,
 };
 use restate_memory::PollMemoryPool;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -35,6 +36,7 @@ static BIFROST_APPENDER_TASK: &str = "bifrost-appender";
 pub struct SelfProposer {
     epoch_sequence_number: EpochSequenceNumber,
     bifrost_appender: restate_bifrost::AppenderHandle<Envelope<Raw>>,
+    enqueued_records: u64,
 }
 
 impl SelfProposer {
@@ -58,6 +60,7 @@ impl SelfProposer {
         Ok(Self {
             epoch_sequence_number,
             bifrost_appender,
+            enqueued_records: 0,
         })
     }
 
@@ -110,6 +113,8 @@ impl SelfProposer {
             sequence_number: end_seq,
         };
 
+        self.enqueued_records += end_seq - start_seq;
+
         Ok(bytes_written)
     }
 
@@ -128,10 +133,13 @@ impl SelfProposer {
         let keys = command.keys();
         let envelope = Envelope::new(dedup, command.inner());
 
-        self.bifrost_appender
+        let bytes = self
+            .bifrost_appender
             .sender()
             .enqueue(BodyWithKeys::new(envelope.into_raw(), keys))
-            .map_err(|e| Error::SelfProposer(e.to_string()))
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+        self.enqueued_records += 1;
+        Ok(bytes)
     }
 
     /// Self-propose a single erased-command to Bifrost, attaching ESN-based dedup information.
@@ -149,10 +157,13 @@ impl SelfProposer {
 
         let envelope = Envelope::from_erased_command(dedup, command);
 
-        self.bifrost_appender
+        let bytes = self
+            .bifrost_appender
             .sender()
             .enqueue(BodyWithKeys::new(envelope, keys))
-            .map_err(|e| Error::SelfProposer(e.to_string()))
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+        self.enqueued_records += 1;
+        Ok(bytes)
     }
 
     /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
@@ -192,10 +203,13 @@ impl SelfProposer {
     ) -> Result<EnqueueWithNotificationResult, Error> {
         let envelope = Envelope::from_erased_command(Dedup::None, command);
 
-        self.bifrost_appender
+        let result = self
+            .bifrost_appender
             .sender()
             .enqueue_with_notification(BodyWithKeys::new(envelope, keys))
-            .map_err(|e| Error::SelfProposer(e.to_string()))
+            .map_err(|e| Error::SelfProposer(e.to_string()))?;
+        self.enqueued_records += 1;
+        Ok(result)
     }
 
     /// Forward externally-created records to Bifrost, returning the number of bytes written and a
@@ -208,6 +222,7 @@ impl SelfProposer {
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
     ) -> Result<EnqueueWithNotificationResult, EnqueueError<()>> {
+        let count = records.len() as u64;
         let sender = self.bifrost_appender.sender();
 
         let inputs = records.map(|record| {
@@ -223,6 +238,7 @@ impl SelfProposer {
         });
 
         let bytes_written = sender.enqueue_many_unchecked(inputs)?;
+        self.enqueued_records += count;
 
         Ok(EnqueueWithNotificationResult {
             commit_token: sender.notify_committed()?,
@@ -245,6 +261,17 @@ impl SelfProposer {
     /// Returns a poll-style watcher over the appender's memory-pool capacity.
     pub fn capacity_poller(&self) -> PollMemoryPool {
         self.bifrost_appender.sender_ref().capacity_poller()
+    }
+
+    pub fn enqueued_records(&self) -> u64 {
+        self.enqueued_records
+    }
+
+    pub fn notify_committed(&self) -> Result<CommitToken, Error> {
+        self.bifrost_appender
+            .sender_ref()
+            .notify_committed()
+            .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
     fn next_esn(&mut self) -> EpochSequenceNumber {

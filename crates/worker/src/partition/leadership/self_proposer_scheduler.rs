@@ -10,12 +10,28 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::task::Poll;
 use std::task::{Context, Wake, Waker};
+use std::time::Duration;
 
 use enum_map::{Enum, EnumMap};
+use futures::FutureExt;
+use metrics::{Counter, Gauge, Histogram, counter, gauge, histogram};
+use tokio::time::Instant;
 use tracing::warn;
 
+use restate_bifrost::CommitToken;
 use restate_platform::sync::Mutex;
+use restate_types::config::WorkerOptions;
+use restate_types::identifiers::PartitionId;
+use restate_types::logs::Lsn;
+
+use crate::metric_definitions::{
+    PARTITION_LABEL, SELF_PROPOSER_INFLIGHT, SELF_PROPOSER_PENDING,
+    SELF_PROPOSER_RECEIVE_TO_PROPOSE, SELF_PROPOSER_WINDOW_BLOCKED_MS,
+};
+
+use super::Error;
 
 const QUANTUM: i64 = 64 * 1024; // 64KiB
 
@@ -78,7 +94,6 @@ enum State {
     },
 }
 
-#[derive(Debug, Clone)]
 struct FlowState {
     /// Signed DRR deficit counter in bytes.
     ///
@@ -88,12 +103,45 @@ struct FlowState {
     /// won't get polled again until its deficit goes positive again over the rounds.
     deficit: i64,
     state: State,
+    in_flight: u64,
+    reported_in_flight: Option<u64>,
+    limit: u64,
+    blocked_since: Option<Instant>,
+    metrics: FlowMetrics,
+}
+
+struct FlowMetrics {
+    in_flight: Gauge,
+    blocked_ms: Counter,
+    receive_to_propose: Histogram,
+}
+
+impl FlowState {
+    fn report_window(&mut self, now: Instant) {
+        if let Some(since) = &mut self.blocked_since {
+            let millis = now.saturating_duration_since(*since).as_millis() as u64;
+            if millis > 0 {
+                self.metrics.blocked_ms.increment(millis);
+                *since += Duration::from_millis(millis);
+            }
+        }
+        if self.in_flight >= self.limit {
+            self.blocked_since.get_or_insert(now);
+        } else {
+            self.blocked_since = None;
+        }
+        if self.reported_in_flight != Some(self.in_flight) {
+            self.metrics.in_flight.set(self.in_flight as f64);
+            self.reported_in_flight = Some(self.in_flight);
+        }
+    }
 }
 
 struct Inner {
     parent_waker: Option<Waker>,
     state: EnumMap<SelfProposerSchedulerFlow, FlowState>,
     ready_ring: VecDeque<SelfProposerSchedulerFlow>,
+    new_proposals: EnumMap<SelfProposerSchedulerFlow, u64>,
 }
 
 #[derive(Debug, Clone, Enum, Copy, PartialEq)]
@@ -110,6 +158,36 @@ pub(crate) enum SelfProposerSchedulerFlow {
 }
 
 impl SelfProposerSchedulerFlow {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Invoker => "invoker",
+            Self::Timer => "timer",
+            Self::Shuffle => "shuffle",
+            Self::Cleaner => "cleaner",
+            Self::UpsertSchema => "upsert-schema",
+            Self::UpsertRuleBook => "upsert-rule-book",
+            Self::NetworkService => "network-service",
+            Self::PartitionMaintenance => "partition-maintenance",
+            Self::Scheduler => "scheduler",
+        }
+    }
+
+    fn limit(self, options: &WorkerOptions) -> u64 {
+        let limits = &options.self_proposal_max_in_flight;
+        let limit = match self {
+            Self::Invoker => limits.invoker,
+            Self::Timer => limits.timer,
+            Self::Shuffle => limits.shuffle,
+            Self::Cleaner => options.cleanup_max_in_flight_purges(),
+            Self::UpsertSchema => limits.upsert_schema,
+            Self::UpsertRuleBook => limits.upsert_rule_book,
+            Self::NetworkService => limits.network_service,
+            Self::PartitionMaintenance => limits.partition_maintenance,
+            Self::Scheduler => limits.scheduler,
+        };
+        u64::from(limit.get())
+    }
+
     /// Returns the cost multiplier for a flow. The multiplier is multiplied by the number of bytes proposed for that flow,
     /// resulting into it being charged more for those bytes. A higher multiplier biases the scheduler "against" that flow
     /// (i.e. deprioritizing it).
@@ -163,13 +241,36 @@ impl<'a> SchedulerDecision<'a> {
     ///
     /// Note: Flows that report back 0 bytes written will lose their position in the
     /// ready queue to avoid starvation.
-    pub(crate) fn on_proposal_enqueued(mut self, bytes_written: usize) {
+    /// `records` counts actual enqueues, independently of the byte charge used for
+    /// fairness; discarded/noop work consumes no application-window credits.
+    pub(crate) fn on_proposal_enqueued(
+        mut self,
+        bytes_written: usize,
+        records: u64,
+        received_at: Option<Instant>,
+    ) {
         self.received_feedback = true;
         let mut inner = self.inner.lock();
         let Inner {
-            state, ready_ring, ..
+            state,
+            ready_ring,
+            new_proposals,
+            ..
         } = &mut *inner;
         let state = &mut state[self.flow];
+        state.in_flight += records;
+        new_proposals[self.flow] += records;
+        if state.in_flight >= state.limit && state.blocked_since.is_none() {
+            state.blocked_since = Some(Instant::now());
+        }
+        if records > 0
+            && let Some(received_at) = received_at
+        {
+            state
+                .metrics
+                .receive_to_propose
+                .record(received_at.elapsed());
+        }
         state.deficit = state.deficit.saturating_sub(
             bytes_written.saturating_mul(self.flow.cost_multiplier() as usize) as i64,
         );
@@ -178,9 +279,9 @@ impl<'a> SchedulerDecision<'a> {
     }
 
     /// Reports back that the flow was ready, but reported an error without proposing any bytes.
-    /// Will be treated as an empty proposal (see [`SelfProposerScheduler::on_proposal_enqueued`]).
+    /// Will be treated as an empty proposal (see [`Self::on_proposal_enqueued`]).
     pub(crate) fn on_error(self) {
-        self.on_proposal_enqueued(0)
+        self.on_proposal_enqueued(0, 0, None)
     }
 
     /// Reports back to the scheduler that the flow was polled and reported `Poll::Pending`.
@@ -246,19 +347,32 @@ pub(crate) struct SelfProposerScheduler {
     inner: Arc<Mutex<Inner>>,
     /// A cache for the per-flow wakers
     wakers: EnumMap<SelfProposerSchedulerFlow, Waker>,
+    pending: VecDeque<ProposalBatch>,
+    pending_invoker: Gauge,
+    pending_network: Gauge,
 }
 
-impl Default for SelfProposerScheduler {
-    fn default() -> Self {
-        Self::new()
-    }
+struct ProposalBatch {
+    commit: CommitToken,
+    committed_lsn: Option<Lsn>,
+    records: EnumMap<SelfProposerSchedulerFlow, u64>,
 }
 
 impl SelfProposerScheduler {
-    pub(crate) fn new() -> SelfProposerScheduler {
-        let state = EnumMap::from_fn(|_| FlowState {
+    pub(crate) fn new(partition_id: PartitionId) -> SelfProposerScheduler {
+        let partition = partition_id.to_string();
+        let state = EnumMap::from_fn(|flow: SelfProposerSchedulerFlow| FlowState {
             deficit: 0,
             state: State::Queued,
+            in_flight: 0,
+            reported_in_flight: None,
+            limit: u64::MAX,
+            blocked_since: None,
+            metrics: FlowMetrics {
+                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition.clone(), "flow" => flow.label()),
+                blocked_ms: counter!(SELF_PROPOSER_WINDOW_BLOCKED_MS, PARTITION_LABEL => partition.clone(), "flow" => flow.label()),
+                receive_to_propose: histogram!(SELF_PROPOSER_RECEIVE_TO_PROPOSE, PARTITION_LABEL => partition.clone(), "flow" => flow.label()),
+            },
         });
         let inner = Arc::new(Mutex::new(Inner {
             // The current waker will be set on the first poll and keep getting updated there.
@@ -267,6 +381,7 @@ impl SelfProposerScheduler {
             // and register their wakers.
             ready_ring: VecDeque::from_iter(state.iter().map(|(flow, _)| flow)),
             state,
+            new_proposals: EnumMap::default(),
         }));
         let wakers = EnumMap::from_fn(|flow| {
             Waker::from(Arc::new(FlowWaker {
@@ -274,7 +389,72 @@ impl SelfProposerScheduler {
                 inner: Arc::clone(&inner),
             }))
         });
-        Self { inner, wakers }
+        Self {
+            inner,
+            wakers,
+            pending: VecDeque::new(),
+            pending_invoker: gauge!(SELF_PROPOSER_PENDING, PARTITION_LABEL => partition.clone(), "flow" => "invoker"),
+            pending_network: gauge!(SELF_PROPOSER_PENDING, PARTITION_LABEL => partition, "flow" => "network-service"),
+        }
+    }
+
+    pub fn report_pending(&self, invoker: usize, network: usize) {
+        self.pending_invoker.set(invoker as f64);
+        self.pending_network.set(network as f64);
+    }
+
+    /// One receipt per admission round, not per record. Receipts are ordered because
+    /// the single background appender preserves enqueue order.
+    pub fn track_proposals(&mut self, commit: CommitToken) {
+        let records = std::mem::take(&mut self.inner.lock().new_proposals);
+        debug_assert!(records.values().any(|count| *count > 0));
+        self.pending.push_back(ProposalBatch {
+            commit,
+            committed_lsn: None,
+            records,
+        });
+    }
+
+    /// The partition loop polls this again after committing each application batch.
+    /// Bifrost commit alone never returns admission credits. The receipt's LSN may
+    /// conservatively include later records in the same appender batch.
+    pub fn poll_progress(
+        &mut self,
+        cx: &mut Context<'_>,
+        applied_lsn: Lsn,
+        options: &WorkerOptions,
+    ) -> Result<(), Error> {
+        while let Some(batch) = self.pending.front_mut() {
+            let lsn = match batch.committed_lsn {
+                Some(lsn) => lsn,
+                None => match batch.commit.poll_unpin(cx) {
+                    Poll::Ready(Ok(lsn)) => {
+                        batch.committed_lsn = Some(lsn);
+                        lsn
+                    }
+                    Poll::Ready(Err(err)) => return Err(Error::task_failed("self-proposer", err)),
+                    Poll::Pending => break,
+                },
+            };
+            if lsn > applied_lsn {
+                break;
+            }
+            let batch = self.pending.pop_front().expect("front exists");
+            self.release_applied(batch.records);
+        }
+        let now = Instant::now();
+        for (flow, state) in &mut self.inner.lock().state {
+            state.limit = flow.limit(options);
+            state.report_window(now);
+        }
+        Ok(())
+    }
+
+    fn release_applied(&mut self, records: EnumMap<SelfProposerSchedulerFlow, u64>) {
+        let mut inner = self.inner.lock();
+        for (flow, count) in records {
+            inner.state[flow].in_flight -= count;
+        }
     }
 
     /// Polls the scheduler for the next decision. The returned [`SchedulerDecision`] is a handle to the flow that's
@@ -289,6 +469,7 @@ impl SelfProposerScheduler {
             state,
             ready_ring,
             parent_waker,
+            ..
         } = &mut *guard;
 
         match parent_waker {
@@ -303,12 +484,19 @@ impl SelfProposerScheduler {
             }
 
             let mut closest_deficit = i64::MIN;
+            let mut eligible = false;
             for _ in 0..round_length {
                 let flow = ready_ring
                     .pop_front()
                     .expect("guarded by the round_length check earlier");
                 let state = &mut state[flow];
                 std::debug_assert_matches!(state.state, State::Queued);
+
+                if state.in_flight >= state.limit {
+                    ready_ring.push_back(flow);
+                    continue;
+                }
+                eligible = true;
 
                 if state.deficit <= 0 {
                     state.deficit += QUANTUM;
@@ -329,7 +517,10 @@ impl SelfProposerScheduler {
                 }
             }
 
-            // We did one full round and no flows were returned. It means that all flows are in debit.
+            if !eligible {
+                return None;
+            }
+            // All eligible flows are in debit; full windows do not accrue credits.
             // As an optimization, let's fast forward the rounds until we find an eligible flow.
             // To do that we:
             //   - Find the flow with the deficit closest to zero.
@@ -338,9 +529,22 @@ impl SelfProposerScheduler {
             assert!(closest_deficit <= 0);
             let rounds_to_skip = closest_deficit.saturating_abs() / QUANTUM;
             ready_ring.iter_mut().for_each(|flow| {
-                state[*flow].deficit += rounds_to_skip * QUANTUM;
+                if state[*flow].in_flight < state[*flow].limit {
+                    state[*flow].deficit += rounds_to_skip * QUANTUM;
+                }
             });
         }
+    }
+}
+
+impl Drop for SelfProposerScheduler {
+    fn drop(&mut self) {
+        let now = Instant::now();
+        for state in self.inner.lock().state.values_mut() {
+            state.in_flight = 0;
+            state.report_window(now);
+        }
+        self.report_pending(0, 0);
     }
 }
 
@@ -349,6 +553,12 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Wake, Waker};
+
+    use enum_map::EnumMap;
+
+    use restate_types::config::WorkerOptions;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::logs::{Lsn, SequenceNumber};
 
     use crate::partition::leadership::self_proposer_scheduler::{
         QUANTUM, SelfProposerSchedulerFlow,
@@ -378,7 +588,8 @@ mod tests {
         let waker = Waker::from(Arc::clone(&test_waker));
         let mut cx = Context::from_waker(&waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new();
+        let mut scheduler =
+            super::SelfProposerScheduler::new(restate_types::identifiers::PartitionId::MIN);
 
         // First poll, expecting the invoker flow.
         let dec = scheduler
@@ -387,7 +598,7 @@ mod tests {
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
 
         // Report back 1KB of commands written
-        dec.on_proposal_enqueued(1024);
+        dec.on_proposal_enqueued(1024, 0, None);
         // Invoker's deficit should still be positive, so asking the scheduler again should yield it again.
         let dec = scheduler
             .poll_next_ready(&mut cx)
@@ -433,7 +644,7 @@ mod tests {
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
         // Report back 128KB of commands, to consume the entire deficit of the invoker.
-        dec.on_proposal_enqueued(128 * 1024);
+        dec.on_proposal_enqueued(128 * 1024, 0, None);
 
         // The invoker is the only queued flow, it should get its deficit back.
         let dec = scheduler
@@ -461,21 +672,22 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new();
+        let mut scheduler =
+            super::SelfProposerScheduler::new(restate_types::identifiers::PartitionId::MIN);
 
         // Report 100x the quantum for the invoker
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
-        dec.on_proposal_enqueued(100 * QUANTUM as usize);
+        dec.on_proposal_enqueued(100 * QUANTUM as usize, 0, None);
 
         // Report 50x the quantum for the timer
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Timer);
-        dec.on_proposal_enqueued(50 * QUANTUM as usize);
+        dec.on_proposal_enqueued(50 * QUANTUM as usize, 0, None);
 
         // Report pending for all other flows
         // Consume the rest of the flows
@@ -512,5 +724,160 @@ mod tests {
 
         // Now all are pending
         assert!(scheduler.poll_next_ready(&mut cx).is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_window_preserves_rpc_capacity_and_reports_blocked_time() {
+        use std::sync::atomic::AtomicU64;
+        use std::time::Duration;
+
+        #[derive(Default)]
+        struct Total(AtomicU64);
+        impl metrics::CounterFn for Total {
+            fn increment(&self, value: u64) {
+                self.0.fetch_add(value, Ordering::Relaxed);
+            }
+            fn absolute(&self, value: u64) {
+                self.0.fetch_max(value, Ordering::Relaxed);
+            }
+        }
+
+        #[derive(Default)]
+        struct Samples(std::sync::Mutex<Vec<f64>>);
+        impl metrics::HistogramFn for Samples {
+            fn record(&self, value: f64) {
+                self.0.lock().unwrap().push(value);
+            }
+        }
+
+        use SelfProposerSchedulerFlow as Flow;
+        let mut options = WorkerOptions::default();
+        options.self_proposal_max_in_flight.invoker = 2.try_into().unwrap();
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::MIN);
+        let total = Arc::new(Total::default());
+        let samples = Arc::new(Samples::default());
+        scheduler.inner.lock().state[Flow::Invoker]
+            .metrics
+            .blocked_ms = metrics::Counter::from_arc(total.clone());
+        scheduler.inner.lock().state[Flow::Invoker]
+            .metrics
+            .receive_to_propose = metrics::Histogram::from_arc(samples.clone());
+        let mut cx = Context::from_waker(Waker::noop());
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        let decision = scheduler.poll_next_ready(&mut cx).unwrap();
+        assert_eq!(decision.flow, Flow::Invoker);
+        let invoker_waker = decision.waker.clone();
+        decision.on_proposal_enqueued(
+            1024,
+            2,
+            Some(tokio::time::Instant::now() - Duration::from_secs(2)),
+        );
+        invoker_waker.wake_by_ref();
+
+        // Full invoker windows cannot be bypassed by wakeups. Other flows, including
+        // RPCs, remain selectable; exhaustion returns Pending instead of spinning.
+        let mut saw_network = false;
+        while let Some(decision) = scheduler.poll_next_ready(&mut cx) {
+            assert_ne!(decision.flow, Flow::Invoker);
+            saw_network |= decision.flow == Flow::NetworkService;
+            decision.on_pending();
+        }
+        assert!(saw_network);
+        tokio::time::advance(Duration::from_millis(1500)).await;
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        assert_eq!(total.0.load(Ordering::Relaxed), 1500);
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        assert_eq!(total.0.load(Ordering::Relaxed), 1500);
+
+        // Raising the limit is live. A noop does not consume a slot, and a formed
+        // batch can overdraw the window once, but cannot admit another batch.
+        options.self_proposal_max_in_flight.invoker = 3.try_into().unwrap();
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        scheduler
+            .poll_next_ready(&mut cx)
+            .unwrap()
+            .on_proposal_enqueued(1024, 0, Some(tokio::time::Instant::now()));
+        scheduler
+            .poll_next_ready(&mut cx)
+            .unwrap()
+            .on_proposal_enqueued(1024, 4, None);
+        assert!(scheduler.poll_next_ready(&mut cx).is_none());
+        assert_eq!(scheduler.inner.lock().state[Flow::Invoker].in_flight, 6);
+
+        let mut released = EnumMap::default();
+        released[Flow::Invoker] = 6;
+        scheduler.release_applied(released);
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        assert_eq!(
+            scheduler.poll_next_ready(&mut cx).map(|d| {
+                let flow = d.flow;
+                d.on_pending();
+                flow
+            }),
+            Some(Flow::Invoker)
+        );
+        tokio::time::advance(Duration::from_secs(1)).await;
+        scheduler
+            .poll_progress(&mut cx, Lsn::INVALID, &options)
+            .unwrap();
+        assert_eq!(total.0.load(Ordering::Relaxed), 1500);
+        assert_eq!(*samples.0.lock().unwrap(), vec![2.0]);
+    }
+
+    #[restate_core::test]
+    async fn credits_wait_for_application_after_bifrost_commit() -> anyhow::Result<()> {
+        use restate_bifrost::{Bifrost, ErrorRecoveryStrategy};
+        use restate_core::TestCoreEnv;
+        use restate_types::logs::LogId;
+
+        use SelfProposerSchedulerFlow as Flow;
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let bifrost = Bifrost::init_in_memory(env.metadata_writer).await;
+        let mut appender = bifrost
+            .create_background_appender::<String>(
+                LogId::new(0),
+                ErrorRecoveryStrategy::Wait,
+                None,
+                10,
+            )?
+            .start("proposal-window-test")?;
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::MIN);
+        let mut options = WorkerOptions::default();
+        options.self_proposal_max_in_flight.invoker = 2.try_into().unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        scheduler.poll_progress(&mut cx, Lsn::INVALID, &options)?;
+        let decision = scheduler.poll_next_ready(&mut cx).unwrap();
+        assert_eq!(decision.flow, Flow::Invoker);
+        let sender = appender.sender();
+        let bytes = sender.enqueue("one".to_owned())? + sender.enqueue("two".to_owned())?;
+        decision.on_proposal_enqueued(bytes, 2, None);
+        scheduler.track_proposals(sender.notify_committed()?);
+        let committed = sender.notify_committed()?.await?;
+        assert_eq!(committed, Lsn::from(2u64));
+
+        scheduler.poll_progress(&mut cx, committed.prev(), &options)?;
+        assert_eq!(scheduler.inner.lock().state[Flow::Invoker].in_flight, 2);
+        while let Some(decision) = scheduler.poll_next_ready(&mut cx) {
+            assert_ne!(decision.flow, Flow::Invoker);
+            decision.on_pending();
+        }
+        scheduler.poll_progress(&mut cx, committed, &options)?;
+        assert_eq!(scheduler.inner.lock().state[Flow::Invoker].in_flight, 0);
+        assert!(scheduler.pending.is_empty());
+        let decision = scheduler.poll_next_ready(&mut cx).unwrap();
+        assert_eq!(decision.flow, Flow::Invoker);
+        decision.on_pending();
+        appender.drain().await?;
+        Ok(())
     }
 }
