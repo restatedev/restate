@@ -11,7 +11,9 @@
 pub mod context;
 mod environment;
 pub mod local_scanners;
-pub use catalog::{ClusterTables, MetadataTables, UserTables};
+pub use catalog::{
+    ClusterTables, MetadataTables, RegisterTable, TableInventoryBuilder, UserTables,
+};
 pub use environment::DataFusionEnv;
 
 pub mod remote_query_scanner_server;

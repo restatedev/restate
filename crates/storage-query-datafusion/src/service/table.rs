@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -21,28 +21,28 @@ use tokio::sync::mpsc::Sender;
 use restate_types::live::Live;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 
-use super::schema::SysServiceBuilder;
+use super::schema::{SysServiceBuilder, SysServiceTable};
 use crate::service::row::append_service_row;
 use crate::statistics::{SERVICE_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    resolver: Live<impl ServiceMetadataResolver + Send + Sync + 'static>,
-) -> datafusion::common::Result<()> {
-    let schema = SysServiceBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema)
-        .with_num_rows_estimate(SERVICE_ROW_ESTIMATE)
-        .with_primary_key("name");
-    let service_table = GenericTableProvider::new(
-        SysServiceBuilder::schema(),
-        Arc::new(ServiceMetadataScanner(resolver)),
-    )
-    .with_statistics(statistics.build());
+impl SysServiceTable {
+    pub(crate) fn create_provider(
+        resolver: Live<impl ServiceMetadataResolver + Send + Sync + 'static>,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysServiceBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema)
+            .with_num_rows_estimate(SERVICE_ROW_ESTIMATE)
+            .with_primary_key("name");
+        let service_table = GenericTableProvider::new(
+            SysServiceBuilder::schema(),
+            Arc::new(ServiceMetadataScanner(resolver)),
+        )
+        .with_statistics(statistics.build());
 
-    ctx.register_table("sys_service", Arc::new(service_table))
-        .map(|_| ())
+        Arc::new(service_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]

@@ -363,6 +363,7 @@ async fn run(
     .context("failed to build the query context")?
     .create_session(SessionOptions {
         allow_statements: true,
+        ..Default::default()
     })?;
 
     match (&args.query, args.listen) {

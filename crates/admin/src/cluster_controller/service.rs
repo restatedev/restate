@@ -102,6 +102,7 @@ where
         networking: Networking<T>,
         server_builder: &mut NetworkServerBuilder,
         metadata_writer: MetadataWriter,
+        datafusion_env: DataFusionEnv,
     ) -> Result<Self, BuildError> {
         let (command_tx, command_rx) = mpsc::channel(2);
 
@@ -128,12 +129,8 @@ where
             cluster_state_refresher.cluster_state_watcher().watch(),
             remote_scanner_manager,
         );
-        let cluster_query_engine = DataFusionQueryEngine::with_cluster_tables(
-            DataFusionEnv::from_options(&options.admin.query_engine)
-                .map_err(restate_storage_query_datafusion::BuildError::from)?,
-            cluster_tables,
-        )
-        .await?;
+        let cluster_query_engine =
+            DataFusionQueryEngine::with_cluster_tables(datafusion_env, cluster_tables).await?;
 
         // Registering ClusterCtrlSvc grpc service to network server
         server_builder.register_grpc_service(
@@ -1101,6 +1098,9 @@ mod tests {
             builder.networking.clone(),
             &mut NetworkServerBuilder::new(&mut address_book),
             builder.metadata_writer.clone(),
+            restate_storage_query_datafusion::DataFusionEnv::from_options(
+                &Configuration::default().admin.query_engine,
+            )?,
         )
         .await?;
 

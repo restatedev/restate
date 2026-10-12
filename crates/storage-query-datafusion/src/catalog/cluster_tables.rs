@@ -10,7 +10,6 @@
 
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
 use tokio::sync::watch;
 
 use restate_core::{Metadata, TaskCenter};
@@ -19,9 +18,17 @@ use restate_types::config::Configuration;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::BuildError;
+use crate::bifrost_read_stream::BifrostReadStreamsTable;
+use crate::config::ConfigTable;
+use crate::log::schema::LogTable;
+use crate::loglet_worker::LogletWorkersTable;
+use crate::node::schema::NodeTable;
+use crate::partition::schema::PartitionTable;
+use crate::partition_replica_set::schema::PartitionReplicaSetTable;
+use crate::partition_state::schema::PartitionStateTable;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 
-use super::RegisterTable;
+use super::{RegisterTable, TableInventoryBuilder};
 
 const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW restate.cluster.logs_tail_segments as SELECT
         l.* FROM restate.cluster.logs AS l JOIN (
@@ -60,45 +67,77 @@ impl ClusterTables {
 }
 
 impl RegisterTable for ClusterTables {
-    async fn register(&self, ctx: &SessionContext) -> Result<(), BuildError> {
-        ctx.sql("CREATE SCHEMA IF NOT EXISTS restate.cluster")
-            .await?;
+    async fn register(&self, inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
         let metadata = Metadata::current();
-        crate::node::register_self(ctx, metadata.clone(), self.cluster_state.clone())?;
-        crate::partition::register_self(ctx, metadata.clone(), self.replica_set_states.clone())?;
-        crate::partition_replica_set::register_self(
-            ctx,
-            metadata.clone(),
-            self.cluster_state.clone(),
-            self.replica_set_states.clone(),
+        inventory.add::<NodeTable>(
+            "cluster",
+            "nodes",
+            NodeTable::create_provider(metadata.clone(), self.cluster_state.clone()),
         )?;
-        crate::log::register_self(ctx, metadata.clone())?;
-        crate::partition_state::register_self(ctx, self.cluster_state_watch.clone())?;
+        inventory.add::<PartitionTable>(
+            "cluster",
+            "partitions",
+            PartitionTable::create_provider(metadata.clone(), self.replica_set_states.clone()),
+        )?;
+        inventory.add::<PartitionReplicaSetTable>(
+            "cluster",
+            "partition_replica_set",
+            PartitionReplicaSetTable::create_provider(
+                metadata.clone(),
+                self.cluster_state.clone(),
+                self.replica_set_states.clone(),
+            ),
+        )?;
+        inventory.add::<LogTable>(
+            "cluster",
+            "logs",
+            LogTable::create_provider(metadata.clone()),
+        )?;
+        inventory.add::<PartitionStateTable>(
+            "cluster",
+            "partition_state",
+            PartitionStateTable::create_provider(self.cluster_state_watch.clone()),
+        )?;
 
         // Node-fan-out tables
-        crate::loglet_worker::register_self(
-            ctx,
-            metadata.clone(),
-            self.remote_scanner_manager.clone(),
-            None, // local scanner is registered separately if this node is also a log-server
+        inventory.add::<LogletWorkersTable>(
+            "cluster",
+            "loglet_workers",
+            LogletWorkersTable::create_provider(
+                metadata.clone(),
+                self.remote_scanner_manager.clone(),
+                None, // local scanner is registered separately if this node is also a log-server
+            ),
         )?;
-        crate::bifrost_read_stream::register_self(
-            ctx,
-            metadata.clone(),
-            self.remote_scanner_manager.clone(),
-            None, // local scanner is registered separately by the node
+        inventory.add::<BifrostReadStreamsTable>(
+            "cluster",
+            "bifrost_read_streams",
+            BifrostReadStreamsTable::create_provider(
+                metadata.clone(),
+                self.remote_scanner_manager.clone(),
+                None, // local scanner is registered separately by the node
+            ),
         )?;
 
         if !Configuration::pinned().common.disable_config_sql_table {
-            crate::config::register_self(
-                ctx,
-                metadata,
-                self.remote_scanner_manager.clone(),
-                None, // local scanner is registered separately by the node
+            inventory.add::<ConfigTable>(
+                "cluster",
+                "config",
+                ConfigTable::create_provider(
+                    metadata,
+                    self.remote_scanner_manager.clone(),
+                    None, // local scanner is registered separately by the node
+                ),
             )?;
         }
 
-        ctx.sql(CLUSTER_LOGS_TAIL_SEGMENTS_VIEW).await?;
+        inventory
+            .add_view(
+                "logs_tail_segments",
+                "cluster",
+                CLUSTER_LOGS_TAIL_SEGMENTS_VIEW,
+            )
+            .await?;
 
         Ok(())
     }

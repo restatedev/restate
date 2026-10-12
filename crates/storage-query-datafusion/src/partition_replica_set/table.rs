@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::TableReference;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -28,27 +27,24 @@ use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 use super::row::append_replica_set_row;
-use super::schema::PartitionReplicaSetBuilder;
+use super::schema::{PartitionReplicaSetBuilder, PartitionReplicaSetTable};
 
-pub fn register_self(
-    ctx: &SessionContext,
-    metadata: Metadata,
-    cluster_state: ClusterState,
-    replica_set_states: PartitionReplicaSetStates,
-) -> datafusion::common::Result<()> {
-    let replica_set_table = GenericTableProvider::new(
-        PartitionReplicaSetBuilder::schema(),
-        Arc::new(ReplicaSetScanner {
-            metadata,
-            replica_set_states,
-            cluster_state,
-        }),
-    );
-    ctx.register_table(
-        TableReference::full("restate", "cluster", "partition_replica_set"),
-        Arc::new(replica_set_table),
-    )
-    .map(|_| ())
+impl PartitionReplicaSetTable {
+    pub(crate) fn create_provider(
+        metadata: Metadata,
+        cluster_state: ClusterState,
+        replica_set_states: PartitionReplicaSetStates,
+    ) -> Arc<dyn TableProvider> {
+        let replica_set_table = GenericTableProvider::new(
+            PartitionReplicaSetBuilder::schema(),
+            Arc::new(ReplicaSetScanner {
+                metadata,
+                replica_set_states,
+                cluster_state,
+            }),
+        );
+        Arc::new(replica_set_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]
