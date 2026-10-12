@@ -16,6 +16,7 @@ mod key_codec;
 mod metadata;
 mod reader;
 mod running_reader;
+mod stats;
 
 use std::collections::BTreeSet;
 use std::pin::Pin;
@@ -431,6 +432,10 @@ impl PartitionStoreTransaction<'_> {
         } else {
             // The status key is overwritten on transitions, so SingleDelete is invalid.
             self.raw_delete_cf(KeyKind::VQueueEntryStatus, key_buffer);
+        }
+
+        if self.storage_features().is_indexes_v1 {
+            stats::on_entry_change(self, context, change);
         }
     }
 }
