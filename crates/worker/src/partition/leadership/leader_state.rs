@@ -72,6 +72,7 @@ use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
 use super::durability_tracker::DurabilityTracker;
+use super::invoker::InvokerRuntime;
 use super::rpc::{CommitCallback, PendingReply};
 use super::self_proposer_scheduler::{
     SchedulerDecision, SelfProposerScheduler, SelfProposerSchedulerFlow,
@@ -96,7 +97,7 @@ pub struct LeaderState {
     pub timer_service: Pin<Box<TimerService>>,
     scheduler: SchedulerService<PartitionDb>,
     invoker_handle: InvokerChannelServiceHandle,
-    invoker_task_handle: Option<TaskHandle<()>>,
+    invoker_runtime: Option<InvokerRuntime>,
     self_proposer: SelfProposer,
 
     awaiting_rpc_actions: HashMap<PartitionProcessorRpcRequestId, RpcReciprocal>,
@@ -136,7 +137,7 @@ impl LeaderState {
         timer_service: TimerService,
         scheduler: SchedulerService<PartitionDb>,
         invoker_handle: InvokerChannelServiceHandle,
-        invoker_task_handle: TaskHandle<()>,
+        invoker_runtime: InvokerRuntime,
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::watch::Receiver<Option<shuffle::OutboxTruncation>>,
@@ -163,7 +164,7 @@ impl LeaderState {
             timer_service: Box::pin(timer_service),
             scheduler,
             invoker_handle,
-            invoker_task_handle: Some(invoker_task_handle),
+            invoker_runtime: Some(invoker_runtime),
             self_proposer_capacity: self_proposer.capacity_poller(),
             self_proposer,
             awaiting_rpc_actions: Default::default(),
@@ -276,7 +277,7 @@ impl LeaderState {
             shuffle_task_handle,
             timer_service,
             scheduler,
-            invoker_task_handle,
+            invoker_runtime,
             self_proposer,
             awaiting_rpc_actions,
             awaiting_rpc_self_propose,
@@ -305,11 +306,11 @@ impl LeaderState {
             });
         }
 
-        if let Poll::Ready(result) = invoker_task_handle.as_mut().expect("is set").poll_unpin(cx) {
-            invoker_task_handle.take();
+        if let Poll::Ready(result) = invoker_runtime.as_mut().expect("is set").poll_unpin(cx) {
+            invoker_runtime.take();
             return Poll::Ready(match result {
                 Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
-                Err(shutdown_error) => Err(Error::Shutdown(shutdown_error)),
+                Err(err) => Err(Error::InvokerBuild(err)),
             });
         }
 
@@ -490,11 +491,11 @@ impl LeaderState {
             }
         };
 
-        let invoker_task_handle = match self.invoker_task_handle {
+        let invoker_runtime = match self.invoker_runtime {
             None => OptionFuture::from(None),
-            Some(invoker_task_handle) => {
-                invoker_task_handle.cancel();
-                OptionFuture::from(Some(invoker_task_handle))
+            Some(invoker_runtime) => {
+                invoker_runtime.cancel();
+                OptionFuture::from(Some(invoker_runtime))
             }
         };
 
@@ -512,7 +513,7 @@ impl LeaderState {
         // we will fail the next time we try to invoke.
         let _ = self.invoker_handle.abort_all();
         let (shuffle_result, cleaner_result, invoker_result) =
-            tokio::join!(shuffle_handle, cleaner_handle, invoker_task_handle);
+            tokio::join!(shuffle_handle, cleaner_handle, invoker_runtime);
 
         if let Some(shuffle_result) = shuffle_result {
             let _ = shuffle_result.expect("graceful termination of shuffle task");
