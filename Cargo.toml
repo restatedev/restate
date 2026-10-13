@@ -157,6 +157,7 @@ datafusion = { version = "55.1.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-functions-json = { version = "0.55.2" }
+datafusion-physical-expr-common = { version = "55.1.0", default-features = false }
 datafusion-proto = { version = "55.1.0", default-features = false }
 derive_builder = "0.20.2"
 derive_more = { version = "2.1.1", default-features = false }
