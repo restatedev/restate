@@ -11,21 +11,19 @@
 use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::physical_plan::PhysicalExpr;
 
-use restate_partition_store::PartitionStoreManager;
 use restate_storage_api::filter::{Filter, FilterTarget, LiveFilter};
+use restate_storage_query_api::QueryEngineTable;
 use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, LivePredicate};
-use crate::partition_store_scanner::{
-    LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
-};
+use crate::partition_store_scanner::ScanLocalPartitionFilter;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
-use crate::table_providers::{PartitionedTableProvider, ScanPartition};
+use crate::table_providers::PartitionedTableProvider;
 
 pub(super) struct IndexFilter<T: FilterTarget> {
     pub range: KeyRange,
@@ -54,14 +52,12 @@ impl<T: FilterTarget + 'static> ScanLocalPartitionFilter for IndexFilter<T> {
     }
 }
 
-pub(super) fn register(
-    ctx: &SessionContext,
+pub(super) fn create_provider<T: QueryEngineTable>(
     partition_selector: impl SelectPartitions,
     remote: &RemoteScannerManager,
-    name: &'static str,
     schema: SchemaRef,
     extractor: FirstMatchingPartitionKeyExtractor,
-) -> datafusion::common::Result<()> {
+) -> Arc<dyn TableProvider> {
     let statistics =
         TableStatisticsBuilder::new(schema.clone()).with_num_rows_estimate(RowEstimate::Large);
     let table = PartitionedTableProvider::new(
@@ -69,22 +65,9 @@ pub(super) fn register(
         schema,
         Vec::new(),
         // Local physical index ordering is not a global SQL ordering.
-        remote.create_distributed_scanner(name),
+        remote.create_distributed_scanner::<T>(),
         extractor,
     )
     .with_statistics(statistics.build());
-    ctx.register_table(name, Arc::new(table)).map(|_| ())
-}
-
-pub(super) fn register_local_scanner<S>(
-    manager: Arc<PartitionStoreManager>,
-    remote: &RemoteScannerManager,
-    name: &'static str,
-) where
-    S: ScanLocalPartition + Default,
-    S::Builder: Send + Sync + 'static,
-{
-    let scanner =
-        Arc::new(LocalPartitionsScanner::new(manager, S::default())) as Arc<dyn ScanPartition>;
-    remote.register_partition_scanner(name, scanner);
+    Arc::new(table)
 }
