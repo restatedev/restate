@@ -225,6 +225,22 @@ impl<'a> SstSink<'a> {
 
 fn reset(db: &PartitionDb) -> anyhow::Result<()> {
     let mut batch = WriteBatch::default();
+    append_reset(db, &mut batch)?;
+    let mut options = rocksdb::WriteOptions::default();
+    options.disable_wal(true);
+    db.rocksdb().inner().write_batch(&batch, &options)?;
+    let mut flush = rocksdb::FlushOptions::default();
+    flush.set_wait(true);
+    db.rocksdb()
+        .inner()
+        .as_raw_db()
+        .flush_cf_opt(db.cf_handle(), &flush)?;
+    Ok(())
+}
+
+/// Appends the partition-local gauge tombstones so callers can atomically update
+/// the feature ledger in the same batch.
+pub(crate) fn append_reset(db: &PartitionDb, batch: &mut WriteBatch) -> anyhow::Result<()> {
     for prefix in [
         StatKeyPrefix::of::<ServiceLoad>(db.partition().id()),
         StatKeyPrefix::of::<DeploymentLoad>(db.partition().id()),
@@ -238,15 +254,6 @@ fn reset(db: &PartitionDb) -> anyhow::Result<()> {
         );
         batch.delete_range_cf(db.cf_handle(), start, &end);
     }
-    let mut options = rocksdb::WriteOptions::default();
-    options.disable_wal(true);
-    db.rocksdb().inner().write_batch(&batch, &options)?;
-    let mut flush = rocksdb::FlushOptions::default();
-    flush.set_wait(true);
-    db.rocksdb()
-        .inner()
-        .as_raw_db()
-        .flush_cf_opt(db.cf_handle(), &flush)?;
     Ok(())
 }
 
