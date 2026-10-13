@@ -15,6 +15,7 @@ use restate_storage_api::vqueue_table::stats::EntryStatistics;
 use restate_storage_api::vqueue_table::{
     EntryId, EntryKey, EntryValue, RawStatusHeaderRef, Stage, Status,
 };
+use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{Seq, VQueueId};
 
 use super::schema::SysVqueuesBuilder;
@@ -45,20 +46,19 @@ pub(crate) fn append_vqueues_row<'a>(
 #[inline]
 pub(crate) fn append_vqueues_status_row(
     builder: &mut SysVqueuesBuilder,
-    partition_key: PartitionKey,
-    entry_id: &EntryId,
+    id: &BaseEntryId,
     header: &RawStatusHeaderRef<'_>,
 ) {
     append_vqueues_row_inner(
         builder,
-        partition_key,
+        id.partition_key(),
         &header.qid,
         header.stage,
         header.status,
         header.has_lock,
         header.next_run_at.as_unix_millis().as_u64() as i64,
         header.seq,
-        entry_id,
+        id.as_entry_id(),
         &header.stats,
         header.metadata.deployment,
     );

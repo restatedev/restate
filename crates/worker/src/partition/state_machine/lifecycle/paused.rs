@@ -18,9 +18,8 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
-use restate_types::identifiers::{InvocationId, WithPartitionKey as _};
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
@@ -93,10 +92,9 @@ where
     debug_if_leader!(ctx.is_leader, "Paused the invocation");
 
     if metadata.vqueue_id.is_some() {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = ctx
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // This is equivalent to InvocationStatus::Free.
