@@ -222,6 +222,23 @@ fn filter_literal(value: &ScalarValue) -> Option<FilterLiteral<'_>> {
         ScalarValue::Int16(Some(value)) => Some(FilterLiteral::Signed((*value).into())),
         ScalarValue::Int32(Some(value)) => Some(FilterLiteral::Signed((*value).into())),
         ScalarValue::Int64(Some(value)) => Some(FilterLiteral::Signed(*value)),
+        // DataFusion has already coerced timestamp literals to the comparison's
+        // timezone. Zoned Arrow timestamps store UTC epoch values regardless of
+        // the display timezone, so no additional timezone adjustment belongs here.
+        ScalarValue::TimestampSecond(Some(value), _) => {
+            value.checked_mul(1_000).map(FilterLiteral::TimestampMillis)
+        }
+        ScalarValue::TimestampMillisecond(Some(value), _) => {
+            Some(FilterLiteral::TimestampMillis(*value))
+        }
+        // Do not round finer-precision literals: that could change equality or
+        // inclusive/exclusive bounds. Non-aligned literals remain residual.
+        ScalarValue::TimestampMicrosecond(Some(value), _) if value % 1_000 == 0 => {
+            Some(FilterLiteral::TimestampMillis(value / 1_000))
+        }
+        ScalarValue::TimestampNanosecond(Some(value), _) if value % 1_000_000 == 0 => {
+            Some(FilterLiteral::TimestampMillis(value / 1_000_000))
+        }
         value => value.try_as_str()?.map(FilterLiteral::String),
     }
 }
@@ -283,6 +300,38 @@ mod tests {
     use restate_util_string::ReString;
 
     use super::*;
+
+    #[test]
+    fn timestamp_literals_preserve_millisecond_precision() {
+        use restate_types::time::MillisSinceEpoch;
+
+        for literal in [
+            ScalarValue::TimestampSecond(Some(2), None),
+            ScalarValue::TimestampMillisecond(Some(2_000), None),
+            ScalarValue::TimestampMillisecond(Some(2_000), Some("+00:00".into())),
+            ScalarValue::TimestampMillisecond(Some(2_000), Some("Europe/Paris".into())),
+            ScalarValue::TimestampMicrosecond(Some(2_000_000), None),
+            ScalarValue::TimestampNanosecond(Some(2_000_000_000), None),
+        ] {
+            let value = MillisSinceEpoch::from_literal(filter_literal(&literal).unwrap()).unwrap();
+            assert_eq!(value.as_u64(), 2_000);
+        }
+        for literal in [
+            ScalarValue::TimestampMicrosecond(Some(1), None),
+            ScalarValue::TimestampNanosecond(Some(1), None),
+            ScalarValue::TimestampSecond(Some(i64::MAX), None),
+        ] {
+            assert!(filter_literal(&literal).is_none());
+        }
+        assert!(
+            LiteralPredicate::Comparison(
+                Operator::Gt,
+                &ScalarValue::TimestampMillisecond(Some(-1), None)
+            )
+            .build::<MillisSinceEpoch>()
+            .is_none()
+        );
+    }
 
     restate_storage_api::define_table! { OtherTarget; }
 
