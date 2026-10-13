@@ -7967,6 +7967,7 @@ dependencies = [
  "restate-sharding",
  "restate-storage-api",
  "restate-storage-query-api",
+ "restate-storage-query-datafusion",
  "restate-types",
  "restate-util-string",
  "restate-worker-api",
