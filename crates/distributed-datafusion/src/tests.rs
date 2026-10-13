@@ -1,0 +1,1161 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+use std::ops::RangeBounds;
+use std::time::{Duration, SystemTime};
+
+use bytes::Bytes;
+use datafusion::arrow::array::{
+    ArrayRef, DurationMillisecondArray, LargeStringArray, ListArray, TimestampMillisecondArray,
+    UInt32Array, UInt64Array,
+};
+use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::DataFusionError;
+use futures::{StreamExt, TryStreamExt, stream};
+use googletest::prelude::{all, assert_that, eq};
+use googletest::unordered_elements_are;
+use strum::IntoDiscriminant;
+
+use restate_limiter::{Level, LimitKey};
+use restate_storage_api::Transaction;
+use restate_storage_api::invocation_status_table::{
+    CompletedInvocation, InFlightInvocationMetadata, InvocationStatus, WriteInvocationStatusTable,
+};
+use restate_storage_api::state_table::WriteStateTable;
+use restate_storage_api::vqueue_table::stats::WaitStats;
+use restate_storage_api::vqueue_table::{
+    EntryContext, EntryKey, EntryKind, EntryMetadata, EntryStateRef, Stage, Status,
+    WriteVQueueTable, stats::EntryStatistics,
+};
+use restate_storage_query_api::errors::QueryExecutionError;
+use restate_types::Scope;
+use restate_types::clock::UniqueTimestamp;
+use restate_types::errors::InvocationError;
+use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{
+    DeploymentId, InvocationId, PartitionId, PartitionKey, ServiceId,
+};
+use restate_types::invocation::InvocationTarget;
+use restate_types::journal::EntryType;
+use restate_types::journal_v2::NotificationId;
+use restate_types::journal_v2::UnresolvedFuture;
+use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::sharding::KeyRange;
+use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{EntryId, EntryTargetRef};
+use restate_util_string::{ReString, RestateString, RestrictedValue};
+use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
+use restate_worker_api::invoker::{InvocationErrorReport, InvocationStatusReport};
+use restate_worker_api::{
+    BlockedResource, SchedulerStatusEntry, SchedulingStatus, UserLimitCounterEntry,
+    VQueueSchedulerStatus,
+};
+use restate_worker_api::{PartitionQueryAccess, PartitionQueryError, PartitionQueryStream};
+
+use crate::mocks::*;
+use crate::row;
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn offline_query_access_preserves_persisted_rows_without_live_state() {
+    let mut engine = MockQueryEngine::create_offline().await;
+    let invocation_id = InvocationId::mock_random();
+    let qid = VQueueId::custom(3337, "offline-entry");
+    let now = MillisSinceEpoch::new(1_744_010_000_000);
+    let key = EntryKey::new(false, now, 1, EntryId::new(EntryKind::Invocation, [1; 16]));
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata::mock()),
+    )
+    .unwrap();
+    tx.create_vqueue_entry_status(
+        &EntryContext {
+            qid: &qid,
+            target: &EntryTargetRef::Service {
+                scope: None,
+                service: "test",
+                handler: "handler",
+            },
+        },
+        EntryStateRef {
+            stage: Stage::Running,
+            status: Status::Started,
+            entry_key: &key,
+            metadata: &EntryMetadata {
+                deployment: None,
+                needed_memory: None,
+                retry_attempts: 0,
+                retry_count_since_last_stored_command: 0,
+            },
+            stats: &EntryStatistics::new(
+                UniqueTimestamp::try_from_unix_millis(now).unwrap(),
+                key.run_at(),
+            ),
+        },
+    );
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    for table in ["sys_invocation_state", "sys_scheduler", "sys_user_limits"] {
+        let batches: Vec<_> = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+    let batches: Vec<_> = engine
+        .execute("SELECT id, last_start_at FROM sys_invocation")
+        .await
+        .unwrap()
+        .stream
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .value(0),
+        invocation_id.to_string()
+    );
+    assert!(batches[0].column(1).is_null(0));
+
+    let batches: Vec<_> = engine
+        .execute("SELECT entry_id FROM sys_vqueue_entry_status")
+        .await
+        .unwrap()
+        .stream
+        .try_collect()
+        .await
+        .unwrap();
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1);
+    assert_eq!(
+        batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .value(0),
+        key.entry_id().display(qid.partition_key()).to_string()
+    );
+
+    for table in ["sys_service", "sys_deployment", "sys_rules"] {
+        let QueryExecutionError::DataFusion(error) = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .err()
+            .expect("metadata tables must be absent offline");
+        assert!(
+            matches!(error.find_root(), DataFusionError::Plan(message)
+                if message.contains(table) && message.contains("not found")),
+            "{error}"
+        );
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn metadata_backed_tables_are_available_when_supplied() {
+    let engine = MockQueryEngine::create().await;
+    for table in ["sys_service", "sys_deployment", "sys_rules"] {
+        let batches: Vec<_> = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .unwrap()
+            .stream
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 0);
+    }
+}
+
+#[derive(Debug)]
+struct FailingQueryAccess;
+
+impl PartitionQueryAccess for FailingQueryAccess {
+    fn scan_invoker_status(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<InvocationStatusReport> {
+        stream::iter([
+            Ok(InvocationStatusReport::new(
+                InvocationId::mock_random(),
+                Default::default(),
+            )),
+            Err(PartitionQueryError::LeaderUnavailable(partition)),
+        ])
+        .boxed()
+    }
+    fn scan_scheduler_status(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<SchedulerStatusEntry> {
+        stream::once(async move { Err(PartitionQueryError::LeaderUnavailable(partition)) }).boxed()
+    }
+    fn scan_user_limit_counters(
+        &self,
+        partition: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        stream::once(async move { Err(PartitionQueryError::LeaderUnavailable(partition)) }).boxed()
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_query_access_failures_are_not_empty_results() {
+    let engine = MockQueryEngine::create_with(FailingQueryAccess, MockSchemas::default()).await;
+    for table in ["sys_invocation_state", "sys_scheduler", "sys_user_limits"] {
+        let error = engine
+            .execute(format!("SELECT * FROM {table}"))
+            .await
+            .unwrap()
+            .stream
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("leader query source"), "{error}");
+    }
+}
+
+#[derive(Clone, Debug)]
+struct MockSchedulerQueryAccess {
+    scheduler_statuses: Vec<SchedulerStatusEntry>,
+}
+
+impl PartitionQueryAccess for MockSchedulerQueryAccess {
+    fn scan_invoker_status(
+        &self,
+        _partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<InvocationStatusReport> {
+        stream::empty().boxed()
+    }
+
+    fn scan_scheduler_status(
+        &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<SchedulerStatusEntry> {
+        assert_eq!(partition_id, PartitionId::MIN);
+        let mut rows: Vec<_> = self
+            .scheduler_statuses
+            .iter()
+            .filter(|(id, _)| keys.contains(&id.partition_key()))
+            .cloned()
+            .collect();
+        rows.sort_by(|(a, _), (b, _)| a.cmp(b));
+        stream::iter(rows.into_iter().map(Ok)).boxed()
+    }
+
+    fn scan_user_limit_counters(
+        &self,
+        _partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        stream::empty().boxed()
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_scheduler() {
+    let qid = VQueueId::custom(PartitionKey::MIN, "scheduler-row");
+    let head_invocation_id = InvocationId::mock_random();
+    let head_entry_id = EntryId::from(head_invocation_id);
+    let expected_head_entry_display = head_entry_id.display(qid.partition_key()).to_string();
+
+    // A BlockedOn(LimitKeyConcurrency) row exercises both the resolved rule
+    // pattern (feedback #2) and the structured Display impl (feedback #1).
+    let scope = Scope::try_from_static("svc-A").unwrap();
+    let tenant = RestrictedValue::<ReString>::new(ReString::new("tenant-1")).unwrap();
+    let limit_key = LimitKey::L1(tenant);
+    let blocked_resource = BlockedResource::LimitKeyConcurrency {
+        scope,
+        limit_key,
+        blocked_level: Level::Level1,
+        blocked_rule: Some(ReString::new("svc-A/tenant-*")),
+    };
+    let expected_blocked_on = blocked_resource.discriminant().to_string();
+    let expected_blocked_on_json = serde_json::to_string(&blocked_resource).unwrap();
+
+    let engine = MockQueryEngine::create_with(
+        MockSchedulerQueryAccess {
+            scheduler_statuses: vec![(
+                qid.clone(),
+                VQueueSchedulerStatus {
+                    wait_stats: WaitStats {
+                        blocked_on_invoker_concurrency_ms: 15,
+                        blocked_on_throttling_rules_ms: 20,
+                        blocked_on_invoker_throttling_ms: 25,
+                        blocked_on_invoker_memory_ms: 30,
+                        blocked_on_concurrency_rules_ms: 35,
+                        blocked_on_lock_ms: 40,
+                        blocked_on_deployment_concurrency_ms: 45,
+                    },
+                    remaining_running: 3,
+                    waiting_inbox: 7,
+                    status: SchedulingStatus::BlockedOn(blocked_resource),
+                    head_entry_id: Some(head_entry_id),
+                },
+            )],
+        },
+        MockSchemas::default(),
+    )
+    .await;
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                status,
+                head_entry_id,
+                num_inbox,
+                blocked_on,
+                blocked_on_json,
+                invoker_concurrency_block_duration,
+                concurrency_rules_block_duration,
+                deployment_concurrency_block_duration
+            FROM sys_scheduler
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => LargeStringArray: eq(qid.to_string()),
+                "status" => LargeStringArray: eq("blocked"),
+                "head_entry_id" => LargeStringArray: eq(expected_head_entry_display),
+                "num_inbox" => UInt64Array: eq(7),
+                "blocked_on" => LargeStringArray: eq(expected_blocked_on),
+                "blocked_on_json" => LargeStringArray: eq(expected_blocked_on_json),
+                "invoker_concurrency_block_duration" => DurationMillisecondArray: eq(15),
+                "concurrency_rules_block_duration" => DurationMillisecondArray: eq(35),
+                "deployment_concurrency_block_duration" => DurationMillisecondArray: eq(45),
+            }
+        ))
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation() {
+    let invocation_id = InvocationId::mock_random();
+    let invocation_target = InvocationTarget::service("MySvc", "MyMethod");
+    let invocation_error = InvocationError::internal("my error");
+
+    let mut engine = MockQueryEngine::create_with(
+        MockStatusHandle::default().with(InvocationStatusReport::new(
+            invocation_id,
+            InvocationStatusReportInner {
+                in_flight: false,
+                start_count: 1,
+                last_start_at: SystemTime::now() - Duration::from_secs(10),
+                last_retry_attempt_failure: Some(InvocationErrorReport {
+                    err: invocation_error.clone(),
+                    doc_error_code: None,
+                    related_entry_index: Some(1),
+                    related_entry_name: Some("my-side-effect".to_string()),
+                    related_entry_type: Some(EntryType::Run),
+                }),
+                last_awaiting_on_unresolved_future: None,
+                next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
+                last_attempt_deployment_id: Some(DeploymentId::new()),
+                last_attempt_protocol_version: Some(ServiceProtocolVersion::V3),
+                last_attempt_server: Some("restate-sdk-java/0.8.0".to_owned()),
+            },
+        )),
+        MockSchemas::default(),
+    )
+    .await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: invocation_target.clone(),
+            response_sinks: Default::default(),
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let assert_rows = |records: RecordBatch| {
+        assert_that!(
+            records,
+            all!(row!(
+                0,
+                {
+                    "id" => LargeStringArray: eq(invocation_id.to_string()),
+                    "target_service_name" => LargeStringArray: eq(invocation_target.service_name().to_string()),
+                    "target_handler_name" => LargeStringArray: eq(invocation_target.handler_name().to_string()),
+                    "last_failure" => LargeStringArray: eq(invocation_error.to_string()),
+                    "last_failure_related_entry_index" => UInt64Array: eq(1),
+                    "last_failure_related_entry_name" => LargeStringArray: eq("my-side-effect"),
+                    "last_failure_related_entry_type" => LargeStringArray: eq(EntryType::Run.to_string()),
+                    "last_attempt_server" => LargeStringArray: eq("restate-sdk-java/0.8.0"),
+                }
+            ))
+        );
+    };
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+    assert_rows(records);
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
+            ORDER BY last_failure_related_entry_index
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+    assert_rows(records);
+
+    let records = engine
+        .execute(format!(
+            "SELECT
+                id,
+                target_service_name,
+                target_handler_name,
+                last_failure,
+                last_failure_related_entry_index,
+                last_failure_related_entry_name,
+                last_failure_related_entry_type,
+                last_attempt_server
+            FROM sys_invocation
+            WHERE id = '{invocation_id}'
+            LIMIT 1"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+    assert_rows(records);
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_with_protocol_v4() {
+    let invocation_id = InvocationId::mock_random();
+    let invocation_target = InvocationTarget::service("MySvc", "MyMethod");
+    let invocation_error = InvocationError::internal("my error");
+
+    let mut engine = MockQueryEngine::create_with(
+        MockStatusHandle::default().with(InvocationStatusReport::new(
+            invocation_id,
+            InvocationStatusReportInner {
+                in_flight: false,
+                start_count: 1,
+                last_start_at: SystemTime::now() - Duration::from_secs(10),
+                last_retry_attempt_failure: Some(InvocationErrorReport {
+                    err: invocation_error.clone(),
+                    doc_error_code: None,
+                    related_entry_index: Some(1),
+                    related_entry_name: Some("my-side-effect".to_string()),
+                    related_entry_type: Some(EntryType::Run),
+                }),
+                last_awaiting_on_unresolved_future: None,
+                next_retry_at: Some(SystemTime::now() + Duration::from_secs(10)),
+                last_attempt_deployment_id: Some(DeploymentId::new()),
+                last_attempt_protocol_version: Some(ServiceProtocolVersion::V4),
+                last_attempt_server: Some("restate-sdk-java/1.3.0".to_owned()),
+            },
+        )),
+        MockSchemas::default(),
+    )
+    .await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: invocation_target.clone(),
+            response_sinks: Default::default(),
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                last_failure_related_command_index,
+                last_failure_related_command_name,
+                last_failure_related_command_type
+            FROM sys_invocation
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "id" => LargeStringArray: eq(invocation_id.to_string()),
+                "last_failure_related_command_index" => UInt64Array: eq(1),
+                "last_failure_related_command_name" => LargeStringArray: eq("my-side-effect"),
+                "last_failure_related_command_type" => LargeStringArray: eq(EntryType::Run.to_string()),
+            }
+        ))
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_completed() {
+    let invocation_target = InvocationTarget::mock_service();
+
+    // To have deterministic ordering
+    let invocation_id_1 = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let invocation_id_2 = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
+    let invocation_id_3 = InvocationId::from_parts(0, InvocationUuid::from_u128(3));
+
+    let completion_retention_duration_1 = Duration::from_secs(100);
+    let journal_retention_duration_1 = Duration::from_secs(50);
+    let completed_invocation_1 = CompletedInvocation {
+        invocation_target: invocation_target.clone(),
+        completion_retention_duration: completion_retention_duration_1,
+        journal_retention_duration: journal_retention_duration_1,
+        ..CompletedInvocation::mock_neo()
+    };
+    let completed_on = completed_invocation_1
+        .timestamps
+        .completed_transition_time()
+        .unwrap();
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id_1,
+        &InvocationStatus::Completed(completed_invocation_1.clone()),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &invocation_id_2,
+        &InvocationStatus::Completed(CompletedInvocation {
+            completion_retention_duration: Duration::ZERO,
+            journal_retention_duration: Duration::ZERO,
+            ..completed_invocation_1.clone()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &invocation_id_3,
+        &InvocationStatus::Completed(CompletedInvocation {
+            completion_retention_duration: Duration::from_secs(10),
+            journal_retention_duration: Duration::from_secs(10),
+            ..completed_invocation_1
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                completed_at + completion_retention AS completion_expiration,
+                completed_at + journal_retention AS journal_expiration
+            FROM sys_invocation_status
+            WHERE journal_retention >= INTERVAL 5 SECOND
+            ORDER BY id ASC",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(
+                0,
+                {
+                    "id" => LargeStringArray: eq(invocation_id_1.to_string()),
+                    "completion_expiration" => TimestampMillisecondArray: eq((completed_on + completion_retention_duration_1).as_u64() as i64),
+                    "journal_expiration" => TimestampMillisecondArray: eq((completed_on + journal_retention_duration_1).as_u64() as i64),
+                }
+            ),
+            row!(
+                1,
+                {
+                    "id" => LargeStringArray: eq(invocation_id_3.to_string()),
+                    "completion_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
+                    "journal_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
+                }
+            ),
+        )
+    );
+}
+
+/// Regression: `NOT IN (> 3 values)` must not be used to build a lookup range
+/// from the excluded invocation IDs. Four values is the smallest list that
+/// survives DataFusion's inline-list simplifier as a negated `InListExpr`.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_not_in() {
+    use datafusion::arrow::array::Array;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    for i in 1..=6u64 {
+        let id = InvocationId::from_parts(i, InvocationUuid::from_u128(i as u128));
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Completed(CompletedInvocation {
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+        )
+        .unwrap();
+        ids.push(id.to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let excluded = ids[0..4]
+        .iter()
+        .map(|id| format!("'{id}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let records = engine
+        .execute(format!(
+            "SELECT id FROM sys_invocation_status WHERE id NOT IN ({excluded})"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut got: Vec<String> = records
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    got.sort();
+
+    let mut expected = vec![ids[4].clone(), ids[5].clone()];
+    expected.sort();
+
+    assert_eq!(got, expected);
+}
+
+/// Regression: `id` must not be declared as a sorted column. The rocksdb scan emits rows in
+/// big-endian key order, but the base62 string encoding of `InvocationId` is not monotonic with
+/// it, so DataFusion would elide sorts that match the declared ordering (notably the
+/// `NULLS FIRST` form, which matches the default `SortOptions` used by `make_ordering`) and
+/// return misordered rows.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_order_by_id() {
+    let invocation_target = InvocationTarget::mock_service();
+    let mut engine = MockQueryEngine::create().await;
+
+    // uuids whose storage (numeric) order differs from the string order of the encoded id
+    let uuids: [u128; 5] = [1, 255, 256, 1 << 64, u128::MAX / 7];
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    for uuid in uuids {
+        let id = InvocationId::from_parts(1, InvocationUuid::from_u128(uuid));
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Completed(CompletedInvocation {
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+        )
+        .unwrap();
+        ids.push(id.to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let mut expected = ids.clone();
+    expected.sort();
+    // `ids` is in storage order; the test is vacuous unless the string order diverges from it
+    assert_ne!(expected, ids);
+
+    for sql in [
+        "SELECT id FROM sys_invocation_status ORDER BY partition_key, id",
+        // matches the declared ordering's SortOptions, so this form is eligible for sort elision
+        "SELECT id FROM sys_invocation_status ORDER BY partition_key NULLS FIRST, id NULLS FIRST",
+    ] {
+        let batches = engine
+            .execute(sql)
+            .await
+            .unwrap()
+            .stream
+            .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+            .await;
+
+        let mut got = Vec::new();
+        for batch in batches {
+            let batch = batch.unwrap();
+            got.extend(
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<LargeStringArray>()
+                    .unwrap()
+                    .iter()
+                    .flatten()
+                    .map(str::to_string),
+            );
+        }
+
+        assert_eq!(got, expected, "misordered result for: {sql}");
+    }
+}
+
+/// Exercises the exact-id fast path: `id IN (...)` on `sys_invocation_status`
+/// must return exactly the requested rows.
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_in_list() {
+    use datafusion::arrow::array::Array;
+
+    let invocation_target = InvocationTarget::mock_service();
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut ids = Vec::new();
+    let mut tx = engine.partition_store().transaction();
+    for i in 1..=4u128 {
+        let id = InvocationId::from_parts(0, InvocationUuid::from_u128(i));
+        tx.put_invocation_status(
+            &id,
+            &InvocationStatus::Completed(CompletedInvocation {
+                invocation_target: invocation_target.clone(),
+                ..CompletedInvocation::mock_neo()
+            }),
+        )
+        .unwrap();
+        ids.push(id.to_string());
+    }
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let wanted = format!("'{}', '{}'", ids[0], ids[2]);
+    let records = engine
+        .execute(format!(
+            "SELECT id FROM sys_invocation_status WHERE id IN ({wanted})"
+        ))
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    let mut got: Vec<String> = records
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .unwrap()
+        .iter()
+        .flatten()
+        .map(str::to_string)
+        .collect();
+    got.sort();
+
+    let mut expected = vec![ids[0].clone(), ids[2].clone()];
+    expected.sort();
+
+    assert_eq!(got, expected);
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_suspended_waiting() {
+    let invocation_id = InvocationId::mock_random();
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &invocation_id,
+        &InvocationStatus::Suspended {
+            metadata: InFlightInvocationMetadata {
+                invocation_target: InvocationTarget::mock_service(),
+                ..InFlightInvocationMetadata::mock()
+            },
+            awaiting_on: UnresolvedFuture::unknown_from_iter([
+                NotificationId::for_completion(1),
+                NotificationId::for_completion(2),
+                NotificationId::for_completion(3),
+                NotificationId::SignalIndex(10),
+                NotificationId::SignalIndex(20),
+            ]),
+        },
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute(
+            "SELECT
+                id,
+                status,
+                suspended_waiting_for_completions,
+                suspended_waiting_for_signals
+            FROM sys_invocation
+            LIMIT 1",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                    "id" => LargeStringArray: eq(invocation_id.to_string()),
+                    "status" => LargeStringArray: eq("suspended")
+            }),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_completions",
+                extract_uint32_list,
+                unordered_elements_are![eq(1), eq(2), eq(3)]
+            ),
+            row_column_matcher(
+                0,
+                "suspended_waiting_for_signals",
+                extract_uint32_list,
+                unordered_elements_are![eq(10), eq(20)]
+            )
+        )
+    );
+}
+
+fn extract_uint32_list(column: &ArrayRef, row: usize) -> Option<Vec<u32>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<ListArray>()
+        .expect("Downcast ref to ListArray");
+    if column.len() <= row {
+        return None;
+    }
+
+    let row_value_ref = column.value(row);
+    let row_value_downcast = row_value_ref
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+        .expect("Downcast ref to UInt32Array");
+
+    Some(row_value_downcast.values().to_owned().into())
+}
+
+fn extract_nullable_string(column: &ArrayRef, row: usize) -> Option<Option<String>> {
+    use datafusion::arrow::array::Array;
+
+    let column = column
+        .as_any()
+        .downcast_ref::<LargeStringArray>()
+        .expect("Downcast ref to LargeStringArray");
+    if column.len() <= row {
+        return None;
+    }
+    if column.is_null(row) {
+        Some(None)
+    } else {
+        Some(Some(column.value(row).to_string()))
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_sys_invocation_status_scope() {
+    let scoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let unscoped_id = InvocationId::from_parts(0, InvocationUuid::from_u128(2));
+
+    let scope = Scope::try_from_static("tenant-A").unwrap();
+    let scoped_target = InvocationTarget::scoped_service("svc", "h", scope);
+    let unscoped_target = InvocationTarget::service("svc", "h");
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_invocation_status(
+        &scoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: scoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.put_invocation_status(
+        &unscoped_id,
+        &InvocationStatus::Invoked(InFlightInvocationMetadata {
+            invocation_target: unscoped_target,
+            ..InFlightInvocationMetadata::mock()
+        }),
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute("SELECT id, scope FROM sys_invocation_status ORDER BY id ASC")
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(
+            row!(0, {
+                "id" => LargeStringArray: eq(scoped_id.to_string()),
+            }),
+            row_column_matcher(
+                0,
+                "scope",
+                extract_nullable_string,
+                eq(Some("tenant-A".to_string()))
+            ),
+            row!(1, {
+                "id" => LargeStringArray: eq(unscoped_id.to_string()),
+            }),
+            row_column_matcher(1, "scope", extract_nullable_string, eq(None)),
+        )
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_scoped_state_with_service_key_filter() {
+    // Regression: combining `scope = ...` and `service_key = ...` filters used to
+    // return zero rows because the partition-key extractor narrowed the scan to
+    // hash(service_key), but scoped rows live under hash(scope).
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "workflow", "i1");
+    let scoped_i2 = ServiceId::new(Some(scope.clone()), "workflow", "i2");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&scoped_i2, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' \
+             ORDER BY service_key",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 2);
+    assert_that!(
+        scope_only,
+        all!(
+            row!(0, { "service_key" => LargeStringArray: eq("i1") }),
+            row!(1, { "service_key" => LargeStringArray: eq("i2") }),
+        )
+    );
+
+    let scope_and_key = engine
+        .execute(
+            "SELECT service_key FROM state \
+             WHERE service_name = 'workflow' AND scope = 'c' AND service_key = 'i1'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_and_key.num_rows(), 1);
+    assert_that!(
+        scope_and_key,
+        row!(0, { "service_key" => LargeStringArray: eq("i1") })
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_state_with_service_key_filter() {
+    // Regression: `service_key = ...` filters used to return only unscoped state entries
+    // because the partition-key extractor narrowed the scan to hash(service_key). This ignores
+    // scoped state entries for the same service_key.
+    let scope = Scope::try_from_static("c").unwrap();
+    let scoped_i1 = ServiceId::new(Some(scope.clone()), "scoped", "i1");
+    let unscoped_i1 = ServiceId::new(None, "unscoped", "i1");
+    let state_key = Bytes::from_static(b"a");
+    let value = b"\"b\"";
+
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    tx.put_user_state(&scoped_i1, &state_key, value).unwrap();
+    tx.put_user_state(&unscoped_i1, &state_key, value).unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let scope_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE scope = 'c'",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(scope_only.num_rows(), 1);
+    assert_that!(
+        scope_only,
+        row!(0, { "service_name" => LargeStringArray: eq("scoped") })
+    );
+
+    let service_key_only = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' \
+             ORDER BY service_name",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(service_key_only.num_rows(), 2);
+    assert_that!(
+        service_key_only,
+        all!(
+            row!(0, { "service_name" => LargeStringArray: eq("scoped") }),
+            row!(1, { "service_name" => LargeStringArray: eq("unscoped") })
+        )
+    );
+
+    // With `scope IS NULL` explicit, the conditional extractor narrows to hash(service_key).
+    let null_scope_service_key = engine
+        .execute(
+            "SELECT service_name FROM state \
+             WHERE service_key = 'i1' AND scope IS NULL",
+        )
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_eq!(null_scope_service_key.num_rows(), 1);
+    assert_that!(
+        null_scope_service_key,
+        row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
+    );
+}

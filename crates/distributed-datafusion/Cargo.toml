@@ -1,0 +1,71 @@
+[package]
+name = "restate-distributed-datafusion"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+options_schema = ["dep:schemars"]
+table_docs = []
+test-util = ["restate-clock/test-util"]
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-clock = { workspace = true, features = ["hlc"] }
+restate-core = { workspace = true }
+restate-limiter = { workspace = true, features = ["rule-book", "serde"] }
+restate-metadata-store = { workspace = true }
+restate-partition-store = { workspace = true }
+restate-platform = { workspace = true }
+restate-service-protocol = { workspace = true, features = ["codec"] }
+restate-service-protocol-v4 = { workspace = true, features = ["entry-codec"]  }
+restate-sharding = { workspace = true }
+restate-storage-api = { workspace = true }
+restate-storage-query-api = { workspace = true }
+restate-types = { workspace = true }
+restate-util-string = { workspace = true }
+restate-worker-api = { workspace = true, features = ["serde"] }
+
+ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+bytestring = { workspace = true }
+codederror = { workspace = true }
+dashmap = { workspace = true }
+datafusion = { workspace = true }
+datafusion-functions-json = { workspace = true }
+datafusion-proto = { workspace = true }
+derive_more = { workspace = true, features = ["debug"] }
+enumset = { workspace = true }
+futures = { workspace = true }
+gardal = { workspace = true }
+itertools = { workspace = true }
+parking_lot = { workspace = true }
+paste = { workspace = true }
+prost = { workspace = true }
+schemars = { workspace = true, optional = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+restate-clock = { workspace = true, features = ["test-util"] }
+restate-core = { workspace = true, features = ["test-util"] }
+restate-rocksdb = { workspace = true, features = ["test-util"] }
+restate-service-protocol = { workspace = true, features = ["test-util"] }
+restate-storage-api = { workspace = true, features = ["test-util"] }
+restate-types = { workspace = true, features = ["test-util"] }
+
+googletest = { workspace = true }
+
+[lints]
+workspace = true

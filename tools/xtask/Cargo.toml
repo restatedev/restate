@@ -14,7 +14,7 @@ restate-ingestion-client = { workspace = true, features = ["test-util"] }
 restate-metadata-server = { workspace = true }
 restate-service-client = { workspace = true }
 restate-service-protocol-v4 = { workspace = true, features = ["discovery", "serdes"]}
-restate-storage-query-datafusion = { workspace = true, features = ["table_docs"] }
+restate-distributed-datafusion = { workspace = true, features = ["table_docs"] }
 restate-storage-query-api = { workspace = true }
 restate-types = { workspace = true, features = ["schemars"] }
 restate-worker = { workspace = true, features = ["options_schema"] }
