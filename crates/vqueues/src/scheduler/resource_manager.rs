@@ -102,8 +102,16 @@ impl ResourceManager {
         let _ = self.tx.send(ResourceManagerUpdate::RulesUpdated(updates));
     }
 
-    /// Removes the vqueue from the resource it's blocked on
-    pub(super) fn remove_vqueue(&mut self, handle: VQueueHandle, blocked_resource: &ResourceKind) {
+    /// Removes a wait or a capacity notification for an invalidated queue head.
+    pub(super) fn remove_vqueue(
+        &mut self,
+        handle: VQueueHandle,
+        blocked_resource: Option<&ResourceKind>,
+    ) {
+        self.invoker_concurrency.cancel_notification(handle);
+        let Some(blocked_resource) = blocked_resource else {
+            return;
+        };
         match blocked_resource {
             ResourceKind::Lock { scope, lock_name } => {
                 self.locks.remove_from_waiters(handle, scope, lock_name);
@@ -315,17 +323,16 @@ impl ResourceManager {
             }
         }
 
-        while let Poll::Ready(Some(queue)) = self.invoker_concurrency.poll_head(cx) {
-            // wake up this vqueue and shift all other waiters to need poll so
-            // they can get a chance to be added to the ready ring if they are eligible and
-            // still valid.
+        if let Poll::Ready(Some(queue)) = self.invoker_concurrency.poll_head(cx) {
+            // Only this queue owns the acquired permit. The next waiter can be notified
+            // after this queue consumes it or its head is invalidated.
             tracing::trace!(
                 "waking up vqueue {queue:?} because invoker concurrency permit was acquired"
             );
             eligible.wake_up_queue(queue);
         }
 
-        while let Poll::Ready(Some(queue)) = self.invoker_throttling.poll_head(cx) {
+        if let Poll::Ready(Some(queue)) = self.invoker_throttling.poll_head(cx) {
             tracing::trace!(
                 "waking up vqueue {queue:?} because invoker throttling token became available"
             );
