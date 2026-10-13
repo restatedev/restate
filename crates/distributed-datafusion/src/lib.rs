@@ -71,6 +71,8 @@ use prost::Message;
 
 #[cfg(test)]
 pub(crate) mod mocks;
+#[cfg(test)]
+mod query_correctness;
 
 mod filter;
 pub mod remote_query_scanner_client;
