@@ -602,6 +602,7 @@ macro_rules! define_table {
             $(#[doc = $doc:expr])*
             $element:ident: $ty:ty
         ),+ $(,)?)
+        $(, visible_if($config:ident, $options:ident) $visibility:block)?
     ) => (paste::paste! {
 
         #[allow(dead_code)]
@@ -611,6 +612,12 @@ macro_rules! define_table {
             fn identity() -> ::restate_util_string::ReString {
                 ::restate_util_string::ReString::from_static(stringify!($table_name))
             }
+            $(
+                fn is_visible(
+                    $config: &::restate_types::config::Configuration,
+                    $options: &::restate_storage_query_api::SessionOptions,
+                ) -> bool $visibility
+            )?
         }
 
         pub struct [< $table_name:camel Builder >] {

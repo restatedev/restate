@@ -27,7 +27,7 @@ use restate_storage_query_api::{
     AdminUser, ClusterOperator, NodeWarnings, QueryEngine, QueryMetadata, QueryOptions,
     QueryResult, QuerySession, SessionOptions, SessionTable,
 };
-use restate_types::config::ThrottlingOptions;
+use restate_types::config::{Configuration, ThrottlingOptions};
 use restate_types::errors::GenericError;
 use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
@@ -76,9 +76,11 @@ impl<T: Send + Sync + 'static> QueryEngine<T> for DataFusionQueryEngine<T> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
         }
-        let ctx = self
-            .env
-            .create_session(opts.tables.as_deref().unwrap_or(&self.tables))?;
+        let ctx = self.env.create_session(
+            opts.tables.as_deref().unwrap_or(&self.tables),
+            &Configuration::pinned(),
+            &opts,
+        )?;
         Ok(Arc::new(RestateQuerySession {
             session_id: ctx.session_id().into(),
             query_clock: Arc::clone(self.env.query_clock()),
@@ -256,6 +258,7 @@ mod tests {
     };
     use restate_types::Version;
     use restate_types::cluster::cluster_state::LegacyClusterState;
+    use restate_types::config::Configuration;
 
     use crate::catalog::{ClusterTables, UserTables};
     use crate::partition::schema::PartitionTable;
@@ -578,7 +581,13 @@ mod tests {
             SessionTable::for_table::<PartitionTable>("restate.cluster.partitions"),
             SessionTable::new("logs_tail_segments", "restate.public.tail"),
         ];
-        let mixed = env.create_session(&selection).unwrap();
+        let mixed = env
+            .create_session(
+                &selection,
+                &Configuration::pinned(),
+                &SessionOptions::default(),
+            )
+            .unwrap();
         mixed
             .sql("CREATE VIEW logs AS SELECT -1 AS marker")
             .await

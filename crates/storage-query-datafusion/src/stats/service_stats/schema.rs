@@ -35,5 +35,8 @@ define_table!(
 
         /// Number of entries aggregated across all physical partitions.
         num_entries: DataType::UInt64,
-    )
+    ),
+    visible_if(config, _options) {
+        config.common.experimental.is_track_status_gauges_enabled()
+    }
 );
