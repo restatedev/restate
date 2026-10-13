@@ -21,12 +21,13 @@ use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::{
-    EntryId, EntryKey, EntryKind, EntryMetadata, Stage, Status, WriteVQueueTable,
+    EntryContext, EntryId, EntryKey, EntryKind, EntryMetadata, EntryStateRef, Stage, Status,
+    WriteVQueueTable,
     stats::{EntryStatistics, WaitStats},
 };
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{Seq, VQueueId};
+use restate_types::vqueues::{EntryTargetRef, Seq, VQueueId};
 use restate_util_string::ToReString;
 
 use crate::mocks::*;
@@ -67,13 +68,22 @@ async fn vqueue_entry_status_not_in_returns_non_excluded_rows() {
             entry_id,
         );
         let stats = EntryStatistics::new(created_at, key.run_at());
-        tx.put_vqueue_entry_status(
-            &qid,
-            Stage::Running,
-            &key,
-            &metadata,
-            stats,
-            Status::Started,
+        tx.create_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &EntryTargetRef::Service {
+                    scope: None,
+                    service: "test",
+                    handler: "handler",
+                },
+            },
+            EntryStateRef {
+                stage: Stage::Running,
+                status: Status::Started,
+                entry_key: &key,
+                metadata: &metadata,
+                stats: &stats,
+            },
         );
         ids.push(key.entry_id().display(qid.partition_key()).to_string());
         canonical_ids.push(key.to_canonical_entry_id(qid.partition_key()));
@@ -193,13 +203,22 @@ async fn get_vqueue_entry_status_header_fields() {
     let first_runnable_at = stats.first_runnable_at;
     let latest_attempt_wait_stats = stats.latest_attempt_wait_stats;
     let total_wait_stats = stats.total_wait_stats;
-    tx.put_vqueue_entry_status(
-        &qid,
-        Stage::Running,
-        &key,
-        &metadata,
-        stats,
-        Status::Started,
+    tx.create_vqueue_entry_status(
+        &EntryContext {
+            qid: &qid,
+            target: &EntryTargetRef::Service {
+                scope: None,
+                service: "test",
+                handler: "handler",
+            },
+        },
+        EntryStateRef {
+            stage: Stage::Running,
+            status: Status::Started,
+            entry_key: &key,
+            metadata: &metadata,
+            stats: &stats,
+        },
     );
     tx.commit().await.unwrap();
     drop(tx);
