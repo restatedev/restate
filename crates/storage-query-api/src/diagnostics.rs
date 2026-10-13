@@ -23,6 +23,9 @@ pub struct QueryMetadata {
     pub session_id: ReString,
     /// Allow-listed request headers retained from the session, including repeated values.
     pub headers: HeaderMap,
+    /// Diagnostic SQL with literal values replaced by `?`, or an omission marker.
+    /// Identifiers, aliases, and type parameters are retained. Never used for execution.
+    pub redacted_sql: ReString,
     /// Parsing, logical planning, optimization, and physical planning.
     pub planning_duration: Duration,
 }
