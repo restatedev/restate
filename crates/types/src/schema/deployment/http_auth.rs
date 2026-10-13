@@ -64,6 +64,11 @@ pub struct GoogleIdTokenAuth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 3)]
     workload_identity_provider: Option<ByteString>,
+    /// Customer opt-in to attach minted tokens even when the deployment URI is neither https nor
+    /// a loopback/private host, e.g. a plain-http endpoint behind Google Private Service Connect.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[bilrost(tag = 4)]
+    allow_insecure_transport: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -114,7 +119,13 @@ impl GoogleIdTokenAuth {
             impersonate_service_account,
             audience,
             workload_identity_provider,
+            allow_insecure_transport: false,
         })
+    }
+
+    pub fn with_allow_insecure_transport(mut self, allow_insecure_transport: bool) -> Self {
+        self.allow_insecure_transport = allow_insecure_transport;
+        self
     }
 
     pub fn audience(&self) -> &ByteString {
@@ -127,6 +138,10 @@ impl GoogleIdTokenAuth {
 
     pub fn workload_identity_provider(&self) -> Option<&ByteString> {
         self.workload_identity_provider.as_ref()
+    }
+
+    pub fn allow_insecure_transport(&self) -> bool {
+        self.allow_insecure_transport
     }
 
     pub fn into_parts(self) -> (ByteString, Option<ByteString>, Option<ByteString>) {
@@ -275,6 +290,83 @@ mod tests {
         // A path-only URI has no scheme or authority; derivation must fail so the REST boundary
         // can refuse to persist an incomplete record.
         assert!(derive_audience(&parse("/discover")).is_none());
+    }
+
+    /// `GoogleIdTokenAuth` as persisted before `allow_insecure_transport` existed.
+    #[derive(Debug, PartialEq, serde::Serialize, serde::Deserialize, bilrost::Message)]
+    struct LegacyGoogleIdTokenAuth {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[bilrost(tag = 1)]
+        impersonate_service_account: Option<ByteString>,
+        #[bilrost(tag = 2)]
+        audience: ByteString,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[bilrost(tag = 3)]
+        workload_identity_provider: Option<ByteString>,
+    }
+
+    fn to_flexbuffers(value: &impl serde::Serialize) -> bytes::BytesMut {
+        let mut buf = bytes::BytesMut::new();
+        crate::storage::encode::encode_serde(
+            value,
+            &mut buf,
+            crate::storage::StorageCodecKind::FlexbuffersSerde,
+        )
+        .unwrap();
+        buf
+    }
+
+    fn from_flexbuffers(buf: bytes::BytesMut) -> GoogleIdTokenAuth {
+        crate::storage::decode::decode_serde(
+            buf,
+            crate::storage::StorageCodecKind::FlexbuffersSerde,
+        )
+        .unwrap()
+    }
+
+    fn sample_auth() -> GoogleIdTokenAuth {
+        GoogleIdTokenAuth::new(
+            ByteString::from_static("http://svc.example.com"),
+            Some(ByteString::from_static("sa@proj.iam")),
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn allow_insecure_transport_is_backward_compatible() {
+        use bilrost::{Message, OwnedMessage};
+
+        let current = sample_auth();
+        let legacy = LegacyGoogleIdTokenAuth {
+            impersonate_service_account: current.impersonate_service_account().cloned(),
+            audience: current.audience().clone(),
+            workload_identity_provider: None,
+        };
+
+        // Records written before the field existed decode to the default, and the default
+        // encodes exactly as those records did.
+        let legacy_bilrost = legacy.encode_to_vec();
+        let decoded = GoogleIdTokenAuth::decode(legacy_bilrost.as_slice()).unwrap();
+        assert_eq!(decoded, current);
+        assert!(!decoded.allow_insecure_transport());
+        assert_eq!(current.encode_to_vec(), legacy_bilrost);
+
+        let legacy_flexbuffers = to_flexbuffers(&legacy);
+        assert_eq!(from_flexbuffers(legacy_flexbuffers.clone()), current);
+        assert_eq!(to_flexbuffers(&current), legacy_flexbuffers);
+    }
+
+    #[test]
+    fn allow_insecure_transport_round_trips() {
+        use bilrost::{Message, OwnedMessage};
+
+        let insecure = sample_auth().with_allow_insecure_transport(true);
+        assert_eq!(
+            GoogleIdTokenAuth::decode(insecure.encode_to_vec().as_slice()).unwrap(),
+            insecure
+        );
+        assert_eq!(from_flexbuffers(to_flexbuffers(&insecure)), insecure);
     }
 
     const PROVIDER: &str = "//iam.googleapis.com/projects/123/locations/global/workloadIdentityPools/pool/providers/aws-federation";

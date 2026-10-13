@@ -161,6 +161,9 @@ pub fn deployment_info_fields(deployment: &Deployment) -> Vec<(String, Field)> {
                         Field::new(provider.to_string()),
                     ));
                 }
+                if token_auth.allow_insecure_transport {
+                    rows.push(("allow_insecure_transport".to_owned(), Field::new("true")));
+                }
             }
             (
                 additional_headers.clone(),
