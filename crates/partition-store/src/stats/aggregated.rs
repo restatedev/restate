@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub(crate) mod backfill;
 mod bucketed_gauge;
 mod deployment_load;
 mod gauge;
