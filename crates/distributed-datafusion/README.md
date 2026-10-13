@@ -34,3 +34,13 @@ fixture and broad primary-scan references:
 cargo nextest run -p restate-distributed-datafusion --all-features query_correctness
 cargo nextest run -p restate-distributed-datafusion --all-features distributed::
 ```
+
+The [sparse MIN/MAX regression comparison](src/query_correctness/sparse_min_max.rs)
+runs the same persisted invocation data through v1 and distributed v2, with aggregate
+dynamic-filter pushdown enabled and disabled. It is ignored by default while
+#5214 is unresolved; run it explicitly with:
+
+```sh
+cargo nextest run -p restate-distributed-datafusion --all-features issue_5214 \
+  --run-ignored ignored-only --success-output immediate
+```
