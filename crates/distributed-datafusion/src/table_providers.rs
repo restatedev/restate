@@ -39,10 +39,16 @@ use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
+use crate::filter::{PartitionKeySelector, PointReadFanout};
+use crate::placement::{PartitionPlacement, PartitionSource, StoragePlacementOptions};
+use crate::selection;
 use crate::table_util::{find_sort_columns, make_ordering};
 
 pub trait ScanPartition: Send + Sync + Debug + 'static {
+    fn partition_source(&self) -> PartitionSource {
+        PartitionSource::Storage
+    }
+
     /// Stable identity and placement information for the opt-in task runtime.
     fn distributed_source(
         &self,
@@ -72,7 +78,7 @@ pub(crate) struct PartitionedTableProvider<T, S> {
     schema: SchemaRef,
     ordering: Vec<String>,
     partition_scanner: T,
-    partition_key_extractor: FirstMatchingPartitionKeyExtractor,
+    partition_key_extractor: PartitionKeySelector,
     statistics: Statistics,
 }
 
@@ -82,7 +88,7 @@ impl<T, S> PartitionedTableProvider<T, S> {
         schema: SchemaRef,
         ordering: Vec<String>,
         partition_scanner: T,
-        partition_key_extractor: FirstMatchingPartitionKeyExtractor,
+        partition_key_extractor: PartitionKeySelector,
     ) -> Self {
         let statistics = Statistics::new_unknown(&schema);
         Self {
@@ -166,21 +172,12 @@ where
         };
 
         // as we report our filter pushdown as inexact, all columns needed for the filters will be in the projection
-        let filters: Vec<_> = filters
-            .iter()
-            .map(|p| {
-                let p = datafusion::physical_expr::planner::logical2physical(p, &projected_schema);
-                // The predicate *should* have the correct column indices but bugs in datafusion can create mixups.
-                // Most datafusion table providers seem to use reassign_expr_columns so they are tolerant to this.
-                // The column indices are not important as all columns should refer to fields in this table
-                // and we don't have any duplicate field names.
-                datafusion::physical_expr::utils::reassign_expr_columns(p, &projected_schema)
-            })
-            .collect::<datafusion::common::Result<_>>()?;
-
-        let partition_key_selection = self
+        let filters = selection::physical_filters(filters, &projected_schema)?;
+        let (partition_keys, fanout) = self
             .partition_key_extractor
-            .try_extract_selection(&filters)
+            .select_domain(&filters)
+            .map_err(|e| DataFusionError::External(e.into()))?;
+        let partition_ids = selection::unsigned_domain(&filters, "partition_id")
             .map_err(|e| DataFusionError::External(e.into()))?;
 
         let predicate = datafusion::physical_expr::conjunction_opt(filters);
@@ -191,89 +188,60 @@ where
             .await
             .map_err(DataFusionError::External)?
             .into_iter()
+            .filter(|(id, _)| partition_ids.contains(&u64::from(*id)))
             .flat_map(|(partition_id, partition)| {
-                match &partition_key_selection {
-                    // User requested a full scan of all partitions, return one physical partition per restate partition
-                    None => itertools::Either::Left(Some((partition_id, partition)).into_iter()),
-                    // Group selected keys into one physical scan per Restate partition if the number
-                    // of keys is too large (to bound the number of concurrent scans) or if the fanout
-                    // was set to per-partition.
-                    Some(selection)
-                        if selection.fanout == PointReadFanout::PerPartition
-                            || selection.keys.len() > 4096 =>
-                    {
-                        let mut keys = selection.keys.range(partition.key_range).copied();
-                        let selected = keys.next().map(|first| {
-                            let last = keys.next_back().unwrap_or(first);
-                            (
-                                partition_id,
-                                Partition::new(partition_id, KeyRange::new(first, last)),
-                            )
-                        });
-                        itertools::Either::Left(selected.into_iter())
-                    }
-                    // User requested a list of point reads
-                    Some(selection) => {
-                        itertools::Either::Right(
-                            selection
-                                .keys
-                                // Find requested partition keys that are in this partition
-                                .range(partition.key_range)
-                                .cloned()
-                                .map(move |partition_key| {
-                                    // We create a 'physical partition' per partition key.
-                                    // If the user provided a single point read (`id = 'inv_...'`),
-                                    // then we will have 1 physical partition overall -> 1 logical partition.
-                                    // If they provided N point reads (`id in ('inv_1', 'inv_2', ..)`),
-                                    // we will have N physical partitions, perhaps even for a single restate partition.
-                                    // Those will then be round-robined to the underlying logical partitions.
-                                    // As a result, separate point reads on the same partition ID might end up
-                                    // on separate logical partitions,but that's ok because they *can* be done
-                                    // in parallel efficiently.
-                                    (
-                                        partition_id,
-                                        Partition::new(
-                                            partition_id,
-                                            KeyRange::new(partition_key, partition_key),
-                                        ),
-                                    )
-                                }),
-                        )
-                    }
+                let mut ranges: Vec<_> = partition_keys.key_ranges(partition.key_range).collect();
+                if (fanout == PointReadFanout::PerPartition || ranges.len() > 4096)
+                    && let (Some(first), Some(last)) = (ranges.first(), ranges.last())
+                {
+                    ranges = vec![KeyRange::new(first.start(), last.end())];
                 }
+                ranges
+                    .into_iter()
+                    .map(move |range| (partition_id, Partition::new(partition_id, range)))
             })
             .collect();
 
-        let target_partitions = state.config().target_partitions();
-        let logical_partitions =
-            physical_partitions_to_logical(physical_partitions, target_partitions);
+        if physical_partitions.is_empty() {
+            return Ok(Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
+                projected_schema,
+            )));
+        }
 
+        let target_partitions = state.config().target_partitions();
         if state
             .config()
             .get_extension::<crate::distributed::DistributedExecution>()
             .is_some()
-            && !logical_partitions.is_empty()
             && let Some((table, manager)) = self.partition_scanner.distributed_source()
         {
-            return Ok(Arc::new(crate::distributed::StorageScanExec::for_scan(
+            return crate::distributed::SourceExec::for_scan(
                 table,
                 manager,
-                logical_partitions
+                physical_partitions
                     .into_iter()
-                    .map(|lane| {
-                        lane.physical_partitions
-                            .into_iter()
-                            .map(|(id, p)| (id, p.key_range))
-                            .collect()
-                    })
+                    .map(|(id, p)| (id, p.key_range))
                     .collect(),
+                PartitionPlacement {
+                    source: self.partition_scanner.partition_source(),
+                    options: state
+                        .config()
+                        .get_extension::<StoragePlacementOptions>()
+                        .as_deref()
+                        .copied()
+                        .unwrap_or_default(),
+                },
+                target_partitions,
                 projected_schema,
                 Arc::new(self.statistics.clone().project(projection).to_inexact()),
                 self.ordering.clone(),
                 predicate,
                 limit,
-            )?));
+            );
         }
+
+        let logical_partitions =
+            physical_partitions_to_logical(physical_partitions, target_partitions);
 
         let sort_columns = find_sort_columns(&self.ordering, &projected_schema);
 

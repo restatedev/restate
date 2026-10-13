@@ -22,7 +22,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::{LockName, Scope};
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::locks::row::append_lock_row;
 use crate::locks::schema::{SysLocksBuilder, SysLocksTable, sys_locks_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -38,7 +38,7 @@ impl SysLocksTable {
             SysLocksBuilder::schema(),
             sys_locks_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_scope("scope")
                 .with_vqueue_entry_id("acquired_by"),
         );

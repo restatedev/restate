@@ -20,11 +20,10 @@
 //! The `plain_node_id` column enables predicate pushdown so queries like
 //! `WHERE plain_node_id = 'N5'` target only the relevant node.
 
+use std::collections::HashMap;
 use std::fmt::{self, Debug, Display, Formatter};
 use std::pin::Pin;
 use std::sync::Arc;
-
-use parking_lot::Mutex;
 use std::task::{Context, Poll};
 
 use async_trait::async_trait;
@@ -44,15 +43,17 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt};
 
 use restate_core::Metadata;
+use restate_platform::sync::Mutex;
 use restate_storage_query_api::{NodeWarning, NodeWarnings};
 use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::sharding::KeyRange;
-use restate_types::{NodeId, PlainNodeId};
+use restate_types::{GenerationalNodeId, PlainNodeId};
 use restate_util_string::{ReString, ToReString};
 
 use crate::remote_query_scanner_client::remote_scan_as_datafusion_stream;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::selection::{self, Domain};
 use crate::table_providers::{MeteredStream, ProjectedColumns, Scan};
 
 /// Determines the set of target nodes for a fan-out query.
@@ -64,7 +65,7 @@ pub(crate) trait NodeLocator: Send + Sync + Debug + 'static {
 #[derive(Debug, Clone)]
 pub(crate) struct TargetNode {
     pub plain_node_id: PlainNodeId,
-    pub node_id: NodeId,
+    pub node_id: GenerationalNodeId,
     pub is_local: bool,
 }
 
@@ -95,7 +96,7 @@ impl NodeLocator for AllNodeLocator {
             .iter()
             .map(|(plain_id, config)| TargetNode {
                 plain_node_id: plain_id,
-                node_id: NodeId::from(config.current_generation),
+                node_id: config.current_generation,
                 is_local: config.current_generation == my_node_id,
             })
             .collect())
@@ -132,82 +133,53 @@ impl NodeLocator for RoleBasedNodeLocator {
             .iter_role(self.role)
             .map(|(plain_id, config)| TargetNode {
                 plain_node_id: plain_id,
-                node_id: NodeId::from(config.current_generation),
+                node_id: config.current_generation,
                 is_local: config.current_generation == my_node_id,
             })
             .collect())
     }
 }
 
-/// Extracts `plain_node_id` filter values from DataFusion predicates.
-///
-/// The `plain_node_id` column is `Utf8` and uses the `Display` format of
-/// [`PlainNodeId`] (e.g. `"N5"`). Literal values are parsed via
-/// [`PlainNodeId::from_str`] which accepts both `"N5"` and `"5"`.
-///
-/// Supports `plain_node_id = 'N5'`, `plain_node_id IN ('N1', 'N2')`, and
-/// combinations thereof.
-fn extract_node_ids_from_filters(filters: &[Expr]) -> Option<Vec<PlainNodeId>> {
-    use datafusion::logical_expr::expr::InList;
-
-    let mut node_ids = Vec::new();
-
-    for filter in filters {
-        match filter {
-            Expr::BinaryExpr(binary) if binary.op == datafusion::logical_expr::Operator::Eq => {
-                if let (Expr::Column(col), Expr::Literal(val, _))
-                | (Expr::Literal(val, _), Expr::Column(col)) = (&*binary.left, &*binary.right)
-                    && col.name == "plain_node_id"
-                    && let Some(id) = literal_to_plain_node_id(val)
-                {
-                    node_ids.push(id);
-                }
+fn select_nodes(
+    filters: &[Arc<dyn PhysicalExpr>],
+    nodes: Vec<TargetNode>,
+) -> anyhow::Result<Vec<TargetNode>> {
+    if filters.is_empty() {
+        return Ok(nodes);
+    }
+    let plain: HashMap<_, _> = nodes
+        .iter()
+        .map(|node| (node.plain_node_id.to_restring(), node.node_id))
+        .collect();
+    let generations: HashMap<_, _> = nodes
+        .iter()
+        .map(|node| (node.node_id.to_restring(), node.node_id))
+        .collect();
+    let domain = selection::analyze(filters, |column, op, value| {
+        if !matches!(column, "plain_node_id" | "gen_node_id")
+            || op != datafusion::logical_expr::Operator::Eq
+        {
+            return Ok(Domain::all());
+        }
+        Ok(match value.try_as_str() {
+            Some(Some(value)) => {
+                let identities = if column == "plain_node_id" {
+                    &plain
+                } else {
+                    &generations
+                };
+                Domain::values(identities.get(value).copied())
             }
-            Expr::InList(InList {
-                expr,
-                list,
-                negated: false,
-            }) => {
-                if let Expr::Column(col) = &**expr
-                    && col.name == "plain_node_id"
-                {
-                    for item in list {
-                        if let Expr::Literal(val, _) = item
-                            && let Some(id) = literal_to_plain_node_id(val)
-                        {
-                            node_ids.push(id);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-
-    if node_ids.is_empty() {
-        None
-    } else {
-        Some(node_ids)
-    }
-}
-
-/// Attempts to parse a [`PlainNodeId`] from a DataFusion scalar literal.
-///
-/// The `plain_node_id` column is `Utf8`, so filter predicates will normally
-/// produce `ScalarValue::Utf8`. We also handle numeric scalars as a fallback.
-fn literal_to_plain_node_id(val: &datafusion::common::ScalarValue) -> Option<PlainNodeId> {
-    match val {
-        datafusion::common::ScalarValue::Utf8(Some(s))
-        | datafusion::common::ScalarValue::LargeUtf8(Some(s)) => s.parse::<PlainNodeId>().ok(),
-        datafusion::common::ScalarValue::UInt32(Some(v)) => Some(PlainNodeId::from(*v)),
-        datafusion::common::ScalarValue::Int64(Some(v)) if *v >= 0 && *v <= u32::MAX as i64 => {
-            Some(PlainNodeId::from(*v as u32))
-        }
-        datafusion::common::ScalarValue::UInt64(Some(v)) if *v <= u32::MAX as u64 => {
-            Some(PlainNodeId::from(*v as u32))
-        }
-        _ => None,
-    }
+            Some(None) => Domain::empty(),
+            None => Domain::all(),
+        })
+    })?;
+    // These are SQL strings, not parsable identifiers: '5' must not match 'N5',
+    // and an exact generation must never resolve to its replacement generation.
+    Ok(nodes
+        .into_iter()
+        .filter(|node| domain.contains(&node.node_id))
+        .collect())
 }
 
 /// A DataFusion [`TableProvider`] that fans out scans to multiple nodes.
@@ -259,7 +231,7 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
 
     async fn scan(
         &self,
-        _state: &dyn datafusion::catalog::Session,
+        state: &dyn datafusion::catalog::Session,
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
@@ -273,14 +245,14 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
             DataFusionError::Internal(format!("Failed to locate target nodes: {e}"))
         })?;
 
-        // Apply plain_node_id predicate pushdown
-        let filtered_nodes = match extract_node_ids_from_filters(filters) {
-            Some(target_ids) => target_nodes
-                .into_iter()
-                .filter(|n| target_ids.contains(&n.plain_node_id))
-                .collect(),
-            None => target_nodes,
-        };
+        let physical_filters = selection::physical_filters(filters, &projected_schema)?;
+        let filtered_nodes = select_nodes(&physical_filters, target_nodes)
+            .map_err(|err| DataFusionError::External(err.into()))?;
+        if filtered_nodes.is_empty() {
+            return Ok(Arc::new(datafusion::physical_plan::empty::EmptyExec::new(
+                projected_schema,
+            )));
+        }
 
         Ok(Arc::new(NodeFanOutExecutionPlan::new(
             projected_schema,
@@ -291,7 +263,11 @@ impl datafusion::catalog::TableProvider for NodeFanOutTableProvider {
             filters.to_vec(),
             limit,
             self.statistics.clone().project(projection),
-        )))
+            state
+                .config()
+                .get_extension::<crate::distributed::DistributedExecution>()
+                .is_some(),
+        )?))
     }
 
     fn supports_filters_pushdown(
@@ -324,6 +300,10 @@ pub(crate) struct NodeFanOutExecutionPlan {
     statistics: Arc<Statistics>,
     metrics: ExecutionPlanMetricsSet,
     node_warnings: NodeWarnings,
+    // Each best-effort node has an isolated library runtime so an installation
+    // error cannot abort another node's result. These are opaque to the outer
+    // planner: it must not combine their admission/failure domains.
+    task_plans: Option<Vec<Arc<dyn ExecutionPlan>>>,
 }
 
 impl NodeFanOutExecutionPlan {
@@ -337,7 +317,8 @@ impl NodeFanOutExecutionPlan {
         filters: Vec<Expr>,
         limit: Option<usize>,
         statistics: Statistics,
-    ) -> Self {
+        distributed: bool,
+    ) -> datafusion::common::Result<Self> {
         let eq_properties = EquivalenceProperties::new(projected_schema.clone());
         let num_partitions = target_nodes.len().max(1);
 
@@ -348,7 +329,25 @@ impl NodeFanOutExecutionPlan {
             Boundedness::Bounded,
         );
 
-        Self {
+        let task_plans = distributed
+            .then(|| {
+                target_nodes
+                    .iter()
+                    .map(|node| {
+                        crate::distributed::plan(Arc::new(
+                            crate::distributed::SourceExec::for_node(
+                                table_name.clone(),
+                                node.node_id,
+                                Arc::clone(&projected_schema),
+                                limit,
+                            )?,
+                        ))
+                    })
+                    .collect::<datafusion::common::Result<Vec<_>>>()
+            })
+            .transpose()?;
+
+        Ok(Self {
             projected_schema,
             target_nodes,
             remote_scanner_manager,
@@ -360,7 +359,8 @@ impl NodeFanOutExecutionPlan {
             statistics: Arc::new(statistics),
             metrics: ExecutionPlanMetricsSet::new(),
             node_warnings: Arc::new(Mutex::new(Vec::new())),
-        }
+            task_plans,
+        })
     }
 
     /// Returns the shared warnings collector. The gRPC layer uses this to
@@ -424,6 +424,27 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
         let batch_size = context.session_config().batch_size();
         let node_label = target.plain_node_id.to_string();
 
+        if let Some(plans) = &self.task_plans {
+            // Defer even synchronous runtime failures into the warning boundary.
+            let plan = Arc::clone(&plans[partition]);
+            let stream = futures::TryStreamExt::try_flatten(futures::stream::once(async move {
+                plan.execute(0, context)
+            }));
+            return Ok(Box::pin(ErrorCatchingStream::new(
+                Box::pin(
+                    datafusion::physical_plan::stream::RecordBatchStreamAdapter::new(
+                        self.schema(),
+                        MeteredStream {
+                            inner: stream.boxed(),
+                            baseline_metrics,
+                        },
+                    ),
+                ),
+                node_label.into(),
+                Arc::clone(&self.node_warnings),
+            )));
+        }
+
         let inner: SendableRecordBatchStream = if target.is_local
             && let Some(local_scanner) = &self.local_scanner
         {
@@ -448,7 +469,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
             let scanner_id = self.remote_scanner_manager.allocate_scanner_id();
             let inner = remote_scan_as_datafusion_stream(
                 self.remote_scanner_manager.remote_scanner_service(),
-                target.node_id,
+                target.node_id.into(),
                 scanner_id,
                 PartitionId::MIN,
                 KeyRange::FULL,
@@ -492,10 +513,11 @@ impl DisplayAs for NodeFanOutExecutionPlan {
             DisplayFormatType::Default | DisplayFormatType::Verbose => {
                 write!(
                     f,
-                    "NodeFanOutExecutionPlan: table={}, target_nodes=[{}], projection=[{}]",
+                    "NodeFanOutExecutionPlan: table={}, target_nodes=[{}], projection=[{}], distributed={}",
                     self.table_name,
                     NodeList(&self.target_nodes),
                     ProjectedColumns(&self.projected_schema),
+                    self.task_plans.is_some(),
                 )?;
                 if let Some(limit) = self.limit {
                     write!(f, ", limit={limit}")?;
@@ -528,7 +550,7 @@ impl Display for NodeList<'_> {
             if !first {
                 write!(f, ", ")?;
             }
-            write!(f, "{}", node.plain_node_id)?;
+            write!(f, "{}", node.node_id)?;
             if node.is_local {
                 write!(f, "(local)")?;
             }
@@ -594,119 +616,70 @@ impl datafusion::execution::RecordBatchStream for ErrorCatchingStream {
 
 #[cfg(test)]
 mod tests {
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::prelude::{col, lit};
+
     use super::*;
 
-    use datafusion::common::ScalarValue;
-    use datafusion::logical_expr::Operator;
-    use datafusion::logical_expr::expr::InList;
-
-    /// Helper: build `plain_node_id = <literal>`.
-    fn eq_filter(val: ScalarValue) -> Expr {
-        Expr::BinaryExpr(datafusion::logical_expr::expr::BinaryExpr {
-            left: Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                "plain_node_id",
-            ))),
-            op: Operator::Eq,
-            right: Box::new(Expr::Literal(val, None)),
-        })
-    }
-
-    /// Helper: build `plain_node_id IN (<literals>)`.
-    fn in_list_filter(vals: Vec<ScalarValue>) -> Expr {
-        Expr::InList(InList {
-            expr: Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                "plain_node_id",
-            ))),
-            list: vals.into_iter().map(|v| Expr::Literal(v, None)).collect(),
-            negated: false,
-        })
-    }
-
     #[test]
-    fn extract_utf8_equality() {
-        // `plain_node_id = 'N5'` — the standard Utf8 format produced by Display
-        let filters = vec![eq_filter(ScalarValue::Utf8(Some("N5".into())))];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(result, Some(vec![PlainNodeId::from(5)]));
-
-        // `plain_node_id = '42'` — bare numeric string (also accepted by FromStr)
-        let filters = vec![eq_filter(ScalarValue::Utf8(Some("42".into())))];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(result, Some(vec![PlainNodeId::from(42)]));
-    }
-
-    #[test]
-    fn extract_utf8_in_list() {
-        let filters = vec![in_list_filter(vec![
-            ScalarValue::Utf8(Some("N1".into())),
-            ScalarValue::Utf8(Some("N3".into())),
-            ScalarValue::Utf8(Some("N7".into())),
-        ])];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(
-            result,
-            Some(vec![
-                PlainNodeId::from(1),
-                PlainNodeId::from(3),
-                PlainNodeId::from(7),
-            ])
-        );
-    }
-
-    #[test]
-    fn extract_numeric_fallback() {
-        // UInt32 literal (fallback path, not typical for Utf8 columns)
-        let filters = vec![eq_filter(ScalarValue::UInt32(Some(10)))];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(result, Some(vec![PlainNodeId::from(10)]));
-
-        // Int64 literal
-        let filters = vec![eq_filter(ScalarValue::Int64(Some(99)))];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(result, Some(vec![PlainNodeId::from(99)]));
-    }
-
-    #[test]
-    fn extract_returns_none_for_empty_or_unrelated_filters() {
-        // No filters at all
-        assert_eq!(extract_node_ids_from_filters(&[]), None);
-
-        // Filter on a different column
-        let other_col = Expr::BinaryExpr(datafusion::logical_expr::expr::BinaryExpr {
-            left: Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                "other_column",
-            ))),
-            op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some("N5".into())), None)),
-        });
-        assert_eq!(extract_node_ids_from_filters(&[other_col]), None);
-
-        // Unparseable string value
-        let bad = eq_filter(ScalarValue::Utf8(Some("not-a-node".into())));
-        assert_eq!(extract_node_ids_from_filters(&[bad]), None);
-
-        // Negated IN list should be ignored
-        let negated = Expr::InList(InList {
-            expr: Box::new(Expr::Column(datafusion::common::Column::new_unqualified(
-                "plain_node_id",
-            ))),
-            list: vec![Expr::Literal(ScalarValue::Utf8(Some("N1".into())), None)],
-            negated: true,
-        });
-        assert_eq!(extract_node_ids_from_filters(&[negated]), None);
-    }
-
-    #[test]
-    fn extract_combines_multiple_filters() {
-        // Two separate equality filters are combined into a single Vec
-        let filters = vec![
-            eq_filter(ScalarValue::Utf8(Some("N2".into()))),
-            eq_filter(ScalarValue::Utf8(Some("N8".into()))),
-        ];
-        let result = extract_node_ids_from_filters(&filters);
-        assert_eq!(
-            result,
-            Some(vec![PlainNodeId::from(2), PlainNodeId::from(8)])
-        );
+    fn identity_domains_preserve_sql_strings_and_generations() {
+        let schema = Schema::new(vec![
+            Field::new("plain_node_id", DataType::Utf8, false),
+            Field::new("gen_node_id", DataType::Utf8, false),
+            Field::new("other", DataType::Utf8, true),
+        ]);
+        let nodes: Vec<_> = [1, 2, 3]
+            .into_iter()
+            .map(|id| TargetNode {
+                plain_node_id: id.into(),
+                node_id: GenerationalNodeId::new(id, 2),
+                is_local: id == 1,
+            })
+            .collect();
+        let plain = col("plain_node_id");
+        let generation = col("gen_node_id");
+        for (filter, expected) in [
+            (plain.clone().eq(lit("N2")), vec![2]),
+            (lit("N2").eq(plain.clone()), vec![2]),
+            (generation.clone().eq(lit("N2:2")), vec![2]),
+            (generation.clone().eq(lit("N2:1")), vec![]),
+            (plain.clone().eq(lit("2")), vec![]),
+            (plain.clone().eq(lit("not-a-node")), vec![]),
+            (
+                plain
+                    .clone()
+                    .in_list(vec![lit("N1"), lit("N3"), lit("N1")], false),
+                vec![1, 3],
+            ),
+            (
+                plain.clone().eq(lit("N2")).and(generation.eq(lit("N1:2"))),
+                vec![],
+            ),
+            (
+                plain.clone().eq(lit("N2")).and(plain.clone().eq(lit("N3"))),
+                vec![],
+            ),
+            (
+                plain.clone().eq(lit("N2")).or(plain.clone().eq(lit("N3"))),
+                vec![2, 3],
+            ),
+            (
+                plain.clone().eq(lit("N2")).or(col("other").eq(lit("x"))),
+                vec![1, 2, 3],
+            ),
+            (plain.in_list(vec![lit("N1")], true), vec![1, 2, 3]),
+        ] {
+            let filters =
+                selection::physical_filters(std::slice::from_ref(&filter), &schema).unwrap();
+            let selected = select_nodes(&filters, nodes.clone()).unwrap();
+            assert_eq!(
+                selected
+                    .into_iter()
+                    .map(|node| node.node_id.raw_id())
+                    .collect::<Vec<_>>(),
+                expected,
+                "{filter}"
+            );
+        }
     }
 }

@@ -17,7 +17,7 @@ use restate_types::vqueues::VQueueId;
 use restate_worker_api::{PartitionQueryAccess, SchedulerStatusEntry, SchedulingStatus};
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::live_scanners::LivePartitionScanner;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::scheduler_status::schema::{
@@ -40,8 +40,8 @@ impl SysSchedulerTable {
             partition_selector,
             schema,
             sys_scheduler_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            remote_scanner_manager.create_live_scanner::<Self>(),
+            PartitionKeySelector::default()
                 .with_partitioned_resource_id::<VQueueId>("id")
                 .with_vqueue_entry_id("head_entry_id"),
         )

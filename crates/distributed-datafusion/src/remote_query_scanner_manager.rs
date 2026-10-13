@@ -21,10 +21,10 @@ use datafusion::common::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
-use parking_lot::Mutex;
 
 use restate_core::Metadata;
 use restate_core::partitions::PartitionRouting;
+use restate_platform::sync::Mutex;
 use restate_storage_query_api::QueryEngineTable;
 use restate_types::NodeId;
 use restate_types::identifiers::PartitionId;
@@ -32,6 +32,7 @@ use restate_types::net::remote_query_scanner::{RemoteQueryScannerOpen, ScannerId
 use restate_types::sharding::KeyRange;
 use restate_util_string::ReString;
 
+use crate::placement::{PartitionPlacement, PartitionSource};
 use crate::remote_query_scanner_client::{
     RemoteScanner, RemoteScannerService, remote_scan_as_datafusion_stream,
 };
@@ -74,6 +75,7 @@ pub struct RemoteScannerManager {
     remote_scanner: Arc<dyn RemoteScannerService>,
     partition_locator: Arc<dyn PartitionLocator>,
     local_store_scanners: LocalPartitionScannerRegistry,
+    local_node_scanners: Arc<Mutex<BTreeMap<ReString, Arc<dyn Scan>>>>,
     metadata: Metadata,
 }
 
@@ -92,6 +94,7 @@ pub trait PartitionLocator: Send + Sync + 'static {
     fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
+        placement: PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation>;
 }
 
@@ -115,9 +118,17 @@ impl PartitionLocator for MetadataAwarePartitionLocator {
     fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
+        placement: PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation> {
         let my_node_id = self.metadata.my_node_id();
-        match self.partition_routing.get_node_by_partition(partition_id) {
+        let target = if placement.requires_leader() {
+            self.partition_routing
+                .get_leader(partition_id)
+                .map(|(node, _)| node)
+        } else {
+            self.partition_routing.get_node_by_partition(partition_id)
+        };
+        match target {
             None => {
                 bail!("node lookup for partition {} failed", partition_id)
             }
@@ -136,6 +147,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
     fn get_partition_target_node(
         &self,
         _partition_id: PartitionId,
+        _placement: PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation> {
         Ok(PartitionLocation::Local)
     }
@@ -164,11 +176,12 @@ impl RemoteScannerManager {
         self.metadata.my_node_id()
     }
 
-    pub(crate) fn storage_owner(
+    pub(crate) fn partition_owner(
         &self,
         partition: PartitionId,
+        placement: PartitionPlacement,
     ) -> anyhow::Result<restate_types::GenerationalNodeId> {
-        match self.get_partition_target_node(partition)? {
+        match self.get_partition_target_node(partition, placement)? {
             PartitionLocation::Local => Ok(self.node_id()),
             PartitionLocation::Remote { node_id } => Ok(self
                 .metadata
@@ -187,6 +200,7 @@ impl RemoteScannerManager {
             remote_scanner,
             partition_locator,
             local_store_scanners: LocalPartitionScannerRegistry::default(),
+            local_node_scanners: Default::default(),
             metadata,
         }
     }
@@ -220,6 +234,13 @@ impl RemoteScannerManager {
         RemotePartitionsScanner::<T>::new(self.clone())
     }
 
+    pub fn create_live_scanner<T: QueryEngineTable>(&self) -> impl ScanPartition + Clone {
+        RemotePartitionsScanner::<T> {
+            source: PartitionSource::LeaderLive,
+            ..RemotePartitionsScanner::new(self.clone())
+        }
+    }
+
     /// Registers a node-local implementation for a partition-scoped source.
     /// Registration does not open a partition or grant access to its database.
     pub fn register_partition_scanner<T: QueryEngineTable>(&self, scanner: Arc<dyn ScanPartition>) {
@@ -231,6 +252,13 @@ impl RemoteScannerManager {
     /// as a `ScanPartition` adapter so it integrates with the existing remote
     /// scanner server infrastructure.
     pub fn register_node_scanner<T: QueryEngineTable>(&self, scanner: Arc<dyn Scan>) {
+        assert!(
+            self.local_node_scanners
+                .lock()
+                .insert(T::identity(), Arc::clone(&scanner))
+                .is_none(),
+            "duplicate local node source"
+        );
         self.local_store_scanners
             .register::<T>(Arc::new(ScanToScanPartitionAdapter(scanner)));
     }
@@ -239,12 +267,17 @@ impl RemoteScannerManager {
         self.local_store_scanners.get(table)
     }
 
+    pub(crate) fn local_node_scanner(&self, table: &str) -> Option<Arc<dyn Scan>> {
+        self.local_node_scanners.lock().get(table).cloned()
+    }
+
     pub fn get_partition_target_node(
         &self,
         partition_id: PartitionId,
+        placement: PartitionPlacement,
     ) -> anyhow::Result<PartitionLocation> {
         self.partition_locator
-            .get_partition_target_node(partition_id)
+            .get_partition_target_node(partition_id, placement)
     }
 
     /// Returns a reference to the remote scanner service for use by node-fan-out tables.
@@ -258,6 +291,7 @@ impl RemoteScannerManager {
 #[derive(Clone, Debug)]
 pub struct RemotePartitionsScanner<T> {
     manager: RemoteScannerManager,
+    source: PartitionSource,
     _phantom: PhantomData<T>,
 }
 
@@ -265,6 +299,7 @@ impl<T: QueryEngineTable> RemotePartitionsScanner<T> {
     pub fn new(manager: RemoteScannerManager) -> Self {
         Self {
             manager,
+            source: PartitionSource::Storage,
             _phantom: PhantomData,
         }
     }
@@ -292,6 +327,10 @@ impl ScanPartition for ScanToScanPartitionAdapter {
 }
 
 impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
+    fn partition_source(&self) -> PartitionSource {
+        self.source
+    }
+
     fn distributed_source(&self) -> Option<(ReString, &RemoteScannerManager)> {
         Some((T::identity(), &self.manager))
     }
@@ -306,7 +345,13 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        match self.manager.get_partition_target_node(partition_id)? {
+        match self.manager.get_partition_target_node(
+            partition_id,
+            PartitionPlacement {
+                source: self.source,
+                ..Default::default()
+            },
+        )? {
             PartitionLocation::Local => {
                 let scanner = self.manager.local_partition_scanner(&T::identity()).ok_or_else(
                     ||anyhow!("was expecting a local partition to be present on this node. It could be that this partition is being opened right now.")
@@ -336,6 +381,88 @@ impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
                     limit,
                 ))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_core::TaskCenter;
+    use restate_core::test_env::TestCoreEnv;
+    use restate_types::cluster_state::NodeState;
+    use restate_types::identifiers::LeaderEpoch;
+    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::partitions::state::{
+        LeadershipState, MemberState, PartitionReplicaSetStates, ReplicaSetState,
+    };
+    use restate_types::{GenerationalNodeId, Version};
+
+    use crate::placement::StoragePlacementOptions;
+
+    use super::*;
+
+    #[restate_core::test]
+    async fn placement_distinguishes_serving_replica_from_required_leader() {
+        let env = TestCoreEnv::create_with_single_node(1, 1).await;
+        let me = env.metadata.my_node_id();
+        TaskCenter::current()
+            .cluster_state()
+            .clone()
+            .updater()
+            .upsert_node_state(me, NodeState::Alive);
+        let states = PartitionReplicaSetStates::default();
+        states.note_observed_membership(
+            PartitionId::MIN,
+            LeadershipState::default(),
+            &ReplicaSetState {
+                version: Version::MIN,
+                members: vec![MemberState {
+                    node_id: me.as_plain(),
+                    durable_lsn: Lsn::INVALID,
+                }],
+            },
+            &None,
+        );
+        let locator = create_partition_locator(
+            PartitionRouting::new(states.clone(), TaskCenter::current()),
+            env.metadata,
+        );
+        let storage = PartitionPlacement::default();
+        let leader_storage = PartitionPlacement {
+            options: StoragePlacementOptions {
+                require_leader: true,
+            },
+            ..storage
+        };
+        let live = PartitionPlacement {
+            source: PartitionSource::LeaderLive,
+            ..storage
+        };
+        assert!(matches!(
+            locator
+                .get_partition_target_node(PartitionId::MIN, storage)
+                .unwrap(),
+            PartitionLocation::Local
+        ));
+        for placement in [leader_storage, live] {
+            assert!(
+                locator
+                    .get_partition_target_node(PartitionId::MIN, placement)
+                    .is_err()
+            );
+        }
+        let leader = GenerationalNodeId::new(2, 7);
+        states.note_observed_leader(
+            PartitionId::MIN,
+            LeadershipState {
+                current_leader: leader,
+                current_leader_epoch: LeaderEpoch::from(1),
+            },
+        );
+        for placement in [storage, leader_storage, live] {
+            assert!(
+                matches!(locator.get_partition_target_node(PartitionId::MIN, placement).unwrap(), PartitionLocation::Remote { node_id } if node_id == NodeId::from(leader))
+            );
         }
     }
 }

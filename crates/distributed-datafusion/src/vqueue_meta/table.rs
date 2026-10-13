@@ -22,7 +22,7 @@ use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueMetaFilter};
+use crate::filter::{PartitionKeySelector, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
@@ -50,7 +50,7 @@ impl SysVqueueMetaTable {
             schema,
             sys_vqueue_meta_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_scope("scope")
                 .with_grouped_partitioned_resource_id::<VQueueId>("id"),
         )

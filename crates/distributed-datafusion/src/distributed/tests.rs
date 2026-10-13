@@ -17,9 +17,9 @@ use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::util::display::array_value_to_string;
 use datafusion::common::{DataFusionError, Statistics};
 use datafusion::execution::SendableRecordBatchStream;
+use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
-use datafusion::physical_plan::{ExecutionPlan, PhysicalExpr};
 use datafusion_proto::physical_plan::{DeduplicatingProtoConverter, PhysicalExtensionCodec};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
 
@@ -56,14 +56,14 @@ use crate::state::schema::{StateBuilder, StateTable};
 use crate::table_providers::ScanPartition;
 
 use super::DistributedQueryServer;
-use super::source::{StorageCodec, StorageScanExec};
+use super::source::{SourceCodec, SourceExec};
 use super::transport::rpc;
 use super::worker::TaskObservation;
 
 const OWNER: GenerationalNodeId = GenerationalNodeId::new(2, 1);
 
 #[derive(Debug)]
-struct NoLegacyScanner;
+pub(super) struct NoLegacyScanner;
 
 #[async_trait]
 impl RemoteScannerService for NoLegacyScanner {
@@ -79,7 +79,11 @@ impl RemoteScannerService for NoLegacyScanner {
 struct RemoteOwner;
 
 impl PartitionLocator for RemoteOwner {
-    fn get_partition_target_node(&self, _: PartitionId) -> anyhow::Result<PartitionLocation> {
+    fn get_partition_target_node(
+        &self,
+        _: PartitionId,
+        _: crate::placement::PartitionPlacement,
+    ) -> anyhow::Result<PartitionLocation> {
         Ok(PartitionLocation::Remote {
             node_id: OWNER.into(),
         })
@@ -94,7 +98,7 @@ struct Fixture<N> {
     observations: Arc<Mutex<Vec<TaskObservation>>>,
 }
 
-fn environment(target_partitions: usize, batch_size: usize) -> DataFusionEnv {
+pub(super) fn environment(target_partitions: usize, batch_size: usize) -> DataFusionEnv {
     DataFusionEnv::new(
         64 * 1024 * 1024,
         None,
@@ -204,7 +208,9 @@ async fn single_owner_runtime_matches_independent_references() {
     let mut fixture = setup(false).await;
     for (partitions, batch_size) in [(1, 2), (4, 128)] {
         let engine = fixture.engine(partitions, batch_size);
-        let metadata = run_distributed_state_corpus(&mut fixture.store, engine.as_ref()).await;
+        let metadata =
+            run_distributed_state_corpus(std::slice::from_mut(&mut fixture.store), engine.as_ref())
+                .await;
         assert_eq!(metadata.len(), 12);
         assert!(
             metadata
@@ -348,7 +354,7 @@ async fn task_protocol_and_required_storage_fail_closed() {
         .await
         .unwrap();
     let invalid = QueryTaskInstall {
-        version: 2,
+        version: restate_types::net::distributed_query::DISTRIBUTED_QUERY_PROTOCOL_VERSION + 1,
         id: QueryTaskId {
             session_id: "unsupported".into(),
             query_ts: UniqueTimestamp::MIN,
@@ -371,10 +377,12 @@ async fn task_protocol_and_required_storage_fail_closed() {
     );
     assert!(fixture.observations.lock().is_empty());
 
-    let plan = StorageScanExec::for_scan(
+    let plan = SourceExec::for_scan(
         StateTable::identity(),
         &fixture.scanners,
-        vec![vec![(PartitionId::MIN, KeyRange::FULL)]],
+        vec![(PartitionId::MIN, KeyRange::FULL)],
+        Default::default(),
+        1,
         StateBuilder::schema(),
         Arc::new(Statistics::new_unknown(&StateBuilder::schema())),
         vec![],
@@ -388,14 +396,10 @@ async fn task_protocol_and_required_storage_fail_closed() {
         "unbound sources cannot execute on the coordinator"
     );
     let mut encoded = Vec::new();
-    StorageCodec::default()
-        .try_encode(
-            Arc::new(plan),
-            &mut encoded,
-            &DeduplicatingProtoConverter::default(),
-        )
+    SourceCodec::default()
+        .try_encode(plan, &mut encoded, &DeduplicatingProtoConverter::default())
         .unwrap();
-    let wrong_owner = StorageCodec {
+    let wrong_owner = SourceCodec {
         manager: Some(fixture.scanners.clone()),
     };
     let error = wrong_owner

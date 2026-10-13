@@ -15,7 +15,7 @@ use datafusion::catalog::TableProvider;
 use restate_worker_api::PartitionQueryAccess;
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::live_scanners::LivePartitionScanner;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
@@ -38,8 +38,8 @@ impl SysUserLimitsTable {
             partition_selector,
             schema,
             sys_user_limits_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default(),
+            remote_scanner_manager.create_live_scanner::<Self>(),
+            PartitionKeySelector::default(),
         )
         .with_statistics(statistics.build());
         Arc::new(table)

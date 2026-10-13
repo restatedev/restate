@@ -21,7 +21,7 @@ use restate_types::identifiers::ServiceId;
 use restate_types::sharding::KeyRange;
 
 use crate::context::SelectPartitions;
-use crate::filter::FirstMatchingPartitionKeyExtractor;
+use crate::filter::PartitionKeySelector;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::state::row::append_state_row;
@@ -38,8 +38,7 @@ impl StateTable {
             StateBuilder::schema(),
             state_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
-                .with_scope_or_service_key("scope", "service_key"),
+            PartitionKeySelector::default().with_scope_or_service_key("scope", "service_key"),
         );
         Arc::new(table)
     }

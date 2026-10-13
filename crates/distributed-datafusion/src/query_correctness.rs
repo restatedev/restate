@@ -10,11 +10,11 @@
 
 //! Differential harness adapted from `23b2a58e38d7` to the prototype baseline.
 //! References use independent fixture rows and a broad primary-storage scan.
-//! The candidate currently executes locally over one quiescent storage partition.
+//! Candidates can execute locally or through tasks over quiescent storage partitions.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, RangeBounds};
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -96,8 +96,12 @@ impl StateFixture {
     }
 
     async fn populate(&self, store: &mut restate_partition_store::PartitionStore) {
+        let range = store.partition_key_range();
         let mut tx = store.transaction();
         for record in &self.records {
+            if !range.contains(&record.service_id.partition_key()) {
+                continue;
+            }
             tx.put_user_state(&record.service_id, &record.key, &record.value)
                 .unwrap();
         }
@@ -999,12 +1003,15 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
 
 /// The same independently constructed references gate the real task transport.
 pub(crate) async fn run_distributed_state_corpus(
-    store: &mut restate_partition_store::PartitionStore,
+    stores: &mut [restate_partition_store::PartitionStore],
     engine: &dyn QueryEngine<AdminUser>,
 ) -> Vec<QueryMetadata> {
     let fixture = StateFixture::deterministic();
-    fixture.populate(store).await;
-    let primary = fixture.scan_primary(store).await;
+    let mut primary = Vec::new();
+    for store in stores {
+        fixture.populate(store).await;
+        primary.extend(fixture.scan_primary(store).await);
+    }
     assert_eq!(record_counts(&fixture.records), record_counts(&primary));
     let session = engine.create_session(SessionOptions::default()).unwrap();
     let mut metadata = Vec::new();

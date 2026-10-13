@@ -24,7 +24,7 @@ use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
 use crate::context::SelectPartitions;
-use crate::filter::{FirstMatchingPartitionKeyExtractor, InvocationIdFilter};
+use crate::filter::{InvocationIdFilter, PartitionKeySelector};
 use crate::invocation_status::row::append_invocation_status_row;
 use crate::invocation_status::schema::{
     SysInvocationStatusBuilder, sys_invocation_status_sort_order,
@@ -56,7 +56,7 @@ impl SysInvocationStatusTable {
             schema,
             sys_invocation_status_sort_order(),
             remote_scanner_manager.create_distributed_scanner::<Self>(),
-            FirstMatchingPartitionKeyExtractor::default()
+            PartitionKeySelector::default()
                 .with_scope_or_service_key("scope", "target_service_key")
                 .with_grouped_invocation_id("id"),
         )

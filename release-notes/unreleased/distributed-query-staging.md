@@ -15,5 +15,7 @@ reject peers that do not support the new query protocol.
 
 Query responses identify the selected engine and include planning duration in the
 `Server-Timing` header. Use `EXPLAIN VERBOSE` and `EXPLAIN ANALYZE VERBOSE` to compare
-plans and execution. The experimental engine currently supports queries targeting
-a single storage owner; detailed remote operator metrics are not yet available.
+plans and execution. The experimental engine supports queries spanning multiple
+storage owners and prunes node queries by plain or exact generational node identity.
+Detailed remote operator metrics are not yet available. Upgrade all participating
+prototype nodes together when trying this version.

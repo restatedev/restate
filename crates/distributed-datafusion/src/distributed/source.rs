@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::{BTreeMap, HashMap};
 use std::fmt::{self, Formatter};
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::metrics::{BaselineMetrics, ExecutionPlanMetricsSet, MetricsSet};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::union::UnionExec;
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, Partitioning, PlanProperties, StatisticsArgs,
 };
@@ -35,12 +37,14 @@ use restate_types::identifiers::PartitionId;
 use restate_types::sharding::KeyRange;
 use restate_util_string::ReString;
 
+use crate::placement::PartitionPlacement;
 use crate::remote_query_scanner_manager::{PartitionLocation, RemoteScannerManager};
-use crate::table_providers::ScanPartition;
+use crate::statistics::estimate_source_statistics;
+use crate::table_providers::{Scan, ScanPartition};
 use crate::table_util::{find_sort_columns, make_ordering};
 use crate::{decode_schema, encode_schema};
 
-#[derive(Debug, Clone, bilrost::Message)]
+#[derive(Debug, Clone, Copy, bilrost::Message)]
 pub(crate) struct ScanRange {
     #[bilrost(1)]
     pub partition: PartitionId,
@@ -61,73 +65,140 @@ struct ScanDescriptor {
     #[bilrost(2)]
     owner: GenerationalNodeId,
     #[bilrost(3)]
-    lanes: Vec<ScanLane>,
+    work: SourceWork,
     #[bilrost(4)]
     ordering: Vec<String>,
     #[bilrost(5)]
     limit: Option<u64>,
 }
 
+#[derive(Debug, Clone, bilrost::Message)]
+struct PartitionWork {
+    #[bilrost(1)]
+    placement: PartitionPlacement,
+    #[bilrost(2)]
+    lanes: Vec<ScanLane>,
+}
+
+#[derive(Debug, Clone, bilrost::Message, bilrost::Oneof)]
+enum SourceWork {
+    Unknown,
+    #[bilrost(1)]
+    Partition(PartitionWork),
+    #[bilrost(2)]
+    Node(()),
+}
+
+#[derive(Debug)]
+enum LocalBinding {
+    Partition(RemoteScannerManager, Arc<dyn ScanPartition>),
+    Node(Arc<dyn Scan>),
+}
+
 /// An unbound coordinator descriptor becomes a strictly local scanner on decode.
 /// Neither execution nor decoding may forward a storage read to another node.
 #[derive(Debug)]
-pub(crate) struct StorageScanExec {
+pub(crate) struct SourceExec {
     descriptor: ScanDescriptor,
     predicate: Option<Arc<dyn PhysicalExpr>>,
     properties: Arc<PlanProperties>,
-    binding: Option<(RemoteScannerManager, Arc<dyn ScanPartition>)>,
+    binding: Option<LocalBinding>,
     metrics: ExecutionPlanMetricsSet,
     // Coordinator planning hints. Serialized tasks already have their join order
     // fixed, so workers can decode the existing wire format with unknown estimates.
     statistics: Arc<Statistics>,
 }
 
-impl StorageScanExec {
+impl SourceExec {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn for_scan(
         table: ReString,
         manager: &RemoteScannerManager,
-        lanes: Vec<Vec<(PartitionId, KeyRange)>>,
+        ranges: Vec<(PartitionId, KeyRange)>,
+        placement: PartitionPlacement,
+        target_partitions: usize,
         schema: SchemaRef,
         statistics: Arc<Statistics>,
         ordering: Vec<String>,
         predicate: Option<Arc<dyn PhysicalExpr>>,
         limit: Option<usize>,
-    ) -> Result<Self> {
-        let mut owner = None;
-        let mut scan_lanes = Vec::with_capacity(lanes.len());
-        for lane in lanes {
-            let mut ranges = Vec::with_capacity(lane.len());
-            for (partition, range) in lane {
-                let target = manager
-                    .storage_owner(partition)
-                    .map_err(|err| DataFusionError::External(err.into()))?;
-                if owner.is_some_and(|owner| owner != target) {
-                    return plan_err!(
-                        "the distributed prototype currently requires a single storage owner"
-                    );
-                }
-                owner = Some(target);
-                ranges.push(ScanRange { partition, range });
-            }
-            ranges.sort_unstable_by_key(|r| r.range.start());
-            scan_lanes.push(ScanLane { ranges });
+    ) -> Result<Arc<dyn ExecutionPlan>> {
+        let mut placements = HashMap::new();
+        let mut owners: BTreeMap<_, Vec<_>> = BTreeMap::new();
+        for (partition, range) in ranges {
+            // Snapshot placement once per selected partition and contract. A lane
+            // count never caps the number of owners or drops logical work.
+            let owner = match placements.entry((partition, placement)) {
+                std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+                std::collections::hash_map::Entry::Vacant(entry) => *entry.insert(
+                    manager
+                        .partition_owner(partition, placement)
+                        .map_err(|err| DataFusionError::External(err.into()))?,
+                ),
+            };
+            owners
+                .entry(owner)
+                .or_default()
+                .push(ScanRange { partition, range });
         }
-        let Some(owner) = owner else {
+        if owners.is_empty() {
             return plan_err!("storage stage has no ranges");
-        };
+        }
+        let total_ranges = owners.values().map(Vec::len).sum::<usize>();
+        let plans = owners
+            .into_iter()
+            .map(|(owner, mut ranges)| {
+                let statistics = estimate_source_statistics(
+                    &statistics,
+                    ranges.len() as f64 / total_ranges as f64,
+                );
+                ranges.sort_unstable_by_key(|range| range.range.start());
+                let mut lanes =
+                    vec![ScanLane { ranges: vec![] }; target_partitions.max(1).min(ranges.len())];
+                let count = lanes.len();
+                for (i, range) in ranges.into_iter().enumerate() {
+                    lanes[i % count].ranges.push(range);
+                }
+                Ok(Arc::new(Self::new(
+                    ScanDescriptor {
+                        table: table.clone(),
+                        owner,
+                        work: SourceWork::Partition(PartitionWork { placement, lanes }),
+                        ordering: ordering.clone(),
+                        limit: limit.map(|l| l as u64),
+                    },
+                    Arc::clone(&schema),
+                    predicate.clone(),
+                    None,
+                    Some(statistics),
+                )?) as Arc<dyn ExecutionPlan>)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if plans.len() == 1 {
+            Ok(Arc::clone(&plans[0]))
+        } else {
+            UnionExec::try_new(plans)
+        }
+    }
+
+    pub(crate) fn for_node(
+        table: ReString,
+        owner: GenerationalNodeId,
+        schema: SchemaRef,
+        limit: Option<usize>,
+    ) -> Result<Self> {
         Self::new(
             ScanDescriptor {
                 table,
                 owner,
-                lanes: scan_lanes,
-                ordering,
+                work: SourceWork::Node(()),
+                ordering: vec![],
                 limit: limit.map(|l| l as u64),
             },
             schema,
-            predicate,
             None,
-            Some(statistics),
+            None,
+            None,
         )
     }
 
@@ -135,13 +206,19 @@ impl StorageScanExec {
         descriptor: ScanDescriptor,
         schema: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
-        binding: Option<(RemoteScannerManager, Arc<dyn ScanPartition>)>,
+        binding: Option<LocalBinding>,
         statistics: Option<Arc<Statistics>>,
     ) -> Result<Self> {
-        if descriptor.lanes.is_empty() || descriptor.lanes.iter().any(|lane| lane.ranges.is_empty())
-        {
-            return plan_err!("storage stage has an empty execution lane");
-        }
+        let lanes = match &descriptor.work {
+            SourceWork::Partition(work) => {
+                if work.lanes.is_empty() || work.lanes.iter().any(|lane| lane.ranges.is_empty()) {
+                    return plan_err!("storage stage has an empty execution lane");
+                }
+                work.lanes.len()
+            }
+            SourceWork::Node(()) => 1,
+            SourceWork::Unknown => return plan_err!("unknown query source scope"),
+        };
         let statistics = statistics.unwrap_or_else(|| Arc::new(Statistics::new_unknown(&schema)));
         if statistics.column_statistics.len() != schema.fields().len() {
             return plan_err!("source statistics do not match the projected schema");
@@ -150,7 +227,7 @@ impl StorageScanExec {
         let equivalence = EquivalenceProperties::new_with_orderings(schema, [ordering]);
         let properties = Arc::new(PlanProperties::new(
             equivalence,
-            Partitioning::UnknownPartitioning(descriptor.lanes.len()),
+            Partitioning::UnknownPartitioning(lanes),
             EmissionType::Incremental,
             Boundedness::Bounded,
         ));
@@ -169,22 +246,26 @@ impl StorageScanExec {
     }
 }
 
-impl DisplayAs for StorageScanExec {
+impl DisplayAs for SourceExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut Formatter) -> fmt::Result {
         write!(
             f,
-            "StorageScanExec: table={}, owner={}, lanes={}, bound={}",
+            "{}: table={}, owner={}, work={:?}, bound={}",
+            self.name(),
             self.descriptor.table,
             self.owner(),
-            self.descriptor.lanes.len(),
+            self.descriptor.work,
             self.binding.is_some()
         )
     }
 }
 
-impl ExecutionPlan for StorageScanExec {
+impl ExecutionPlan for SourceExec {
     fn name(&self) -> &str {
-        "StorageScanExec"
+        match self.descriptor.work {
+            SourceWork::Node(()) => "NodeScanExec",
+            _ => "StorageScanExec",
+        }
     }
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
@@ -212,16 +293,33 @@ impl ExecutionPlan for StorageScanExec {
         partition: usize,
         context: Arc<TaskContext>,
     ) -> Result<SendableRecordBatchStream> {
-        let Some((manager, scanner)) = &self.binding else {
+        let Some(binding) = &self.binding else {
             return exec_err!("unbound owner-only storage scan reached the coordinator");
         };
-        let Some(lane) = self.descriptor.lanes.get(partition) else {
+        let (manager, scanner, work) = match (binding, &self.descriptor.work) {
+            (LocalBinding::Node(scanner), SourceWork::Node(())) => {
+                if partition != 0 {
+                    return exec_err!("invalid node scan lane {partition}");
+                }
+                return Ok(scanner.scan(
+                    self.schema(),
+                    &[],
+                    context.session_config().batch_size(),
+                    self.descriptor.limit.map(|l| l as usize),
+                ));
+            }
+            (LocalBinding::Partition(manager, scanner), SourceWork::Partition(work)) => {
+                (manager, scanner, work)
+            }
+            _ => return exec_err!("query source binding has the wrong scope"),
+        };
+        let Some(lane) = work.lanes.get(partition) else {
             return exec_err!("invalid storage lane {partition}");
         };
         for range in &lane.ranges {
             if !matches!(
                 manager
-                    .get_partition_target_node(range.partition)
+                    .get_partition_target_node(range.partition, work.placement)
                     .map_err(|err| DataFusionError::External(err.into()))?,
                 PartitionLocation::Local
             ) {
@@ -272,10 +370,14 @@ impl ExecutionPlan for StorageScanExec {
         args: &StatisticsArgs,
     ) -> Result<Arc<Statistics>> {
         if let Some(partition) = args.partition() {
-            if partition >= self.descriptor.lanes.len() {
+            let lanes = self.properties.partitioning.partition_count();
+            if partition >= lanes {
                 return plan_err!("invalid source statistics partition {partition}");
             }
-            Ok(Arc::new(Statistics::new_unknown(&self.schema())))
+            Ok(estimate_source_statistics(
+                &self.statistics,
+                1.0 / lanes as f64,
+            ))
         } else {
             Ok(Arc::clone(&self.statistics))
         }
@@ -283,12 +385,12 @@ impl ExecutionPlan for StorageScanExec {
 }
 
 #[derive(Debug, Default)]
-pub(super) struct StorageCodec {
+pub(super) struct SourceCodec {
     pub manager: Option<RemoteScannerManager>,
 }
 
 #[derive(Clone, PartialEq, prost::Message)]
-struct StorageScanProto {
+struct SourceProto {
     // Separate envelope tags from the library's extension nodes.
     #[prost(bytes = "vec", tag = "101")]
     descriptor: Vec<u8>,
@@ -298,7 +400,7 @@ struct StorageScanProto {
     predicate: Option<PhysicalExprNode>,
 }
 
-impl PhysicalExtensionCodec for StorageCodec {
+impl PhysicalExtensionCodec for SourceCodec {
     fn try_decode(
         &self,
         buf: &[u8],
@@ -309,8 +411,8 @@ impl PhysicalExtensionCodec for StorageCodec {
         if !inputs.is_empty() {
             return plan_err!("storage scans cannot have children");
         }
-        let proto = StorageScanProto::decode(buf)
-            .map_err(|err| DataFusionError::External(Box::new(err)))?;
+        let proto =
+            SourceProto::decode(buf).map_err(|err| DataFusionError::External(Box::new(err)))?;
         let descriptor = ScanDescriptor::decode(proto.descriptor.as_slice())
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
         let schema = Arc::new(
@@ -331,14 +433,38 @@ impl PhysicalExtensionCodec for StorageCodec {
             if descriptor.owner != manager.node_id() {
                 return exec_err!("storage task delivered to the wrong owner");
             }
-            let Some(scanner) = manager.local_partition_scanner(&descriptor.table) else {
-                return exec_err!("local query source '{}' is unavailable", descriptor.table);
-            };
-            Some((manager.clone(), scanner))
+            Some(match &descriptor.work {
+                SourceWork::Node(()) => {
+                    let Some(scanner) = manager.local_node_scanner(&descriptor.table) else {
+                        return exec_err!(
+                            "local node source '{}' is unavailable",
+                            descriptor.table
+                        );
+                    };
+                    LocalBinding::Node(scanner)
+                }
+                SourceWork::Partition(work) => {
+                    let Some(scanner) = manager.local_partition_scanner(&descriptor.table) else {
+                        return exec_err!(
+                            "local query source '{}' is unavailable",
+                            descriptor.table
+                        );
+                    };
+                    if manager.local_node_scanner(&descriptor.table).is_some()
+                        || scanner.partition_source() != work.placement.source
+                    {
+                        return exec_err!(
+                            "local query source has incompatible placement requirements"
+                        );
+                    }
+                    LocalBinding::Partition(manager.clone(), scanner)
+                }
+                SourceWork::Unknown => return exec_err!("unknown query source scope"),
+            })
         } else {
             None
         };
-        Ok(Arc::new(StorageScanExec::new(
+        Ok(Arc::new(SourceExec::new(
             descriptor, schema, predicate, binding, None,
         )?))
     }
@@ -349,10 +475,10 @@ impl PhysicalExtensionCodec for StorageCodec {
         buf: &mut Vec<u8>,
         converter: &dyn PhysicalProtoConverterExtension,
     ) -> Result<()> {
-        let Some(source) = plan.downcast_ref::<StorageScanExec>() else {
+        let Some(source) = plan.downcast_ref::<SourceExec>() else {
             return plan_err!("unsupported Restate query source");
         };
-        let proto = StorageScanProto {
+        let proto = SourceProto {
             descriptor: source.descriptor.encode_to_vec(),
             schema: encode_schema(&source.schema()),
             predicate: source
