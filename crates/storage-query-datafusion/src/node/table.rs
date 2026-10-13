@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::TableReference;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -40,8 +41,11 @@ pub fn register_self(
             cluster_state,
         }),
     );
-    ctx.register_table("nodes", Arc::new(nodes_table))
-        .map(|_| ())
+    ctx.register_table(
+        TableReference::full("restate", "cluster", "nodes"),
+        Arc::new(nodes_table),
+    )
+    .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]
