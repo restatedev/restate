@@ -17,6 +17,7 @@ use arrow::{
     datatypes::{Int64Type, SchemaRef},
 };
 use bytes::Buf;
+use clap::ValueEnum;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info};
@@ -28,15 +29,43 @@ use crate::clients::AdminClient;
 
 use super::errors::{ApiError, ApiErrorBody, ClientError};
 
+/// Header selecting the query engine on the admin `/query` endpoint. The response carries the
+/// same header with the engine that served the query.
+const QUERY_ENGINE_HEADER: &str = "x-restate-query-engine";
+
+/// Query engine that runs a SQL query on the server.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QueryEngine {
+    /// The default query engine
+    V1,
+    /// The experimental distributed query engine. Requires the `query-engine-v2`
+    /// experimental feature on the server
+    V2,
+}
+
+impl QueryEngine {
+    fn as_header_value(&self) -> &'static str {
+        match self {
+            QueryEngine::V1 => "v1",
+            QueryEngine::V2 => "v2",
+        }
+    }
+}
+
 /// A handy client for the datafusion HTTP service.
 #[derive(Clone)]
 pub struct DataFusionHttpClient {
     pub(crate) inner: AdminClient,
+    /// Engine requested through the query-engine header, `None` leaves the choice to the server.
+    query_engine: Option<QueryEngine>,
 }
 
 impl From<AdminClient> for DataFusionHttpClient {
     fn from(value: AdminClient) -> Self {
-        DataFusionHttpClient { inner: value }
+        DataFusionHttpClient {
+            inner: value,
+            query_engine: None,
+        }
     }
 }
 
@@ -44,14 +73,24 @@ impl DataFusionHttpClient {
     pub async fn new(env: &CliEnv) -> anyhow::Result<Self> {
         let inner = AdminClient::new(env).await?;
 
-        Ok(Self { inner })
+        Ok(Self::from(inner))
+    }
+
+    /// Run the queries on the given engine instead of the server's default one.
+    pub fn with_query_engine(mut self, query_engine: Option<QueryEngine>) -> Self {
+        self.query_engine = query_engine;
+        self
     }
 
     /// Prepare a request builder for a DataFusion request.
     fn prepare(&self) -> Result<reqwest::RequestBuilder, ClientError> {
-        Ok(self
+        let mut builder = self
             .inner
-            .prepare(reqwest::Method::POST, self.inner.versioned_url(["query"])))
+            .prepare(reqwest::Method::POST, self.inner.versioned_url(["query"]));
+        if let Some(engine) = self.query_engine {
+            builder = builder.header(QUERY_ENGINE_HEADER, engine.as_header_value());
+        }
+        Ok(builder)
     }
 
     pub async fn run_json_query<T: serde::de::DeserializeOwned>(
@@ -120,6 +159,12 @@ impl DataFusionHttpClient {
             }));
         }
 
+        let engine = resp
+            .headers()
+            .get(QUERY_ENGINE_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+
         // We read the entire payload first in-memory to simplify the logic, however,
         // if this ever becomes a problem, we can use bytes_stream() (requires
         // reqwest's stream feature) and stitch that with the stream reader.
@@ -132,7 +177,11 @@ impl DataFusionHttpClient {
             batches.push(batch?);
         }
 
-        Ok(SqlResponse { schema, batches })
+        Ok(SqlResponse {
+            schema,
+            batches,
+            engine,
+        })
     }
 
     pub async fn run_count_agg_query(&self, query: String) -> Result<i64, ClientError> {
@@ -179,6 +228,8 @@ pub struct SqlQueryRequest {
 pub struct SqlResponse {
     pub schema: SchemaRef,
     pub batches: Vec<RecordBatch>,
+    /// Engine that served the query, as reported by the server (older servers omit it).
+    pub engine: Option<String>,
 }
 
 #[derive(Deserialize)]
