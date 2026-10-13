@@ -64,6 +64,16 @@ pub struct DataFusionEnv {
 }
 
 impl DataFusionEnv {
+    /// Opts this environment into the experimental, single-owner task runtime.
+    /// Register [`crate::distributed::DistributedQueryServer`] on storage owners.
+    pub fn with_distributed_execution(
+        mut self,
+        network: impl restate_core::network::NetworkSender,
+    ) -> Self {
+        crate::distributed::configure(&mut self.config, network);
+        self
+    }
+
     pub fn from_options(options: &QueryEngineOptions) -> Result<Self, DataFusionError> {
         Self::new(
             options.memory_size.get(),
@@ -236,6 +246,16 @@ impl DataFusionEnv {
             .with_config(self.config.clone())
             .with_runtime_env(Arc::clone(&self.runtime));
         let mut state = apply_default_features(builder).build();
+        datafusion_functions_json::register_all(&mut state)?;
+        Ok(state)
+    }
+
+    pub(crate) fn build_worker_state(
+        &self,
+        builder: SessionStateBuilder,
+    ) -> Result<SessionState, DataFusionError> {
+        let mut state =
+            apply_default_features(builder.with_runtime_env(Arc::clone(&self.runtime))).build();
         datafusion_functions_json::register_all(&mut state)?;
         Ok(state)
     }

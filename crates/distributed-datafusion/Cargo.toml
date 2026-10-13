@@ -34,17 +34,20 @@ restate-worker-api = { workspace = true, features = ["serde"] }
 ahash = { workspace = true }                                                    # Required to due a yanked version used by datafusion
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 codederror = { workspace = true }
 dashmap = { workspace = true }
 datafusion = { workspace = true }
+datafusion-distributed = { workspace = true }
 datafusion-functions-json = { workspace = true }
 datafusion-proto = { workspace = true }
 derive_more = { workspace = true, features = ["debug"] }
 enumset = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
+http = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
@@ -55,7 +58,10 @@ strum = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
+tokio-util = { workspace = true }
 tracing = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 restate-clock = { workspace = true, features = ["test-util"] }

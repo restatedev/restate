@@ -34,7 +34,9 @@ use restate_clock::MockClock;
 use restate_platform::sync::Mutex;
 use restate_storage_api::Transaction;
 use restate_storage_api::state_table::{ScanStateTable, WriteStateTable};
-use restate_storage_query_api::QueryStatus;
+use restate_storage_query_api::{
+    AdminUser, QueryEngine, QueryMetadata, QueryOptions, QueryResult, QueryStatus, SessionOptions,
+};
 use restate_types::Scope;
 use restate_types::identifiers::{ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
@@ -93,8 +95,8 @@ impl StateFixture {
         }
     }
 
-    async fn populate(&self, engine: &mut MockQueryEngine) {
-        let mut tx = engine.partition_store().transaction();
+    async fn populate(&self, store: &mut restate_partition_store::PartitionStore) {
+        let mut tx = store.transaction();
         for record in &self.records {
             tx.put_user_state(&record.service_id, &record.key, &record.value)
                 .unwrap();
@@ -102,11 +104,13 @@ impl StateFixture {
         tx.commit().await.unwrap();
     }
 
-    async fn scan_primary(&self, engine: &mut MockQueryEngine) -> Vec<StateRecord> {
+    async fn scan_primary(
+        &self,
+        store: &mut restate_partition_store::PartitionStore,
+    ) -> Vec<StateRecord> {
         let records = Arc::new(Mutex::new(Vec::new()));
         let output = Arc::clone(&records);
-        engine
-            .partition_store()
+        store
             .for_each_user_state(KeyRange::FULL, move |(service_id, key, value)| {
                 output.lock().push(StateRecord {
                     service_id,
@@ -568,8 +572,7 @@ async fn run_memtable(sql: &str, batch: RecordBatch) -> Result<CapturedResult, S
     capture_stream(stream).await
 }
 
-async fn run_candidate(engine: &MockQueryEngine, sql: &str) -> Result<CapturedResult, String> {
-    let result = engine.execute(sql).await.map_err(|e| e.to_string())?;
+async fn run_candidate(result: QueryResult) -> Result<CapturedResult, String> {
     let captured = capture_stream(result.stream).await?;
     let stats = result.diagnostics.snapshot();
     let expected_status = if captured.terminal_error.is_some() {
@@ -595,7 +598,7 @@ async fn run_case(
     case: &Case,
     fixture: &StateFixture,
     primary_records: &[StateRecord],
-    engine: &MockQueryEngine,
+    result: QueryResult,
 ) -> Result<(), String> {
     let logical = run_memtable(case.sql, state_batch(&fixture.records))
         .await
@@ -603,7 +606,7 @@ async fn run_case(
     let primary = run_memtable(case.sql, state_batch(primary_records))
         .await
         .map_err(|error| format!("primary oracle: {error}"))?;
-    let candidate = run_candidate(engine, case.sql)
+    let candidate = run_candidate(result)
         .await
         .map_err(|error| format!("candidate: {error}"))?;
 
@@ -969,8 +972,8 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
         .with_mock_clock(MockClock::new())
         .unwrap();
     let mut engine = MockQueryEngine::create_with_env(env).await;
-    fixture.populate(&mut engine).await;
-    let primary_records = fixture.scan_primary(&mut engine).await;
+    fixture.populate(engine.partition_store()).await;
+    let primary_records = fixture.scan_primary(engine.partition_store()).await;
 
     assert_eq!(
         record_counts(&fixture.records),
@@ -980,7 +983,8 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
     );
 
     for case in CASES {
-        if let Err(error) = run_case(case, &fixture, &primary_records, &engine).await {
+        let result = engine.execute(case.sql).await.unwrap();
+        if let Err(error) = run_case(case, &fixture, &primary_records, result).await {
             panic!(
                 "query correctness case failed\ncase={}\nsql={}\ncomparison={:?}\n\
                      target_partitions={target_partitions} batch_size={batch_size}\n{}\n{error}",
@@ -991,6 +995,31 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
             );
         }
     }
+}
+
+/// The same independently constructed references gate the real task transport.
+pub(crate) async fn run_distributed_state_corpus(
+    store: &mut restate_partition_store::PartitionStore,
+    engine: &dyn QueryEngine<AdminUser>,
+) -> Vec<QueryMetadata> {
+    let fixture = StateFixture::deterministic();
+    fixture.populate(store).await;
+    let primary = fixture.scan_primary(store).await;
+    assert_eq!(record_counts(&fixture.records), record_counts(&primary));
+    let session = engine.create_session(SessionOptions::default()).unwrap();
+    let mut metadata = Vec::new();
+    for case in CASES {
+        let result = session.execute(case.sql, QueryOptions {}).await.unwrap();
+        metadata.push(result.metadata.clone());
+        if let Err(error) = run_case(case, &fixture, &primary, result).await {
+            panic!(
+                "remote correctness case {} failed: {error}\n{}",
+                case.name,
+                fixture.describe()
+            );
+        }
+    }
+    metadata
 }
 
 #[test]

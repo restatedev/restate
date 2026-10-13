@@ -160,6 +160,24 @@ impl RemoteScannerService for NoopRemoteScanner {
 }
 
 impl RemoteScannerManager {
+    pub(crate) fn node_id(&self) -> restate_types::GenerationalNodeId {
+        self.metadata.my_node_id()
+    }
+
+    pub(crate) fn storage_owner(
+        &self,
+        partition: PartitionId,
+    ) -> anyhow::Result<restate_types::GenerationalNodeId> {
+        match self.get_partition_target_node(partition)? {
+            PartitionLocation::Local => Ok(self.node_id()),
+            PartitionLocation::Remote { node_id } => Ok(self
+                .metadata
+                .nodes_config_ref()
+                .find_node_by_id(node_id)?
+                .current_generation),
+        }
+    }
+
     pub fn new(
         remote_scanner: Arc<dyn RemoteScannerService>,
         partition_locator: Arc<dyn PartitionLocator>,
@@ -274,6 +292,10 @@ impl ScanPartition for ScanToScanPartitionAdapter {
 }
 
 impl<T: QueryEngineTable> ScanPartition for RemotePartitionsScanner<T> {
+    fn distributed_source(&self) -> Option<(ReString, &RemoteScannerManager)> {
+        Some((T::identity(), &self.manager))
+    }
+
     fn scan_partition(
         &self,
         partition_id: PartitionId,
