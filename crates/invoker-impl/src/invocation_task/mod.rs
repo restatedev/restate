@@ -157,6 +157,7 @@ pub(super) struct InvocationTaskOutput {
     pub(super) invocation_id: InvocationId,
     pub(super) fencing_token: FencingToken,
     pub(super) inner: InvocationTaskOutputInner,
+    pub(super) received_at: tokio::time::Instant,
 }
 
 pub(super) enum InvocationTaskOutputInner {
@@ -263,7 +264,7 @@ pub(super) struct InvocationTask<DMR> {
 
     // Invoker tx/rx
     schemas: Live<DMR>,
-    invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+    invoker_tx: mpsc::Sender<InvocationTaskOutput>,
     invoker_rx: mpsc::UnboundedReceiver<Notification>,
 
     // throttling
@@ -340,7 +341,7 @@ where
         message_size_limit: NonZeroUsize,
         retry_count_since_last_stored_entry: u32,
         deployment_metadata_resolver: Live<Schemas>,
-        invoker_tx: mpsc::UnboundedSender<InvocationTaskOutput>,
+        invoker_tx: mpsc::Sender<InvocationTaskOutput>,
         invoker_rx: mpsc::UnboundedReceiver<Notification>,
         action_token_bucket: Option<TokenBucket>,
         limit_key: LimitKey<ReString>,
@@ -426,7 +427,7 @@ where
             }
         };
 
-        self.send_invoker_tx(inner);
+        self.send_invoker_tx(inner).await;
         histogram!(INVOKER_TASK_DURATION).record(start.elapsed());
     }
 
@@ -549,7 +550,8 @@ where
         self.send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
             PinnedDeployment::new(deployment.id, chosen_service_protocol_version),
             deployment_changed,
-        ));
+        ))
+        .await;
 
         // Protocol runner for service protocol v4+. Preload state upfront only when the policy asks
         // for it and the memory cap allows it.
@@ -576,13 +578,21 @@ where
 }
 
 impl<Schemas> InvocationTask<Schemas> {
-    /// Send a non-terminal message to the invoker main loop.
-    pub(crate) fn send_invoker_tx(&self, invocation_task_output_inner: InvocationTaskOutputInner) {
-        let _ = self.invoker_tx.send(InvocationTaskOutput {
-            invocation_id: self.invocation_id,
-            fencing_token: self.fencing_token,
-            inner: invocation_task_output_inner,
-        });
+    /// Await admission to the invoker's bounded task-output queue. Capture the
+    /// timestamp before waiting so receive-to-propose includes this backpressure.
+    pub(crate) async fn send_invoker_tx(
+        &self,
+        invocation_task_output_inner: InvocationTaskOutputInner,
+    ) {
+        let _ = self
+            .invoker_tx
+            .send(InvocationTaskOutput {
+                received_at: tokio::time::Instant::now(),
+                invocation_id: self.invocation_id,
+                fencing_token: self.fencing_token,
+                inner: invocation_task_output_inner,
+            })
+            .await;
     }
 }
 
@@ -698,6 +708,70 @@ mod tests {
     use restate_worker_api::invoker::{InvocationReaderError, invocation_reader::EagerState};
 
     use super::collect_eager_state;
+
+    #[restate_core::test(start_paused = true)]
+    async fn output_backpressure_preserves_timestamp_and_unblocks_on_close() {
+        use std::num::NonZeroUsize;
+        use std::task::Poll;
+        use std::time::Duration;
+
+        use futures::poll;
+
+        use restate_service_client::{AssumeRoleCacheMode, ServiceClient};
+        use restate_types::identifiers::InvocationId;
+        use restate_types::invocation::{FencingToken, InvocationTarget};
+        use restate_types::live::Live;
+        use restate_types::schema::Schema;
+
+        use super::{InvocationTask, InvocationTaskOutputInner};
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (_notifications_tx, notifications_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = InvocationTask::new(
+            ServiceClient::from_options(&Default::default(), AssumeRoleCacheMode::Unbounded)
+                .unwrap(),
+            InvocationId::mock_random(),
+            FencingToken::default(),
+            InvocationTarget::mock_virtual_object(),
+            Duration::from_secs(60),
+            Duration::from_secs(600),
+            0,
+            NonZeroUsize::new(1024).unwrap(),
+            NonZeroUsize::new(1024).unwrap(),
+            0,
+            Live::from_value(Schema::default()),
+            tx,
+            notifications_rx,
+            None,
+            restate_types::LimitKey::None,
+            None,
+            1000,
+            false,
+        );
+        task.send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
+            "first".into(),
+        ))
+        .await;
+        let received_at = tokio::time::Instant::now();
+        let mut terminal = std::pin::pin!(task.send_invoker_tx(InvocationTaskOutputInner::Closed));
+        assert!(matches!(poll!(&mut terminal), Poll::Pending));
+        tokio::time::advance(Duration::from_secs(5)).await;
+        assert!(matches!(
+            rx.recv().await.unwrap().inner,
+            InvocationTaskOutputInner::ServerHeaderReceived(_)
+        ));
+        terminal.await;
+        let output = rx.recv().await.unwrap();
+        assert!(matches!(output.inner, InvocationTaskOutputInner::Closed));
+        assert_eq!(output.received_at, received_at);
+
+        task.send_invoker_tx(InvocationTaskOutputInner::Closed)
+            .await;
+        let mut blocked = std::pin::pin!(task.send_invoker_tx(InvocationTaskOutputInner::Closed));
+        assert!(matches!(poll!(&mut blocked), Poll::Pending));
+        drop(rx);
+        blocked.await;
+    }
 
     #[derive(Debug, derive_more::Display)]
     struct TestError;
