@@ -139,6 +139,7 @@ pub(crate) enum TaskTermination {
 pub(crate) enum NetworkServiceEvent {
     /// Propose a single command; `reply` decides when and how the caller is answered.
     RpcProposal {
+        received_at: Instant,
         keys: Keys,
         cmd: ErasedCommand,
         reply: PendingReply,
@@ -146,6 +147,7 @@ pub(crate) enum NetworkServiceEvent {
     },
     /// Forward already-built records; the caller is answered on commit.
     IngestRecords {
+        received_at: Instant,
         records: Vec<IngestRecord>,
         #[debug(skip)]
         on_commit: CommitCallback,
@@ -969,12 +971,14 @@ impl RpcProposalSender {
         proposal: RpcProposal<W::Ok>,
         reciprocal: Reciprocal<Oneshot<W::Response>>,
         lease: MemoryLease,
+        received_at: Instant,
     ) where
         W: PartitionProcessorWireRpc,
         W::Ok: FromRpcReply,
     {
         let (keys, cmd, reply_on) = proposal.into_parts();
         self.send(NetworkServiceEvent::RpcProposal {
+            received_at,
             keys,
             cmd,
             reply: PendingReply::new::<W>(reply_on, reciprocal),
@@ -987,8 +991,10 @@ impl RpcProposalSender {
         records: Vec<IngestRecord>,
         on_commit: CommitCallback,
         lease: MemoryLease,
+        received_at: Instant,
     ) {
         self.send(NetworkServiceEvent::IngestRecords {
+            received_at,
             records,
             on_commit,
             lease,
@@ -1469,6 +1475,7 @@ mod tests {
         deployment_id: DeploymentId,
     ) -> InvokerEffect {
         FencedEffect {
+            received_at: None,
             fencing_token,
             effect: Box::new(Effect {
                 invocation_id,

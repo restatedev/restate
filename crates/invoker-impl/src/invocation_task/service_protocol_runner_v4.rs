@@ -531,7 +531,7 @@ where
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()))
                         },
                         Some(DecoderStreamItem::Parts(headers)) => {
-                            shortcircuit!(self.handle_response_headers(headers));
+                            shortcircuit!(self.handle_response_headers(headers).await);
                         }
                         Some(DecoderStreamItem::Message(_, _)) => {
                             panic!("Unexpected poll after the headers have been resolved already")
@@ -674,7 +674,7 @@ where
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
-                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts).await),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
                             shortcircuit!(self.handle_message(
                                 message_header,
@@ -723,7 +723,7 @@ where
                         None => {
                             return TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2::unknown()));
                         }
-                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts)),
+                        Some(DecoderStreamItem::Parts(parts)) => shortcircuit!(self.handle_response_headers(parts).await),
                         Some(DecoderStreamItem::Message(message_header, message)) => {
                             shortcircuit!(self.handle_message(
                                 message_header,
@@ -882,7 +882,7 @@ where
         Ok(())
     }
 
-    fn handle_response_headers(
+    async fn handle_response_headers(
         &mut self,
         mut parts: http::response::Parts,
     ) -> Result<(), InvokerError> {
@@ -948,12 +948,13 @@ where
                         .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
                         .to_owned(),
                 ))
+                .await;
         }
 
         Ok(())
     }
 
-    fn handle_new_command(
+    async fn handle_new_command(
         &mut self,
         mh: MessageHeader,
         command: RawCommand,
@@ -986,7 +987,8 @@ where
                     .requested_ack()
                     .expect("All command messages support requested_ack"),
                 command,
-            });
+            })
+            .await;
         self.command_index += 1;
     }
 
@@ -1060,7 +1062,7 @@ where
                 TerminalLoopState::Continue(())
             }
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
-            Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on),
+            Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on).await,
             Message::Error(e) => self.handle_error_message(e),
             Message::End(_) => TerminalLoopState::Closed,
 
@@ -1095,14 +1097,14 @@ where
                     )],
                 );
 
-                self.invocation_task.send_invoker_tx(
-                    InvocationTaskOutputInner::NewNotificationProposal {
+                self.invocation_task
+                    .send_invoker_tx(InvocationTaskOutputInner::NewNotificationProposal {
                         notification: raw_notification,
                         requested_ack: mh
                             .requested_ack()
                             .expect("ProposeRunCompletion message supports requested_ack"),
-                    },
-                );
+                    })
+                    .await;
 
                 TerminalLoopState::Continue(())
             }
@@ -1114,7 +1116,8 @@ where
                     RawCommand::new(CommandType::Output, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::InputCommand(cmd) => {
@@ -1123,7 +1126,8 @@ where
                     RawCommand::new(CommandType::Input, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetInvocationOutputCommand(cmd) => {
@@ -1149,7 +1153,8 @@ where
                     RawCommand::new(CommandType::GetInvocationOutput, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::AttachInvocationCommand(cmd) => {
@@ -1172,20 +1177,22 @@ where
                     RawCommand::new(CommandType::AttachInvocation, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::RunCommand(cmd) => {
                 let raw = RawCommand::new(CommandType::Run, cmd);
                 let run_cmd: RunCommand = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
-                self.handle_new_command(mh, raw, attempt_span, Some(run_cmd.name.to_string()));
+                self.handle_new_command(mh, raw, attempt_span, Some(run_cmd.name.to_string()))
+                    .await;
                 TerminalLoopState::Continue(())
             }
             Message::SendSignalCommand(cmd) => {
                 // Verify the provided InvocationId is valid
                 let raw = RawCommand::new(CommandType::SendSignal, cmd);
                 let _: Entry = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
-                self.handle_new_command(mh, raw, attempt_span, None);
+                self.handle_new_command(mh, raw, attempt_span, None).await;
                 TerminalLoopState::Continue(())
             }
             Message::OneWayCallCommand(raw) => {
@@ -1236,7 +1243,8 @@ where
                     ),
                     attempt_span,
                     Some(cmd.name),
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::CallCommand(raw) => {
@@ -1285,14 +1293,16 @@ where
                     ),
                     attempt_span,
                     Some(cmd.name),
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::SleepCommand(cmd) => {
                 let raw = RawCommand::new(CommandType::Sleep, cmd);
                 let sleep_cmd: SleepCommand =
                     shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
-                self.handle_new_command(mh, raw, attempt_span, Some(sleep_cmd.name.to_string()));
+                self.handle_new_command(mh, raw, attempt_span, Some(sleep_cmd.name.to_string()))
+                    .await;
                 TerminalLoopState::Continue(())
             }
             Message::CompletePromiseCommand(cmd) => {
@@ -1306,7 +1316,8 @@ where
                     RawCommand::new(CommandType::CompletePromise, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::PeekPromiseCommand(cmd) => {
@@ -1320,7 +1331,8 @@ where
                     RawCommand::new(CommandType::PeekPromise, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetPromiseCommand(cmd) => {
@@ -1334,7 +1346,8 @@ where
                     RawCommand::new(CommandType::GetPromise, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateKeysCommand(cmd) => {
@@ -1351,7 +1364,8 @@ where
                     RawCommand::new(CommandType::GetEagerStateKeys, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetEagerStateCommand(cmd) => {
@@ -1368,7 +1382,8 @@ where
                     RawCommand::new(CommandType::GetEagerState, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateKeysCommand(cmd) => {
@@ -1385,7 +1400,8 @@ where
                     RawCommand::new(CommandType::GetLazyStateKeys, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::ClearAllStateCommand(cmd) => {
@@ -1402,7 +1418,8 @@ where
                     RawCommand::new(CommandType::ClearAllState, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::ClearStateCommand(cmd) => {
@@ -1419,7 +1436,8 @@ where
                     RawCommand::new(CommandType::ClearState, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::SetStateCommand(cmd) => {
@@ -1436,7 +1454,8 @@ where
                     RawCommand::new(CommandType::SetState, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::GetLazyStateCommand(cmd) => {
@@ -1453,14 +1472,15 @@ where
                     RawCommand::new(CommandType::GetLazyState, cmd),
                     attempt_span,
                     None,
-                );
+                )
+                .await;
                 TerminalLoopState::Continue(())
             }
             Message::CompleteAwakeableCommand(cmd) => {
                 // Verify the provided InvocationId is valid
                 let raw = RawCommand::new(CommandType::CompleteAwakeable, cmd);
                 let _: Entry = shortcircuit!(raw.decode::<ServiceProtocolV4Codec, _>());
-                self.handle_new_command(mh, raw, attempt_span, None);
+                self.handle_new_command(mh, raw, attempt_span, None).await;
                 TerminalLoopState::Continue(())
             }
             Message::SignalNotification(_) => TerminalLoopState::Failed(
@@ -1515,7 +1535,7 @@ where
         }
     }
 
-    fn handle_awaiting_on_message(
+    async fn handle_awaiting_on_message(
         &mut self,
         awaiting_on: proto::AwaitingOnMessage,
     ) -> TerminalLoopState<()> {
@@ -1538,7 +1558,8 @@ where
                 .map_err(|e| InvokerError::Encoding(GenericError::from(e).into()))
         );
         self.invocation_task
-            .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn { unresolved_future });
+            .send_invoker_tx(InvocationTaskOutputInner::AwaitingOn { unresolved_future })
+            .await;
 
         // todo(azmy): Handle awaiting on message
         //  Also verify that we keep correctly updated the InvocationStatusReportInner.last_awaiting_on_unresolved_future field!

@@ -176,7 +176,7 @@ impl LeaderState {
             network_events_tx,
             network_events_stream: UnboundedReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
-            self_proposer_scheduler: SelfProposerScheduler::new(),
+            self_proposer_scheduler: SelfProposerScheduler::new(partition_id),
         }
     }
 
@@ -321,6 +321,13 @@ impl LeaderState {
         // Join the inflight commit notification futures
         while let Poll::Ready(Some(_)) = awaiting_rpc_self_propose.next().poll_unpin(cx) {}
 
+        self_proposer_scheduler.poll_progress(cx, ctx.fsm().last_applied_lsn(), &config.worker)?;
+        self_proposer_scheduler.report_pending(
+            invoker_stream.as_ref().len(),
+            network_events_stream.as_ref().len(),
+        );
+        let records_before = self_proposer.enqueued_records();
+
         let mut state = LeaderEventHandlerState {
             partition_key_range: *partition_key_range,
             self_proposer,
@@ -376,6 +383,16 @@ impl LeaderState {
         // Poll the commit notification futures pushed while handling events so that their
         // wakers get registered. Otherwise, we might miss their completion if we return pending.
         while let Poll::Ready(Some(_)) = state.awaiting_rpc_self_propose.poll_next_unpin(cx) {}
+
+        if state.self_proposer.enqueued_records() != records_before {
+            self_proposer_scheduler.track_proposals(state.self_proposer.notify_committed()?);
+        }
+        // Register the new receipt's waker even when all windows just became full.
+        self_proposer_scheduler.poll_progress(cx, ctx.fsm().last_applied_lsn(), &config.worker)?;
+        self_proposer_scheduler.report_pending(
+            input_streams.invoker_stream.as_ref().len(),
+            input_streams.network_events_stream.as_ref().len(),
+        );
 
         result
     }
@@ -768,16 +785,21 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
         decision: SchedulerDecision<'_>,
     ) -> Result<usize, Error> {
         match self {
-            FlowPoll::Ready(handler) => match handler.handle(state) {
-                Ok(bytes_written) => {
-                    decision.on_proposal_enqueued(bytes_written);
-                    Ok(bytes_written)
+            FlowPoll::Ready(handler) => {
+                let received_at = handler.received_at();
+                let records_before = state.self_proposer.enqueued_records();
+                match handler.handle(state) {
+                    Ok(bytes_written) => {
+                        let records = state.self_proposer.enqueued_records() - records_before;
+                        decision.on_proposal_enqueued(bytes_written, records, received_at);
+                        Ok(bytes_written)
+                    }
+                    Err(e) => {
+                        decision.on_error();
+                        Err(e)
+                    }
                 }
-                Err(e) => {
-                    decision.on_error();
-                    Err(e)
-                }
-            },
+            }
             FlowPoll::Pending => {
                 decision.on_pending();
                 Ok(NOOP_BYTES_WRITTEN)
@@ -787,7 +809,7 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
                 Ok(NOOP_BYTES_WRITTEN)
             }
             FlowPoll::Noop => {
-                decision.on_proposal_enqueued(NOOP_BYTES_WRITTEN);
+                decision.on_proposal_enqueued(NOOP_BYTES_WRITTEN, 0, None);
                 Ok(NOOP_BYTES_WRITTEN)
             }
             FlowPoll::Err(e) => {
@@ -799,6 +821,10 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
 }
 
 trait LeaderEventHandler {
+    fn received_at(&self) -> Option<Instant> {
+        None
+    }
+
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error>;
 }
 
@@ -850,6 +876,10 @@ impl LeaderEventHandler for UpdatePartitionDurabilityCommand {
 }
 
 impl LeaderEventHandler for InvokerEffect {
+    fn received_at(&self) -> Option<Instant> {
+        self.received_at
+    }
+
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         let invocation_id = self.effect.invocation_id;
         // Fence stale effects at write time: only self-propose if the effect carries
@@ -953,6 +983,12 @@ impl LeaderEventHandler for Arc<RuleBook> {
 }
 
 impl LeaderEventHandler for NetworkServiceEvent {
+    fn received_at(&self) -> Option<Instant> {
+        let (Self::RpcProposal { received_at, .. } | Self::IngestRecords { received_at, .. }) =
+            self;
+        Some(*received_at)
+    }
+
     fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
         Ok(match self {
             NetworkServiceEvent::RpcProposal {
@@ -960,11 +996,13 @@ impl LeaderEventHandler for NetworkServiceEvent {
                 cmd,
                 reply,
                 lease: _lease, // Release the network memory reservation now that we're proposing the command.
+                received_at: _,
             } => state.handle_rpc_proposal(keys, cmd, reply),
             NetworkServiceEvent::IngestRecords {
                 records,
                 on_commit,
                 lease: _lease, // Release the network memory reservation now that we're proposing the command.
+                received_at: _,
             } => state.forward_many_and_respond_on_commit(records.into_iter(), on_commit),
         })
     }
