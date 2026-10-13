@@ -9,6 +9,8 @@
 // by the Apache License, Version 2.0.
 
 use restate_core::network::grpc::DEFAULT_GRPC_COMPRESSION;
+use restate_types::config::NetworkingOptions;
+use restate_types::net::connect_opts::GrpcConnectionOptions;
 use tonic::codec::CompressionEncoding;
 use tonic::transport::Channel;
 
@@ -20,10 +22,17 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
 /// Creates a new MetadataServerNetworkSvcClient with appropriate configuration
 pub fn new_metadata_server_network_client(
     channel: Channel,
+    config: &NetworkingOptions,
 ) -> metadata_server_network_svc_client::MetadataServerNetworkSvcClient<Channel> {
-    metadata_server_network_svc_client::MetadataServerNetworkSvcClient::new(channel)
+    let client = metadata_server_network_svc_client::MetadataServerNetworkSvcClient::new(channel)
+        .max_decoding_message_size(config.message_size_limit().get())
         // note: the order of those calls defines the priority
         .accept_compressed(CompressionEncoding::Zstd)
-        .accept_compressed(CompressionEncoding::Gzip)
-        .send_compressed(DEFAULT_GRPC_COMPRESSION)
+        .accept_compressed(CompressionEncoding::Gzip);
+
+    if config.disable_compression {
+        client
+    } else {
+        client.send_compressed(DEFAULT_GRPC_COMPRESSION)
+    }
 }

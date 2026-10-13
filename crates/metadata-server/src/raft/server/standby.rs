@@ -282,13 +282,14 @@ impl Standby {
                 .clone()
         };
 
-        let channel = create_tonic_channel(
-            address,
-            &Configuration::pinned().networking,
-            DNSResolution::Gai,
-        );
+        let mut client = {
+            let configuration = Configuration::pinned();
+            let channel =
+                create_tonic_channel(address, &configuration.networking, DNSResolution::Gai);
+            new_metadata_server_network_client(channel, &configuration.networking)
+        };
 
-        match new_metadata_server_network_client(channel)
+        match client
             .join_cluster(network::grpc_svc::JoinClusterRequest {
                 node_id: u32::from(member_id.node_id),
                 created_at_millis: member_id.created_at_millis,
