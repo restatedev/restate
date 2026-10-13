@@ -20,19 +20,45 @@ use datafusion::execution::{SessionState, SessionStateBuilder, SessionStateDefau
 use datafusion::logical_expr::registry::{ExtensionTypeRegistry, MemoryExtensionTypeRegistry};
 use datafusion::prelude::SessionContext;
 
+use restate_clock::{AtomicStorage, HlcClock, UniqueTimestamp, WallClock};
 use restate_storage_query_api::{QueryEngineTable, SessionTable};
 use restate_types::config::QueryEngineOptions;
 use restate_util_string::ReString;
 
+pub(crate) enum QueryClock {
+    Wall(HlcClock<WallClock, AtomicStorage>),
+    #[cfg(any(test, feature = "test-util"))]
+    Mock(HlcClock<restate_clock::MockClock, AtomicStorage>),
+}
+
+impl QueryClock {
+    pub(crate) fn next(&self) -> UniqueTimestamp {
+        match self {
+            Self::Wall(clock) => clock.next(),
+            #[cfg(any(test, feature = "test-util"))]
+            Self::Mock(clock) => clock.next(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn snapshot(&self) -> UniqueTimestamp {
+        match self {
+            Self::Wall(clock) => clock.snapshot(),
+            Self::Mock(clock) => clock.snapshot(),
+        }
+    }
+}
+
 /// Shared DataFusion resources and defaults used to construct independent session state.
 ///
-/// Clones share the runtime and its memory pool. Each call to [`Self::build_session_state`]
+/// Clones share the runtime, its memory pool, and the query HLC. Each call to [`Self::build_session_state`]
 /// creates a fresh session identity, configuration copy, and catalog container while reusing
 /// that runtime. Components populate the shared provider inventory as dependencies become
 /// available; sessions select and name providers in independent catalogs.
 #[derive(Clone)]
 pub struct DataFusionEnv {
     runtime: Arc<RuntimeEnv>,
+    query_clock: Arc<QueryClock>,
     config: SessionConfig,
     tables: Arc<DashMap<ReString, Arc<dyn TableProvider>>>,
 }
@@ -56,10 +82,11 @@ impl DataFusionEnv {
     /// Session defaults enable the information schema, use a batch size of 128, and resolve
     /// unqualified tables in `restate.public`. `datafusion_options` are applied last and may
     /// override these settings, including the target partition count.
+    /// Query execution requires the binary's [`restate_clock::ClockUpkeep`] to be running.
     ///
     /// # Errors
     ///
-    /// Returns an error if runtime initialization fails or a DataFusion configuration option
+    /// Returns an error if runtime/clock initialization fails or a DataFusion configuration option
     /// is invalid.
     pub fn new(
         memory_limit: usize,
@@ -96,9 +123,31 @@ impl DataFusionEnv {
 
         Ok(Self {
             runtime,
+            query_clock: Arc::new(QueryClock::Wall(
+                HlcClock::new(None, WallClock, AtomicStorage::default())
+                    .map_err(|err| DataFusionError::External(Box::new(err)))?,
+            )),
             config,
             tables: Arc::new(DashMap::new()),
         })
+    }
+
+    /// Shared across environment clones and sessions; query timestamps are allocated at execution.
+    pub(crate) fn query_clock(&self) -> &Arc<QueryClock> {
+        &self.query_clock
+    }
+
+    /// Installs a test clock without upkeep. Call before cloning the environment or creating sessions.
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn with_mock_clock(
+        mut self,
+        clock: restate_clock::MockClock,
+    ) -> Result<Self, DataFusionError> {
+        self.query_clock = Arc::new(QueryClock::Mock(
+            HlcClock::new(None, clock, AtomicStorage::default())
+                .map_err(|err| DataFusionError::External(Box::new(err)))?,
+        ));
+        Ok(self)
     }
 
     /// Registers a source once. SQL exposure names belong to session catalogs.

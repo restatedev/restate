@@ -96,6 +96,7 @@ impl<W: RecordBatchWriter + Unpin> Stream for WriteRecordBatchStream<W> {
                     warn!(
                         target: "query_engine",
                         session = %self.metadata.session_id,
+                        query_ts = self.metadata.query_ts.as_u64(),
                         query = %self.metadata.redacted_sql,
                         "Query failed: {err}"
                     );

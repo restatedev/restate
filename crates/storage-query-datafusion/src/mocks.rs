@@ -22,6 +22,7 @@ use futures::{StreamExt, stream};
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
+use restate_clock::MockClock;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -268,7 +269,10 @@ impl MockQueryEngine {
             manager.clone(),
             partition_store,
             DataFusionQueryEngine::with_tables(
-                DataFusionEnv::from_options(&QueryEngineOptions::default()).unwrap(),
+                DataFusionEnv::from_options(&QueryEngineOptions::default())
+                    .unwrap()
+                    .with_mock_clock(MockClock::new())
+                    .unwrap(),
                 None,
                 catalog(remote_scanner_manager),
             )

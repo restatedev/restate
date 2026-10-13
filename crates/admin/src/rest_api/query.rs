@@ -322,7 +322,10 @@ mod tests {
         let grpc_metadata = tonic::metadata::MetadataMap::from_headers(headers.clone());
         assert_eq!(collect_query_headers(grpc_metadata.as_ref()), collected);
 
-        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new())
+            .unwrap()
+            .with_mock_clock(restate_types::clock::MockClock::new())
+            .unwrap();
         let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(env, None, vec![]);
         let session = engine
             .create_session(SessionOptions {

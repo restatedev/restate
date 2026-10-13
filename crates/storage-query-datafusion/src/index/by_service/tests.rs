@@ -21,6 +21,7 @@ use datafusion::logical_expr::{col, lit};
 use datafusion::physical_expr::planner::logical2physical;
 use futures::TryStreamExt;
 
+use restate_clock::MockClock;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::index::EntryByStageServiceKey;
 use restate_partition_store::keys::{IndexFieldEncode, KeyKind};
@@ -767,7 +768,10 @@ async fn partition_tables_register_the_scanner_and_sort_across_stores() {
         &scanners,
     );
     let engine = DataFusionQueryEngine::with_user_tables(
-        DataFusionEnv::from_options(&options).unwrap(),
+        DataFusionEnv::from_options(&options)
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap(),
         None,
         UserTables::new(partitions, scanners.clone()),
     )
