@@ -9,4 +9,8 @@
 // by the Apache License, Version 2.0.
 
 pub type HashMap<K, V, S = hashbrown::DefaultHashBuilder> = hashbrown::HashMap<K, V, S>;
+pub mod hash_map {
+    pub type Entry<'a, K, V, S = hashbrown::DefaultHashBuilder> =
+        hashbrown::hash_map::Entry<'a, K, V, S>;
+}
 pub type HashSet<T, S = hashbrown::DefaultHashBuilder> = hashbrown::HashSet<T, S>;

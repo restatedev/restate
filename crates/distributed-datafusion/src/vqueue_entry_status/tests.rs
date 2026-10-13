@@ -19,12 +19,15 @@ use futures::StreamExt;
 use googletest::all;
 use googletest::prelude::{assert_that, eq};
 
+use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
+use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryId, EntryKey, EntryKind, EntryMetadata, EntryStateRef, Stage, Status,
     WriteVQueueTable,
     stats::{EntryStatistics, WaitStats},
 };
+use restate_types::ServiceName;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::{EntryTargetRef, VQueueId};
@@ -172,6 +175,15 @@ async fn get_vqueue_entry_status_header_fields() {
     };
 
     let mut tx = engine.partition_store().transaction();
+    tx.create_vqueue(
+        &qid,
+        &VQueueMeta::new(
+            created_at,
+            None,
+            LimitKey::None,
+            VQueueLink::Service(ServiceName::new("test")),
+        ),
+    );
     let first_runnable_at = stats.first_runnable_at;
     let latest_attempt_wait_stats = stats.latest_attempt_wait_stats;
     let total_wait_stats = stats.total_wait_stats;
@@ -209,7 +221,7 @@ async fn get_vqueue_entry_status_header_fields() {
              total_blocked_on_invoker_concurrency, total_blocked_on_throttling_rules, \
              total_blocked_on_invoker_throttling, total_blocked_on_invoker_memory, \
              total_blocked_on_concurrency_rules, total_blocked_on_lock, \
-             total_blocked_on_deployment_concurrency FROM sys_vqueue_entry_status \
+             total_blocked_on_deployment_concurrency, service_name FROM sys_vqueue_entry_status \
              WHERE entry_id = '{entry_id}' ORDER BY sequence_number"
         ))
         .await
@@ -262,6 +274,7 @@ async fn get_vqueue_entry_status_header_fields() {
                 "total_blocked_on_concurrency_rules" => DurationMillisecondArray: eq(total_wait_stats.blocked_on_concurrency_rules_ms as i64),
                 "total_blocked_on_lock" => DurationMillisecondArray: eq(total_wait_stats.blocked_on_lock_ms as i64),
                 "total_blocked_on_deployment_concurrency" => DurationMillisecondArray: eq(total_wait_stats.blocked_on_deployment_concurrency_ms as i64),
+                "service_name" => LargeStringArray: eq("test"),
             }
         ))
     );

@@ -28,7 +28,7 @@ use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition}
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
-use crate::vqueue_entry_status::row::append_vqueue_entry_status_row;
+use crate::vqueue_entry_status::row::{ServiceNameResolver, append_vqueue_entry_status_row};
 use crate::vqueue_entry_status::schema::{
     SysVqueueEntryStatusBuilder, SysVqueueEntryStatusTable, sys_vqueue_entry_status_sort_order,
 };
@@ -78,8 +78,13 @@ struct VQueueEntryStatusScanner;
 impl ScanLocalPartition for VQueueEntryStatusScanner {
     const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::VQueueEntry);
     type Builder = SysVqueueEntryStatusBuilder;
-    type Item<'a> = (PartitionKey, &'a EntryId, &'a RawStatusHeaderRef<'a>);
-    type ConversionError = std::convert::Infallible;
+    type Item<'a> = (
+        PartitionKey,
+        &'a EntryId,
+        &'a RawStatusHeaderRef<'a>,
+        &'a mut ServiceNameResolver,
+    );
+    type ConversionError = StorageError;
     type Filter = VQueueEntryIdFilter;
 
     fn for_each_row<
@@ -92,17 +97,22 @@ impl ScanLocalPartition for VQueueEntryStatusScanner {
         filter: VQueueEntryIdFilter,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
+        let mut service_names = ServiceNameResolver::new(partition_store.clone());
         partition_store.for_each_vqueue_entry_status(filter.into(), move |id, header| {
-            f((id.partition_key(), id.as_entry_id(), header)).map_break(Result::unwrap)
+            f((
+                id.partition_key(),
+                id.as_entry_id(),
+                header,
+                &mut service_names,
+            ))
         })
     }
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
-        (partition_key, entry_id, header): Self::Item<'a>,
+        (partition_key, entry_id, header, service_names): Self::Item<'a>,
     ) -> Result<(), Self::ConversionError> {
-        append_vqueue_entry_status_row(row_builder, partition_key, entry_id, header);
-        Ok(())
+        append_vqueue_entry_status_row(row_builder, partition_key, entry_id, header, service_names)
     }
 }
 
