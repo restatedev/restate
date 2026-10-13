@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod aggregated_status_stats;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -89,6 +90,12 @@ storage_features! {
     ///
     /// *Since v1.7.10*
     pub VqueueMetadataCleanupV1,
+
+    /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment
+    /// statistics during entries' lifecycle. This storage feature indicates only that we
+    ///
+    /// Since v1.8.1
+    pub TrackStatusGauges,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -664,7 +671,10 @@ mod tests {
 
         assert_eq!(
             features.automatic_changes(&config, &current_version, false),
-            [KnownStorageFeature::VqueueMetadataCleanupV1]
+            [
+                KnownStorageFeature::VqueueMetadataCleanupV1,
+                KnownStorageFeature::TrackStatusGauges,
+            ]
         );
         assert_eq!(
             features.automatic_changes(&config, &current_version, true),
@@ -673,6 +683,7 @@ mod tests {
                 KnownStorageFeature::MigratedToScopedStateTable,
                 KnownStorageFeature::MigratedToScopedPromiseTable,
                 KnownStorageFeature::VqueueMetadataCleanupV1,
+                KnownStorageFeature::TrackStatusGauges,
             ]
         );
     }
