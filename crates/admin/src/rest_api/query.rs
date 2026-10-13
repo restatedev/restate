@@ -33,14 +33,17 @@ use restate_admin_rest_model::query::QueryRequest;
 use restate_core::network::TransportConnect;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
 use restate_storage_query_api::{
-    QueryOptions, RecordBatchWriter, SessionOptions, WriteRecordBatchStream,
+    AdminUser, QueryOptions, QuerySession, RecordBatchWriter, SessionOptions,
+    WriteRecordBatchStream,
 };
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
+use crate::query_context::collect_query_headers;
 use crate::state::AdminServiceState;
 
 const RETRY_AFTER_HEADER: &str = "Retry-After";
+const QUERY_SESSION_HEADER: &str = "x-restate-query-session-id";
 
 /// Error response for query endpoint.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -123,7 +126,8 @@ impl IntoResponse for QueryError {
             content (
                 ("application/vnd.apache.arrow.stream"),
                 ("application/json", example = json!({"rows": []}))
-            )),
+            ),
+            headers(("X-Restate-Query-Session-Id" = String, description = "Server-generated query session ID"))),
         (status = 400, description = "Error during planning: table 'mytable' not found", body = QueryErrorBody),
         (status = 500, description = "Internal query error", body = QueryErrorBody),
         (status = 503, description = "Query service not available", body = QueryErrorBody),
@@ -141,10 +145,36 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
-    let session = state
-        .query_engine
-        .create_session(SessionOptions::default())?;
+    let session = state.query_engine.create_session(SessionOptions {
+        headers: collect_query_headers(&headers),
+        ..Default::default()
+    })?;
 
+    query_in_session(session.as_ref(), &headers, payload).await
+}
+
+async fn query_in_session(
+    session: &dyn QuerySession<AdminUser>,
+    headers: &HeaderMap,
+    payload: QueryRequest,
+) -> Result<Response, QueryError> {
+    let session_id = HeaderValue::from_str(session.session_id())
+        .map_err(|err| DataFusionError::Internal(format!("Invalid query session ID: {err}")))?;
+    // Preserve correlation on planning and first-batch errors as well as success.
+    let mut response = execute_query(session, headers, payload)
+        .await
+        .into_response();
+    response
+        .headers_mut()
+        .insert(QUERY_SESSION_HEADER, session_id);
+    Ok(response)
+}
+
+async fn execute_query(
+    session: &dyn QuerySession<AdminUser>,
+    headers: &HeaderMap,
+    payload: QueryRequest,
+) -> Result<Response, QueryError> {
     let query_result = session.execute(&payload.query, QueryOptions {}).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
@@ -238,5 +268,127 @@ impl RecordBatchWriter for JsonWriter {
             self.lock_writer.write_all(b"}")?;
         }
         Ok(Bytes::from(self.lock_writer.take()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use http_body_util::BodyExt;
+
+    use restate_storage_query_datafusion::DataFusionEnv;
+    use restate_storage_query_datafusion::context::DataFusionQueryEngine;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn query_context_and_session_header_preserve_streaming_responses() {
+        let mut headers = HeaderMap::new();
+        assert!(collect_query_headers(&headers).is_empty());
+        for (name, value) in [
+            ("X-Restate-Query-Client", "ui"),
+            ("X-Restate-Query-Origin", "built-in"),
+            ("X-RestateCloud-User-id", "user-1"),
+            ("X-RestateCloud-Environment-id", "env-1"),
+            ("X-RestateCloud-Caller-Principal", "principal-1"),
+            ("Authorization", "Bearer private-token"),
+            ("Cookie", "private-cookie"),
+            ("X-Unlisted-Header", "ignored"),
+        ] {
+            headers.insert(
+                name.parse::<http::header::HeaderName>().unwrap(),
+                HeaderValue::from_static(value),
+            );
+        }
+        headers.append(
+            "x-restate-query-client",
+            HeaderValue::from_static("second-client"),
+        );
+        let collected = collect_query_headers(&headers);
+        assert_eq!(collected.len(), 6);
+        assert_eq!(collected["x-restate-query-client"], "ui");
+        assert_eq!(
+            collected.get_all("x-restate-query-client").iter().count(),
+            2
+        );
+        assert_eq!(collected["x-restate-query-origin"], "built-in");
+        assert_eq!(collected["x-restatecloud-user-id"], "user-1");
+        assert_eq!(collected["x-restatecloud-environment-id"], "env-1");
+        assert_eq!(collected["x-restatecloud-caller-principal"], "principal-1");
+        assert!(!collected.contains_key("authorization"));
+        assert!(!collected.contains_key("cookie"));
+        assert!(!collected.contains_key("x-unlisted-header"));
+        let grpc_metadata = tonic::metadata::MetadataMap::from_headers(headers.clone());
+        assert_eq!(collect_query_headers(grpc_metadata.as_ref()), collected);
+
+        let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
+        let engine = DataFusionQueryEngine::<AdminUser>::from_inventory(env, None, vec![]);
+        let session = engine
+            .create_session(SessionOptions {
+                headers: collected.clone(),
+                ..Default::default()
+            })
+            .unwrap();
+        let result = session.execute("SELECT 42", QueryOptions {}).await.unwrap();
+        assert_eq!(result.metadata.headers, collected);
+        drop(result);
+        for accept in ["application/json", "application/vnd.apache.arrow.stream"] {
+            headers.insert(http::header::ACCEPT, HeaderValue::from_static(accept));
+            let response = query_in_session(
+                session.as_ref(),
+                &headers,
+                QueryRequest {
+                    query: "SELECT 42 AS answer".into(),
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                response.headers()[QUERY_SESSION_HEADER],
+                session.session_id()
+            );
+            assert_eq!(response.headers()[http::header::CONTENT_TYPE], accept);
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            if accept == "application/json" {
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes).unwrap(),
+                    serde_json::json!({"rows": [{"answer": 42}]})
+                );
+            } else {
+                let batches = datafusion::arrow::ipc::reader::StreamReader::try_new(
+                    std::io::Cursor::new(bytes),
+                    None,
+                )
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+                assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+            }
+        }
+        let response = query_in_session(
+            session.as_ref(),
+            &headers,
+            QueryRequest {
+                query: "SELECT (".into(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response.headers()[QUERY_SESSION_HEADER],
+            session.session_id()
+        );
+
+        headers.insert(
+            "x-restate-query-client",
+            HeaderValue::from_bytes(b"\xff").unwrap(),
+        );
+        assert_eq!(
+            collect_query_headers(&headers)["x-restate-query-client"].as_bytes(),
+            b"\xff"
+        );
     }
 }

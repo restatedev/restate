@@ -9,15 +9,21 @@
 // by the Apache License, Version 2.0.
 
 mod catalog;
+mod diagnostics;
 mod engine;
 pub mod errors;
 mod writer;
 
 use std::any::Any;
 
+pub use datafusion_physical_expr_common::metrics;
+
 use restate_util_string::ReString;
 
 pub use catalog::{AdminUser, ClusterOperator};
+pub use diagnostics::{
+    QueryDiagnostics, QueryMetadata, QueryOperatorStats, QueryStats, QueryStatus,
+};
 pub use engine::{
     NoOpQueryEngine, NodeWarning, NodeWarnings, QueryEngine, QueryOptions, QueryResult,
     QuerySession, SessionOptions, SessionTable,
