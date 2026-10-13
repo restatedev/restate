@@ -163,9 +163,10 @@ impl WireEncode for Append {
                 let msg: compat::Append = self.clone().into();
                 Ok(encode_as_bilrost(&msg))
             }
-            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                Ok(encode_as_bilrost(self))
-            }
+            ProtocolVersion::V3
+            | ProtocolVersion::V4
+            | ProtocolVersion::V5
+            | ProtocolVersion::V6 => Ok(encode_as_bilrost(self)),
         }
     }
 }
@@ -190,9 +191,10 @@ impl WireDecode for Append {
                     crate::net::codec::decode_as_bilrost(buf, protocol_version)?;
                 Ok(msg.into())
             }
-            ProtocolVersion::V3 | ProtocolVersion::V4 | ProtocolVersion::V6 => {
-                crate::net::codec::decode_as_bilrost(buf, protocol_version)
-            }
+            ProtocolVersion::V3
+            | ProtocolVersion::V4
+            | ProtocolVersion::V5
+            | ProtocolVersion::V6 => crate::net::codec::decode_as_bilrost(buf, protocol_version),
         }
     }
 }

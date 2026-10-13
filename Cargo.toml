@@ -158,6 +158,7 @@ datafusion = { version = "55.1.0", default-features = false, features = [
     "recursive_protection",
 ] }
 datafusion-functions-json = { version = "0.55.2" }
+datafusion-distributed = { git = "https://github.com/datafusion-contrib/datafusion-distributed", rev = "6b937fb3ee9546c2e3c51ae30b7853a58fa22b45", default-features = false }
 datafusion-physical-expr-common = { version = "55.1.0", default-features = false }
 datafusion-proto = { version = "55.1.0", default-features = false }
 derive_builder = "0.20.2"
