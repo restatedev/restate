@@ -871,6 +871,15 @@ experimental! {
     ///
     /// Since v1.8.0
     inconsistent_state_mutation_cleanup,
+
+    /// # Status Gauges For Services
+    ///
+    /// Enables tracking service-level status gauges for invocations. This impacts
+    /// new invocations and and any existing invocation that goes through an status
+    /// transition. Existing completed invocations will not be accounted for.
+    ///
+    /// Since v1.8.1
+    track_status_gauges,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

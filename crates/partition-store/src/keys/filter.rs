@@ -8,9 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// Remove in next commits
-#![allow(dead_code)]
-
 use std::marker::PhantomData;
 use std::ops::Bound::{self, Excluded, Included, Unbounded};
 
@@ -540,6 +537,7 @@ impl<K: IndexKeySchema> KeyFilterCursor<K> {
 
     /// Replaces the live filter. It must be sound on its own, see
     /// [`restate_storage_api::filter::LiveFilter`].
+    #[allow(dead_code)]
     pub(crate) fn set_live(&mut self, filter: PreparedKeyFilter<K>) {
         self.live = Some(filter);
     }
