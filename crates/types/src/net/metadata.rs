@@ -51,6 +51,7 @@ impl WireEncode for GetMetadataRequest {
         Ok(Bytes::from(codec::encode_as_flexbuffers(self)))
     }
 }
+
 impl WireDecode for GetMetadataRequest {
     type Error = anyhow::Error;
     fn try_decode(
@@ -65,10 +66,18 @@ impl WireDecode for GetMetadataRequest {
 }
 
 impl WireEncode for MetadataUpdate {
-    fn encode_to_bytes(&self, _protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
-        Ok(Bytes::from(codec::encode_as_flexbuffers(self)))
+    fn encode_to_bytes(&self, protocol_version: ProtocolVersion) -> Result<Bytes, EncodeError> {
+        match protocol_version {
+            ProtocolVersion::Unknown
+            | ProtocolVersion::V2
+            | ProtocolVersion::V3
+            | ProtocolVersion::V4 => Ok(Bytes::from(codec::encode_as_flexbuffers(self))),
+            ProtocolVersion::V6 => Ok(wire::metadata_update_wire_encode(self, protocol_version)
+                .expect("encode to succeed")),
+        }
     }
 }
+
 impl WireDecode for MetadataUpdate {
     type Error = anyhow::Error;
     fn try_decode(
@@ -78,7 +87,13 @@ impl WireDecode for MetadataUpdate {
     where
         Self: Sized,
     {
-        codec::decode_as_flexbuffers(buf, protocol_version)
+        match protocol_version {
+            ProtocolVersion::Unknown
+            | ProtocolVersion::V2
+            | ProtocolVersion::V3
+            | ProtocolVersion::V4 => codec::decode_as_flexbuffers(buf, protocol_version),
+            ProtocolVersion::V6 => Ok(wire::metadata_update_wire_decode(buf, protocol_version)?),
+        }
     }
 }
 
@@ -126,6 +141,10 @@ impl TryFrom<crate::protobuf::common::MetadataKind> for MetadataKind {
     }
 }
 
+// TODO(azmy): serde Serialize and Deserialize is only implemented for
+// backward compatibility with Wire ProtocolVersion < V6. Once
+// protocol versions < V6 are deprecated (possibly Restate v1.9.0)
+// we SHOULD drop those implementations.
 #[derive(Debug, Clone, Serialize, Deserialize, derive_more::From)]
 pub enum MetadataContainer {
     NodesConfiguration(Arc<NodesConfiguration>),
@@ -140,6 +159,10 @@ pub struct GetMetadataRequest {
     pub min_version: Option<crate::Version>,
 }
 
+// TODO(azmy): serde Serialize and Deserialize is only implemented for
+// backward compatibility with Wire ProtocolVersion < V6. Once
+// protocol versions < V6 are deprecated (possibly Restate v1.9.0)
+// we SHOULD drop those implementations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MetadataUpdate {
     pub container: MetadataContainer,
@@ -222,6 +245,225 @@ impl Extraction for Logs {
             Some(v)
         } else {
             None
+        }
+    }
+}
+
+mod wire {
+    use std::{ops::Deref, sync::Arc};
+
+    use bilrost::{Message, OwnedMessage};
+    use bytes::{Bytes, BytesMut};
+
+    use restate_platform::storage::{StorageCodecKind, StorageDecodeError, StorageEncodeError};
+
+    use super::MetadataUpdate;
+    use crate::{
+        net::{ProtocolVersion, metadata::MetadataContainer},
+        schema::SchemaUnindexed,
+        storage::{self},
+    };
+
+    /// A duplicate of the super::MetadataKind just to make the bilrost
+    /// encoding separate from the public types.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Enumeration)]
+    enum MetadataKind {
+        #[bilrost(0)]
+        NodesConfiguration,
+        #[bilrost(1)]
+        PartitionTable,
+        #[bilrost(2)]
+        Logs,
+        #[bilrost(3)]
+        Schema,
+    }
+
+    #[derive(Debug, Clone, bilrost::Message)]
+    struct MetadataUpdateHeader {
+        #[bilrost(1)]
+        kind: MetadataKind,
+    }
+
+    pub fn metadata_update_wire_encode(
+        value: &MetadataUpdate,
+        protocol_version: ProtocolVersion,
+    ) -> Result<Bytes, StorageEncodeError> {
+        assert_eq!(protocol_version, ProtocolVersion::V6);
+
+        let mut bytes = BytesMut::new();
+
+        let kind = match &value.container {
+            MetadataContainer::NodesConfiguration(_) => MetadataKind::NodesConfiguration,
+            MetadataContainer::PartitionTable(_) => MetadataKind::PartitionTable,
+            MetadataContainer::Logs(_) => MetadataKind::Logs,
+            MetadataContainer::Schema(_) => MetadataKind::Schema,
+        };
+
+        let header = MetadataUpdateHeader { kind };
+        let len = header.encoded_len();
+
+        bytes.reserve(len + bilrost::encoding::encoded_len_varint(len as u64));
+        header
+            .encode_length_delimited(&mut bytes)
+            .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
+
+        match &value.container {
+            MetadataContainer::NodesConfiguration(value) => {
+                storage::encode::encode_serde(
+                    value,
+                    &mut bytes,
+                    StorageCodecKind::FlexbuffersSerde,
+                )?;
+            }
+            MetadataContainer::PartitionTable(value) => {
+                storage::encode::encode_serde(
+                    value,
+                    &mut bytes,
+                    StorageCodecKind::FlexbuffersSerde,
+                )?;
+            }
+            MetadataContainer::Logs(value) => {
+                storage::encode::encode_serde(
+                    value,
+                    &mut bytes,
+                    StorageCodecKind::FlexbuffersSerde,
+                )?;
+            }
+            MetadataContainer::Schema(value) => {
+                storage::encode::encode_bilrost_zstd(value.as_ref().deref(), &mut bytes)?;
+            }
+        };
+
+        Ok(bytes.freeze())
+    }
+
+    pub fn metadata_update_wire_decode(
+        mut buf: impl bytes::Buf,
+        protocol_version: ProtocolVersion,
+    ) -> Result<MetadataUpdate, StorageDecodeError> {
+        assert_eq!(protocol_version, ProtocolVersion::V6);
+
+        let header = MetadataUpdateHeader::decode_length_delimited(&mut buf)
+            .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+
+        let container = match header.kind {
+            MetadataKind::NodesConfiguration => {
+                let value =
+                    storage::decode::decode_serde(&mut buf, StorageCodecKind::FlexbuffersSerde)?;
+                MetadataContainer::NodesConfiguration(Arc::new(value))
+            }
+            MetadataKind::PartitionTable => {
+                let value =
+                    storage::decode::decode_serde(&mut buf, StorageCodecKind::FlexbuffersSerde)?;
+                MetadataContainer::PartitionTable(Arc::new(value))
+            }
+            MetadataKind::Logs => {
+                let value =
+                    storage::decode::decode_serde(&mut buf, StorageCodecKind::FlexbuffersSerde)?;
+                MetadataContainer::Logs(Arc::new(value))
+            }
+            MetadataKind::Schema => {
+                let value: SchemaUnindexed = storage::decode::decode_bilrost_zstd(&mut buf)?;
+                value
+                    .verify()
+                    .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
+                MetadataContainer::Schema(Arc::new(value.into()))
+            }
+        };
+
+        Ok(MetadataUpdate { container })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_platform::storage::{StorageCodecKind, StorageEncode};
+
+    use super::*;
+
+    #[test]
+    fn metadata_update_wire_roundtrip() {
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        nodes_config.set_version(Version::from(7));
+        let partition_table = PartitionTable::with_equally_sized_partitions(Version::from(3), 4);
+
+        let containers = [
+            MetadataContainer::NodesConfiguration(Arc::new(nodes_config.clone())),
+            MetadataContainer::PartitionTable(Arc::new(partition_table.clone())),
+            MetadataContainer::Logs(Arc::new(Logs::default())),
+            MetadataContainer::Schema(Arc::new(Schema::default())),
+        ];
+
+        for protocol_version in [ProtocolVersion::V4, ProtocolVersion::V6] {
+            for container in &containers {
+                let update = MetadataUpdate {
+                    container: container.clone(),
+                };
+                let bytes = update.encode_to_bytes(protocol_version).unwrap();
+                let decoded = MetadataUpdate::try_decode(bytes, protocol_version).unwrap();
+
+                assert_eq!(decoded.container.kind(), container.kind());
+                assert_eq!(decoded.container.version(), container.version());
+
+                match decoded.container {
+                    MetadataContainer::NodesConfiguration(decoded) => {
+                        assert_eq!(decoded.cluster_name(), nodes_config.cluster_name());
+                        assert_eq!(
+                            decoded.cluster_fingerprint(),
+                            nodes_config.cluster_fingerprint()
+                        );
+                    }
+                    MetadataContainer::PartitionTable(decoded) => {
+                        assert_eq!(*decoded, partition_table);
+                    }
+                    MetadataContainer::Logs(_) | MetadataContainer::Schema(_) => {}
+                }
+            }
+        }
+    }
+
+    /// Guards against a metadata type's default storage codec drifting away
+    /// from the codecs the wire protocol expects for it.
+    ///
+    /// A failure here is not a correctness issue, but it means the wire
+    /// protocol is no longer sending that object with its most efficient codec.
+    /// To fix it, bump the wire protocol version, switch that object to the new
+    /// codec on the wire, and then update the expected codecs below.
+    #[test]
+    fn storage_encoding_matches_wire_encoding() {
+        let supported_codecs = vec![
+            (
+                "NodesConfiguration",
+                NodesConfiguration::default().default_codec(),
+                vec![StorageCodecKind::FlexbuffersSerde],
+            ),
+            (
+                "PartitionTable",
+                PartitionTable::default().default_codec(),
+                vec![StorageCodecKind::FlexbuffersSerde],
+            ),
+            (
+                "Logs",
+                Logs::default().default_codec(),
+                vec![StorageCodecKind::FlexbuffersSerde],
+            ),
+            (
+                "Schema",
+                Schema::default().default_codec(),
+                vec![
+                    // todo(azmy): Remove the flexbuffer support once zstd-bilrost-encoding becomes
+                    // default storage codec for schema
+                    StorageCodecKind::FlexbuffersSerde,
+                    StorageCodecKind::ZstdBilrostDefault,
+                ],
+            ),
+        ];
+
+        for (metadata_kind, current, supported) in supported_codecs {
+            assert!(
+                supported.contains(&current),
+                "StorageCodecKind for {metadata_kind} has diverged from the supported wire protocol (storage: {current}), supported: {supported:?})"
+            );
         }
     }
 }

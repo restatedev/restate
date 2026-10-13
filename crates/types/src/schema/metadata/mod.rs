@@ -83,6 +83,8 @@ pub struct SchemaUnindexed {
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
+// TODO(azmy): Drop serde::Serialize and serde::Deserialize implementations along with serde for MetadataUpdate
+// in v1.9.0
 #[derive(derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(from = "SchemaUnindexed", into = "SchemaUnindexed")]
 #[debug("Schema(version: {})", unindexed.version)]
@@ -182,9 +184,12 @@ mod storage {
     use super::{Schema, SchemaUnindexed};
     use crate::{config::Configuration, storage};
 
-    // It's unsafe to change the encoding during runtime because the StorageCodec might read
-    // a different default_codec that what schema use if the config changes between the two
-    // calls. Hence we keep this value here on first read.
+    // The encoding choice is cached once per process because it must not change at runtime.
+    // `StorageCodec::encode` calls `StorageEncode::default_codec` to pick the codec kind it
+    // stores alongside the value, and `StorageEncode::encode` then calls it again to choose the actual
+    // encoding. If the config changed between those two calls, the stored codec kind would not
+    // match the encoded bytes, and the value could no longer be decoded.
+    // TODO(azmy): remove along the experimental flag once default_codec becomes ZstdBilrost
     static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
 
     impl StorageEncode for SchemaUnindexed {
