@@ -91,6 +91,14 @@ pub(crate) enum InvokerError {
     #[error("malformed ProposeRunCompletionMessage, missing result field")]
     #[code(restate_errors::RT0012)]
     MalformedProposeRunCompletion,
+    #[error("malformed GetStateEphemeralCommandMessage, the key is not a valid UTF-8 string: {0}")]
+    #[code(restate_errors::RT0012)]
+    MalformedGetStateEphemeralCommand(#[source] std::str::Utf8Error),
+    #[error(
+        "cannot process GetStateEphemeralCommandMessage, this service type doesn't have state access"
+    )]
+    #[code(restate_errors::RT0012)]
+    GetStateEphemeralCommandWithoutStateAccess,
 
     #[error("error when trying to read the journal: {0}")]
     #[code(restate_errors::RT0006)]
