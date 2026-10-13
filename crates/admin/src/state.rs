@@ -29,6 +29,10 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     /// directly (e.g. the rule book) via `read_modify_write`.
     pub metadata_store_client: MetadataStoreClient,
     pub query_engine: Arc<dyn QueryEngine<AdminUser>>,
+    #[builder(default)]
+    pub distributed_query_engine: Option<Arc<dyn QueryEngine<AdminUser>>>,
+    #[builder(default)]
+    pub query_engine_v2_default: bool,
     pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
@@ -53,6 +57,8 @@ where
             ingestion_client,
             metadata_store_client,
             query_engine,
+            distributed_query_engine: None,
+            query_engine_v2_default: false,
             rule_book_observer,
         }
     }
