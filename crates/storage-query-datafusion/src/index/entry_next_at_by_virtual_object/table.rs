@@ -63,7 +63,7 @@ impl ScanLocalPartition for EntryNextAtByVirtualObjectScanner {
             + Sync
             + 'static,
     {
-        store.scan_entry_next_at_by_virtual_object(filter.range, &filter.predicate, f)
+        store.scan_entry_next_at_by_virtual_object(filter.range, &filter.predicate, filter.live, f)
     }
 
     fn append_row<'a>(

@@ -11,20 +11,15 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::physical_plan::PhysicalExpr;
-
 use restate_partition_store::index::EntryNextAtByStageKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
-use restate_storage_api::filter::Filter;
 use restate_storage_api::index::EntryNextAtByStage;
-use restate_types::sharding::KeyRange;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
-use crate::partition_store_scanner::{
-    LocalPartitionsScanner, ScanLocalPartition, ScanLocalPartitionFilter,
-};
+use crate::index::table::IndexFilter;
+use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
@@ -63,25 +58,11 @@ pub(crate) fn register_self(
 #[derive(Debug, Clone)]
 struct EntryNextAtByStageScanner;
 
-struct EntryNextAtByStageFilter {
-    range: KeyRange,
-    predicate: Filter<EntryNextAtByStage>,
-}
-
-impl ScanLocalPartitionFilter for EntryNextAtByStageFilter {
-    fn new(range: KeyRange, access_predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
-        Self {
-            range,
-            predicate: Filter::new(range, access_predicate),
-        }
-    }
-}
-
 impl ScanLocalPartition for EntryNextAtByStageScanner {
     type Builder = IdxEntryNextAtByStageBuilder;
     type Item<'a> = EntryNextAtByStageKeyView<'a>;
     type ConversionError = StorageError;
-    type Filter = EntryNextAtByStageFilter;
+    type Filter = IndexFilter<EntryNextAtByStage>;
 
     fn for_each_row<F>(
         partition_store: &PartitionStore,
@@ -94,7 +75,7 @@ impl ScanLocalPartition for EntryNextAtByStageScanner {
             + Sync
             + 'static,
     {
-        partition_store.scan_entry_next_at_by_stage(filter.range, &filter.predicate, f)
+        partition_store.scan_entry_next_at_by_stage(filter.range, &filter.predicate, filter.live, f)
     }
 
     fn append_row<'a>(

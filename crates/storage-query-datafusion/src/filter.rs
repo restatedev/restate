@@ -10,6 +10,8 @@
 
 mod typed;
 
+pub(crate) use typed::LivePredicate;
+
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
 use std::ops::RangeBounds;
