@@ -13,6 +13,7 @@ use bytes::{Buf, BufMut};
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{EntryKey, Stage};
+use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{self, EntryId, EntryKind, Seq, VQueueId};
 
 use crate::keys::{KeyDecode, KeyEncode};
@@ -103,9 +104,30 @@ impl KeyDecode for HasLock {
     }
 }
 
+impl KeyEncode for BaseEntryId {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(self.as_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        BaseEntryId::serialized_length_fixed()
+    }
+}
+
+impl KeyDecode for BaseEntryId {
+    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+        let mut dst = [0u8; BaseEntryId::serialized_length_fixed()];
+        source.copy_to_slice(&mut dst);
+        let by_ref =
+            BaseEntryId::try_from_bytes(&dst).map_err(|e| StorageError::Conversion(e.into()))?;
+
+        Ok(*by_ref)
+    }
+}
+
 impl KeyEncode for EntryId {
     fn encode<B: BufMut>(&self, target: &mut B) {
-        target.put_slice(&self.to_bytes());
+        target.put_slice(self.as_bytes());
     }
 
     fn serialized_length(&self) -> usize {
