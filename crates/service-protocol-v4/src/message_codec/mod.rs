@@ -340,6 +340,8 @@ gen_message!(
     ProposeRunCompletion Control allows_ack = 0x0005,
     AwaitingOn Control = 0x0006,
     ProposeRunCompletionAck Control = 0x0007,
+    GetStateEphemeralCommand Control = 0x0200,
+    GetStateEphemeralNotification Control = 0x0300,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,
@@ -427,5 +429,25 @@ impl Message {
 
     pub fn new_propose_run_completion_ack(completion_id: u32) -> Self {
         Self::ProposeRunCompletionAck(proto::ProposeRunCompletionAckMessage { completion_id })
+    }
+
+    /// Ephemeral notification completing [`proto::GetStateEphemeralCommandMessage`]. `None` value means the state is empty.
+    pub fn new_get_state_ephemeral_notification(
+        ephemeral_completion_id: u32,
+        value: Option<Bytes>,
+    ) -> Self {
+        Self::GetStateEphemeralNotification(proto::GetStateEphemeralNotificationMessage {
+            ephemeral_completion_id,
+            result: Some(match value {
+                None => {
+                    proto::get_state_ephemeral_notification_message::Result::Void(proto::Void {})
+                }
+                Some(content) => {
+                    proto::get_state_ephemeral_notification_message::Result::Value(proto::Value {
+                        content,
+                    })
+                }
+            }),
+        })
     }
 }
