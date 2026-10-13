@@ -31,6 +31,9 @@ pub(crate) fn append_vqueue_entry_status_row(
     if row.is_entry_id_defined() {
         row.fmt_entry_id(id);
     }
+    if row.is_canonical_id_defined() {
+        row.fmt_canonical_id(id.canonicalize(header.seq));
+    }
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(&header.qid);
     }
