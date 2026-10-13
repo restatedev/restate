@@ -908,6 +908,11 @@ experimental! {
     ///
     /// Since v1.8.1
     status_gauges_reset,
+
+    /// # [WIP] Secondary Indexes for vqueue entries
+    ///
+    /// Since v1.8.1
+    indexes_v1,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

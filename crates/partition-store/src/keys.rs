@@ -27,7 +27,7 @@ pub use codec::{
     EncodedOption, FieldDecoder, IndexFieldDecode, IndexFieldEncode, IndexFieldView,
     IntoIndexFieldRef,
 };
-
+pub use index::IndexKeyPrefix;
 pub use key_decoder::KeyDecoder;
 
 #[doc(hidden)]

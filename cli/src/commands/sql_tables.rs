@@ -146,16 +146,15 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "num_waiters", ty: "UInt64", description: "Number of vqueues currently waiting behind this counter." },
     ] },
     SqlTableDoc { name: "sys_virtual_object_stats", description: "Partition-local VQueue entry counts grouped by virtual-object dimensions, stage, and status.", columns: &[
-        SqlColumnDoc { name: "partition_id", ty: "UInt32", description: "Physical partition containing these virtual-object statistics." },
         SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Name of the virtual-object service whose entries are counted." },
-        SqlColumnDoc { name: "key", ty: "Utf8", description: "Key of the virtual object whose entries are counted." },
         SqlColumnDoc { name: "scope", ty: "Utf8", description: "Scope of the virtual object. NULL for unscoped virtual objects." },
+        SqlColumnDoc { name: "key", ty: "Utf8", description: "Key of the virtual object whose entries are counted." },
         SqlColumnDoc { name: "handler", ty: "Utf8", description: "Name of the handler. The handler is NULL for state mutations." },
         SqlColumnDoc { name: "kind", ty: "Utf8", description: "The kind of operation. One of `state-mutation` or `invocation`." },
-        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning virtual objects. Can be ignored." },
         SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage whose entries are counted. One of `inbox`, `running`, `suspended`, `paused`, or `finished`." },
         SqlColumnDoc { name: "status", ty: "Utf8", description: "The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`." },
         SqlColumnDoc { name: "num_entries", ty: "UInt64", description: "Number of entries in this partition-local stage/status bucket. Buckets with no entries are omitted." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning virtual objects. Can be ignored." },
     ] },
     SqlTableDoc { name: "sys_vqueue_entry_status", description: "Status of every vqueue entry. One row per entry (an invocation or a state mutation), with its stage, its attempts and how long it was blocked on each resource.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },
