@@ -34,7 +34,7 @@ restate-test-util = { workspace = true, optional = true }
 restate-tracing = { workspace = true }
 restate-util-time = { workspace = true, features = ["serde", "serde_with"] }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
-restate-util-string = { workspace = true, features = ["serde", "bilrost"] }
+restate-util-string = { workspace = true, features = ["serde", "bilrost", "mem-comparable"] }
 restate-utoipa = { workspace = true }
 
 adaptive-timeout = { workspace = true, features = ["serde"] }

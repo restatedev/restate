@@ -11,6 +11,7 @@
 use restate_sharding::KeyRange;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
+use restate_util_string::{EncodedMemCmpStr, encoded_mem_cmp_str};
 
 use super::RawStatusHeaderRef;
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
@@ -30,9 +31,16 @@ use crate::Result;
     PartialOrd,
     Ord,
     bilrost::Enumeration,
+    enum_map::Enum,
     strum::EnumCount,
     strum::FromRepr,
     strum::Display,
+    strum::VariantArray,
+    zerocopy::IntoBytes,
+    zerocopy::TryFromBytes,
+    zerocopy::KnownLayout,
+    zerocopy::Immutable,
+    zerocopy::Unaligned,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
@@ -58,9 +66,39 @@ pub enum Stage {
     #[bilrost(5)]
     Finished = b'f',
 }
+
 impl Stage {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Stage::Unknown => "unknown",
+            Stage::Inbox => "inbox",
+            Stage::Running => "running",
+            Stage::Suspended => "suspended",
+            Stage::Paused => "paused",
+            Stage::Finished => "finished",
+        }
+    }
+
+    pub const fn as_mem_cmp_str(self) -> &'static EncodedMemCmpStr {
+        match self {
+            Stage::Unknown => encoded_mem_cmp_str!("unknown"),
+            Stage::Inbox => encoded_mem_cmp_str!("inbox"),
+            Stage::Running => encoded_mem_cmp_str!("running"),
+            Stage::Suspended => encoded_mem_cmp_str!("suspended"),
+            Stage::Paused => encoded_mem_cmp_str!("paused"),
+            Stage::Finished => encoded_mem_cmp_str!("finished"),
+        }
+    }
+
+    pub fn from_mem_cmp_str(value: &EncodedMemCmpStr) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .find(|stage| value == stage.as_mem_cmp_str())
+            .copied()
     }
 }
 
