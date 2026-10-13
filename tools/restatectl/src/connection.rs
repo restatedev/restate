@@ -661,7 +661,7 @@ pub enum NodeOperationError {
 impl From<Status> for NodeOperationError {
     fn from(value: Status) -> Self {
         match value.code() {
-            Code::FailedPrecondition | Code::OutOfRange => {
+            Code::FailedPrecondition | Code::OutOfRange | Code::InvalidArgument => {
                 Self::Terminal(SimpleStatusWrapper::from(value))
             }
             _ => Self::RetryElsewhere(SimpleStatusWrapper::from(value)),

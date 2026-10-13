@@ -24,15 +24,17 @@ use tracing::info;
 
 use restate_bifrost::loglet::FindTailOptions;
 use restate_bifrost::{Bifrost, Error as BiforstError};
+use restate_core::network::{RpcError, RpcReplyError};
 use restate_core::protobuf::cluster_ctrl_svc::{
     ClusterStateRequest, ClusterStateResponse, CreatePartitionSnapshotRequest,
-    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse, FindTailRequest,
-    FindTailResponse, GetClusterConfigurationRequest, GetClusterConfigurationResponse,
-    ListLogsRequest, ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse,
-    QueryRequest, QueryResponse, QueryWarning, SealAndExtendChainRequest,
-    SealAndExtendChainResponse, SealChainRequest, SealChainResponse, SealedSegment,
-    SetClusterConfigurationRequest, SetClusterConfigurationResponse, SyncEpochMetadataRequest,
-    SyncEpochMetadataResponse, TailState, TrimLogRequest,
+    CreatePartitionSnapshotResponse, DescribeLogRequest, DescribeLogResponse,
+    DropPartitionStoreRequest, DropPartitionStoreResponse, FindTailRequest, FindTailResponse,
+    GetClusterConfigurationRequest, GetClusterConfigurationResponse, ListLogsRequest,
+    ListLogsResponse, MigrateMetadataRequest, MigrateMetadataResponse, QueryRequest, QueryResponse,
+    QueryWarning, SealAndExtendChainRequest, SealAndExtendChainResponse, SealChainRequest,
+    SealChainResponse, SealedSegment, SetClusterConfigurationRequest,
+    SetClusterConfigurationResponse, SyncEpochMetadataRequest, SyncEpochMetadataResponse,
+    TailState, TrimLogRequest,
     cluster_ctrl_svc_server::{ClusterCtrlSvc, ClusterCtrlSvcServer},
 };
 use restate_core::{Metadata, MetadataWriter};
@@ -49,17 +51,19 @@ use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata::{GlobalMetadata, Precondition};
 use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_types::net::partition_processor_manager::Snapshot;
+use restate_types::net::partition_processor_manager::{
+    DropPartitionStoreError, DropPartitionStoreOutcome, Snapshot,
+};
 use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partitions::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::cluster::ClusterConfiguration;
 use restate_types::schema::Schema;
 use restate_types::storage::{StorageCodec, StorageEncode};
-use restate_types::{PlainNodeId, Version, Versioned};
+use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
 use super::ClusterControllerHandle;
-use super::service::ChainExtension;
+use super::service::{ChainExtension, DropPartitionStoreRequestError};
 use crate::query_context::collect_query_headers;
 
 pub(crate) struct ClusterCtrlSvcHandler {
@@ -227,6 +231,42 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
                 snapshot_id: snapshot_id.to_string(),
                 log_id: log_id.into(),
                 min_applied_lsn: min_applied_lsn.as_u64(),
+            })),
+        }
+    }
+
+    /// Handles requests from `restatectl partition drop-store` to delete a single node's local
+    /// copy of a partition. Implemented as an RPC call to the targeted worker node.
+    async fn drop_partition_store(
+        &self,
+        request: Request<DropPartitionStoreRequest>,
+    ) -> Result<Response<DropPartitionStoreResponse>, Status> {
+        let request = request.into_inner();
+        let partition_id = PartitionId::from(
+            u16::try_from(request.partition_id)
+                .map_err(|id| Status::invalid_argument(format!("Invalid partition id: {id}")))?,
+        );
+        // the generation is irrelevant here: we target whichever generation of the node is
+        // currently alive
+        let node_id = NodeId::from(
+            request
+                .node_id
+                .ok_or_else(|| Status::invalid_argument("node_id is required"))?,
+        )
+        .id();
+
+        match self
+            .controller_handle
+            .drop_partition_store(partition_id, node_id, request.force)
+            .await
+            .map_err(|_| Status::unavailable("Node is shutting down"))?
+        {
+            Err(err) => {
+                info!("Failed to drop partition store: {err}");
+                Err(drop_partition_store_status(err))
+            }
+            Ok(outcome) => Ok(Response::new(DropPartitionStoreResponse {
+                dropped: matches!(outcome, DropPartitionStoreOutcome::Dropped),
             })),
         }
     }
@@ -609,6 +649,41 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
     }
 }
 
+fn drop_partition_store_status(error: DropPartitionStoreRequestError) -> Status {
+    match error {
+        DropPartitionStoreRequestError::NodeNotAlive(node_id) => Status::failed_precondition(
+            DropPartitionStoreRequestError::NodeNotAlive(node_id).to_string(),
+        ),
+        DropPartitionStoreRequestError::Worker { node_id, error } => {
+            let message = format!("{node_id} refused to drop its partition store: {error}");
+            match error {
+                DropPartitionStoreError::ProcessorRunning => Status::failed_precondition(message),
+                DropPartitionStoreError::DropInProgress => Status::aborted(message),
+                DropPartitionStoreError::UnknownPartition => Status::not_found(message),
+                DropPartitionStoreError::Internal(_) => Status::internal(message),
+            }
+        }
+        DropPartitionStoreRequestError::Rpc { node_id, error } => match error {
+            RpcError::Timeout(_) => Status::deadline_exceeded(format!(
+                "timed out requesting a partition store drop from {node_id}: {error}"
+            )),
+            RpcError::Receive(
+                RpcReplyError::ServiceNotFound | RpcReplyError::MessageUnrecognized,
+            ) => Status::unimplemented(format!(
+                "{node_id} does not support dropping partition stores: {error}"
+            )),
+            RpcError::Receive(ref reply_error) if reply_error.maybe_processed() => Status::unknown(
+                format!("the partition store drop outcome on {node_id} is unknown: {error}"),
+            ),
+            RpcError::ConnectionClosed(_) | RpcError::Send(_) | RpcError::Receive(_) => {
+                Status::unavailable(format!(
+                    "failed to request a partition store drop from {node_id}: {error}"
+                ))
+            }
+        },
+    }
+}
+
 fn serialize_value<T: StorageEncode>(value: &T) -> Bytes {
     let mut buf = BytesMut::new();
     StorageCodec::encode(value, &mut buf).expect("We can always serialize");
@@ -695,5 +770,48 @@ fn df_error_to_status(err: DataFusionError) -> Status {
         | DataFusionError::Execution(..)
         | DataFusionError::SchemaError(..) => Status::invalid_argument(err.to_string()),
         _ => Status::internal(err.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod drop_partition_store_tests {
+    use super::*;
+
+    #[test]
+    fn maps_drop_partition_store_errors_to_grpc_statuses() {
+        let node_id = PlainNodeId::from(1).with_generation(1);
+
+        for (error, expected_code) in [
+            (
+                DropPartitionStoreError::ProcessorRunning,
+                tonic::Code::FailedPrecondition,
+            ),
+            (
+                DropPartitionStoreError::DropInProgress,
+                tonic::Code::Aborted,
+            ),
+            (
+                DropPartitionStoreError::UnknownPartition,
+                tonic::Code::NotFound,
+            ),
+            (
+                DropPartitionStoreError::Internal("failed".to_owned()),
+                tonic::Code::Internal,
+            ),
+        ] {
+            let status = drop_partition_store_status(DropPartitionStoreRequestError::Worker {
+                node_id,
+                error,
+            });
+            assert_eq!(status.code(), expected_code);
+        }
+
+        assert_eq!(
+            drop_partition_store_status(DropPartitionStoreRequestError::NodeNotAlive(
+                node_id.as_plain(),
+            ))
+            .code(),
+            tonic::Code::FailedPrecondition
+        );
     }
 }
