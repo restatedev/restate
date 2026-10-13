@@ -90,6 +90,12 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
         return segments;
     }
 
+    // TODO: Color index fields once their layouts are defined. Do not interpret
+    // the index header as the standard eight-byte partition header.
+    if key_kind == KeyKind::SecondaryIndex {
+        return segments;
+    }
+
     if key.len() < 10 {
         return segments;
     }
@@ -498,7 +504,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
-        KeyKind::Stats => {
+        KeyKind::Stats | KeyKind::SecondaryIndex => {
             unreachable!("handled before the standard partition header")
         }
     }
