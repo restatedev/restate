@@ -830,6 +830,22 @@ pub struct StorageOptions {
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
     pub always_commit_in_background: bool,
 
+    /// # Enable block-cache filling for low-priority scans
+    ///
+    /// Allows low-priority partition-store iterators, including query scans, to populate the
+    /// RocksDB block cache. Disabled by default to avoid evicting frequently accessed data.
+    /// Cached blocks can still be read when this is disabled. Explicit per-scan cache bypasses
+    /// take precedence when this is enabled.
+    ///
+    /// Changes apply to newly started iterators.
+    ///
+    /// [Supports configuration hot-reloading]
+    ///
+    /// Since v1.8.0
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub rocksdb_enable_low_priority_cache_fill: bool,
+
     /// # Enable L6 filters
     ///
     /// Build Ribbon filters for L6 SST files to avoid unnecessary reads for missing keys.
@@ -1136,6 +1152,7 @@ impl Default for StorageOptions {
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
             always_commit_in_background: false,
+            rocksdb_enable_low_priority_cache_fill: false,
             rocksdb_enable_l6_filters: false,
             rocksdb_disable_whole_key_filtering: false,
             rocksdb_disable_compact_on_deletion: false,
