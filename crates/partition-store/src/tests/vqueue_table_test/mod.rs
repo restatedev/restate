@@ -612,7 +612,8 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
     {
         let mut txn = rocksdb.transaction();
         for index in 0..NUM_PRESENT_IDS {
-            let entry_id = entry_id_from_u64(index);
+            // Invocation UUIDs must be non-zero, including the first fixture.
+            let entry_id = entry_id_from_u64(index + 1);
             let entry_key = EntryKey::new(false, test_run_at(index), index, entry_id);
             let stats = EntryStatistics::new(
                 UniqueTimestamp::try_from(10_000u64 + index).unwrap(),

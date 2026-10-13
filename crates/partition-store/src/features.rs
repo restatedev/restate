@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod aggregated_status_stats;
+mod indexes_v1;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -96,6 +97,13 @@ storage_features! {
     ///
     /// Since v1.8.1
     pub TrackStatusGauges,
+
+    /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment
+    /// statistics during entries' lifecycle. Additionally, this enables a new set of
+    /// secondary indexes for invocations and vqueues.
+    ///
+    /// Since v1.8.1
+    pub IndexesV1,
 }
 
 trait StorageFeature: Sized + 'static {

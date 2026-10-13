@@ -9,20 +9,17 @@
 // by the Apache License, Version 2.0.
 
 use restate_partition_store::stats::aggregated::{StageStatusCounts, VirtualObjectLoadKey};
-use restate_types::sharding::PartitionId;
 
 use super::schema::SysVirtualObjectStatsBuilder;
 
 #[inline]
 pub(crate) fn append_virtual_object_stats_row(
     builder: &mut SysVirtualObjectStatsBuilder,
-    partition_id: PartitionId,
     key: VirtualObjectLoadKey,
     counts: StageStatusCounts,
 ) {
     for (bucket, value) in counts.iter() {
         let mut row = builder.row();
-        row.partition_id(partition_id.into());
         if row.is_service_name_defined() {
             row.fmt_service_name(&key.service_name);
         }
