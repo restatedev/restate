@@ -339,8 +339,13 @@ impl PartitionStore {
         self.db.partition().key_range.contains(&key)
     }
 
+    // NOTE: This will be removed in lieu of cf_for_key_kind in later changes.
     pub(crate) fn table_handle(&self, table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
         self.db.table_cf_handle(table_kind)
+    }
+
+    pub(crate) fn cf_for_key_kind(&self, key_kind: KeyKind) -> &Arc<BoundColumnFamily<'_>> {
+        self.db.cf_handle_for_key_kind(key_kind)
     }
 
     /// Writes local state that cannot be reconstructed from Bifrost through RocksDB's WAL.
@@ -353,7 +358,7 @@ impl PartitionStore {
         key.serialize_to(key_buffer);
         let key_buffer = key_buffer.split();
 
-        let table = self.table_handle(K::TABLE);
+        let table = self.cf_for_key_kind(K::KEY_KIND);
         let mut opts = rocksdb::WriteOptions::default();
         opts.disable_wal(false);
         self.db
@@ -499,8 +504,7 @@ impl PartitionStore {
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
         match scan {
-            PhysicalScan::Prefix(table, prefix) => {
-                assert!(table.has_key_kind(&prefix));
+            PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 self.db.rocksdb().clone().run_background_iterator(
                     // todo(asoli): Pass an owned cf handle instead of name
@@ -512,8 +516,7 @@ impl PartitionStore {
                     on_iter,
                 )?;
             }
-            PhysicalScan::RangeExclusive(table, scan_mode, start, end) => {
-                assert!(table.has_key_kind(&start));
+            PhysicalScan::RangeExclusive(_key_kind, scan_mode, start, end) => {
                 configure_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
                     self.db.partition().cf_name().as_ref().into(),
@@ -959,7 +962,7 @@ pub struct PartitionStoreTransaction<'a> {
     settings: TransactionSettings,
 }
 
-impl PartitionStoreTransaction<'_> {
+impl<'a> PartitionStoreTransaction<'a> {
     pub(crate) fn settings(&self) -> &TransactionSettings {
         &self.settings
     }
@@ -986,27 +989,29 @@ impl PartitionStoreTransaction<'_> {
     #[inline]
     pub fn raw_put_cf(
         &mut self,
-        _key_kind: KeyKind,
+        key_kind: KeyKind,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) {
+        let cf = self.cf_for_key_kind(key_kind);
         self.write_batch_with_index
             .as_mut()
             .expect("transaction valid")
-            .put_cf(self.data_cf_handle, key, value);
+            .put_cf(cf, key, value);
     }
 
     #[inline]
     pub fn raw_merge_cf(
         &mut self,
-        _key_kind: KeyKind,
+        key_kind: KeyKind,
         key: impl AsRef<[u8]>,
         value: impl AsRef<[u8]>,
     ) {
+        let cf = self.cf_for_key_kind(key_kind);
         self.write_batch_with_index
             .as_mut()
             .expect("transaction valid")
-            .merge_cf(self.data_cf_handle, key, value);
+            .merge_cf(cf, key, value);
     }
 
     #[inline]
@@ -1025,7 +1030,12 @@ impl PartitionStoreTransaction<'_> {
             .single_delete_cf(self.data_cf_handle, key);
     }
 
-    pub(crate) fn table_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
+    pub(crate) fn cf_handle(&self, _table_kind: TableKind) -> &'a Arc<BoundColumnFamily<'a>> {
+        // Right now, everything is in one cf, return a reference and save CPU.
+        self.data_cf_handle
+    }
+
+    pub(crate) fn cf_for_key_kind(&self, _key_kind: KeyKind) -> &'a Arc<BoundColumnFamily<'a>> {
         // Right now, everything is in one cf, return a reference and save CPU.
         self.data_cf_handle
     }
@@ -1115,30 +1125,29 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
         scan: TableScan<K>,
     ) -> Result<DBRawIteratorWithThreadMode<'_, Self::DBAccess<'_>>> {
         let scan: PhysicalScan<Bytes> = scan.into();
-        let (table, start, opts) = match scan {
-            PhysicalScan::Prefix(table, prefix) => {
+        let (cf, start, opts) = match scan {
+            PhysicalScan::Prefix(key_kind, prefix) => {
                 let mut opts = self.read_options();
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
-                (table, prefix, opts)
+                (self.cf_for_key_kind(key_kind), prefix, opts)
             }
-            PhysicalScan::RangeExclusive(table, scan_mode, start, end) => {
+            PhysicalScan::RangeExclusive(key_kind, scan_mode, start, end) => {
                 let mut opts = self.read_options();
                 configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end);
-                (table, start, opts)
+                (self.cf_for_key_kind(key_kind), start, opts)
             }
         };
 
-        let table = self.table_handle(table);
         let base = self
             .rocksdb
             .inner()
             .as_raw_db()
-            .raw_iterator_cf_opt(table, opts);
+            .raw_iterator_cf_opt(cf, opts);
         let mut iterator = self
             .write_batch_with_index
             .as_ref()
             .expect("transaction valid")
-            .iterator_with_base_cf(base, table);
+            .iterator_with_base_cf(base, cf);
         iterator.seek(start);
         Ok(iterator)
     }
@@ -1159,7 +1168,7 @@ impl StorageAccess for PartitionStoreTransaction<'_> {
 
     #[inline]
     fn get<K: AsRef<[u8]>>(&self, table: TableKind, key: K) -> Result<Option<DBPinnableSlice<'_>>> {
-        let table = self.table_handle(table);
+        let table = self.cf_handle(table);
         self.write_batch_with_index
             .as_ref()
             .expect("transaction valid")
