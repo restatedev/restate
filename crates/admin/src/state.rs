@@ -15,7 +15,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_storage_query_datafusion::context::QueryContext;
+use restate_storage_query_api::{AdminUser, QueryEngine};
 use restate_types::schema::registry::SchemaRegistry;
 use restate_wal_protocol::v2::{Envelope, Raw};
 
@@ -28,8 +28,7 @@ pub struct AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transp
     /// Used by handlers that mutate cluster-global metadata-store keys
     /// directly (e.g. the rule book) via `read_modify_write`.
     pub metadata_store_client: MetadataStoreClient,
-    // Some value if the query endpoint is activated
-    pub query_context: Option<QueryContext>,
+    pub query_engine: Arc<dyn QueryEngine<AdminUser>>,
     pub rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
 
@@ -44,7 +43,7 @@ where
         invocation_client: Invocations,
         ingestion_client: IngestionClient<Transport, Envelope<Raw>>,
         metadata_store_client: MetadataStoreClient,
-        query_context: Option<QueryContext>,
+        query_engine: Arc<dyn QueryEngine<AdminUser>>,
         rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Self {
         Self {
@@ -53,7 +52,7 @@ where
             invocation_client,
             ingestion_client,
             metadata_store_client,
-            query_context,
+            query_engine,
             rule_book_observer,
         }
     }

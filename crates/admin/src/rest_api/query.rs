@@ -31,10 +31,13 @@ use serde::Serialize;
 
 use restate_admin_rest_model::query::QueryRequest;
 use restate_core::network::TransportConnect;
+use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
+use restate_storage_query_api::{
+    QueryOptions, RecordBatchWriter, SessionOptions, WriteRecordBatchStream,
+};
 use restate_types::invocation::client::InvocationClient;
 use restate_types::schema::registry::{DiscoveryClient, MetadataService, TelemetryClient};
 
-use crate::query_utils::{RecordBatchWriter, WriteRecordBatchStream};
 use crate::state::AdminServiceState;
 
 const RETRY_AFTER_HEADER: &str = "Retry-After";
@@ -48,23 +51,30 @@ struct QueryErrorBody {
 /// Errors that can occur when executing a query.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum QueryError {
-    #[error("Datafusion error: {0}")]
+    #[error(transparent)]
     Datafusion(#[from] datafusion::error::DataFusionError),
     #[error("Query service not available")]
     Unavailable,
     #[error("Rate limited")]
     RateLimited(#[from] gardal::RateLimited),
+    #[error("Session initialization error: {0}")]
+    SessionInitialization(datafusion::error::DataFusionError),
 }
 
-impl From<restate_storage_query_datafusion::context::QueryError> for QueryError {
-    fn from(err: restate_storage_query_datafusion::context::QueryError) -> Self {
+impl From<QueryExecutionError> for QueryError {
+    fn from(err: QueryExecutionError) -> Self {
         match err {
-            restate_storage_query_datafusion::context::QueryError::DataFusion(e) => {
-                Self::Datafusion(e)
-            }
-            restate_storage_query_datafusion::context::QueryError::RateLimited(e) => {
-                Self::RateLimited(e)
-            }
+            QueryExecutionError::DataFusion(e) => Self::Datafusion(e),
+        }
+    }
+}
+
+impl From<SessionError> for QueryError {
+    fn from(err: SessionError) -> Self {
+        match err {
+            SessionError::EngineDisabled => Self::Unavailable,
+            SessionError::RateLimited(e) => Self::RateLimited(e),
+            SessionError::DataFusion(e) => Self::SessionInitialization(e),
         }
     }
 }
@@ -78,7 +88,9 @@ impl IntoResponse for QueryError {
             | QueryError::Datafusion(datafusion::error::DataFusionError::SQL(_, _)) => {
                 StatusCode::BAD_REQUEST
             }
-            QueryError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Datafusion(_) | QueryError::SessionInitialization(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             QueryError::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
             QueryError::RateLimited(e) => {
                 headers.insert(
@@ -112,7 +124,8 @@ impl IntoResponse for QueryError {
                 ("application/vnd.apache.arrow.stream"),
                 ("application/json", example = json!({"rows": []}))
             )),
-        (status = 500, description = "Datafusion error", body = QueryErrorBody),
+        (status = 400, description = "Error during planning: table 'mytable' not found", body = QueryErrorBody),
+        (status = 500, description = "Internal query error", body = QueryErrorBody),
         (status = 503, description = "Query service not available", body = QueryErrorBody),
     )
 )]
@@ -128,11 +141,11 @@ where
     Invocations: InvocationClient + Send + Sync + Clone + 'static,
     Transport: TransportConnect,
 {
-    let Some(query_context) = state.query_context.as_ref() else {
-        return Err(QueryError::Unavailable);
-    };
+    let session = state
+        .query_engine
+        .create_session(SessionOptions::default())?;
 
-    let query_result = query_context.execute(&payload.query).await?;
+    let query_result = session.execute(&payload.query, QueryOptions {}).await?;
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (

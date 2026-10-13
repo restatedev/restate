@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -22,14 +23,13 @@ use restate_types::identifiers::ServiceRevision;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 
 use super::schema::SysDeploymentBuilder;
-use crate::context::QueryContext;
 use crate::deployment::row::append_deployment_row;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
 ) -> datafusion::common::Result<()> {
     let schema = SysDeploymentBuilder::schema();
@@ -41,7 +41,8 @@ pub(crate) fn register_self(
         Arc::new(DeploymentMetadataScanner(resolver)),
     )
     .with_statistics(statistics.build());
-    ctx.register_non_partitioned_table("sys_deployment", Arc::new(deployment_table))
+    ctx.register_table("sys_deployment", Arc::new(deployment_table))
+        .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

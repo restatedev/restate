@@ -48,6 +48,17 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
+datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-csv = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-json = { version = "55", default-features = false, features = ["proto"] }
+datafusion-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection", "sql"] }
+datafusion-functions-nested = { version = "55", default-features = false, features = ["sql"] }
+datafusion-physical-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection"] }
+datafusion-physical-expr-common = { version = "55", default-features = false, features = ["proto"] }
+datafusion-physical-plan = { version = "55", default-features = false, features = ["proto"] }
 deranged = { version = "0.5", features = ["serde"] }
 derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "std"] }
@@ -189,6 +200,17 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
+datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-csv = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-json = { version = "55", default-features = false, features = ["proto"] }
+datafusion-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection", "sql"] }
+datafusion-functions-nested = { version = "55", default-features = false, features = ["sql"] }
+datafusion-physical-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection"] }
+datafusion-physical-expr-common = { version = "55", default-features = false, features = ["proto"] }
+datafusion-physical-plan = { version = "55", default-features = false, features = ["proto"] }
 deranged = { version = "0.5", features = ["serde"] }
 derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }

@@ -18,7 +18,7 @@ use restate_types::journal_v2::{CommandIndex, NotificationId};
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::ReString;
-use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
+use restate_worker_api::invoker::InvocationStatusReport;
 use restate_worker_api::resources::ReservedResources;
 // -- Input messages
 
@@ -146,23 +146,41 @@ pub struct ChannelStatusReader(
     >,
 );
 
-impl StatusHandle for ChannelStatusReader {
-    type Iterator = itertools::Either<
-        std::iter::Empty<InvocationStatusReport>,
-        std::vec::IntoIter<InvocationStatusReport>,
-    >;
-
-    async fn read_status(&self, keys: KeyRange) -> Self::Iterator {
+impl ChannelStatusReader {
+    /// Reads live status without converting a stopped invoker into an empty result.
+    pub async fn try_read_status(
+        &self,
+        keys: KeyRange,
+    ) -> Result<Vec<InvocationStatusReport>, NotRunningError> {
         let (cmd, rx) = restate_futures_util::command::Command::prepare(keys);
-        if self.0.send(cmd).is_err() {
-            return itertools::Either::Left(std::iter::empty::<InvocationStatusReport>());
-        }
+        self.0.send(cmd).map_err(|_| NotRunningError)?;
+        let mut statuses = rx.await.map_err(|_| NotRunningError)?;
+        statuses.sort_by(|a, b| a.invocation_id().cmp(b.invocation_id()));
+        Ok(statuses)
+    }
+}
 
-        if let Ok(mut status_vec) = rx.await {
-            status_vec.sort_by(|a, b| a.invocation_id().cmp(b.invocation_id()));
-            itertools::Either::Right(status_vec.into_iter())
-        } else {
-            itertools::Either::Left(std::iter::empty::<InvocationStatusReport>())
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn status_reader_distinguishes_empty_from_unavailable() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let reader = ChannelStatusReader(tx);
+        let read = reader.try_read_status(KeyRange::FULL);
+        let respond = async {
+            rx.recv().await.unwrap().reply(Vec::new()).unwrap();
+        };
+        let (rows, ()) = tokio::join!(read, respond);
+        assert!(rows.unwrap().is_empty());
+        let read = reader.try_read_status(KeyRange::FULL);
+        let abandon = async {
+            drop(rx.recv().await.unwrap());
+        };
+        let (rows, ()) = tokio::join!(read, abandon);
+        assert!(rows.is_err());
+        drop(rx);
+        assert!(reader.try_read_status(KeyRange::FULL).await.is_err());
     }
 }

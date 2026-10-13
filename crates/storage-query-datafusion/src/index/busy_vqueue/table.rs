@@ -11,6 +11,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
 use enum_map::EnumMap;
 
 use restate_partition_store::index::BusyVQueueKeyView;
@@ -21,7 +22,7 @@ use restate_storage_api::index::BusyVQueue;
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::vqueues::VQueueId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::index::table::{IndexFilter, register};
 use crate::partition_store_scanner::ScanLocalPartition;
@@ -29,22 +30,29 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 use super::schema::IdxBusyVqueueBuilder;
 
+const NAME: &str = "_idx_busy_vqueue";
+
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     selector: impl SelectPartitions,
-    manager: Arc<PartitionStoreManager>,
     remote: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    register::<BusyVQueueScanner>(
+    register(
         ctx,
         selector,
-        manager,
         remote,
-        "_idx_busy_vqueue",
+        NAME,
         IdxBusyVqueueBuilder::schema(),
         FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
             .with_grouped_partitioned_resource_id::<VQueueId>("vqueue_id"),
     )
+}
+
+pub(crate) fn register_local_scanner(
+    manager: Arc<PartitionStoreManager>,
+    remote: &RemoteScannerManager,
+) {
+    crate::index::table::register_local_scanner::<BusyVQueueScanner>(manager, remote, NAME);
 }
 
 #[derive(Debug, Clone, Default)]

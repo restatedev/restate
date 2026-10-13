@@ -44,27 +44,16 @@ use datafusion::physical_plan::{
 use futures::{Stream, StreamExt};
 
 use restate_core::Metadata;
+use restate_storage_query_api::{NodeWarning, NodeWarnings};
 use restate_types::identifiers::PartitionId;
 use restate_types::nodes_config::Role;
 use restate_types::sharding::KeyRange;
 use restate_types::{NodeId, PlainNodeId};
+use restate_util_string::{ReString, ToReString};
 
 use crate::remote_query_scanner_client::remote_scan_as_datafusion_stream;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{MeteredStream, ProjectedColumns, Scan};
-
-/// A warning collected from a node that failed during query execution.
-#[derive(Debug, Clone)]
-pub struct NodeWarning {
-    pub node_id: String,
-    pub message: String,
-}
-
-/// Shared collection of per-node warnings accumulated during fan-out execution.
-///
-/// Each partition (node) stream that encounters an error will push a warning
-/// here instead of propagating the error through DataFusion.
-pub type NodeWarnings = Arc<Mutex<Vec<NodeWarning>>>;
 
 /// Determines the set of target nodes for a fan-out query.
 pub(crate) trait NodeLocator: Send + Sync + Debug + 'static {
@@ -483,7 +472,7 @@ impl ExecutionPlan for NodeFanOutExecutionPlan {
 
         Ok(Box::pin(ErrorCatchingStream::new(
             inner,
-            node_label,
+            node_label.into(),
             self.node_warnings.clone(),
         )))
     }
@@ -554,13 +543,13 @@ impl Display for NodeList<'_> {
 /// instead of propagating the error through DataFusion.
 struct ErrorCatchingStream {
     inner: SendableRecordBatchStream,
-    node_label: String,
+    node_label: ReString,
     warnings: NodeWarnings,
     done: bool,
 }
 
 impl ErrorCatchingStream {
-    fn new(inner: SendableRecordBatchStream, node_label: String, warnings: NodeWarnings) -> Self {
+    fn new(inner: SendableRecordBatchStream, node_label: ReString, warnings: NodeWarnings) -> Self {
         Self {
             inner,
             node_label,
@@ -583,7 +572,7 @@ impl Stream for ErrorCatchingStream {
                 self.done = true;
                 self.warnings.lock().push(NodeWarning {
                     node_id: self.node_label.clone(),
-                    message: err.to_string(),
+                    message: err.to_restring(),
                 });
                 // Terminate this partition's stream gracefully
                 Poll::Ready(None)

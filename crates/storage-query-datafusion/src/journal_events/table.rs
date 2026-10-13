@@ -11,6 +11,8 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::journal_events::{
@@ -18,7 +20,7 @@ use restate_storage_api::journal_events::{
 };
 use restate_types::identifiers::InvocationId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::filter::InvocationIdFilter;
 use crate::journal_events::row::append_journal_event_row;
@@ -30,24 +32,31 @@ use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 const NAME: &str = "sys_journal_events";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        JournalEventsScanner,
-    )) as Arc<dyn ScanPartition>;
-
     let journal_events_table = PartitionedTableProvider::new(
         partition_selector,
         SysJournalEventsBuilder::schema(),
         sys_journal_events_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::default().with_invocation_id("id"),
     );
-    ctx.register_partitioned_table(NAME, Arc::new(journal_events_table))
+    ctx.register_table(NAME, Arc::new(journal_events_table))
+        .map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        JournalEventsScanner,
+    )) as Arc<dyn ScanPartition>;
+
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]

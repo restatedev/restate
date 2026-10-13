@@ -1,0 +1,29 @@
+[package]
+name = "restate-storage-query-api"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-platform = { workspace = true }
+restate-util-string = { workspace = true }
+
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+bytes = { workspace = true }
+datafusion = { workspace = true }
+futures = { workspace = true }
+gardal = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true
