@@ -9,30 +9,43 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::{BTreeSet, HashMap};
+use std::ops::RangeBounds;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
+use bytes::Bytes;
 use datafusion::arrow::array::{RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SendableRecordBatchStream;
-use datafusion::physical_plan::PhysicalExpr;
+use datafusion::physical_plan::displayable;
+use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::Time;
+use datafusion::physical_plan::sorts::sort::SortExec;
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr};
+use datafusion::prelude::SessionContext;
+use datafusion_distributed::{NetworkBoundary, NetworkCoalesceExec, Stage};
 use futures::{FutureExt, StreamExt, TryStreamExt, stream};
+use tokio::time::Instant;
 
 use restate_core::network::NetworkSender;
 use restate_core::network::transport_connector::test_util::MockConnector;
 use restate_core::partitions::PartitionRouting;
 use restate_core::test_env::{TestCoreEnv, TestCoreEnvBuilder, create_mock_nodes_config};
 use restate_core::{Metadata, TaskCenter, TaskKind};
+use restate_memory::ByteCount;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_platform::sync::Mutex;
 use restate_rocksdb::RocksDbManager;
+use restate_storage_api::Transaction;
+use restate_storage_api::state_table::WriteStateTable;
 use restate_storage_query_api::{
-    AdminUser, QueryEngine, QueryEngineTable, QueryOptions, SessionOptions, SessionTable,
+    AdminUser, QueryEngine, QueryEngineTable, QueryOptions, QuerySession, SessionOptions,
+    SessionTable,
 };
-use restate_types::identifiers::{LeaderEpoch, PartitionId};
+use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceId, WithPartitionKey};
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::{Partition, PartitionTable};
 use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
@@ -41,6 +54,7 @@ use restate_types::{GenerationalNodeId, Version};
 use restate_util_string::ReString;
 
 use crate::context::{DataFusionQueryEngine, SelectPartitions};
+use crate::invocation_status::schema::SysInvocationStatusTable;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider, RoleBasedNodeLocator};
 use crate::placement::{PartitionPlacement, StoragePlacementOptions};
 use crate::query_correctness::run_distributed_state_corpus;
@@ -326,11 +340,25 @@ async fn setup() -> MultiFixture<impl NetworkSender> {
 
 impl<N: NetworkSender> MultiFixture<N> {
     fn engine(&self, parallelism: usize) -> Arc<dyn QueryEngine<AdminUser>> {
-        let env = environment(parallelism, 2)
+        self.engine_with_pushdown(parallelism, 2, true)
+    }
+
+    fn engine_with_pushdown(
+        &self,
+        parallelism: usize,
+        batch_size: usize,
+        pushdown: bool,
+    ) -> Arc<dyn QueryEngine<AdminUser>> {
+        let env = environment(parallelism, batch_size)
             .with_storage_placement(StoragePlacementOptions {
                 require_leader: true,
             })
             .with_distributed_execution(self.network.clone());
+        let env = if pushdown {
+            env
+        } else {
+            env.without_distributed_operator_pushdown()
+        };
         env.register_table::<StateTable>(StateTable::create_provider(
             self.partitions.clone(),
             &self.scanners,
@@ -373,9 +401,25 @@ impl<N: NetworkSender> MultiFixture<N> {
 #[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
 async fn multi_owner_coverage_and_scoped_selection() {
     let mut fixture = setup().await;
-    for parallelism in [1, 2, 4] {
+    for parallelism in [1, 2, 4, 48] {
         let engine = fixture.engine(parallelism);
-        let metadata = run_distributed_state_corpus(&mut fixture.stores, engine.as_ref()).await;
+        let metadata = run_distributed_state_corpus(&mut fixture.stores, engine.as_ref())
+            .await
+            .unwrap_or_else(|error| {
+                let tasks = fixture.tasks.lock();
+                if let Some(last) = tasks.last() {
+                    for task in tasks.iter().filter(|task| {
+                        task.id.query_ts == last.id.query_ts
+                            && task.id.session_id == last.id.session_id
+                    }) {
+                        eprintln!(
+                            "parallelism={parallelism} owner={} task={}\n{}",
+                            task.owner, task.id.task, task.plan
+                        );
+                    }
+                }
+                panic!("{error}")
+            });
         let tasks = fixture.tasks.lock();
         let count_tasks: Vec<_> = tasks
             .iter()
@@ -575,6 +619,21 @@ async fn multi_owner_coverage_and_scoped_selection() {
         warnings[0].message
     );
 
+    let result = session
+        .execute(
+            "SELECT COUNT(*) FROM state CROSS JOIN node_rows",
+            QueryOptions {},
+        )
+        .await
+        .unwrap();
+    let diagnostics = result.diagnostics;
+    let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+    assert_eq!(
+        array_value_to_string(batches[0].column(0), 0).unwrap(),
+        "27"
+    );
+    assert!(diagnostics.warnings().is_empty());
+
     // Change observed ownership after selection. Execution must validate the
     // serialized placement contract rather than forward or silently omit work.
     let result = session
@@ -593,4 +652,327 @@ async fn multi_owner_coverage_and_scoped_selection() {
         error.to_string().contains("storage ownership changed"),
         "{error}"
     );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stage_budgets_cover_sorts_aggregates_and_joins() {
+    let fixture = setup().await;
+    let env = environment(48, 128).with_distributed_execution(fixture.network.clone());
+    let ctx = SessionContext::new_with_state(env.build_session_state().unwrap());
+    ctx.register_table(
+        "sys_invocation_status",
+        SysInvocationStatusTable::create_provider(fixture.partitions.clone(), &fixture.scanners),
+    )
+    .unwrap();
+
+    for (sql, expected_stages, expected_lanes, owner_operator) in [
+        (
+            "SELECT status, modified_at FROM sys_invocation_status WHERE partition_key > 0 ORDER BY modified_at DESC",
+            3,
+            8,
+            "SortExec",
+        ),
+        (
+            "SELECT status, modified_at FROM sys_invocation_status WHERE partition_key > 11529215046068469760 ORDER BY modified_at DESC",
+            3,
+            3,
+            "SortExec",
+        ),
+        (
+            "SELECT status, modified_at FROM sys_invocation_status WHERE partition_key > 0 ORDER BY modified_at DESC LIMIT 10 OFFSET 2",
+            3,
+            8,
+            "SortExec",
+        ),
+        (
+            "SELECT status, COUNT(*) FROM sys_invocation_status GROUP BY status",
+            3,
+            8,
+            "AggregateExec",
+        ),
+        (
+            "SELECT a.id FROM sys_invocation_status a JOIN sys_invocation_status b ON a.id = b.id",
+            6,
+            16,
+            "StorageScanExec",
+        ),
+        (
+            "SELECT status, COUNT(*) AS n FROM sys_invocation_status GROUP BY status UNION ALL SELECT status, COUNT(*) AS n FROM sys_invocation_status GROUP BY status",
+            6,
+            16,
+            "AggregateExec",
+        ),
+    ] {
+        let plan = ctx
+            .sql(sql)
+            .await
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let text = displayable(plan.as_ref()).indent(false).to_string();
+        eprintln!("stage_budget sql={sql}\n{text}");
+        let mut stages = 0;
+        let mut inputs = 0;
+        plan.apply(|node| {
+            let Some(boundary) = node.downcast_ref::<NetworkCoalesceExec>() else {
+                return Ok(TreeNodeRecursion::Continue);
+            };
+            let Stage::Local(stage) = boundary.input_stage() else {
+                panic!("expected owner stage");
+            };
+            stages += 1;
+            inputs += node.output_partitioning().partition_count();
+            let mut source_lanes = 0;
+            stage.plan.apply(|node| {
+                if node.is::<super::SourceExec>() {
+                    source_lanes += node.output_partitioning().partition_count();
+                }
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+            let mut found_operator = false;
+            stage.plan.apply(|node| {
+                assert!(
+                    node.output_partitioning().partition_count() <= source_lanes,
+                    "{text}"
+                );
+                found_operator |= if owner_operator == "SortExec" {
+                    node.is::<SortExec>()
+                } else {
+                    node.name() == owner_operator
+                };
+                Ok(TreeNodeRecursion::Continue)
+            })?;
+            assert!(
+                found_operator,
+                "missing owner-local {owner_operator}: {text}"
+            );
+            assert_eq!(
+                node.output_partitioning().partition_count(),
+                source_lanes,
+                "{text}"
+            );
+            Ok(TreeNodeRecursion::Jump)
+        })
+        .unwrap();
+        assert_eq!(stages, expected_stages, "{text}");
+        assert_eq!(inputs, expected_lanes, "{text}");
+        plan.apply(|node| {
+            if node.is::<NetworkCoalesceExec>() {
+                return Ok(TreeNodeRecursion::Jump);
+            }
+            assert!(
+                node.output_partitioning().partition_count() <= inputs,
+                "{text}"
+            );
+            assert!(!node.is::<SortExec>(), "sort should run at owners: {text}");
+            if let Some(join) = node.downcast_ref::<HashJoinExec>() {
+                assert_eq!(join.partition_mode(), &PartitionMode::Partitioned);
+                assert_eq!(
+                    join.left().output_partitioning().partition_count(),
+                    join.right().output_partitioning().partition_count(),
+                    "{text}"
+                );
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    }
+    assert!(
+        fixture.tasks.lock().is_empty(),
+        "planning must not dispatch"
+    );
+}
+
+#[derive(Debug)]
+struct Measurement {
+    elapsed_us: u128,
+    scans: usize,
+    storage_rows: usize,
+    transported_rows: usize,
+    ipc: ByteCount,
+    remote_ipc: ByteCount,
+}
+
+async fn measure(
+    fixture: &MultiFixture<impl NetworkSender>,
+    session: &dyn QuerySession<AdminUser>,
+    sql: &str,
+    expected: &[Vec<String>],
+    pushdown: bool,
+    aggregation: bool,
+) -> Measurement {
+    *fixture.reads.lock() = Reads::default();
+    let start = Instant::now();
+    let result = session.execute(sql, QueryOptions {}).await.unwrap();
+    let metadata = result.metadata;
+    let diagnostics = result.diagnostics;
+    let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+    let elapsed_us = start.elapsed().as_micros();
+    let rows: Vec<_> = batches
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| {
+                batch
+                    .columns()
+                    .iter()
+                    .map(|column| array_value_to_string(column, row).unwrap())
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    assert_eq!(rows, expected);
+    assert_eq!(diagnostics.snapshot().output_rows, expected.len() as u64);
+    assert!(diagnostics.warnings().is_empty());
+    let tasks = fixture.tasks.lock();
+    let tasks: Vec<_> = tasks
+        .iter()
+        .filter(|task| {
+            task.id.session_id == metadata.session_id && task.id.query_ts == metadata.query_ts
+        })
+        .collect();
+    assert_eq!(tasks.len(), 3);
+    for task in &tasks {
+        assert_eq!(
+            task.plan.contains("AggregateExec: mode=Partial"),
+            pushdown && aggregation,
+            "{}",
+            task.plan
+        );
+        if !aggregation {
+            assert_eq!(task.plan.contains("FilterExec"), pushdown, "{}", task.plan);
+        }
+    }
+    let reads = fixture.reads.lock();
+    Measurement {
+        elapsed_us,
+        scans: reads.ranges.len(),
+        storage_rows: reads.rows,
+        transported_rows: tasks.iter().map(|task| task.output.lock().rows).sum(),
+        ipc: ByteCount::from(
+            tasks
+                .iter()
+                .map(|task| task.output.lock().bytes)
+                .sum::<usize>(),
+        ),
+        remote_ipc: ByteCount::from(
+            tasks
+                .iter()
+                .filter(|task| task.owner.raw_id() != 1)
+                .map(|task| task.output.lock().bytes)
+                .sum::<usize>(),
+        ),
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 4)]
+async fn partial_aggregation_reduces_transfer_without_changing_storage_work() {
+    let mut fixture = setup().await;
+    let empty = fixture
+        .engine_with_pushdown(48, 128, true)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    let result = measure(
+        &fixture,
+        empty.as_ref(),
+        "SELECT COUNT(*) FROM state",
+        &[vec!["0".into()]],
+        true,
+        true,
+    )
+    .await;
+    assert_eq!(result.scans, 8);
+    assert_eq!(result.storage_rows, 0);
+
+    // Independent, hand-computable reference: two groups, 2,048 rows each;
+    // every state key is one byte. Quiescent data spread over eight partitions.
+    let records: Vec<_> = (0..4096)
+        .map(|i| {
+            (
+                ServiceId::new(None, "measurement", format!("object-{i}")),
+                Bytes::from(vec![b'x'; if i % 2 == 0 { 4 } else { 64 }]),
+            )
+        })
+        .collect();
+    for store in &mut fixture.stores {
+        let range = store.partition_key_range();
+        let mut tx = store.transaction();
+        for (service, value) in &records {
+            if range.contains(&service.partition_key()) {
+                tx.put_user_state(service, &Bytes::from_static(b"k"), value)
+                    .unwrap();
+            }
+        }
+        tx.commit().await.unwrap();
+    }
+    for parallelism in [1, 48] {
+        let control = fixture
+            .engine_with_pushdown(parallelism, 128, false)
+            .create_session(SessionOptions::default())
+            .unwrap();
+        let pushed = fixture
+            .engine_with_pushdown(parallelism, 128, true)
+            .create_session(SessionOptions::default())
+            .unwrap();
+        let sql = "SELECT value_length, COUNT(*) AS n, SUM(key_length) AS key_bytes FROM state GROUP BY value_length ORDER BY value_length";
+        let expected = vec![
+            vec!["4".into(), "2048".into(), "2048".into()],
+            vec!["64".into(), "2048".into(), "2048".into()],
+        ];
+        let mut timings = [vec![], vec![]];
+        for round in 0..6 {
+            let mut payloads = [0; 2];
+            let mut remote_payloads = [0; 2];
+            let order = if round % 2 == 0 {
+                [false, true]
+            } else {
+                [true, false]
+            };
+            for pushdown in order {
+                let session = if pushdown { &pushed } else { &control };
+                let result =
+                    measure(&fixture, session.as_ref(), sql, &expected, pushdown, true).await;
+                assert_eq!(result.scans, 8);
+                assert_eq!(result.storage_rows, records.len());
+                // Two groups per source lane: one lane per owner at parallelism 1,
+                // one per storage partition at parallelism 48.
+                let partial_rows = if parallelism == 1 { 6 } else { 16 };
+                assert_eq!(
+                    result.transported_rows,
+                    if pushdown { partial_rows } else { 4096 }
+                );
+                if round > 0 {
+                    timings[usize::from(pushdown)].push(result.elapsed_us);
+                }
+                // ByteCount's Debug preserves exact byte counts in this measurement log.
+                eprintln!(
+                    "m2_measure parallelism={parallelism} round={round} pushdown={pushdown} {result:?}"
+                );
+                assert!(result.ipc.as_u64() > 0 && result.remote_ipc.as_u64() > 0);
+                payloads[usize::from(pushdown)] = result.ipc.as_u64();
+                remote_payloads[usize::from(pushdown)] = result.remote_ipc.as_u64();
+            }
+            assert!(payloads[1] < payloads[0] / 8);
+            assert!(remote_payloads[1] < remote_payloads[0] / 8);
+        }
+        for (mode, mut samples) in timings.into_iter().enumerate() {
+            samples.sort_unstable();
+            eprintln!(
+                "m2_median parallelism={parallelism} pushdown={} elapsed_us={}",
+                mode != 0,
+                samples[samples.len() / 2]
+            );
+        }
+        let expected = vec![vec!["1".to_owned()]; 2048];
+        let sql = "SELECT key_length FROM state WHERE value_length = 4";
+        let a = measure(&fixture, control.as_ref(), sql, &expected, false, false).await;
+        let b = measure(&fixture, pushed.as_ref(), sql, &expected, true, false).await;
+        assert_eq!(a.storage_rows, b.storage_rows);
+        // The scanner already applies this predicate on both paths. Moving the
+        // residual FilterExec's projection saves columns and batch framing, not rows.
+        assert_eq!(a.transported_rows, 2048);
+        assert_eq!(b.transported_rows, 2048);
+        assert!(b.ipc < a.ipc && b.remote_ipc < a.remote_ipc);
+        eprintln!("m2_filter parallelism={parallelism} control={a:?} pushed={b:?}");
+    }
 }
