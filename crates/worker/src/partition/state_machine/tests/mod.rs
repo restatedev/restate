@@ -599,10 +599,9 @@ async fn get_entry_status(
     test_env: &mut TestEnv,
     id: &StateMutationId,
 ) -> Option<(Stage, EntryKey, VQueueId)> {
-    let entry_id = EntryId::from(id);
     let transaction = test_env.storage.transaction();
     let header = transaction
-        .get_vqueue_entry_status(id.partition_key(), &entry_id)
+        .get_vqueue_entry_status(&BaseEntryId::from(id))
         .await
         .unwrap()?;
     Some((
