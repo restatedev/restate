@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::keys::KeyDecoder;
 use restate_partition_store::stats::aggregated::{StageCounts, VirtualObjectLoadKey};
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -20,7 +22,7 @@ use restate_storage_api::filter::Filter;
 use restate_storage_api::stats::virtual_object_load::VirtualObjectLoad;
 use restate_types::errors::ConversionError;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -33,16 +35,10 @@ use super::schema::SysVirtualObjectStatsBuilder;
 const NAME: &str = "sys_virtual_object_stats";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VirtualObjectStatsScanner,
-    )) as Arc<dyn ScanPartition>;
-
     let schema = SysVirtualObjectStatsBuilder::schema();
     let statistics = TableStatisticsBuilder::new(schema.clone())
         .with_num_rows_estimate(RowEstimate::Large)
@@ -52,14 +48,25 @@ pub(crate) fn register_self(
         partition_selector,
         schema,
         Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         // The typed filter applies the entire predicate rather than each point-read
         // range, so selected keys must share one scan per physical partition.
         FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition),
     )
     .with_statistics(statistics.build());
 
-    ctx.register_partitioned_table(NAME, Arc::new(table))
+    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        VirtualObjectStatsScanner,
+    )) as Arc<dyn ScanPartition>;
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]

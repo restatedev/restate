@@ -40,8 +40,8 @@ static NEXT_SCANNER_SEQ: AtomicU64 = AtomicU64::new(1);
 
 /// LocalPartitionScannerRegistry is a mapping between a datafusion registered table name
 /// (i.e. sys_inbox, sys_status, etc.) to an implementation of a ScanPartition.
-/// This registry is populated when we register all the partitioned tables, and it is accessed
-/// by the RemoteQueryScannerServer.
+/// This registry is populated during local capability registration and accessed by both
+/// local plans and the RemoteQueryScannerServer.
 #[derive(Clone, Debug, Default)]
 struct LocalPartitionScannerRegistry {
     local_store_scanners: Arc<Mutex<BTreeMap<String, Arc<dyn ScanPartition>>>>,
@@ -187,25 +187,22 @@ impl RemoteScannerManager {
         )
     }
 
-    /// Combines the local partition scanner for the given table, with an RPC based partition scanner
-    /// this is able to both scan partition hosted at the current node, and remote partitions hosted on
-    /// other nodes via RPC.
+    /// Creates a routing adapter without changing the node's registered local capabilities.
     pub fn create_distributed_scanner(
         &self,
         table_name: impl Into<String>,
-        local_scanner: impl Into<Option<Arc<dyn ScanPartition>>>,
     ) -> impl ScanPartition + Clone {
-        let name = table_name.into();
+        RemotePartitionsScanner::new(self.clone(), table_name)
+    }
 
-        if let Some(local_scanner) = local_scanner.into() {
-            // make the local scanner available to serve a remote RPC.
-            // see usages of [[local_partition_scanner]]
-            // we use the table_name to associate a remote scanner with its local counterpart.
-            self.local_store_scanners
-                .register(name.clone(), local_scanner.clone());
-        }
-
-        RemotePartitionsScanner::new(self.clone(), name)
+    /// Registers a node-local implementation for a partition-scoped source.
+    /// Registration does not open a partition or grant access to its database.
+    pub fn register_partition_scanner(
+        &self,
+        table_name: impl Into<String>,
+        scanner: Arc<dyn ScanPartition>,
+    ) {
+        self.local_store_scanners.register(table_name, scanner);
     }
 
     /// Registers a node-level scanner that can serve remote scan RPCs for a

@@ -8,7 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::future::Future;
 use std::time::SystemTime;
 
 use codederror::Code;
@@ -18,7 +17,6 @@ use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::journal::{EntryIndex, EntryType};
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
-use restate_types::sharding::KeyRange;
 
 // -- Status data structure
 
@@ -106,15 +104,4 @@ pub struct InvocationErrorReport {
     pub related_entry_index: Option<EntryIndex>,
     pub related_entry_name: Option<String>,
     pub related_entry_type: Option<EntryType>,
-}
-
-/// Struct to access the status of the invocations currently handled by the invoker
-pub trait StatusHandle {
-    type Iterator: Iterator<Item = InvocationStatusReport> + Send;
-
-    /// This method returns a snapshot of the status of all the invocations currently being processed by this invoker,
-    /// filtered by the partition key range
-    ///
-    /// The data returned by this method is eventually consistent.
-    fn read_status(&self, keys: KeyRange) -> impl Future<Output = Self::Iterator> + Send;
 }

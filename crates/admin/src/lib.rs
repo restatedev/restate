@@ -13,7 +13,6 @@ mod error;
 #[cfg(feature = "metadata-api")]
 mod metadata_api;
 mod metric_definitions;
-mod query_utils;
 mod rest_api;
 pub mod schema_registry_integration;
 pub mod service;

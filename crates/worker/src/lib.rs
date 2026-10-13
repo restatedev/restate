@@ -42,8 +42,6 @@ use restate_ingestion_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
-use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
-use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
@@ -95,7 +93,6 @@ pub enum BuildError {
 }
 
 pub struct Worker<T> {
-    storage_query_context: QueryContext,
     ingress_kafka: IngressKafkaService<T>,
     subscription_controller_handle: SubscriptionControllerHandle,
     partition_processor_manager: PartitionProcessorManager<T>,
@@ -115,7 +112,6 @@ where
         ingestion_client: IngestionClient<T, Envelope<Raw>>,
         router_builder: &mut MessageRouterBuilder,
         metadata_writer: MetadataWriter,
-        remote_scanner_manager: RemoteScannerManager,
     ) -> Result<Self, BuildError> {
         metric_definitions::describe_metrics();
         restate_vqueues::describe_metrics();
@@ -165,8 +161,6 @@ where
                 .expect("Ingestion session options to build"),
         );
 
-        let metadata_store_client = metadata_writer.raw_metadata_store_client().clone();
-
         let partition_processor_manager = PartitionProcessorManager::new(
             health_status,
             Configuration::live(),
@@ -184,38 +178,15 @@ where
             ppm_ingestion_client,
         );
 
-        let rule_book_cache_handle = partition_processor_manager.rule_book_cache_handle();
-
-        let storage_query_context = QueryContext::with_user_tables(
-            &config.admin.query_engine,
-            SelectPartitionsFromMetadata,
-            partition_store_manager,
-            Some(partition_processor_manager.leader_handles_registry()),
-            schema,
-            remote_scanner_manager,
-            metadata_store_client,
-            Some(Arc::new(rule_book_cache_handle)),
-        )
-        .await?;
-
         Ok(Self {
-            storage_query_context,
             ingress_kafka,
             subscription_controller_handle,
             partition_processor_manager,
         })
     }
 
-    pub fn storage_query_context(&self) -> &QueryContext {
-        &self.storage_query_context
-    }
-
     pub fn partition_processor_manager_handle(&self) -> ProcessorsManagerHandle {
         self.partition_processor_manager.handle()
-    }
-
-    pub fn rule_book_cache_handle(&self) -> RuleBookCacheHandle {
-        self.partition_processor_manager.rule_book_cache_handle()
     }
 
     pub async fn run(self) -> anyhow::Result<()> {

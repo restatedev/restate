@@ -12,6 +12,8 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::ScanVQueueMetaTable;
@@ -19,7 +21,7 @@ use restate_storage_api::vqueue_table::filters::ScanMetaFilter;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
 
-use crate::context::{QueryContext, SelectPartitions};
+use crate::context::SelectPartitions;
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
@@ -31,16 +33,10 @@ use crate::vqueue_meta::schema::{SysVqueueMetaBuilder, sys_vqueue_meta_sort_orde
 const NAME: &str = "sys_vqueue_meta";
 
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     partition_selector: impl SelectPartitions,
-    partition_store_manager: Arc<PartitionStoreManager>,
     remote_scanner_manager: &RemoteScannerManager,
 ) -> datafusion::common::Result<()> {
-    let local_scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VQueuesMetaScanner,
-    )) as Arc<dyn ScanPartition>;
-
     let schema = SysVqueueMetaBuilder::schema();
 
     // There are far fewer vqueues than vqueue entries, so this table is small.
@@ -53,14 +49,27 @@ pub(crate) fn register_self(
         partition_selector,
         schema,
         sys_vqueue_meta_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
+        remote_scanner_manager.create_distributed_scanner(NAME),
         FirstMatchingPartitionKeyExtractor::default()
             .with_scope("scope")
             .with_grouped_partitioned_resource_id::<VQueueId>("id"),
     )
     .with_statistics(statistics.build());
 
-    ctx.register_partitioned_table(NAME, Arc::new(vqueue_meta_table))
+    ctx.register_table(NAME, Arc::new(vqueue_meta_table))
+        .map(|_| ())
+}
+
+pub(crate) fn register_local_scanner(
+    partition_store_manager: Arc<PartitionStoreManager>,
+    remote_scanner_manager: &RemoteScannerManager,
+) {
+    let scanner = Arc::new(LocalPartitionsScanner::new(
+        partition_store_manager,
+        VQueuesMetaScanner,
+    )) as Arc<dyn ScanPartition>;
+
+    remote_scanner_manager.register_partition_scanner(NAME, scanner);
 }
 
 #[derive(Debug, Clone)]

@@ -10,6 +10,7 @@
 
 use std::cmp::Reverse;
 use std::ops::ControlFlow;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::{
@@ -40,6 +41,7 @@ use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, ReadVQueueTable,
     Stage, Status, WriteVQueueTable,
 };
+use restate_storage_query_api::{QueryOptions, SessionOptions};
 use restate_types::clock::{RoughTimestamp, UniqueTimestamp};
 use restate_types::config::{Configuration, QueryEngineOptions};
 use restate_types::errors::GenericError;
@@ -47,11 +49,14 @@ use restate_types::identifiers::CanonicalEntryId;
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, Seq, VQueueId};
+use restate_worker_api::OfflinePartitionQueryAccess;
 
-use crate::context::{PartitionTables, QueryContext, SelectPartitions};
+use crate::context::{DataFusionQueryEngine, SelectPartitions};
+use crate::local_scanners::{register_live_scanners, register_partition_scanners};
 use crate::mocks::MockQueryEngine;
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::{DataFusionEnv, UserTables};
 
 use super::entry_by_stage::schema::IdxEntryByStageBuilder;
 use super::entry_next_at_by_stage::schema::IdxEntryNextAtByStageBuilder;
@@ -1096,19 +1101,32 @@ async fn stage_tables_register_for_partition_queries_and_sort_across_stores() {
     options
         .datafusion_options
         .insert("datafusion.execution.target_partitions".into(), "1".into());
-    let ctx = QueryContext::create(
-        &options,
-        PartitionTables::new(partitions, manager, scanners.clone()),
+    register_partition_scanners(manager, &scanners);
+    register_live_scanners(
+        Arc::new(OfflinePartitionQueryAccess::new(
+            partitions
+                .0
+                .iter()
+                .map(|(id, partition)| (*id, partition.key_range)),
+        )),
+        &scanners,
+    );
+    let engine = DataFusionQueryEngine::with_user_tables(
+        DataFusionEnv::from_options(&options).unwrap(),
+        None,
+        UserTables::new(partitions, scanners.clone()),
     )
     .await
     .unwrap();
+    let ctx = engine.create_session(SessionOptions::default()).unwrap();
     for (table, time) in TABLES.into_iter().chain(NEW_ENTRY_TABLES) {
         assert!(scanners.local_partition_scanner(table).is_some());
         let direction = if time == "next_at" { "ASC" } else { "DESC" };
         let batches = ctx
-            .execute(&format!(
-                "SELECT canonical_id FROM {table} ORDER BY {time} {direction} LIMIT 1"
-            ))
+            .execute(
+                &format!("SELECT canonical_id FROM {table} ORDER BY {time} {direction} LIMIT 1"),
+                QueryOptions {},
+            )
             .await
             .unwrap()
             .stream
@@ -1120,7 +1138,7 @@ async fn stage_tables_register_for_partition_queries_and_sort_across_stores() {
             ("canonical_id", ids[1].to_string()),
             ("entry_id", ids[1].to_base_entry_id().to_string()),
         ] {
-            let batches = ctx.execute(&format!("SELECT canonical_id FROM {table} WHERE {column} IN ('{expected}', '{expected}')")).await.unwrap().stream.try_collect::<Vec<_>>().await.unwrap();
+            let batches = ctx.execute(&format!("SELECT canonical_id FROM {table} WHERE {column} IN ('{expected}', '{expected}')"), QueryOptions {}).await.unwrap().stream.try_collect::<Vec<_>>().await.unwrap();
             assert_eq!(strings(&batches, "canonical_id"), [ids[1].to_string()]);
         }
     }
