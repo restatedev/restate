@@ -274,6 +274,62 @@ const CASES: &[Case] = &[
         anchor: Anchor::None,
         outcome: ExpectedOutcome::Success,
     },
+    Case {
+        name: "descending-value-order",
+        sql: "SELECT partition_key, scope, service_name, service_key, key, value_length FROM state \
+              ORDER BY value_length DESC, partition_key, scope NULLS FIRST, service_name, service_key, key",
+        comparison: Comparison::Ordered,
+        expected_rows: 9,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "descending-value-topk-offset",
+        sql: "SELECT partition_key, scope, service_name, service_key, key, value_length FROM state \
+              ORDER BY value_length DESC, partition_key, scope NULLS FIRST, service_name, service_key, key \
+              LIMIT 4 OFFSET 2",
+        comparison: Comparison::Ordered,
+        expected_rows: 4,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    // Unordered LIMIT may select any qualifying rows. Equal-valued projections
+    // make exact bag comparison valid while checking global cardinality, filters,
+    // offsets, and limits nested below a UNION ALL.
+    Case {
+        name: "unordered-limit",
+        sql: "SELECT 1 AS one FROM state LIMIT 4",
+        comparison: Comparison::Bag,
+        expected_rows: 4,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "unordered-filtered-limit",
+        sql: "SELECT value_utf8 FROM state WHERE value_utf8 = 'red' LIMIT 1",
+        comparison: Comparison::Bag,
+        expected_rows: 1,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "unordered-limit-offset",
+        sql: "SELECT 1 AS one FROM state LIMIT 4 OFFSET 2",
+        comparison: Comparison::Bag,
+        expected_rows: 4,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
+    Case {
+        name: "unordered-limits-in-union-branches",
+        sql: "SELECT value_utf8 FROM (SELECT value_utf8 FROM state WHERE value_utf8 = 'red' LIMIT 1) \
+              UNION ALL \
+              SELECT value_utf8 FROM (SELECT value_utf8 FROM state WHERE value_utf8 = 'red' LIMIT 2)",
+        comparison: Comparison::Bag,
+        expected_rows: 3,
+        anchor: Anchor::None,
+        outcome: ExpectedOutcome::Success,
+    },
 ];
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1005,7 +1061,7 @@ async fn run_state_corpus(target_partitions: usize, batch_size: usize) {
 pub(crate) async fn run_distributed_state_corpus(
     stores: &mut [restate_partition_store::PartitionStore],
     engine: &dyn QueryEngine<AdminUser>,
-) -> Vec<QueryMetadata> {
+) -> Result<Vec<QueryMetadata>, String> {
     let fixture = StateFixture::deterministic();
     let mut primary = Vec::new();
     for store in stores {
@@ -1019,14 +1075,14 @@ pub(crate) async fn run_distributed_state_corpus(
         let result = session.execute(case.sql, QueryOptions {}).await.unwrap();
         metadata.push(result.metadata.clone());
         if let Err(error) = run_case(case, &fixture, &primary, result).await {
-            panic!(
+            return Err(format!(
                 "remote correctness case {} failed: {error}\n{}",
                 case.name,
                 fixture.describe()
-            );
+            ));
         }
     }
-    metadata
+    Ok(metadata)
 }
 
 #[test]

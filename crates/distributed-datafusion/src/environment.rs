@@ -74,6 +74,17 @@ impl DataFusionEnv {
         self
     }
 
+    /// Control experiment: identical sources, placement and RPC, with operators
+    /// retained on the coordinator. There is no public runtime switch for this.
+    #[cfg(test)]
+    pub(crate) fn without_distributed_operator_pushdown(mut self) -> Self {
+        self.config
+            .set_extension(Arc::new(crate::distributed::DistributedExecution {
+                operator_pushdown: false,
+            }));
+        self
+    }
+
     /// Sets the storage serving policy passed through planning and worker binding.
     pub fn with_storage_placement(
         mut self,
@@ -254,12 +265,15 @@ impl DataFusionEnv {
         let builder = SessionStateBuilder::new()
             .with_config(self.config.clone())
             .with_runtime_env(Arc::clone(&self.runtime));
-        let builder = if self
+        let builder = if let Some(distributed) = self
             .config
             .get_extension::<crate::distributed::DistributedExecution>()
-            .is_some()
         {
-            builder.with_physical_optimizer_rule(Arc::new(crate::distributed::DistributedPlanRule))
+            builder.with_physical_optimizer_rule(Arc::new(
+                crate::distributed::DistributedPlanRule {
+                    operator_pushdown: distributed.operator_pushdown,
+                },
+            ))
         } else {
             builder
         };
