@@ -307,7 +307,7 @@ impl LeaderState {
             invoker_runtime.take();
             return Poll::Ready(match result {
                 Ok(()) => Err(Error::task_terminated_unexpectedly("invoker")),
-                Err(err) => Err(Error::InvokerBuild(err)),
+                Err(err) => Err(err),
             });
         }
 
