@@ -33,6 +33,9 @@ use crate::rules::schema::SysRulesTable;
 use crate::scheduler_status::schema::SysSchedulerTable;
 use crate::service::schema::SysServiceTable;
 use crate::state::schema::StateTable;
+use crate::stats::deployment_stats::schema::SysDeploymentStatsTable;
+use crate::stats::service_stats::schema::SysServiceStatsTable;
+use crate::stats::virtual_object_stats::schema::SysVirtualObjectStatsTable;
 use crate::user_limits::schema::SysUserLimitsTable;
 use crate::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 use crate::vqueue_meta::schema::SysVqueueMetaTable;
@@ -212,7 +215,24 @@ where
             SysVqueueMetaTable,
             SysVqueueEntryStatusTable,
             SysVqueuesTable,
+            SysVirtualObjectStatsTable,
         );
+        inventory.add::<SysServiceStatsTable>(
+            "public",
+            &SysServiceStatsTable::identity(),
+            SysServiceStatsTable::create_provider(
+                self.partition_selector.clone(),
+                &self.remote_scanner_manager,
+            )?,
+        )?;
+        inventory.add::<SysDeploymentStatsTable>(
+            "public",
+            &SysDeploymentStatsTable::identity(),
+            SysDeploymentStatsTable::create_provider(
+                self.partition_selector.clone(),
+                &self.remote_scanner_manager,
+            )?,
+        )?;
         inventory
             .add_view("sys_invocation", "public", SYS_INVOCATION_VIEW)
             .await?;
