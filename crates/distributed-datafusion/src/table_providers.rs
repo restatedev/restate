@@ -38,9 +38,11 @@ use restate_types::identifiers::PartitionId;
 use restate_types::partition_table::Partition;
 use restate_types::sharding::KeyRange;
 
+use crate::access::{PrimaryKeyKind, PrimaryRead};
 use crate::context::SelectPartitions;
 use crate::filter::{PartitionKeySelector, PointReadFanout};
 use crate::placement::{PartitionPlacement, PartitionSource, StoragePlacementOptions};
+use crate::remote_query_scanner_manager::{PartitionLocation, PartitionedSource};
 use crate::selection;
 use crate::table_util::{find_sort_columns, make_ordering};
 
@@ -49,14 +51,38 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
         PartitionSource::Storage
     }
 
-    /// Stable identity and placement information for the opt-in task runtime.
-    fn distributed_source(
-        &self,
-    ) -> Option<(
-        restate_util_string::ReString,
-        &crate::remote_query_scanner_manager::RemoteScannerManager,
-    )> {
+    /// Primary lookup capability exposed by the worker-local resource binding.
+    fn primary_key_kind(&self) -> Option<PrimaryKeyKind> {
         None
+    }
+
+    /// Execute an already selected access path. Implementations must reject an
+    /// unsupported lookup rather than silently changing it into a scan.
+    #[allow(clippy::too_many_arguments)]
+    fn read_partition(
+        &self,
+        partition_id: PartitionId,
+        range: KeyRange,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        elapsed_compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        anyhow::ensure!(
+            matches!(access, PrimaryRead::Range),
+            "primary lookup is unavailable for this source"
+        );
+        self.scan_partition(
+            partition_id,
+            range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            elapsed_compute,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -73,21 +99,21 @@ pub trait ScanPartition: Send + Sync + Debug + 'static {
 }
 
 #[derive(Debug)]
-pub(crate) struct PartitionedTableProvider<T, S> {
+pub(crate) struct PartitionedTableProvider<S> {
     partition_selector: S,
     schema: SchemaRef,
     ordering: Vec<String>,
-    partition_scanner: T,
+    source: PartitionedSource,
     partition_key_extractor: PartitionKeySelector,
     statistics: Statistics,
 }
 
-impl<T, S> PartitionedTableProvider<T, S> {
+impl<S> PartitionedTableProvider<S> {
     pub(crate) fn new(
         partition_selector: S,
         schema: SchemaRef,
         ordering: Vec<String>,
-        partition_scanner: T,
+        source: PartitionedSource,
         partition_key_extractor: PartitionKeySelector,
     ) -> Self {
         let statistics = Statistics::new_unknown(&schema);
@@ -95,7 +121,7 @@ impl<T, S> PartitionedTableProvider<T, S> {
             partition_selector,
             schema,
             ordering,
-            partition_scanner,
+            source,
             partition_key_extractor,
             statistics,
         }
@@ -146,9 +172,8 @@ fn physical_partitions_to_logical(
 }
 
 #[async_trait]
-impl<T, S> TableProvider for PartitionedTableProvider<T, S>
+impl<S> TableProvider for PartitionedTableProvider<S>
 where
-    T: ScanPartition + Clone,
     S: SelectPartitions,
 {
     fn schema(&self) -> SchemaRef {
@@ -209,34 +234,45 @@ where
         }
 
         let target_partitions = state.config().target_partitions();
-        if state
+        let distributed = state
             .config()
             .get_extension::<crate::distributed::DistributedExecution>()
-            .is_some()
-            && let Some((table, manager)) = self.partition_scanner.distributed_source()
-        {
-            return crate::distributed::SourceExec::for_scan(
-                table,
-                manager,
+            .is_some();
+        let placement = PartitionPlacement {
+            source: self.source.source,
+            options: state
+                .config()
+                .get_extension::<StoragePlacementOptions>()
+                .as_deref()
+                .copied()
+                .unwrap_or_default(),
+        };
+        // Retain the old scanner-RPC adapter only for callers that explicitly use
+        // a non-distributed environment with remote partitions.
+        let local = !distributed
+            && physical_partitions.iter().all(|(id, _)| {
+                matches!(
+                    self.source
+                        .manager
+                        .get_partition_target_node(*id, placement),
+                    Ok(PartitionLocation::Local)
+                )
+            });
+        if distributed || local {
+            return crate::distributed::source::TableScanExec::for_query(
+                self.source.clone(),
                 physical_partitions
                     .into_iter()
                     .map(|(id, p)| (id, p.key_range))
                     .collect(),
-                PartitionPlacement {
-                    source: self.partition_scanner.partition_source(),
-                    options: state
-                        .config()
-                        .get_extension::<StoragePlacementOptions>()
-                        .as_deref()
-                        .copied()
-                        .unwrap_or_default(),
-                },
+                placement,
                 target_partitions,
                 projected_schema,
                 Arc::new(self.statistics.clone().project(projection).to_inexact()),
                 self.ordering.clone(),
                 predicate,
                 limit,
+                local,
             );
         }
 
@@ -268,7 +304,7 @@ where
             projected_schema,
             limit,
             predicate,
-            scanner: self.partition_scanner.clone(),
+            scanner: self.source.clone(),
             plan: Arc::new(plan),
             statistics: Arc::new(self.statistics.clone().project(projection)),
             metrics: ExecutionPlanMetricsSet::new(),

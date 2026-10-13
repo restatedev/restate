@@ -137,6 +137,18 @@ impl<T: Ord + Clone> Domain<T> {
         self.0.iter().any(|span| span.contains(value))
     }
 
+    /// A finite selection, including the proven-empty set. Unbounded or non-point
+    /// intervals cannot be implemented by an exact-key lookup.
+    pub(crate) fn into_values(self) -> Option<Vec<T>> {
+        self.0
+            .into_iter()
+            .map(|span| match (span.lower, span.upper) {
+                (Bound::Included(a), Bound::Included(b)) if a == b => Some(a),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub(crate) fn intersect(self, other: Self) -> Self {
         if self.is_all() {
             return other;
