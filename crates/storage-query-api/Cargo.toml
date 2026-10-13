@@ -20,8 +20,10 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 bytes = { workspace = true }
 datafusion = { workspace = true }
+datafusion-physical-expr-common = { workspace = true }
 futures = { workspace = true }
 gardal = { workspace = true }
+http = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 

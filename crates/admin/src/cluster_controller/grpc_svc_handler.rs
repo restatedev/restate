@@ -39,7 +39,7 @@ use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_store::WriteError;
 use restate_storage_query_api::errors::{QueryExecutionError, SessionError};
 use restate_storage_query_api::{
-    ClusterOperator, NodeWarnings, QueryEngine, QueryOptions, SessionOptions,
+    ClusterOperator, QueryDiagnostics, QueryEngine, QueryOptions, SessionOptions,
     WriteRecordBatchStream,
 };
 use restate_types::config::{MetadataClientKind, MetadataClientOptions, NetworkingOptions};
@@ -60,6 +60,7 @@ use restate_types::{PlainNodeId, Version, Versioned};
 
 use super::ClusterControllerHandle;
 use super::service::ChainExtension;
+use crate::query_context::collect_query_headers;
 
 pub(crate) struct ClusterCtrlSvcHandler {
     controller_handle: ClusterControllerHandle,
@@ -427,11 +428,12 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         &self,
         request: Request<QueryRequest>,
     ) -> std::result::Result<Response<Self::QueryStream>, tonic::Status> {
+        let options = SessionOptions {
+            headers: collect_query_headers(request.metadata().as_ref()),
+            ..Default::default()
+        };
         let request = request.into_inner();
-        let session = match self
-            .cluster_query_engine
-            .create_session(SessionOptions::default())
-        {
+        let session = match self.cluster_query_engine.create_session(options) {
             Ok(session) => session,
             Err(e @ SessionError::EngineDisabled) => {
                 return Err(Status::unimplemented(e.to_string()));
@@ -449,7 +451,13 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .await
             .map_err(query_error_to_status)?;
 
-        let node_warnings = query_result.node_warnings;
+        let diagnostics = query_result.diagnostics;
+        let session_id = query_result
+            .metadata
+            .session_id
+            .as_str()
+            .parse()
+            .map_err(|err| Status::internal(format!("Invalid query session ID: {err}")))?;
 
         let data_stream = WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
             query_result.stream,
@@ -468,12 +476,16 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         // response message, avoiding an extra trailing empty-data message.
         let stream = QueryWarningStream {
             inner: data_stream.boxed(),
-            node_warnings,
+            diagnostics,
             last_response: None,
             done: false,
         };
 
-        Ok(Response::new(stream.boxed()))
+        let mut response = Response::new(stream.boxed());
+        response
+            .metadata_mut()
+            .insert("x-restate-query-session-id", session_id);
+        Ok(response)
     }
 
     /// Migrate metadata from the current metadata store to a target store
@@ -608,7 +620,7 @@ fn serialize_value<T: StorageEncode>(value: &T) -> Bytes {
 /// to that final response before yielding it.
 struct QueryWarningStream {
     inner: BoxStream<'static, Result<QueryResponse, Status>>,
-    node_warnings: Vec<NodeWarnings>,
+    diagnostics: Arc<dyn QueryDiagnostics>,
     last_response: Option<Result<QueryResponse, Status>>,
     done: bool,
 }
@@ -628,7 +640,15 @@ impl Stream for QueryWarningStream {
                     self.done = true;
                     // Inner stream ended. Yield the buffered last response
                     // with warnings attached, or a warnings-only response.
-                    let warnings = drain_node_warnings(&self.node_warnings);
+                    let warnings = self
+                        .diagnostics
+                        .warnings()
+                        .into_iter()
+                        .map(|w| QueryWarning {
+                            node_id: w.node_id.to_string(),
+                            message: w.message.to_string(),
+                        })
+                        .collect::<Vec<_>>();
                     return match self.last_response.take() {
                         Some(Ok(mut resp)) => {
                             resp.warnings = warnings;
@@ -656,17 +676,6 @@ impl Stream for QueryWarningStream {
             }
         }
     }
-}
-
-fn drain_node_warnings(node_warnings: &[NodeWarnings]) -> Vec<QueryWarning> {
-    let mut out = Vec::new();
-    for nw in node_warnings {
-        out.extend(nw.lock().drain(..).map(|w| QueryWarning {
-            node_id: w.node_id.to_string(),
-            message: w.message.to_string(),
-        }));
-    }
-    out
 }
 
 fn query_error_to_status(err: QueryExecutionError) -> Status {
