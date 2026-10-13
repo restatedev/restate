@@ -126,6 +126,7 @@ async fn assert_ids(
 async fn populate(engine: &mut MockQueryEngine) -> Vec<CanonicalEntryId> {
     let mut config = Configuration::default();
     config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config.clone());
     engine
         .partition_store()
         .verify_and_run_migrations(Default::default(), &config)
@@ -223,6 +224,9 @@ async fn populate(engine: &mut MockQueryEngine) -> Vec<CanonicalEntryId> {
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stage_tables_project_filter_and_follow_lifecycle_updates() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     for (table, _) in TABLES {
         assert_ids(&engine, table, "true", &[]).await;
@@ -543,6 +547,9 @@ struct Partitions(Vec<(PartitionId, Partition)>);
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn every_entry_index_defers_unprojected_stage_decoding() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     let partition = engine.partition_store().partition_id();
     let id = EntryId::new(EntryKind::Invocation, [1; 16])
@@ -819,6 +826,9 @@ async fn busy_queue_table_covers_counts_and_translates_descending_filters() {
     use super::busy_vqueue::schema::IdxBusyVqueueBuilder;
     use restate_partition_store::index::SecondaryIndexKey;
 
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     let partition = engine.partition_store().partition_id();
     let qids =
@@ -1053,6 +1063,7 @@ async fn stage_tables_register_for_partition_queries_and_sort_across_stores() {
         let mut store = manager.open(partition, None).await.unwrap();
         let mut config = Configuration::default();
         config.common.experimental.set_indexes_v1(true);
+        Configuration::set(config.clone());
         store
             .verify_and_run_migrations(Default::default(), &config)
             .await

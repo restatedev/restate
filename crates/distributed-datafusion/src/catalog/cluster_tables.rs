@@ -14,7 +14,6 @@ use tokio::sync::watch;
 
 use restate_core::{Metadata, TaskCenter};
 use restate_types::cluster::cluster_state::LegacyClusterState;
-use restate_types::config::Configuration;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::BuildError;
@@ -119,17 +118,15 @@ impl RegisterTable for ClusterTables {
             ),
         )?;
 
-        if !Configuration::pinned().common.disable_config_sql_table {
-            inventory.add::<ConfigTable>(
-                "cluster",
-                "config",
-                ConfigTable::create_provider(
-                    metadata,
-                    self.remote_scanner_manager.clone(),
-                    None, // local scanner is registered separately by the node
-                ),
-            )?;
-        }
+        inventory.add::<ConfigTable>(
+            "cluster",
+            "config",
+            ConfigTable::create_provider(
+                metadata,
+                self.remote_scanner_manager.clone(),
+                None, // local scanner is registered separately by the node
+            ),
+        )?;
 
         inventory
             .add_view(

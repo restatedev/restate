@@ -23,5 +23,8 @@ define_table!(
         key: DataType::Utf8,
         /// Config value.
         value: DataType::Utf8,
-    )
+    ),
+    visible_if(config, _options) {
+        !config.common.disable_config_sql_table
+    }
 );

@@ -418,8 +418,8 @@ impl Node {
             remote_scanner_manager.register_node_scanner::<BifrostReadStreamsTable>(local_scanner);
         }
 
-        // Register config scanner — available on every node.
-        if !Configuration::pinned().common.disable_config_sql_table {
+        // Register config scanner on every node; SQL visibility is decided per session.
+        {
             let local_scanner = restate_storage_query_datafusion::config::create_scanner(
                 metadata.clone(),
                 Configuration::live(),

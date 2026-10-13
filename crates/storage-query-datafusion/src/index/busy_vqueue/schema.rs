@@ -35,5 +35,8 @@ define_table!(
         num_finished: DataType::UInt64,
         /// Partition key encoded in the VQueue ID.
         partition_key: DataType::UInt64,
-    )
+    ),
+    visible_if(config, _options) {
+        config.common.experimental.is_indexes_v1_enabled()
+    }
 );

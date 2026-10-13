@@ -96,6 +96,7 @@ async fn stats_tables_aggregate_filter_and_follow_lifecycle_across_stores() {
     ]);
     let mut config = Configuration::default();
     config.common.experimental.set_track_status_gauges(true);
+    Configuration::set(config.clone());
     let deployment = DeploymentId::new().to_string();
     let now = MillisSinceEpoch::new(1_744_010_000_000);
     let created_at = UniqueTimestamp::try_from_unix_millis(now).unwrap();
