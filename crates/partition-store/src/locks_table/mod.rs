@@ -18,12 +18,11 @@ use restate_storage_api::lock_table::{LoadLocks, LockState, ScanLocksTable, Writ
 use restate_types::identifiers::{PartitionKey, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{CanonicalLockId, LockName, Scope};
-use restate_util_string::RestateString;
 
 use crate::TableKind::Locks;
 use crate::keys::{
     DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyEncode, KeyKind,
-    define_table_key,
+    OptionalScope, define_table_key,
 };
 use crate::scan::TableScan;
 use crate::{
@@ -45,57 +44,10 @@ define_table_key!(
     KeyKind::Lock,
     LockKey (
         partition_key: PartitionKey,
-        optional_scope: Option<Scope>,
+        optional_scope: Option<Scope> => OptionalScope,
         lock_name: LockName,
     )
 );
-
-// prefix is `s` or `u`
-impl KeyEncode for Option<Scope> {
-    fn encode<B: BufMut>(&self, target: &mut B) {
-        if let Some(scope) = self {
-            target.put_u8(b's');
-            target.put_u32(scope.len() as u32);
-            target.put_slice(scope.as_bytes());
-        } else {
-            target.put_u8(b'u');
-        }
-    }
-
-    fn serialized_length(&self) -> usize {
-        if self.is_some() {
-            1 + std::mem::size_of::<u32>() + self.as_ref().map(|s| s.len()).unwrap_or_default()
-        } else {
-            1
-        }
-    }
-}
-
-impl KeyDecode for Option<Scope> {
-    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
-        let tag = source.get_u8();
-        match tag {
-            b's' => {
-                let scope_len = source.get_u32() as usize;
-                if scope_len == 0 {
-                    return Err(StorageError::Generic(anyhow::anyhow!("empty scope")));
-                }
-                let mut string_data = source.take(scope_len);
-                // SAFETY:
-                // We are always decoding keys that we have serialized by this type, therefore
-                // they are valid utf-8 strings.
-                let raw = unsafe { std::str::from_utf8_unchecked(string_data.chunk()) };
-                let scope = unsafe { Scope::new_unchecked(raw) };
-                string_data.advance(scope_len);
-                Ok(Some(scope))
-            }
-            b'u' => Ok(None),
-            _ => Err(StorageError::Generic(anyhow::anyhow!(
-                "unknown scope prefix: {tag:x?}"
-            ))),
-        }
-    }
-}
 
 // Note that LockName *must* be used as the suffix portion of a key since it's not length-prefixed.
 impl KeyEncode for LockName {
