@@ -20,8 +20,7 @@ use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{
     EntryKey, EntryValue, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable, Stage,
 };
-use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{CanonicalEntryId, VQueueId};
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, VQueueFilter};
@@ -50,6 +49,7 @@ pub(crate) fn register_self(
         .with_num_rows_estimate(RowEstimate::Large)
         .with_partition_key()
         .with_primary_key("entry_id")
+        .with_primary_key("canonical_id")
         .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
         .with_foreign_key("id", RowEstimate::Small);
 
@@ -60,6 +60,7 @@ pub(crate) fn register_self(
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
         FirstMatchingPartitionKeyExtractor::default()
             .with_grouped_vqueue_entry_id("entry_id")
+            .with_grouped_vqueue_entry_id("canonical_id")
             .with_partitioned_resource_id::<VQueueId>("id"),
     )
     .with_statistics(statistics.build());
@@ -72,7 +73,7 @@ struct VQueuesScanner;
 
 enum VQueueRow<'a> {
     Stage(&'a VQueueId, Stage, &'a EntryKey, &'a EntryValue),
-    Status(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>),
+    Status(&'a CanonicalEntryId, &'a RawStatusHeaderRef<'a>),
 }
 
 impl ScanLocalPartition for VQueuesScanner {
@@ -104,7 +105,8 @@ impl ScanLocalPartition for VQueuesScanner {
                             return ControlFlow::Continue(());
                         }
 
-                        f(VQueueRow::Status(id, header)).map_break(Result::unwrap)
+                        let canonical_id = id.canonicalize(header.seq);
+                        f(VQueueRow::Status(&canonical_id, header)).map_break(Result::unwrap)
                     },
                 )
                 .map(FutureExt::boxed);
