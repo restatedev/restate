@@ -150,6 +150,8 @@ struct SstSink<'a> {
     pending: Accumulator,
     limit: usize,
     files: u64,
+    output_bytes: u64,
+    write_time: Duration,
 }
 
 impl<'a> SstSink<'a> {
@@ -186,6 +188,8 @@ impl<'a> SstSink<'a> {
             pending: Accumulator::default(),
             limit,
             files: 0,
+            output_bytes: 0,
+            write_time: Duration::ZERO,
         })
     }
 
@@ -199,6 +203,7 @@ impl<'a> SstSink<'a> {
             return Ok(());
         }
         check_cancel(self.cancel)?;
+        let started = Instant::now();
         let path = self.file_path(self.files);
         let mut writer = SstFileWriter::create(&self.options);
         writer.open(&path)?;
@@ -213,7 +218,9 @@ impl<'a> SstSink<'a> {
             writer.merge(key, &value)?;
         }
         writer.finish()?;
+        self.output_bytes += writer.file_size();
         drop(writer);
+        self.write_time += started.elapsed();
         self.pending = Accumulator::default();
         self.files += 1;
         Ok(())
@@ -308,17 +315,46 @@ fn target_ref<'a>(target: &'a InvocationTargetLazy<'_>) -> anyhow::Result<EntryT
 }
 
 fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::Result<u64> {
+    build_measured::<true>(db, cancel, limit, 0).map(|report| report.files)
+}
+
+#[derive(Debug, serde::Serialize)]
+struct BackfillReport {
+    entries: u64,
+    invocation_rows: u64,
+    state_mutations: u64,
+    source_value_bytes: u64,
+    files: u64,
+    output_bytes: u64,
+    elapsed_secs: f64,
+    reset_secs: f64,
+    sst_write_secs: f64,
+    ingest_secs: f64,
+}
+
+// The scan-only instantiation is used by the opt-in historical benchmark. Both modes
+// execute exactly the same ordered join and target decoding; only contributions differ.
+fn build_measured<const AGGREGATE: bool>(
+    db: &PartitionDb,
+    cancel: &CancellationToken,
+    limit: usize,
+    readahead_bytes: usize,
+) -> anyhow::Result<BackfillReport> {
     check_cancel(cancel)?;
     let started = Instant::now();
     let partition_id = db.partition().id();
     info!(%partition_id, buffer_size = %ByteCount::from(limit), "Backfilling status gauges");
-    reset(db).context("resetting status gauges and flushing their source")?;
+    if AGGREGATE {
+        reset(db).context("resetting status gauges and flushing their source")?;
+    }
+    let reset_time = started.elapsed();
     let mut sink = SstSink::new(db, cancel, limit)?;
     let mut arena = BytesMut::new();
     let read_options = || {
         let mut options = ReadOptions::default();
         options.fill_cache(false);
         options.set_async_io(true);
+        options.set_readahead_size(readahead_bytes);
         options
     };
     let mut entries = db.scan(
@@ -337,9 +373,13 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
     let mut source_key = Vec::new();
     let mut stat_key = Vec::new();
     let mut scanned = 0u64;
+    let mut invocation_rows = 0u64;
+    let mut state_mutations = 0u64;
+    let mut source_value_bytes = 0u64;
     let mut last_report = Instant::now();
     while let Some((mut key, mut value)) = entries.item() {
         check_cancel(cancel)?;
+        source_value_bytes += value.len() as u64;
         let id = EntryStatusKey::deserialize_from(&mut key)?.id;
         if previous_partition_key != Some(id.partition_key()) {
             objects.drain_into(&mut sink)?;
@@ -351,6 +391,10 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
             "entry and queue partition keys disagree"
         );
         let mut record = |target: &EntryTargetRef<'_>| -> anyhow::Result<()> {
+            if !AGGREGATE {
+                std::hint::black_box(target);
+                return Ok(());
+            }
             contribute::<ServiceLoad>(
                 &mut totals,
                 partition_id,
@@ -402,6 +446,8 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
                     .is_some_and(|key| key < source_key.as_slice())
                 {
                     check_cancel(cancel)?;
+                    invocation_rows += 1;
+                    source_value_bytes += invocations.value().map_or(0, |value| value.len() as u64);
                     invocations.next();
                 }
                 invocations.status()?;
@@ -412,6 +458,8 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
                 let value = invocations
                     .value()
                     .context("missing invocation status value")?;
+                invocation_rows += 1;
+                source_value_bytes += value.len() as u64;
                 let (&codec, value) = value.split_first().context("empty invocation status")?;
                 ensure!(
                     matches!(
@@ -429,6 +477,7 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
                 invocations.next();
             }
             EntryKind::StateMutation => {
+                state_mutations += 1;
                 let qid = VQueueId::from_raw_bytes(&mut header.qid.as_raw_bytes());
                 source_key.clear();
                 InputPayloadKey::builder()
@@ -442,6 +491,7 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
                     .as_raw_db()
                     .get_pinned_cf_opt(db.cf_handle(), &source_key, &read_options())?
                     .context("missing state mutation input")?;
+                source_value_bytes += value.len() as u64;
                 let mutation = StateMutationTarget::decode(value.as_ref())?;
                 record(&EntryTargetRef::VirtualObject {
                     service: &mutation.service_id.service_name,
@@ -472,10 +522,33 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
     drop((entries, invocations));
     objects.drain_into(&mut sink)?;
     totals.drain_into(&mut sink)?;
+    sink.spill()?;
+    let output_bytes = sink.output_bytes;
+    let write_time = sink.write_time;
+    let ingest_started = Instant::now();
     let files = sink.ingest()?;
+    let ingest_time = if files == 0 {
+        Duration::ZERO
+    } else {
+        ingest_started.elapsed()
+    };
     check_cancel(cancel)?;
-    info!(%partition_id, scanned, files, elapsed = %started.elapsed().friendly(), "Finished backfilling status gauges");
-    Ok(files)
+    info!(%partition_id, scanned, files,
+        output_size = %ByteCount::from(output_bytes),
+        sst_write_time = %write_time.friendly(), ingest_time = %ingest_time.friendly(),
+        elapsed = %started.elapsed().friendly(), "Finished backfilling status gauges");
+    Ok(BackfillReport {
+        entries: scanned,
+        invocation_rows,
+        state_mutations,
+        source_value_bytes,
+        files,
+        output_bytes,
+        elapsed_secs: started.elapsed().as_secs_f64(),
+        reset_secs: reset_time.as_secs_f64(),
+        sst_write_secs: write_time.as_secs_f64(),
+        ingest_secs: ingest_time.as_secs_f64(),
+    })
 }
 
 fn contribute<S: Stat>(
@@ -492,3 +565,6 @@ fn contribute<S: Stat>(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod benchmark;
