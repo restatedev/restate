@@ -112,7 +112,11 @@ impl EligibilityTracker {
     }
 
     pub fn poll_delayed(&mut self, cx: &mut std::task::Context<'_>) {
-        while let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) {
+        while let Poll::Ready(coop) = tokio::task::coop::poll_proceed(cx) {
+            let Poll::Ready(Some(expired)) = self.delayed_eligibility.poll_expired(cx) else {
+                break;
+            };
+            coop.made_progress();
             let timer_key = expired.key();
             let handle = expired.into_inner();
             if let Some(state) = self.states.get_mut(handle) {
@@ -139,6 +143,12 @@ impl EligibilityTracker {
         let n = self.ready_ring.len();
         // avoid rescanning the ready ring multiple rounds
         for _ in 0..n {
+            // Bound eligibility transitions as well as decisions. Merely rotating an
+            // IO-pending queue restores the budget so an idle scan does not self-wake forever.
+            let coop = match tokio::task::coop::poll_proceed(cx) {
+                Poll::Ready(coop) => coop,
+                Poll::Pending => return Ok(None),
+            };
             // what is my current status
             let Some(handle) = self.ready_ring.front().copied() else {
                 return Ok(None);
@@ -149,6 +159,7 @@ impl EligibilityTracker {
                 // safe to assume that it's not eligible.
                 self.remove(handle);
                 self.ready_ring.pop_front();
+                coop.made_progress();
                 continue;
             };
 
@@ -156,6 +167,7 @@ impl EligibilityTracker {
                 // The vqueue is not eligible anymore. This can happen if the vqueue became dormant
                 // due to items being removed externally (killed, etc.)
                 self.ready_ring.pop_front();
+                coop.made_progress();
                 continue;
             };
 
@@ -164,6 +176,7 @@ impl EligibilityTracker {
                 // due to items being removed externally (killed, etc.)
                 self.remove(handle);
                 self.ready_ring.pop_front();
+                coop.made_progress();
                 continue;
             };
 
@@ -173,6 +186,7 @@ impl EligibilityTracker {
                     match qstate.poll_eligibility(cx, slot, storage, refill_mode) {
                         Poll::Ready(Ok(Eligibility::Eligible)) => {
                             *current_state = State::Ready;
+                            coop.made_progress();
                             return Ok(Some(handle));
                         }
                         Poll::Ready(Ok(Eligibility::EligibleAt(ts))) => {
@@ -186,11 +200,13 @@ impl EligibilityTracker {
                                 wake_up: WakeUp { ts, timer_key },
                             };
                             self.ready_ring.pop_front();
+                            coop.made_progress();
                             continue;
                         }
                         Poll::Ready(Ok(Eligibility::NotEligible)) => {
                             self.ready_ring.pop_front();
                             self.remove(handle);
+                            coop.made_progress();
                             continue;
                         }
                         Poll::Ready(Err(err)) => {
@@ -204,8 +220,10 @@ impl EligibilityTracker {
                 }
                 State::BlockedOn(_) | State::Scheduled { .. } => {
                     self.ready_ring.pop_front();
+                    coop.made_progress();
                 }
                 State::Ready => {
+                    coop.made_progress();
                     return Ok(Some(handle));
                 }
             }
