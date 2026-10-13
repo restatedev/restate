@@ -10,6 +10,8 @@
 
 use std::io::{IsTerminal, Write};
 
+use anyhow::Context;
+use bytes::Buf;
 use clap::Parser;
 use cling::{Collect, Run};
 
@@ -25,7 +27,7 @@ use restate_types::nodes_config::NodesConfiguration;
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::metadata::VersionedValue;
 use restate_types::schema::SchemaUnindexed;
-use restate_types::storage::{StorageCodec, StorageDecode};
+use restate_types::storage::{self, StorageCodec, StorageCodecKind, StorageDecode};
 use restate_types::{Version, Versioned};
 
 use crate::commands::metadata::MetadataCommonOpts;
@@ -82,23 +84,21 @@ async fn get_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::
         return get_raw_value(connection, opts).await;
     }
 
-    let Some(known_key) = KnownKey::parse(&opts.key) else {
-        anyhow::bail!(
-            "key '{}' is not a well-known metadata key and cannot be decoded; use --raw to fetch the stored bytes as-is",
-            opts.key
-        );
-    };
+    let known_key = KnownKey::parse(&opts.key);
 
     let Some(value) = super::get_raw_value(connection, &opts.key).await? else {
         anyhow::bail!("key '{}' does not exist", opts.key);
     };
 
     let value = match known_key {
-        KnownKey::NodesConfig => decode_json::<NodesConfiguration>(value)?,
-        KnownKey::Logs => decode_json::<Logs>(value)?,
-        KnownKey::PartitionTable => decode_json::<PartitionTable>(value)?,
-        KnownKey::Schema => decode_json::<SchemaUnindexed>(value)?,
-        KnownKey::Epoch => decode_json::<EpochMetadata>(value)?,
+        None => decode_generic_json(value)?,
+        Some(known_key) => match known_key {
+            KnownKey::NodesConfig => decode_json::<NodesConfiguration>(value)?,
+            KnownKey::Logs => decode_json::<Logs>(value)?,
+            KnownKey::PartitionTable => decode_json::<PartitionTable>(value)?,
+            KnownKey::Schema => decode_json::<SchemaUnindexed>(value)?,
+            KnownKey::Epoch => decode_json::<EpochMetadata>(value)?,
+        },
     };
 
     println!("{}", serde_json::to_string_pretty(&value)?);
@@ -120,6 +120,36 @@ fn decode_json<T: StorageDecode + Versioned + serde::Serialize>(
     }
 
     Ok(serde_json::to_value(&decoded)?)
+}
+
+fn decode_generic_json(mut value: VersionedValue) -> anyhow::Result<serde_json::Value> {
+    let version: Version = value
+        .version
+        .ok_or_else(|| anyhow::anyhow!("version is required"))?
+        .into();
+
+    anyhow::ensure!(
+        value.bytes.has_remaining(),
+        "value is empty; there is nothing to decode"
+    );
+    let header = value.bytes.get_u8();
+    let codec = StorageCodecKind::try_from(header).with_context(|| {
+        format!(
+            "unrecognized storage codec header byte {header:#04x}; the value was likely not written \
+            with the storage codec and cannot be decoded. Use --raw to fetch the bytes as-is"
+        )
+    })?;
+    let decoded: serde_json::Value = storage::decode::decode_serde(value.bytes, codec).with_context(|| {
+        format!("value is stored with the {codec} codec, which cannot be decoded without knowing its type; use --raw")
+    })?;
+
+    if let Some(v) = decoded.get("version").and_then(|v| v.as_u64())
+        && Version::from(v as u32) != version
+    {
+        anyhow::bail!("returned payload and metadata object versions must align");
+    }
+
+    Ok(decoded)
 }
 
 async fn get_raw_value(connection: &ConnectionInfo, opts: &GetValueOpts) -> anyhow::Result<()> {
