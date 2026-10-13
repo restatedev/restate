@@ -48,7 +48,7 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
-datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "datetime_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
 datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
 datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
 datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
@@ -130,6 +130,7 @@ serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
+sketches-ddsketch = { version = "0.3", default-features = false, features = ["use_serde"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "full", "visit", "visit-mut"] }
@@ -200,7 +201,7 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
-datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "datetime_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
 datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
 datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
 datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
@@ -285,6 +286,7 @@ serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "float_roundtrip", "preserve_order", "raw_value", "unbounded_depth"] }
 serde_with = { version = "3", features = ["base64", "hex", "json"] }
 simd-adler32 = { version = "0.3", default-features = false, features = ["std"] }
+sketches-ddsketch = { version = "0.3", default-features = false, features = ["use_serde"] }
 slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde", "union"] }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
