@@ -8,9 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_partition_store::PartitionStore;
+use restate_platform::hash::HashMap;
+use restate_platform::hash::hash_map::Entry;
 use restate_sharding::PartitionKey;
+use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::RawStatusHeaderRef;
-use restate_types::vqueues::EntryId;
+use restate_types::ServiceName;
+use restate_types::vqueues::{EntryId, VQueueId, VQueueIdRef};
 
 use super::schema::SysVqueueEntryStatusBuilder;
 
@@ -20,7 +25,8 @@ pub(crate) fn append_vqueue_entry_status_row(
     partition_key: PartitionKey,
     entry_id: &EntryId,
     header: &RawStatusHeaderRef<'_>,
-) {
+    service_names: &mut ServiceNameResolver,
+) -> Result<(), StorageError> {
     let stats = &header.stats;
     let metadata = &header.metadata;
 
@@ -35,6 +41,11 @@ pub(crate) fn append_vqueue_entry_status_row(
     }
     if row.is_vqueue_id_defined() {
         row.fmt_vqueue_id(&header.qid);
+    }
+    if row.is_service_name_defined()
+        && let Some(service_name) = service_names.resolve(&header.qid)?
+    {
+        row.service_name(service_name);
     }
     if row.is_stage_defined() {
         row.fmt_stage(header.stage);
@@ -186,5 +197,59 @@ pub(crate) fn append_vqueue_entry_status_row(
         row.total_blocked_on_deployment_concurrency(
             total_wait_stats.blocked_on_deployment_concurrency_ms as i64,
         );
+    }
+
+    Ok(())
+}
+
+/// Resolves the service name of an entry's vqueue through point lookups into the
+/// vqueue metadata, caching the results.
+///
+/// Service names are interned: they come from a small, stable set, so repeated
+/// queries on the same storage thread share a single allocation per name.
+///
+/// A vqueue id embeds the partition key of its entries, and entry statuses are
+/// scanned in partition-key order, so the cache only holds the vqueues seen under
+/// the current partition key.
+pub(crate) struct ServiceNameResolver {
+    partition_store: PartitionStore,
+    partition_key: Option<PartitionKey>,
+    cache: HashMap<VQueueId, Option<ServiceName>>,
+}
+
+impl ServiceNameResolver {
+    pub(crate) fn new(partition_store: PartitionStore) -> Self {
+        Self {
+            partition_store,
+            partition_key: None,
+            cache: HashMap::new(),
+        }
+    }
+
+    fn resolve(&mut self, qid: &VQueueIdRef<'_>) -> Result<Option<&str>, StorageError> {
+        if self.partition_key != Some(qid.partition_key()) {
+            self.cache.clear();
+            self.partition_key = Some(qid.partition_key());
+        }
+
+        let service_name = match self
+            .cache
+            .entry(VQueueId::from_raw_bytes(&mut qid.as_raw_bytes()))
+        {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let service_name = self
+                    .partition_store
+                    .map_vqueue_meta_blocking(entry.key(), |meta| {
+                        meta.service_name()
+                            .filter(|s| !s.is_empty())
+                            .map(ServiceName::new)
+                    })?
+                    .flatten();
+                entry.insert(service_name)
+            }
+        };
+
+        Ok(service_name.as_ref().map(ServiceName::as_str))
     }
 }

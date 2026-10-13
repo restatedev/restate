@@ -168,6 +168,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "total_blocked_on_concurrency_rules", ty: "DurationMillisecond", description: "Total time spent waiting on user-defined concurrency limits across all attempts." },
         SqlColumnDoc { name: "total_blocked_on_lock", ty: "DurationMillisecond", description: "Total time spent waiting to acquire a virtual object lock across all attempts." },
         SqlColumnDoc { name: "total_blocked_on_deployment_concurrency", ty: "DurationMillisecond", description: "Total time spent blocked on deployment concurrency capacity across all attempts." },
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Name of the service this entry's vqueue belongs to." },
     ] },
     SqlTableDoc { name: "sys_vqueue_meta", description: "", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },

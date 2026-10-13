@@ -354,7 +354,10 @@ pub trait ScanVQueueEntryStatusTable {
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(
+                &'a BaseEntryId,
+                &'a RawStatusHeaderRef<'a>,
+            ) -> std::ops::ControlFlow<Result<()>>
             + Send
             + Sync
             + 'static;

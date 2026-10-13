@@ -130,4 +130,7 @@ define_table!(sys_vqueue_entry_status(
 
     /// Total time spent blocked on deployment concurrency capacity across all attempts.
     total_blocked_on_deployment_concurrency: DataType::Duration,
+
+    /// Name of the service this entry's vqueue belongs to.
+    service_name: DataType::LargeUtf8,
 ));

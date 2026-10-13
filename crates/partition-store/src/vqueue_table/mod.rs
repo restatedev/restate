@@ -20,6 +20,7 @@ mod running_reader;
 mod stats;
 
 use std::collections::BTreeSet;
+use std::ops::ControlFlow;
 use std::pin::Pin;
 
 pub use entry::{EntryStatusKey, EntryStatusKeyRef};
@@ -566,6 +567,24 @@ impl<'txn> ReadVQueueTable for PartitionStoreTransaction<'txn> {
     }
 }
 
+impl PartitionStore {
+    /// Gets a vqueue's metadata, and applies a function to it.
+    pub fn map_vqueue_meta_blocking<F, R>(&self, qid: &VQueueId, f: F) -> Result<Option<R>>
+    where
+        F: FnOnce(&VQueueMetaRef<'_>) -> R,
+    {
+        let mut key_buffer = [0u8; MetaKey::serialized_length_fixed()];
+        MetaKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key_buffer.as_mut());
+        let Some(raw_value) = self.get(TableKind::VQueue, key_buffer)? else {
+            return Ok(None);
+        };
+        let meta = VQueueMetaRef::decode_borrowed(raw_value.as_ref())?;
+        Ok(Some(f(&meta)))
+    }
+}
+
 impl ScanVQueueMetaTable for PartitionStore {
     fn for_each_vqueue_meta<F>(
         &self,
@@ -727,7 +746,10 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>
     where
-        F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
+        F: for<'a> FnMut(
+                &'a BaseEntryId,
+                &'a RawStatusHeaderRef<'a>,
+            ) -> std::ops::ControlFlow<Result<()>>
             + Send
             + Sync
             + 'static,
@@ -762,7 +784,7 @@ impl ScanVQueueEntryStatusTable for PartitionStore {
                             .map_err(StorageError::BilrostDecode),
                     )?;
 
-                    f(&id, &header).map_break(Ok)
+                    f(&id, &header)
                 },
             )
             .map_err(|_| StorageError::OperationalError)?;
@@ -780,7 +802,10 @@ fn multi_get_vqueue_entry_status<F>(
     mut f: F,
 ) -> impl Future<Output = Result<()>> + Send
 where
-    F: for<'a> FnMut(&'a BaseEntryId, &'a RawStatusHeaderRef<'a>) -> std::ops::ControlFlow<()>
+    F: for<'a> FnMut(
+            &'a BaseEntryId,
+            &'a RawStatusHeaderRef<'a>,
+        ) -> std::ops::ControlFlow<Result<()>>
         + Send
         + Sync
         + 'static,
@@ -848,8 +873,8 @@ where
                                 RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
                                     .map_err(StorageError::BilrostDecode)?;
 
-                            if f(id, &header).is_break() {
-                                return Ok(());
+                            if let ControlFlow::Break(result) = f(id, &header) {
+                                return result;
                             }
                         }
 
