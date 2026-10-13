@@ -23,6 +23,13 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "max_service_protocol_version", ty: "UInt32", description: "Maximum supported protocol version." },
         SqlColumnDoc { name: "services", ty: "Utf8 List", description: "List of service names registered by this deployment." },
     ] },
+    SqlTableDoc { name: "sys_deployment_stats", description: "VQueue entry counts grouped by deployment, service, stage, and status across the cluster.", columns: &[
+        SqlColumnDoc { name: "deployment_id", ty: "Utf8", description: "Identifier of the deployment whose entries are counted." },
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Name of the service whose entries are counted." },
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage whose entries are counted. One of `inbox`, `running`, `suspended`, `paused`, or `finished`." },
+        SqlColumnDoc { name: "status", ty: "Utf8", description: "The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`." },
+        SqlColumnDoc { name: "num_entries", ty: "UInt64", description: "Number of entries aggregated across all physical partitions." },
+    ] },
     SqlTableDoc { name: "sys_inbox", description: "Invocations queued for a Virtual Object or Workflow key. Only one invocation runs at a time per key; the others wait here, ordered by `sequence_number`.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
         SqlColumnDoc { name: "service_name", ty: "Utf8", description: "The name of the invoked virtual object/workflow." },
@@ -107,6 +114,14 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "ty", ty: "Utf8", description: "The service type. Either `service` or `virtual_object` or `workflow`." },
         SqlColumnDoc { name: "deployment_id", ty: "Utf8", description: "The ID of the latest deployment" },
     ] },
+    SqlTableDoc { name: "sys_service_stats", description: "VQueue entry counts grouped by service dimensions across the cluster.", columns: &[
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Name of the service whose entries are counted." },
+        SqlColumnDoc { name: "handler", ty: "Utf8", description: "Name of the handler. The handler is NULL for operations that are not linked to a handler (e.g. state mutations)." },
+        SqlColumnDoc { name: "kind", ty: "Utf8", description: "The kind of operation. Examples are `state-mutation` and `invocation`." },
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage whose entries are counted. One of `inbox`, `running`, `suspended`, `paused`, or `finished`." },
+        SqlColumnDoc { name: "status", ty: "Utf8", description: "The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`." },
+        SqlColumnDoc { name: "num_entries", ty: "UInt64", description: "Number of entries aggregated across all physical partitions." },
+    ] },
     SqlTableDoc { name: "state", description: "State of Virtual Objects and Workflows. One row per state key of each Virtual Object or Workflow instance.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
         SqlColumnDoc { name: "scope", ty: "Utf8", description: "The scope of the Virtual Object instance, if scoped. NULL for unscoped entries. Since v1.7.0" },
@@ -129,6 +144,18 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "rule_pattern", ty: "Utf8", description: "The rule pattern that defines the limit (null if unlimited). Resolved from the rule handle; shows \"[removed]\" if the rule was deleted since the counter was created." },
         SqlColumnDoc { name: "available", ty: "UInt32", description: "Available capacity (limit - usage). Null if unlimited." },
         SqlColumnDoc { name: "num_waiters", ty: "UInt64", description: "Number of vqueues currently waiting behind this counter." },
+    ] },
+    SqlTableDoc { name: "sys_virtual_object_stats", description: "Partition-local VQueue entry counts grouped by virtual-object dimensions, stage, and status.", columns: &[
+        SqlColumnDoc { name: "partition_id", ty: "UInt32", description: "Physical partition containing these virtual-object statistics." },
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Name of the virtual-object service whose entries are counted." },
+        SqlColumnDoc { name: "key", ty: "Utf8", description: "Key of the virtual object whose entries are counted." },
+        SqlColumnDoc { name: "scope", ty: "Utf8", description: "Scope of the virtual object. NULL for unscoped virtual objects." },
+        SqlColumnDoc { name: "handler", ty: "Utf8", description: "Name of the handler. The handler is NULL for state mutations." },
+        SqlColumnDoc { name: "kind", ty: "Utf8", description: "The kind of operation. One of `state-mutation` or `invocation`." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning virtual objects. Can be ignored." },
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage whose entries are counted. One of `inbox`, `running`, `suspended`, `paused`, or `finished`." },
+        SqlColumnDoc { name: "status", ty: "Utf8", description: "The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`." },
+        SqlColumnDoc { name: "num_entries", ty: "UInt64", description: "Number of entries in this partition-local stage/status bucket. Buckets with no entries are omitted." },
     ] },
     SqlTableDoc { name: "sys_vqueue_entry_status", description: "Status of every vqueue entry. One row per entry (an invocation or a state mutation), with its stage, its attempts and how long it was blocked on each resource.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },
@@ -277,4 +304,4 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_deployment_stats, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, sys_service_stats, state, sys_user_limits, sys_virtual_object_stats, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
