@@ -45,6 +45,11 @@ pub struct GoogleIdTokenAuth {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "schema", schema(value_type = Option<String>))]
     pub workload_identity_provider: Option<bytestring::ByteString>,
+    /// Allow a deployment URI that is neither https nor a loopback/private IP address, e.g. a
+    /// plain-http endpoint reached through Google Private Service Connect. Minted tokens are then
+    /// sent in cleartext. Defaults to false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_insecure_transport: bool,
 }
 
 /// Failure converting wire authentication into its persisted form.
@@ -102,7 +107,8 @@ impl GoogleIdTokenAuth {
             audience,
             self.impersonate_service_account,
             self.workload_identity_provider,
-        )?)
+        )?
+        .with_allow_insecure_transport(self.allow_insecure_transport))
     }
 }
 
@@ -122,6 +128,7 @@ impl From<restate_types::deployment::GoogleIdTokenAuth> for GoogleIdTokenAuth {
             impersonate_service_account: value.impersonate_service_account().cloned(),
             audience: Some(value.audience().clone()),
             workload_identity_provider: value.workload_identity_provider().cloned(),
+            allow_insecure_transport: value.allow_insecure_transport(),
         }
     }
 }
@@ -883,7 +890,34 @@ mod tests {
             impersonate_service_account: None,
             audience,
             workload_identity_provider: None,
+            allow_insecure_transport: false,
         }
+    }
+
+    #[test]
+    fn allow_insecure_transport_round_trips_and_defaults_to_false() {
+        let uri: Uri = "http://svc.example.com/".parse().unwrap();
+        let audience = Some(ByteString::from_static("http://svc.example.com"));
+
+        let default_auth: GoogleIdTokenAuth =
+            serde_json::from_value(serde_json::json!({ "audience": "http://svc.example.com" }))
+                .unwrap();
+        assert_eq!(default_auth, wire_auth(audience.clone()));
+        assert_eq!(
+            serde_json::to_value(&default_auth).unwrap(),
+            serde_json::json!({ "audience": "http://svc.example.com" })
+        );
+        let persisted = default_auth.clone().into_persisted(&uri).unwrap();
+        assert!(!persisted.allow_insecure_transport());
+        assert_eq!(GoogleIdTokenAuth::from(persisted), default_auth);
+
+        let insecure = GoogleIdTokenAuth {
+            allow_insecure_transport: true,
+            ..wire_auth(audience)
+        };
+        let persisted = insecure.clone().into_persisted(&uri).unwrap();
+        assert!(persisted.allow_insecure_transport());
+        assert_eq!(GoogleIdTokenAuth::from(persisted), insecure);
     }
 
     #[test]
@@ -927,6 +961,7 @@ mod tests {
             workload_identity_provider: Some(ByteString::from_static(
                 "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r",
             )),
+            allow_insecure_transport: false,
         };
         let err = auth
             .into_persisted(&uri)

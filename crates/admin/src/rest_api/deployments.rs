@@ -116,7 +116,12 @@ where
                 )?;
                 let headers_for_validation: Option<HashMap<http::HeaderName, http::HeaderValue>> =
                     additional_headers.clone().map(Into::into);
-                validate_http_auth(&uri, headers_for_validation.as_ref())?;
+                let HttpAuth::GoogleIdToken(google_auth) = &wire_auth;
+                validate_http_auth(
+                    &uri,
+                    headers_for_validation.as_ref(),
+                    google_auth.allow_insecure_transport,
+                )?;
                 let persisted = wire_auth
                     .into_persisted(&uri)
                     .map_err(|e| MetaApiError::InvalidField(e.field(), e.to_string()))?;
@@ -387,7 +392,7 @@ where
                 .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
             if let DeploymentType::Http {
                 address: existing_uri,
-                auth: Some(_),
+                auth: Some(restate_types::deployment::HttpAuth::GoogleIdToken(existing_auth)),
                 ..
             } = &existing_deployment.ty
             {
@@ -399,7 +404,11 @@ where
                     existing_uri,
                     &existing_deployment.additional_headers,
                 );
-                validate_http_auth(effective_uri, Some(effective_headers.as_ref()))?;
+                validate_http_auth(
+                    effective_uri,
+                    Some(effective_headers.as_ref()),
+                    existing_auth.allow_insecure_transport(),
+                )?;
             }
 
             (
@@ -664,6 +673,7 @@ mod tests {
             workload_identity_provider: Some(ByteString::from_static(
                 "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/p/providers/r",
             )),
+            allow_insecure_transport: false,
         })
     }
 

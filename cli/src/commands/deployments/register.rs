@@ -117,6 +117,13 @@ pub struct Register {
     )]
     gcp_workload_identity_provider: Option<String>,
 
+    /// Allow minting Google ID tokens for a deployment URL that is neither
+    /// https nor a loopback/private IP address, e.g. a plain-http endpoint
+    /// reached through Google Private Service Connect. Tokens are then sent
+    /// in cleartext. Implies --gcp-id-token.
+    #[clap(long, help_heading = "GCP authentication")]
+    gcp_allow_insecure_transport: bool,
+
     /// Additional header that will be sent to the endpoint during the discovery request.
     ///
     /// Use `--extra-header name=value` format and repeat --extra-header for each additional header.
@@ -249,9 +256,9 @@ fn parse_deployment(
 fn validate_gcp_auth_flags(id_token_auth_requested: bool, is_lambda_target: bool) -> Result<()> {
     if id_token_auth_requested && is_lambda_target {
         bail!(
-            "--gcp-id-token, --gcp-impersonate-service-account, --gcp-audience, and \
-             --gcp-workload-identity-provider are HTTP-only flags. Lambda deployments use \
-             --assume-role-arn instead."
+            "--gcp-id-token, --gcp-impersonate-service-account, --gcp-audience, \
+             --gcp-workload-identity-provider, and --gcp-allow-insecure-transport are HTTP-only \
+             flags. Lambda deployments use --assume-role-arn instead."
         );
     }
     Ok(())
@@ -311,7 +318,8 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
     let id_token_auth = discover_opts.gcp_id_token
         || discover_opts.gcp_impersonate_service_account.is_some()
         || discover_opts.gcp_audience.is_some()
-        || discover_opts.gcp_workload_identity_provider.is_some();
+        || discover_opts.gcp_workload_identity_provider.is_some()
+        || discover_opts.gcp_allow_insecure_transport;
     validate_gcp_auth_flags(
         id_token_auth,
         matches!(discover_opts.deployment, DeploymentEndpoint::Lambda(_)),
@@ -328,6 +336,7 @@ pub async fn run_register(State(env): State<CliEnv>, discover_opts: &Register) -
                 .gcp_workload_identity_provider
                 .clone()
                 .map(Into::into),
+            allow_insecure_transport: discover_opts.gcp_allow_insecure_transport,
         })
     });
 

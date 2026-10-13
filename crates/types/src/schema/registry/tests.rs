@@ -179,22 +179,33 @@ mod http_auth_validation_tests {
     }
 
     #[test]
-    fn rejects_non_https_public_host() {
+    fn rejects_non_https_public_host_unless_insecure_transport_allowed() {
         let uri: Uri = "http://example.com/".parse().unwrap();
-        assert_invalid_field(validate_http_auth(&uri, None), "auth");
+        assert_invalid_field(validate_http_auth(&uri, None, false), "auth");
+        validate_http_auth(&uri, None, true).expect("opt-in accepts a non-https public host");
+
+        let mut headers: Headers = Headers::new();
+        headers.insert(
+            HeaderName::from_static("x-serverless-authorization"),
+            HeaderValue::from_static("Bearer y"),
+        );
+        assert_invalid_field(
+            validate_http_auth(&uri, Some(&headers), true),
+            "additional_headers",
+        );
     }
 
     #[test]
     fn accepts_https_public_host() {
         let uri: Uri = "https://svc.example.com/".parse().unwrap();
-        validate_http_auth(&uri, None).expect("https public host accepted");
+        validate_http_auth(&uri, None, false).expect("https public host accepted");
     }
 
     #[test]
     fn accepts_non_https_loopback() {
         for host in ["localhost", "127.0.0.1", "[::1]", "10.0.0.1", "[fc00::1]"] {
             let uri: Uri = format!("http://{host}/").parse().unwrap();
-            validate_http_auth(&uri, None)
+            validate_http_auth(&uri, None, false)
                 .unwrap_or_else(|e| panic!("expected accept for {host}, got {e:?}"));
         }
     }
@@ -209,7 +220,7 @@ mod http_auth_validation_tests {
         );
 
         assert_invalid_field(
-            validate_http_auth(&uri, Some(&headers)),
+            validate_http_auth(&uri, Some(&headers), false),
             "additional_headers",
         );
     }
@@ -228,7 +239,7 @@ mod http_auth_validation_tests {
         );
 
         assert_invalid_field(
-            validate_http_auth(&uri, Some(&headers)),
+            validate_http_auth(&uri, Some(&headers), false),
             "additional_headers",
         );
     }
@@ -242,7 +253,8 @@ mod http_auth_validation_tests {
             HeaderValue::from_static("Bearer x"),
         );
 
-        validate_http_auth(&uri, Some(&headers)).expect("single Authorization header is allowed");
+        validate_http_auth(&uri, Some(&headers), false)
+            .expect("single Authorization header is allowed");
     }
 
     #[test]
@@ -255,7 +267,7 @@ mod http_auth_validation_tests {
             effective_http_patch_inputs(Some(&new_uri), None, &existing_uri, &existing_headers);
 
         assert_invalid_field(
-            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref()), false),
             "auth",
         );
     }
@@ -275,7 +287,7 @@ mod http_auth_validation_tests {
             effective_http_patch_inputs(None, Some(&patched), &existing_uri, &existing_headers);
 
         assert_invalid_field(
-            validate_http_auth(effective_uri, Some(effective_headers.as_ref())),
+            validate_http_auth(effective_uri, Some(effective_headers.as_ref()), false),
             "additional_headers",
         );
     }
@@ -288,7 +300,7 @@ mod http_auth_validation_tests {
         let (effective_uri, effective_headers) =
             effective_http_patch_inputs(None, None, &existing_uri, &existing_headers);
 
-        validate_http_auth(effective_uri, Some(effective_headers.as_ref()))
+        validate_http_auth(effective_uri, Some(effective_headers.as_ref()), false)
             .expect("no-op PATCH against safe persisted record is accepted");
     }
 }
