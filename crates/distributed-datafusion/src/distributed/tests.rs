@@ -56,7 +56,7 @@ use crate::state::schema::{StateBuilder, StateTable};
 use crate::table_providers::ScanPartition;
 
 use super::DistributedQueryServer;
-use super::source::{SourceCodec, SourceExec};
+use super::source::{SourceCodec, plan_partition_access};
 use super::transport::rpc;
 use super::worker::TaskObservation;
 
@@ -313,12 +313,15 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
         .engine(1, 2)
         .create_session(SessionOptions::default())
         .unwrap();
-    for analyze in [false, true] {
-        let sql = if analyze {
-            "EXPLAIN ANALYZE VERBOSE SELECT COUNT(*) FROM state"
-        } else {
-            "EXPLAIN VERBOSE SELECT COUNT(*) FROM state"
-        };
+    for (sql, analyze, verbose) in [
+        ("EXPLAIN SELECT COUNT(*) FROM state", false, false),
+        ("EXPLAIN VERBOSE SELECT COUNT(*) FROM state", false, true),
+        (
+            "EXPLAIN ANALYZE VERBOSE SELECT COUNT(*) FROM state",
+            true,
+            true,
+        ),
+    ] {
         let result = session.execute(sql, QueryOptions {}).await.unwrap();
         let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
         let text = batches
@@ -331,8 +334,13 @@ async fn explain_shows_distributed_stages_and_analyze_executes_them() {
             .join("\n");
         assert!(text.contains("DistributedExec"), "{text}");
         assert!(text.contains("NetworkCoalesceExec"), "{text}");
-        assert!(text.contains("StorageScanExec"), "{text}");
+        assert!(text.contains("TableScanExec"), "{text}");
         assert!(text.contains("owner=N2:1"), "{text}");
+        assert_eq!(text.contains("KeyRange("), verbose, "{text}");
+        if !verbose {
+            assert!(text.contains("lanes=1, partitions=[0]"), "{text}");
+            assert!(!text.contains("work="), "{text}");
+        }
         assert_eq!(
             fixture.observations.lock().len(),
             usize::from(analyze),
@@ -378,7 +386,7 @@ async fn task_protocol_and_required_storage_fail_closed() {
     );
     assert!(fixture.observations.lock().is_empty());
 
-    let plan = SourceExec::for_scan(
+    let plan = plan_partition_access(
         StateTable::identity(),
         &fixture.scanners,
         vec![(PartitionId::MIN, KeyRange::FULL)],
@@ -389,6 +397,9 @@ async fn task_protocol_and_required_storage_fail_closed() {
         vec![],
         None,
         None,
+        None,
+        false,
+        false,
     )
     .unwrap();
     let context = environment(1, 2).build_session_state().unwrap().task_ctx();

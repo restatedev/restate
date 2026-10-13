@@ -37,7 +37,7 @@ impl StateTable {
             partition_selector,
             StateBuilder::schema(),
             state_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager.create_partition_source::<Self>(),
             PartitionKeySelector::default().with_scope_or_service_key("scope", "service_key"),
         );
         Arc::new(table)
