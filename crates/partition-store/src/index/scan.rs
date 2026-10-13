@@ -15,7 +15,7 @@ use zerocopy::IntoBytes;
 
 use restate_rocksdb::{IterAction, Priority};
 use restate_storage_api::StorageError;
-use restate_storage_api::filter::Filter;
+use restate_storage_api::filter::{Filter, LiveFilter};
 use restate_storage_api::index::{
     BusyVQueue as BusyVQueueTarget, EntryByService, EntryByStage, EntryByVirtualObject,
     EntryNextAtByService, EntryNextAtByStage, EntryNextAtByVirtualObject,
@@ -36,15 +36,21 @@ use super::{
     EntryNextAtByVirtualObjectStageKeyView, SecondaryIndexKey,
 };
 
+/// Keys visited between checks for a newer live filter. A check reads state shared
+/// with the query engine, so it is amortized rather than repeated for every key.
+const LIVE_FILTER_POLL_INTERVAL: u32 = 64;
+
 macro_rules! entry_scan {
     ($method:ident, $target:ty, $key:ty, $view:ident) => {
         /// Scans persisted index entries within the requested and owned key range.
         /// Validates field boundaries and the canonical ID; other values remain lazy.
-        /// Native predicates run before materialization.
+        /// Native predicates, including the latest live filter, run before
+        /// materialization.
         pub fn $method<F>(
             &self,
             range: KeyRange,
             filter: &Filter<$target>,
+            live: Option<Box<dyn LiveFilter<$target>>>,
             mut f: F,
         ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
         where
@@ -53,6 +59,9 @@ macro_rules! entry_scan {
             self.scan_index(
                 range,
                 <$key>::prepare_filter(filter)?,
+                live.map(|mut live| {
+                    move || live.poll().map(|filter| <$key>::prepare_filter(&filter))
+                }),
                 move |decoder, value, range| {
                     if !value.is_empty() {
                         return ControlFlow::Break(Err(StorageError::DataIntegrityError));
@@ -118,6 +127,7 @@ impl PartitionStore {
         &self,
         range: KeyRange,
         filter: &Filter<BusyVQueueTarget>,
+        live: Option<Box<dyn LiveFilter<BusyVQueueTarget>>>,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, F>>
     where
@@ -128,6 +138,12 @@ impl PartitionStore {
         self.scan_index(
             range,
             BusyVQueueKey::prepare_filter(filter)?,
+            live.map(|mut live| {
+                move || {
+                    live.poll()
+                        .map(|filter| BusyVQueueKey::prepare_filter(&filter))
+                }
+            }),
             move |decoder, value, range| {
                 let view = break_on_err(decoder.take_all())?;
                 if !range.contains(&break_on_err(view.vqueue_id.decode())?.partition_key()) {
@@ -141,14 +157,17 @@ impl PartitionStore {
 
     /// Shares physical scanning and filtering. The callback chooses lazy or owned
     /// decoding and enforces the supplied intersection of requested and owned ranges.
-    fn scan_index<K, F>(
+    /// `live` returns a newly prepared live filter when one is available.
+    fn scan_index<K, L, F>(
         &self,
         range: KeyRange,
         filter: PreparedKeyFilter<K>,
+        mut live: Option<L>,
         mut f: F,
-    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, K, F>>
+    ) -> Result<impl Future<Output = Result<()>> + Send + use<'_, K, L, F>>
     where
         K: SecondaryIndexKey + KeyDecode + IndexKeySchema + 'static,
+        L: FnMut() -> Option<Result<PreparedKeyFilter<K>>> + Send + 'static,
         F: for<'a> FnMut(KeyDecoder<'a, K>, &'a [u8], KeyRange) -> ControlFlow<Result<()>>
             + Send
             + 'static,
@@ -162,12 +181,21 @@ impl PartitionStore {
                 let scan = cursor.scan().clone();
                 let mut opts = ReadOptions::default();
                 opts.set_async_io(true);
+                let mut visited = 0u32;
                 self.iterator_controlled_physical(
                     "df-scan-entry-index",
                     Priority::Low,
                     opts,
                     scan,
                     move |(key, value)| {
+                        // Live filters only refine the static plan, so a snapshot that
+                        // cannot be prepared is ignored rather than failing the scan.
+                        if visited.is_multiple_of(LIVE_FILTER_POLL_INTERVAL)
+                            && let Some(Ok(filter)) = live.as_mut().and_then(|live| live())
+                        {
+                            cursor.set_live(filter);
+                        }
+                        visited = visited.wrapping_add(1);
                         match break_on_err(cursor.evaluate(key))? {
                             KeyMatch::Match => {}
                             KeyMatch::Seek(target) => {
@@ -220,7 +248,7 @@ mod tests {
     ) -> Result<Vec<CanonicalEntryId>> {
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(range, &filter, move |key| {
+            .scan_entry_by_service(range, &filter, None, move |key| {
                 sender.send(key.canonical_id.decode().unwrap()).unwrap();
                 ControlFlow::Continue(())
             })?
@@ -307,7 +335,7 @@ mod tests {
 
         let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
         store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, move |_| {
+            .scan_entry_by_service(KeyRange::FULL, &Filter::All, None, move |_| {
                 sender.send(()).unwrap();
                 ControlFlow::Break(Ok(()))
             })
@@ -317,7 +345,7 @@ mod tests {
         assert_eq!(receiver.recv().await, Some(()));
         assert_eq!(receiver.recv().await, None);
         let error = store
-            .scan_entry_by_service(KeyRange::FULL, &Filter::All, |_| {
+            .scan_entry_by_service(KeyRange::FULL, &Filter::All, None, |_| {
                 ControlFlow::Break(Err(StorageError::DataIntegrityError))
             })
             .unwrap()
