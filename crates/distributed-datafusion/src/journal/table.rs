@@ -24,6 +24,7 @@ use restate_storage_api::journal_table_v2::{
 use restate_types::identifiers::JournalEntryId;
 use restate_types::storage::StoredRawEntry;
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::InvocationIdFilter;
 use crate::filter::PartitionKeySelector;
@@ -42,7 +43,9 @@ impl SysJournalTable {
             partition_selector,
             SysJournalBuilder::schema(),
             sys_journal_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::InvocationRange),
             PartitionKeySelector::default().with_invocation_id("id"),
         );
         Arc::new(journal_table)
@@ -66,6 +69,7 @@ pub(crate) enum ScannedEntry {
 struct JournalScanner;
 
 impl ScanLocalPartition for JournalScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::InvocationRange);
     type Builder = SysJournalBuilder;
     type Item<'a> = (JournalEntryId, ScannedEntry);
     type ConversionError = std::convert::Infallible;

@@ -21,6 +21,7 @@ use restate_storage_api::vqueue_table::filters::ScanMetaFilter;
 use restate_storage_api::vqueue_table::metadata::VQueueMetaRef;
 use restate_types::vqueues::VQueueId;
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::{PartitionKeySelector, VQueueMetaFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -49,7 +50,9 @@ impl SysVqueueMetaTable {
             partition_selector,
             schema,
             sys_vqueue_meta_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::VQueue),
             PartitionKeySelector::default()
                 .with_scope("scope")
                 .with_grouped_partitioned_resource_id::<VQueueId>("id"),
@@ -70,6 +73,7 @@ impl SysVqueueMetaTable {
 struct VQueuesMetaScanner;
 
 impl ScanLocalPartition for VQueuesMetaScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::VQueue);
     type Builder = SysVqueueMetaBuilder;
     type Item<'a> = (&'a VQueueId, &'a VQueueMetaRef<'a>);
     type ConversionError = std::convert::Infallible;

@@ -335,7 +335,7 @@ impl NodeFanOutExecutionPlan {
                     .iter()
                     .map(|node| {
                         crate::distributed::plan(Arc::new(
-                            crate::distributed::SourceExec::for_node(
+                            crate::distributed::NodeScanExec::for_node(
                                 table_name.clone(),
                                 node.node_id,
                                 Arc::clone(&projected_schema),

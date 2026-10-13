@@ -23,6 +23,7 @@ use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_types::errors::ConversionError;
 use restate_types::identifiers::InvocationId;
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::{InvocationIdFilter, PartitionKeySelector};
 use crate::invocation_status::row::append_invocation_status_row;
@@ -55,7 +56,9 @@ impl SysInvocationStatusTable {
             partition_selector,
             schema,
             sys_invocation_status_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::Invocation),
             PartitionKeySelector::default()
                 .with_scope_or_service_key("scope", "target_service_key")
                 .with_grouped_invocation_id("id"),
@@ -75,6 +78,7 @@ impl SysInvocationStatusTable {
 struct StatusScanner;
 
 impl ScanLocalPartition for StatusScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::Invocation);
     type Builder = SysInvocationStatusBuilder;
     type Item<'a> = (InvocationId, &'a InvocationStatusV2Lazy<'a>);
     type ConversionError = ConversionError;

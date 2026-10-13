@@ -20,6 +20,7 @@ use restate_storage_api::journal_events::{
 };
 use restate_types::identifiers::InvocationId;
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::InvocationIdFilter;
 use crate::filter::PartitionKeySelector;
@@ -40,7 +41,9 @@ impl SysJournalEventsTable {
             partition_selector,
             SysJournalEventsBuilder::schema(),
             sys_journal_events_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::InvocationRange),
             PartitionKeySelector::default().with_invocation_id("id"),
         );
         Arc::new(journal_events_table)
@@ -57,6 +60,7 @@ impl SysJournalEventsTable {
 struct JournalEventsScanner;
 
 impl ScanLocalPartition for JournalEventsScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::InvocationRange);
     type Builder = SysJournalEventsBuilder;
     type Item<'a> = (InvocationId, EventView);
     type ConversionError = std::convert::Infallible;
