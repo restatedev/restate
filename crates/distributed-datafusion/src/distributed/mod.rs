@@ -17,12 +17,15 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod multi_owner_tests;
+
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::common::config::ConfigOptions;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion};
-use datafusion::common::{Result, exec_err, plan_err};
+use datafusion::common::{Result, exec_err};
 use datafusion::physical_optimizer::PhysicalOptimizerRule;
 use datafusion::physical_plan::coalesce_partitions::CoalescePartitionsExec;
 use datafusion::physical_plan::{ExecutionPlan, ExecutionPlanProperties};
@@ -37,7 +40,7 @@ use uuid::Uuid;
 use restate_core::network::NetworkSender;
 use restate_types::GenerationalNodeId;
 
-pub(crate) use source::StorageScanExec;
+pub(crate) use source::SourceExec;
 pub use worker::DistributedQueryServer;
 
 #[derive(Debug)]
@@ -69,9 +72,9 @@ pub(crate) fn configure(config: &mut SessionConfig, network: impl NetworkSender)
     config.set_extension(Arc::new(DistributedExecution));
     config.set_distributed_option_extension(runtime_config());
     config.set_distributed_channel_resolver(transport::RestateChannelResolver::new(network));
-    config.set_distributed_worker_resolver(StorageOwnersOnly);
-    config.set_distributed_route_task_handler(StorageOwnersOnly);
-    config.set_distributed_user_codec(source::StorageCodec::default());
+    config.set_distributed_worker_resolver(SourceOwnersOnly);
+    config.set_distributed_route_task_handler(SourceOwnersOnly);
+    config.set_distributed_user_codec(source::SourceCodec::default());
 }
 
 fn runtime_config() -> DistributedConfig {
@@ -88,18 +91,11 @@ fn runtime_config() -> DistributedConfig {
 pub(crate) fn plan(plan: Arc<dyn ExecutionPlan>) -> Result<Arc<dyn ExecutionPlan>> {
     let query_id = Uuid::new_v4();
     let mut stage_number = 0;
-    let mut owner = None;
     let plan = plan
         .transform_up(|plan| {
-            let Some(source) = plan.downcast_ref::<StorageScanExec>() else {
+            if !plan.is::<SourceExec>() {
                 return Ok(Transformed::no(plan));
-            };
-            if owner.is_some_and(|owner| owner != source.owner()) {
-                return plan_err!(
-                    "the distributed prototype currently requires a single storage owner"
-                );
             }
-            owner = Some(source.owner());
             stage_number += 1;
             let boundary = NetworkCoalesceExec::try_new(plan, 1, 1)?;
             let mut stage = boundary.input_stage().clone();
@@ -128,9 +124,9 @@ fn worker_url(owner: GenerationalNodeId) -> Result<Url> {
         .map_err(|err| datafusion::error::DataFusionError::External(Box::new(err)))
 }
 
-struct StorageOwnersOnly;
+struct SourceOwnersOnly;
 
-impl WorkerResolver for StorageOwnersOnly {
+impl WorkerResolver for SourceOwnersOnly {
     fn get_urls(&self) -> Result<Vec<Url>> {
         // Assignment is exclusively through the mandatory handler below.
         Ok(vec![])
@@ -138,7 +134,7 @@ impl WorkerResolver for StorageOwnersOnly {
 }
 
 #[async_trait]
-impl RouteTaskHandler for StorageOwnersOnly {
+impl RouteTaskHandler for SourceOwnersOnly {
     async fn handle(&self, ev: RouteTaskEvent<'_>) -> Option<Result<RouteTaskEventResponse>> {
         Some(
             async {
@@ -147,16 +143,16 @@ impl RouteTaskHandler for StorageOwnersOnly {
                 }
                 let mut owner = None;
                 ev.task_specialized_plan.apply(|plan| {
-                    if let Some(source) = plan.downcast_ref::<StorageScanExec>() {
+                    if let Some(source) = plan.downcast_ref::<SourceExec>() {
                         if owner.is_some_and(|owner| owner != source.owner()) {
-                            return exec_err!("task contains conflicting storage owners");
+                            return exec_err!("task contains conflicting source owners");
                         }
                         owner = Some(source.owner());
                     }
                     Ok(TreeNodeRecursion::Continue)
                 })?;
                 let Some(owner) = owner else {
-                    return exec_err!("task has no storage owner");
+                    return exec_err!("task has no source owner");
                 };
                 ev.dialer.dial(worker_url(owner)?).await
             }
