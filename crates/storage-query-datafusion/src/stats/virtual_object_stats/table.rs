@@ -19,7 +19,6 @@ use restate_storage_api::StorageError;
 use restate_storage_api::filter::Filter;
 use restate_storage_api::stats::virtual_object_load::VirtualObjectLoad;
 use restate_types::errors::ConversionError;
-use restate_types::sharding::PartitionId;
 
 use crate::context::{QueryContext, SelectPartitions};
 use crate::filter::{FirstMatchingPartitionKeyExtractor, PointReadFanout};
@@ -68,11 +67,7 @@ struct VirtualObjectStatsScanner;
 
 impl ScanLocalPartition for VirtualObjectStatsScanner {
     type Builder = SysVirtualObjectStatsBuilder;
-    type Item<'a> = (
-        PartitionId,
-        KeyDecoder<'a, VirtualObjectLoadKey>,
-        StageCounts,
-    );
+    type Item<'a> = (KeyDecoder<'a, VirtualObjectLoadKey>, StageCounts);
     type ConversionError = ConversionError;
     type Filter = Filter<VirtualObjectLoad>;
 
@@ -86,21 +81,19 @@ impl ScanLocalPartition for VirtualObjectStatsScanner {
         filter: Self::Filter,
         mut f: F,
     ) -> Result<impl Future<Output = restate_storage_api::Result<()>> + Send, StorageError> {
-        let partition_id = partition_store.partition_id();
         partition_store.scan_virtual_object_load(&filter, move |key_decoder, value| {
-            f((partition_id, key_decoder, value))
-                .map_break(|result| result.map_err(StorageError::from))
+            f((key_decoder, value)).map_break(|result| result.map_err(StorageError::from))
         })
     }
 
     fn append_row<'a>(
         row_builder: &mut Self::Builder,
-        (partition_id, key_decoder, value): Self::Item<'a>,
+        (key_decoder, value): Self::Item<'a>,
     ) -> Result<(), Self::ConversionError> {
         let key = key_decoder
             .try_full_decode::<VirtualObjectLoad>()
             .map_err(ConversionError::invalid_data)?;
-        append_virtual_object_stats_row(row_builder, partition_id, key, value);
+        append_virtual_object_stats_row(row_builder, key, value);
         Ok(())
     }
 }
