@@ -12,6 +12,8 @@
 //! References use independent fixture rows and a broad primary-storage scan.
 //! Candidates can execute locally or through tasks over quiescent storage partitions.
 
+mod sparse_min_max;
+
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write;
 use std::ops::{ControlFlow, RangeBounds};
@@ -19,9 +21,10 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use datafusion::arrow::array::{
-    Array, ArrayRef, BooleanArray, Int64Array, LargeBinaryArray, LargeStringArray, UInt64Array,
+    Array, ArrayRef, BooleanArray, Int64Array, LargeBinaryArray, LargeStringArray,
+    TimestampMillisecondArray, UInt64Array,
 };
-use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use datafusion::arrow::record_batch::{RecordBatch, RecordBatchOptions};
 use datafusion::catalog::MemTable;
 use datafusion::common::DataFusionError;
@@ -337,6 +340,7 @@ enum Cell {
     Null,
     Int64(i64),
     UInt64(u64),
+    TimestampMillisecond(i64),
     LargeUtf8(String),
     LargeBinary(Vec<u8>),
 }
@@ -388,7 +392,11 @@ fn validate_supported_schema(schema: &Schema) -> Result<(), String> {
     for field in schema.fields() {
         if !matches!(
             field.data_type(),
-            DataType::Int64 | DataType::UInt64 | DataType::LargeUtf8 | DataType::LargeBinary
+            DataType::Int64
+                | DataType::UInt64
+                | DataType::LargeUtf8
+                | DataType::LargeBinary
+                | DataType::Timestamp(TimeUnit::Millisecond, _)
         ) {
             return Err(format!(
                 "unsupported comparison type {:?} for column {}",
@@ -432,6 +440,13 @@ fn append_batch(rows: &mut Vec<Row>, batch: &RecordBatch) -> Result<(), String> 
                     array
                         .as_any()
                         .downcast_ref::<UInt64Array>()
+                        .unwrap()
+                        .value(row_index),
+                ),
+                DataType::Timestamp(TimeUnit::Millisecond, _) => Cell::TimestampMillisecond(
+                    array
+                        .as_any()
+                        .downcast_ref::<TimestampMillisecondArray>()
                         .unwrap()
                         .value(row_index),
                 ),
@@ -609,10 +624,18 @@ fn state_batch(records: &[StateRecord]) -> RecordBatch {
 }
 
 async fn run_memtable(sql: &str, batch: RecordBatch) -> Result<CapturedResult, String> {
+    run_memtable_as("state", sql, batch).await
+}
+
+async fn run_memtable_as(
+    name: &str,
+    sql: &str,
+    batch: RecordBatch,
+) -> Result<CapturedResult, String> {
     let context = SessionContext::new();
     let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).map_err(|e| e.to_string())?;
     context
-        .register_table("state", Arc::new(table))
+        .register_table(name, Arc::new(table))
         .map_err(|e| e.to_string())?;
     let state = context.state();
     let statement = state
