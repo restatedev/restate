@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 use serde_with::serde_as;
 
+// TODO(v1.10): Remove schema serde support
+
 /// The schema information
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -49,6 +51,7 @@ impl From<SchemaUnindexed> for Schema {
             deployments,
             subscriptions,
             kafka_clusters,
+            bilrost_encoded: _,
         }: SchemaUnindexed,
     ) -> Self {
         Self {
@@ -81,6 +84,7 @@ impl From<Schema> for SchemaUnindexed {
                 .collect(),
             subscriptions,
             kafka_clusters,
+            bilrost_encoded: false,
         }
     }
 }

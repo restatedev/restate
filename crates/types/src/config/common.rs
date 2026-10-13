@@ -830,10 +830,16 @@ experimental! {
     /// default flexbuffers. Nodes older than v1.8.0 cannot read either,
     /// so only enable once all nodes run v1.8.0 or newer.
     ///
+    /// This switch is one-way: the first schema change made while this
+    /// option is enabled (e.g. registering a deployment) moves the cluster
+    /// to bilrost permanently. Disabling the option afterwards does not
+    /// switch back to flexbuffers.
+    ///
     /// This will be default from v1.9.0
     ///
-    /// NOTE: Hot change of this config has no effect. A change
-    /// will only take effect on restart.
+    /// TODO(v1.9): Remove this experimental option after new schemas default to Bilrost and schema
+    /// updates enable it unconditionally. Keep the schema's persisted coordination marker until
+    /// v1.10 (to support rolling back from v1.9 to v1.8).
     ///
     /// Since v1.8.0
     schema_bilrost_encoding,

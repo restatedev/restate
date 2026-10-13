@@ -78,17 +78,30 @@ pub struct SchemaUnindexed {
     subscriptions: HashMap<SubscriptionId, Subscription>,
     #[bilrost(tag(4))]
     kafka_clusters: HashMap<String, KafkaCluster>,
+
+    // Temporary mixed-version coordination marker. In v1.8, once a schema is written or decoded
+    // with Bilrost, this remains true so nodes without the experimental option also keep using
+    // Bilrost for that schema.
+    //
+    // TODO(v1.9): Keep this field for compatibility with v1.8, but make new schemas default to
+    // `true` and set it unconditionally whenever a legacy schema is modified. At that point the
+    // experimental configuration option is no longer needed.
+    // TODO(v1.10): Remove this field (including Bilrost tag 5), its serde compatibility plumbing,
+    // and the conditional codec selection. Schema encoding can then always select Bilrost.
+    #[bilrost(tag(5))]
+    bilrost_encoded: bool,
 }
 
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
-// TODO(azmy): Drop serde::Serialize and serde::Deserialize implementations along with serde for MetadataUpdate
-// in v1.9.0
-#[derive(derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(
+    derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize, derive_more::Deref,
+)]
 #[serde(from = "SchemaUnindexed", into = "SchemaUnindexed")]
 #[debug("Schema(version: {})", unindexed.version)]
 pub struct Schema {
+    #[deref]
     unindexed: SchemaUnindexed,
     /// Derived from `unindexed.deployments`, never persisted.
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
@@ -101,6 +114,9 @@ impl Default for SchemaUnindexed {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
+            // TODO(v1.9): Change this to `true` to make Bilrost the default for new schemas. Do not
+            // remove the field until v1.10; v1.9 still needs it to coordinate with v1.8 nodes.
+            bilrost_encoded: false,
         }
     }
 }
@@ -113,6 +129,11 @@ impl SchemaUnindexed {
 
         Ok(())
     }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_bilrost_encoded(&self) -> bool {
+        self.bilrost_encoded
+    }
 }
 
 impl From<SchemaUnindexed> for Schema {
@@ -123,14 +144,6 @@ impl From<SchemaUnindexed> for Schema {
             ),
             unindexed,
         }
-    }
-}
-
-impl std::ops::Deref for Schema {
-    type Target = SchemaUnindexed;
-
-    fn deref(&self) -> &Self::Target {
-        &self.unindexed
     }
 }
 
@@ -147,6 +160,11 @@ impl Schema {
     /// to force update of the schema from v1.
     pub fn touch(&mut self) {
         self.unindexed.version = self.unindexed.version.next();
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_bilrost_encoded(&mut self, enabled: bool) {
+        self.unindexed.bilrost_encoded = enabled;
     }
 }
 
@@ -173,8 +191,6 @@ impl Versioned for Schema {
 }
 
 mod storage {
-    use std::sync::OnceLock;
-
     use bytes::BytesMut;
 
     use restate_platform::storage::{
@@ -182,26 +198,12 @@ mod storage {
     };
 
     use super::{Schema, SchemaUnindexed};
-    use crate::{config::Configuration, storage};
-
-    // The encoding choice is cached once per process because it must not change at runtime.
-    // `StorageCodec::encode` calls `StorageEncode::default_codec` to pick the codec kind it
-    // stores alongside the value, and `StorageEncode::encode` then calls it again to choose the actual
-    // encoding. If the config changed between those two calls, the stored codec kind would not
-    // match the encoded bytes, and the value could no longer be decoded.
-    // TODO(azmy): remove along the experimental flag once default_codec becomes ZstdBilrost
-    static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
+    use crate::storage;
 
     impl StorageEncode for SchemaUnindexed {
         fn default_codec(&self) -> StorageCodecKind {
-            let bilrost_encoding = ENABLED_SCHEMA_BILROST_ENCODING.get_or_init(|| {
-                Configuration::pinned()
-                    .common
-                    .experimental
-                    .is_schema_bilrost_encoding_enabled()
-            });
-
-            if *bilrost_encoding {
+            // TODO(v1.9): return `StorageCodecKind::ZstdBilrostDefault` unconditionally.
+            if self.bilrost_encoded {
                 StorageCodecKind::ZstdBilrostDefault
             } else {
                 StorageCodecKind::FlexbuffersSerde
@@ -237,8 +239,11 @@ mod storage {
                     Ok(schema)
                 }
                 StorageCodecKind::ZstdBilrostDefault => {
-                    let schema = storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
+                    let mut schema =
+                        storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
 
+                    // TODO(v1.10): Remove this assignment together with `bilrost_encoded`.
+                    schema.bilrost_encoded = true;
                     schema
                         .verify()
                         .map_err(|err| StorageDecodeError::DecodeValue(err.into()))?;
