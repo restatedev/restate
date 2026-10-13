@@ -305,6 +305,12 @@ where
             self.partition_store_manager.clone(),
             &self.remote_scanner_manager,
         )?;
+        crate::index::by_service::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
         crate::stats::service_stats::register_self(
             ctx,
             self.partition_selector.clone(),
@@ -500,6 +506,12 @@ where
             &self.remote_scanner_manager,
         )?;
         crate::vqueue_meta::register_self(
+            ctx,
+            self.partition_selector.clone(),
+            self.partition_store_manager.clone(),
+            &self.remote_scanner_manager,
+        )?;
+        crate::index::by_service::register_self(
             ctx,
             self.partition_selector.clone(),
             self.partition_store_manager.clone(),
