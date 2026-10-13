@@ -7516,6 +7516,7 @@ dependencies = [
  "restate-serde-util",
  "restate-service-client",
  "restate-service-protocol-v4",
+ "restate-storage-query-api",
  "restate-storage-query-datafusion",
  "restate-types",
  "restate-util-string",
@@ -7900,10 +7901,12 @@ dependencies = [
  "restate-partition-store",
  "restate-rocksdb",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-storage-query-datafusion",
  "restate-types",
  "restate-util-bytecount",
  "restate-wal-protocol",
+ "restate-worker-api",
  "restate-workspace-hack",
  "rlimit",
  "rust-rocksdb",
@@ -8472,6 +8475,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-service-client",
  "restate-service-protocol-v4",
+ "restate-storage-query-api",
  "restate-storage-query-datafusion",
  "restate-tracing-instrumentation",
  "restate-types",
@@ -8849,6 +8853,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "restate-storage-query-api"
+version = "1.8.1-dev"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "datafusion",
+ "futures",
+ "gardal",
+ "restate-platform",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "thiserror 2.0.20",
+ "tracing",
+]
+
+[[package]]
 name = "restate-storage-query-datafusion"
 version = "1.8.2-dev"
 dependencies = [
@@ -8881,6 +8902,7 @@ dependencies = [
  "restate-service-protocol-v4",
  "restate-sharding",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-types",
  "restate-util-string",
  "restate-worker-api",
@@ -9344,6 +9366,17 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "dashmap",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-datasource-arrow",
+ "datafusion-datasource-csv",
+ "datafusion-datasource-json",
+ "datafusion-expr",
+ "datafusion-functions-nested",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
+ "datafusion-physical-plan",
  "deranged",
  "derive_more",
  "derive_more-impl",
@@ -12176,6 +12209,7 @@ dependencies = [
  "restate-metadata-server",
  "restate-service-client",
  "restate-service-protocol-v4",
+ "restate-storage-query-api",
  "restate-storage-query-datafusion",
  "restate-types",
  "restate-worker",

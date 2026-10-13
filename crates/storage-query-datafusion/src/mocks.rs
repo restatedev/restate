@@ -9,14 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use std::fmt::Debug;
-use std::future::Future;
 use std::marker::PhantomData;
+use std::ops::RangeBounds;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use datafusion::arrow::array::ArrayRef;
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::DataFusionError;
+use futures::{StreamExt, stream};
 
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
@@ -24,10 +25,15 @@ use serde_json::Value;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
+use restate_storage_query_api::errors::QueryExecutionError;
+use restate_storage_query_api::{
+    AdminUser, QueryEngine, QueryOptions, QueryResult, SessionOptions,
+};
 use restate_types::NodeId;
 use restate_types::config::QueryEngineOptions;
 use restate_types::deployment::{DeploymentAddress, Headers};
 use restate_types::errors::GenericError;
+use restate_types::identifiers::WithPartitionKey;
 use restate_types::identifiers::{DeploymentId, PartitionId, ServiceRevision};
 use restate_types::live::Live;
 use restate_types::net::address::{AdvertisedAddress, HttpIngressPort};
@@ -38,15 +44,21 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::service::test_util::MockServiceMetadataResolver;
 use restate_types::schema::service::{ServiceMetadata, ServiceMetadataResolver};
 use restate_types::sharding::KeyRange;
-use restate_worker_api::invoker::{InvocationStatusReport, StatusHandle};
-use restate_worker_api::{SchedulerStatusEntry, UserLimitCounterEntry};
+use restate_worker_api::invoker::InvocationStatusReport;
+use restate_worker_api::{
+    OfflinePartitionQueryAccess, PartitionQueryAccess, PartitionQueryStream, SchedulerStatusEntry,
+    UserLimitCounterEntry,
+};
 
-use super::context::QueryContext;
-use crate::context::{PartitionLeaderStatusHandle, SelectPartitions};
+use super::context::DataFusionQueryEngine;
+use crate::catalog::RegisterTable;
+use crate::context::SelectPartitions;
+use crate::local_scanners::{register_live_scanners, register_partition_scanners};
 use crate::remote_query_scanner_client::{RemoteScanner, RemoteScannerService};
 use crate::remote_query_scanner_manager::{
     PartitionLocation, PartitionLocator, RemoteScannerManager,
 };
+use crate::{DataFusionEnv, MetadataTables, UserTables};
 
 #[derive(Debug, Clone, Default)]
 pub struct MockStatusHandle(Vec<InvocationStatusReport>);
@@ -58,11 +70,37 @@ impl MockStatusHandle {
     }
 }
 
-impl StatusHandle for MockStatusHandle {
-    type Iterator = std::vec::IntoIter<InvocationStatusReport>;
+impl PartitionQueryAccess for MockStatusHandle {
+    fn scan_invoker_status(
+        &self,
+        partition_id: PartitionId,
+        keys: KeyRange,
+    ) -> PartitionQueryStream<InvocationStatusReport> {
+        assert_eq!(partition_id, PartitionId::MIN);
+        let mut rows: Vec<_> = self
+            .0
+            .iter()
+            .filter(|row| keys.contains(&row.invocation_id().partition_key()))
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| a.invocation_id().cmp(b.invocation_id()));
+        stream::iter(rows.into_iter().map(Ok)).boxed()
+    }
 
-    async fn read_status(&self, _keys: KeyRange) -> Self::Iterator {
-        self.0.clone().into_iter()
+    fn scan_scheduler_status(
+        &self,
+        _partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<SchedulerStatusEntry> {
+        stream::empty().boxed()
+    }
+
+    fn scan_user_limit_counters(
+        &self,
+        _partition_id: PartitionId,
+        _keys: KeyRange,
+    ) -> PartitionQueryStream<UserLimitCounterEntry> {
+        stream::empty().boxed()
     }
 }
 
@@ -91,28 +129,6 @@ impl ServiceMetadataResolver for MockSchemas {
 
     fn list_service_names(&self) -> Vec<String> {
         self.0.list_service_names()
-    }
-}
-
-impl PartitionLeaderStatusHandle for MockStatusHandle {
-    type SchedulerStatus = SchedulerStatusEntry;
-    type SchedulerStatusIterator = std::iter::Empty<Self::SchedulerStatus>;
-
-    type UserLimitCounter = UserLimitCounterEntry;
-    type UserLimitCounterIterator = std::iter::Empty<Self::UserLimitCounter>;
-
-    fn read_scheduler_status(
-        &self,
-        _keys: KeyRange,
-    ) -> impl Future<Output = Self::SchedulerStatusIterator> + Send {
-        std::future::ready(std::iter::empty())
-    }
-
-    fn read_user_limit_counters(
-        &self,
-        _keys: KeyRange,
-    ) -> impl Future<Output = Self::UserLimitCounterIterator> + Send {
-        std::future::ready(std::iter::empty())
     }
 }
 
@@ -162,7 +178,11 @@ impl SelectPartitions for MockPartitionSelector {
 }
 
 #[allow(dead_code)]
-pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
+pub(crate) struct MockQueryEngine(
+    Arc<PartitionStoreManager>,
+    PartitionStore,
+    Arc<dyn QueryEngine<AdminUser>>,
+);
 
 #[derive(Debug)]
 struct NoopSvc;
@@ -191,10 +211,7 @@ impl PartitionLocator for AlwaysLocalPartitionLocator {
 
 impl MockQueryEngine {
     pub async fn create_with(
-        status: impl PartitionLeaderStatusHandle<
-            SchedulerStatus = SchedulerStatusEntry,
-            UserLimitCounter = UserLimitCounterEntry,
-        >,
+        status: impl PartitionQueryAccess,
         schemas: impl DeploymentResolver
         + ServiceMetadataResolver
         + Send
@@ -202,6 +219,28 @@ impl MockQueryEngine {
         + Debug
         + Clone
         + 'static,
+    ) -> Self {
+        Self::create_with_catalog(status, |manager| {
+            UserTables::new(MockPartitionSelector, manager).with_metadata(MetadataTables::new(
+                Live::from_value(schemas),
+                MetadataStoreClient::new_in_memory(),
+                None,
+            ))
+        })
+        .await
+    }
+
+    pub async fn create_offline() -> Self {
+        Self::create_with_catalog(
+            OfflinePartitionQueryAccess::new([(PartitionId::MIN, KeyRange::FULL)]),
+            |manager| UserTables::new(MockPartitionSelector, manager),
+        )
+        .await
+    }
+
+    async fn create_with_catalog<K: RegisterTable>(
+        status: impl PartitionQueryAccess,
+        catalog: impl FnOnce(RemoteScannerManager) -> K,
     ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init();
@@ -213,26 +252,25 @@ impl MockQueryEngine {
             .await
             .unwrap();
 
+        let remote_scanner_manager = RemoteScannerManager::new(
+            Arc::new(NoopSvc),
+            Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
+            // The mock locator always returns `Local`, so the manager
+            // never invokes `allocate_scanner_id` and never reads
+            // `my_node_id`. A blank Metadata is sufficient here.
+            restate_core::MetadataBuilder::default().to_metadata(),
+        );
+        register_partition_scanners(Arc::clone(&manager), &remote_scanner_manager);
+        register_live_scanners(Arc::new(status), &remote_scanner_manager);
+
         // Matches MockPartitionSelector's single partition
         Self(
             manager.clone(),
             partition_store,
-            QueryContext::with_user_tables(
-                &QueryEngineOptions::default(),
-                MockPartitionSelector,
-                manager,
-                Some(status),
-                Live::from_value(schemas),
-                RemoteScannerManager::new(
-                    Arc::new(NoopSvc),
-                    Arc::new(AlwaysLocalPartitionLocator) as Arc<dyn PartitionLocator>,
-                    // The mock locator always returns `Local`, so the manager
-                    // never invokes `allocate_scanner_id` and never reads
-                    // `my_node_id`. A blank Metadata is sufficient here.
-                    restate_core::MetadataBuilder::default().to_metadata(),
-                ),
-                MetadataStoreClient::new_in_memory(),
+            DataFusionQueryEngine::with_tables(
+                DataFusionEnv::from_options(&QueryEngineOptions::default()).unwrap(),
                 None,
+                catalog(remote_scanner_manager),
             )
             .await
             .unwrap(),
@@ -250,8 +288,12 @@ impl MockQueryEngine {
     pub async fn execute(
         &self,
         sql: impl AsRef<str> + Send,
-    ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
-        self.2.execute(sql.as_ref()).await
+    ) -> Result<QueryResult, QueryExecutionError> {
+        self.2
+            .create_session(SessionOptions::default())
+            .expect("mock session initializes")
+            .execute(sql.as_ref(), QueryOptions {})
+            .await
     }
 }
 

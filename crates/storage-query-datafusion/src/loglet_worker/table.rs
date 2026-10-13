@@ -10,10 +10,11 @@
 
 use std::sync::Arc;
 
+use datafusion::execution::context::SessionContext;
+
 use restate_core::Metadata;
 use restate_types::nodes_config::Role;
 
-use crate::context::QueryContext;
 use crate::node_fan_out::{NodeFanOutTableProvider, RoleBasedNodeLocator};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
@@ -24,7 +25,7 @@ pub(crate) const TABLE_NAME: &str = "loglet_workers";
 
 /// Registers the `loglet_workers` fan-out table in the query context.
 pub(crate) fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     metadata: Metadata,
     remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
@@ -39,5 +40,5 @@ pub(crate) fn register_self(
         TABLE_NAME,
     );
 
-    ctx.register_non_partitioned_table(TABLE_NAME, Arc::new(table))
+    ctx.register_table(TABLE_NAME, Arc::new(table)).map(|_| ())
 }
