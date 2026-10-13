@@ -11,21 +11,46 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
-
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
+use restate_storage_query_api::QueryEngineTable;
 use restate_types::live::Live;
 use restate_types::schema::deployment::DeploymentResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
 
 use crate::BuildError;
 use crate::context::SelectPartitions;
+use crate::deployment::schema::SysDeploymentTable;
+use crate::inbox::schema::SysInboxTable;
+use crate::index::busy_vqueue::schema::IdxBusyVqueueTable;
+use crate::index::by_service::schema::IdxEntryByServiceTable;
+use crate::index::by_virtual_object::schema::IdxEntryByVirtualObjectTable;
+use crate::index::entry_by_stage::schema::IdxEntryByStageTable;
+use crate::index::entry_next_at_by_service::schema::IdxEntryNextAtByServiceTable;
+use crate::index::entry_next_at_by_stage::schema::IdxEntryNextAtByStageTable;
+use crate::index::entry_next_at_by_virtual_object::schema::IdxEntryNextAtByVirtualObjectTable;
+use crate::invocation_state::schema::SysInvocationStateTable;
+use crate::invocation_status::schema::SysInvocationStatusTable;
+use crate::journal::schema::SysJournalTable;
+use crate::journal_events::schema::SysJournalEventsTable;
+use crate::locks::schema::SysLocksTable;
+use crate::promise::schema::SysPromiseTable;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
+use crate::rules::schema::SysRulesTable;
+use crate::scheduler_status::schema::SysSchedulerTable;
+use crate::service::schema::SysServiceTable;
+use crate::state::schema::StateTable;
+use crate::stats::deployment_stats::schema::SysDeploymentStatsTable;
+use crate::stats::service_stats::schema::SysServiceStatsTable;
+use crate::stats::virtual_object_stats::schema::SysVirtualObjectStatsTable;
+use crate::user_limits::schema::SysUserLimitsTable;
+use crate::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
+use crate::vqueue_meta::schema::SysVqueueMetaTable;
+use crate::vqueues::schema::SysVqueuesTable;
 
-use super::RegisterTable;
+use super::{RegisterTable, TableInventoryBuilder};
 
-pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELECT
+pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW restate.public.sys_invocation as SELECT
             ss.id,
             ss.vqueue_id,
             ss.target,
@@ -88,8 +113,8 @@ pub(super) const SYS_INVOCATION_VIEW: &str = "CREATE VIEW sys_invocation as SELE
             END, 'LargeUtf8') AS status,
             ss.completion_result,
             ss.completion_failure
-        FROM sys_invocation_state sis
-        RIGHT JOIN sys_invocation_status ss ON ss.id = sis.id";
+        FROM restate.public.sys_invocation_state sis
+        RIGHT JOIN restate.public.sys_invocation_status ss ON ss.id = sis.id";
 
 /// User-facing partition tables and views, optionally extended with metadata-backed tables.
 ///
@@ -146,13 +171,24 @@ impl<S> RegisterTable for MetadataTables<S>
 where
     S: DeploymentResolver + ServiceMetadataResolver + Send + Sync + Debug + Clone + 'static,
 {
-    async fn register(&self, ctx: &SessionContext) -> Result<(), BuildError> {
-        crate::deployment::register_self(ctx, self.schemas.clone())?;
-        crate::service::register_self(ctx, self.schemas.clone())?;
-        crate::rules::register_self(
-            ctx,
-            self.metadata_store_client.clone(),
-            self.rule_book_observer.clone(),
+    async fn register(&self, inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
+        inventory.add::<SysDeploymentTable>(
+            "public",
+            "sys_deployment",
+            SysDeploymentTable::create_provider(self.schemas.clone()),
+        )?;
+        inventory.add::<SysServiceTable>(
+            "public",
+            "sys_service",
+            SysServiceTable::create_provider(self.schemas.clone()),
+        )?;
+        inventory.add::<SysRulesTable>(
+            "public",
+            "sys_rules",
+            SysRulesTable::create_provider(
+                self.metadata_store_client.clone(),
+                self.rule_book_observer.clone(),
+            ),
         )?;
         Ok(())
     }
@@ -163,126 +199,57 @@ where
     P: SelectPartitions + Clone,
     M: RegisterTable,
 {
-    async fn register(&self, ctx: &SessionContext) -> Result<(), BuildError> {
-        self.metadata.register(ctx).await?;
-        crate::invocation_state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
+    async fn register(&self, inventory: &mut TableInventoryBuilder<'_>) -> Result<(), BuildError> {
+        self.metadata.register(inventory).await?;
+        macro_rules! add_partition_tables {
+            ($($table:ty),+ $(,)?) => { $(
+                inventory.add::<$table>("public", &<$table>::identity(), <$table>::create_provider(
+                    self.partition_selector.clone(), &self.remote_scanner_manager,
+                ))?;
+            )+ };
+        }
+        add_partition_tables!(
+            SysInvocationStateTable,
+            SysSchedulerTable,
+            SysUserLimitsTable,
+            SysInvocationStatusTable,
+            SysLocksTable,
+            StateTable,
+            SysJournalTable,
+            SysJournalEventsTable,
+            SysInboxTable,
+            SysPromiseTable,
+            SysVqueueMetaTable,
+            SysVqueueEntryStatusTable,
+            SysVqueuesTable,
+            IdxEntryByServiceTable,
+            IdxEntryByStageTable,
+            IdxEntryNextAtByServiceTable,
+            IdxEntryByVirtualObjectTable,
+            IdxEntryNextAtByVirtualObjectTable,
+            IdxBusyVqueueTable,
+            IdxEntryNextAtByStageTable,
+            SysVirtualObjectStatsTable,
+        );
+        inventory.add::<SysServiceStatsTable>(
+            "public",
+            &SysServiceStatsTable::identity(),
+            SysServiceStatsTable::create_provider(
+                self.partition_selector.clone(),
+                &self.remote_scanner_manager,
+            )?,
         )?;
-        crate::scheduler_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
+        inventory.add::<SysDeploymentStatsTable>(
+            "public",
+            &SysDeploymentStatsTable::identity(),
+            SysDeploymentStatsTable::create_provider(
+                self.partition_selector.clone(),
+                &self.remote_scanner_manager,
+            )?,
         )?;
-        crate::user_limits::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::invocation_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::locks::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::state::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::journal_events::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::inbox::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::promise::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        // VQueues Tables
-        crate::vqueue_meta::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::by_service::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::entry_by_stage::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::entry_next_at_by_service::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::by_virtual_object::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::entry_next_at_by_virtual_object::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::busy_vqueue::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::index::entry_next_at_by_stage::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::service_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::deployment_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::stats::virtual_object_stats::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueue_entry_status::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-        crate::vqueues::register_self(
-            ctx,
-            self.partition_selector.clone(),
-            &self.remote_scanner_manager,
-        )?;
-
-        ctx.sql(SYS_INVOCATION_VIEW).await?;
+        inventory
+            .add_view("sys_invocation", "public", SYS_INVOCATION_VIEW)
+            .await?;
 
         Ok(())
     }

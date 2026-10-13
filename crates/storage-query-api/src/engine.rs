@@ -11,17 +11,43 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use datafusion::common::TableReference;
 use datafusion::execution::SendableRecordBatchStream;
 
 use restate_platform::sync::Mutex;
 use restate_util_string::ReString;
 
+use crate::QueryEngineTable;
 use crate::errors::{QueryExecutionError, SessionError};
 
 #[derive(Debug, Clone, Default)]
 pub struct SessionOptions {
     /// Allows SQL statements such as `SET` in this session. Defaults to `false`.
     pub allow_statements: bool,
+    /// SQL names to expose from the shared inventory. `None` uses the engine's defaults;
+    /// an empty list exposes no application tables. Missing inventory entries are omitted.
+    /// Exposing a prebound view exposes its result without exposing its base tables.
+    pub tables: Option<Vec<SessionTable>>,
+}
+
+/// Maps a stable inventory identity to a session-local SQL name.
+#[derive(Debug, Clone)]
+pub struct SessionTable {
+    pub identity: ReString,
+    pub name: TableReference,
+}
+
+impl SessionTable {
+    pub fn new(identity: impl Into<ReString>, name: impl Into<TableReference>) -> Self {
+        Self {
+            identity: identity.into(),
+            name: name.into(),
+        }
+    }
+
+    pub fn for_table<T: QueryEngineTable>(name: impl Into<TableReference>) -> Self {
+        Self::new(T::identity(), name)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -30,8 +56,8 @@ pub struct QueryOptions {}
 pub trait QueryEngine<T>: Send + Sync {
     /// Creates an independent session with the configured tables, functions, and defaults.
     ///
-    /// Sessions share the runtime (including its memory pool) and catalog providers. Session
-    /// settings and prepared statements are private to the returned session.
+    /// Sessions share the runtime and table providers, but own their catalogs and settings.
+    /// Session creation applies the engine's shared admission rate limit.
     fn create_session(
         &self,
         opts: SessionOptions,
@@ -40,7 +66,7 @@ pub trait QueryEngine<T>: Send + Sync {
 
 #[async_trait]
 pub trait QuerySession<T>: Send + Sync {
-    /// Executes in a caller-owned session, applying the shared rate limit and SQL restrictions.
+    /// Executes in a caller-owned session, applying SQL restrictions.
     ///
     /// Use a session from [`QueryEngine::create_session`] to retain settings across executions or attach
     /// request metadata before planning. The returned stream can outlive the session handle.

@@ -21,7 +21,7 @@ The query engine uses a two-tier architecture:
 ┌─────────────────────────────────────────────────────────────────┐
 │                         Admin Node                              │
 │  ┌───────────────────────────────────────────────────────────┐  │
-│  │                    QueryContext                           │  │
+│  │                 RestateQuerySession                       │  │
 │  │  - DataFusion SessionContext                              │  │
 │  │  - SQL parsing, planning, optimization                    │  │
 │  │  - Accumulations, joins, aggregations                     │  │
@@ -50,7 +50,9 @@ The query engine uses a two-tier architecture:
 
 | Component | Location | Description |
 |-----------|----------|-------------|
-| `QueryContext` | `storage-query-datafusion/src/context.rs` | Central orchestrator wrapping DataFusion's `SessionContext` |
+| `DataFusionEnv` | `storage-query-datafusion/src/environment.rs` | Shared runtime and provider inventory |
+| `DataFusionQueryEngine` | `storage-query-datafusion/src/context.rs` | Session admission and default SQL exposure |
+| `RestateQuerySession` | `storage-query-datafusion/src/context.rs` | Request-owned DataFusion context and catalog |
 | `PartitionedTableProvider` | `storage-query-datafusion/src/table_providers.rs` | DataFusion `TableProvider` for partitioned tables |
 | `RemoteScannerManager` | `storage-query-datafusion/src/remote_query_scanner_manager.rs` | Routes scans to local or remote partitions |
 | `RemotePartitionsScanner` | `storage-query-datafusion/src/remote_query_scanner_manager.rs` | Decides local vs remote execution per partition |
@@ -67,9 +69,38 @@ Table names below are unqualified SQL names (see `storage-query-datafusion/src/c
 continues to work in `restatectl`; it can also be written as
 `SELECT * FROM restate.cluster.partitions`. Cluster tables are not exposed through HTTP `/query`.
 
-Cluster-table registrations and view definitions explicitly target `restate.cluster`, so their
-placement does not depend on the bootstrap session's default schema. Remote scanner identifiers
-remain unqualified (for example, `loglet_workers`); SQL namespaces are separate from wire names.
+The catalog groups declare those default SQL names separately from provider construction.
+Remote scanner identifiers remain unqualified (for example, `loglet_workers`); SQL namespaces
+and aliases are separate from wire identities.
+
+### Provider inventory and session catalogs
+
+`DataFusionEnv` clones share a `DashMap` of stable identities to `Arc<dyn TableProvider>`, plus
+the DataFusion runtime and memory pool. Components populate the inventory when their dependencies
+are ready. Node initialization supplies the same environment to the HTTP engine and the cluster
+controller; the controller adds its providers when enabled. Duplicate identities are rejected.
+
+`QueryEngineTable` is the marker for a stable identity. `define_table!` generates these markers.
+Table implementations construct providers and local scanners; `UserTables` and `ClusterTables`
+populate the inventory through `TableInventoryBuilder` and declare their default SQL exposure.
+`DataFusionQueryEngine` retains that exposure list, not a shared catalog.
+
+For each session, `SessionOptions.tables` can replace the engine's default list with `SessionTable`
+bindings from inventory identities to SQL names. `None` selects the defaults; an empty list exposes
+no application tables. Missing inventory entries are omitted. The environment clones each available
+provider into fresh catalog/schema containers and releases every map guard before planning or
+execution. Later registrations affect new sessions; existing catalogs remain stable.
+
+Views are bound once during component registration against a temporary catalog of their dependencies.
+The resulting view provider is retained in the inventory. A session can expose a view under another
+name without exposing its base tables: the logical plan retains their provider references. This exposes
+the view's defined result, not session-specific restrictions on separately exposed base tables.
+Rows are still read at execution time; this does not materialize data or create a database snapshot.
+
+The HTTP handler currently uses the default user-table selection. Custom session bindings are an
+internal API; no request header or HTTP parameter selects additional tables.
+
+### Available tables
 
 **Partitioned tables** (data distributed across partitions by partition key):
 - `sys_invocation_status` - Invocation metadata and status
@@ -114,13 +145,15 @@ SELECT * FROM sys_invocation_status WHERE id = 'inv_1abc...'
 
 ### 1. SQL Parsing and Planning
 
-The `QueryContext::execute` method handles SQL execution:
+The `RestateQuerySession::execute` method handles SQL execution after catalog construction:
 
 ```rust
 let statement = state.sql_to_statement(sql, &Dialect::PostgreSQL)?;
 let plan = state.statement_to_plan(statement).await?;
-let df = self.datafusion_context.execute_logical_plan(plan).await?;
-df.execute_stream().await
+let df = self.ctx.execute_logical_plan(plan).await?;
+let task_ctx = Arc::new(df.task_ctx());
+let physical_plan = df.create_physical_plan().await?;
+execute_stream(physical_plan, task_ctx)
 ```
 
 ### 2. Partition Key Extraction
@@ -174,7 +207,7 @@ When the partition is remote, `remote_scan_as_datafusion_stream` manages the RPC
 
 1. **Open scanner**:
    - Establish connection to target node
-   - Send `RemoteQueryScannerOpen` RPC with table name, schema, range, predicate, batch size
+    - Send `RemoteQueryScannerOpen` RPC with stable source identity, schema, range, predicate, batch size
    - Receive `ScannerId` back
 
 2. **Stream batches**:

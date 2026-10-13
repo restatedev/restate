@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -24,40 +24,33 @@ use restate_types::{LockName, Scope};
 use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::locks::row::append_lock_row;
-use crate::locks::schema::{SysLocksBuilder, sys_locks_sort_order};
+use crate::locks::schema::{SysLocksBuilder, SysLocksTable, sys_locks_sort_order};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
-const NAME: &str = "sys_locks";
+impl SysLocksTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let locks_table = PartitionedTableProvider::new(
+            partition_selector,
+            SysLocksBuilder::schema(),
+            sys_locks_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_scope("scope")
+                .with_vqueue_entry_id("acquired_by"),
+        );
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let locks_table = PartitionedTableProvider::new(
-        partition_selector,
-        SysLocksBuilder::schema(),
-        sys_locks_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_scope("scope")
-            .with_vqueue_entry_id("acquired_by"),
-    );
+        Arc::new(locks_table)
+    }
 
-    ctx.register_table(NAME, Arc::new(locks_table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        LocksScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<LocksScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -223,7 +223,7 @@ pub(crate) struct NodeFanOutTableProvider {
     node_locator: Arc<dyn NodeLocator>,
     remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
-    table_name: String,
+    table_name: ReString,
     statistics: Statistics,
 }
 
@@ -233,7 +233,7 @@ impl NodeFanOutTableProvider {
         node_locator: Arc<dyn NodeLocator>,
         remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
-        table_name: impl Into<String>,
+        table_name: impl Into<ReString>,
     ) -> Self {
         let statistics = Statistics::new_unknown(&schema);
         Self {
@@ -317,7 +317,7 @@ pub(crate) struct NodeFanOutExecutionPlan {
     target_nodes: Vec<TargetNode>,
     remote_scanner_manager: RemoteScannerManager,
     local_scanner: Option<Arc<dyn Scan>>,
-    table_name: String,
+    table_name: ReString,
     filters: Vec<Expr>,
     limit: Option<usize>,
     plan_properties: Arc<PlanProperties>,
@@ -333,7 +333,7 @@ impl NodeFanOutExecutionPlan {
         target_nodes: Vec<TargetNode>,
         remote_scanner_manager: RemoteScannerManager,
         local_scanner: Option<Arc<dyn Scan>>,
-        table_name: String,
+        table_name: ReString,
         filters: Vec<Expr>,
         limit: Option<usize>,
         statistics: Statistics,

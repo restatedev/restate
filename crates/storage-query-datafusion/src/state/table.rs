@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use bytes::Bytes;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_storage_api::StorageError;
@@ -25,37 +25,30 @@ use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::state::row::append_state_row;
-use crate::state::schema::{StateBuilder, state_sort_order};
+use crate::state::schema::{StateBuilder, StateTable, state_sort_order};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-const NAME: &str = "state";
+impl StateTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            StateBuilder::schema(),
+            state_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_scope_or_service_key("scope", "service_key"),
+        );
+        Arc::new(table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        StateBuilder::schema(),
-        state_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_scope_or_service_key("scope", "service_key"),
-    );
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        StateScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<StateScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

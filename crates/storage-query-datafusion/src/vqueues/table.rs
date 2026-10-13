@@ -12,7 +12,7 @@ use std::fmt::Debug;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use futures::FutureExt;
 
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -30,49 +30,42 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 use crate::vqueues::row::{append_vqueues_row, append_vqueues_status_row};
-use crate::vqueues::schema::SysVqueuesBuilder;
+use crate::vqueues::schema::{SysVqueuesBuilder, SysVqueuesTable};
 
-const NAME: &str = "sys_vqueues";
+impl SysVqueuesTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysVqueuesBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Large)
+            .with_partition_key()
+            .with_primary_key("entry_id")
+            .with_primary_key("canonical_id")
+            .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
+            .with_foreign_key("id", RowEstimate::Small);
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = SysVqueuesBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Large)
-        .with_partition_key()
-        .with_primary_key("entry_id")
-        .with_primary_key("canonical_id")
-        .with_foreign_key("deployment", DEPLOYMENT_ROW_ESTIMATE)
-        .with_foreign_key("id", RowEstimate::Small);
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            Vec::new(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_grouped_vqueue_entry_id("entry_id")
+                .with_grouped_vqueue_entry_id("canonical_id")
+                .with_partitioned_resource_id::<VQueueId>("id"),
+        )
+        .with_statistics(statistics.build());
 
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_grouped_vqueue_entry_id("entry_id")
-            .with_grouped_vqueue_entry_id("canonical_id")
-            .with_partitioned_resource_id::<VQueueId>("id"),
-    )
-    .with_statistics(statistics.build());
+        Arc::new(table)
+    }
 
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        VQueuesScanner,
-    )) as Arc<dyn ScanPartition>;
-
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<VQueuesScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -75,17 +75,17 @@ pub trait ScanLocalPartition: Send + Sync + Debug + 'static {
 }
 
 #[derive(Clone, derive_more::Debug)]
-pub struct LocalPartitionsScanner<S> {
+pub struct LocalPartitionsScanner<T> {
     #[debug(skip)]
     partition_store_manager: Arc<PartitionStoreManager>,
-    _marker: std::marker::PhantomData<S>,
+    _marker: std::marker::PhantomData<T>,
 }
 
-impl<S> LocalPartitionsScanner<S>
+impl<T> LocalPartitionsScanner<T>
 where
-    S: ScanLocalPartition,
+    T: ScanLocalPartition,
 {
-    pub fn new(partition_store_manager: Arc<PartitionStoreManager>, _scanner: S) -> Self {
+    pub fn new(partition_store_manager: Arc<PartitionStoreManager>) -> Self {
         Self {
             partition_store_manager,
             _marker: std::marker::PhantomData,

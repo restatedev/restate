@@ -13,48 +13,42 @@ use std::sync::Arc;
 use anyhow::Context;
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::TableReference;
+use datafusion::catalog::TableProvider;
 use datafusion::error::DataFusionError;
-use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
 use tokio::sync::mpsc::Sender;
 
 use restate_core::Metadata;
+use restate_storage_query_api::QueryEngineTable;
 use restate_types::GenerationalNodeId;
 use restate_types::config::Configuration;
 use restate_types::live::Live;
 
-use super::schema::ConfigBuilder;
+use super::schema::{ConfigBuilder, ConfigTable};
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider};
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::table_providers::Scan;
 use crate::table_util::Builder;
 
-// Also used as the wire scanner identifier; only SQL registration is schema-qualified.
-pub(crate) const TABLE_NAME: &str = "config";
+impl ConfigTable {
+    pub(crate) fn create_provider(
+        metadata: Metadata,
+        remote_scanner_manager: RemoteScannerManager,
+        local_scanner: Option<Arc<dyn Scan>>,
+    ) -> Arc<dyn TableProvider> {
+        let node_locator = Arc::new(AllNodeLocator::new(metadata));
 
-pub fn register_self(
-    ctx: &SessionContext,
-    metadata: Metadata,
-    remote_scanner_manager: RemoteScannerManager,
-    local_scanner: Option<Arc<dyn Scan>>,
-) -> datafusion::common::Result<()> {
-    let node_locator = Arc::new(AllNodeLocator::new(metadata));
-
-    let config_table = NodeFanOutTableProvider::new(
-        ConfigBuilder::schema(),
-        node_locator,
-        remote_scanner_manager,
-        local_scanner,
-        TABLE_NAME,
-    );
-    ctx.register_table(
-        TableReference::full("restate", "cluster", TABLE_NAME),
-        Arc::new(config_table),
-    )
-    .map(|_| ())
+        let config_table = NodeFanOutTableProvider::new(
+            ConfigBuilder::schema(),
+            node_locator,
+            remote_scanner_manager,
+            local_scanner,
+            Self::identity(),
+        );
+        Arc::new(config_table)
+    }
 }
 
 pub fn create_scanner(metadata: Metadata, config: Live<Configuration>) -> Arc<dyn Scan> {

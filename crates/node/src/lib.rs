@@ -34,9 +34,12 @@ use restate_core::{MetadataBuilder, MetadataManager, TaskCenter, spawn_metadata_
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{IngestionClient, SessionOptions};
 use restate_log_server::LogServerService;
+use restate_storage_query_datafusion::bifrost_read_stream::BifrostReadStreamsTable;
+use restate_storage_query_datafusion::config::ConfigTable;
 use restate_storage_query_datafusion::context::{
     DataFusionQueryEngine, SelectPartitionsFromMetadata,
 };
+use restate_storage_query_datafusion::loglet_worker::LogletWorkersTable;
 use restate_storage_query_datafusion::remote_query_scanner_client::create_remote_scanner_service;
 use restate_storage_query_datafusion::remote_query_scanner_manager::{
     RemoteScannerManager, create_partition_locator,
@@ -396,7 +399,7 @@ impl Node {
                 log_server.active_worker_map().clone(),
                 metadata.clone(),
             );
-            remote_scanner_manager.register_node_scanner("loglet_workers", local_scanner);
+            remote_scanner_manager.register_node_scanner::<LogletWorkersTable>(local_scanner);
         }
 
         // Register bifrost_read_streams scanner — available on every node since
@@ -406,7 +409,7 @@ impl Node {
                 bifrost.read_stream_registry().clone(),
                 metadata.clone(),
             );
-            remote_scanner_manager.register_node_scanner("bifrost_read_streams", local_scanner);
+            remote_scanner_manager.register_node_scanner::<BifrostReadStreamsTable>(local_scanner);
         }
 
         // Register config scanner — available on every node.
@@ -415,7 +418,7 @@ impl Node {
                 metadata.clone(),
                 Configuration::live(),
             );
-            remote_scanner_manager.register_node_scanner("config", local_scanner);
+            remote_scanner_manager.register_node_scanner::<ConfigTable>(local_scanner);
         }
 
         let datafusion_remote_scanner = RemoteQueryScannerServer::new(
@@ -452,7 +455,7 @@ impl Node {
                 processor_manager.as_ref().map(|pm| pm.rule_book_observer());
 
             let query_engine = DataFusionQueryEngine::with_user_tables(
-                datafusion_env,
+                datafusion_env.clone(),
                 config.admin.query_engine.rate_limiting.as_ref(),
                 UserTables::new(SelectPartitionsFromMetadata, remote_scanner_manager)
                     .with_metadata(MetadataTables::new(
@@ -478,6 +481,7 @@ impl Node {
                     &mut server_builder,
                     &mut address_book,
                     query_engine,
+                    datafusion_env,
                     local_rule_book_observer,
                 )
                 .await?,

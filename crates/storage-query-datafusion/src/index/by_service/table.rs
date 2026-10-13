@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::index::EntryByStageServiceKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -27,43 +27,37 @@ use crate::statistics::{RowEstimate, SERVICE_ROW_ESTIMATE, TableStatisticsBuilde
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
 use super::row::append_row;
-use super::schema::IdxEntryByServiceBuilder;
+use super::schema::{IdxEntryByServiceBuilder, IdxEntryByServiceTable};
 
-pub(super) const NAME: &str = "_idx_entry_by_service";
+impl IdxEntryByServiceTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = IdxEntryByServiceBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Large)
+            .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            // A logical scan may concatenate multiple physical partitions. Do not
+            // advertise their local secondary-key order as a global SQL ordering.
+            Vec::new(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
+                .with_grouped_vqueue_entry_id("canonical_id")
+                .with_grouped_vqueue_entry_id("entry_id"),
+        )
+        .with_statistics(statistics.build());
+        Arc::new(table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = IdxEntryByServiceBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Large)
-        .with_foreign_key("service_name", SERVICE_ROW_ESTIMATE);
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        // A logical scan may concatenate multiple physical partitions. Do not
-        // advertise their local secondary-key order as a global SQL ordering.
-        Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
-            .with_grouped_vqueue_entry_id("canonical_id")
-            .with_grouped_vqueue_entry_id("entry_id"),
-    )
-    .with_statistics(statistics.build());
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        EntryIndexScanner,
-    )) as Arc<dyn ScanPartition>;
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<EntryIndexScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]

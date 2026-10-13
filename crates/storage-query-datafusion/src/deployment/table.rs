@@ -12,37 +12,37 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
-use restate_types::live::Live;
 use tokio::sync::mpsc::Sender;
 
 use restate_types::identifiers::ServiceRevision;
+use restate_types::live::Live;
 use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 
-use super::schema::SysDeploymentBuilder;
+use super::schema::{SysDeploymentBuilder, SysDeploymentTable};
 use crate::deployment::row::append_deployment_row;
 use crate::statistics::{DEPLOYMENT_ROW_ESTIMATE, TableStatisticsBuilder};
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
-) -> datafusion::common::Result<()> {
-    let schema = SysDeploymentBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema)
-        .with_num_rows_estimate(DEPLOYMENT_ROW_ESTIMATE)
-        .with_primary_key("id");
-    let deployment_table = GenericTableProvider::new(
-        SysDeploymentBuilder::schema(),
-        Arc::new(DeploymentMetadataScanner(resolver)),
-    )
-    .with_statistics(statistics.build());
-    ctx.register_table("sys_deployment", Arc::new(deployment_table))
-        .map(|_| ())
+impl SysDeploymentTable {
+    pub(crate) fn create_provider(
+        resolver: Live<impl DeploymentResolver + Send + Sync + 'static>,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysDeploymentBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema)
+            .with_num_rows_estimate(DEPLOYMENT_ROW_ESTIMATE)
+            .with_primary_key("id");
+        let deployment_table = GenericTableProvider::new(
+            SysDeploymentBuilder::schema(),
+            Arc::new(DeploymentMetadataScanner(resolver)),
+        )
+        .with_statistics(statistics.build());
+        Arc::new(deployment_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]

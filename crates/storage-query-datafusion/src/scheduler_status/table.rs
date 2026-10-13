@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use strum::IntoDiscriminant;
 
 use restate_types::vqueues::VQueueId;
@@ -20,47 +20,44 @@ use crate::context::SelectPartitions;
 use crate::filter::FirstMatchingPartitionKeyExtractor;
 use crate::live_scanners::LivePartitionScanner;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
-use crate::scheduler_status::schema::{SysSchedulerBuilder, sys_scheduler_sort_order};
+use crate::scheduler_status::schema::{
+    SysSchedulerBuilder, SysSchedulerTable, sys_scheduler_sort_order,
+};
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
-use crate::table_providers::PartitionedTableProvider;
+use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-const NAME: &str = "sys_scheduler";
+impl SysSchedulerTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = SysSchedulerBuilder::schema();
+        let statistics = TableStatisticsBuilder::new(schema.clone())
+            .with_num_rows_estimate(RowEstimate::Small)
+            .with_partition_key()
+            .with_primary_key("id");
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            sys_scheduler_sort_order(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::default()
+                .with_partitioned_resource_id::<VQueueId>("id")
+                .with_vqueue_entry_id("head_entry_id"),
+        )
+        .with_statistics(statistics.build());
+        Arc::new(table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = SysSchedulerBuilder::schema();
-    let statistics = TableStatisticsBuilder::new(schema.clone())
-        .with_num_rows_estimate(RowEstimate::Small)
-        .with_partition_key()
-        .with_primary_key("id");
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        sys_scheduler_sort_order(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::default()
-            .with_partitioned_resource_id::<VQueueId>("id")
-            .with_vqueue_entry_id("head_entry_id"),
-    )
-    .with_statistics(statistics.build());
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    access: Arc<dyn PartitionQueryAccess>,
-    manager: &RemoteScannerManager,
-) {
-    manager.register_partition_scanner(
-        NAME,
-        Arc::new(LivePartitionScanner::new(
+    pub(crate) fn create_local_scanner(
+        access: Arc<dyn PartitionQueryAccess>,
+    ) -> impl ScanPartition {
+        LivePartitionScanner::new(
             access,
             |access, partition, keys| access.scan_scheduler_status(partition, keys),
             append_scheduler_row,
-        )),
-    );
+        )
+    }
 }
 
 #[inline]
