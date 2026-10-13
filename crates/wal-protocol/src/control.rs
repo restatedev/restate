@@ -348,6 +348,7 @@ mod tests {
     fn upsert_schema_decodes_both_codecs() {
         let mut schema = Schema::default();
         schema.touch();
+        schema.set_bilrost_encoded(true);
         let command = UpsertSchemaCommand {
             partition_key_range: Keys::RangeInclusive(10..=20),
             schema: schema.into(),
@@ -375,6 +376,12 @@ mod tests {
             .into_typed::<UpsertSchemaCommand>()
             .split()
             .unwrap();
+            match codec {
+                StorageCodecKind::FlexbuffersSerde => {
+                    assert!(!decoded.schema.is_bilrost_encoded())
+                }
+                _ => assert!(decoded.schema.is_bilrost_encoded()),
+            }
             assert_eq!(decoded.partition_key_range, command.partition_key_range);
             assert_eq!(decoded.schema.version(), command.schema.version());
         }

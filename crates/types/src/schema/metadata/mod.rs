@@ -89,15 +89,12 @@ pub struct SchemaUnindexed {
     // TODO(v1.10): Remove this field (including Bilrost tag 5), its serde compatibility plumbing,
     // and the conditional codec selection. Schema encoding can then always select Bilrost.
     #[bilrost(tag(5))]
-    #[serde(skip)]
     bilrost_encoded: bool,
 }
 
 /// Serializable data structure representing the schema registry
 ///
 /// Do not leak the representation as this data structure, as it strictly depends on SchemaUpdater, SchemaRegistry and the Admin API.
-// TODO(azmy): Drop serde::Serialize and serde::Deserialize implementations along with serde for MetadataUpdate
-// in v1.9.0
 #[derive(
     derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize, derive_more::Deref,
 )]
@@ -132,6 +129,11 @@ impl SchemaUnindexed {
 
         Ok(())
     }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn is_bilrost_encoded(&self) -> bool {
+        self.bilrost_encoded
+    }
 }
 
 impl From<SchemaUnindexed> for Schema {
@@ -158,6 +160,11 @@ impl Schema {
     /// to force update of the schema from v1.
     pub fn touch(&mut self) {
         self.unindexed.version = self.unindexed.version.next();
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn set_bilrost_encoded(&mut self, enabled: bool) {
+        self.unindexed.bilrost_encoded = enabled;
     }
 }
 

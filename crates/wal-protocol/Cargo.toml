@@ -30,6 +30,7 @@ strum = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+restate-types = { workspace = true, features = ["test-util"] }
 
 [lints]
 workspace = true

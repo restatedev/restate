@@ -3237,3 +3237,81 @@ mod kafka_cluster {
         );
     }
 }
+
+mod bilrost_encoded {
+    use super::*;
+
+    use bytes::BytesMut;
+    use test_log::test;
+
+    use restate_platform::storage::{StorageCodecKind, StorageEncode};
+    use restate_test_util::{assert, assert_eq};
+
+    use crate::config::{Configuration, set_current_config};
+    use crate::storage::StorageCodec;
+
+    fn set_schema_bilrost_encoding(enabled: bool) {
+        let mut config = Configuration::default();
+        config
+            .common
+            .experimental
+            .set_schema_bilrost_encoding(enabled);
+        set_current_config(config);
+    }
+
+    fn add_deployment(schema: Schema, port: u16) -> Schema {
+        SchemaUpdater::update(schema, |updater| {
+            updater
+                .add_deployment(AddDeploymentRequest {
+                    deployment_address: DeploymentAddress::mock_uri(&format!(
+                        "http://localhost:{port}"
+                    )),
+                    ..add_deployment_request(vec![greeter_service()])
+                })
+                .map(|_| ())
+        })
+        .unwrap()
+    }
+
+    /// Encodes the schema via [`StorageCodec`], asserting the selected codec, and decodes it back.
+    fn round_trip(schema: &Schema, expected_codec: StorageCodecKind) -> Schema {
+        assert_eq!(schema.default_codec(), expected_codec);
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(schema, &mut buf).unwrap();
+        let decoded = StorageCodec::decode::<Schema, _>(&mut buf).unwrap();
+
+        assert_eq!(decoded.version(), schema.version());
+        assert_eq!(decoded.is_bilrost_encoded(), schema.is_bilrost_encoded());
+        decoded
+    }
+
+    #[test]
+    fn preserved_across_updates_and_storage_codec() {
+        set_schema_bilrost_encoding(false);
+
+        // Legacy schemas stay on Flexbuffers while the experimental option is disabled.
+        let schema = add_deployment(Schema::default(), 9080);
+        assert!(!schema.is_bilrost_encoded());
+        let schema = round_trip(&schema, StorageCodecKind::FlexbuffersSerde);
+
+        // Enabling the option upgrades the schema on its next modification.
+        set_schema_bilrost_encoding(true);
+        let schema = add_deployment(schema, 9081);
+        assert!(schema.is_bilrost_encoded());
+        let schema = round_trip(&schema, StorageCodecKind::ZstdBilrostDefault);
+
+        // Once set, the marker sticks even on nodes without the experimental option, both for
+        // modifications and for further storage round-trips.
+        set_schema_bilrost_encoding(false);
+        let schema = add_deployment(schema, 9082);
+        assert!(schema.is_bilrost_encoded());
+        let schema = round_trip(&schema, StorageCodecKind::ZstdBilrostDefault);
+
+        // A no-op update neither bumps the version nor resets the marker.
+        let version = schema.version();
+        let schema = SchemaUpdater::update(schema, |_| Ok::<(), Infallible>(())).unwrap();
+        assert_eq!(schema.version(), version);
+        assert!(schema.is_bilrost_encoded());
+    }
+}
