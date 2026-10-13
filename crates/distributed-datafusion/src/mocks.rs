@@ -243,6 +243,28 @@ impl MockQueryEngine {
         status: impl PartitionQueryAccess,
         catalog: impl FnOnce(RemoteScannerManager) -> K,
     ) -> Self {
+        let env = DataFusionEnv::from_options(&QueryEngineOptions::default())
+            .unwrap()
+            .with_mock_clock(MockClock::new())
+            .unwrap();
+        Self::create_with_catalog_and_env(status, catalog, env).await
+    }
+
+    /// Uses caller-supplied session defaults for differential execution tests.
+    pub async fn create_with_env(env: DataFusionEnv) -> Self {
+        Self::create_with_catalog_and_env(
+            MockStatusHandle::default(),
+            |manager| UserTables::new(MockPartitionSelector, manager),
+            env,
+        )
+        .await
+    }
+
+    async fn create_with_catalog_and_env<K: RegisterTable>(
+        status: impl PartitionQueryAccess,
+        catalog: impl FnOnce(RemoteScannerManager) -> K,
+        env: DataFusionEnv,
+    ) -> Self {
         // Prepare Rocksdb
         RocksDbManager::init();
         let manager = PartitionStoreManager::create(true)
@@ -268,16 +290,9 @@ impl MockQueryEngine {
         Self(
             manager.clone(),
             partition_store,
-            DataFusionQueryEngine::with_tables(
-                DataFusionEnv::from_options(&QueryEngineOptions::default())
-                    .unwrap()
-                    .with_mock_clock(MockClock::new())
-                    .unwrap(),
-                None,
-                catalog(remote_scanner_manager),
-            )
-            .await
-            .unwrap(),
+            DataFusionQueryEngine::with_tables(env, None, catalog(remote_scanner_manager))
+                .await
+                .unwrap(),
         )
     }
 
