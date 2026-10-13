@@ -45,7 +45,7 @@ use crate::environment::DataFusionEnv;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::{encode_record_batch, encode_schema};
 
-use super::source::StorageCodec;
+use super::source::SourceCodec;
 use super::worker_url;
 
 type Lane = Arc<tokio::sync::Mutex<Option<SendableRecordBatchStream>>>;
@@ -66,6 +66,16 @@ pub(super) struct TaskObservation {
     pub id: QueryTaskId,
     pub context: Arc<TaskContext>,
     pub partitions: usize,
+    pub owner: GenerationalNodeId,
+    pub plan: String,
+    pub output: Arc<Mutex<TaskOutput>>,
+}
+
+#[cfg(test)]
+#[derive(Default, Clone, Copy, Debug)]
+pub(super) struct TaskOutput {
+    pub rows: usize,
+    pub bytes: usize,
 }
 
 impl DistributedQueryServer {
@@ -122,7 +132,10 @@ impl DistributedQueryServer {
                                 Ok(task) => {
                                     let schema = encode_schema(&task.plan.schema()).into();
                                     #[cfg(test)]
-                                    self.observations.lock().push(TaskObservation { id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count() });
+                                    self.observations.lock().push(TaskObservation {
+                                        id: key.1.clone(), context: Arc::clone(&task.context), partitions: task.plan.output_partitioning().partition_count(),
+                                        owner: self.scanners.node_id(), plan: datafusion::physical_plan::displayable(task.plan.as_ref()).indent(true).to_string(), output: Arc::clone(&task.output),
+                                    });
                                     tasks.insert(key, Arc::new(task));
                                     reply.send(QueryTaskReply::Installed(QueryTaskInstalled { version: DISTRIBUTED_QUERY_PROTOCOL_VERSION, schema }));
                                 }
@@ -178,6 +191,8 @@ struct InstalledTask {
     lanes: Mutex<HashMap<usize, Lane>>,
     cancel: CancellationToken,
     last_used: Mutex<Instant>,
+    #[cfg(test)]
+    output: Arc<Mutex<TaskOutput>>,
 }
 
 impl InstalledTask {
@@ -238,7 +253,7 @@ impl InstalledTask {
                 let builder = ctx
                     .builder
                     .with_session_id(id.session_id.to_string())
-                    .with_distributed_user_codec(StorageCodec {
+                    .with_distributed_user_codec(SourceCodec {
                         manager: Some(scanners),
                     })
                     .with_distributed_worker_plan_rewrite_handler(
@@ -303,6 +318,8 @@ impl InstalledTask {
             lanes: Default::default(),
             cancel,
             last_used: Mutex::new(Instant::now()),
+            #[cfg(test)]
+            output: Default::default(),
         })
     }
 
@@ -365,9 +382,18 @@ impl InstalledTask {
                     return exec_err!("task output partition already ended");
                 };
                 match stream.next().await {
-                    Some(Ok(batch)) => Ok(QueryTaskReply::Batch(
-                        encode_record_batch(&self.plan.schema(), batch)?.into(),
-                    )),
+                    Some(Ok(batch)) => {
+                        #[cfg(test)]
+                        let rows = batch.num_rows();
+                        let encoded = encode_record_batch(&self.plan.schema(), batch)?;
+                        #[cfg(test)]
+                        {
+                            let mut output = self.output.lock();
+                            output.rows += rows;
+                            output.bytes += encoded.len();
+                        }
+                        Ok(QueryTaskReply::Batch(encoded.into()))
+                    }
                     Some(Err(error)) => {
                         *lane = None;
                         Err(error)
