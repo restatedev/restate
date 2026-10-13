@@ -50,6 +50,9 @@ fn parse_clause<T: FilterTarget>(predicate: &Arc<dyn PhysicalExpr>) -> Option<T:
     if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
         && *binary.op() == Operator::Or
     {
+        if let Some(clause) = parse_null_or::<T>(binary) {
+            return Some(clause);
+        }
         // DataFusion expands short IN lists into ORs. Only normalize unions of
         // literals on the same column; any unsupported arm keeps the whole OR residual.
         let values = InList::parse(predicate, 64)?;
@@ -75,38 +78,64 @@ fn parse_clause<T: FilterTarget>(predicate: &Arc<dyn PhysicalExpr>) -> Option<T:
             literal.value().try_as_str()??,
         );
     }
-    let (column, builder) = if let Some(is_null) = predicate.downcast_ref::<IsNullExpr>() {
-        let column = is_null.arg().downcast_ref::<Column>()?;
-        (column, LiteralPredicate::IsNull)
-    } else if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
-        && matches!(
-            binary.op(),
-            Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
-        )
-    {
-        let (column, literal, op) = if let Some((column, literal)) =
-            extract_column_literal(binary.left(), binary.right())
-        {
-            (column, literal, *binary.op())
-        } else {
-            let (column, literal) = extract_column_literal(binary.right(), binary.left())?;
-            (column, literal, binary.op().swap()?)
-        };
-        let builder = if op == Operator::Eq {
-            LiteralPredicate::Equal(literal.value())
-        } else {
-            LiteralPredicate::Comparison(op, literal.value())
-        };
-        (column, builder)
-    } else {
-        let in_list = predicate.downcast_ref::<InListExpr>()?;
-        if in_list.negated() {
-            return None;
-        }
-        let column = in_list.expr().downcast_ref::<Column>()?;
-        (column, LiteralPredicate::In(in_list.list()))
-    };
+    let (column, builder) = literal_predicate(predicate)?;
     T::value_clause(T::field_from_tag(column.name())?, builder)
+}
+
+/// Parses `col IS NULL OR <comparison on col>`. TopK dynamic filters take this
+/// form for NULLS FIRST orderings, including on fields that cannot be NULL.
+fn parse_null_or<T: FilterTarget>(or: &BinaryExpr) -> Option<T::Clause> {
+    let (is_null, other) = match (
+        or.left().downcast_ref::<IsNullExpr>(),
+        or.right().downcast_ref::<IsNullExpr>(),
+    ) {
+        (Some(is_null), _) => (is_null, or.right()),
+        (None, Some(is_null)) => (is_null, or.left()),
+        (None, None) => return None,
+    };
+    let column = is_null.arg().downcast_ref::<Column>()?;
+    let (other_column, builder) = literal_predicate(other)?;
+    if other_column.name() != column.name() {
+        return None;
+    }
+    T::value_clause(T::field_from_tag(column.name())?, NonNullOr(builder))
+}
+
+/// A column compared with literals, not yet bound to the field's value type.
+fn literal_predicate(predicate: &Arc<dyn PhysicalExpr>) -> Option<(&Column, LiteralPredicate<'_>)> {
+    Some(
+        if let Some(is_null) = predicate.downcast_ref::<IsNullExpr>() {
+            let column = is_null.arg().downcast_ref::<Column>()?;
+            (column, LiteralPredicate::IsNull)
+        } else if let Some(binary) = predicate.downcast_ref::<BinaryExpr>()
+            && matches!(
+                binary.op(),
+                Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
+            )
+        {
+            let (column, literal, op) = if let Some((column, literal)) =
+                extract_column_literal(binary.left(), binary.right())
+            {
+                (column, literal, *binary.op())
+            } else {
+                let (column, literal) = extract_column_literal(binary.right(), binary.left())?;
+                (column, literal, binary.op().swap()?)
+            };
+            let builder = if op == Operator::Eq {
+                LiteralPredicate::Equal(literal.value())
+            } else {
+                LiteralPredicate::Comparison(op, literal.value())
+            };
+            (column, builder)
+        } else {
+            let in_list = predicate.downcast_ref::<InListExpr>()?;
+            if in_list.negated() {
+                return None;
+            }
+            let column = in_list.expr().downcast_ref::<Column>()?;
+            (column, LiteralPredicate::In(in_list.list()))
+        },
+    )
 }
 
 /// Recognizes one literal prefix followed by an unescaped `%`.
@@ -201,6 +230,19 @@ impl ValuePredicateBuilder for LiteralPredicate<'_> {
     }
 }
 
+/// Builds the second arm of `col IS NULL OR <predicate>`. The NULL arm can only
+/// be dropped for value types that have no NULL; otherwise the OR stays residual.
+struct NonNullOr<'a>(LiteralPredicate<'a>);
+
+impl ValuePredicateBuilder for NonNullOr<'_> {
+    fn build<V: FilterValue>(self) -> Option<ValuePredicate<V>> {
+        match V::from_literal(FilterLiteral::Null) {
+            Err(LiteralConversionError::Unrepresentable) => self.0.build(),
+            Ok(_) | Err(LiteralConversionError::Unsupported) => None,
+        }
+    }
+}
+
 impl ValuePredicateBuilder for InList<'_> {
     fn build<V: FilterValue>(self) -> Option<ValuePredicate<V>> {
         if self.negated {
@@ -281,7 +323,7 @@ fn collect_values<'a, V: FilterValue>(
 
 #[cfg(test)]
 mod tests {
-    use std::ops::RangeBounds;
+    use std::ops::{Bound, RangeBounds};
 
     use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, LargeStringArray};
     use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
@@ -741,6 +783,47 @@ mod tests {
                 .build::<ReString>()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn null_first_thresholds_preserve_nullable_and_mixed_column_predicates() {
+        fn threshold(filter: &Filter<ServiceLoad>) -> (Bound<&str>, Bound<&str>) {
+            let Filter::Predicates(fields) = filter else {
+                panic!("expected constraints")
+            };
+            let [Clause::ServiceName(ValuePredicate::Range { lower, upper })] =
+                fields.for_field(Field::ServiceName)
+            else {
+                panic!("expected a service range")
+            };
+            (
+                lower.as_ref().map(ReString::as_str),
+                upper.as_ref().map(ReString::as_str),
+            )
+        }
+
+        // TopK filters for NULLS FIRST orderings keep an impossible NULL arm on
+        // non-nullable fields; the NULL arm of a nullable field stays residual.
+        let topk = col("service_name")
+            .is_null()
+            .or(col("service_name").gt(string(Some("beta"))));
+        assert_eq!(threshold(&translate(topk)), (Excluded("beta"), Unbounded));
+        assert!(matches!(
+            translate(
+                col("handler")
+                    .is_null()
+                    .or(col("handler").gt(string(Some("beta"))))
+            ),
+            Filter::All
+        ));
+        assert!(matches!(
+            translate(
+                col("service_name")
+                    .is_null()
+                    .or(col("handler").gt(string(Some("beta"))))
+            ),
+            Filter::All
+        ));
     }
 
     #[test]
