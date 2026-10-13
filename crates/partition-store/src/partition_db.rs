@@ -91,6 +91,10 @@ impl PartitionDb {
         self.cf_handle()
     }
 
+    pub(crate) fn cf_handle_for_key_kind(&self, _key_kind: KeyKind) -> &Arc<BoundColumnFamily<'_>> {
+        &self.cf.0
+    }
+
     pub fn cf_names(&self) -> Vec<ReString> {
         vec![self.meta.cf_name().into_inner()]
     }
@@ -193,10 +197,9 @@ impl PartitionDb {
         B: AsRef<[u8]>,
     {
         match scan {
-            PhysicalScan::Prefix(table, prefix) => {
-                debug_assert!(table.has_key_kind(prefix.as_ref()));
+            PhysicalScan::Prefix(key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
-                let table = self.table_cf_handle(table);
+                let table = self.cf_handle_for_key_kind(key_kind);
                 let mut it = self
                     .rocksdb
                     .inner()
@@ -205,10 +208,9 @@ impl PartitionDb {
                 it.seek(prefix);
                 Ok(it)
             }
-            PhysicalScan::RangeExclusive(table, scan_mode, start, end) => {
-                debug_assert!(table.has_key_kind(start.as_ref()));
+            PhysicalScan::RangeExclusive(key_kind, scan_mode, start, end) => {
                 configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end.as_ref());
-                let table = self.table_cf_handle(table);
+                let table = self.cf_handle_for_key_kind(key_kind);
                 let mut it = self
                     .rocksdb
                     .inner()
