@@ -79,14 +79,15 @@ pub struct SchemaUnindexed {
     #[bilrost(tag(4))]
     kafka_clusters: HashMap<String, KafkaCluster>,
 
-    // Once schema is decoded using bilrost
-    // this flag will remain "true". Nodes
-    // that has it's configuration to use
-    // bilrost encoding not enabled will then
-    // also use the bilrost_encoding for the
-    // schema
-    // todo(azmy): remove in v1.9 once bilrost encoding
-    // becomes default for Schema
+    // Temporary mixed-version coordination marker. In v1.8, once a schema is written or decoded
+    // with Bilrost, this remains true so nodes without the experimental option also keep using
+    // Bilrost for that schema.
+    //
+    // TODO(v1.9): Keep this field for compatibility with v1.8, but make new schemas default to
+    // `true` and set it unconditionally whenever a legacy schema is modified. At that point the
+    // experimental configuration option is no longer needed.
+    // TODO(v1.10): Remove this field (including Bilrost tag 5), its serde compatibility plumbing,
+    // and the conditional codec selection. Schema encoding can then always select Bilrost.
     #[bilrost(tag(5))]
     #[serde(skip)]
     bilrost_encoded: bool,
@@ -116,6 +117,8 @@ impl Default for SchemaUnindexed {
             deployments: HashMap::default(),
             subscriptions: HashMap::default(),
             kafka_clusters: HashMap::default(),
+            // TODO(v1.9): Change this to `true` to make Bilrost the default for new schemas. Do not
+            // remove the field until v1.10; v1.9 still needs it to coordinate with v1.8 nodes.
             bilrost_encoded: false,
         }
     }
@@ -192,6 +195,7 @@ mod storage {
 
     impl StorageEncode for SchemaUnindexed {
         fn default_codec(&self) -> StorageCodecKind {
+            // TODO(v1.9): return `StorageCodecKind::ZstdBilrostDefault` unconditionally.
             if self.bilrost_encoded {
                 StorageCodecKind::ZstdBilrostDefault
             } else {
@@ -231,6 +235,7 @@ mod storage {
                     let mut schema =
                         storage::decode::decode_bilrost_zstd::<SchemaUnindexed, _>(buf)?;
 
+                    // TODO(v1.10): Remove this assignment together with `bilrost_encoded`.
                     schema.bilrost_encoded = true;
                     schema
                         .verify()

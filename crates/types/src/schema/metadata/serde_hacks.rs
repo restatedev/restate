@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 use serde_with::serde_as;
 
+// TODO(v1.10): Remove schema serde support
+
 /// The schema information
 #[serde_as]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

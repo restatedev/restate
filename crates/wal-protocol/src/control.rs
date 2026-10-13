@@ -224,8 +224,12 @@ bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
 
 /// Consistently store schema across partition replicas.
 ///
-/// Uses the same encoding as [`SchemaUnindexed`]: flexbuffers by default, or zstd
-/// compressed bilrost if `experimental-enable-schema-bilrost-encoding` is set.
+/// Uses the same encoding as [`SchemaUnindexed`]: in v1.8, flexbuffers by default, or zstd
+/// compressed bilrost if `experimental-enable-schema-bilrost-encoding` is set or this schema has
+/// previously used Bilrost.
+///
+/// TODO(v1.9): Update this documentation when Bilrost becomes the default and the experimental
+/// option is removed. The schema's compatibility marker remains until v1.10.
 ///
 /// Since v1.6.0.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]

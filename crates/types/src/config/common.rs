@@ -832,6 +832,10 @@ experimental! {
     ///
     /// This will be default from v1.9.0
     ///
+    /// TODO(v1.9): Remove this experimental option after new schemas default to Bilrost and schema
+    /// updates enable it unconditionally. Keep the schema's persisted coordination marker until
+    /// v1.10 (to support rolling back from v1.9 to v1.8).
+    ///
     /// NOTE: Hot change of this config has no effect. A change
     /// will only take effect on restart.
     ///
