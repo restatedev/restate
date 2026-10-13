@@ -604,6 +604,15 @@ macro_rules! define_table {
         ),+ $(,)?)
     ) => (paste::paste! {
 
+        #[allow(dead_code)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+        pub enum [< $table_name:camel Table>] {}
+        impl ::restate_storage_query_api::QueryEngineTable for [< $table_name:camel Table >] {
+            fn identity() -> ::restate_util_string::ReString {
+                ::restate_util_string::ReString::from_static(stringify!($table_name))
+            }
+        }
+
         pub struct [< $table_name:camel Builder >] {
             rows_inserted_so_far: usize,
             projected_count: u16,
