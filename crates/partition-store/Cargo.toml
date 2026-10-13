@@ -49,7 +49,7 @@ rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
-restate-util-string = { workspace = true }
+restate-util-string = { workspace = true, features = ["bytestring", "mem-comparable"] }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }
