@@ -114,7 +114,7 @@ impl ScanLocalPartition for VQueuesScanner {
                             id.as_entry_id(),
                             header,
                         ))
-                        .map_break(Result::unwrap)
+                        .map_break(|Ok(())| Ok(()))
                     },
                 )
                 .map(FutureExt::boxed);
