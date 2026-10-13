@@ -67,9 +67,12 @@ impl ScanLocalPartition for BusyVQueueScanner {
             + Sync
             + 'static,
     {
-        store.scan_busy_vqueues(filter.range, &filter.predicate, move |key, counts| {
-            f((key, counts))
-        })
+        store.scan_busy_vqueues(
+            filter.range,
+            &filter.predicate,
+            filter.live,
+            move |key, counts| f((key, counts)),
+        )
     }
 
     fn append_row<'a>(
