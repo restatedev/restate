@@ -265,19 +265,11 @@ mod upsert_schema_storage {
 
     impl StorageDecode for UpsertSchemaCommand {
         fn decode<B: Buf>(buf: B, kind: StorageCodecKind) -> Result<Self, StorageDecodeError> {
-            let mut bilrost_encoded = false;
-            let mut command: Self = match kind {
+            let command: Self = match kind {
                 StorageCodecKind::FlexbuffersSerde => decode::decode_serde(buf, kind)?,
-                StorageCodecKind::ZstdBilrostDefault => {
-                    bilrost_encoded = true;
-                    decode::decode_bilrost_zstd(buf)?
-                }
+                StorageCodecKind::ZstdBilrostDefault => decode::decode_bilrost_zstd(buf)?,
                 _ => return Err(StorageDecodeError::UnsupportedCodecKind(kind)),
             };
-
-            if bilrost_encoded {
-                command.schema.mark_bilrost_encoded(bilrost_encoded);
-            }
 
             command
                 .schema

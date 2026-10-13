@@ -326,7 +326,11 @@ impl SchemaUpdater {
 
     fn into_inner(mut self) -> Schema {
         if self.modified {
-            self.schema.unindexed.version = self.schema.unindexed.version.next()
+            self.schema.unindexed.version = self.schema.unindexed.version.next();
+            self.schema.unindexed.bilrost_encoded |= Configuration::pinned()
+                .common
+                .experimental
+                .is_schema_bilrost_encoding_enabled();
         }
 
         self.schema

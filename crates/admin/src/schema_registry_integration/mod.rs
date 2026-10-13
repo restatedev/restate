@@ -42,8 +42,7 @@ impl restate_types::schema::registry::MetadataService for MetadataService {
                     .map(|s| s.as_ref().clone())
                     .unwrap_or_default();
 
-                let (new_t, mut new_schema) = modify(schema)?;
-                new_schema.mark_bilrost_encoded(false);
+                let (new_t, new_schema) = modify(schema)?;
                 t = Some(new_t);
                 Ok(new_schema)
             })

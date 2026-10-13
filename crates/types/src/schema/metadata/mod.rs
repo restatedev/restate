@@ -21,7 +21,6 @@ use std::time::Duration;
 use arc_swap::ArcSwapOption;
 use http::{HeaderName, HeaderValue};
 use restate_encoding::{Arced, RestateEncoding};
-use restate_platform::storage::{StorageCodecKind, StorageEncode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use serde_with::serde_as;
@@ -99,19 +98,12 @@ pub struct SchemaUnindexed {
 // TODO(azmy): Drop serde::Serialize and serde::Deserialize implementations along with serde for MetadataUpdate
 // in v1.9.0
 #[derive(
-    derive_more::Debug,
-    Clone,
-    Default,
-    serde::Serialize,
-    serde::Deserialize,
-    derive_more::Deref,
-    derive_more::DerefMut,
+    derive_more::Debug, Clone, Default, serde::Serialize, serde::Deserialize, derive_more::Deref,
 )]
 #[serde(from = "SchemaUnindexed", into = "SchemaUnindexed")]
 #[debug("Schema(version: {})", unindexed.version)]
 pub struct Schema {
     #[deref]
-    #[deref_mut]
     unindexed: SchemaUnindexed,
     /// Derived from `unindexed.deployments`, never persisted.
     active_service_revisions: HashMap<String, ActiveServiceRevision>,
@@ -136,11 +128,6 @@ impl SchemaUnindexed {
         }
 
         Ok(())
-    }
-
-    pub fn mark_bilrost_encoded(&mut self, force: bool) {
-        self.bilrost_encoded =
-            force || self.default_codec() == StorageCodecKind::ZstdBilrostDefault;
     }
 }
 
@@ -194,8 +181,6 @@ impl Versioned for Schema {
 }
 
 mod storage {
-    use std::sync::OnceLock;
-
     use bytes::BytesMut;
 
     use restate_platform::storage::{
@@ -203,26 +188,11 @@ mod storage {
     };
 
     use super::{Schema, SchemaUnindexed};
-    use crate::{config::Configuration, storage};
-
-    // The encoding choice is cached once per process because it must not change at runtime.
-    // `StorageCodec::encode` calls `StorageEncode::default_codec` to pick the codec kind it
-    // stores alongside the value, and `StorageEncode::encode` then calls it again to choose the actual
-    // encoding. If the config changed between those two calls, the stored codec kind would not
-    // match the encoded bytes, and the value could no longer be decoded.
-    // TODO(azmy): remove along the experimental flag once default_codec becomes ZstdBilrost
-    static ENABLED_SCHEMA_BILROST_ENCODING: OnceLock<bool> = OnceLock::new();
+    use crate::storage;
 
     impl StorageEncode for SchemaUnindexed {
         fn default_codec(&self) -> StorageCodecKind {
-            let bilrost_encoding = ENABLED_SCHEMA_BILROST_ENCODING.get_or_init(|| {
-                Configuration::pinned()
-                    .common
-                    .experimental
-                    .is_schema_bilrost_encoding_enabled()
-            });
-
-            if *bilrost_encoding || self.bilrost_encoded {
+            if self.bilrost_encoded {
                 StorageCodecKind::ZstdBilrostDefault
             } else {
                 StorageCodecKind::FlexbuffersSerde
