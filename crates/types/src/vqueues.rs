@@ -33,4 +33,6 @@ pub enum ParseError {
     UnknownEntryKind(u8),
     #[error("malformed byte representation of a entry id")]
     MalformedId,
+    #[error("unknown entry kind string")]
+    UnknownEntryKindString,
 }
