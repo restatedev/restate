@@ -11,11 +11,11 @@
 use std::sync::Arc;
 
 use datafusion::execution::context::SessionContext;
-use restate_core::{Metadata, TaskCenter};
-use restate_types::config::Configuration;
 use tokio::sync::watch;
 
+use restate_core::{Metadata, TaskCenter};
 use restate_types::cluster::cluster_state::LegacyClusterState;
+use restate_types::config::Configuration;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
 use crate::BuildError;
@@ -23,12 +23,13 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 
 use super::RegisterTable;
 
-const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW logs_tail_segments as SELECT
-        l.* FROM logs AS l JOIN (
-            SELECT log_id, max(segment_index) AS segment_index FROM logs GROUP BY log_id
+const CLUSTER_LOGS_TAIL_SEGMENTS_VIEW: &str = "CREATE VIEW restate.cluster.logs_tail_segments as SELECT
+        l.* FROM restate.cluster.logs AS l JOIN (
+            SELECT log_id, max(segment_index) AS segment_index FROM restate.cluster.logs GROUP BY log_id
         ) m
         ON m.log_id=l.log_id AND l.segment_index=m.segment_index";
 
+/// Registers cluster tables and views in `restate.cluster`, independently of session defaults.
 pub struct ClusterTables {
     cluster_state: restate_types::cluster_state::ClusterState,
     replica_set_states: PartitionReplicaSetStates,
@@ -60,6 +61,8 @@ impl ClusterTables {
 
 impl RegisterTable for ClusterTables {
     async fn register(&self, ctx: &SessionContext) -> Result<(), BuildError> {
+        ctx.sql("CREATE SCHEMA IF NOT EXISTS restate.cluster")
+            .await?;
         let metadata = Metadata::current();
         crate::node::register_self(ctx, metadata.clone(), self.cluster_state.clone())?;
         crate::partition::register_self(ctx, metadata.clone(), self.replica_set_states.clone())?;
