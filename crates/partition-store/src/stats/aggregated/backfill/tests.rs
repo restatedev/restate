@@ -380,17 +380,17 @@ async fn spills_retry_and_activation_match_live_maintenance() {
         147
     );
 
-    // Fail after multiple files have already been ingested. The missing feature marker
-    // must let the next attempt clear all partial contributions rather than double count.
+    // Fail late in the source scan, after multiple runs have been written. None of
+    // those runs may be installed before the complete source has been validated.
     let mut tx = store.transaction();
     tx.delete_invocation_status(&last_id).unwrap();
     tx.commit().await.unwrap();
     drop(tx);
     let err = build(store.partition_db(), &CancellationToken::new(), 512).unwrap_err();
     assert!(err.to_string().contains("missing invocation status"));
-    assert!(!read_all(&store).is_empty());
+    assert!(read_all(&store).is_empty());
     assert!(!store.storage_features().is_track_status_gauges);
-    // SQL must fail rather than expose a partially ingested baseline during startup.
+    // SQL must fail rather than expose an unfinished baseline during startup.
     assert!(
         store
             .scan_service_load(&Filter::All, |_, _| ControlFlow::Continue(()))
@@ -482,7 +482,7 @@ async fn spills_retry_and_activation_match_live_maintenance() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
-async fn empty_source_clears_partial_output_and_cancellation_stops_ingestion() {
+async fn staged_runs_are_numbered_cancel_safe_and_ingested_together() {
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let store = manager
@@ -490,25 +490,65 @@ async fn empty_source_clears_partial_output_and_cancellation_stops_ingestion() {
         .await
         .unwrap();
     let db = store.partition_db();
-    let cancel = CancellationToken::new();
-    let mut sink = SstSink::new(db, &cancel, 512).unwrap();
     let mut key = Vec::new();
     ServiceLoad::encode_key(
         store.partition_id(),
         ServiceLoadKey::borrowed("stale", Some("run"), EntryKind::Invocation),
         &mut key,
     );
-    sink.pending
-        .add(&key, StageStatus::new(Stage::Inbox, Status::New), 3)
-        .unwrap();
+    let bucket = StageStatus::new(Stage::Inbox, Status::New);
+    let cancel = CancellationToken::new();
+    let directory = db
+        .rocksdb()
+        .inner()
+        .as_raw_db()
+        .path()
+        .join(format!("status-stats-ingest-{}", store.partition_id()));
+
+    // A process crash can leave a finished run behind. Starting again must
+    // recreate the exact directory rather than include stale runs in the list.
+    {
+        let mut sink = SstSink::new(db, &cancel, 512).unwrap();
+        assert_eq!(sink.directory.path(), directory);
+        sink.pending.add(&key, bucket, 100).unwrap();
+        sink.spill().unwrap();
+        assert!(directory.join("000000.sst").is_file());
+        assert_eq!(sink.directory.keep(), directory);
+    }
+    let mut sink = SstSink::new(db, &cancel, 512).unwrap();
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 0);
+    sink.pending.add(&key, bucket, 3).unwrap();
     sink.spill().unwrap();
-    assert_eq!(read_all(&store).len(), 1);
-    sink.pending
-        .add(&key, StageStatus::new(Stage::Inbox, Status::New), 4)
-        .unwrap();
+    sink.pending.add(&key, bucket, 4).unwrap();
+    sink.spill().unwrap();
+    assert_eq!(sink.files, 2);
+    assert!(directory.join("000000.sst").is_file());
+    assert!(directory.join("000001.sst").is_file());
+    assert_eq!(std::fs::read_dir(&directory).unwrap().count(), 2);
+    assert!(read_all(&store).is_empty());
     cancel.cancel();
-    assert!(sink.spill().unwrap_err().is::<MigrationError>());
-    drop(sink);
+    assert!(sink.ingest().unwrap_err().is::<MigrationError>());
+    assert!(read_all(&store).is_empty());
+    assert!(!directory.exists());
+
+    let cancel = CancellationToken::new();
+    let mut sink = SstSink::new(db, &cancel, 512).unwrap();
+    sink.pending.add(&key, bucket, 3).unwrap();
+    sink.spill().unwrap();
+    sink.pending.add(&key, bucket, 4).unwrap();
+    // Finalization writes the pending run and installs both overlapping SSTs at once.
+    assert_eq!(sink.ingest().unwrap(), 2);
+    assert!(!directory.exists());
+    let counts = read_all(&store);
+    assert_eq!(counts.len(), 1);
+    assert_eq!(
+        counts.values().next().unwrap().iter().collect::<Vec<_>>(),
+        [(bucket, 7)]
+    );
+
+    // A crash after ingestion but before feature publication must still be restartable,
+    // including when the source has no entries to rebuild.
     assert_eq!(build(db, &CancellationToken::new(), 512).unwrap(), 0);
     assert!(read_all(&store).is_empty());
+    assert!(!directory.exists());
 }

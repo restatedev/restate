@@ -13,10 +13,11 @@
 //! the current objects, service/deployment totals, and sorted output respectively. Spills
 //! contain coalesced positive merge operands: even an exceptionally large partition-key
 //! group can spill without overwriting earlier contributions or requiring an external sort.
+//! All runs are staged as sequentially numbered SSTs and ingested together after scanning.
 //!
 //! The processor must remain stopped throughout the build. Before ingesting any SST we
 //! clear an interrupted build and flush the CF, making both the source and its applied LSN
-//! durable. Ingestion makes each output file durable before the caller can publish the
+//! durable. Ingestion makes the output files durable before the caller can publish the
 //! feature ledger. A crash before that marker restarts the build, including the range clear;
 //! a crash after it cannot lose the baseline or replay source writes already counted in it.
 
@@ -157,20 +158,19 @@ impl<'a> SstSink<'a> {
         cancel: &'a CancellationToken,
         limit: usize,
     ) -> anyhow::Result<Self> {
-        // A fixed, partition-local parent lets retries clean up files left by a process crash.
-        let path = db
-            .rocksdb()
-            .inner()
-            .as_raw_db()
-            .path()
-            .join(format!("status-gauges-{}.staging", db.partition().id()));
+        // The deterministic directory lets retries discard runs left by a process crash.
+        let parent = db.rocksdb().inner().as_raw_db().path();
+        let name = format!("status-stats-ingest-{}", db.partition().id());
+        let path = parent.join(&name);
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
             Err(err) => return Err(err).context("cleaning status gauge staging directory"),
         }
-        std::fs::create_dir_all(&path)?;
-        let directory = tempfile::tempdir_in(path)?;
+        let directory = tempfile::Builder::new()
+            .prefix(&name)
+            .rand_bytes(0)
+            .tempdir_in(parent)?;
         let mut options = Options::default();
         options.set_compression_type(rocksdb::DBCompressionType::None);
         options.set_merge_operator(
@@ -189,12 +189,17 @@ impl<'a> SstSink<'a> {
         })
     }
 
+    fn file_path(&self, number: u64) -> PathBuf {
+        self.directory.path().join(format!("{number:06}.sst"))
+    }
+
+    /// Writes a sorted run without installing it in the database.
     fn spill(&mut self) -> anyhow::Result<()> {
         if self.pending.entries.is_empty() {
             return Ok(());
         }
         check_cancel(self.cancel)?;
-        let path: PathBuf = self.directory.path().join("run.sst");
+        let path = self.file_path(self.files);
         let mut writer = SstFileWriter::create(&self.options);
         writer.open(&path)?;
         let mut value = Vec::new();
@@ -209,17 +214,30 @@ impl<'a> SstSink<'a> {
         }
         writer.finish()?;
         drop(writer);
+        self.pending = Accumulator::default();
+        self.files += 1;
+        Ok(())
+    }
+
+    /// Consumes the completed build so its additive operands cannot be ingested twice.
+    fn ingest(mut self) -> anyhow::Result<u64> {
+        self.spill()?;
         check_cancel(self.cancel)?;
+        if self.files == 0 {
+            return Ok(0);
+        }
+        let paths = (0..self.files)
+            .map(|number| self.file_path(number))
+            .collect();
         let mut options = IngestExternalFileOptions::default();
         options.set_move_files(true);
         self.db
             .rocksdb()
             .inner()
             .as_raw_db()
-            .ingest_external_file_cf_opts(self.db.cf_handle(), &options, vec![path])?;
-        self.pending = Accumulator::default();
-        self.files += 1;
-        Ok(())
+            .ingest_external_file_cf_opts(self.db.cf_handle(), &options, paths)
+            .context("ingesting status gauge SSTs")?;
+        Ok(self.files)
     }
 }
 
@@ -454,10 +472,10 @@ fn build(db: &PartitionDb, cancel: &CancellationToken, limit: usize) -> anyhow::
     drop((entries, invocations));
     objects.drain_into(&mut sink)?;
     totals.drain_into(&mut sink)?;
-    sink.spill()?;
+    let files = sink.ingest()?;
     check_cancel(cancel)?;
-    info!(%partition_id, scanned, files = sink.files, elapsed = %started.elapsed().friendly(), "Finished backfilling status gauges");
-    Ok(sink.files)
+    info!(%partition_id, scanned, files, elapsed = %started.elapsed().friendly(), "Finished backfilling status gauges");
+    Ok(files)
 }
 
 fn contribute<S: Stat>(
