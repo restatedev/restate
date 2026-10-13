@@ -33,6 +33,7 @@ use restate_types::sharding::KeyRange;
 use restate_types::state_mut::StateMutationInput;
 use restate_types::vqueues::{EntryId, EntryTargetExt};
 
+use crate::fsm_table::{get_storage_features_from_partition_db, put_storage_features_json};
 use crate::stats::StatValueCodec;
 use crate::stats::aggregated::StageStatusCounts;
 use crate::{PartitionStoreManager, StorageAccess, TableKind};
@@ -192,6 +193,157 @@ fn read_all(store: &PartitionStore) -> BTreeMap<(u16, Vec<u8>), StageStatusCount
     }
     it.status().unwrap();
     result
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reset_disables_collection_persists_and_allows_rebuilding() {
+    RocksDbManager::init();
+    let manager = PartitionStoreManager::create(true).await.unwrap();
+    let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+    let mut store = manager.open(&partition, None).await.unwrap();
+    let mut reference = manager
+        .open(&Partition::new(PartitionId::from(2), KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_status_gauges(true);
+    for store in [&mut store, &mut reference] {
+        store
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
+    }
+    let (last_id, last_status) = seed(&mut store).await;
+    seed(&mut reference).await;
+    let expected = read_all(&reference);
+    assert!(!expected.is_empty());
+    assert_eq!(read_all(&store), expected);
+
+    let ledger = |store: &PartitionStore| {
+        serde_json::to_value(
+            get_storage_features_from_partition_db(store.partition_db())
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    let mut enabled_ledger = ledger(&store);
+    enabled_ledger["future-document-field"] = serde_json::json!({"preserve": true});
+    enabled_ledger["features"]["future-feature"] = serde_json::json!({
+        "min_required_version": restate_types::SemanticRestateVersion::current(),
+        "future-metadata": 42,
+    });
+    put_storage_features_json(
+        &mut store,
+        partition.id(),
+        &serde_json::to_vec(&enabled_ledger).unwrap(),
+    )
+    .await
+    .unwrap();
+    config.common.experimental = serde_json::from_value(serde_json::json!({
+        "experimental-enable-track-status-gauges": true,
+        "experimental-enable-status-gauges-reset": true,
+    }))
+    .unwrap();
+    assert!(config.common.experimental.is_status_gauges_reset_enabled());
+
+    let cancelled = CancellationToken::new();
+    cancelled.cancel();
+    let error = store
+        .verify_and_run_migrations(cancelled, &config)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, MigrationError::MigrationCancelled),
+        "{error:?}"
+    );
+    assert!(store.storage_features().is_track_status_gauges);
+    assert_eq!(read_all(&store), expected);
+    assert_eq!(ledger(&store), enabled_ledger);
+
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    assert!(!store.storage_features().is_track_status_gauges);
+    assert!(read_all(&store).is_empty());
+    assert_eq!(read_all(&reference), expected);
+    let mut disabled_ledger = enabled_ledger;
+    disabled_ledger["features"]
+        .as_object_mut()
+        .unwrap()
+        .remove("status-gauges")
+        .unwrap();
+    assert_eq!(ledger(&store), disabled_ledger);
+    assert!(
+        store
+            .scan_service_load(&Filter::All, |_, _| ControlFlow::Continue(()))
+            .is_err()
+    );
+
+    // Reset also clears an interrupted, unmarked backfill rather than relying
+    // on the feature already being enabled.
+    let mut stale_key = Vec::new();
+    ServiceLoad::encode_key(
+        store.partition_id(),
+        ServiceLoadKey::borrowed("stale", None::<&str>, EntryKind::Invocation),
+        &mut stale_key,
+    );
+    let mut stale_value = Vec::new();
+    expected
+        .values()
+        .next()
+        .unwrap()
+        .serialize_to(&mut stale_value);
+    store
+        .put_cf(TableKind::Stats, &stale_key, &stale_value)
+        .unwrap();
+    assert!(!read_all(&store).is_empty());
+    store
+        .verify_and_run_migrations(CancellationToken::new(), &config)
+        .await
+        .unwrap();
+    assert!(read_all(&store).is_empty());
+    assert_eq!(ledger(&store), disabled_ledger);
+
+    // Live mutations must stop maintaining gauges, but remain available as the
+    // source of truth for the next backfill.
+    for store in [&mut store, &mut reference] {
+        let mut tx = store.transaction();
+        let header = tx
+            .get_vqueue_entry_status(&BaseEntryId::from(last_id))
+            .await
+            .unwrap()
+            .unwrap();
+        let qid = VQueueId::custom(last_id.partition_key(), "backfill");
+        tx.delete_vqueue_entry_status(
+            &EntryContext {
+                qid: &qid,
+                target: &last_status.invocation_target().unwrap().entry_target_ref(),
+            },
+            EntryStateRef::from_header(&header),
+        );
+        tx.delete_invocation_status(&last_id).unwrap();
+        tx.commit().await.unwrap();
+    }
+    assert!(read_all(&store).is_empty());
+    store.partition_db().flush_memtables(true).await.unwrap();
+    drop(store);
+    manager.close_partition_store(partition.id()).await;
+    let mut reopened = manager.open(&partition, None).await.unwrap();
+    assert!(!reopened.storage_features().is_track_status_gauges);
+    assert_eq!(ledger(&reopened), disabled_ledger);
+    assert!(read_all(&reopened).is_empty());
+
+    config.common.experimental.set_status_gauges_reset(false);
+    for _ in 0..2 {
+        reopened
+            .verify_and_run_migrations(CancellationToken::new(), &config)
+            .await
+            .unwrap();
+        assert!(reopened.storage_features().is_track_status_gauges);
+        assert_eq!(read_all(&reopened), read_all(&reference));
+    }
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
