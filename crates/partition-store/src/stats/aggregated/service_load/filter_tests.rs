@@ -21,6 +21,7 @@ use restate_storage_api::stats::service_load::{
     ServiceLoad as Target, ServiceLoadClause as Clause,
 };
 use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_types::config::Configuration;
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::vqueues::EntryKind;
@@ -358,6 +359,12 @@ async fn service_load_filters_run_before_value_materialization() {
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let mut store = manager
         .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_status_gauges(true);
+    store
+        .verify_and_run_migrations(Default::default(), &config)
         .await
         .unwrap();
     let mut tx = store.transaction();

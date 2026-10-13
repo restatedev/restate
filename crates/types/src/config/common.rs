@@ -874,9 +874,10 @@ experimental! {
 
     /// # Status Gauges For Services
     ///
-    /// Enables tracking service-level status gauges for invocations. This impacts
-    /// new invocations and and any existing invocation that goes through an status
-    /// transition. Existing completed invocations will not be accounted for.
+    /// Enables tracking status gauges for VQueue entries by service, deployment,
+    /// and virtual object. Existing entries, including retained completed entries,
+    /// are counted before each local partition starts for the first time with this
+    /// feature enabled. This initial scan can increase partition startup time.
     ///
     /// Since v1.8.1
     track_status_gauges,
