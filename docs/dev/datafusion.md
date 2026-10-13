@@ -103,9 +103,23 @@ internal API; no request header or HTTP parameter selects additional tables.
 ### Query metadata and diagnostics
 
 `QuerySession::session_id()` exposes the server-generated session identity before planning.
-Each `QueryResult` includes fixed `QueryMetadata` (session ID, collected request headers, redacted SQL, and planning
+Each `QueryResult` includes fixed `QueryMetadata` (session ID, query timestamp, collected request headers, redacted SQL, and planning
 duration) and an independently cloneable `Arc<dyn QueryDiagnostics>`. Clone the handle before
 moving the record-batch stream into a response writer; `snapshot()` returns owned values.
+
+Each `execute()` allocates a native `UniqueTimestamp` as `query_ts` before parsing. `DataFusionEnv`
+owns an atomic `HlcClock`; environment clones and their sessions share it. Failed planning attempts
+advance the clock too. The pair `(session_id, query_ts)` identifies an execution across independently
+created environments. Query execution requires the binary's `ClockUpkeep` to be running.
+Tests inject `MockClock` using `DataFusionEnv::with_mock_clock` (available through `test-util`),
+so they can freeze or advance physical time without an upkeep thread.
+
+`QueryMetadata.query_ts` retains the timestamp as a native value. The execution's cloned DataFusion
+session state carries it as a typed `SessionConfig` extension, inherited by planning and task contexts:
+`TaskContext::session_config().get_extension::<UniqueTimestamp>()`. Shared providers and the reusable
+session state do not hold a mutable current-query timestamp. Tracing and execution/failure logs emit its raw
+`u64` value alongside the session ID. Remote propagation and snapshot binding are follow-up work;
+the timestamp does not yet establish a storage snapshot or a consistent cluster-wide read cutoff.
 
 `snapshot()` returns only output row/batch counts, status, execution wall time, and total wall
 time including planning. It is allocation-free and never traverses the physical plan. Total time
