@@ -12,6 +12,7 @@ use std::marker::PhantomData;
 
 use bytes::Bytes;
 use tokio::sync::{oneshot, watch};
+use tokio::time::Instant;
 
 use restate_platform::memory::EstimatedMemorySize;
 
@@ -31,6 +32,7 @@ pub struct Incoming<M> {
     inner: M,
     peer: GenerationalNodeId,
     metadata_version: PeerMetadataVersion,
+    received_at: Instant,
 }
 
 impl<M> Incoming<M> {
@@ -39,18 +41,25 @@ impl<M> Incoming<M> {
         inner: M,
         peer: GenerationalNodeId,
         metadata_version: PeerMetadataVersion,
+        received_at: Instant,
     ) -> Self {
         Self {
             protocol_version,
             inner,
             peer,
             metadata_version,
+            received_at,
         }
     }
 
     /// Sender's metadata version if it was set in headers
     pub fn metadata_version(&self) -> &PeerMetadataVersion {
         &self.metadata_version
+    }
+
+    /// Local monotonic receive time, preserved across message type conversions.
+    pub fn received_at(&self) -> Instant {
+        self.received_at
     }
 
     /// The sender's node-id if known
@@ -290,6 +299,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            received_at: raw.received_at,
         }
     }
 
@@ -306,6 +316,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 
@@ -349,6 +360,7 @@ impl<S: Service> Incoming<RawSvcRpc<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 }
@@ -407,6 +419,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            received_at: raw.received_at,
         }
     }
 
@@ -422,6 +435,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 
@@ -464,6 +478,7 @@ impl<S: Service> Incoming<RawSvcUnary<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 }
@@ -523,6 +538,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: raw.peer,
             metadata_version: raw.metadata_version,
+            received_at: raw.received_at,
         }
     }
 
@@ -539,6 +555,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             },
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 
@@ -593,6 +610,7 @@ impl<S: Service> Incoming<RawSvcWatch<S>> {
             protocol_version: self.protocol_version,
             peer: self.peer,
             metadata_version: self.metadata_version,
+            received_at: self.received_at,
         }
     }
 }
@@ -895,5 +913,35 @@ pub mod test_util {
                 OneshotRxMock(rx, PhantomData),
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::net::partition_processor::{AppendSignalRpcRequest, PartitionLeaderService};
+
+    use super::*;
+
+    #[test]
+    fn receive_time_survives_rpc_type_conversions() {
+        let received_at = Instant::now() - std::time::Duration::from_secs(2);
+        let (reply_port, _reply_rx) = RpcReplyPort::new();
+        let incoming = Incoming::new(
+            ProtocolVersion::V2,
+            RawRpc {
+                reply_port,
+                payload: Bytes::new(),
+                sort_code: Some(0),
+                msg_type: AppendSignalRpcRequest::TYPE.to_owned(),
+                reservation: MemoryLease::unlinked(),
+            },
+            GenerationalNodeId::new(1, 1),
+            PeerMetadataVersion::default(),
+            received_at,
+        );
+        let incoming = Incoming::<RawSvcRpc<PartitionLeaderService>>::from_raw_rpc(incoming);
+        assert_eq!(incoming.received_at(), received_at);
+        let incoming = incoming.into_typed::<AppendSignalRpcRequest>();
+        assert_eq!(incoming.received_at(), received_at);
     }
 }
