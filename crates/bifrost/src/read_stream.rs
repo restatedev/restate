@@ -119,10 +119,8 @@ enum State {
         safe_known_tail: Option<Lsn>,
         #[pin]
         tail_watch: Option<BoxStream<'static, TailState>>,
-        /// Logs version at which we last confirmed `read_pointer` still falls in a live
-        /// segment. A prefix-trim always bumps the version, so we only re-scan the chain when
-        /// this lags. Reset to [`Version::INVALID`] on entry so the check runs once per substream.
-        trim_checked_version: Version,
+        /// Logs version at which we last checked the chain for this substream.
+        chain_checked_version: Version,
     },
     /// Chain reconfiguration has been detected, we'll update our view of the chain.
     AwaitingReconfiguration,
@@ -155,11 +153,11 @@ impl State {
         }
     }
 
-    fn reading_to_known_tail(tail_lsn: Lsn) -> Self {
+    fn reading_to_known_tail(tail_lsn: Lsn, chain_checked_version: Version) -> Self {
         Self::Reading {
             safe_known_tail: Some(tail_lsn),
             tail_watch: None,
-            trim_checked_version: Version::INVALID,
+            chain_checked_version,
         }
     }
 }
@@ -353,7 +351,7 @@ impl Stream for LogReadStream {
                     this.state.set(State::Reading {
                         safe_known_tail,
                         tail_watch,
-                        trim_checked_version: Version::INVALID,
+                        chain_checked_version: Version::INVALID,
                     });
                 }
 
@@ -361,29 +359,45 @@ impl Stream for LogReadStream {
                 StateProj::Reading {
                     safe_known_tail,
                     tail_watch,
-                    trim_checked_version,
+                    chain_checked_version,
                 } => {
                     // Continue driving the substream
                     //
                     // This depends on whether we know its tail (if sealed), or if the value of
                     // `safe_known_tail` is higher than the `read_pointer` of the substream.
-                    let Some(substream) = this.substream.as_mut().as_pin_mut() else {
+                    let Some(mut substream) = this.substream.as_mut().as_pin_mut() else {
                         panic!("substream must be set at this point");
                     };
 
-                    // A prefix-trim may have dropped the segment under our read_pointer from
-                    // the chain while we were parked here; a substream on a sealed tail won't
-                    // surface that, so we consult the chain directly, as the other stalled
-                    // states do via `check_chain`.
-                    if *trim_checked_version != logs.version() {
-                        match chain.find_segment_for_lsn(*this.read_pointer) {
-                            MaybeSegment::Trim { next_base_lsn } => {
+                    if *chain_checked_version != logs.version() {
+                        match check_chain(
+                            chain,
+                            *this.read_pointer,
+                            substream.loglet().segment_index(),
+                            substream.loglet().config.kind,
+                        ) {
+                            Decision::NoChange => {
+                                *chain_checked_version = logs.version();
+                            }
+                            Decision::NewSegment => {
+                                this.substream.set(None);
+                                this.state.set(State::finding_loglet(
+                                    bifrost_inner,
+                                    *this.log_id,
+                                    *this.read_pointer,
+                                ));
+                                continue;
+                            }
+                            Decision::TailLsnSet { sealed_tail } => {
+                                substream.set_tail_lsn(sealed_tail);
+                                this.state
+                                    .set(State::reading_to_known_tail(sealed_tail, logs.version()));
+                                continue;
+                            }
+                            Decision::Trim { next_base_lsn } => {
                                 let gap = deliver_trim_gap(&mut this, next_base_lsn, bifrost_inner);
                                 update_shared_state(&this);
                                 return Poll::Ready(Some(Ok(gap)));
-                            }
-                            MaybeSegment::Some(_) => {
-                                *trim_checked_version = logs.version();
                             }
                         }
                     }
@@ -548,7 +562,8 @@ impl Stream for LogReadStream {
                         Decision::TailLsnSet { sealed_tail } => {
                             substream.set_tail_lsn(sealed_tail);
                             // go back to reading.
-                            this.state.set(State::reading_to_known_tail(sealed_tail));
+                            this.state
+                                .set(State::reading_to_known_tail(sealed_tail, logs.version()));
                             continue;
                         }
                         Decision::Trim { next_base_lsn } => {
@@ -595,7 +610,8 @@ impl Stream for LogReadStream {
                         Decision::TailLsnSet { sealed_tail } => {
                             substream.set_tail_lsn(sealed_tail);
                             // go back to reading.
-                            this.state.set(State::reading_to_known_tail(sealed_tail));
+                            this.state
+                                .set(State::reading_to_known_tail(sealed_tail, logs.version()));
                             continue;
                         }
                         Decision::Trim { next_base_lsn } => {
@@ -781,7 +797,7 @@ mod tests {
     use restate_types::config::LocalLogletOptions;
     use restate_types::live::{Constant, LiveLoadExt};
     use restate_types::logs::metadata::{ProviderKind, new_single_node_loglet_params};
-    use restate_types::logs::{KeyFilter, SequenceNumber};
+    use restate_types::logs::{KeyFilter, LogletOffset, SequenceNumber};
     use restate_types::metadata::Precondition;
 
     use crate::loglet::FindTailOptions;
@@ -1524,6 +1540,211 @@ mod tests {
         assert_that!(record.sequence_number(), eq(Lsn::new(6)));
         assert_that!(record.trim_gap_to_sequence_number(), eq(Some(Lsn::new(10))));
         assert_eq!(Lsn::from(11), reader.read_pointer());
+
+        Ok(())
+    }
+
+    mod stale_tail_loglet {
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        use async_trait::async_trait;
+        use futures::stream::BoxStream;
+
+        use restate_types::logs::metadata::{
+            Chain, LogletParams, ProviderConfiguration, ProviderKind, SegmentIndex,
+        };
+        use restate_types::logs::{
+            KeyFilter, LogId, LogletId, LogletOffset, Record, SequenceNumber, TailOffsetWatch,
+            TailState,
+        };
+
+        use crate::Result;
+        use crate::loglet::{
+            FindTailOptions, Loglet, LogletCommit, LogletProvider, LogletProviderFactory,
+            OperationError, SendableLogletReadStream,
+        };
+        use crate::providers::memory_loglet::MemoryLoglet;
+
+        pub struct Factory {
+            loglet: Arc<StaleTailLoglet>,
+        }
+
+        impl Factory {
+            pub fn new(loglet: Arc<StaleTailLoglet>) -> Self {
+                Self { loglet }
+            }
+        }
+
+        #[async_trait]
+        impl LogletProviderFactory for Factory {
+            fn kind(&self) -> ProviderKind {
+                ProviderKind::Local
+            }
+
+            async fn create(self: Box<Self>) -> Result<Arc<dyn LogletProvider>, OperationError> {
+                Ok(Arc::new(Provider {
+                    loglet: self.loglet,
+                }))
+            }
+        }
+
+        struct Provider {
+            loglet: Arc<StaleTailLoglet>,
+        }
+
+        #[async_trait]
+        impl LogletProvider for Provider {
+            async fn get_loglet(
+                &self,
+                _log_id: LogId,
+                _segment_index: SegmentIndex,
+                _params: &LogletParams,
+            ) -> Result<Arc<dyn Loglet>> {
+                Ok(self.loglet.clone())
+            }
+
+            fn propose_new_loglet_params(
+                &self,
+                _log_id: LogId,
+                _chain: Option<&Chain>,
+                _defaults: &ProviderConfiguration,
+            ) -> Result<LogletParams, OperationError> {
+                Ok(LogletParams::from("stale-tail"))
+            }
+        }
+
+        pub struct StaleTailLoglet {
+            inner: Arc<MemoryLoglet>,
+            visible_tail: TailOffsetWatch,
+        }
+
+        impl StaleTailLoglet {
+            pub fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    inner: MemoryLoglet::new(LogletId::new_unchecked(1)),
+                    visible_tail: TailOffsetWatch::new(TailState::Open(LogletOffset::OLDEST)),
+                })
+            }
+
+            pub fn notify_tail(&self, tail: LogletOffset) {
+                self.visible_tail.notify(false, tail);
+            }
+
+            pub fn visible_tail(&self) -> TailState<LogletOffset> {
+                *self.visible_tail.get()
+            }
+        }
+
+        #[async_trait]
+        impl Loglet for StaleTailLoglet {
+            fn id(&self) -> Option<LogletId> {
+                self.inner.id()
+            }
+
+            fn debug_str(&self) -> Cow<'static, str> {
+                Cow::Borrowed("stale-tail")
+            }
+
+            async fn create_read_stream(
+                self: Arc<Self>,
+                filter: KeyFilter,
+                from: LogletOffset,
+            ) -> Result<SendableLogletReadStream, OperationError> {
+                self.inner.clone().create_read_stream(filter, from).await
+            }
+
+            fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
+                Box::pin(self.visible_tail.to_stream())
+            }
+
+            async fn enqueue_batch(
+                &self,
+                payloads: Arc<[Record]>,
+            ) -> Result<LogletCommit, OperationError> {
+                self.inner.enqueue_batch(payloads).await
+            }
+
+            async fn find_tail(
+                &self,
+                opts: FindTailOptions,
+            ) -> Result<TailState<LogletOffset>, OperationError> {
+                self.inner.find_tail(opts).await
+            }
+
+            async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
+                self.inner.get_trim_point().await
+            }
+
+            async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
+                self.inner.trim(trim_point).await
+            }
+
+            async fn seal(&self) -> Result<(), OperationError> {
+                self.inner.seal().await
+            }
+        }
+    }
+
+    #[restate_core::test(start_paused = true)]
+    async fn reading_state_uses_chain_tail_when_loglet_tail_is_stale() -> anyhow::Result<()> {
+        const LOG_ID: LogId = LogId::new(0);
+
+        let node_env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_provider_kind(ProviderKind::Local)
+            .build()
+            .await;
+        let loglet = stale_tail_loglet::StaleTailLoglet::new();
+        let svc = BifrostService::new(node_env.metadata_writer.clone())
+            .with_factory(stale_tail_loglet::Factory::new(loglet.clone()));
+        let bifrost = svc.handle();
+        svc.start().await.expect("loglet must start");
+
+        let mut appender = bifrost.create_appender(LOG_ID, ErrorRecoveryStrategy::Wait)?;
+        for i in 1..=5 {
+            assert_eq!(Lsn::new(i), appender.append(format!("record-{i}")).await?);
+        }
+        loglet.notify_tail(LogletOffset::new(6));
+
+        let mut reader = bifrost.create_reader(LOG_ID, KeyFilter::Any, Lsn::OLDEST, Lsn::MAX)?;
+        for i in 1..=5 {
+            let record = reader.next().await.expect("reader must stay alive")?;
+            assert_that!(record.sequence_number(), eq(Lsn::new(i)));
+        }
+
+        for i in 6..=10 {
+            assert_eq!(Lsn::new(i), appender.append(format!("record-{i}")).await?);
+        }
+        assert_that!(reader.safe_known_tail(), some(eq(Lsn::new(6))));
+
+        let metadata = Metadata::current();
+        let old_version = metadata.logs_version();
+        let mut builder = metadata
+            .logs_ref()
+            .clone()
+            .try_into_builder()
+            .expect("can create builder");
+        builder
+            .chain(LOG_ID)
+            .unwrap()
+            .seal(Lsn::new(11), &SealMetadata::new("test", my_node_id()))?;
+        let new_metadata = builder.build();
+        node_env
+            .metadata_writer
+            .global_metadata()
+            .put(
+                new_metadata.into(),
+                Precondition::MatchesVersion(old_version),
+            )
+            .await?;
+
+        let record = reader.next().await.expect("reader must not hang")?;
+        assert_that!(record.sequence_number(), eq(Lsn::new(6)));
+        assert_that!(reader.safe_known_tail(), some(eq(Lsn::new(11))));
+        assert_that!(
+            loglet.visible_tail(),
+            eq(TailState::Open(LogletOffset::new(6)))
+        );
 
         Ok(())
     }
