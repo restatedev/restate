@@ -14,6 +14,63 @@ pub struct SqlColumnDoc { pub name: &'static str, pub ty: &'static str, pub desc
 pub struct SqlTableDoc { pub name: &'static str, pub description: &'static str, pub columns: &'static [SqlColumnDoc] }
 
 pub static SQL_TABLES: &[SqlTableDoc] = &[
+    SqlTableDoc { name: "_idx_entry_by_virtual_object", description: "Inspection of virtual-object invocations and state mutations ordered by identity, stage, and newest transition.", columns: &[
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Virtual-object service name." },
+        SqlColumnDoc { name: "scope", ty: "Utf8", description: "Scope, or NULL for an unscoped object." },
+        SqlColumnDoc { name: "key", ty: "Utf8", description: "Virtual-object key." },
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage." },
+        SqlColumnDoc { name: "transitioned_at", ty: "TimestampMillisecond", description: "Last stage transition, exposed at millisecond precision." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical entry incarnation ID." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource ID without its sequence suffix." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the canonical ID." },
+    ] },
+    SqlTableDoc { name: "_idx_entry_next_at_by_service", description: "Inspection of persisted entries ordered by stage, service, next transition time, and sequence.", columns: &[
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage." },
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Service name." },
+        SqlColumnDoc { name: "next_at", ty: "TimestampMillisecond", description: "Next transition time, stored in seconds and exposed in milliseconds." },
+        SqlColumnDoc { name: "seq", ty: "UInt64", description: "Sequence breaking same-second ties." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical entry incarnation ID." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource ID without its sequence suffix." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the canonical ID." },
+    ] },
+    SqlTableDoc { name: "_idx_entry_next_at_by_virtual_object", description: "Inspection of virtual-object invocations and state mutations ordered by identity, stage, next time, and sequence.", columns: &[
+        SqlColumnDoc { name: "service_name", ty: "Utf8", description: "Virtual-object service name." },
+        SqlColumnDoc { name: "scope", ty: "Utf8", description: "Scope, or NULL for an unscoped object." },
+        SqlColumnDoc { name: "key", ty: "Utf8", description: "Virtual-object key." },
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage." },
+        SqlColumnDoc { name: "next_at", ty: "TimestampMillisecond", description: "Next transition time, stored in seconds and exposed in milliseconds." },
+        SqlColumnDoc { name: "seq", ty: "UInt64", description: "Sequence breaking same-second ties." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical entry incarnation ID." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource ID without its sequence suffix." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the canonical ID." },
+    ] },
+    SqlTableDoc { name: "_idx_busy_vqueue", description: "Inspection of the covering busy-queue index, including zero-count queues until metadata deletion.", columns: &[
+        SqlColumnDoc { name: "total_non_completed", ty: "UInt64", description: "Total inbox, running, suspended, and paused entries." },
+        SqlColumnDoc { name: "last_modified", ty: "TimestampMillisecond", description: "Latest creation, enqueue, start, attempt, or finish timestamp." },
+        SqlColumnDoc { name: "scope", ty: "Utf8", description: "Scope, or NULL for an unscoped queue." },
+        SqlColumnDoc { name: "vqueue_id", ty: "Utf8", description: "VQueue identity." },
+        SqlColumnDoc { name: "num_inbox", ty: "UInt64", description: "Entries waiting in the inbox." },
+        SqlColumnDoc { name: "num_running", ty: "UInt64", description: "Running entries." },
+        SqlColumnDoc { name: "num_suspended", ty: "UInt64", description: "Suspended entries." },
+        SqlColumnDoc { name: "num_paused", ty: "UInt64", description: "Paused entries." },
+        SqlColumnDoc { name: "num_finished", ty: "UInt64", description: "Finished entries retained until deletion." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the VQueue ID." },
+    ] },
+    SqlTableDoc { name: "_idx_entry_by_stage", description: "Experimental inspection of the persisted stage/transition-time entry index. Includes invocations and state mutations, including finished entries until deletion. Entries predating index activation are not backfilled; this is not an authoritative inventory.", columns: &[
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage, not the invocation status reported by sys_invocation." },
+        SqlColumnDoc { name: "transitioned_at", ty: "TimestampMillisecond", description: "Time of the entry's last stage transition, at millisecond precision." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical entry ID stored as the index's primary-key suffix." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource ID derived from the canonical ID, without its sequence suffix." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the canonical ID." },
+    ] },
+    SqlTableDoc { name: "_idx_entry_next_at_by_stage", description: "Experimental inspection of the persisted stage/next-transition-time entry index. Includes invocations and state mutations, including finished entries until deletion. Entries predating index activation are not backfilled; this is not an authoritative inventory.", columns: &[
+        SqlColumnDoc { name: "stage", ty: "Utf8", description: "VQueue stage, not the invocation status reported by sys_invocation." },
+        SqlColumnDoc { name: "next_at", ty: "TimestampMillisecond", description: "Scheduled next transition time from the entry ordering key. Stored with second precision and exposed as a millisecond timestamp." },
+        SqlColumnDoc { name: "seq", ty: "UInt64", description: "Sequence breaking ties between transitions in the same second." },
+        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical entry ID stored as the index's primary-key suffix." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource ID derived from the canonical ID, without its sequence suffix." },
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Partition key encoded in the canonical ID." },
+    ] },
     SqlTableDoc { name: "sys_deployment", description: "Registered deployments. A deployment is a version of your service(s) code that Restate calls.", columns: &[
         SqlColumnDoc { name: "id", ty: "Utf8", description: "The ID of the service deployment." },
         SqlColumnDoc { name: "ty", ty: "Utf8", description: "The type of the endpoint. Either `http` or `lambda`." },
@@ -304,4 +361,4 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_deployment_stats, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, sys_service_stats, state, sys_user_limits, sys_virtual_object_stats, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  _idx_entry_by_virtual_object, _idx_entry_next_at_by_service, _idx_entry_next_at_by_virtual_object, _idx_busy_vqueue, _idx_entry_by_stage, _idx_entry_next_at_by_stage, sys_deployment, sys_deployment_stats, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, sys_service_stats, state, sys_user_limits, sys_virtual_object_stats, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
