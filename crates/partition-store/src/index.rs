@@ -24,15 +24,17 @@ mod virtual_object;
 mod vqueue;
 
 pub use entry::{
-    EntryByStage, EntryByStageKey, EntryByStageService, EntryByStageServiceKey,
-    EntryByStageServiceKeyView, EntryNextAtByStage, EntryNextAtByStageKey,
-    EntryNextAtByStageService, EntryNextAtByStageServiceKey,
+    EntryByStage, EntryByStageKey, EntryByStageKeyView, EntryByStageService,
+    EntryByStageServiceKey, EntryByStageServiceKeyView, EntryNextAtByStage, EntryNextAtByStageKey,
+    EntryNextAtByStageKeyView, EntryNextAtByStageService, EntryNextAtByStageServiceKey,
+    EntryNextAtByStageServiceKeyView,
 };
 pub use virtual_object::{
-    EntryByVirtualObjectStage, EntryByVirtualObjectStageKey, EntryNextAtByVirtualObjectStage,
-    EntryNextAtByVirtualObjectStageKey,
+    EntryByVirtualObjectStage, EntryByVirtualObjectStageKey, EntryByVirtualObjectStageKeyView,
+    EntryNextAtByVirtualObjectStage, EntryNextAtByVirtualObjectStageKey,
+    EntryNextAtByVirtualObjectStageKeyView,
 };
-pub use vqueue::{BusyVQueue, BusyVQueueKey};
+pub use vqueue::{BusyVQueue, BusyVQueueKey, BusyVQueueKeyView};
 
 /// Identifies a secondary index and the primary-key type it references.
 pub trait SecondaryIndex {
