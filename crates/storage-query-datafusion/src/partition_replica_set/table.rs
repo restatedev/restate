@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -22,7 +23,6 @@ use restate_types::cluster_state::ClusterState;
 use restate_types::partition_table::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 
-use crate::context::QueryContext;
 use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
@@ -30,7 +30,7 @@ use super::row::append_replica_set_row;
 use super::schema::PartitionReplicaSetBuilder;
 
 pub fn register_self(
-    ctx: &QueryContext,
+    ctx: &SessionContext,
     metadata: Metadata,
     cluster_state: ClusterState,
     replica_set_states: PartitionReplicaSetStates,
@@ -43,7 +43,8 @@ pub fn register_self(
             cluster_state,
         }),
     );
-    ctx.register_non_partitioned_table("partition_replica_set", Arc::new(replica_set_table))
+    ctx.register_table("partition_replica_set", Arc::new(replica_set_table))
+        .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

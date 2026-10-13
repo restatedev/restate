@@ -654,9 +654,11 @@ where
             // the invoker task's future below, binding the entry's lifetime to the
             // invoker task: cancel or panic drops the future, drops the guard, and
             // removes the entry.
-            let invoker_status_guard = node_ctx
-                .leader_handles_registry
-                .register_invoker_status(processor.key_range(), invoker.status_reader());
+            let invoker_status_guard = node_ctx.leader_handles_registry.register_invoker_status(
+                processor.partition_id(),
+                processor.key_range(),
+                invoker.status_reader(),
+            );
 
             // Register the leader-query channel separately so scheduler status (and
             // future user-limit counters) can be routed through the partition
@@ -664,9 +666,11 @@ where
             // LeaderState so it drops exactly when we step down — independent of
             // the invoker task's lifetime. When the scheduler becomes its own task,
             // it will register its own status handle and own its own guard.
-            let leader_query_guard = node_ctx
-                .leader_handles_registry
-                .register_leader_query(processor.key_range(), self.leader_query_tx.clone());
+            let leader_query_guard = node_ctx.leader_handles_registry.register_leader_query(
+                processor.partition_id(),
+                processor.key_range(),
+                self.leader_query_tx.clone(),
+            );
 
             let invoker_name = format_restring!("invoker-{}", processor.partition_id());
             let invoker_config = Configuration::live().map(|c| &c.worker.invoker);
