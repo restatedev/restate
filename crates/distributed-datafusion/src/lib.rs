@@ -49,6 +49,7 @@ mod service;
 mod sql;
 mod state;
 mod statistics;
+mod stats;
 #[cfg(feature = "table_docs")]
 pub mod table_docs;
 mod table_macro;

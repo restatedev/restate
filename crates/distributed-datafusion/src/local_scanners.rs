@@ -23,6 +23,9 @@ use crate::promise::schema::SysPromiseTable;
 use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::scheduler_status::schema::SysSchedulerTable;
 use crate::state::schema::StateTable;
+use crate::stats::deployment_stats::schema::SysDeploymentStatsTable;
+use crate::stats::service_stats::schema::SysServiceStatsTable;
+use crate::stats::virtual_object_stats::schema::SysVirtualObjectStatsTable;
 use crate::user_limits::schema::SysUserLimitsTable;
 use crate::vqueue_entry_status::schema::SysVqueueEntryStatusTable;
 use crate::vqueue_meta::schema::SysVqueueMetaTable;
@@ -76,6 +79,15 @@ pub fn register_partition_scanners(
         SysVqueueEntryStatusTable::create_local_scanner(Arc::clone(&partition_store_manager)),
     ));
     remote_scanner_manager.register_partition_scanner::<SysVqueuesTable>(Arc::new(
-        SysVqueuesTable::create_local_scanner(partition_store_manager),
+        SysVqueuesTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysServiceStatsTable>(Arc::new(
+        SysServiceStatsTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysDeploymentStatsTable>(Arc::new(
+        SysDeploymentStatsTable::create_local_scanner(Arc::clone(&partition_store_manager)),
+    ));
+    remote_scanner_manager.register_partition_scanner::<SysVirtualObjectStatsTable>(Arc::new(
+        SysVirtualObjectStatsTable::create_local_scanner(partition_store_manager),
     ));
 }
