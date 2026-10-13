@@ -14,11 +14,13 @@
 //! [`EntryId`], [`BaseEntryId`](crate::identifiers::BaseEntryId), and [`CanonicalEntryId`].
 
 mod entry_id;
+mod entry_target;
 mod seq;
 mod vqueue_id;
 
 pub use crate::identifiers::CanonicalEntryId;
 pub use entry_id::{EntryId, EntryIdDisplay, EntryKind};
+pub use entry_target::{EntryTargetExt, EntryTargetRef, HandlerRef};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 

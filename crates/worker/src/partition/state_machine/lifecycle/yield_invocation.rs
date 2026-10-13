@@ -11,12 +11,15 @@
 use tracing::{debug, info};
 
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
+use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::scheduler::YieldReason;
 use restate_storage_api::vqueue_table::{
     EntryStatusHeader, ReadVQueueTable, Stage, WriteVQueueTable,
 };
 use restate_types::identifiers::{BaseEntryId, InvocationId};
+use restate_types::invocation::InvocationTarget;
+use restate_types::vqueues::EntryTargetExt;
 use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
@@ -30,6 +33,8 @@ use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyCo
 /// scheduler
 pub struct YieldInvocationCommand<'e> {
     pub invocation_id: &'e InvocationId,
+    /// Reuse the invoker effect's metadata; scheduler decisions carry only an ID.
+    pub invocation_target: Option<&'e InvocationTarget>,
     pub yield_reason: YieldReason,
     pub resume_at: Option<RoughTimestamp>,
 }
@@ -37,7 +42,7 @@ pub struct YieldInvocationCommand<'e> {
 impl<'e, 'ctx: 'e, 's: 'ctx, S, P> CommandHandler<&'ctx mut StateMachineApplyContext<'s, S, P>>
     for YieldInvocationCommand<'e>
 where
-    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable + ReadVQueueTable,
+    S: WriteVQueueTable + ReadVQueueTable + WriteLockTable + ReadInvocationStatusTable,
     P: Processor + HasVQueuesMut,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -68,6 +73,20 @@ where
             return Ok(());
         }
 
+        let invocation_status;
+        let target = match self.invocation_target {
+            Some(target) => target,
+            None => {
+                invocation_status = ctx
+                    .storage
+                    .get_invocation_status(self.invocation_id)
+                    .await?;
+                invocation_status
+                    .invocation_target()
+                    .expect("running invocation has a target")
+            }
+        };
+
         VQueue::get(
             header.vqueue_id(),
             ctx.storage,
@@ -76,7 +95,13 @@ where
         )
         .await?
         .expect("yielding in a non-existent vqueue")
-        .yield_entry(at, &header, self.resume_at, self.yield_reason);
+        .yield_entry(
+            at,
+            &header,
+            &target.entry_target_ref(),
+            self.resume_at,
+            self.yield_reason,
+        );
 
         Ok(())
     }

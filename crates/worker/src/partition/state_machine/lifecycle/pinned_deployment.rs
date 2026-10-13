@@ -27,6 +27,7 @@ use restate_storage_api::{journal_table as journal_table_v1, journal_table_v2};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::vqueues::EntryTargetExt;
 use restate_util_string::ToReString;
 use restate_vqueues::VQueue;
 
@@ -114,7 +115,13 @@ where
             )
             .await?
             .expect("pinning in a non-existent vqueue")
-            .update_entry_metadata(&header, &metadata);
+            .update_entry_metadata(
+                &header,
+                &in_flight_invocation_metadata
+                    .invocation_target
+                    .entry_target_ref(),
+                &metadata,
+            );
         }
 
         in_flight_invocation_metadata
