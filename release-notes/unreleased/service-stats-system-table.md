@@ -9,10 +9,10 @@ VQueue entry counts grouped by service, deployment, and virtual-object dimension
 All three expose `stage`, `status`, and `num_entries`, so you can distinguish, for example,
 succeeded and failed entries within the finished stage.
 `sys_service_stats` and `sys_deployment_stats` combine partition-local gauges into cluster-wide
-counts in `num_entries`; physical partition IDs are not part of those two public schemas.
+counts in `num_entries`; physical partition IDs are not part of any of these public schemas.
 
 `sys_virtual_object_stats` exposes one row per non-empty stage/status bucket in each partition-local
-virtual-object/handler/operation-kind group, including its scope, `partition_id`, and `partition_key`.
+virtual-object/handler/operation-kind group, including its scope and `partition_key`.
 For example, use `stage = 'running'` to find groups with running entries, or
 `stage = 'finished' AND status = 'failed'` to count failed entries.
 It does not perform cross-partition aggregation, allowing limited queries to

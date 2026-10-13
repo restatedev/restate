@@ -16,6 +16,7 @@ use smallvec::SmallVec;
 use strum::{EnumCount, VariantArray};
 
 use restate_storage_api::StorageError;
+use restate_storage_api::vqueue_table::metadata::VQueueStatistics;
 use restate_storage_api::vqueue_table::{Stage, Status};
 
 use crate::stats::{StatKind, StatMergeValueCodec, StatValueCodec};
@@ -300,6 +301,24 @@ impl<B: GaugeBucket> Aggregate for BucketedGaugeAggregation<B> {
 }
 
 pub type StageCounts = BucketedGauge<Stage>;
+
+impl From<&VQueueStatistics> for StageCounts {
+    fn from(stats: &VQueueStatistics) -> Self {
+        Self {
+            buckets: [
+                (Stage::Inbox, stats.num_inbox()),
+                (Stage::Running, stats.num_running()),
+                (Stage::Suspended, stats.num_suspended()),
+                (Stage::Paused, stats.num_paused()),
+                (Stage::Finished, stats.num_finished()),
+            ]
+            .into_iter()
+            .filter(|(_, count)| *count != 0)
+            .collect(),
+        }
+    }
+}
+
 pub type StageStatusCounts = BucketedGauge<StageStatus>;
 pub type StageGauge = BucketedGaugeAggregation<Stage>;
 pub type StageStatusGauge = BucketedGaugeAggregation<StageStatus>;

@@ -417,8 +417,8 @@ fn build_measured<const AGGREGATE: bool>(
                     partition_id,
                     VirtualObjectLoadKey::borrowed(
                         target.service(),
-                        key,
                         target.scope(),
+                        key,
                         target.handler(),
                         id.kind(),
                         id.partition_key(),
