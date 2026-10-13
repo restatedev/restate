@@ -22,12 +22,13 @@ In v1.8, collection is enabled with:
 
 ```toml
 [common]
-experimental-enable-service-stats = true
+experimental-enable-track-status-gauges = true
 ```
 
-Existing VQueue entries are not currently backfilled when this option is enabled on a non-empty
-partition store. Counts are reliable only for stores where collection was enabled before entries
-were added. Collection becomes automatic for new stores in v1.9.
+When collection is first enabled, each local partition counts its existing VQueue entries,
+including retained completed entries, before starting. This can increase initial startup time
+on large stores. Statistics queries report that a partition is not ready until its initial
+counts are complete. Collection becomes automatic in v1.9.
 
 ### Why This Matters
 
@@ -36,6 +37,6 @@ scanning every VQueue or individual entry.
 
 ### Migration Guidance
 
-On v1.8, enable the option before adding VQueue entries to an empty partition store. Do not use the
-table as an authoritative total after enabling the option on a non-empty store until backfill is
-implemented.
+On v1.8, enable the option and restart the affected nodes. Existing VQueue entries are included
+automatically; entries that have already been purged and legacy invocations without VQueue entries
+are not counted. Secondary indexes do not need to be enabled.

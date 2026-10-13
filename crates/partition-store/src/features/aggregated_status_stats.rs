@@ -47,12 +47,11 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
     }
 
     async fn enable(
-        _storage: &mut PartitionStore,
-        _cancel: &CancellationToken,
+        storage: &mut PartitionStore,
+        cancel: &CancellationToken,
         _config: &Configuration,
         _finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError> {
-        // This feature does not perform any migration for existing invocations (yet).
-        Ok(())
+        crate::stats::aggregated::backfill::run(storage, cancel).await
     }
 }

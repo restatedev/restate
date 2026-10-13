@@ -18,6 +18,7 @@ use restate_storage_api::Transaction;
 use restate_storage_api::filter::{Filter, ValuePredicate};
 use restate_storage_api::stats::virtual_object_load::VirtualObjectLoadClause as Clause;
 use restate_storage_api::vqueue_table::{Stage, Status};
+use restate_types::config::Configuration;
 use restate_types::partition_table::Partition;
 use restate_types::sharding::{KeyRange, PartitionId};
 use restate_types::vqueues::EntryKind;
@@ -37,6 +38,12 @@ async fn compound_bounds_skip_keys_and_carry_between_services() {
     let partition = PartitionId::MIN;
     let mut store = manager
         .open(&Partition::new(partition, KeyRange::FULL), None)
+        .await
+        .unwrap();
+    let mut config = Configuration::default();
+    config.common.experimental.set_track_status_gauges(true);
+    store
+        .verify_and_run_migrations(Default::default(), &config)
         .await
         .unwrap();
     let mut tx = store.transaction();
