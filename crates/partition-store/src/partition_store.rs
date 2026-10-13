@@ -536,6 +536,14 @@ impl PartitionStore {
         scan: PhysicalScan<Bytes>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), ShutdownError> {
+        if matches!(priority, Priority::Low)
+            && !Configuration::pinned()
+                .worker
+                .storage
+                .rocksdb_enable_low_priority_cache_fill
+        {
+            opts.fill_cache(false);
+        }
         match scan {
             PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
