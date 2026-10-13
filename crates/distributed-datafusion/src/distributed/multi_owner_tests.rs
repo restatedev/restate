@@ -17,12 +17,15 @@ use bytes::Bytes;
 use datafusion::arrow::array::{RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::arrow::util::display::array_value_to_string;
+use datafusion::common::JoinType;
+use datafusion::common::stats::Precision;
 use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
 use datafusion::execution::SendableRecordBatchStream;
 use datafusion::physical_plan::displayable;
 use datafusion::physical_plan::joins::{HashJoinExec, PartitionMode};
 use datafusion::physical_plan::metrics::Time;
 use datafusion::physical_plan::sorts::sort::SortExec;
+use datafusion::physical_plan::statistics::{StatisticsArgs, StatisticsContext};
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{ExecutionPlanProperties, PhysicalExpr};
 use datafusion::prelude::SessionContext;
@@ -45,7 +48,9 @@ use restate_storage_query_api::{
     AdminUser, QueryEngine, QueryEngineTable, QueryOptions, QuerySession, SessionOptions,
     SessionTable,
 };
-use restate_types::identifiers::{LeaderEpoch, PartitionId, ServiceId, WithPartitionKey};
+use restate_types::identifiers::{
+    InvocationId, InvocationUuid, LeaderEpoch, PartitionId, ServiceId, WithPartitionKey,
+};
 use restate_types::nodes_config::Role;
 use restate_types::partition_table::{Partition, PartitionTable};
 use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
@@ -53,7 +58,9 @@ use restate_types::sharding::KeyRange;
 use restate_types::{GenerationalNodeId, Version};
 use restate_util_string::ReString;
 
+use crate::access::{PrimaryKeyKind, PrimaryRead};
 use crate::context::{DataFusionQueryEngine, SelectPartitions};
+use crate::invocation_state::schema::SysInvocationStateTable;
 use crate::invocation_status::schema::SysInvocationStatusTable;
 use crate::node_fan_out::{AllNodeLocator, NodeFanOutTableProvider, RoleBasedNodeLocator};
 use crate::placement::{PartitionPlacement, StoragePlacementOptions};
@@ -67,6 +74,9 @@ use crate::table_providers::{Scan, ScanPartition};
 use super::DistributedQueryServer;
 use super::tests::{NoLegacyScanner, environment};
 use super::worker::TaskObservation;
+
+#[path = "primary_access_tests.rs"]
+mod primary_access;
 
 fn owner(partition: PartitionId) -> GenerationalNodeId {
     GenerationalNodeId::new(u32::from(partition) % 3 + 1, 1)
@@ -87,17 +97,23 @@ impl SelectPartitions for Partitions {
 #[derive(Debug, Default)]
 struct Reads {
     ranges: Vec<(GenerationalNodeId, PartitionId, KeyRange)>,
+    accesses: Vec<(PartitionId, PrimaryRead)>,
     rows: usize,
 }
 
 #[derive(Debug)]
 struct CheckedScanner {
     node: GenerationalNodeId,
+    check_owner: bool,
     inner: Arc<dyn ScanPartition>,
     reads: Arc<Mutex<Reads>>,
 }
 
 impl ScanPartition for CheckedScanner {
+    fn primary_key_kind(&self) -> Option<PrimaryKeyKind> {
+        self.inner.primary_key_kind()
+    }
+
     fn scan_partition(
         &self,
         partition: PartitionId,
@@ -108,15 +124,42 @@ impl ScanPartition for CheckedScanner {
         limit: Option<usize>,
         compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
-        assert_eq!(
-            owner(partition),
-            self.node,
-            "scanner accessed another owner's storage"
-        );
-        self.reads.lock().ranges.push((self.node, partition, range));
-        let stream = self.inner.scan_partition(
+        self.read_partition(
             partition,
             range,
+            PrimaryRead::Range,
+            projection,
+            predicate,
+            batch_size,
+            limit,
+            compute,
+        )
+    }
+
+    fn read_partition(
+        &self,
+        partition: PartitionId,
+        range: KeyRange,
+        access: PrimaryRead,
+        projection: SchemaRef,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+        batch_size: usize,
+        limit: Option<usize>,
+        compute: Time,
+    ) -> anyhow::Result<SendableRecordBatchStream> {
+        if self.check_owner {
+            assert_eq!(
+                owner(partition),
+                self.node,
+                "scanner accessed another owner's storage"
+            );
+        }
+        self.reads.lock().ranges.push((self.node, partition, range));
+        self.reads.lock().accesses.push((partition, access.clone()));
+        let stream = self.inner.read_partition(
+            partition,
+            range,
+            access,
             Arc::clone(&projection),
             predicate,
             batch_size,
@@ -211,6 +254,7 @@ struct MultiFixture<N> {
     scanners: RemoteScannerManager,
     partitions: Partitions,
     stores: Vec<PartitionStore>,
+    store_manager: Arc<PartitionStoreManager>,
     tasks: Arc<Mutex<Vec<TaskObservation>>>,
     reads: Arc<Mutex<Reads>>,
     node_reads: Arc<Mutex<Vec<GenerationalNodeId>>>,
@@ -288,7 +332,16 @@ async fn setup() -> MultiFixture<impl NetworkSender> {
         );
         scanners.register_partition_scanner::<StateTable>(Arc::new(CheckedScanner {
             node,
+            check_owner: true,
             inner: Arc::new(StateTable::create_local_scanner(Arc::clone(&manager))),
+            reads: Arc::clone(&reads),
+        }));
+        scanners.register_partition_scanner::<SysInvocationStatusTable>(Arc::new(CheckedScanner {
+            node,
+            check_owner: true,
+            inner: Arc::new(SysInvocationStatusTable::create_local_scanner(Arc::clone(
+                &manager,
+            ))),
             reads: Arc::clone(&reads),
         }));
         scanners.register_node_scanner::<NodeRows>(Arc::new(NodeRows {
@@ -330,6 +383,7 @@ async fn setup() -> MultiFixture<impl NetworkSender> {
         scanners,
         partitions,
         stores,
+        store_manager: manager,
         tasks,
         reads,
         node_reads,
@@ -443,7 +497,7 @@ async fn multi_owner_coverage_and_scoped_selection() {
         assert!(
             count_tasks
                 .iter()
-                .all(|task| task.plan.contains("StorageScanExec"))
+                .all(|task| task.plan.contains("TableScanExec"))
         );
         assert!(
             count_tasks
@@ -655,6 +709,106 @@ async fn multi_owner_coverage_and_scoped_selection() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn source_estimates_choose_live_state_as_join_build_side() {
+    let fixture = setup().await;
+    let env = environment(48, 128).with_distributed_execution(fixture.network.clone());
+    let ctx = SessionContext::new_with_state(env.build_session_state().unwrap());
+    ctx.register_table(
+        "sys_invocation_status",
+        SysInvocationStatusTable::create_provider(fixture.partitions.clone(), &fixture.scanners),
+    )
+    .unwrap();
+    ctx.register_table(
+        "sys_invocation_state",
+        SysInvocationStateTable::create_provider(fixture.partitions.clone(), &fixture.scanners),
+    )
+    .unwrap();
+
+    // The UI query must build on the small live-state table, even though the SQL
+    // puts the potentially millions of retained invocation rows on the left.
+    let plan = ctx
+        .sql(
+            "SELECT ss.target_service_name AS service_name,
+                CASE
+                    WHEN ss.status = 'inboxed' THEN 'pending'
+                    WHEN ss.status = 'invoked' AND sis.in_flight IS TRUE THEN 'running'
+                    WHEN ss.status = 'invoked' THEN 'ready-yielded-backing-off'
+                    WHEN ss.status = 'completed' AND ss.completion_result = 'success' THEN 'succeeded'
+                    WHEN ss.status = 'completed' THEN 'failed'
+                    ELSE ss.status
+                END AS bucket, COUNT(1) AS count
+             FROM sys_invocation_status ss
+             LEFT JOIN sys_invocation_state sis ON sis.id = ss.id
+             WHERE ss.target_service_name IN ('Counter')
+             GROUP BY service_name, bucket",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let mut joins = 0;
+    plan.apply(|node| {
+        if let Some(join) = node.downcast_ref::<HashJoinExec>() {
+            joins += 1;
+            assert_eq!(join.join_type(), &JoinType::Right);
+            assert_eq!(join.partition_mode(), &PartitionMode::CollectLeft);
+            let statistics = StatisticsContext::new()
+                .compute(join.left().as_ref(), &StatisticsArgs::new())
+                .unwrap();
+            assert_eq!(statistics.num_rows, Precision::Inexact(64 * 1024));
+            let build = displayable(join.left().as_ref()).indent(false).to_string();
+            assert!(build.contains("table=sys_invocation_state,"), "{build}");
+            assert!(!build.contains("table=sys_invocation_status,"), "{build}");
+        }
+        Ok(TreeNodeRecursion::Continue)
+    })
+    .unwrap();
+    assert_eq!(joins, 1);
+
+    // A requested key may not exist. Keep estimates inexact so COUNT(*) cannot
+    // become the number of requested keys; preserve projected id NDV as well.
+    let id = InvocationId::from_parts(0, InvocationUuid::from_u128(1));
+    let lookup = ctx
+        .sql(&format!(
+            "SELECT status, id FROM sys_invocation_status WHERE id = '{id}'"
+        ))
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let mut lookups = 0;
+    lookup
+        .apply(|node| {
+            if node.is::<super::source::MultiGetExec>() {
+                lookups += 1;
+                let statistics = StatisticsContext::new()
+                    .compute(node.as_ref(), &StatisticsArgs::new())
+                    .unwrap();
+                assert_eq!(statistics.num_rows, Precision::Inexact(1));
+                let id_column = node.schema().index_of("id").unwrap();
+                assert_eq!(
+                    statistics.column_statistics[id_column].distinct_count,
+                    Precision::Inexact(1)
+                );
+                let status_column = node.schema().index_of("status").unwrap();
+                assert_eq!(
+                    statistics.column_statistics[status_column].distinct_count,
+                    Precision::Absent
+                );
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    assert_eq!(lookups, 1);
+    assert!(
+        fixture.tasks.lock().is_empty(),
+        "planning must not dispatch"
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stage_budgets_cover_sorts_aggregates_and_joins() {
     let fixture = setup().await;
     let env = environment(48, 128).with_distributed_execution(fixture.network.clone());
@@ -694,7 +848,7 @@ async fn stage_budgets_cover_sorts_aggregates_and_joins() {
             "SELECT a.id FROM sys_invocation_status a JOIN sys_invocation_status b ON a.id = b.id",
             6,
             16,
-            "StorageScanExec",
+            "TableScanExec",
         ),
         (
             "SELECT status, COUNT(*) AS n FROM sys_invocation_status GROUP BY status UNION ALL SELECT status, COUNT(*) AS n FROM sys_invocation_status GROUP BY status",
@@ -725,7 +879,7 @@ async fn stage_budgets_cover_sorts_aggregates_and_joins() {
             inputs += node.output_partitioning().partition_count();
             let mut source_lanes = 0;
             stage.plan.apply(|node| {
-                if node.is::<super::SourceExec>() {
+                if super::source::source_owner(node.as_ref()).is_some() {
                     source_lanes += node.output_partitioning().partition_count();
                 }
                 Ok(TreeNodeRecursion::Continue)

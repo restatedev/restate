@@ -21,6 +21,7 @@ use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
 use restate_storage_api::vqueue_table::{RawStatusHeaderRef, ScanVQueueEntryStatusTable};
 use restate_types::vqueues::{EntryId, VQueueId};
 
+use crate::access::PrimaryKeyKind;
 use crate::context::SelectPartitions;
 use crate::filter::{PartitionKeySelector, VQueueEntryIdFilter};
 use crate::partition_store_scanner::{LocalPartitionsScanner, ScanLocalPartition};
@@ -52,7 +53,9 @@ impl SysVqueueEntryStatusTable {
             partition_selector,
             schema,
             sys_vqueue_entry_status_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager
+                .create_partition_source::<Self>()
+                .with_primary_key(PrimaryKeyKind::VQueueEntry),
             PartitionKeySelector::default()
                 .with_grouped_vqueue_entry_id("entry_id")
                 .with_partitioned_resource_id::<VQueueId>("vqueue_id"),
@@ -73,6 +76,7 @@ impl SysVqueueEntryStatusTable {
 struct VQueueEntryStatusScanner;
 
 impl ScanLocalPartition for VQueueEntryStatusScanner {
+    const PRIMARY_KEY: Option<PrimaryKeyKind> = Some(PrimaryKeyKind::VQueueEntry);
     type Builder = SysVqueueEntryStatusBuilder;
     type Item<'a> = (PartitionKey, &'a EntryId, &'a RawStatusHeaderRef<'a>);
     type ConversionError = std::convert::Infallible;

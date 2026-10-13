@@ -32,6 +32,7 @@ use restate_types::identifiers::{
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::VQueueId;
 
+use crate::access::{PrimaryKeys, PrimaryRead};
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
 use crate::selection::{self, Domain};
 
@@ -443,6 +444,30 @@ pub struct VQueueFilter {
 }
 
 impl ScanLocalPartitionFilter for VQueueFilter {
+    fn planned(
+        range: KeyRange,
+        access: &PrimaryRead,
+        predicate: Option<Arc<dyn PhysicalExpr>>,
+    ) -> anyhow::Result<Self> {
+        let entry_ids = VQueueEntryIdFilter::planned(range, access, None)?.entry_ids;
+        let mut stages: Option<BTreeSet<Stage>> = None;
+        if let Some(predicate) = predicate {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(selected) = parse_vqueue_stages("stage", conjunct) {
+                    stages = Some(match stages {
+                        Some(current) => current.intersection(&selected).copied().collect(),
+                        None => selected,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            partition_keys: range,
+            stages,
+            entry_ids,
+        })
+    }
+
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         let mut stages: Option<BTreeSet<Stage>> = None;
         let mut entry_ids = None;
@@ -538,6 +563,29 @@ pub struct InvocationIdFilter {
 }
 
 impl ScanLocalPartitionFilter for InvocationIdFilter {
+    fn planned(
+        range: KeyRange,
+        access: &PrimaryRead,
+        _: Option<Arc<dyn PhysicalExpr>>,
+    ) -> anyhow::Result<Self> {
+        let invocation_ids = match access {
+            PrimaryRead::MultiGet(keys) => match keys.as_ref() {
+                PrimaryKeys::Invocation(ids) => Some(IdSelection {
+                    ids: ids.iter().copied().collect(),
+                }),
+                _ => anyhow::bail!("incompatible invocation primary keys"),
+            },
+            PrimaryRead::InvocationRange(bounds) => Some(IdSelection {
+                ids: [bounds.first, bounds.last].into(),
+            }),
+            PrimaryRead::Range => None,
+        };
+        Ok(Self {
+            partition_keys: range,
+            invocation_ids,
+        })
+    }
+
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)
@@ -604,6 +652,30 @@ pub struct VQueueEntryIdFilter {
 }
 
 impl ScanLocalPartitionFilter for VQueueEntryIdFilter {
+    fn planned(
+        range: KeyRange,
+        access: &PrimaryRead,
+        _: Option<Arc<dyn PhysicalExpr>>,
+    ) -> anyhow::Result<Self> {
+        let entry_ids = match access {
+            PrimaryRead::MultiGet(keys) => match keys.as_ref() {
+                PrimaryKeys::VQueueEntry(ids) => Some(IdSelection {
+                    ids: ids
+                        .iter()
+                        .map(|id| id.to_id())
+                        .collect::<anyhow::Result<_>>()?,
+                }),
+                _ => anyhow::bail!("incompatible entry primary keys"),
+            },
+            PrimaryRead::Range => None,
+            _ => anyhow::bail!("incompatible entry primary keys"),
+        };
+        Ok(Self {
+            partition_keys: range,
+            entry_ids,
+        })
+    }
+
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)
@@ -638,6 +710,27 @@ pub struct VQueueMetaFilter {
 }
 
 impl ScanLocalPartitionFilter for VQueueMetaFilter {
+    fn planned(
+        range: KeyRange,
+        access: &PrimaryRead,
+        _: Option<Arc<dyn PhysicalExpr>>,
+    ) -> anyhow::Result<Self> {
+        let ids = match access {
+            PrimaryRead::MultiGet(keys) => match keys.as_ref() {
+                PrimaryKeys::VQueue(ids) => Some(IdSelection {
+                    ids: ids.iter().cloned().collect(),
+                }),
+                _ => anyhow::bail!("incompatible vqueue primary keys"),
+            },
+            PrimaryRead::Range => None,
+            _ => anyhow::bail!("incompatible vqueue primary keys"),
+        };
+        Ok(Self {
+            partition_keys: range,
+            ids,
+        })
+    }
+
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)

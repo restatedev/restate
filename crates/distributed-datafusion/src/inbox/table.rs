@@ -35,7 +35,7 @@ impl SysInboxTable {
             partition_selector,
             SysInboxBuilder::schema(),
             sys_inbox_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager.create_partition_source::<Self>(),
             PartitionKeySelector::default()
                 .with_service_key("service_key")
                 .with_invocation_id("id"),

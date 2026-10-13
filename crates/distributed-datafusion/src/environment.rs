@@ -18,6 +18,7 @@ use datafusion::execution::config::SessionConfig;
 use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
 use datafusion::execution::{SessionState, SessionStateBuilder, SessionStateDefaults};
 use datafusion::logical_expr::registry::{ExtensionTypeRegistry, MemoryExtensionTypeRegistry};
+use datafusion::physical_optimizer::optimizer::PhysicalOptimizer;
 use datafusion::prelude::SessionContext;
 
 use restate_clock::{AtomicStorage, HlcClock, UniqueTimestamp, WallClock};
@@ -262,8 +263,11 @@ impl DataFusionEnv {
     ///
     /// Returns an error if registration of JSON functions, rewrites, or planners fails.
     pub fn build_session_state(&self) -> Result<SessionState, DataFusionError> {
+        let mut physical_rules = PhysicalOptimizer::new().rules;
+        physical_rules.insert(0, Arc::new(crate::distributed::source::PrimaryAccessRule));
         let builder = SessionStateBuilder::new()
             .with_config(self.config.clone())
+            .with_physical_optimizer_rules(physical_rules)
             .with_runtime_env(Arc::clone(&self.runtime));
         let builder = if let Some(distributed) = self
             .config

@@ -37,7 +37,7 @@ impl SysLocksTable {
             partition_selector,
             SysLocksBuilder::schema(),
             sys_locks_sort_order(),
-            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            remote_scanner_manager.create_partition_source::<Self>(),
             PartitionKeySelector::default()
                 .with_scope("scope")
                 .with_vqueue_entry_id("acquired_by"),
