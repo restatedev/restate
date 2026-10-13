@@ -15,6 +15,7 @@ bilrost = ["dep:bilrost", "bytes"]
 opentelemetry = ["dep:opentelemetry"]
 metrics = ["dep:metrics"]
 bytestring = ["dep:bytestring", "bytes"]
+mem-comparable = ["bytes", "dep:zerocopy"]
 
 [dependencies]
 restate-workspace-hack = { workspace = true }
@@ -28,11 +29,19 @@ hashbrown = { workspace = true }
 metrics = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 serde_core = { workspace = true, optional = true }
+zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
-restate-util-string = {path = ".", default-features = false, features = ["bytes", "bilrost", "serde"]}
+restate-util-string = {path = ".", default-features = false, features = ["bytestring", "bilrost", "mem-comparable", "serde"]}
 
+criterion = { workspace = true }
+prost = { workspace = true }
 serde_json = { workspace = true }
+
+[[bench]]
+name = "mem_cmp_string"
+harness = false
+required-features = ["bytestring", "mem-comparable"]
 
 [lints]
 workspace = true
