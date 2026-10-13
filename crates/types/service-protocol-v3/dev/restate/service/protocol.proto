@@ -44,6 +44,9 @@ enum ServiceProtocolVersion {
   // * OneWayCallCommandMessage.scope
   // * OneWayCallCommandMessage.limit_key
   V7 = 7;
+  // Added:
+  // * Ephemeral commands: GetStateEphemeralCommandMessage and GetStateEphemeralNotificationMessage
+  V8 = 8;
 }
 
 // --- Core frames ---
