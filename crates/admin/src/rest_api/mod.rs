@@ -57,7 +57,6 @@ pub use version::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};
         (name = "kafka_cluster", description = "Kafka cluster management"),
         (name = "service", description = "Service management"),
         (name = "service_handler", description = "Service handlers metadata"),
-        (name = "vqueue", description = "Virtual queue management"),
         (name = "health", description = "Admin API health"),
         (name = "version", description = "API Version"),
         (name = "introspection", description = "System introspection"),
@@ -103,9 +102,6 @@ where
             // Handler endpoints
             .routes(routes!(handlers::list_service_handlers))
             .routes(routes!(handlers::get_service_handler))
-            // Virtual queue endpoints
-            .routes(routes!(vqueues::pause_vqueue))
-            .routes(routes!(vqueues::resume_vqueue))
             // Invocation endpoints
             .routes(routes!(invocations::delete_invocation))
             .routes(routes!(invocations::kill_invocation))
@@ -171,6 +167,15 @@ where
         .route(
             "/internal/invocations_batch_operations/pause",
             axum::routing::post(invocations::batch_pause_invocations),
+        )
+        // TODO: re-enable OpenAPI docs for these (and the "vqueue" tag) once vqueue pausing/resuming is fixed
+        .route(
+            "/vqueues/{vqueue_id}/pause",
+            axum::routing::post(vqueues::pause_vqueue),
+        )
+        .route(
+            "/vqueues/{vqueue_id}/resume",
+            axum::routing::post(vqueues::resume_vqueue),
         )
         .route(
             "/internal/services/{service}/serdes/decode/{*serde_name}",
