@@ -30,6 +30,7 @@ use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
 use restate_storage_query_api::AdminUser;
 use restate_storage_query_api::QueryEngine;
+use restate_storage_query_datafusion::DataFusionEnv;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
 use restate_types::live::Live;
@@ -89,6 +90,7 @@ impl<T: TransportConnect> AdminRole<T> {
         server_builder: &mut NetworkServerBuilder,
         address_book: &mut AddressBook,
         query_manager: Arc<dyn QueryEngine<AdminUser>>,
+        datafusion_env: DataFusionEnv,
         local_rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
     ) -> Result<Self, AdminRoleBuildError> {
         health_status.update(AdminStatus::StartingUp);
@@ -141,6 +143,7 @@ impl<T: TransportConnect> AdminRole<T> {
                     networking,
                     server_builder,
                     metadata_writer,
+                    datafusion_env,
                 )
                 .await?,
             )

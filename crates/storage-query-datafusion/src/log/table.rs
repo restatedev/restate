@@ -12,8 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::TableReference;
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
 use datafusion::physical_plan::stream::RecordBatchReceiverStream;
@@ -28,16 +27,14 @@ use crate::table_providers::{GenericTableProvider, Scan};
 use crate::table_util::Builder;
 
 use super::row::append_segment_row;
-use super::schema::LogBuilder;
+use super::schema::{LogBuilder, LogTable};
 
-pub fn register_self(ctx: &SessionContext, metadata: Metadata) -> datafusion::common::Result<()> {
-    let logs_table =
-        GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
-    ctx.register_table(
-        TableReference::full("restate", "cluster", "logs"),
-        Arc::new(logs_table),
-    )
-    .map(|_| ())
+impl LogTable {
+    pub(crate) fn create_provider(metadata: Metadata) -> Arc<dyn TableProvider> {
+        let logs_table =
+            GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
+        Arc::new(logs_table)
+    }
 }
 
 #[derive(Clone, derive_more::Debug)]

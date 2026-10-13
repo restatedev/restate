@@ -11,7 +11,7 @@
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use datafusion::execution::context::SessionContext;
+use datafusion::catalog::TableProvider;
 
 use restate_partition_store::index::EntryNextAtByStageKeyView;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
@@ -26,41 +26,35 @@ use crate::remote_query_scanner_manager::RemoteScannerManager;
 use crate::statistics::{RowEstimate, TableStatisticsBuilder};
 use crate::table_providers::{PartitionedTableProvider, ScanPartition};
 
-use super::schema::IdxEntryNextAtByStageBuilder;
+use super::schema::{IdxEntryNextAtByStageBuilder, IdxEntryNextAtByStageTable};
 
-const NAME: &str = "_idx_entry_next_at_by_stage";
+impl IdxEntryNextAtByStageTable {
+    pub(crate) fn create_provider(
+        partition_selector: impl SelectPartitions,
+        remote_scanner_manager: &RemoteScannerManager,
+    ) -> Arc<dyn TableProvider> {
+        let schema = IdxEntryNextAtByStageBuilder::schema();
+        let statistics =
+            TableStatisticsBuilder::new(schema.clone()).with_num_rows_estimate(RowEstimate::Large);
+        let table = PartitionedTableProvider::new(
+            partition_selector,
+            schema,
+            // Local index order is not global order across physical partitions.
+            Vec::new(),
+            remote_scanner_manager.create_distributed_scanner::<Self>(),
+            FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
+                .with_grouped_vqueue_entry_id("canonical_id")
+                .with_grouped_vqueue_entry_id("entry_id"),
+        )
+        .with_statistics(statistics.build());
+        Arc::new(table)
+    }
 
-pub(crate) fn register_self(
-    ctx: &SessionContext,
-    partition_selector: impl SelectPartitions,
-    remote_scanner_manager: &RemoteScannerManager,
-) -> datafusion::common::Result<()> {
-    let schema = IdxEntryNextAtByStageBuilder::schema();
-    let statistics =
-        TableStatisticsBuilder::new(schema.clone()).with_num_rows_estimate(RowEstimate::Large);
-    let table = PartitionedTableProvider::new(
-        partition_selector,
-        schema,
-        // Local index order is not global order across physical partitions.
-        Vec::new(),
-        remote_scanner_manager.create_distributed_scanner(NAME),
-        FirstMatchingPartitionKeyExtractor::partition_key(PointReadFanout::PerPartition)
-            .with_grouped_vqueue_entry_id("canonical_id")
-            .with_grouped_vqueue_entry_id("entry_id"),
-    )
-    .with_statistics(statistics.build());
-    ctx.register_table(NAME, Arc::new(table)).map(|_| ())
-}
-
-pub(crate) fn register_local_scanner(
-    partition_store_manager: Arc<PartitionStoreManager>,
-    remote_scanner_manager: &RemoteScannerManager,
-) {
-    let scanner = Arc::new(LocalPartitionsScanner::new(
-        partition_store_manager,
-        EntryNextAtByStageScanner,
-    )) as Arc<dyn ScanPartition>;
-    remote_scanner_manager.register_partition_scanner(NAME, scanner);
+    pub(crate) fn create_local_scanner(
+        partition_store_manager: Arc<PartitionStoreManager>,
+    ) -> impl ScanPartition {
+        LocalPartitionsScanner::<EntryNextAtByStageScanner>::new(partition_store_manager)
+    }
 }
 
 #[derive(Debug, Clone)]
