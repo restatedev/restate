@@ -21,8 +21,8 @@ use datafusion::logical_expr::registry::{ExtensionTypeRegistry, MemoryExtensionT
 use datafusion::prelude::SessionContext;
 
 use restate_clock::{AtomicStorage, HlcClock, UniqueTimestamp, WallClock};
-use restate_storage_query_api::{QueryEngineTable, SessionTable};
-use restate_types::config::QueryEngineOptions;
+use restate_storage_query_api::{QueryEngineTable, SessionOptions, SessionTable};
+use restate_types::config::{Configuration, QueryEngineOptions};
 use restate_util_string::ReString;
 
 pub(crate) enum QueryClock {
@@ -60,7 +60,12 @@ pub struct DataFusionEnv {
     runtime: Arc<RuntimeEnv>,
     query_clock: Arc<QueryClock>,
     config: SessionConfig,
-    tables: Arc<DashMap<ReString, Arc<dyn TableProvider>>>,
+    tables: Arc<DashMap<ReString, RegisteredTable>>,
+}
+
+struct RegisteredTable {
+    provider: Arc<dyn TableProvider>,
+    is_visible: fn(&Configuration, &SessionOptions) -> bool,
 }
 
 impl DataFusionEnv {
@@ -155,7 +160,7 @@ impl DataFusionEnv {
         &self,
         provider: Arc<dyn TableProvider>,
     ) -> Result<(), DataFusionError> {
-        self.register_provider(T::identity(), provider)
+        self.register_provider_with_visibility(T::identity(), provider, T::is_visible)
     }
 
     pub(crate) fn register_provider(
@@ -163,9 +168,21 @@ impl DataFusionEnv {
         identity: ReString,
         provider: Arc<dyn TableProvider>,
     ) -> Result<(), DataFusionError> {
+        self.register_provider_with_visibility(identity, provider, |_, _| true)
+    }
+
+    fn register_provider_with_visibility(
+        &self,
+        identity: ReString,
+        provider: Arc<dyn TableProvider>,
+        is_visible: fn(&Configuration, &SessionOptions) -> bool,
+    ) -> Result<(), DataFusionError> {
         match self.tables.entry(identity) {
             Entry::Vacant(entry) => {
-                entry.insert(provider);
+                entry.insert(RegisteredTable {
+                    provider,
+                    is_visible,
+                });
                 Ok(())
             }
             Entry::Occupied(entry) => Err(DataFusionError::Plan(format!(
@@ -179,19 +196,28 @@ impl DataFusionEnv {
     pub fn table_provider(&self, identity: &str) -> Option<Arc<dyn TableProvider>> {
         self.tables
             .get(identity)
-            .map(|entry| Arc::clone(entry.value()))
+            .map(|entry| Arc::clone(&entry.provider))
     }
 
     /// Builds a session-local catalog from the currently available selected providers.
+    /// Each source's visibility policy is evaluated with the same configuration snapshot.
     /// Later registrations affect subsequent sessions, never an existing catalog.
     pub(crate) fn create_session(
         &self,
         tables: &[SessionTable],
+        config: &Configuration,
+        options: &SessionOptions,
     ) -> Result<SessionContext, DataFusionError> {
         let ctx = SessionContext::new_with_state(self.build_session_state()?);
         for table in tables {
-            let Some(provider) = self.table_provider(&table.identity) else {
-                continue;
+            let provider = {
+                let Some(entry) = self.tables.get(&table.identity) else {
+                    continue;
+                };
+                if !(entry.is_visible)(config, options) {
+                    continue;
+                }
+                Arc::clone(&entry.provider)
             };
             let name = table.name.clone().resolve(
                 &self.config.options().catalog.default_catalog,
@@ -278,17 +304,27 @@ mod tests {
         fn identity() -> ReString {
             ReString::from_static("inventory_test")
         }
+
+        fn is_visible(config: &Configuration, options: &SessionOptions) -> bool {
+            config.common.experimental.is_track_status_gauges_enabled()
+                && !options.headers.contains_key("x-test-hide-table")
+        }
     }
 
     #[tokio::test]
     async fn catalogs_share_providers_but_isolate_names_and_late_registration() {
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
+        let options = SessionOptions::default();
         let env = DataFusionEnv::new(10 * 1024 * 1024, None, None, &HashMap::new()).unwrap();
         let component = env.clone();
         let binding = SessionTable::for_table::<TestTable>("reports.visible.alias");
-        let before = env.create_session(std::slice::from_ref(&binding)).unwrap();
+        let before = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
         assert!(before.table_provider(binding.name.clone()).await.is_err());
 
-        let bootstrap = env.create_session(&[]).unwrap();
+        let bootstrap = env.create_session(&[], &config, &options).unwrap();
         bootstrap
             .sql("CREATE VIEW fixture AS SELECT 7 AS value")
             .await
@@ -299,8 +335,12 @@ mod tests {
             .unwrap();
         drop(bootstrap);
 
-        let first = env.create_session(std::slice::from_ref(&binding)).unwrap();
-        let second = env.create_session(std::slice::from_ref(&binding)).unwrap();
+        let first = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
+        let second = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
         assert!(Arc::ptr_eq(
             &first.table_provider(binding.name.clone()).await.unwrap(),
             &provider
@@ -324,11 +364,49 @@ mod tests {
                 .register_table::<TestTable>(Arc::clone(&provider))
                 .is_err()
         );
-        assert!(env.create_session(&[binding.clone(), binding]).is_err());
         assert!(
-            env.create_session(&[])
+            env.create_session(&[binding.clone(), binding.clone()], &config, &options)
+                .is_err()
+        );
+        assert!(
+            env.create_session(&[], &config, &options)
                 .unwrap()
                 .table_provider("reports.visible.alias")
+                .await
+                .is_err()
+        );
+
+        config.common.experimental.set_track_status_gauges(false);
+        let hidden = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
+        assert!(hidden.table_provider(binding.name.clone()).await.is_err());
+        assert!(
+            hidden
+                .sql("SELECT * FROM reports.visible.alias")
+                .await
+                .is_err()
+        );
+        // A disabled source still exists in the inventory, and old sessions retain it.
+        assert!(env.table_provider(&TestTable::identity()).is_some());
+        assert!(second.table_provider(binding.name.clone()).await.is_ok());
+
+        config.common.experimental.set_track_status_gauges(true);
+        let enabled = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
+        assert!(enabled.table_provider(binding.name.clone()).await.is_ok());
+        assert!(hidden.table_provider(binding.name.clone()).await.is_err());
+        let mut options = options;
+        options
+            .headers
+            .insert("x-test-hide-table", "true".parse().unwrap());
+        let hidden_by_options = env
+            .create_session(std::slice::from_ref(&binding), &config, &options)
+            .unwrap();
+        assert!(
+            hidden_by_options
+                .table_provider(binding.name)
                 .await
                 .is_err()
         );

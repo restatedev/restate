@@ -95,6 +95,7 @@ async fn stats_tables_return_cluster_aggregates_and_partition_local_vo_counts() 
 
     let mut config = Configuration::default();
     config.common.experimental.set_track_status_gauges(true);
+    Configuration::set(config.clone());
     engine
         .partition_store()
         .verify_and_run_migrations(Default::default(), &config)

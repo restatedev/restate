@@ -29,5 +29,8 @@ define_table!(
         entry_id: DataType::LargeUtf8,
         /// Partition key encoded in the canonical ID.
         partition_key: DataType::UInt64,
-    )
+    ),
+    visible_if(config, _options) {
+        config.common.experimental.is_indexes_v1_enabled()
+    }
 );

@@ -45,5 +45,8 @@ define_table!(
         /// Internal column that is used for partitioning virtual objects. Can be ignored.
         partition_key: DataType::UInt64,
 
-        )
+        ),
+    visible_if(config, _options) {
+        config.common.experimental.is_track_status_gauges_enabled()
+    }
 );

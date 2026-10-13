@@ -18,6 +18,7 @@ use std::any::Any;
 
 pub use datafusion_physical_expr_common::metrics;
 
+use restate_types::config::Configuration;
 use restate_util_string::ReString;
 
 pub use catalog::{AdminUser, ClusterOperator};
@@ -36,4 +37,13 @@ pub trait QueryEngineTable: Any + Send + Sync + Clone + std::fmt::Debug + 'stati
     /// must be consistent across all nodes and unique in its bare form
     /// across catalogs and schema prefixes.
     fn identity() -> ReString;
+
+    /// Whether this source may be exposed in a newly created SQL session.
+    ///
+    /// Evaluated against one configuration snapshot for the whole catalog, including
+    /// explicit selections and aliases. Existing sessions and worker-side source
+    /// registration are unaffected by subsequent configuration changes.
+    fn is_visible(_config: &Configuration, _options: &SessionOptions) -> bool {
+        true
+    }
 }

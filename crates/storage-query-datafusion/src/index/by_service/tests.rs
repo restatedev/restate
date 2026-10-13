@@ -107,6 +107,7 @@ async fn assert_ids(engine: &MockQueryEngine, predicate: &str, expected: &[Canon
 async fn populate(engine: &mut MockQueryEngine) -> Vec<CanonicalEntryId> {
     let mut config = Configuration::default();
     config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config.clone());
     engine
         .partition_store()
         .verify_and_run_migrations(Default::default(), &config)
@@ -180,6 +181,9 @@ async fn populate(engine: &mut MockQueryEngine) -> Vec<CanonicalEntryId> {
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     assert!(
         ids(&engine, "SELECT canonical_id FROM _idx_entry_by_service")
@@ -412,6 +416,9 @@ async fn sql_index_scan_filters_projects_orders_and_tracks_lifecycle() {
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lazy_index_views_decode_only_projected_values_and_validate_key_structure() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     let partition = engine.partition_store().partition_id();
     let id = BaseEntryId::from(InvocationId::from_parts(100, InvocationUuid::from_u128(1)))
@@ -578,6 +585,9 @@ async fn native_constraints_survive_remote_predicates_and_skip_unselected_keys()
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn millisecond_timestamp_ranges_and_in_lists_cover_whole_hlc_buckets() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     let mut engine = MockQueryEngine::create().await;
     let mut entries = Vec::new();
     let partition = engine.partition_store().partition_id();
@@ -716,6 +726,9 @@ impl SelectPartitions for Partitions {
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn partition_tables_register_the_scanner_and_sort_across_stores() {
+    let mut config = Configuration::default();
+    config.common.experimental.set_indexes_v1(true);
+    Configuration::set(config);
     RocksDbManager::init();
     let manager = PartitionStoreManager::create(true).await.unwrap();
     let partitions = Partitions(vec![

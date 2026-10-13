@@ -652,7 +652,8 @@ pub struct CommonOptions {
     /// # Disable the config table
     ///
     /// Disables the `config` SQL table, which exposes the node's running
-    /// configuration via SQL queries.
+    /// configuration via SQL queries. Evaluated when a query session is created;
+    /// existing sessions retain their original table visibility.
     ///
     /// Since v1.7.1
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -898,11 +899,14 @@ experimental! {
     /// and virtual object. Existing entries, including retained completed entries,
     /// are counted before each local partition starts for the first time with this
     /// feature enabled. This initial scan can increase partition startup time.
+    /// Also exposes the statistics SQL tables in newly created v1 and v2 query sessions.
     ///
     /// Since v1.8.1
     track_status_gauges,
 
     /// # [WIP] Secondary Indexes for vqueue entries
+    ///
+    /// Also exposes the secondary-index SQL tables in newly created v1 query sessions.
     ///
     /// Since v1.8.1
     indexes_v1,

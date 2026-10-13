@@ -11,12 +11,16 @@
 mod cluster_tables;
 mod user_tables;
 
+#[cfg(test)]
+mod tests;
+
 use std::sync::Arc;
 
 use datafusion::catalog::TableProvider;
 use datafusion::common::TableReference;
 
-use restate_storage_query_api::{QueryEngineTable, SessionTable};
+use restate_storage_query_api::{QueryEngineTable, SessionOptions, SessionTable};
+use restate_types::config::Configuration;
 use restate_util_string::ReString;
 
 pub use cluster_tables::ClusterTables;
@@ -72,7 +76,11 @@ impl<'a> TableInventoryBuilder<'a> {
         schema: &str,
         sql: &str,
     ) -> Result<(), BuildError> {
-        let bootstrap = self.env.create_session(&self.tables)?;
+        let bootstrap = self.env.create_session(
+            &self.tables,
+            &Configuration::pinned(),
+            &SessionOptions::default(),
+        )?;
         bootstrap.sql(sql).await?;
         let name = TableReference::full("restate", schema, identity);
         let provider = bootstrap.table_provider(name.clone()).await?;
