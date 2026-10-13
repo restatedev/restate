@@ -79,6 +79,7 @@ utoipa = { workspace = true, features = ["axum_extras"] }
 utoipa-axum = { workspace = true }
 
 [dev-dependencies]
+restate-storage-query-datafusion = { workspace = true, features = ["test-util"] }
 restate-bifrost = { workspace = true, features = ["test-util"] }
 restate-core = { workspace = true, features = ["test-util"] }
 restate-types = { workspace = true, features = ["test-util"] }
