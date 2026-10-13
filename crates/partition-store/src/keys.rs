@@ -15,6 +15,7 @@
 mod codec;
 mod fields;
 pub(crate) mod filter;
+mod index;
 mod index_key_codec;
 mod key_decoder;
 pub(crate) mod macros;
@@ -108,6 +109,10 @@ pub enum KeyKind {
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
 
+    /// Secondary indexes
+    /// All secondary indexes are stored under a single key kind.
+    SecondaryIndex,
+
     /// Stats and partition-level aggregates
     Stats,
 }
@@ -174,6 +179,9 @@ impl KeyKind {
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
 
+            // xI prefix for secondary indexes
+            KeyKind::SecondaryIndex => b"xI",
+
             // zS prefix for partition-level counters and statistics. Those statistics
             // will need to be reconstructed on partition split.
             KeyKind::Stats => b"zS",
@@ -220,6 +228,7 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"xI" => Some(KeyKind::SecondaryIndex),
             b"zS" => Some(KeyKind::Stats),
             _ => None,
         }

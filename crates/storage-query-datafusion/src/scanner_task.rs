@@ -71,14 +71,14 @@ impl ScannerTask {
         let schema = decode_schema(&request.projection_schema_bytes).context("bad schema bytes")?;
         let ctx = query_context.task_ctx();
 
-        let predicate = request
+        let access_predicate = request
             .predicate
             .map(|predicate| decode_expr(&ctx, &schema, &predicate.serialized_physical_expression))
             .transpose()?;
 
         let schema = Arc::new(schema);
 
-        let dynamic_filter = predicate
+        let dynamic_filter = access_predicate
             .as_ref()
             .map(|pred| Arc::new(DynamicFilterPhysicalExpr::new(Vec::new(), Arc::clone(pred))));
 
@@ -89,6 +89,7 @@ impl ScannerTask {
             dynamic_filter
                 .as_ref()
                 .map(|filter| filter.clone() as Arc<dyn PhysicalExpr>),
+            access_predicate,
             usize::try_from(request.batch_size).expect("batch_size to fit in a usize"),
             request
                 .limit

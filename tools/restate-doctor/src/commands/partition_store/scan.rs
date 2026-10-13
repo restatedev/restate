@@ -444,6 +444,8 @@ fn decode_key(key: &[u8]) -> (String, Option<String>, Option<KeyKind>) {
             .ok()
             .map(|k| format!("{k:?}")),
         KeyKind::Stats => decode_aggregated_stat_key(key),
+        // TODO: Decode index-specific keys once their layouts are defined.
+        KeyKind::SecondaryIndex => None,
     };
 
     (kind_name, decoded, Some(key_kind))

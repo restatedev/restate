@@ -88,7 +88,7 @@ storage_features! {
     ///
     /// This records one sweep rather than requiring repeated startup scans.
     ///
-    /// *Since v1.7.10*
+    /// Since v1.7.10
     pub VqueueMetadataCleanupV1,
 
     /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment

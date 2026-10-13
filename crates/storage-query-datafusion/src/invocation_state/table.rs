@@ -99,6 +99,7 @@ impl<S: StatusHandle + Send + Sync + Debug + Clone + 'static> ScanPartition for 
         range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         _elapsed_compute: Time,

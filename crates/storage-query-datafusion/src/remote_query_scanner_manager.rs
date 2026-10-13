@@ -264,6 +264,7 @@ impl ScanPartition for ScanToScanPartitionAdapter {
         _range: KeyRange,
         projection: SchemaRef,
         _predicate: Option<Arc<dyn PhysicalExpr>>,
+        _access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         _elapsed_compute: Time,
@@ -280,10 +281,22 @@ impl ScanPartition for RemotePartitionsScanner {
         range: KeyRange,
         projection: SchemaRef,
         predicate: Option<Arc<dyn PhysicalExpr>>,
+        access_predicate: Option<Arc<dyn PhysicalExpr>>,
         batch_size: usize,
         limit: Option<usize>,
         elapsed_compute: Time,
     ) -> anyhow::Result<SendableRecordBatchStream> {
+        // The wire protocol carries one initial predicate; only the worker introduces a separate
+        // update wrapper. Enforce this for both routes so routing cannot change access planning.
+        assert!(
+            match (&predicate, &access_predicate) {
+                (Some(predicate), Some(access_predicate)) =>
+                    Arc::ptr_eq(predicate, access_predicate),
+                (None, None) => true,
+                _ => false,
+            },
+            "coordinator scans must use the same initial predicate for access and filtering"
+        );
         match self.manager.get_partition_target_node(partition_id)? {
             PartitionLocation::Local => {
                 let scanner = self.manager.local_partition_scanner(&self.table_name).ok_or_else(
@@ -294,6 +307,7 @@ impl ScanPartition for RemotePartitionsScanner {
                     range,
                     projection,
                     predicate,
+                    access_predicate,
                     batch_size,
                     limit,
                     elapsed_compute,

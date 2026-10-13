@@ -180,6 +180,7 @@ pub enum TableKind {
     Promise,
     VQueue,
     Locks,
+    SecondaryIndex,
     Stats,
 }
 
@@ -215,6 +216,7 @@ impl TableKind {
                 KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
+            Self::SecondaryIndex => &[KeyKind::SecondaryIndex],
             Self::Stats => &[KeyKind::Stats],
         }
     }
