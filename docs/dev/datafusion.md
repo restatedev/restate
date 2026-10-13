@@ -103,7 +103,7 @@ internal API; no request header or HTTP parameter selects additional tables.
 ### Query metadata and diagnostics
 
 `QuerySession::session_id()` exposes the server-generated session identity before planning.
-Each `QueryResult` includes fixed `QueryMetadata` (session ID, collected request headers, and planning
+Each `QueryResult` includes fixed `QueryMetadata` (session ID, collected request headers, redacted SQL, and planning
 duration) and an independently cloneable `Arc<dyn QueryDiagnostics>`. Clone the handle before
 moving the record-batch stream into a response writer; `snapshot()` returns owned values.
 
@@ -152,6 +152,26 @@ explicitly; the server does not infer them from SQL or user-agent strings.
 The snapshot API is the foundation for opt-in metrics delivery. The JSON/Arrow response bodies
 and gRPC messages do not yet carry metrics; defining the request flag and wire representation
 is a separate step. Existing gRPC node warnings are read through the diagnostics handle.
+
+### SQL diagnostics
+
+The session parses SQL once with DataFusion's PostgreSQL dialect. A copy of that AST is visited
+to replace literal values (including strings, numbers, booleans, nulls, and placeholders) with `?`.
+The original AST is used for planning. The formatted diagnostic copy is stored as a `ReString` in
+`QueryMetadata.redacted_sql` and used by the execution and stream-failure logs.
+
+This is literal redaction, not identifier anonymization: table/column names, aliases, and type
+parameters such as `VARCHAR(123)` remain visible. Parser formatting discards comments and normalizes
+whitespace. The diagnostic SQL is not intended to be executable. Non-query statements and query
+forms with unsupported string-bearing clauses use `[SQL omitted]`; EXPLAIN retains its inner
+query shape but omits its options. A tokenization check of the formatted copy catches string literals
+in AST fields that the value visitor does not cover, such as wildcard ILIKE patterns and ENUM labels;
+those queries are omitted. Parsing failures produce no SQL log and never fall back to raw SQL.
+
+The HTTP/gRPC and snapshot-server stream writers retain query metadata instead of the original SQL.
+Their failure logs omit error text, which can itself contain literal values; the original errors
+are still returned to the caller. This does not redact arbitrary DataFusion plan/debug output or
+node warnings.
 
 ### Available tables
 

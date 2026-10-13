@@ -44,6 +44,7 @@ mod rules;
 mod scanner_task;
 mod scheduler_status;
 mod service;
+mod sql;
 mod state;
 mod statistics;
 mod stats;

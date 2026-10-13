@@ -179,7 +179,7 @@ async fn execute_query(
 
     let (result_stream, content_type) = match headers.get(http::header::ACCEPT) {
         Some(v) if v == HeaderValue::from_static("application/json") => (
-            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, payload.query)?
+            WriteRecordBatchStream::<JsonWriter>::new(query_result.stream, query_result.metadata)?
                 .map_ok(Frame::data)
                 .left_stream(),
             "application/json",
@@ -187,7 +187,7 @@ async fn execute_query(
         _ => (
             WriteRecordBatchStream::<StreamWriter<Vec<u8>>>::new(
                 query_result.stream,
-                payload.query,
+                query_result.metadata,
             )?
             .map_ok(Frame::data)
             .right_stream(),
