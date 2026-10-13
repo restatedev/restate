@@ -27,7 +27,9 @@ use crate::connection::ConnectionInfo;
 
 #[derive(Run, Subcommand, Clone)]
 pub enum Metadata {
-    /// Get a single key's value from the metadata store
+    /// Get a single key's value from the metadata store. Only well-known keys
+    /// (nodes_config, bifrost_config, partition_table, schema_registry, pp_epoch_<id>)
+    /// can be decoded; use `--raw` for any other key
     Get(get::GetValueOpts),
     /// Patch a value stored in the metadata store
     Patch(patch::PatchValueOpts),
