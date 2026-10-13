@@ -7945,6 +7945,7 @@ dependencies = [
  "datafusion-functions-json",
  "datafusion-proto",
  "derive_more",
+ "enum-map",
  "enumset",
  "futures",
  "gardal",
