@@ -175,7 +175,7 @@ pub async fn remove_pending_state_mutations(
                     .end(at, &header, Status::Killed, Duration::ZERO);
             } else {
                 // Only the input payload is left
-                txn.delete_vqueue_input_payload(&qid, seq, &id);
+                txn.delete_vqueue_input_payload(&qid, &base_id.canonicalize(seq));
             }
             removed += 1;
 

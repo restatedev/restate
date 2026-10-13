@@ -10,7 +10,7 @@
 
 use restate_sharding::KeyRange;
 use restate_types::identifiers::BaseEntryId;
-use restate_types::vqueues::{Seq, VQueueId};
+use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
 
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
@@ -193,7 +193,7 @@ pub trait WriteVQueueTable {
         E: bilrost::Message;
 
     /// Deletes a vqueue item.
-    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, seq: impl Into<Seq>, id: &EntryId);
+    fn delete_vqueue_input_payload(&mut self, qid: &VQueueId, id: &CanonicalEntryId);
 }
 
 pub trait ReadVQueueTable {

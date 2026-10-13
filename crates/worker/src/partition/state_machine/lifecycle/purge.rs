@@ -118,7 +118,6 @@ where
                     .delete(
                         at,
                         vqueue_id,
-                        header.entry_id(),
                         header.entry_key(),
                         header.metadata(),
                     );
