@@ -300,6 +300,41 @@ async fn single_owner_runtime_matches_independent_references() {
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explain_shows_distributed_stages_and_analyze_executes_them() {
+    let fixture = setup(false).await;
+    let session = fixture
+        .engine(1, 2)
+        .create_session(SessionOptions::default())
+        .unwrap();
+    for analyze in [false, true] {
+        let sql = if analyze {
+            "EXPLAIN ANALYZE VERBOSE SELECT COUNT(*) FROM state"
+        } else {
+            "EXPLAIN VERBOSE SELECT COUNT(*) FROM state"
+        };
+        let result = session.execute(sql, QueryOptions {}).await.unwrap();
+        let batches = result.stream.try_collect::<Vec<_>>().await.unwrap();
+        let text = batches
+            .iter()
+            .flat_map(|batch| {
+                (0..batch.num_rows())
+                    .map(|row| array_value_to_string(batch.column(1), row).unwrap())
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("DistributedExec"), "{text}");
+        assert!(text.contains("NetworkCoalesceExec"), "{text}");
+        assert!(text.contains("StorageScanExec"), "{text}");
+        assert!(text.contains("owner=N2:1"), "{text}");
+        assert_eq!(
+            fixture.observations.lock().len(),
+            usize::from(analyze),
+            "EXPLAIN must not install tasks; ANALYZE must execute remotely"
+        );
+    }
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn task_protocol_and_required_storage_fail_closed() {
     let fixture = setup(false).await;
     let connection = fixture
