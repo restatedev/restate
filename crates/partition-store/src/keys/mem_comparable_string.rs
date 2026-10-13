@@ -41,7 +41,7 @@ impl KeyEncode for MemCmpStr<'_> {
     }
 }
 
-fn map_decode_error(error: MemCmpStringError) -> StorageError {
+pub(super) fn map_decode_error(error: MemCmpStringError) -> StorageError {
     match error {
         MemCmpStringError::InvalidMarker(_) | MemCmpStringError::NonZeroPadding => {
             StorageError::Generic(error.into())

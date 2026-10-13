@@ -12,6 +12,30 @@
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
 
+mod codec;
+mod fields;
+pub(crate) mod filter;
+mod index_key_codec;
+mod key_decoder;
+pub(crate) mod macros;
+mod mem_comparable_string;
+pub(crate) mod predicate;
+
+// Re-exports
+pub use codec::{
+    EncodedOption, FieldDecoder, IndexFieldDecode, IndexFieldEncode, IndexFieldView,
+    IntoIndexFieldRef,
+};
+
+pub use key_decoder::KeyDecoder;
+
+#[doc(hidden)]
+pub use restate_util_string::decode_str_into;
+pub use restate_util_string::{
+    EncodedMemCmpStr, MemCmpStr, MemCmpString, MemCmpTarget, decode_str_with,
+    decode_str_with_unchecked,
+};
+
 use std::mem;
 
 use anyhow::anyhow;
@@ -25,15 +49,6 @@ use tracing::{error, trace};
 use restate_types::clock::UniqueTimestamp;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::{ReString, RestateString};
-
-mod mem_comparable_string;
-
-#[doc(hidden)]
-pub use restate_util_string::decode_str_into;
-pub use restate_util_string::{
-    EncodedMemCmpStr, MemCmpStr, MemCmpString, MemCmpTarget, decode_str_with,
-    decode_str_with_unchecked,
-};
 
 /// Every table key needs to have a key kind. This allows to multiplex different keys in the same
 /// column family and to evolve a key if necessary.
@@ -636,7 +651,7 @@ use restate_storage_api::timer_table::TimerKeyKind;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
-pub(crate) trait KeyEncode {
+pub trait KeyEncode {
     fn encode<B: BufMut>(&self, target: &mut B);
 
     fn serialized_length(&self) -> usize;
@@ -652,7 +667,7 @@ impl<T: KeyEncode> KeyEncode for &T {
     }
 }
 
-pub(crate) trait KeyDecode: Sized {
+pub trait KeyDecode: Sized {
     fn decode(source: &mut &[u8]) -> crate::Result<Self>;
 }
 

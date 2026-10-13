@@ -8517,6 +8517,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.15.0",
  "jiff",
  "metrics",
  "num-bigint 0.5.1",
@@ -8546,6 +8547,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "smallvec",
  "static_assertions",
  "strum",
  "tempfile",
@@ -8557,6 +8559,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zerocopy",
 ]
 
 [[package]]
