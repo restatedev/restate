@@ -18,13 +18,13 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
-use restate_types::ServiceName;
-use restate_util_string::ReString;
 use rocksdb::MergeOperands;
 use strum::EnumIter;
 use tracing::{error, trace};
 
 use restate_types::clock::UniqueTimestamp;
+use restate_types::{Scope, ServiceName};
+use restate_util_string::{ReString, RestateString};
 
 mod mem_comparable_string;
 
@@ -333,9 +333,18 @@ where
 /// }
 ///```
 ///
+/// A field can specify a private codec wrapper with `field: Type => Codec`.
+/// Generated fields, builders, and accessors still use `Type`; encoding borrows
+/// it through `Codec::from_ref`, and decoding unwraps it through `Codec::into_inner`.
 macro_rules! define_table_key {
+    (@field_ref $value:expr) => { $value };
+    (@field_ref $value:expr, $codec:ty) => { <$codec>::from_ref($value) };
+    (@decode $bytes:expr, $ty:ty) => { $crate::keys::deserialize::<$ty>($bytes) };
+    (@decode $bytes:expr, $ty:ty, $codec:ty) => {
+        $crate::keys::deserialize::<$codec>($bytes).map(<$codec>::into_inner)
+    };
 
-    ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty),+ $(,)? ) ) => (paste::paste! {
+    ($table_kind:expr, $key_kind:path, $key_name:ident ( $($element: ident: $ty: ty $(=> $codec:ty)?),+ $(,)? ) ) => (paste::paste! {
         // key builder by holding references
         #[derive(Default, Debug, Eq, PartialEq, Clone)]
         pub struct [< $key_name BuilderRef >]<'a> { $(pub $element: Option<&'a $ty>),+ }
@@ -383,7 +392,9 @@ macro_rules! define_table_key {
                 $key_kind.serialize(bytes);
                 $(
                     if let Some(v) = &self.$element {
-                        $crate::keys::serialize(v, bytes);
+                        $crate::keys::serialize(
+                            $crate::keys::define_table_key!(@field_ref v $(, $codec)?), bytes,
+                        );
                     } else {
                         // Stop at the first None since this is a prefix scan
                         return;
@@ -397,7 +408,9 @@ macro_rules! define_table_key {
                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
                     if let Some(v) = &self.$element {
-                        serialized_length += $crate::keys::KeyEncode::serialized_length(v);
+                        serialized_length += $crate::keys::KeyEncode::serialized_length(
+                            $crate::keys::define_table_key!(@field_ref v $(, $codec)?),
+                        );
                     } else {
                         // Stop at the first None since this is a prefix scan
                         return serialized_length;
@@ -503,7 +516,9 @@ macro_rules! define_table_key {
                 $key_kind.serialize(bytes);
                 $(
                     if let Some(v) = &self.$element {
-                        $crate::keys::serialize(v, bytes);
+                        $crate::keys::serialize(
+                            $crate::keys::define_table_key!(@field_ref v $(, $codec)?), bytes,
+                        );
                     } else {
                         // Stop at the first None since this is a prefix scan
                         return;
@@ -517,7 +532,9 @@ macro_rules! define_table_key {
                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
                     if let Some(v) = &self.$element {
-                        serialized_length += $crate::keys::KeyEncode::serialized_length(v);
+                        serialized_length += $crate::keys::KeyEncode::serialized_length(
+                            $crate::keys::define_table_key!(@field_ref v $(, $codec)?),
+                        );
                     } else {
                         // Stop at the first None since this is a prefix scan
                         return serialized_length;
@@ -537,7 +554,9 @@ macro_rules! define_table_key {
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
                 $key_kind.serialize(bytes);
                 $(
-                $crate::keys::serialize(&self.$element, bytes);
+                $crate::keys::serialize(
+                    $crate::keys::define_table_key!(@field_ref &self.$element $(, $codec)?), bytes,
+                );
                 )+
             }
 
@@ -546,7 +565,9 @@ macro_rules! define_table_key {
                 // we always need space for the key kind
                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
-                    serialized_length += $crate::keys::KeyEncode::serialized_length(&self.$element);
+                    serialized_length += $crate::keys::KeyEncode::serialized_length(
+                        $crate::keys::define_table_key!(@field_ref &self.$element $(, $codec)?),
+                    );
                 )+
                 serialized_length
             }
@@ -561,7 +582,9 @@ macro_rules! define_table_key {
             fn serialize_to<B: bytes::BufMut>(&self, bytes: &mut B) {
                 $key_kind.serialize(bytes);
                 $(
-                $crate::keys::serialize(&self.$element, bytes);
+                $crate::keys::serialize(
+                    $crate::keys::define_table_key!(@field_ref &self.$element $(, $codec)?), bytes,
+                );
                 )+
             }
 
@@ -570,7 +593,9 @@ macro_rules! define_table_key {
                 // we always need space for the key kind
                 let mut serialized_length = $crate::keys::KeyKind::SERIALIZED_LENGTH;
                 $(
-                    serialized_length += $crate::keys::KeyEncode::serialized_length(&self.$element);
+                    serialized_length += $crate::keys::KeyEncode::serialized_length(
+                        $crate::keys::define_table_key!(@field_ref &self.$element $(, $codec)?),
+                    );
                 )+
                 serialized_length
             }
@@ -588,7 +613,7 @@ macro_rules! define_table_key {
                 }
 
                 $(
-                    let $element = $crate::keys::deserialize(bytes)?;
+                    let $element = $crate::keys::define_table_key!(@decode bytes, $ty $(, $codec)?)?;
                  )+
 
                 Ok(Self {
@@ -629,6 +654,75 @@ impl<T: KeyEncode> KeyEncode for &T {
 
 pub(crate) trait KeyDecode: Sized {
     fn decode(source: &mut &[u8]) -> crate::Result<Self>;
+}
+
+/// Codec wrapper for the legacy, non-mem-comparable scope encoding in RocksDB keys.
+/// Use only for existing tables; new tables should use mem-comparable encoding.
+#[derive(Debug)]
+#[repr(transparent)]
+pub(super) struct OptionalScope(Option<Scope>);
+
+impl OptionalScope {
+    #[inline]
+    pub(super) fn from_ref(scope: &Option<Scope>) -> &Self {
+        // SAFETY: OptionalScope is repr(transparent) over Option<Scope>
+        // and imposes no additional validity invariants. The returned
+        // shared reference preserves the input's lifetime.
+        //
+        // It guarantees the wrapper has the same layout and alignment
+        // as its Option<Scope> field.
+        unsafe { &*std::ptr::from_ref(scope).cast::<Self>() }
+    }
+
+    pub(super) fn into_inner(self) -> Option<Scope> {
+        self.0
+    }
+}
+
+// Prefix is `s` or `u`.
+impl KeyEncode for OptionalScope {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        if let Some(scope) = &self.0 {
+            target.put_u8(b's');
+            target.put_u32(scope.len() as u32);
+            target.put_slice(scope.as_bytes());
+        } else {
+            target.put_u8(b'u');
+        }
+    }
+
+    fn serialized_length(&self) -> usize {
+        match &self.0 {
+            Some(scope) => 1 + size_of::<u32>() + scope.len(),
+            None => 1,
+        }
+    }
+}
+
+impl KeyDecode for OptionalScope {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
+        let tag = source.get_u8();
+        match tag {
+            b's' => {
+                let scope_len = source.get_u32() as usize;
+                if scope_len == 0 {
+                    return Err(StorageError::Generic(anyhow!("empty scope")));
+                }
+                let mut string_data = source.take(scope_len);
+                // SAFETY: these bytes were serialized from a valid Scope, so they
+                // are valid UTF-8 and satisfy Scope's validity requirements.
+                let raw = unsafe { std::str::from_utf8_unchecked(string_data.chunk()) };
+                // SAFETY: the bytes were serialized from a valid Scope, as above.
+                let scope = unsafe { Scope::new_unchecked(raw) };
+                string_data.advance(scope_len);
+                Ok(Self(Some(scope)))
+            }
+            b'u' => Ok(Self(None)),
+            _ => Err(StorageError::Generic(anyhow!(
+                "unknown scope prefix: {tag:x?}"
+            ))),
+        }
+    }
 }
 
 impl KeyEncode for Bytes {
@@ -1094,9 +1188,67 @@ pub(crate) fn deserialize<T: KeyDecode>(source: &mut &[u8]) -> crate::Result<T> 
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use bytes::BytesMut;
     use strum::IntoEnumIterator;
+
+    use restate_types::LockName;
+
+    use crate::locks_table::{LockKey, LockKeyRef};
+
+    use super::*;
+
+    #[test]
+    fn scope_codec_preserves_legacy_keys_and_prefixes() {
+        fn assert_encoded(key: &impl EncodeTableKeyPrefix, expected: &[u8]) {
+            assert_eq!(key.serialized_length(), expected.len());
+            assert_eq!(key.serialize().as_ref(), expected);
+        }
+
+        let partition_key = 42u64;
+        let lock_name = LockName::parse("svc/key").unwrap();
+        for (scope, scope_bytes) in [
+            (None, b"u".as_slice()),
+            (
+                Some(Scope::try_from_static("tenant").unwrap()),
+                b"s\0\0\0\x06tenant".as_slice(),
+            ),
+        ] {
+            let mut expected = b"lo\0\0\0\0\0\0\0\x2a".to_vec();
+            let owned = LockKey::builder().partition_key(partition_key);
+            let borrowed = LockKeyRef::builder().partition_key(&partition_key);
+            assert_encoded(&owned, &expected);
+            assert_encoded(&borrowed, &expected);
+
+            // An explicitly unscoped prefix must include `u`; an unspecified
+            // scope above must stop before it.
+            expected.extend_from_slice(scope_bytes);
+            let owned = owned.optional_scope(scope.clone());
+            let borrowed = borrowed.optional_scope(&scope);
+            assert_encoded(&owned, &expected);
+            assert_encoded(&borrowed, &expected);
+
+            expected.extend_from_slice(b"svc/key");
+            let owned = owned.lock_name(lock_name.clone());
+            let borrowed = borrowed.lock_name(&lock_name);
+            assert_encoded(&owned, &expected);
+            assert_encoded(&borrowed, &expected);
+
+            let owned = owned.into_complete().unwrap();
+            let borrowed = borrowed.into_complete().unwrap();
+            assert_encoded(&owned, &expected);
+            assert_encoded(&borrowed, &expected);
+            let _: &Option<Scope> = owned.optional_scope();
+            let _: &Option<Scope> = borrowed.optional_scope();
+
+            let mut bytes = expected.as_slice();
+            let decoded = LockKey::deserialize_from(&mut bytes).unwrap();
+            assert_eq!(decoded, owned);
+            let (decoded_partition, decoded_scope, decoded_name) = decoded.split();
+            assert_eq!(decoded_partition, partition_key);
+            assert_eq!(decoded_scope, scope);
+            assert_eq!(decoded_name, lock_name);
+        }
+    }
 
     #[test]
     fn write_read_round_trip() {

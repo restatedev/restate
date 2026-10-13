@@ -8,17 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use bytes::Bytes;
-use bytestring::ByteString;
 use std::sync::Arc;
 
-use crate::features::StorageFeatures;
-use crate::keys::{DecodeTableKey, KeyKind, define_table_key};
-use crate::scan::TableScan;
-use crate::{
-    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
-    TableScanIterationDecision, break_on_err,
-};
+use bytes::Bytes;
+use bytestring::ByteString;
+
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard};
 use restate_storage_api::promise_table::{
     OwnedPromiseRow, Promise, ReadPromiseTable, ScanPromiseTable, WritePromiseTable,
@@ -29,6 +23,14 @@ use restate_types::identifiers::{PartitionKey, ServiceId, WithPartitionKey};
 use restate_types::sharding::KeyRange;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::ReString;
+
+use crate::features::StorageFeatures;
+use crate::keys::{DecodeTableKey, KeyKind, OptionalScope, define_table_key};
+use crate::scan::TableScan;
+use crate::{
+    PartitionStore, PartitionStoreTransaction, StorageAccess, TableKind,
+    TableScanIterationDecision, break_on_err,
+};
 
 define_table_key!(
     TableKind::Promise,
@@ -46,7 +48,7 @@ define_table_key!(
     KeyKind::ScopedPromise,
     ScopedPromiseKey(
         partition_key: PartitionKey,
-        scope: Option<Scope>,
+        scope: Option<Scope> => OptionalScope,
         service_name: ServiceName,
         service_key: ReString,
         key: ReString,
