@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::TableReference;
 use datafusion::execution::context::SessionContext;
 use datafusion::logical_expr::Expr;
 use datafusion::physical_plan::SendableRecordBatchStream;
@@ -32,7 +33,11 @@ use super::schema::LogBuilder;
 pub fn register_self(ctx: &SessionContext, metadata: Metadata) -> datafusion::common::Result<()> {
     let logs_table =
         GenericTableProvider::new(LogBuilder::schema(), Arc::new(LogScanner(metadata)));
-    ctx.register_table("logs", Arc::new(logs_table)).map(|_| ())
+    ctx.register_table(
+        TableReference::full("restate", "cluster", "logs"),
+        Arc::new(logs_table),
+    )
+    .map(|_| ())
 }
 
 #[derive(Clone, derive_more::Debug)]

@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use datafusion::common::TableReference;
 use datafusion::execution::context::SessionContext;
 
 use restate_core::Metadata;
@@ -21,6 +22,7 @@ use crate::table_providers::Scan;
 
 use super::schema::LogletWorkersBuilder;
 
+// Also used as the wire scanner identifier; only SQL registration is schema-qualified.
 pub(crate) const TABLE_NAME: &str = "loglet_workers";
 
 /// Registers the `loglet_workers` fan-out table in the query context.
@@ -40,5 +42,9 @@ pub(crate) fn register_self(
         TABLE_NAME,
     );
 
-    ctx.register_table(TABLE_NAME, Arc::new(table)).map(|_| ())
+    ctx.register_table(
+        TableReference::full("restate", "cluster", TABLE_NAME),
+        Arc::new(table),
+    )
+    .map(|_| ())
 }
