@@ -167,7 +167,7 @@ impl DeploymentResolver for MockSchemas {
 }
 
 #[derive(Clone, Debug)]
-struct MockPartitionSelector;
+pub(crate) struct MockPartitionSelector;
 
 #[async_trait]
 impl SelectPartitions for MockPartitionSelector {
