@@ -40,9 +40,11 @@ pub struct GetValueOpts {
     #[clap(flatten)]
     metadata: MetadataCommonOpts,
 
-    /// The key to get. Without `--raw`, only well-known keys are supported:
-    /// nodes_config, bifrost_config, partition_table, schema_registry and
-    /// pp_epoch_<partition-id>. Use `--raw` to fetch any other key.
+    /// The key to get. Well-known keys (nodes_config, bifrost_config,
+    /// partition_table, schema_registry and pp_epoch_<partition-id>) are decoded
+    /// into their typed representation. Other keys are decoded on a best-effort
+    /// basis, which only works for values stored as JSON or flexbuffers. Use
+    /// `--raw` for values that cannot be decoded.
     #[arg(short, long)]
     key: String,
 
