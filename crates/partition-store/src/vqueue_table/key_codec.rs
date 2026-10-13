@@ -59,7 +59,7 @@ impl KeyEncode for VQueueId {
 
 impl KeyDecode for VQueueId {
     #[inline]
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(VQueueId::from_raw_bytes(source))
     }
 }
@@ -75,7 +75,7 @@ impl KeyEncode for Stage {
 }
 
 impl KeyDecode for Stage {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let i: u8 = source.get_u8();
         Self::from_repr(i)
             .ok_or_else(|| StorageError::Generic(anyhow::anyhow!("Wrong value for Stage: {}", i)))
@@ -94,7 +94,7 @@ impl KeyEncode for HasLock {
 }
 
 impl KeyDecode for HasLock {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let raw = source.get_u8();
         if raw == 0 {
             Ok(Self(true))
@@ -115,7 +115,7 @@ impl KeyEncode for BaseEntryId {
 }
 
 impl KeyDecode for BaseEntryId {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let mut dst = [0u8; BaseEntryId::serialized_length_fixed()];
         source.copy_to_slice(&mut dst);
         let by_ref =
@@ -136,7 +136,7 @@ impl KeyEncode for EntryId {
 }
 
 impl KeyDecode for EntryId {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let kind_byte = source.get_u8();
         let kind = EntryKind::from_repr(kind_byte);
         let Some(kind) = kind else {
@@ -167,7 +167,7 @@ impl KeyEncode for RoughTimestamp {
 }
 
 impl KeyDecode for RoughTimestamp {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let raw_ms = source.get_u64();
         // Floor to seconds. Clamp so that forward-written ms values beyond
         // `RoughTimestamp`'s range saturate at MAX instead of truncating
@@ -188,13 +188,13 @@ impl KeyEncode for Seq {
 }
 
 impl KeyDecode for Seq {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         Ok(Self::new(source.get_u64()))
     }
 }
 
 impl KeyDecode for EntryKey {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let has_lock = HasLock::decode(source)?;
         let run_at = RoughTimestamp::decode(source)?;
         let seq = Seq::decode(source)?;

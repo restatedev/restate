@@ -71,7 +71,7 @@ impl KeyEncode for Option<Scope> {
 }
 
 impl KeyDecode for Option<Scope> {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let tag = source.get_u8();
         match tag {
             b's' => {
@@ -110,7 +110,7 @@ impl KeyEncode for LockName {
 }
 
 impl KeyDecode for LockName {
-    fn decode<B: Buf>(source: &mut B) -> crate::Result<Self> {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
         let string_data = source.take(source.remaining());
         // SAFETY:
         // We are always decoding keys that we have serialized by this type, therefore
