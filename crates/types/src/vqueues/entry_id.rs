@@ -10,12 +10,15 @@
 
 use std::str::FromStr;
 
+use restate_util_string::{EncodedMemCmpStr, encoded_mem_cmp_str};
+
 use crate::identifiers::{
     BaseEntryId, InvocationId, InvocationUuid, PartitionKey, StateMutationId,
 };
 
 use super::ParseError;
 
+/// The length of the remainder bytes of an entry id.
 const REMAINDER_LEN: usize = 16;
 
 #[derive(
@@ -28,6 +31,7 @@ const REMAINDER_LEN: usize = 16;
     Ord,
     Hash,
     strum::FromRepr,
+    strum::VariantArray,
     bilrost::Enumeration,
     strum::Display,
     zerocopy::Immutable,
@@ -54,6 +58,30 @@ pub enum EntryKind {
 impl EntryKind {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Invocation => "invocation",
+            Self::StateMutation => "state-mutation",
+        }
+    }
+
+    /// Static display-name encoding for lexicographically ordered key fields.
+    pub const fn as_mem_cmp_str(self) -> &'static EncodedMemCmpStr {
+        match self {
+            Self::Unknown => encoded_mem_cmp_str!("unknown"),
+            Self::Invocation => encoded_mem_cmp_str!("invocation"),
+            Self::StateMutation => encoded_mem_cmp_str!("state-mutation"),
+        }
+    }
+
+    pub fn from_mem_cmp_str(value: &EncodedMemCmpStr) -> Option<Self> {
+        <Self as strum::VariantArray>::VARIANTS
+            .iter()
+            .find(|kind| value == kind.as_mem_cmp_str())
+            .copied()
     }
 }
 
