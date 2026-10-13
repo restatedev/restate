@@ -13,7 +13,6 @@ use std::time::Duration;
 
 use axum::error_handling::HandleErrorLayer;
 use http::{Request, Response, StatusCode};
-use restate_storage_query_api::{AdminUser, QueryEngine};
 use tower::ServiceBuilder;
 use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::compression::CompressionLayer;
@@ -29,7 +28,8 @@ use restate_metadata_store::MetadataStoreClient;
 use restate_service_client::HttpClient;
 use restate_service_protocol_v4::discovery::ServiceDiscovery;
 use restate_service_protocol_v4::serdes::SerdesClient;
-use restate_types::config::AdminOptions;
+use restate_storage_query_api::{AdminUser, QueryEngine};
+use restate_types::config::{AdminOptions, Configuration};
 use restate_types::invocation::client::InvocationClient;
 use restate_types::live::LiveLoad;
 use restate_types::net::address::AdminPort;
@@ -53,6 +53,7 @@ pub struct AdminService<Metadata, Discovery, Telemetry, Invocations, Transport> 
     serdes_client: SerdesClient,
     invocation_client: Invocations,
     query_engine: Arc<dyn QueryEngine<AdminUser>>,
+    distributed_query_engine: Option<Arc<dyn QueryEngine<AdminUser>>>,
     metadata_client: MetadataStoreClient,
     rule_book_observer: Option<Arc<dyn RuleBookObserver>>,
 }
@@ -86,6 +87,7 @@ where
             serdes_client,
             invocation_client,
             query_engine,
+            distributed_query_engine: None,
             metadata_client,
             rule_book_observer: None,
         }
@@ -98,13 +100,22 @@ where
         }
     }
 
+    /// Enables per-request selection of the staging query engine.
+    pub fn with_distributed_query_engine(
+        mut self,
+        engine: Arc<dyn QueryEngine<AdminUser>>,
+    ) -> Self {
+        self.distributed_query_engine = Some(engine);
+        self
+    }
+
     pub async fn run(
         self,
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
 
-        let rest_state = state::AdminServiceState::new(
+        let mut rest_state = state::AdminServiceState::new(
             self.schema_registry,
             self.serdes_client,
             self.invocation_client,
@@ -113,6 +124,11 @@ where
             self.query_engine,
             self.rule_book_observer,
         );
+        rest_state.distributed_query_engine = self.distributed_query_engine;
+        rest_state.query_engine_v2_default = Configuration::pinned()
+            .common
+            .experimental
+            .is_query_engine_v2_default_enabled();
 
         let router = axum::Router::new();
 

@@ -245,6 +245,15 @@ impl DataFusionEnv {
         let builder = SessionStateBuilder::new()
             .with_config(self.config.clone())
             .with_runtime_env(Arc::clone(&self.runtime));
+        let builder = if self
+            .config
+            .get_extension::<crate::distributed::DistributedExecution>()
+            .is_some()
+        {
+            builder.with_physical_optimizer_rule(Arc::new(crate::distributed::DistributedPlanRule))
+        } else {
+            builder
+        };
         let mut state = apply_default_features(builder).build();
         datafusion_functions_json::register_all(&mut state)?;
         Ok(state)
