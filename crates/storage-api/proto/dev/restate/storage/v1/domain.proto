@@ -334,6 +334,7 @@ message InvocationStatusV2Lazy {
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
+  optional uint64 creation_seq = 36;
 }
 
 message VirtualObjectStatus {

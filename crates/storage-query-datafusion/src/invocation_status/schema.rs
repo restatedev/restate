@@ -21,6 +21,12 @@ define_table!(sys_invocation_status(
     /// [Invocation ID](/services/invocation/managing-invocations#invocation-id).
     id: DataType::LargeUtf8,
 
+    /// Canonical invocation ID: the invocation ID followed by the sequence number of the
+    /// record that created the invocation, e.g. `inv_..._42`. NULL if the sequence number
+    /// is unknown.
+    /// Since v1.9.0.
+    canonical_id: DataType::LargeUtf8,
+
     /// The VQueue assigned to the the invocation. NULL if invocation was not migrated to vqueues.
     /// Since v1.7.0.
     vqueue_id: DataType::LargeUtf8,
