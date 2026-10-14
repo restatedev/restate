@@ -1545,7 +1545,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=~\"throttled|rate-limited\"}[$__rate_interval]))",
+          "expr": "sum(rate(restate_ingress_requests_total{cluster_name=\"$cluster\", node_name=~\"$node\", status=\"rate-limited\"}[$__rate_interval]))",
           "legendFormat": "throttled",
           "refId": "C"
         }
