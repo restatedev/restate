@@ -8,14 +8,16 @@ The `sys_invocation_status` table shows it in a new `canonical_id` column: the i
 ID followed by that position, e.g. `inv_..._42`.
 
 A new experimental option, `experimental-enable-invocation-creation-seq`, adds this to
-invocations that existed before the upgrade.
+invocations that existed before the upgrade and had not completed yet.
 
 ### Impact on Users
 - Without the option, `canonical_id` is NULL for invocations created before the upgrade,
   and no action is needed.
 - With the option enabled, each partition runs a one-time background step the next time
-  it becomes leader. Partitions with many stored invocations (including completed
-  invocations that are still retained) may take a little longer to become available.
+  it becomes leader. Partitions with many running or queued invocations may take a little
+  longer to become available.
+- Invocations that had already completed before this step keep a NULL `canonical_id` until
+  their retention period expires.
 
 ### Migration Guidance
 - Only enable the option once all nodes run v1.9.0 or newer.

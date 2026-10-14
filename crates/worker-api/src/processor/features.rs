@@ -58,7 +58,8 @@ pub trait PartitionFeatures {
         self.has_feature(PartitionFeatureChange::EnableInconsistentStateMutationCleanup)
     }
 
-    /// Whether all invocations carry the sequence of the record that created them.
+    /// Whether all invocations, except those completed before the backfill, carry the sequence of
+    /// the record that created them.
     ///
     /// *Since v1.9.0*
     fn is_invocation_creation_seq_enabled(&self) -> bool {

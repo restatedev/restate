@@ -672,7 +672,8 @@ async fn state_mutation_ids_are_deterministic() -> TestResult {
 }
 
 /// New invocations persist the sequence of the record that created them, which matches the
-/// sequence of their vqueue entry. The backfill restores it from the vqueue entry.
+/// sequence of their vqueue entry. The backfill restores it from the vqueue entry, except for
+/// completed invocations.
 #[test(restate_core::test)]
 async fn invocation_creation_seq() -> TestResult {
     let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
@@ -681,16 +682,19 @@ async fn invocation_creation_seq() -> TestResult {
     ]))
     .await;
     let invocation_id = InvocationId::mock_random();
-    test_env
-        .apply_at(
-            commands::InvokeCommand::test_envelope(ServiceInvocation {
-                invocation_id,
-                ..ServiceInvocation::mock()
-            }),
-            MillisSinceEpoch::now(),
-            Lsn::new(10),
-        )
-        .await;
+    let completed_id = InvocationId::mock_random();
+    for (id, lsn) in [(invocation_id, 10), (completed_id, 11)] {
+        test_env
+            .apply_at(
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id: id,
+                    ..ServiceInvocation::mock()
+                }),
+                MillisSinceEpoch::now(),
+                Lsn::new(lsn),
+            )
+            .await;
+    }
 
     let entry_seq = test_env
         .storage
@@ -714,6 +718,13 @@ async fn invocation_creation_seq() -> TestResult {
     {
         let mut txn = test_env.storage.transaction();
         txn.put_invocation_status(&invocation_id, &InvocationStatus::Inboxed(inboxed))?;
+        // A completed invocation (with a vqueue entry) without a creation sequence
+        txn.put_invocation_status(
+            &completed_id,
+            &InvocationStatus::Completed(
+                restate_storage_api::invocation_status_table::CompletedInvocation::mock_neo(),
+            ),
+        )?;
         txn.commit().await?;
     }
 
@@ -733,6 +744,14 @@ async fn invocation_creation_seq() -> TestResult {
             .await?
             .get_creation_seq(),
         Some(entry_seq)
+    );
+    assert_eq!(
+        test_env
+            .storage
+            .get_invocation_status(&completed_id)
+            .await?
+            .get_creation_seq(),
+        None
     );
 
     // Running it again is a no-op

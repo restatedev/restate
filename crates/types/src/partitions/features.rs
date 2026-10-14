@@ -76,7 +76,8 @@ pub enum PartitionFeatureChange {
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
     /// Backfill the creation sequence of existing invocations from their vqueue entries.
-    /// Afterwards, every invocation carries the sequence of the record that created it.
+    /// Afterwards, every invocation that was not already completed carries the sequence of the
+    /// record that created it.
     ///
     /// *Since v1.9.0*
     EnableInvocationCreationSeq = 7,
@@ -194,7 +195,8 @@ pub struct PersistedFeatures {
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
 
-    /// All invocations carry the sequence of the record that created them.
+    /// All invocations, except those completed before the backfill, carry the sequence of the
+    /// record that created them.
     ///
     /// *Since v1.9.0*
     #[bilrost(tag(7))]

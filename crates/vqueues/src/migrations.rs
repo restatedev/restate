@@ -200,8 +200,12 @@ pub async fn remove_pending_state_mutations(
     Ok(removed)
 }
 
-/// Copies the creation sequence of every invocation that lacks one from its vqueue entry, and
-/// returns how many invocations were updated.
+/// Copies the creation sequence of every non-completed invocation that lacks one from its vqueue
+/// entry, and returns how many invocations were updated.
+///
+/// Completed invocations are skipped: they never run again under the same id, and rewriting them
+/// (including their result) would dominate the cost of the backfill. They keep no creation
+/// sequence until they are cleaned up.
 ///
 /// Requires all invocations to be migrated to vqueues. Each update is complete within one commit
 /// and invocations that already have a creation sequence are skipped, so it is safe to run again
@@ -227,9 +231,9 @@ pub async fn backfill_invocation_creation_seq(
         tokio::task::consume_budget().await;
         let (mut key, value) = iterator.item().unwrap();
 
-        if InvocationLite::decode(&mut &value[..])?
-            .creation_seq
-            .is_none()
+        let lite = InvocationLite::decode(&mut &value[..])?;
+        if lite.creation_seq.is_none()
+            && !matches!(lite.status, InvocationStatusDiscriminants::Completed)
         {
             let invocation_id = invocation_id_from_key_bytes(&mut key)?;
             let entry_id = EntryId::from(invocation_id);
