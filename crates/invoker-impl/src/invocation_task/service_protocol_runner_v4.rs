@@ -33,7 +33,8 @@ use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
-    Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
+    Decoder, Encoder, EncodingError, Message, MessageHeader, MessageType, ServiceWireDecoder,
+    StateEntry, proto,
 };
 use restate_service_protocol_v4::proto_lite;
 use restate_tracing_instrumentation::ServiceSpan;
@@ -1118,7 +1119,18 @@ where
                 self.handle_new_command(mh, raw, attempt_span, None);
                 TerminalLoopState::Continue(())
             }
-            Message::OneWayCallCommand(cmd, raw) => {
+            Message::OneWayCallCommand(raw) => {
+                // Registered as `noparse`: decode to resolve the request, then forward the
+                // original bytes downstream to avoid a re-encode round trip.
+                let cmd = shortcircuit!(
+                    <proto::OneWayCallCommandMessage as ServiceWireDecoder>::decode(
+                        raw.clone(),
+                        self.service_protocol_version
+                    )
+                    .map_err(|err| InvokerError::Encoder(
+                        EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
+                    ))
+                );
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
@@ -1158,7 +1170,16 @@ where
                 );
                 TerminalLoopState::Continue(())
             }
-            Message::CallCommand(cmd, raw) => {
+            Message::CallCommand(raw) => {
+                let cmd = shortcircuit!(
+                    <proto::CallCommandMessage as ServiceWireDecoder>::decode(
+                        raw.clone(),
+                        self.service_protocol_version
+                    )
+                    .map_err(|err| InvokerError::Encoder(
+                        EncodingError::MessageEncoding(MessageType::CallCommand, err)
+                    ))
+                );
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
