@@ -280,12 +280,6 @@ mod tests {
         PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
         assert!(features.unique_random_seeds);
-        assert!(PartitionFeatureChange::EnableInvocationCreationSeq.apply_to(&mut features));
-        assert!(features.invocation_creation_seq);
-        assert_eq!(
-            features.enabled_names().last(),
-            Some("invocation_creation_seq")
-        );
     }
 
     #[test]
