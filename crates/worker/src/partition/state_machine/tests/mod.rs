@@ -671,6 +671,78 @@ async fn state_mutation_ids_are_deterministic() -> TestResult {
     Ok(())
 }
 
+/// New invocations persist the sequence of the record that created them, which matches the
+/// sequence of their vqueue entry. The backfill restores it from the vqueue entry.
+#[test(restate_core::test)]
+async fn invocation_creation_seq() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let invocation_id = InvocationId::mock_random();
+    test_env
+        .apply_at(
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                ..ServiceInvocation::mock()
+            }),
+            MillisSinceEpoch::now(),
+            Lsn::new(10),
+        )
+        .await;
+
+    let entry_seq = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(invocation_id.partition_key(), &EntryId::from(invocation_id))
+        .await?
+        .unwrap()
+        .seq();
+    assert_eq!(entry_seq, Seq::from(Lsn::new(10)));
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    // Drop the creation sequence, as if the invocation was created before it existed
+    let InvocationStatus::Inboxed(mut inboxed) = status else {
+        panic!("expected an inboxed invocation, got {status:?}");
+    };
+    inboxed.metadata.creation_seq = None;
+    {
+        let mut txn = test_env.storage.transaction();
+        txn.put_invocation_status(&invocation_id, &InvocationStatus::Inboxed(inboxed))?;
+        txn.commit().await?;
+    }
+
+    let partition_db = test_env.storage.partition_db().clone();
+    let ctx = MigrationContext::new(
+        &Configuration::pinned(),
+        &partition_db,
+        KeyRange::FULL,
+        CancellationToken::new(),
+    );
+    let updated = restate_vqueues::migrations::backfill_invocation_creation_seq(&ctx).await?;
+    assert_eq!(updated, 1);
+    assert_eq!(
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await?
+            .get_creation_seq(),
+        Some(entry_seq)
+    );
+
+    // Running it again is a no-op
+    let updated = restate_vqueues::migrations::backfill_invocation_creation_seq(&ctx).await?;
+    assert_eq!(updated, 0);
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 /// Replicas might store state mutations that were enqueued before #5416 was fixed under different
 /// ids. A decision to run them must still find the local entry.
 #[test(restate_core::test)]

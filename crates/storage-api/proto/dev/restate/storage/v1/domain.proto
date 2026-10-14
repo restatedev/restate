@@ -269,6 +269,9 @@ message InvocationStatusV2 {
   optional bytes vqueue_id = 34;
   // If empty, no limit was set
   string limit_key = 35;
+  // Sequence number of the record that created this invocation. Combined with
+  // the invocation id, it forms the canonical id of this invocation.
+  optional uint64 creation_seq = 36;
 }
 
 
@@ -283,6 +286,7 @@ message InvocationV2Lite {
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
+  optional uint64 creation_seq = 36;
 }
 
 // A somewhat slimmer version of InvocationStatusV2 with nested messages left

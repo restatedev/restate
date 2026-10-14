@@ -770,6 +770,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_invocation,
             qid,
             random_seed,
+            self.record_lsn.into(),
         );
 
         self.on_pre_flight_invocation(

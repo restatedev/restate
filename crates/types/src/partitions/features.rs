@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_9_0, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -75,6 +75,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
+    /// Backfill the creation sequence of existing invocations from their vqueue entries.
+    /// Afterwards, every invocation carries the sequence of the record that created it.
+    ///
+    /// *Since v1.9.0*
+    EnableInvocationCreationSeq = 7,
 }
 
 impl PartitionFeatureChange {
@@ -94,6 +99,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
+            Self::EnableInvocationCreationSeq => &RESTATE_VERSION_1_9_0,
         }
     }
 
@@ -120,6 +126,9 @@ impl PartitionFeatureChange {
             ),
             Self::EnableInconsistentStateMutationCleanup => {
                 !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
+            }
+            Self::EnableInvocationCreationSeq => {
+                !std::mem::replace(&mut features.invocation_creation_seq, true)
             }
         }
     }
@@ -184,6 +193,12 @@ pub struct PersistedFeatures {
     /// *Since v1.8.0*
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
+
+    /// All invocations carry the sequence of the record that created them.
+    ///
+    /// *Since v1.9.0*
+    #[bilrost(tag(7))]
+    pub invocation_creation_seq: bool,
 }
 
 impl PersistedFeatures {
@@ -201,6 +216,8 @@ impl PersistedFeatures {
                 .then_some("preflight_invocation_termination_retention"),
             self.inconsistent_state_mutation_cleanup
                 .then_some("inconsistent_state_mutation_cleanup"),
+            self.invocation_creation_seq
+                .then_some("invocation_creation_seq"),
         ]
         .into_iter()
         .flatten()
@@ -261,6 +278,12 @@ mod tests {
         PartitionFeatureChange::EnableUniqueRandomSeeds.apply_to(&mut features);
         assert!(features.vqueues);
         assert!(features.unique_random_seeds);
+        assert!(PartitionFeatureChange::EnableInvocationCreationSeq.apply_to(&mut features));
+        assert!(features.invocation_creation_seq);
+        assert_eq!(
+            features.enabled_names().last(),
+            Some("invocation_creation_seq")
+        );
     }
 
     #[test]

@@ -33,7 +33,7 @@ use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufS
 use restate_storage_api::timer_table::{TimerKey, WriteTimerTable};
 use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
-    EntryMetadata, ReadVQueueTable, Stage, Status, WriteVQueueTable,
+    EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage, Status, WriteVQueueTable,
 };
 use restate_storage_api::{StorageError, Transaction};
 use restate_types::identifiers::InvocationId;
@@ -200,6 +200,93 @@ pub async fn remove_pending_state_mutations(
     Ok(removed)
 }
 
+/// Copies the creation sequence of every invocation that lacks one from its vqueue entry, and
+/// returns how many invocations were updated.
+///
+/// Requires all invocations to be migrated to vqueues. Each update is complete within one commit
+/// and invocations that already have a creation sequence are skipped, so it is safe to run again
+/// after an interruption.
+pub async fn backfill_invocation_creation_seq(
+    ctx: &MigrationContext<'_>,
+) -> Result<usize, StorageError> {
+    let readopts = invocation_status_read_options(ctx);
+    let mut partition_store = PartitionStore::from(ctx.partition_db.clone());
+
+    // The iterator reads a snapshot of the partition, so committing updates doesn't affect it.
+    let rocks = ctx.partition_db.rocksdb().clone();
+    let mut iterator = rocks
+        .inner()
+        .as_raw_db()
+        .raw_iterator_cf_opt(ctx.partition_db.cf_handle(), readopts);
+    iterator.seek_to_first();
+
+    let mut txn = partition_store.transaction();
+    let mut updated = 0;
+    while iterator.valid() {
+        // Allow tokio to cancel this task if the processor is being cancelled.
+        tokio::task::consume_budget().await;
+        let (mut key, value) = iterator.item().unwrap();
+
+        if InvocationLite::decode(&mut &value[..])?
+            .creation_seq
+            .is_none()
+        {
+            let invocation_id = invocation_id_from_key_bytes(&mut key)?;
+            let entry_id = EntryId::from(invocation_id);
+            if let Some(header) = txn
+                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .await?
+            {
+                let mut status: InvocationStatus = decode_value(value)?;
+                status.set_creation_seq(header.seq());
+                txn.put_invocation_status(&invocation_id, &status)?;
+                updated += 1;
+
+                if txn.estimated_size_in_bytes() >= MAX_TRANSACTION_SIZE {
+                    txn.commit().await?;
+                }
+            } else {
+                warn!(
+                    "Cannot backfill the creation sequence of invocation {invocation_id}: it has no vqueue entry"
+                );
+            }
+        }
+        iterator.next();
+    }
+
+    // ensures we didn't stop because of an iterator error
+    iterator
+        .status()
+        .context("iterating over invocation statuses")
+        .map_err(StorageError::Generic)?;
+
+    txn.commit().await?;
+
+    Ok(updated)
+}
+
+/// Read options that bound an iterator to the invocation statuses in the context's key range.
+fn invocation_status_read_options(ctx: &MigrationContext<'_>) -> rocksdb::ReadOptions {
+    let mut readopts = rocksdb::ReadOptions::default();
+    readopts.set_total_order_seek(true);
+    readopts.set_verify_checksums(false);
+    readopts.fill_cache(false);
+
+    let start_key = invocation_status_table::InvocationStatusKeyBuilder::default()
+        .partition_key(ctx.key_range.start())
+        .serialize();
+    readopts.set_iterate_lower_bound(start_key);
+
+    let mut end_key = invocation_status_table::InvocationStatusKeyBuilder::default()
+        .partition_key(ctx.key_range.end())
+        .serialize();
+
+    // safe because we have no key kinds set to [0xff, 0xff]
+    increment_unchecked(&mut end_key);
+    readopts.set_iterate_upper_bound(end_key);
+    readopts
+}
+
 /// Migrate inboxes
 async fn migrate_inboxes(
     stats: &mut MigrationStats,
@@ -361,24 +448,7 @@ async fn migrate_invocations(
     ctx: &mut MigrationContext<'_>,
     skip_completed: bool,
 ) -> Result<(), StorageError> {
-    let mut readopts = rocksdb::ReadOptions::default();
-    readopts.set_total_order_seek(true);
-    readopts.set_verify_checksums(false);
-    readopts.fill_cache(false);
-
-    let start_key = invocation_status_table::InvocationStatusKeyBuilder::default()
-        .partition_key(ctx.key_range.start())
-        .serialize();
-    readopts.set_iterate_lower_bound(start_key);
-
-    let mut end_key = invocation_status_table::InvocationStatusKeyBuilder::default()
-        .partition_key(ctx.key_range.end())
-        .serialize();
-
-    // safe because we have no key kinds set to [0xff, 0xff]
-    increment_unchecked(&mut end_key);
-    readopts.set_iterate_upper_bound(end_key);
-
+    let readopts = invocation_status_read_options(ctx);
     let mut partition_store = PartitionStore::from(ctx.partition_db.clone());
 
     let rocks = ctx.partition_db.rocksdb().clone();

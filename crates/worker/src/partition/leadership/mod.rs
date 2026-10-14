@@ -550,6 +550,20 @@ where
                 feature_changes.push(PartitionFeatureChange::EnableVqueues);
             }
 
+            // Backfilling the creation sequence must come after `EnableVqueues` since it reads the
+            // sequence from vqueue entries.
+            if config
+                .common
+                .experimental
+                .is_invocation_creation_seq_enabled()
+                && !processor
+                    .fsm()
+                    .features()
+                    .is_invocation_creation_seq_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableInvocationCreationSeq);
+            }
+
             if config
                 .common
                 .experimental
@@ -1217,6 +1231,7 @@ mod tests {
                 unique_random_seeds: true,
                 preflight_invocation_termination_retention: true,
                 inconsistent_state_mutation_cleanup: true,
+                invocation_creation_seq: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();
