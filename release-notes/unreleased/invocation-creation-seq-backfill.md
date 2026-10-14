@@ -20,6 +20,6 @@ invocations that existed before the upgrade and had not completed yet.
   their retention period expires.
 
 ### Migration Guidance
-- Only enable the option once all nodes run v1.9.0 or newer.
+- Only enable the option once all nodes run v1.8.1 or newer.
 - Once a partition has completed this step, it cannot be downgraded to a Restate version
-  older than v1.9.0.
+  older than v1.8.1.

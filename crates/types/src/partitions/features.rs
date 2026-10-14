@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_9_0, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -79,7 +79,7 @@ pub enum PartitionFeatureChange {
     /// Afterwards, every invocation that was not already completed carries the sequence of the
     /// record that created it.
     ///
-    /// *Since v1.9.0*
+    /// *Since v1.8.1*
     EnableInvocationCreationSeq = 7,
 }
 
@@ -100,7 +100,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
-            Self::EnableInvocationCreationSeq => &RESTATE_VERSION_1_9_0,
+            Self::EnableInvocationCreationSeq => &RESTATE_VERSION_1_8_1,
         }
     }
 
@@ -198,7 +198,7 @@ pub struct PersistedFeatures {
     /// All invocations, except those completed before the backfill, carry the sequence of the
     /// record that created them.
     ///
-    /// *Since v1.9.0*
+    /// *Since v1.8.1*
     #[bilrost(tag(7))]
     pub invocation_creation_seq: bool,
 }
