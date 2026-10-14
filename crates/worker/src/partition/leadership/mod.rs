@@ -552,15 +552,25 @@ where
 
             // Backfilling the creation sequence must come after `EnableVqueues` since it reads the
             // sequence from vqueue entries.
-            if config
+            if (config
                 .common
                 .experimental
                 .is_invocation_creation_seq_enabled()
+                || feature_changes.contains(&PartitionFeatureChange::EnableInvocationCreationSeq))
                 && !processor
                     .fsm()
                     .features()
                     .is_invocation_creation_seq_enabled()
             {
+                // Remove any earlier occurrence and re-append so this feature always lands after
+                // `EnableVqueues`: it backfills the sequence from the vqueue entry status, and
+                // applying it first could leave the partition stuck crashing on the `VersionBarrier`
+                // record.
+                // An earlier occurrence is only possible when features are set by name via the
+                // `RESTATE_INTERNAL_STATE_MACHINE_FEATURES` env var.
+                feature_changes
+                    .retain(|v| v != &PartitionFeatureChange::EnableInvocationCreationSeq);
+
                 feature_changes.push(PartitionFeatureChange::EnableInvocationCreationSeq);
             }
 

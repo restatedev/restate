@@ -770,6 +770,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_invocation,
             qid,
             random_seed,
+            // creation_seq is always set, regardless of the feature flag:
+            // - Rollback-safe: older versions ignore the field.
+            // - Saves writes: the backfill migration skips invocations that already have it.
+            // Note: rollback is only blocked once the feature is enabled and backfill completes.
             self.record_lsn.into(),
         );
 
