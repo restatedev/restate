@@ -208,7 +208,14 @@ pub async fn delete_deployments() {
     };
     let version = schema_metadata.get().version();
 
-    // Only unknown ids: nothing is written.
+    // No ids, or only unknown ids: nothing is written.
+    assert!(
+        schema_registry
+            .delete_deployments(vec![])
+            .await
+            .unwrap()
+            .is_empty()
+    );
     let unknown = DeploymentId::new();
     assert_eq!(
         schema_registry

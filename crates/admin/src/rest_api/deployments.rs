@@ -312,8 +312,8 @@ generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidFieldError, BatchTo
 
 /// Bulk delete deployments
 ///
-/// Delete up to 1000 deployments at once. Duplicate ids are ignored. The request is rejected as a whole
-/// if it lists no deployment, more than 1000, or a malformed id.
+/// Delete up to 1000 deployments at once. Duplicate ids are ignored, and an empty list succeeds with empty
+/// results. The request is rejected as a whole if it lists more than 1000 ids, or a malformed id.
 ///
 /// All the existing deployments of the request are deleted together, with a single update of the schema.
 /// Deployments that can't be deleted, e.g. because they don't exist, are reported in `failed`, with a
@@ -346,9 +346,6 @@ where
         deployment_ids,
         force,
     }) = payload.map_err(|e| InvalidFieldError("body", e.body_text()))?;
-    if deployment_ids.is_empty() {
-        return Err(InvalidFieldError("deployment_ids", "must not be empty".to_owned()).into());
-    }
     if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
         return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
     }

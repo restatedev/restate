@@ -626,6 +626,9 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
     ) -> Result<Vec<DeploymentId>, SchemaRegistryError> {
         let mut seen = HashSet::with_capacity(deployment_ids.len());
         deployment_ids.retain(|id| seen.insert(*id));
+        if deployment_ids.is_empty() {
+            return Ok(vec![]);
+        }
 
         let result = self
             .metadata_service
