@@ -799,7 +799,7 @@ where
             RawEntry::Command(cmd) => {
                 self.write_raw_with_lease(
                     http_stream_tx,
-                    cmd.command_type().into(),
+                    cmd.command_type().try_into()?,
                     cmd.into_serialized_content(),
                     lease,
                 )?;

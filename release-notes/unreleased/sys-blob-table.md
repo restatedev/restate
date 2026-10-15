@@ -44,6 +44,11 @@ With the option enabled, invocations that complete afterwards are reported diffe
   error message. Read the message from `sys_blob.failure_json` instead.
 - `completion_failure_code` is unchanged.
 
+In `sys_journal`, the last entry of a completed invocation is `Command: EndMarker` instead of
+`Command: Output`. The marker carries no payload; read the output from `sys_invocation_output`.
+Killed and failed invocations also end with an `EndMarker` entry. An invocation can't be
+restarted from a journal prefix that includes the marker.
+
 Invocations that completed before the option was enabled keep their previous representation.
 
 Once enabled, the option cannot be turned off again: removing it from the configuration does not

@@ -201,12 +201,15 @@ mod tests {
             }))
         );
 
-        // With the blob table, the Output command is not written to the journal
-        let mut expected_commands = vec![CommandType::Input.into()];
-        if !write_blob_table {
-            expected_commands.push(CommandType::Output.into());
-        }
-        let expected_length = expected_commands.len() as u32;
+        // With the output table, a marker takes the place of the Output command
+        let expected_commands = [
+            CommandType::Input.into(),
+            if write_blob_table {
+                CommandType::EndMarker.into()
+            } else {
+                CommandType::Output.into()
+            },
+        ];
 
         // InvocationStatus contains completed
         assert_that!(
@@ -216,8 +219,8 @@ mod tests {
                 .await,
             ok(all!(
                 is_variant(InvocationStatusDiscriminants::Completed),
-                has_commands(expected_length),
-                has_journal_length(expected_length)
+                has_commands(2),
+                has_journal_length(2)
             ))
         );
 

@@ -11,6 +11,8 @@
 use std::num::NonZeroU16;
 
 use assert2::assert;
+use bytestring::ByteString;
+use metrics::counter;
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
@@ -41,12 +43,18 @@ use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
 use restate_types::invocation::ResponseResult;
 use restate_types::journal::EntryType;
-use restate_types::journal_v2::{self, CommandType, EntryMetadata, OutputCommand, OutputResult};
+use restate_types::journal_v2::{
+    self, CommandType, EndMarkerCommand, Entry, EntryMetadata, OutputCommand, OutputResult,
+};
 use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 use restate_types::vqueues::EntryTargetExt;
 use restate_vqueues::VQueue;
 use restate_worker_api::processor::PartitionFeatures;
 
+use crate::metric_definitions::{
+    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+};
 use crate::partition::processor::{FsmAccess, ProcessorContext};
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -187,7 +195,7 @@ where
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         let EndInvocationCommand {
             invocation_id,
-            invocation_metadata,
+            mut invocation_metadata,
             reason,
         } = self;
 
@@ -199,18 +207,10 @@ where
             invocation_metadata.idempotency_key.as_deref(),
         );
 
-        let journal_length = invocation_metadata.journal_metadata.length;
-
         let pinned_service_protocol_version = invocation_metadata
             .pinned_deployment
             .as_ref()
             .map(|pd| pd.service_protocol_version);
-
-        let response_cache = ResponseResultLoader::new(
-            invocation_id,
-            journal_length,
-            pinned_service_protocol_version.unwrap_or_default(),
-        );
 
         let entry_status = if invocation_metadata.vqueue_id.is_some() {
             ctx.storage
@@ -225,13 +225,42 @@ where
             .map(|r| r.seq())
             .or(invocation_metadata.creation_seq);
 
-        let vqueue_id = invocation_metadata.vqueue_id.clone();
-
         // The feature stores a *reference* (journal entry index) to the blob table instead of
         // inlining the result bytes, and synthesizes a missing output entry on Killed/Failed.
         // note: write_blob_table is only possible if canonical entry id is known
         let is_write_blob_table_enabled =
             ctx.processor.fsm().features().is_write_blob_table_enabled() && sequence.is_some();
+
+        // The output is not written to the journal when using the output table. Append a payload-free
+        // marker in its place instead, so the journal keeps its previous shape. Only v2 journals can
+        // hold it, and there's no point if the journal is going to be dropped right after.
+        if is_write_blob_table_enabled
+            && !journal_retention.is_zero()
+            && pinned_service_protocol_version
+                .is_none_or(|version| version >= ServiceProtocolVersion::V4)
+        {
+            let name = match &reason {
+                EndInvocationReason::Completed(output) => Some(output.name.clone()),
+                EndInvocationReason::Killed | EndInvocationReason::Failed(_) => {
+                    Some(Default::default())
+                }
+                // Output was journaled before the feature was enabled (or never produced)
+                EndInvocationReason::End => None,
+            };
+            if let Some(name) = name {
+                append_end_marker(ctx, invocation_id, &mut invocation_metadata, name)?;
+            }
+        }
+
+        let journal_length = invocation_metadata.journal_metadata.length;
+
+        let response_cache = ResponseResultLoader::new(
+            invocation_id,
+            journal_length,
+            pinned_service_protocol_version.unwrap_or_default(),
+        );
+
+        let vqueue_id = invocation_metadata.vqueue_id.clone();
 
         // Killed/Failed are known upfront, End/Completed are refined from the output below
         let mut end_status = match &reason {
@@ -443,4 +472,41 @@ where
 
         Ok(())
     }
+}
+
+fn append_end_marker<S, P>(
+    ctx: &mut StateMachineApplyContext<'_, S, P>,
+    invocation_id: InvocationId,
+    invocation_metadata: &mut InFlightInvocationMetadata,
+    name: ByteString,
+) -> Result<(), Error>
+where
+    S: journal_table_v2::WriteJournalTable,
+    P: ProcessorContext,
+{
+    let entry = Entry::from(EndMarkerCommand { name }).encode::<ServiceProtocolV4Codec>();
+    if ctx.is_leader() {
+        counter!(
+            USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+            "entry" => entry.ty().prometheus_label(),
+        )
+        .increment(1);
+        counter!(
+            USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+            "entry" => entry.ty().prometheus_label(),
+        )
+        .increment(entry.serialized_length() as u64);
+    }
+
+    let journal_metadata = &mut invocation_metadata.journal_metadata;
+    journal_table_v2::WriteJournalTable::put_journal_entry(
+        ctx.storage,
+        &invocation_id,
+        journal_metadata.length,
+        &StoredRawEntry::new(StoredRawEntryHeader::new(ctx.record_created_at), entry),
+        &[],
+    )?;
+    journal_metadata.length += 1;
+    journal_metadata.commands += 1;
+    Ok(())
 }

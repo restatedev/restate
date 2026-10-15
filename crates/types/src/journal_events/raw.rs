@@ -191,6 +191,8 @@ mod pb {
                 journal_v2::CommandType::AttachInvocation => Self::AttachInvocation,
                 journal_v2::CommandType::GetInvocationOutput => Self::GetInvocationOutput,
                 journal_v2::CommandType::CompleteAwakeable => Self::CompleteAwakeable,
+                // The marker is written by the partition processor and never fails transiently
+                journal_v2::CommandType::EndMarker => Self::Output,
             }
         }
     }
