@@ -209,12 +209,9 @@ pub async fn delete_deployments() {
     let version = schema_metadata.get().version();
 
     // No ids, or only unknown ids: nothing is written.
-    assert!(
-        schema_registry
-            .delete_deployments(vec![])
-            .await
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        schema_registry.delete_deployments(vec![]).await.unwrap(),
+        DeleteDeploymentsResult::default()
     );
     let unknown = DeploymentId::new();
     assert_eq!(
@@ -222,18 +219,23 @@ pub async fn delete_deployments() {
             .delete_deployments(vec![unknown, unknown])
             .await
             .unwrap(),
-        vec![unknown]
+        DeleteDeploymentsResult {
+            deleted: vec![],
+            not_found: vec![unknown],
+        }
     );
     assert_eq!(schema_metadata.get().version(), version);
 
-    // The existing deployments are deleted in one schema update, duplicates are ignored, and the
-    // unknown ids are returned.
+    // The existing deployments are deleted in one schema update, and duplicates are ignored.
     assert_eq!(
         schema_registry
             .delete_deployments(vec![deployment_1, unknown, deployment_2, deployment_1])
             .await
             .unwrap(),
-        vec![unknown]
+        DeleteDeploymentsResult {
+            deleted: vec![deployment_1, deployment_2],
+            not_found: vec![unknown],
+        }
     );
     let schema = schema_metadata.get();
     assert_eq!(schema.version(), version.next());

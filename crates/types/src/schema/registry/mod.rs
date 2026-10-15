@@ -16,10 +16,12 @@ pub use discovery_client::*;
 pub use metadata_service::*;
 pub use telemetry_client::*;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
+use itertools::Itertools;
 use tracing::subscriber::NoSubscriber;
 
 use crate::deployment;
@@ -82,6 +84,15 @@ impl SchemaRegistryError {
             }
         }
     }
+}
+
+/// Outcome of [`SchemaRegistry::delete_deployments`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeleteDeploymentsResult {
+    /// The deployments that were deleted.
+    pub deleted: Vec<DeploymentId>,
+    /// The deployments that don't exist.
+    pub not_found: Vec<DeploymentId>,
 }
 
 impl From<SchemaError> for SchemaRegistryError {
@@ -606,53 +617,58 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         &self,
         deployment_id: DeploymentId,
     ) -> Result<(), SchemaRegistryError> {
-        if self
-            .delete_deployments(vec![deployment_id])
-            .await?
-            .is_empty()
-        {
+        let result = self.delete_deployments([deployment_id]).await?;
+        if result.not_found.is_empty() {
             Ok(())
         } else {
             Err(SchemaError::NotFound(format!("deployment with id '{deployment_id}'")).into())
         }
     }
 
-    /// Deletes the given deployments with a single schema update (one schema version bump), and
-    /// returns the ones that don't exist. Either all the existing deployments are deleted, or
-    /// none of them (on error). Duplicate ids are ignored.
+    /// Deletes the given deployments with a single schema update (one schema version bump).
+    /// Either all the existing deployments are deleted, or none of them (on error). Duplicate ids
+    /// are ignored. The schema is not written when none of the deployments exist.
     pub async fn delete_deployments(
         &self,
-        mut deployment_ids: Vec<DeploymentId>,
-    ) -> Result<Vec<DeploymentId>, SchemaRegistryError> {
-        let mut seen = HashSet::with_capacity(deployment_ids.len());
-        deployment_ids.retain(|id| seen.insert(*id));
+        deployment_ids: impl IntoIterator<Item = DeploymentId>,
+    ) -> Result<DeleteDeploymentsResult, SchemaRegistryError> {
+        // Collected as the update closure can run again on conflicts.
+        let deployment_ids: Vec<_> = deployment_ids.into_iter().unique().collect();
         if deployment_ids.is_empty() {
-            return Ok(vec![]);
+            return Ok(DeleteDeploymentsResult::default());
         }
 
+        // Set when none of the deployments exist, to tell that case apart from a failed update.
+        let nothing_to_delete = AtomicBool::new(false);
         let result = self
             .metadata_service
             .update(|schema| {
                 SchemaUpdater::update_and_return(schema, |updater| {
-                    let missing: Vec<_> = deployment_ids
-                        .iter()
-                        .copied()
-                        .filter(|id| !updater.remove_deployment(*id))
-                        .collect();
-                    if missing.len() == deployment_ids.len() {
-                        // Nothing to delete: fail the update so the unchanged schema isn't written.
-                        Err(SchemaError::NotFound("deployments".to_owned()))
-                    } else {
-                        Ok(missing)
+                    let mut result = DeleteDeploymentsResult::default();
+                    for &deployment_id in &deployment_ids {
+                        if updater.remove_deployment(deployment_id) {
+                            result.deleted.push(deployment_id);
+                        } else {
+                            result.not_found.push(deployment_id);
+                        }
                     }
+                    if result.deleted.is_empty() {
+                        nothing_to_delete.store(true, Ordering::Relaxed);
+                        // Abort the update, so that the unchanged schema isn't written.
+                        return Err(SchemaError::NotFound("deployments".to_owned()));
+                    }
+                    Ok(result)
                 })
                 .map_err(Into::into)
             })
             .await;
 
         match result {
-            Ok((missing, _)) => Ok(missing),
-            Err(err) if err.status_code() == StatusCode::NOT_FOUND => Ok(deployment_ids),
+            Ok((result, _)) => Ok(result),
+            Err(_) if nothing_to_delete.load(Ordering::Relaxed) => Ok(DeleteDeploymentsResult {
+                deleted: vec![],
+                not_found: deployment_ids,
+            }),
             Err(err) => Err(err),
         }
     }

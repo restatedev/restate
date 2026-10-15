@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use axum::extract::rejection::JsonRejection;
@@ -29,8 +29,8 @@ use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
-    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
-    Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
+    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DeleteDeploymentsResult, DiscoveryClient,
+    MetadataService, Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
 };
 use restate_types::schema::service::ServiceMetadata;
 
@@ -308,7 +308,7 @@ where
     }
 }
 
-generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidFieldError, BatchTooLargeError, GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
+generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidRequestBodyError, BatchTooLargeError, GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
 
 /// Bulk delete deployments
 ///
@@ -345,7 +345,7 @@ where
     let Json(BulkDeleteDeploymentsRequest {
         deployment_ids,
         force,
-    }) = payload.map_err(|e| InvalidFieldError("body", e.body_text()))?;
+    }) = payload.map_err(InvalidRequestBodyError)?;
     if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
         return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
     }
@@ -353,28 +353,24 @@ where
         return Err(GracefulDeploymentDeletionNotSupportedError.into());
     }
 
-    let missing = state
+    let DeleteDeploymentsResult { deleted, not_found } = state
         .schema_registry
-        .delete_deployments(deployment_ids.clone())
+        .delete_deployments(deployment_ids)
         .await
         .inspect_err(|e| warn_it!(e))
         .map_err(MetaApiError::from)?;
 
-    let mut seen = HashSet::with_capacity(deployment_ids.len());
-    let succeeded = deployment_ids
-        .into_iter()
-        .filter(|id| seen.insert(*id) && !missing.contains(id))
-        .collect();
-    let failed = missing
-        .into_iter()
-        .map(|deployment_id| FailedDeploymentDeletion {
-            deployment_id,
-            reason: DeploymentDeletionFailureReason::NotFound,
-            error: MetaApiError::DeploymentNotFound(deployment_id).to_string(),
-        })
-        .collect();
-
-    Ok(Json(BulkDeleteDeploymentsResponse { succeeded, failed }))
+    Ok(Json(BulkDeleteDeploymentsResponse {
+        succeeded: deleted,
+        failed: not_found
+            .into_iter()
+            .map(|deployment_id| FailedDeploymentDeletion {
+                deployment_id,
+                reason: DeploymentDeletionFailureReason::NotFound,
+                error: MetaApiError::DeploymentNotFound(deployment_id).to_string(),
+            })
+            .collect(),
+    }))
 }
 
 /// Update deployment
@@ -758,5 +754,36 @@ mod tests {
             .expect_err("the experimental feature must be enabled");
         validate_gcp_federation_admission(AdminApiVersion::V5, true, &auth)
             .expect("an enabled Admin API v5 server accepts federation");
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_rejects_malformed_bodies_with_400() {
+        use axum::extract::FromRequest;
+
+        async fn status(content_type: Option<&str>, body: &'static str) -> StatusCode {
+            let mut request = http::Request::builder();
+            if let Some(content_type) = content_type {
+                request = request.header(header::CONTENT_TYPE, content_type);
+            }
+            let rejection = Json::<BulkDeleteDeploymentsRequest>::from_request(
+                request.body(body.into()).unwrap(),
+                &(),
+            )
+            .await
+            .expect_err("the body must be rejected");
+            InvalidRequestBodyError(rejection).into_response().status()
+        }
+
+        let json = Some("application/json");
+        // A malformed id is a 400, not axum's default 422.
+        assert_eq!(
+            status(json, r#"{"deployment_ids": ["dp_bogus"], "force": true}"#).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(status(json, "{").await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            status(None, r#"{"deployment_ids": []}"#).await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
     }
 }
