@@ -9185,8 +9185,8 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.34"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.34#9bcf5d94eea20fef47f6d08fe715533e9c0d895f"
+version = "1.0.36"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.36#2407c8f47b73182fdbfcd261258f25ef37fd9583"
 dependencies = [
  "anyhow",
  "include_dir",
@@ -9667,9 +9667,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "aws-lc-rs",
  "log",
@@ -10628,7 +10628,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
