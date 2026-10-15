@@ -68,6 +68,9 @@ pub enum Command {
     AttachInvocation(AttachInvocationCommand),
     GetInvocationOutput(GetInvocationOutputCommand),
     CompleteAwakeable(CompleteAwakeableCommand),
+    /// Payload-free placeholder appended where the Output command would have been, when the
+    /// output is stored in the output table instead of the journal. Never sent to the SDK.
+    OutputMarker(OutputMarkerCommand),
 }
 
 impl fmt::Display for CommandType {
@@ -172,6 +175,12 @@ pub enum OutputResult {
     Failure(Failure),
 }
 impl_command_accessors!(Output -> [@metadata @from_entry @no_completion]);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutputMarkerCommand {
+    pub name: ByteString,
+}
+impl_command_accessors!(OutputMarker -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateCommand {

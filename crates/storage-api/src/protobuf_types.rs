@@ -3038,6 +3038,9 @@ pub mod v1 {
                     EntryType::OutputCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::Output)
                     }
+                    EntryType::OutputMarkerCommand => {
+                        journal_v2::EntryType::Command(journal_v2::CommandType::OutputMarker)
+                    }
                     EntryType::RunCommand => {
                         journal_v2::EntryType::Command(journal_v2::CommandType::Run)
                     }
@@ -3170,6 +3173,9 @@ pub mod v1 {
                     }
                     journal_v2::EntryType::Command(journal_v2::CommandType::Output) => {
                         EntryType::OutputCommand
+                    }
+                    journal_v2::EntryType::Command(journal_v2::CommandType::OutputMarker) => {
+                        EntryType::OutputMarkerCommand
                     }
                     journal_v2::EntryType::Command(journal_v2::CommandType::GetLazyState) => {
                         EntryType::GetLazyStateCommand

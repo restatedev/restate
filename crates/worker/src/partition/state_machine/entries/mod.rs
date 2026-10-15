@@ -224,6 +224,10 @@ where
                                 .await;
                             }
                         }
+                        Command::OutputMarker(_) => {
+                            // Only the partition processor writes markers, they can't come from the SDK
+                            return Err(Error::BadEntryVariant(entry.ty()));
+                        }
                         Command::GetLazyState(entry) => {
                             ApplyGetLazyStateCommand {
                                 invocation_id: self.invocation_id,
