@@ -341,17 +341,8 @@ pub async fn bulk_delete_deployments<Metadata, Discovery, Telemetry, Invocations
 where
     Metadata: MetadataService,
 {
-    // Validate the whole request before deleting anything.
-    let Json(BulkDeleteDeploymentsRequest {
-        deployment_ids,
-        force,
-    }) = payload.map_err(InvalidRequestBodyError)?;
-    if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
-        return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
-    }
-    if !force {
-        return Err(GracefulDeploymentDeletionNotSupportedError.into());
-    }
+    let Json(request) = payload.map_err(InvalidRequestBodyError)?;
+    let deployment_ids = validate_bulk_delete(request)?;
 
     let DeleteDeploymentsResult { deleted, not_found } = state
         .schema_registry
@@ -371,6 +362,23 @@ where
             })
             .collect(),
     }))
+}
+
+/// Validates the whole bulk delete request before deleting anything, and returns the deployments
+/// to delete. An empty list is a success, whatever `force` says.
+fn validate_bulk_delete(
+    BulkDeleteDeploymentsRequest {
+        deployment_ids,
+        force,
+    }: BulkDeleteDeploymentsRequest,
+) -> Result<Vec<DeploymentId>, BulkDeleteDeploymentsError> {
+    if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
+    }
+    if !force && !deployment_ids.is_empty() {
+        return Err(GracefulDeploymentDeletionNotSupportedError.into());
+    }
+    Ok(deployment_ids)
 }
 
 /// Update deployment
@@ -757,10 +765,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bulk_delete_rejects_malformed_bodies_with_400() {
+    async fn bulk_delete_validation() {
         use axum::extract::FromRequest;
 
-        async fn status(content_type: Option<&str>, body: &'static str) -> StatusCode {
+        async fn rejection_status(content_type: Option<&str>, body: &'static str) -> StatusCode {
             let mut request = http::Request::builder();
             if let Some(content_type) = content_type {
                 request = request.header(header::CONTENT_TYPE, content_type);
@@ -777,13 +785,31 @@ mod tests {
         let json = Some("application/json");
         // A malformed id is a 400, not axum's default 422.
         assert_eq!(
-            status(json, r#"{"deployment_ids": ["dp_bogus"], "force": true}"#).await,
+            rejection_status(json, r#"{"deployment_ids": ["dp_bogus"], "force": true}"#).await,
             StatusCode::BAD_REQUEST
         );
-        assert_eq!(status(json, "{").await, StatusCode::BAD_REQUEST);
+        assert_eq!(rejection_status(json, "{").await, StatusCode::BAD_REQUEST);
         assert_eq!(
-            status(None, r#"{"deployment_ids": []}"#).await,
+            rejection_status(None, r#"{"deployment_ids": []}"#).await,
             StatusCode::UNSUPPORTED_MEDIA_TYPE
         );
+
+        let validate = |len, force| {
+            validate_bulk_delete(BulkDeleteDeploymentsRequest {
+                deployment_ids: (0..len).map(|_| DeploymentId::new()).collect(),
+                force,
+            })
+        };
+        // An empty list succeeds, even without force.
+        assert!(validate(0, false).unwrap().is_empty());
+        assert_eq!(validate(2, true).unwrap().len(), 2);
+        assert!(matches!(
+            validate(1, false),
+            Err(BulkDeleteDeploymentsError::GracefulDeploymentDeletionNotSupportedError(_))
+        ));
+        assert!(matches!(
+            validate(BATCH_OPERATION_MAX_SIZE + 1, true),
+            Err(BulkDeleteDeploymentsError::BatchTooLargeError(_))
+        ));
     }
 }
