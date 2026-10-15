@@ -179,7 +179,7 @@ impl LeaderState {
             network_events_tx,
             network_events_stream: UnboundedReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
-            self_proposer_scheduler: SelfProposerScheduler::new(),
+            self_proposer_scheduler: SelfProposerScheduler::new(partition_id),
         }
     }
 
@@ -296,6 +296,10 @@ impl LeaderState {
             self_proposer_scheduler,
             ..
         } = self;
+
+        // Notify the scheduler about the RSM progress so that it can update its stats.
+        self_proposer_scheduler.poll_on_progress(cx, ctx.fsm().last_applied_lsn());
+
         // watch the shuffle task in case it crashed
         if let Poll::Ready(result) = shuffle_task_handle.as_mut().expect("is set").poll_unpin(cx) {
             // it's not possible to await the shuffler handle
@@ -345,6 +349,7 @@ impl LeaderState {
         };
 
         let mut bytes_admitted = 0;
+        let mut records_admitted = 0;
 
         // Let's in every round try to propose 10% of the queue's memory limit as long as
         // we've proposals that are ready to go, and that tokio is ok with us taking that long.
@@ -367,6 +372,7 @@ impl LeaderState {
                 Poll::Ready(Ok(result)) => {
                     coop.made_progress();
                     bytes_admitted += result.bytes_written;
+                    records_admitted += result.records_written;
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => {
@@ -379,6 +385,15 @@ impl LeaderState {
         // Poll the commit notification futures pushed while handling events so that their
         // wakers get registered. Otherwise, we might miss their completion if we return pending.
         while let Poll::Ready(Some(_)) = state.awaiting_rpc_self_propose.poll_next_unpin(cx) {}
+
+        if records_admitted > 0 {
+            // Track the committed LSN only for rounds that admitted records.
+            self.self_proposer_scheduler.on_round_end(
+                self.self_proposer
+                    .notify_committed()
+                    .map_err(|e| Error::SelfProposer(e.to_string()))?,
+            );
+        }
 
         result
     }
