@@ -12,7 +12,7 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 use crate::{
-    deployment, inbox, invocation_state, invocation_status, journal, journal_events, locks,
+    deployment, inbox, invocation_state, invocation_status, journal, journal_events, locks, output,
     promise, rules, scheduler_status, service, state, user_limits, vqueue_entry_status,
     vqueue_meta, vqueues,
 };
@@ -26,6 +26,7 @@ pub const ALL_TABLE_DOCS: &[StaticTableDocs] = &[
     journal::schema::TABLE_DOCS,
     journal_events::schema::TABLE_DOCS,
     locks::schema::TABLE_DOCS,
+    output::schema::TABLE_DOCS,
     promise::schema::TABLE_DOCS,
     rules::schema::TABLE_DOCS,
     scheduler_status::schema::TABLE_DOCS,

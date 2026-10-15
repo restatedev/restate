@@ -75,6 +75,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.0*
+    EnableWriteOutputTable = 7,
 }
 
 impl PartitionFeatureChange {
@@ -94,6 +100,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
+            Self::EnableWriteOutputTable => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -120,6 +127,9 @@ impl PartitionFeatureChange {
             ),
             Self::EnableInconsistentStateMutationCleanup => {
                 !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
+            }
+            Self::EnableWriteOutputTable => {
+                !std::mem::replace(&mut features.write_output_table, true)
             }
         }
     }
@@ -184,6 +194,14 @@ pub struct PersistedFeatures {
     /// *Since v1.8.0*
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
+
+    /// Write invocation results into the output
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.0*
+    #[bilrost(tag(7))]
+    pub write_output_table: bool,
 }
 
 impl PersistedFeatures {
@@ -201,6 +219,7 @@ impl PersistedFeatures {
                 .then_some("preflight_invocation_termination_retention"),
             self.inconsistent_state_mutation_cleanup
                 .then_some("inconsistent_state_mutation_cleanup"),
+            self.write_output_table.then_some("write_output_table"),
         ]
         .into_iter()
         .flatten()
