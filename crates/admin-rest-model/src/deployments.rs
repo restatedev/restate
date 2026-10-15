@@ -317,8 +317,8 @@ pub struct ListDeploymentsResponse {
 pub struct BulkDeleteDeploymentsRequest {
     /// # Deployment IDs
     ///
-    /// Deployments to delete: at least 1 and at most 1000. Duplicates are ignored.
-    #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 1000))]
+    /// Deployments to delete: at most 1000. Duplicates are ignored.
+    #[cfg_attr(feature = "schema", schema(max_items = 1000))]
     pub deployment_ids: Vec<DeploymentId>,
 
     /// # Force
