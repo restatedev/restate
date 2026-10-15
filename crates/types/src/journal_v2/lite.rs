@@ -53,6 +53,7 @@ pub enum CommandLite {
     AttachInvocation(AttachInvocationCommandLite),
     GetInvocationOutput(GetInvocationOutputCommandLite),
     CompleteAwakeable(CompleteAwakeableCommandLite),
+    OutputMarker(OutputMarkerCommandLite),
 }
 
 // Little macro to reduce boilerplate for TryFromEntry and EntryMetadata.
@@ -91,6 +92,10 @@ macro_rules! impl_command_accessors {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct InputCommandLite {}
 impl_command_accessors!(Input);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutputMarkerCommandLite {}
+impl_command_accessors!(OutputMarker);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutputCommandLite {
