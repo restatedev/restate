@@ -17,6 +17,8 @@ use enum_map::{Array, Enum, EnumMap};
 use futures::task::AtomicWaker;
 use tracing::warn;
 
+use restate_bifrost::WrittenRecords;
+
 const QUANTUM: i64 = 64 * 1024; // 64KiB
 
 // Every flow gets one bit in `Shared::woken`.
@@ -162,26 +164,27 @@ impl<'a> SchedulerDecision<'a> {
         state.state = State::Queued;
     }
 
-    /// Report back how many bytes were written to the self-proposer as a result of handling
-    /// the flow. A flow that managed to write something will be automatically considered
-    /// ready to be polled again. Depending on its deficit, it may get re-enqueued at the
-    /// head or the back of the ready queue.
+    /// Report back the result of handling the flow to the self-proposer. A flow that managed to
+    /// write something will be automatically considered ready to be polled again. Depending on its
+    /// deficit, it may get re-enqueued at the head or the back of the ready queue.
     ///
     /// Note: Flows that report back 0 bytes written will lose their position in the
     /// ready queue to avoid starvation.
-    pub(crate) fn on_proposal_enqueued(mut self, bytes_written: usize) {
+    pub(crate) fn on_proposal_enqueued(mut self, result: WrittenRecords) {
         self.received_feedback = true;
-        let cost = bytes_written.saturating_mul(self.flow.cost_multiplier() as usize) as i64;
+        let cost = result
+            .bytes_written
+            .saturating_mul(self.flow.cost_multiplier() as usize) as i64;
         let state = self.flow_state();
         state.deficit = state.deficit.saturating_sub(cost);
         std::debug_assert_matches!(state.state, State::Polling);
-        self.requeue(bytes_written == 0);
+        self.requeue(result.bytes_written == 0);
     }
 
     /// Reports back that the flow was ready, but reported an error without proposing any bytes.
     /// Will be treated as an empty proposal (see [`SelfProposerScheduler::on_proposal_enqueued`]).
     pub(crate) fn on_error(self) {
-        self.on_proposal_enqueued(0)
+        self.on_proposal_enqueued(WrittenRecords::default())
     }
 
     /// Reports back to the scheduler that the flow was polled and reported `Poll::Pending`.
@@ -369,9 +372,20 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Wake, Waker};
 
+    use restate_bifrost::WrittenRecords;
+
     use crate::partition::leadership::self_proposer_scheduler::{
         QUANTUM, SelfProposerSchedulerFlow,
     };
+
+    /// A proposal of `bytes_written` bytes. The scheduler only accounts for the bytes, so the
+    /// record count is not meaningful in these tests.
+    fn proposal(bytes_written: usize) -> WrittenRecords {
+        WrittenRecords {
+            bytes_written,
+            records_written: 1,
+        }
+    }
 
     struct TestWaker {
         woken: AtomicBool,
@@ -406,7 +420,7 @@ mod tests {
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
 
         // Report back 1KB of commands written
-        dec.on_proposal_enqueued(1024);
+        dec.on_proposal_enqueued(proposal(1024));
         // Invoker's deficit should still be positive, so asking the scheduler again should yield it again.
         let dec = scheduler
             .poll_next_ready(&mut cx)
@@ -452,7 +466,7 @@ mod tests {
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
         // Report back 128KB of commands, to consume the entire deficit of the invoker.
-        dec.on_proposal_enqueued(128 * 1024);
+        dec.on_proposal_enqueued(proposal(128 * 1024));
 
         // The invoker is the only queued flow, it should get its deficit back.
         let dec = scheduler
@@ -487,14 +501,14 @@ mod tests {
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
-        dec.on_proposal_enqueued(100 * QUANTUM as usize);
+        dec.on_proposal_enqueued(proposal(100 * QUANTUM as usize));
 
         // Report 50x the quantum for the timer
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Timer);
-        dec.on_proposal_enqueued(50 * QUANTUM as usize);
+        dec.on_proposal_enqueued(proposal(50 * QUANTUM as usize));
 
         // Report pending for all other flows
         // Consume the rest of the flows
