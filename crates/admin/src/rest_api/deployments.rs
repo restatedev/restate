@@ -8,9 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::SystemTime;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
@@ -19,6 +20,7 @@ use http::{Method, Uri};
 use serde::Deserialize;
 
 use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::config::Configuration;
@@ -33,6 +35,7 @@ use restate_types::schema::registry::{
 use restate_types::schema::service::ServiceMetadata;
 
 use super::error::*;
+use crate::generate_meta_api_error;
 use crate::rest_api::ErrorDescriptionResponse;
 use crate::state::AdminServiceState;
 
@@ -303,6 +306,78 @@ where
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
     }
+}
+
+generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidFieldError, BatchTooLargeError, GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
+
+/// Bulk delete deployments
+///
+/// Delete up to 1000 deployments at once. Duplicate ids are ignored. The request is rejected as a whole
+/// if it lists no deployment, more than 1000, or a malformed id.
+///
+/// All the existing deployments of the request are deleted together, with a single update of the schema.
+/// Deployments that can't be deleted, e.g. because they don't exist, are reported in `failed`, with a
+/// machine-readable `reason`, without failing the others.
+///
+/// Currently, only forced deletions are supported.
+/// **Use with caution**: forcing a deployment deletion can break in-flight invocations.
+#[utoipa::path(
+    post,
+    path = "/deployments/bulk-delete",
+    operation_id = "bulk_delete_deployments",
+    tag = "deployment",
+    request_body = BulkDeleteDeploymentsRequest,
+    responses(
+        (status = 200, description = "The deployments that were deleted, and the ones that were not.", body = BulkDeleteDeploymentsResponse),
+        (status = 400, response = meta_api_error::BadRequest),
+        (status = 501, description = "Not implemented. Graceful deployment deletion (force=false) is not yet supported.", body = ErrorDescriptionResponse),
+        (status = 500, response = meta_api_error::InternalServerError),
+    )
+)]
+pub async fn bulk_delete_deployments<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    payload: Result<Json<BulkDeleteDeploymentsRequest>, JsonRejection>,
+) -> Result<Json<BulkDeleteDeploymentsResponse>, BulkDeleteDeploymentsError>
+where
+    Metadata: MetadataService,
+{
+    // Validate the whole request before deleting anything.
+    let Json(BulkDeleteDeploymentsRequest {
+        deployment_ids,
+        force,
+    }) = payload.map_err(|e| InvalidFieldError("body", e.body_text()))?;
+    if deployment_ids.is_empty() {
+        return Err(InvalidFieldError("deployment_ids", "must not be empty".to_owned()).into());
+    }
+    if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
+    }
+    if !force {
+        return Err(GracefulDeploymentDeletionNotSupportedError.into());
+    }
+
+    let missing = state
+        .schema_registry
+        .delete_deployments(deployment_ids.clone())
+        .await
+        .inspect_err(|e| warn_it!(e))
+        .map_err(MetaApiError::from)?;
+
+    let mut seen = HashSet::with_capacity(deployment_ids.len());
+    let succeeded = deployment_ids
+        .into_iter()
+        .filter(|id| seen.insert(*id) && !missing.contains(id))
+        .collect();
+    let failed = missing
+        .into_iter()
+        .map(|deployment_id| FailedDeploymentDeletion {
+            deployment_id,
+            reason: DeploymentDeletionFailureReason::NotFound,
+            error: MetaApiError::DeploymentNotFound(deployment_id).to_string(),
+        })
+        .collect();
+
+    Ok(Json(BulkDeleteDeploymentsResponse { succeeded, failed }))
 }
 
 /// Update deployment

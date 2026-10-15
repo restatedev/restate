@@ -16,7 +16,7 @@ pub use discovery_client::*;
 pub use metadata_service::*;
 pub use telemetry_client::*;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
@@ -606,24 +606,52 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         &self,
         deployment_id: DeploymentId,
     ) -> Result<(), SchemaRegistryError> {
-        self.metadata_service
-            .update(|schema| {
-                Ok((
-                    (),
-                    SchemaUpdater::update(schema, |updater| {
-                        if updater.remove_deployment(deployment_id) {
-                            Ok(())
-                        } else {
-                            Err(SchemaError::NotFound(format!(
-                                "deployment with id '{deployment_id}'"
-                            )))
-                        }
-                    })?,
-                ))
-            })
-            .await?;
+        if self
+            .delete_deployments(vec![deployment_id])
+            .await?
+            .is_empty()
+        {
+            Ok(())
+        } else {
+            Err(SchemaError::NotFound(format!("deployment with id '{deployment_id}'")).into())
+        }
+    }
 
-        Ok(())
+    /// Deletes the given deployments with a single schema update (one schema version bump), and
+    /// returns the ones that don't exist. Either all the existing deployments are deleted, or
+    /// none of them (on error). Duplicate ids are ignored.
+    pub async fn delete_deployments(
+        &self,
+        mut deployment_ids: Vec<DeploymentId>,
+    ) -> Result<Vec<DeploymentId>, SchemaRegistryError> {
+        let mut seen = HashSet::with_capacity(deployment_ids.len());
+        deployment_ids.retain(|id| seen.insert(*id));
+
+        let result = self
+            .metadata_service
+            .update(|schema| {
+                SchemaUpdater::update_and_return(schema, |updater| {
+                    let missing: Vec<_> = deployment_ids
+                        .iter()
+                        .copied()
+                        .filter(|id| !updater.remove_deployment(*id))
+                        .collect();
+                    if missing.len() == deployment_ids.len() {
+                        // Nothing to delete: fail the update so the unchanged schema isn't written.
+                        Err(SchemaError::NotFound("deployments".to_owned()))
+                    } else {
+                        Ok(missing)
+                    }
+                })
+                .map_err(Into::into)
+            })
+            .await;
+
+        match result {
+            Ok((missing, _)) => Ok(missing),
+            Err(err) if err.status_code() == StatusCode::NOT_FOUND => Ok(deployment_ids),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn modify_service(

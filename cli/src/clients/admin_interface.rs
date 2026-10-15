@@ -57,6 +57,10 @@ pub trait AdminClientInterface {
         id: &str,
         force: bool,
     ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+    fn bulk_remove_deployments(
+        &self,
+        body: BulkDeleteDeploymentsRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<BulkDeleteDeploymentsResponse>>> + Send + 'static;
 
     fn discover_deployment(
         &self,
@@ -236,6 +240,15 @@ impl AdminClientInterface for AdminClient {
         url.set_query(Some(&format!("force={force}")));
 
         self.run(reqwest::Method::DELETE, url)
+    }
+
+    fn bulk_remove_deployments(
+        &self,
+        body: BulkDeleteDeploymentsRequest,
+    ) -> impl Future<Output = reqwest::Result<Envelope<BulkDeleteDeploymentsResponse>>> + Send + 'static
+    {
+        let url = self.versioned_url(["deployments", "bulk-delete"]);
+        self.run_with_body(reqwest::Method::POST, url, body)
     }
 
     fn discover_deployment(
