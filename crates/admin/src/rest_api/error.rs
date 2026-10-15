@@ -146,6 +146,11 @@ pub(crate) struct BatchTooLargeError(pub(crate) usize, pub(crate) usize);
 impl_meta_api_error!(BatchTooLargeError: BAD_REQUEST "The batch size exceeds the maximum allowed.");
 
 #[derive(Debug, thiserror::Error)]
+#[error("Graceful deployment deletion (force=false) is not yet supported")]
+pub(crate) struct GracefulDeploymentDeletionNotSupportedError;
+impl_meta_api_error!(GracefulDeploymentDeletionNotSupportedError: NOT_IMPLEMENTED "Not implemented. Graceful deployment deletion (force=false) is not yet supported.");
+
+#[derive(Debug, thiserror::Error)]
 #[error("The requested invocation '{0}' does not exist")]
 pub(crate) struct InvocationNotFoundError(pub(crate) String);
 impl_meta_api_error!(InvocationNotFoundError: NOT_FOUND "The invocation was not found.");

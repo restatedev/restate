@@ -311,6 +311,56 @@ pub struct ListDeploymentsResponse {
     pub deployments: Vec<DeploymentResponse>,
 }
 
+/// Request body of `POST /deployments/bulk-delete`.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkDeleteDeploymentsRequest {
+    /// # Deployment IDs
+    ///
+    /// Deployments to delete: at least 1 and at most 1000. Duplicates are ignored.
+    #[cfg_attr(feature = "schema", schema(min_items = 1, max_items = 1000))]
+    pub deployment_ids: Vec<DeploymentId>,
+
+    /// # Force
+    ///
+    /// If true, the deployments will be forcefully deleted. This might break in-flight
+    /// invocations, use with caution. Currently, only forced deletions are supported.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Why a deployment of a bulk deletion was not deleted. More reasons might be added in the
+/// future.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentDeletionFailureReason {
+    /// The deployment doesn't exist.
+    NotFound,
+}
+
+/// A deployment of a bulk deletion that was not deleted.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FailedDeploymentDeletion {
+    /// The deployment that was not deleted
+    pub deployment_id: DeploymentId,
+    /// Machine-readable reason of the failure
+    pub reason: DeploymentDeletionFailureReason,
+    /// Error message describing the failure
+    pub error: String,
+}
+
+/// Result of `POST /deployments/bulk-delete`.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkDeleteDeploymentsResponse {
+    /// Deployments that were deleted
+    pub succeeded: Vec<DeploymentId>,
+    /// Deployments that were not deleted, with the reason
+    pub failed: Vec<FailedDeploymentDeletion>,
+}
+
 // Why the deployment responses carry explicit `type` discriminators:
 //
 // `DeploymentResponse` and `DetailedDeploymentResponse` are `#[serde(untagged)]`, which utoipa
