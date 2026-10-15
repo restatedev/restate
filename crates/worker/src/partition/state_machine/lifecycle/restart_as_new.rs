@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use ahash::HashSet;
-use metrics::counter;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -37,9 +36,6 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, Notif
 use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
-use crate::metric_definitions::{
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-};
 use crate::partition::processor::*;
 use crate::partition::state_machine::{
     Action, CommandHandler, Error, RpcReply, StateMachineApplyContext,
@@ -150,17 +146,11 @@ where
                 break;
             };
 
-            if ctx.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(entry.inner.serialized_length() as u64);
+            if let Some(leader) = ctx.leader {
+                leader.record_journal_entry_usage(
+                    entry.ty().prometheus_label(),
+                    entry.inner.serialized_length(),
+                );
             }
 
             match entry.ty() {
@@ -219,17 +209,11 @@ where
                 && let NotificationId::CompletionId(completion_id) = notification.id()
                 && missing_completions.remove(&completion_id)
             {
-                if ctx.is_leader {
-                    counter!(
-                        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                        "entry" => entry.ty().prometheus_label(),
-                    )
-                    .increment(1);
-                    counter!(
-                        USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                        "entry" => entry.ty().prometheus_label(),
-                    )
-                    .increment(entry.inner.serialized_length() as u64);
+                if let Some(leader) = ctx.leader {
+                    leader.record_journal_entry_usage(
+                        entry.ty().prometheus_label(),
+                        entry.inner.serialized_length(),
+                    );
                 }
                 // Copy over this notification
                 journal_table_v2::WriteJournalTable::put_journal_entry(

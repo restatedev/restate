@@ -26,7 +26,6 @@ mod sleep_command;
 
 use std::collections::VecDeque;
 
-use metrics::counter;
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
@@ -50,9 +49,6 @@ use restate_types::journal_v2::{
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
 
 use crate::debug_if_leader;
-use crate::metric_definitions::{
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-};
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
@@ -169,17 +165,11 @@ where
             // We need this information to store the journal entry!
             let mut related_completion_ids = vec![];
 
-            if ctx.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(entry.serialized_length() as u64);
+            if let Some(leader) = ctx.leader {
+                leader.record_journal_entry_usage(
+                    entry.ty().prometheus_label(),
+                    entry.serialized_length(),
+                );
             }
 
             // --- Process entry effect

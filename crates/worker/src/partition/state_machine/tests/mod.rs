@@ -168,7 +168,7 @@ impl TestEnv {
             &mut transaction,
             DataRecord::new(created_at.into(), Keys::None, lsn, envelope),
             &mut action_collector,
-            true,
+            Some(LeaderContext::new(NonZeroUsize::new(64 * 1024))),
             &mut arena,
         )
         .await
@@ -1314,4 +1314,17 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
 
     test_env.shutdown().await;
     Ok(())
+}
+
+#[test]
+fn quantized_actions_count_every_started_chunk() {
+    let size_64k = NonZeroUsize::new(64 * 1024).unwrap();
+    assert_eq!(quantized_actions(0, size_64k), 1);
+    assert_eq!(quantized_actions(1, size_64k), 1);
+    assert_eq!(quantized_actions(64 * 1024, size_64k), 1);
+    assert_eq!(quantized_actions(64 * 1024 + 1, size_64k), 2);
+    assert_eq!(quantized_actions(1024 * 1024, size_64k), 16);
+
+    let size_32k = NonZeroUsize::new(32 * 1024).unwrap();
+    assert_eq!(quantized_actions(64 * 1024 + 1, size_32k), 3);
 }

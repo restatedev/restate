@@ -19,6 +19,7 @@ use restate_worker_api::processor::PartitionFeatures;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::Debug;
+use std::num::NonZeroUsize;
 use std::ops::RangeBounds;
 use std::str::FromStr;
 use std::time::{Duration, Instant};
@@ -128,6 +129,7 @@ use self::utils::SpanExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
+    USAGE_LEADER_QUANTIZED_ACTION_COUNT,
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
@@ -199,6 +201,38 @@ macro_rules! info_span_if_leader {
     }};
 }
 
+/// Leader-only settings, captured from the configuration when the partition processor becomes leader.
+#[derive(Debug, Clone, Copy)]
+pub struct LeaderContext {
+    /// Enables the quantized action count metric if set.
+    quantized_action_size: Option<NonZeroUsize>,
+}
+
+impl LeaderContext {
+    pub fn new(quantized_action_size: Option<NonZeroUsize>) -> Self {
+        Self {
+            quantized_action_size,
+        }
+    }
+
+    fn record_journal_entry_usage(&self, entry: &'static str, serialized_length: usize) {
+        counter!(USAGE_LEADER_JOURNAL_ENTRY_COUNT, "entry" => entry).increment(1);
+        counter!(USAGE_LEADER_JOURNAL_ENTRY_BYTES, "entry" => entry)
+            .increment(serialized_length as u64);
+        if let Some(quantized_action_size) = self.quantized_action_size {
+            counter!(USAGE_LEADER_QUANTIZED_ACTION_COUNT, "entry" => entry)
+                .increment(quantized_actions(serialized_length, quantized_action_size));
+        }
+    }
+}
+
+/// Every entry accounts for at least one action, plus one per started `quantized_action_size`.
+fn quantized_actions(serialized_length: usize, quantized_action_size: NonZeroUsize) -> u64 {
+    serialized_length
+        .div_ceil(quantized_action_size.get())
+        .max(1) as u64
+}
+
 pub(crate) struct StateMachineApplyContext<'a, S, P> {
     processor: P,
     storage: &'a mut S,
@@ -206,6 +240,7 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
     is_leader: bool,
+    leader: Option<LeaderContext>,
     encoding_arena: &'a mut BytesMut,
 }
 
@@ -219,9 +254,10 @@ impl StateMachine {
         txn: &mut TransactionType,
         envelope: DataRecord<v2::Envelope<v2::Raw>>,
         action_collector: &mut ActionCollector,
-        is_leader: bool,
+        leader: Option<LeaderContext>,
         encoding_arena: &mut BytesMut,
     ) -> Result<(), Error> {
+        let is_leader = leader.is_some();
         let span = utils::state_machine_apply_command_span(is_leader, envelope.inner().kind());
         async {
             let start = Instant::now();
@@ -236,6 +272,7 @@ impl StateMachine {
                 record_lsn,
                 action_collector,
                 is_leader,
+                leader,
                 encoding_arena,
             }
             .on_apply(envelope.into_inner())
@@ -829,17 +866,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .into();
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
-            if self.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => new_raw_entry.ty().prometheus_label(),
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => new_raw_entry.ty().prometheus_label(),
-                )
-                .increment(new_raw_entry.serialized_length() as u64);
+            if let Some(leader) = self.leader {
+                leader.record_journal_entry_usage(
+                    new_raw_entry.ty().prometheus_label(),
+                    new_raw_entry.serialized_length(),
+                );
             }
 
             // Now write the entry in the new table
@@ -1348,17 +1379,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .into();
             let new_raw_entry = new_entry.encode::<ServiceProtocolV4Codec>();
 
-            if self.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => new_raw_entry.ty().prometheus_label(),
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => new_raw_entry.ty().prometheus_label(),
-                )
-                .increment(new_raw_entry.serialized_length() as u64);
+            if let Some(leader) = self.leader {
+                leader.record_journal_entry_usage(
+                    new_raw_entry.ty().prometheus_label(),
+                    new_raw_entry.serialized_length(),
+                );
             }
 
             let stored_entry = StoredRawEntry::new(
@@ -1386,17 +1411,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 invocation_input.argument,
             );
 
-            if self.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => "Command/Input",
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => "Command/Input",
-                )
-                .increment(input_entry.serialized_entry().len() as u64);
+            if let Some(leader) = self.leader {
+                leader.record_journal_entry_usage(
+                    "Command/Input",
+                    input_entry.serialized_entry().len(),
+                );
             }
 
             journal_table::WriteJournalTable::put_journal_entry(

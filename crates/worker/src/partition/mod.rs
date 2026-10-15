@@ -1148,7 +1148,7 @@ where
                     txn,
                     envelope,
                     action_collector,
-                    self.leadership_state.is_leader(),
+                    self.leadership_state.leader_context(),
                     &mut self.encoding_arena,
                 )
                 .await?;
