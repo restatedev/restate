@@ -8,12 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use anyhow::Result;
 use cling::prelude::*;
-use futures::future::try_join_all;
-use reqwest::StatusCode;
+use futures::{StreamExt, TryStreamExt, stream};
+use http::StatusCode;
+use itertools::Itertools;
 use serde_json::json;
 
 use restate_admin_rest_model::deployments::{
@@ -61,11 +62,14 @@ pub struct Remove {
     force: bool,
     /// Deployment ids (`dp_...`)
     #[clap(required = true, value_name = "DEPLOYMENT_ID")]
-    deployment_ids: Vec<String>,
+    deployment_ids: Vec<DeploymentId>,
 
     #[clap(flatten)]
     dry_run: DryRun,
 }
+
+/// How many deployments are inspected concurrently, each with a few requests to the server.
+const MAX_CONCURRENT_INSPECTIONS: usize = 16;
 
 /// A deployment to remove, with what removing it would break.
 struct Inspected {
@@ -80,10 +84,10 @@ async fn inspect(
     client: &AdminClient,
     sql_client: &DataFusionHttpClient,
     latest_services: &HashMap<String, ServiceMetadata>,
-    deployment_id: &str,
+    deployment_id: DeploymentId,
 ) -> Result<Inspected> {
     let deployment = client
-        .get_deployment(deployment_id)
+        .get_deployment(deployment_id.to_string())
         .await?
         .into_body()
         .await?;
@@ -172,23 +176,22 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let client = AdminClient::new(&env).await?;
     let sql_client = DataFusionHttpClient::from(client.clone());
 
-    let mut deployment_ids = opts.deployment_ids.clone();
-    // Drop duplicates, keeping the order the user gave.
-    let mut seen = HashSet::new();
-    deployment_ids.retain(|id| seen.insert(id.clone()));
-
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
     for service in client.get_services().await?.into_body().await?.services {
         latest_services.insert(service.name.clone(), service);
     }
 
-    let deployments = try_join_all(
-        deployment_ids
-            .iter()
-            .map(|id| inspect(&client, &sql_client, &latest_services, id)),
-    )
-    .await?;
+    let inspections = opts
+        .deployment_ids
+        .iter()
+        .copied()
+        .unique()
+        .map(|id| inspect(&client, &sql_client, &latest_services, id));
+    let deployments: Vec<_> = stream::iter(inspections)
+        .buffered(MAX_CONCURRENT_INSPECTIONS)
+        .try_collect()
+        .await?;
 
     let mut f = Formatter::new();
     if let [deployment] = &deployments[..] {
@@ -211,11 +214,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .collect();
     f.value("changes", Field::with_display(changes, ""));
 
-    let ids = deployments
-        .iter()
-        .map(|d| d.deployment_id.to_string())
-        .collect::<Vec<_>>()
-        .join(" ");
+    let ids = deployments.iter().map(|d| d.deployment_id).join(" ");
     let json = CliContext::get().json_output();
     // Removing a deployment that isn't drained breaks invocations: refuse unless --force.
     let risks: Vec<_> = deployments
@@ -277,18 +276,17 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     };
     f.confirm(&opts.dry_run, &prompt)?;
 
-    let deployment_ids: Vec<_> = deployments.iter().map(|d| d.deployment_id).collect();
-    let failed = remove_deployments(&client, &deployment_ids).await?;
+    //TODO: Use opts.force when the server implements the false + validation case!
+    let failed = remove_deployments(&client, &deployments, true).await?;
     if !failed.is_empty() {
-        let not_removed = failed
-            .iter()
-            .map(|f| format!(" - {}: {}", f.deployment_id, f.error))
-            .collect::<Vec<_>>()
-            .join("\n");
         return Err(RestateCliError::not_found(format!(
-            "Removed {} of {} deployments. Not removed:\n{not_removed}",
-            deployment_ids.len() - failed.len(),
-            deployment_ids.len()
+            "Removed {} of {} deployments. Not removed:\n{}",
+            deployments.len() - failed.len(),
+            deployments.len(),
+            failed
+                .iter()
+                .map(|f| format!(" - {}: {}", f.deployment_id, f.error))
+                .join("\n")
         ))
         .into());
     }
@@ -309,39 +307,44 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 /// Removes the deployments, in chunks the server accepts, and returns the ones that couldn't be.
 async fn remove_deployments(
     client: &AdminClient,
-    deployment_ids: &[DeploymentId],
+    deployments: &[Inspected],
+    force: bool,
 ) -> Result<Vec<FailedDeploymentDeletion>> {
-    //TODO: Use opts.force when the server implements the false + validation case!
-    let force = true;
-    if let [deployment_id] = deployment_ids {
-        client
-            .remove_deployment(&deployment_id.to_string(), force)
-            .await?
-            .into_success_status()
-            .await?;
+    // A single deployment goes through the single delete API, which all servers support.
+    if let [deployment] = deployments {
+        remove_deployment(client, deployment.deployment_id, force).await?;
         return Ok(vec![]);
     }
 
     let mut failed = vec![];
-    for (i, chunk) in deployment_ids.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
+    for (i, chunk) in deployments.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
         let response = client
             .bulk_remove_deployments(BulkDeleteDeploymentsRequest {
-                deployment_ids: chunk.to_vec(),
+                deployment_ids: chunk.iter().map(|d| d.deployment_id).collect(),
                 force,
             })
             .await?;
         if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
             // Servers without the bulk delete API: remove the deployments one by one.
-            for deployment_id in &deployment_ids[i * BATCH_OPERATION_MAX_SIZE..] {
-                client
-                    .remove_deployment(&deployment_id.to_string(), force)
-                    .await?
-                    .into_success_status()
-                    .await?;
+            for deployment in &deployments[i * BATCH_OPERATION_MAX_SIZE..] {
+                remove_deployment(client, deployment.deployment_id, force).await?;
             }
             break;
         }
         failed.extend(response.into_body().await?.failed);
     }
     Ok(failed)
+}
+
+async fn remove_deployment(
+    client: &AdminClient,
+    deployment_id: DeploymentId,
+    force: bool,
+) -> Result<()> {
+    client
+        .remove_deployment(&deployment_id.to_string(), force)
+        .await?
+        .into_success_status()
+        .await?;
+    Ok(())
 }

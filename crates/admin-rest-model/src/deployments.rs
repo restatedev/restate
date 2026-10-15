@@ -311,6 +311,11 @@ pub struct ListDeploymentsResponse {
     pub deployments: Vec<DeploymentResponse>,
 }
 
+const _: () = assert!(
+    crate::invocations::BATCH_OPERATION_MAX_SIZE == 1000,
+    "update the documented limit of BulkDeleteDeploymentsRequest::deployment_ids"
+);
+
 /// Request body of `POST /deployments/bulk-delete`.
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
@@ -318,6 +323,7 @@ pub struct BulkDeleteDeploymentsRequest {
     /// # Deployment IDs
     ///
     /// Deployments to delete: at most 1000. Duplicates are ignored.
+    // utoipa only takes a literal here.
     #[cfg_attr(feature = "schema", schema(max_items = 1000))]
     pub deployment_ids: Vec<DeploymentId>,
 
