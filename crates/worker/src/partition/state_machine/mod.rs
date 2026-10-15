@@ -770,6 +770,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_invocation,
             qid,
             random_seed,
+            // Older versions ignore this field, so setting it is rollback-safe.
+            self.record_lsn.into(),
         );
 
         self.on_pre_flight_invocation(

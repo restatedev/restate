@@ -331,6 +331,8 @@ where
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
             random_seed,
+            // The new invocation is created by the record being applied
+            creation_seq: Some(ctx.record_lsn.into()),
 
             // We don't set those
             idempotency_key: None,

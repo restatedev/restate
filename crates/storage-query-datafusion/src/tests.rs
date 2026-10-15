@@ -31,7 +31,9 @@ use restate_storage_api::vqueue_table::stats::WaitStats;
 use restate_types::Scope;
 use restate_types::errors::InvocationError;
 use restate_types::identifiers::InvocationUuid;
-use restate_types::identifiers::{DeploymentId, InvocationId, PartitionKey, ServiceId};
+use restate_types::identifiers::{
+    BaseEntryId, DeploymentId, InvocationId, PartitionKey, ServiceId,
+};
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::EntryType;
 use restate_types::journal_v2::NotificationId;
@@ -39,6 +41,7 @@ use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::service_protocol::ServiceProtocolVersion;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::EntryId;
+use restate_types::vqueues::Seq;
 use restate_types::vqueues::VQueueId;
 use restate_util_string::{ReString, RestateString, RestrictedValue};
 use restate_worker_api::invoker::status_handle::InvocationStatusReportInner;
@@ -402,6 +405,7 @@ async fn query_sys_invocation_status_completed() {
         invocation_target: invocation_target.clone(),
         completion_retention_duration: completion_retention_duration_1,
         journal_retention_duration: journal_retention_duration_1,
+        creation_seq: Some(Seq::new(7)),
         ..CompletedInvocation::mock_neo()
     };
     let completed_on = completed_invocation_1
@@ -442,6 +446,7 @@ async fn query_sys_invocation_status_completed() {
         .execute(
             "SELECT
                 id,
+                canonical_id,
                 completed_at + completion_retention AS completion_expiration,
                 completed_at + journal_retention AS journal_expiration
             FROM sys_invocation_status
@@ -463,6 +468,7 @@ async fn query_sys_invocation_status_completed() {
                 0,
                 {
                     "id" => LargeStringArray: eq(invocation_id_1.to_string()),
+                    "canonical_id" => LargeStringArray: eq(BaseEntryId::from(invocation_id_1).canonicalize(Seq::new(7)).to_string()),
                     "completion_expiration" => TimestampMillisecondArray: eq((completed_on + completion_retention_duration_1).as_u64() as i64),
                     "journal_expiration" => TimestampMillisecondArray: eq((completed_on + journal_retention_duration_1).as_u64() as i64),
                 }
@@ -471,6 +477,7 @@ async fn query_sys_invocation_status_completed() {
                 1,
                 {
                     "id" => LargeStringArray: eq(invocation_id_3.to_string()),
+                    "canonical_id" => LargeStringArray: eq(BaseEntryId::from(invocation_id_3).canonicalize(Seq::new(7)).to_string()),
                     "completion_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
                     "journal_expiration" => TimestampMillisecondArray: eq((completed_on + Duration::from_secs(10)).as_u64() as i64),
                 }
