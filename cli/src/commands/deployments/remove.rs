@@ -10,8 +10,9 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use cling::prelude::*;
+use comfy_table::{Cell, Color, Table};
 use futures::{StreamExt, TryStreamExt, stream};
 use http::StatusCode;
 use itertools::Itertools;
@@ -21,7 +22,10 @@ use restate_admin_rest_model::deployments::{
     BulkDeleteDeploymentsRequest, FailedDeploymentDeletion, ServiceNameRevPair,
 };
 use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
-use restate_cli_util::{CliContext, c_eprintln, c_println, c_success};
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{
+    CliContext, c_eprintln, c_indent_table, c_println, c_success, c_warn, exit,
+};
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
@@ -33,7 +37,9 @@ use crate::ui::deployments::{
     DeploymentStatus, active_invocations_field, calculate_deployment_status,
     deployment_info_fields, deployment_status_field, latest_service, service_item,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
+use crate::ui::fmt::{
+    DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter,
+};
 
 /// Remove drained deployments
 ///
@@ -144,10 +150,8 @@ impl Inspected {
         f: &mut impl OutputFormatter,
         latest_services: &HashMap<String, ServiceMetadata>,
     ) -> Result<()> {
-        let mut deployment_fields = vec![(
-            "deployment_id".to_owned(),
-            Field::new(self.deployment_id.to_string()),
-        )];
+        let mut deployment_fields =
+            vec![("deployment_id".to_owned(), Field::new(self.deployment_id))];
         deployment_fields.extend(deployment_info_fields(&self.deployment));
         deployment_fields.push(("status".to_owned(), deployment_status_field(self.status)));
         deployment_fields.push((
@@ -210,7 +214,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     // The plan, JSON-only: the human output already describes the deployments to remove.
     let changes: Vec<_> = deployments
         .iter()
-        .map(|d| json!({"deployment_id": d.deployment_id.to_string(), "change": "delete"}))
+        .map(|d| json!({"deployment_id": d.deployment_id, "change": "delete"}))
         .collect();
     f.value("changes", Field::with_display(changes, ""));
 
@@ -278,30 +282,71 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     //TODO: Use opts.force when the server implements the false + validation case!
     let failed = remove_deployments(&client, &deployments, true).await?;
-    if !failed.is_empty() {
-        return Err(RestateCliError::not_found(format!(
-            "Removed {} of {} deployments. Not removed:\n{}",
-            deployments.len() - failed.len(),
-            deployments.len(),
-            failed
-                .iter()
-                .map(|f| format!(" - {}: {}", f.deployment_id, f.error))
-                .join("\n")
-        ))
-        .into());
+    if json {
+        // One row per deployment, like the invocation batch commands.
+        let failures: HashMap<_, _> = failed.iter().map(|f| (f.deployment_id, f)).collect();
+        let rows = deployments.iter().map(|d| {
+            let failure = failures.get(&d.deployment_id);
+            [
+                Field::new(d.deployment_id),
+                Field::new(if failure.is_some() {
+                    "failed"
+                } else {
+                    "removed"
+                }),
+                // A reason unknown to this CLI doesn't serialize, and is left `null`.
+                Field::new(failure.and_then(|f| serde_json::to_value(f.reason).ok())),
+                Field::new(failure.map(|f| f.error.as_str())),
+            ]
+        });
+        f.table(
+            "results",
+            &["deployment_id", "outcome", "reason", "error"],
+            rows,
+            IfEmpty::Nothing,
+        );
+    }
+    if failed.is_empty() {
+        f.outcome(
+            "result",
+            Field::with_display("removed", removed),
+            Outcome::Success,
+        );
+        f.next_step(
+            "restate deployments list",
+            "see the remaining deployments",
+            IncludeFormatting::Yes,
+        );
+        return f.finish();
     }
 
-    f.outcome(
-        "result",
-        Field::with_display("removed", removed),
-        Outcome::Success,
+    let summary = format!(
+        "Failed to remove {} deployments out of {}",
+        failed.len(),
+        deployments.len()
     );
-    f.next_step(
-        "restate deployments list",
-        "see the remaining deployments",
-        IncludeFormatting::Yes,
-    );
-    f.finish()
+    if json {
+        // The `results` section already carries each failure; keep stdout a single document and
+        // signal the partial failure through the exit code only.
+        f.finish()?;
+        c_eprintln!("{summary}");
+        return Err(exit::AlreadyReported {
+            code: exit::GENERIC_ERROR,
+        }
+        .into());
+    }
+    c_println!();
+    c_warn!("Failed to remove:");
+    let mut table = Table::new_styled();
+    table.set_styled_header(vec!["ID", "REASON"]);
+    for failure in &failed {
+        table.add_row(vec![
+            Cell::new(failure.deployment_id),
+            Cell::new(&failure.error).fg(Color::DarkRed),
+        ]);
+    }
+    c_indent_table!(0, table);
+    bail!(summary)
 }
 
 /// Removes the deployments, in chunks the server accepts, and returns the ones that couldn't be.

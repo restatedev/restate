@@ -336,13 +336,17 @@ pub struct BulkDeleteDeploymentsRequest {
 }
 
 /// Why a deployment of a bulk deletion was not deleted. More reasons might be added in the
-/// future.
+/// future: clients should handle values they don't know.
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeploymentDeletionFailureReason {
     /// The deployment doesn't exist.
     NotFound,
+    /// A reason added after this version, only produced when deserializing. Servers never send it,
+    /// so it is left out of the OpenAPI document.
+    #[serde(other, skip_serializing)]
+    Unknown,
 }
 
 /// A deployment of a bulk deletion that was not deleted.
@@ -1023,5 +1027,18 @@ mod tests {
             .into_persisted(&uri)
             .expect_err("provider without impersonation must be rejected");
         assert_eq!(err.field(), "auth.workload_identity_provider");
+    }
+
+    #[test]
+    fn deletion_failure_reason_tolerates_unknown_values() {
+        use DeploymentDeletionFailureReason::*;
+
+        let parse = |value| serde_json::from_value::<DeploymentDeletionFailureReason>(value);
+        assert_eq!(parse(serde_json::json!("not_found")).unwrap(), NotFound);
+        assert_eq!(
+            parse(serde_json::json!("some_future_reason")).unwrap(),
+            Unknown
+        );
+        assert_eq!(serde_json::to_value(NotFound).unwrap(), "not_found");
     }
 }

@@ -815,7 +815,12 @@ fn register_two_deployments_then_remove_first() {
 
     let version_before_removal = schemas.version();
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_1));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_1])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();
@@ -857,7 +862,12 @@ fn register_two_deployments_then_remove_second() {
 
     let version_before_removal = schemas.version();
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_2));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_2])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();
@@ -1003,7 +1013,12 @@ fn update_deployment_same_uri() {
 
     // the failing invocations have drained so I can safely delete the original deployment
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_1));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_1])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();

@@ -41,8 +41,8 @@ use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, Subscri
 
 use crate::schema::Redaction;
 pub use crate::schema::metadata::updater::{
-    AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, ModifyServiceRequest,
-    Overwrite,
+    AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, DeleteDeploymentsResult,
+    ModifyServiceRequest, Overwrite,
 };
 // -- Schema registry error and other types
 
@@ -84,15 +84,6 @@ impl SchemaRegistryError {
             }
         }
     }
-}
-
-/// Outcome of [`SchemaRegistry::delete_deployments`].
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct DeleteDeploymentsResult {
-    /// The deployments that were deleted.
-    pub deleted: Vec<DeploymentId>,
-    /// The deployments that don't exist.
-    pub not_found: Vec<DeploymentId>,
 }
 
 impl From<SchemaError> for SchemaRegistryError {
@@ -644,14 +635,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .metadata_service
             .update(|schema| {
                 SchemaUpdater::update_and_return(schema, |updater| {
-                    let mut result = DeleteDeploymentsResult::default();
-                    for &deployment_id in &deployment_ids {
-                        if updater.remove_deployment(deployment_id) {
-                            result.deleted.push(deployment_id);
-                        } else {
-                            result.not_found.push(deployment_id);
-                        }
-                    }
+                    let result = updater.remove_deployments(deployment_ids.iter().copied());
                     if result.deleted.is_empty() {
                         nothing_to_delete.store(true, Ordering::Relaxed);
                         // Abort the update, so that the unchanged schema isn't written.
