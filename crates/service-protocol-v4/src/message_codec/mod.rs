@@ -38,6 +38,11 @@ type MessageTypeId = u16;
 #[error("unknown protocol.message code {0:#x}")]
 pub struct UnknownMessageType(u16);
 
+/// Commands stored in the journal that have no service protocol message, hence can't be sent to the SDK.
+#[derive(Debug, thiserror::Error)]
+#[error("command {0} is not part of the service protocol")]
+pub struct NotAProtocolCommand(pub CommandType);
+
 // This macro generates:
 //
 // * the Message enum, containing the concrete protobuf messages, except for @noparse annotated variants.
@@ -241,10 +246,13 @@ macro_rules! gen_message {
     };
 
     (@gen_from_command_ty [] -> [$($variant:ident,)*]) => {
-        impl From<CommandType> for MessageType {
-            fn from(value: CommandType) -> Self {
+        impl TryFrom<CommandType> for MessageType {
+            type Error = NotAProtocolCommand;
+
+            fn try_from(value: CommandType) -> Result<Self, NotAProtocolCommand> {
                 match value {
-                    $(CommandType::$variant => paste::paste! { MessageType::[< $variant Command >] },)*
+                    $(CommandType::$variant => Ok(paste::paste! { MessageType::[< $variant Command >] }),)*
+                    CommandType::EndMarker => Err(NotAProtocolCommand(value)),
                 }
             }
         }

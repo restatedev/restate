@@ -68,6 +68,10 @@ pub enum Command {
     AttachInvocation(AttachInvocationCommand),
     GetInvocationOutput(GetInvocationOutputCommand),
     CompleteAwakeable(CompleteAwakeableCommand),
+    /// Payload-free marker ending the journal of a completed invocation, appended where the Output
+    /// command would have been when the output is stored in the output table instead of the journal.
+    /// Never sent to the SDK.
+    EndMarker(EndMarkerCommand),
 }
 
 impl fmt::Display for CommandType {
@@ -172,6 +176,12 @@ pub enum OutputResult {
     Failure(Failure),
 }
 impl_command_accessors!(Output -> [@metadata @from_entry @no_completion]);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndMarkerCommand {
+    pub name: ByteString,
+}
+impl_command_accessors!(EndMarker -> [@metadata @from_entry @no_completion]);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetLazyStateCommand {
