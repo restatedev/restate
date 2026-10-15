@@ -25,7 +25,6 @@ use restate_vqueues::context::HasVQueuesMut;
 use restate_vqueues::migrations::MigrationResult;
 use restate_wal_protocol::control::VersionBarrierCommand;
 use restate_wal_protocol::v2::{CommandScope, Envelope};
-use restate_worker_api::processor::PartitionFeatures;
 
 use super::{ApplyPartitionCommand, NextStep};
 use crate::partition::processor::leadership::LeaderPromotion;
@@ -210,32 +209,6 @@ impl<L: LeaderPromotion> ApplyPartitionCommand<VersionBarrierCommand>
                         info!(
                             partition_id = %self.processor.partition_id(),
                             "Removed {removed} pending state mutations",
-                        );
-                    }
-                    // The creation sequence is copied from the vqueue entries, so all invocations
-                    // must be migrated to vqueues first. The backfill commits its updates itself;
-                    // the feature flag below is only set once all of them are updated.
-                    PartitionFeatureChange::EnableInvocationCreationSeq => {
-                        if !updated.is_fully_migrated_to_vqueues() {
-                            return Err(ProcessorError::MigrationBarrier {
-                                reason: "backfilling the invocation creation sequence requires \
-                                    all invocations to be migrated to vqueues"
-                                    .to_owned(),
-                            });
-                        }
-                        let config = self.node_ctx.config.live_load();
-                        let ctx = MigrationContext::new(
-                            config,
-                            &self.partition_db,
-                            self.processor.key_range(),
-                            cancellation_token(),
-                        );
-                        let updated =
-                            restate_vqueues::migrations::backfill_invocation_creation_seq(&ctx)
-                                .await?;
-                        info!(
-                            partition_id = %self.processor.partition_id(),
-                            "Backfilled the creation sequence of {updated} invocations",
                         );
                     }
                 }

@@ -672,8 +672,7 @@ async fn state_mutation_ids_are_deterministic() -> TestResult {
 }
 
 /// New invocations persist the sequence of the record that created them, which matches the
-/// sequence of their vqueue entry. The backfill restores it from the vqueue entry, except for
-/// completed invocations.
+/// sequence of their vqueue entry.
 #[test(restate_core::test)]
 async fn invocation_creation_seq() -> TestResult {
     let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
@@ -682,19 +681,16 @@ async fn invocation_creation_seq() -> TestResult {
     ]))
     .await;
     let invocation_id = InvocationId::mock_random();
-    let completed_id = InvocationId::mock_random();
-    for (id, lsn) in [(invocation_id, 10), (completed_id, 11)] {
-        test_env
-            .apply_at(
-                commands::InvokeCommand::test_envelope(ServiceInvocation {
-                    invocation_id: id,
-                    ..ServiceInvocation::mock()
-                }),
-                MillisSinceEpoch::now(),
-                Lsn::new(lsn),
-            )
-            .await;
-    }
+    test_env
+        .apply_at(
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                ..ServiceInvocation::mock()
+            }),
+            MillisSinceEpoch::now(),
+            Lsn::new(10),
+        )
+        .await;
 
     let entry_seq = test_env
         .storage
@@ -709,54 +705,6 @@ async fn invocation_creation_seq() -> TestResult {
         .get_invocation_status(&invocation_id)
         .await?;
     assert_eq!(status.get_creation_seq(), Some(entry_seq));
-
-    // Drop the creation sequence, as if the invocation was created before it existed
-    let InvocationStatus::Inboxed(mut inboxed) = status else {
-        panic!("expected an inboxed invocation, got {status:?}");
-    };
-    inboxed.metadata.creation_seq = None;
-    {
-        let mut txn = test_env.storage.transaction();
-        txn.put_invocation_status(&invocation_id, &InvocationStatus::Inboxed(inboxed))?;
-        // A completed invocation (with a vqueue entry) without a creation sequence
-        txn.put_invocation_status(
-            &completed_id,
-            &InvocationStatus::Completed(
-                restate_storage_api::invocation_status_table::CompletedInvocation::mock_neo(),
-            ),
-        )?;
-        txn.commit().await?;
-    }
-
-    let partition_db = test_env.storage.partition_db().clone();
-    let ctx = MigrationContext::new(
-        &Configuration::pinned(),
-        &partition_db,
-        KeyRange::FULL,
-        CancellationToken::new(),
-    );
-    let updated = restate_vqueues::migrations::backfill_invocation_creation_seq(&ctx).await?;
-    assert_eq!(updated, 1);
-    assert_eq!(
-        test_env
-            .storage
-            .get_invocation_status(&invocation_id)
-            .await?
-            .get_creation_seq(),
-        Some(entry_seq)
-    );
-    assert_eq!(
-        test_env
-            .storage
-            .get_invocation_status(&completed_id)
-            .await?
-            .get_creation_seq(),
-        None
-    );
-
-    // Running it again is a no-op
-    let updated = restate_vqueues::migrations::backfill_invocation_creation_seq(&ctx).await?;
-    assert_eq!(updated, 0);
 
     test_env.shutdown().await;
     Ok(())

@@ -387,20 +387,6 @@ impl InvocationStatus {
         }
     }
 
-    /// Sets the creation sequence of the invocation. No-op for [`InvocationStatus::Free`].
-    #[inline]
-    pub fn set_creation_seq(&mut self, seq: Seq) {
-        match self {
-            InvocationStatus::Scheduled(metadata) => metadata.metadata.creation_seq = Some(seq),
-            InvocationStatus::Inboxed(metadata) => metadata.metadata.creation_seq = Some(seq),
-            InvocationStatus::Invoked(metadata)
-            | InvocationStatus::Suspended { metadata, .. }
-            | InvocationStatus::Paused(metadata) => metadata.creation_seq = Some(seq),
-            InvocationStatus::Completed(completed) => completed.creation_seq = Some(seq),
-            InvocationStatus::Free => {}
-        }
-    }
-
     #[inline]
     pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
         match self {
@@ -537,7 +523,7 @@ pub struct PreFlightInvocationMetadata {
     /// Sequence number of the record that created this invocation. Combined with the
     /// invocation id, it forms the invocation's canonical id.
     ///
-    /// None for invocations created before this field was introduced and not yet backfilled.
+    /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
 }
 
@@ -668,7 +654,7 @@ pub struct InFlightInvocationMetadata {
     /// Sequence number of the record that created this invocation. Combined with the
     /// invocation id, it forms the invocation's canonical id.
     ///
-    /// None for invocations created before this field was introduced and not yet backfilled.
+    /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
 }
 
@@ -795,7 +781,7 @@ pub struct CompletedInvocation {
     /// Sequence number of the record that created this invocation. Combined with the
     /// invocation id, it forms the invocation's canonical id.
     ///
-    /// None for invocations created before this field was introduced and not yet backfilled.
+    /// None for invocations created before this field was introduced.
     pub creation_seq: Option<Seq>,
 }
 

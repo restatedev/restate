@@ -871,17 +871,6 @@ experimental! {
     ///
     /// Since v1.8.0
     inconsistent_state_mutation_cleanup,
-
-    /// # Backfill the creation sequence of invocations
-    ///
-    /// When enabled, partitions record the position in the log where each existing
-    /// invocation was created. Invocations that already completed are skipped. Requires all
-    /// invocations to be migrated to vqueues.
-    ///
-    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.9.0.
-    ///
-    /// Since v1.9.0
-    invocation_creation_seq,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
