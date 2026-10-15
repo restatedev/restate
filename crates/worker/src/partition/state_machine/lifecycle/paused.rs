@@ -79,7 +79,7 @@ where
 pub(crate) async fn pause_invocation<'ctx, 's: 'ctx, S, P>(
     ctx: &'ctx mut StateMachineApplyContext<'s, S, P>,
     invocation_id: &InvocationId,
-    metadata: InFlightInvocationMetadata,
+    mut metadata: InFlightInvocationMetadata,
     paused_event: RawEvent,
 ) -> Result<(), Error>
 where
@@ -116,6 +116,9 @@ where
         .await?
         .expect("pausing in a non-existent vqueue")
         .pause_entry(at, &header);
+
+        // Backfill for invocations created before creation_seq was introduced
+        metadata.creation_seq.get_or_insert_with(|| header.seq());
     }
 
     let mut invocation_status = InvocationStatus::Paused(metadata);

@@ -113,7 +113,7 @@ use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{self, EntryId, VQueueId};
+use restate_types::vqueues::{self, EntryId, Seq, VQueueId};
 use restate_types::{RESTATE_VERSION_1_9_0, journal::*};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_util_string::{ReString, ToReString};
@@ -1884,6 +1884,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     new_status,
                     completion_retention,
                 );
+
+                // Backfill for invocations created before creation_seq was introduced
+                metadata
+                    .creation_seq
+                    .get_or_insert_with(|| entry_status.seq());
             }
         } else {
             // Delete the inbox entry.
@@ -2037,6 +2042,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     new_status,
                     completion_retention,
                 );
+
+                // Backfill for invocations created before creation_seq was introduced
+                metadata
+                    .creation_seq
+                    .get_or_insert_with(|| entry_status.seq());
             }
         } else {
             // Delete timer
@@ -3264,8 +3274,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let status = self.get_invocation_status(&invocation_id).await?;
 
         match status {
-            InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
-            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+            InvocationStatus::Scheduled(ScheduledInvocation { mut metadata, .. })
+            | InvocationStatus::Inboxed(InboxedInvocation { mut metadata, .. }) => {
+                // Backfill for invocations created before creation_seq was introduced
+                metadata.creation_seq.get_or_insert_with(|| header.seq());
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,
@@ -4620,8 +4632,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         metadata.timestamps.update(self.record_created_at);
 
         if metadata.vqueue_id.is_some() {
-            self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
+            let seq = self
+                .vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
+            // Backfill for invocations created before creation_seq was introduced
+            metadata.creation_seq.get_or_insert(seq);
         }
 
         self.storage
@@ -4682,6 +4697,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .await?
             .expect("suspending in a non-existent vqueue")
             .suspend_entry(now, &header);
+
+            // Backfill for invocations created before creation_seq was introduced
+            metadata.creation_seq.get_or_insert_with(|| header.seq());
         }
 
         self.storage
@@ -5331,11 +5349,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its
     /// current [`Stage`], it will either yield the invocation from running, wake it up or be a noop
     /// if the invocation is already in the inbox stage.
+    ///
+    /// Returns the sequence of the invocation's vqueue entry.
     // [vqueues only]
     async fn vqueue_move_invocation_to_inbox_stage(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Result<(), Error>
+    ) -> Result<Seq, Error>
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
@@ -5385,7 +5405,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
         };
 
-        Ok(())
+        Ok(header.seq())
     }
 
     /// Reschedules a waiting VQueue invocation to a new `run_at` so the scheduler re-evaluates its

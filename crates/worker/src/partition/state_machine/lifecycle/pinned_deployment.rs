@@ -118,6 +118,11 @@ where
             .await?
             .expect("pinning in a non-existent vqueue")
             .update_entry_metadata(&header, &metadata);
+
+            // Backfill for invocations created before creation_seq was introduced
+            in_flight_invocation_metadata
+                .creation_seq
+                .get_or_insert_with(|| header.seq());
         }
 
         in_flight_invocation_metadata
