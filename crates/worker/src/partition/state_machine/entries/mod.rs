@@ -366,7 +366,7 @@ where
             // entry index. Otherwise, we might have sent a notification with the wrong entry index.
             debug_assert_eq!(entry_index, journal_meta.length);
             debug_if_leader!(
-                ctx.is_leader,
+                ctx.is_leader(),
                 restate.journal.index = entry_index,
                 restate.invocation.id = %self.invocation_id,
                 "Write journal entry {:?} to storage",

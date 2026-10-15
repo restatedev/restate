@@ -58,7 +58,7 @@ impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
     ) {
         if let Some(InvocationMutationResponseSink::Ingress(sink)) = response_sink {
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 "Send restart as new response to request id '{:?}': {:?}",
                 sink.request_id,
                 response

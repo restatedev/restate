@@ -239,9 +239,14 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
     record_created_at: MillisSinceEpoch,
     record_lsn: Lsn,
     action_collector: &'a mut ActionCollector,
-    is_leader: bool,
     leader: Option<LeaderContext>,
     encoding_arena: &'a mut BytesMut,
+}
+
+impl<S, P> StateMachineApplyContext<'_, S, P> {
+    fn is_leader(&self) -> bool {
+        self.leader.is_some()
+    }
 }
 
 trait CommandHandler<CTX> {
@@ -271,7 +276,6 @@ impl StateMachine {
                 record_created_at,
                 record_lsn,
                 action_collector,
-                is_leader,
                 leader,
                 encoding_arena,
             }
@@ -315,7 +319,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         match timer_value.value() {
             Timer::CompleteJournalEntry(_, entry_index) => {
                 info_span_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     span_context.is_sampled(),
                     span_context.as_parent(),
                     "sleep",
@@ -328,7 +332,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 );
 
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     restate.journal.index = entry_index,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
@@ -338,7 +342,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             Timer::Invoke(service_invocation) => {
                 // no span necessary; there will already be a background_invoke span
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     rpc.service = %service_invocation.invocation_target.service_name(),
                     rpc.method = %service_invocation.invocation_target.handler_name(),
                     restate.invocation.target = %service_invocation.invocation_target,
@@ -350,7 +354,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             Timer::NeoInvoke(invocation_id) => {
                 // no span necessary; there will already be a background_invoke span
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     restate.invocation.id = %invocation_id,
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
@@ -359,7 +363,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
             Timer::CleanInvocationStatus(_) => {
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     restate.timer.wake_up_time = %timer_value.wake_up_time(),
                     restate.timer.key = %TimerKeyDisplay(timer_value.key()),
                     "Register cleanup invocation status timer"
@@ -384,7 +388,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         notification_id: NotificationId,
     ) {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.index = entry_index,
             "Forward notification to deployment",
         );
@@ -398,7 +402,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId) {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.invocation.id = %invocation_id,
             "Send abort command to invoker"
         );
@@ -548,7 +552,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_typed::<commands::PurgeInvocationCommand>()
                     .into_inner()?
                     .into();
-                let is_cleaner_purge = self.is_leader
+                let is_cleaner_purge = self.is_leader()
                     && is_self_proposal
                     && purge_invocation_request.response_sink.is_none();
 
@@ -567,7 +571,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .into_typed::<commands::PurgeJournalCommand>()
                     .into_inner()?
                     .into();
-                let is_cleaner_purge = self.is_leader
+                let is_cleaner_purge = self.is_leader()
                     && is_self_proposal
                     && purge_invocation_request.response_sink.is_none();
 
@@ -685,7 +689,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         qid,
                         self.storage,
                         self.processor.vqueues_mut(),
-                        self.is_leader.then_some(self.action_collector),
+                        self.leader.is_some().then_some(self.action_collector),
                     )
                     .await?
                     else {
@@ -707,7 +711,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         qid,
                         self.storage,
                         self.processor.vqueues_mut(),
-                        self.is_leader.then_some(self.action_collector),
+                        self.leader.is_some().then_some(self.action_collector),
                     )
                     .await?
                     else {
@@ -1008,7 +1012,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             &metadata.invocation_target,
             self.storage,
             self.processor.vqueues_mut(),
-            self.is_leader.then_some(self.action_collector),
+            self.leader.is_some().then_some(self.action_collector),
             &metadata.limit_key,
         )
         .await?
@@ -1045,7 +1049,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         // Invocation was scheduled, send back the ingress attach notification and return
         // Notify the ingress, if needed, of the chosen invocation_id
-        if self.is_leader
+        if self.is_leader()
             && let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink
         {
             let execution_time = invocation_status.execution_time();
@@ -1092,7 +1096,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if previous_invocation_status == InvocationStatus::Free {
             // --- New invocation
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 "First time we see this invocation id, invocation will be processed"
             );
             return Ok(Some(service_invocation));
@@ -1116,7 +1120,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // This is a special handling we do only for workflows.
         if is_workflow_run {
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 "Invocation to workflow method is a duplicate"
             );
             self.send_response_to_sinks(
@@ -1131,7 +1135,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // For all the other type of duplicate requests, append the response sink or return back the original result
         if has_idempotency_key {
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 restate.idempotency.key = ?service_invocation.idempotency_key.unwrap(),
                 "Invocation with idempotency key is a duplicate"
             );
@@ -1181,7 +1185,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     {
         if let Some(execution_time) = metadata.execution_time {
             let span_context = metadata.span_context().clone();
-            debug_if_leader!(self.is_leader, "Store scheduled invocation");
+            debug_if_leader!(self.is_leader(), "Store scheduled invocation");
 
             self.register_timer(
                 TimerKeyValue::neo_invoke(execution_time, *invocation_id),
@@ -1238,7 +1242,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .await?;
 
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     restate.outbox.seq = inbox_seq_number,
                     "Store inboxed invocation"
                 );
@@ -1259,7 +1263,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             } else {
                 // If unlocked, lock it
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     restate.service.id = %keyed_service_id,
                     "Locking service"
                 );
@@ -1295,7 +1299,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         }
 
         // Emit the trace anchor span for the invocation.
-        if self.is_leader {
+        if self.is_leader() {
             let _start = instrumentation::create_invocation_start_span(
                 invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
@@ -1327,7 +1331,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         }
 
         // Emit the trace anchor span for the invocation.
-        if self.is_leader {
+        if self.is_leader() {
             let _start = instrumentation::create_invocation_start_span(
                 invocation_id,
                 &in_flight_invocation_metadata.invocation_target,
@@ -1360,7 +1364,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteJournalTable + journal_table_v2::WriteJournalTable,
     {
-        debug_if_leader!(self.is_leader, "Init journal with input entry");
+        debug_if_leader!(self.is_leader(), "Init journal with input entry");
 
         // In our current data model, ServiceInvocation has always an input, so initial length is 1
         in_flight_invocation_metadata.journal_metadata.length = 1;
@@ -1440,7 +1444,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteInvocationStatusTable,
     {
-        debug_if_leader!(self.is_leader, "Invoke");
+        debug_if_leader!(self.is_leader(), "Invoke");
 
         let status = InvocationStatus::Invoked(in_flight_invocation_metadata);
 
@@ -1448,7 +1452,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .put_invocation_status(invocation_id, &status)
             .map_err(Error::Storage)?;
 
-        if self.is_leader {
+        if self.is_leader() {
             let invocation_metadata = status.into_invocation_metadata().unwrap();
             let invocation_target = invocation_metadata.invocation_target;
             self.action_collector.push(Action::VQInvoke {
@@ -1468,7 +1472,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     {
         let seq_number = self.processor.fsm().inbox_seq_number();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.inbox.seq = seq_number,
             "Enqueue inbox entry"
         );
@@ -1890,7 +1894,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     vqueue_id,
                     self.storage,
                     self.processor.vqueues_mut(),
-                    self.is_leader.then_some(self.action_collector),
+                    self.leader.is_some().then_some(self.action_collector),
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
@@ -2045,7 +2049,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     vqueue_id,
                     self.storage,
                     self.processor.vqueues_mut(),
-                    self.is_leader.then_some(self.action_collector),
+                    self.leader.is_some().then_some(self.action_collector),
                 )
                 .await?
                 .expect("terminate expects vqueue to exist")
@@ -2471,7 +2475,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Handle scheduled invocation timer with invocation id {invocation_id}"
         );
         let invocation_status = self.get_invocation_status(invocation_id).await?;
@@ -2972,7 +2976,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 &vqueue_id,
                 self.storage,
                 self.processor.vqueues_mut(),
-                self.is_leader.then_some(self.action_collector),
+                self.leader.is_some().then_some(self.action_collector),
             )
             .await?
             .expect("terminate expects vqueue to exist")
@@ -3151,7 +3155,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     qid,
                     self.storage,
                     self.processor.vqueues_mut(),
-                    self.is_leader.then_some(self.action_collector),
+                    self.leader.is_some().then_some(self.action_collector),
                 )
                 .await?
                 .expect("state mutation run on vqueue on a non-existent vqueue")
@@ -3245,14 +3249,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         if header.has_started() {
             // We fallthrough if the invocation was never started so we can initialize the journal.
-            debug_if_leader!(self.is_leader, "Invoke");
+            debug_if_leader!(self.is_leader(), "Invoke");
 
             let status = self.get_invocation_status(&invocation_id).await?;
             let mut vqueue = VQueue::get(
                 qid,
                 self.storage,
                 self.processor.vqueues_mut(),
-                self.is_leader.then_some(self.action_collector),
+                self.leader.is_some().then_some(self.action_collector),
             )
             .await?
             .unwrap();
@@ -3260,7 +3264,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             vqueue.run_entry(record_unique_ts, &header, wait_stats);
             let vq_handle = vqueue.handle();
 
-            if self.is_leader {
+            if self.is_leader() {
                 self.action_collector.push(Action::VQInvoke {
                     vq_handle,
                     key: *entry_key,
@@ -3291,7 +3295,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     qid,
                     self.storage,
                     self.processor.vqueues_mut(),
-                    self.is_leader.then_some(self.action_collector),
+                    self.leader.is_some().then_some(self.action_collector),
                 )
                 .await?
                 .unwrap();
@@ -3336,7 +3340,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             );
 
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 rpc.service = %keyed_service_id,
                 "Consume inbox"
             );
@@ -3355,7 +3359,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         );
 
                         debug_if_leader!(
-                            self.is_leader,
+                            self.is_leader(),
                             rpc.service = %keyed_service_id,
                             "Invoke inboxed"
                         );
@@ -4307,7 +4311,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         span_context: &ServiceInvocationSpanContext,
         invocation_result: Result<(), &InvocationError>,
     ) {
-        if !self.is_leader {
+        if !self.is_leader() {
             return;
         }
         use opentelemetry::KeyValue;
@@ -4428,14 +4432,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         match &response {
             InvocationOutputResponse::Success(_, _) => {
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     "Send response to ingress with request id '{:?}': Success",
                     request_id
                 )
             }
             InvocationOutputResponse::Failure(e) => {
                 debug_if_leader!(
-                    self.is_leader,
+                    self.is_leader(),
                     "Send response to ingress with request id '{:?}': Failure({})",
                     request_id,
                     e
@@ -4465,7 +4469,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send cancel response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4488,7 +4492,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send kill response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4511,7 +4515,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send purge response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4534,7 +4538,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send purge response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4557,7 +4561,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send resume response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4580,7 +4584,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let InvocationMutationResponseSink::Ingress(IngressInvocationResponseSink { request_id }) =
             response_sink.unwrap();
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Send pause response to request id '{:?}': {:?}",
             request_id,
             response
@@ -4602,7 +4606,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // Notify the ingress, if needed, of the chosen invocation_id
         if let Some(SubmitNotificationSink::Ingress { request_id }) = submit_notification_sink {
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 "Sending ingress attach invocation for {}",
                 invocation_id,
             );
@@ -4627,7 +4631,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Resume service"
         );
@@ -4669,7 +4673,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInvocationStatusTable + WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Suspend service waiting on entries {:?}",
             waiting_for_completed_entries
@@ -4694,7 +4698,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 header.vqueue_id(),
                 self.storage,
                 self.processor.vqueues_mut(),
-                self.is_leader.then_some(self.action_collector),
+                self.leader.is_some().then_some(self.action_collector),
             )
             .await?
             .expect("suspending in a non-existent vqueue")
@@ -4728,7 +4732,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.invocation.id = %invocation_id,
             "Effect: Store completed invocation"
         );
@@ -4746,7 +4750,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.invocation.id = %invocation_id,
             "Effect: Free invocation"
         );
@@ -4765,7 +4769,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInboxTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             rpc.service = %service_id.service_name,
             restate.inbox.seq = sequence_number,
             "Effect: Delete inbox entry",
@@ -4799,7 +4803,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         //         }
 
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.outbox.seq = seq_number,
             restate.partition.key = message.partition_key(),
             "Send outbox message with command kind {}",
@@ -4851,7 +4855,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteStateTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.state.key = ?key,
             "Effect: Set state"
         );
@@ -4881,7 +4885,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteStateTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.state.key = ?key,
             "Effect: Clear state"
         );
@@ -4908,7 +4912,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteStateTable,
     {
-        debug_if_leader!(self.is_leader, "Effect: Clear all state");
+        debug_if_leader!(self.is_leader(), "Effect: Clear all state");
 
         self.storage.delete_all_user_state(&service_id)?;
 
@@ -4920,7 +4924,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteTimerTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.timer.key = %TimerKeyDisplay(&timer_key),
             "Effect: Delete timer"
         );
@@ -4948,7 +4952,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteJournalTable + WriteInvocationStatusTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.index = entry_index,
             restate.invocation.id = %invocation_id,
             "Write journal entry {:?} to storage",
@@ -5003,7 +5007,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.length = journal_length,
             "Effect: Drop journal"
         );
@@ -5132,7 +5136,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: ReadJournalTable + WriteJournalTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.index = completion.entry_index,
             "Store completion {}",
             CompletionResultFmt(&completion.result)
@@ -5205,7 +5209,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn forward_completion(&mut self, _: InvocationId, entry_index: EntryIndex) {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.journal.index = entry_index,
             "Dropping protocol < v4 completion, because the invoker doesnt support it",
         );
@@ -5226,7 +5230,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteInvocationStatusTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             restate.invocation.id = %invocation_id,
             "Effect: Store additional response sink {:?}",
             additional_response_sink
@@ -5248,7 +5252,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     }
 
     fn do_send_abort_invocation_to_invoker(&mut self, invocation_id: InvocationId) {
-        debug_if_leader!(self.is_leader, restate.invocation.id = %invocation_id, "Send abort command to invoker");
+        debug_if_leader!(self.is_leader(), restate.invocation.id = %invocation_id, "Send abort command to invoker");
 
         self.action_collector
             .push(Action::AbortInvocation { invocation_id });
@@ -5259,7 +5263,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: ReadStateTable + WriteStateTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             "Effect: Mutate state for service id '{:?}'",
             &state_mutation.service_id
         );
@@ -5278,7 +5282,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WritePromiseTable,
     {
-        debug_if_leader!(self.is_leader, rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key);
+        debug_if_leader!(self.is_leader(), rpc.service = %service_id.service_name, "Effect: Put promise {} in non completed state", key);
 
         self.storage
             .put_promise(&service_id, &key, &promise)
@@ -5290,7 +5294,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WritePromiseTable,
     {
         debug_if_leader!(
-            self.is_leader,
+            self.is_leader(),
             rpc.service = %service_id.service_name,
             "Effect: Clear all promises"
         );
@@ -5378,7 +5382,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             qid,
             self.storage,
             self.processor.vqueues_mut(),
-            self.is_leader.then_some(self.action_collector),
+            self.leader.is_some().then_some(self.action_collector),
         )
         .await?
         .expect("waking up in a non-existent vqueue");
@@ -5459,7 +5463,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             qid,
             self.storage,
             self.processor.vqueues_mut(),
-            self.is_leader.then_some(self.action_collector),
+            self.leader.is_some().then_some(self.action_collector),
         )
         .await?
         .expect("rescheduling in a non-existent vqueue");
@@ -5527,7 +5531,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             &target,
             self.storage,
             self.processor.vqueues_mut(),
-            self.is_leader.then_some(self.action_collector),
+            self.leader.is_some().then_some(self.action_collector),
             &limit_key,
         )
         .await?;
