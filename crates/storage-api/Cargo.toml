@@ -26,8 +26,10 @@ bilrost = { workspace = true }
 bytes = { workspace = true }
 bytestring = { workspace = true }
 derive_more = { workspace = true, features = ["from", "into"] }
+enum-map = { workspace = true }
 futures = { workspace = true }
 opentelemetry = { workspace = true }
+paste = { workspace = true }
 prost = { workspace = true }
 serde = { workspace = true }
 serde_with = { workspace = true }
