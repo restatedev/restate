@@ -63,11 +63,13 @@ use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
+use crate::stats::aggregated::AggregatedStatsMut;
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
 
-// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8))
+// Key kind and partition key are 10 bytes (KeyKind(2) + PartitionKey/Id(8)).
+// Statistics use a table-specific 8-byte suffix.
 pub(crate) const DB_PREFIX_LENGTH: usize =
     KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>();
 
@@ -178,6 +180,7 @@ pub enum TableKind {
     Promise,
     VQueue,
     Locks,
+    Stats,
 }
 
 impl TableKind {
@@ -212,6 +215,7 @@ impl TableKind {
                 KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
+            Self::Stats => &[KeyKind::Stats],
         }
     }
 
@@ -1053,6 +1057,13 @@ impl<'a> PartitionStoreTransaction<'a> {
     #[inline]
     pub(crate) fn assert_partition_key(&self, partition_key: &impl WithPartitionKey) -> Result<()> {
         assert_partition_key_or_err(self.meta.key_range, partition_key)
+    }
+}
+
+impl<'a> PartitionStoreTransaction<'a> {
+    #[allow(unused)]
+    pub(crate) fn aggregated_stats<'b>(&'b mut self) -> AggregatedStatsMut<'b, 'a> {
+        AggregatedStatsMut::new(self)
     }
 }
 
