@@ -310,6 +310,12 @@ where
             )
             .await
             {
+                // The marker has no protocol representation, it can't be replayed to the SDK
+                Ok(Some(entry))
+                    if entry.ty() == EntryType::Command(journal_v2::CommandType::OutputMarker) =>
+                {
+                    bail!(JournalCopyRangeInvalid);
+                }
                 Ok(Some(entry)) if matches!(entry.ty(), EntryType::Command(_)) => {
                     // Check we got the notifications available in the journal
                     let cmd = match entry.decode::<ServiceProtocolV4Codec, journal_v2::Command>() {
