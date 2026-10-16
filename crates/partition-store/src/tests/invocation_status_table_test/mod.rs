@@ -30,6 +30,7 @@ use restate_types::invocation::{
 };
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::Seq;
 use restate_types::{LimitKey, RestateVersion};
 
 const INVOCATION_TARGET_1: InvocationTarget = InvocationTarget::VirtualObject {
@@ -99,6 +100,7 @@ fn invoked_status(invocation_target: InvocationTarget) -> InvocationStatus {
         idempotency_key: None,
         hotfix_apply_cancellation_after_deployment_is_pinned: false,
         random_seed: None,
+        creation_seq: Some(Seq::new(42)),
     })
 }
 
@@ -127,6 +129,7 @@ fn suspended_status(invocation_target: InvocationTarget) -> InvocationStatus {
             idempotency_key: None,
             hotfix_apply_cancellation_after_deployment_is_pinned: false,
             random_seed: None,
+            creation_seq: Some(Seq::new(42)),
         },
         awaiting_on: UnresolvedFuture::Unknown(Vec::default()),
     }

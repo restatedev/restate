@@ -108,7 +108,7 @@ pub mod v1 {
         use restate_types::logs::Lsn;
         use restate_types::service_protocol::ServiceProtocolVersion;
         use restate_types::time::MillisSinceEpoch;
-        use restate_types::vqueues::VQueueId;
+        use restate_types::vqueues::{Seq, VQueueId};
         use restate_types::{GenerationalNodeId, LimitKey, Scope, journal_v2};
         use restate_util_string::RestateString;
 
@@ -427,6 +427,7 @@ pub mod v1 {
                     deployment_id,
                     service_protocol_version,
                     random_seed,
+                    creation_seq,
                     waiting_for_completions,
                     waiting_for_signal_indexes,
                     waiting_for_signal_names,
@@ -438,6 +439,7 @@ pub mod v1 {
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
                 let vqueue_id = vqueue_id.map(|buf| VQueueId::from_raw_bytes(&mut buf.as_ref()));
+                let creation_seq = creation_seq.map(Seq::new);
 
                 let limit_key = LimitKey::from_str(&limit_key).expect("valid limit key format");
                 let created_using_restate_version =
@@ -512,6 +514,7 @@ pub mod v1 {
                                             .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         random_seed,
+                                        creation_seq,
                                     },
                             },
                         ))
@@ -562,6 +565,7 @@ pub mod v1 {
                                             .try_into()?,
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         random_seed,
+                                        creation_seq,
                                     },
                             },
                         ))
@@ -595,6 +599,7 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
+                                creation_seq,
                             },
                         ))
                     }
@@ -640,6 +645,7 @@ pub mod v1 {
                                         idempotency_key: idempotency_key.map(ByteString::from),
                                         hotfix_apply_cancellation_after_deployment_is_pinned,
                                         random_seed,
+                                        creation_seq,
                                     },
                                 awaiting_on: awaiting_on.try_into()?,
                             },
@@ -674,6 +680,7 @@ pub mod v1 {
                                 idempotency_key: idempotency_key.map(ByteString::from),
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
+                                creation_seq,
                             },
                         ))
                     }
@@ -705,6 +712,7 @@ pub mod v1 {
                                     service_protocol_version,
                                 )?,
                                 random_seed,
+                                creation_seq,
                             },
                         ))
                     }
@@ -734,6 +742,7 @@ pub mod v1 {
                                     journal_retention_duration,
                                     idempotency_key,
                                     random_seed,
+                                    creation_seq,
                                     input:
                                         PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
@@ -787,6 +796,7 @@ pub mod v1 {
                         combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
                         random_seed,
+                        creation_seq: creation_seq.map(Seq::as_u64),
                     },
                     crate::invocation_status_table::InvocationStatus::Scheduled(
                         crate::invocation_status_table::ScheduledInvocation {
@@ -811,6 +821,7 @@ pub mod v1 {
                                             },
                                         ),
                                     random_seed,
+                                    creation_seq,
                                 },
                         },
                     ) => {
@@ -871,6 +882,7 @@ pub mod v1 {
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Inboxed(
@@ -889,6 +901,7 @@ pub mod v1 {
                                     journal_retention_duration,
                                     idempotency_key,
                                     random_seed,
+                                    creation_seq,
                                     input:
                                         PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                                             argument,
@@ -943,6 +956,7 @@ pub mod v1 {
                         combinator_type: super::CombinatorType::Unknown.into(),
                         result: None,
                         random_seed,
+                        creation_seq: creation_seq.map(Seq::as_u64),
                     },
                     crate::invocation_status_table::InvocationStatus::Inboxed(
                         crate::invocation_status_table::InboxedInvocation {
@@ -967,6 +981,7 @@ pub mod v1 {
                                             },
                                         ),
                                     random_seed,
+                                    creation_seq,
                                 },
                             inbox_sequence_number,
                         },
@@ -1027,6 +1042,7 @@ pub mod v1 {
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: None,
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Invoked(
@@ -1046,6 +1062,7 @@ pub mod v1 {
                             idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
+                            creation_seq,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1105,6 +1122,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Suspended {
@@ -1125,6 +1143,7 @@ pub mod v1 {
                                 idempotency_key,
                                 hotfix_apply_cancellation_after_deployment_is_pinned,
                                 random_seed,
+                                creation_seq,
                             },
                         awaiting_on,
                     } => {
@@ -1206,6 +1225,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Paused(
@@ -1225,6 +1245,7 @@ pub mod v1 {
                             idempotency_key,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
+                            creation_seq,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1284,6 +1305,7 @@ pub mod v1 {
                             result: None,
                             hotfix_apply_cancellation_after_deployment_is_pinned,
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Completed(
@@ -1302,6 +1324,7 @@ pub mod v1 {
                             journal_metadata,
                             pinned_deployment,
                             random_seed,
+                            creation_seq,
                         },
                     ) => {
                         let (deployment_id, service_protocol_version) = match pinned_deployment {
@@ -1358,6 +1381,7 @@ pub mod v1 {
                             combinator_type: super::CombinatorType::Unknown.into(),
                             result: Some(response_result.into()),
                             random_seed,
+                            creation_seq: creation_seq.map(Seq::as_u64),
                         }
                     }
                     crate::invocation_status_table::InvocationStatus::Free => {
@@ -1377,6 +1401,7 @@ pub mod v1 {
                     status,
                     invocation_target,
                     vqueue_id,
+                    creation_seq,
                 } = value;
 
                 let invocation_target = expect_or_fail!(invocation_target)?.try_into()?;
@@ -1412,6 +1437,7 @@ pub mod v1 {
                     status,
                     invocation_target,
                     vqueue_id,
+                    creation_seq: creation_seq.map(Seq::new),
                 })
             }
         }
