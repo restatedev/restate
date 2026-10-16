@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::str::FromStr;
+
 use crate::identifiers::{
     BaseEntryId, InvocationId, InvocationUuid, PartitionKey, StateMutationId,
 };
+
+use super::ParseError;
 
 const REMAINDER_LEN: usize = 16;
 
@@ -50,6 +54,22 @@ pub enum EntryKind {
 impl EntryKind {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+}
+
+impl FromStr for EntryKind {
+    type Err = ParseError;
+
+    /// Parses the display names `"invocation"` and `"state-mutation"`.
+    ///
+    /// Rejects `"unknown"`: [`EntryKind::Unknown`] is a decoding sentinel, not a
+    /// usable entry kind.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "invocation" => Ok(Self::Invocation),
+            "state-mutation" => Ok(Self::StateMutation),
+            _ => Err(ParseError::UnknownEntryKindString),
+        }
     }
 }
 

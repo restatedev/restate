@@ -24,7 +24,7 @@ pub use entry_target::{EntryTargetExt, EntryTargetRef, HandlerRef};
 pub use seq::Seq;
 pub use vqueue_id::{VQueueId, VQueueIdRef};
 
-/// Errors returned when parsing encoded vqueue entry identifiers.
+/// Errors returned when parsing encoded vqueue entry identifiers or entry kinds.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ParseError {
     #[error("bad length")]
@@ -33,4 +33,7 @@ pub enum ParseError {
     UnknownEntryKind(u8),
     #[error("malformed byte representation of a entry id")]
     MalformedId,
+    /// A string other than `"invocation"` or `"state-mutation"`.
+    #[error("unknown entry kind string")]
+    UnknownEntryKindString,
 }
