@@ -19,7 +19,6 @@
 /// This macro implements `Stat` and `AggregatedStat` for the table marker and
 /// delegates key generation to `define_index_key!`. The generated key's
 /// `prepare_filter` accepts `Filter<table>` and binds its clauses to those codecs.
-#[allow(unused_macros)]
 macro_rules! define_aggregated_stat {
     (
         table: $stat:ident,
@@ -75,5 +74,4 @@ macro_rules! define_aggregated_stat {
     };
 }
 
-#[allow(unused_macros, unused_imports)]
 pub(crate) use define_aggregated_stat;
