@@ -11,13 +11,21 @@
 #![allow(unused)]
 
 mod bucketed_gauge;
+mod deployment_load;
 mod gauge;
+pub mod scan;
+mod service_load;
+mod virtual_object_load;
 
 // Re-exports
 pub use bucketed_gauge::{
     BucketedGauge, StageCounts, StageGauge, StageStatus, StageStatusCounts, StageStatusGauge,
 };
+
+pub use deployment_load::DeploymentLoadKey;
 pub use gauge::{Gauge, GaugeOp};
+pub use service_load::ServiceLoadKey;
+pub use virtual_object_load::VirtualObjectLoadKey;
 
 use tracing::error;
 

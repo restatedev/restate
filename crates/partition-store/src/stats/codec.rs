@@ -93,8 +93,8 @@ impl StatKeyPrefix {
 
     /// Returns the typed statistic identifier when it is known to this binary.
     pub fn stat_id(&self) -> Option<StatId> {
-        // StatId::from_repr(self.stat_id_raw())
-        None
+        let id: u8 = u8::try_from(self.stat_id_raw()).ok()?;
+        StatId::from_repr(id)
     }
 
     pub fn stat_kind(&self) -> StatKind {
