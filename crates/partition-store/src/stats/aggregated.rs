@@ -8,11 +8,10 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-#![allow(unused)]
-
 mod bucketed_gauge;
 mod deployment_load;
 mod gauge;
+pub mod scan;
 mod service_load;
 mod virtual_object_load;
 
