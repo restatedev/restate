@@ -29,9 +29,14 @@ use self::aggregated::Aggregate;
 const KEY_KIND: KeyKind = KeyKind::Stats;
 
 /// Globally unique identifiers for statistics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::FromRepr)]
 #[allow(clippy::enum_variant_names)]
-pub enum StatId {}
+#[repr(u8)]
+pub enum StatId {
+    ServiceLoad = 1,
+    DeploymentLoad = 2,
+    VirtualObjectLoad = 3,
+}
 
 impl StatId {
     /// Returns the identifier's persisted representation.

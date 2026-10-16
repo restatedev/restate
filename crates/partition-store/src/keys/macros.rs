@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// Remove in next commits
-#![allow(dead_code)]
-#![allow(unused_macros)]
-#![allow(unused_imports)]
-
 /// Defines an ordered key payload, its borrowed view, physical schema, and typed
 /// prefix/decoder steps. The caller supplies the key kind and fixed-prefix adapter.
 ///
@@ -276,6 +271,7 @@ macro_rules! define_index_key_filter {
         paste::paste! {
             impl $key {
                 /// Binds logical clauses to this key's declared physical codecs.
+                #[allow(unused)]
                 pub(crate) fn prepare_filter(
                     filter: &restate_storage_api::filter::Filter<$target>,
                 ) -> crate::Result<crate::keys::filter::PreparedKeyFilter<Self>> {
