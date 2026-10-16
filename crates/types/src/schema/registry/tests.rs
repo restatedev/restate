@@ -10,6 +10,7 @@
 
 use super::*;
 
+use crate::Versioned;
 use crate::endpoint_manifest;
 use crate::schema::registry::mocks::mock_arc_schema;
 use restate_test_util::assert_eq;
@@ -163,6 +164,101 @@ pub async fn register_deployment_lambda() {
     schema_metadata
         .get()
         .assert_service_revision(GREETER_SERVICE_NAME, 3);
+}
+
+#[test(tokio::test)]
+pub async fn delete_deployments() {
+    let schema_metadata = mock_arc_schema();
+    let schema_registry = SchemaRegistry::new(
+        schema_metadata.clone(),
+        DiscoveryResponse {
+            deployment_type_parameters: DeploymentConnectionParameters::Lambda {
+                compression: None,
+            },
+            ..DiscoveryResponse::mock(vec![greeter_service()])
+        },
+        (),
+    );
+
+    let mut deployment_ids = vec![];
+    for arn in [
+        "arn:aws:lambda:region:account:function:lambda-function:1",
+        "arn:aws:lambda:region:account:function:lambda-function:2",
+        "arn:aws:lambda:region:account:function:lambda-function:3",
+    ] {
+        let (_, deployment, _) = schema_registry
+            .register_deployment(RegisterDeploymentRequest {
+                deployment_address: DeploymentAddress::Lambda(LambdaDeploymentAddress::new(
+                    arn.parse().unwrap(),
+                    None,
+                )),
+                additional_headers: Default::default(),
+                metadata: Default::default(),
+                use_http_11: false,
+                allow_breaking: AllowBreakingChanges::No,
+                overwrite: Overwrite::No,
+                apply_mode: ApplyMode::Apply,
+            })
+            .await
+            .unwrap();
+        deployment_ids.push(deployment.id);
+    }
+    let [deployment_1, deployment_2, deployment_3] = deployment_ids[..] else {
+        unreachable!()
+    };
+    let version = schema_metadata.get().version();
+
+    // No ids, or only unknown ids: nothing is written.
+    assert_eq!(
+        schema_registry.delete_deployments(vec![]).await.unwrap(),
+        DeleteDeploymentsResult::default()
+    );
+    let unknown = DeploymentId::new();
+    assert_eq!(
+        schema_registry
+            .delete_deployments(vec![unknown, unknown])
+            .await
+            .unwrap(),
+        DeleteDeploymentsResult {
+            deleted: vec![],
+            not_found: vec![unknown],
+        }
+    );
+    assert_eq!(schema_metadata.get().version(), version);
+
+    // The existing deployments are deleted in one schema update, and duplicates are ignored.
+    assert_eq!(
+        schema_registry
+            .delete_deployments(vec![deployment_1, unknown, deployment_2, deployment_1])
+            .await
+            .unwrap(),
+        DeleteDeploymentsResult {
+            deleted: vec![deployment_1, deployment_2],
+            not_found: vec![unknown],
+        }
+    );
+    let schema = schema_metadata.get();
+    assert_eq!(schema.version(), version.next());
+    assert!(schema.get_deployment(&deployment_1).is_none());
+    assert!(schema.get_deployment(&deployment_2).is_none());
+    schema.assert_service_revision(GREETER_SERVICE_NAME, 3);
+
+    // Deleting a single unknown deployment fails.
+    let err = schema_registry
+        .delete_deployment(deployment_1)
+        .await
+        .unwrap_err();
+    assert_eq!(err.status_code(), StatusCode::NOT_FOUND);
+    schema_registry
+        .delete_deployment(deployment_3)
+        .await
+        .unwrap();
+    assert!(
+        schema_metadata
+            .get()
+            .resolve_latest_service(GREETER_SERVICE_NAME)
+            .is_none()
+    );
 }
 
 #[cfg(test)]

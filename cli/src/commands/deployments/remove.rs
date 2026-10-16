@@ -10,66 +10,175 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use cling::prelude::*;
+use comfy_table::{Cell, Color, Table};
+use futures::{StreamExt, TryStreamExt, stream};
+use http::StatusCode;
+use itertools::Itertools;
 use serde_json::json;
 
-use restate_admin_rest_model::deployments::ServiceNameRevPair;
-use restate_cli_util::{CliContext, c_eprintln, c_println, c_success};
+use restate_admin_rest_model::deployments::{
+    BulkDeleteDeploymentsRequest, FailedDeploymentDeletion, ServiceNameRevPair,
+};
+use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
+use restate_cli_util::ui::console::StyledTable;
+use restate_cli_util::{
+    CliContext, c_eprintln, c_indent_table, c_println, c_success, c_warn, exit,
+};
+use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
 use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
-use crate::clients::{AdminClient, AdminClientInterface, Deployment};
+use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient, Deployment};
 use crate::error::RestateCliError;
 use crate::ui::deployments::{
     DeploymentStatus, active_invocations_field, calculate_deployment_status,
     deployment_info_fields, deployment_status_field, latest_service, service_item,
 };
-use crate::ui::fmt::{DryRun, Field, Formatter, IncludeFormatting, Outcome, OutputFormatter};
+use crate::ui::fmt::{
+    DryRun, Field, Formatter, IfEmpty, IncludeFormatting, Outcome, OutputFormatter,
+};
 
-/// Remove a drained deployment
+/// Remove drained deployments
 ///
 /// A deployment is drained when newer deployments serve the latest revision of all its
 /// services, and none of its invocations are still in flight (invocations keep running on the
 /// deployment they started on). Check with `restate deployments describe <id> --extra`.
-/// Removing a deployment that isn't drained is refused unless --force.
+/// Removing a deployment that isn't drained is refused unless --force. Several deployments
+/// can be removed at once, confirming them together.
 #[derive(Run, Parser, Collect, Clone)]
 #[clap(visible_alias = "rm")]
 #[cling(run = "run_remove")]
 #[command(after_help = after_help!(
     examples: [
         "restate deployments remove dp_14LsPzBd7Uuvbx8wA3wtKoD --dry-run",
+        "restate deployments remove dp_14LsPzBd7Uuvbx8wA3wtKoD dp_11pXxBETJoA3YQ1jW8QnSuF",
         "restate deployments list --extra --json \\",
-        "  | jq -r '.deployments[] | select(.status == \"Drained\") | .deployment_id'",
+        "  | jq -r '.deployments[] | select(.status == \"Drained\") | .deployment_id' \\",
+        "  | xargs restate deployments remove --yes",
     ],
     learn_more: "https://docs.restate.dev/services/versioning",
 ))]
 pub struct Remove {
-    /// Remove the deployment even if it's not drained. Its in-flight invocations will fail,
-    /// and the services whose latest revision it serves become unavailable
+    /// Remove the deployments even if they're not drained. Their in-flight invocations will
+    /// fail, and the services whose latest revision they serve become unavailable
     #[clap(long)]
     force: bool,
-    /// Deployment id (`dp_...`)
-    deployment_id: String,
+    /// Deployment ids (`dp_...`)
+    #[clap(required = true, value_name = "DEPLOYMENT_ID")]
+    deployment_ids: Vec<DeploymentId>,
 
     #[clap(flatten)]
     dry_run: DryRun,
 }
 
-pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
-    // First get information about this deployment and inspect if it's drained or not.
-    let client = AdminClient::new(&env).await?;
-    let sql_client = crate::clients::DataFusionHttpClient::from(client.clone());
+/// How many deployments are inspected concurrently, each with a few requests to the server.
+const MAX_CONCURRENT_INSPECTIONS: usize = 16;
 
+/// A deployment to remove, with what removing it would break.
+struct Inspected {
+    deployment_id: DeploymentId,
+    deployment: Deployment,
+    services: Vec<ServiceMetadata>,
+    status: DeploymentStatus,
+    total_active_inv: i64,
+}
+
+async fn inspect(
+    client: &AdminClient,
+    sql_client: &DataFusionHttpClient,
+    latest_services: &HashMap<String, ServiceMetadata>,
+    deployment_id: DeploymentId,
+) -> Result<Inspected> {
     let deployment = client
-        .get_deployment(&opts.deployment_id)
+        .get_deployment(deployment_id.to_string())
         .await?
         .into_body()
         .await?;
-    let (deployment_id, deployment, deployment_services) =
+    let (deployment_id, deployment, services) =
         Deployment::from_detailed_deployment_response(deployment);
-    let active_inv = count_deployment_active_inv_by_method(&sql_client, &deployment_id).await?;
+    let active_inv = count_deployment_active_inv_by_method(sql_client, &deployment_id).await?;
+    let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
+
+    let service_rev_pairs: Vec<_> = services
+        .iter()
+        .map(|s| ServiceNameRevPair {
+            name: s.name.clone(),
+            revision: s.revision,
+        })
+        .collect();
+    let status = calculate_deployment_status(
+        &deployment_id,
+        &service_rev_pairs,
+        total_active_inv,
+        latest_services,
+    );
+
+    Ok(Inspected {
+        deployment_id,
+        deployment,
+        services,
+        status,
+        total_active_inv,
+    })
+}
+
+impl Inspected {
+    /// Why removing this deployment is risky, if it isn't drained.
+    fn risk(&self) -> Option<String> {
+        let total_active_inv = self.total_active_inv;
+        match self.status {
+            DeploymentStatus::Active => Some(
+                "Active. This means that it hosts the latest revision of some of your services as \
+                 indicated above. Removing this deployment will cause those services to be \
+                 unavailable and current or future invocations on them WILL fail."
+                    .to_owned(),
+            ),
+            DeploymentStatus::Draining => Some(format!(
+                "Draining. There are {total_active_inv} invocations that will break if you proceed \
+                 with this operation. Please make sure in-flight invocations are completed \
+                 (deployment is Drained) or killed/cancelled before continuing."
+            )),
+            DeploymentStatus::Drained => None,
+        }
+    }
+
+    fn describe(
+        &self,
+        f: &mut impl OutputFormatter,
+        latest_services: &HashMap<String, ServiceMetadata>,
+    ) -> Result<()> {
+        let mut deployment_fields =
+            vec![("deployment_id".to_owned(), Field::new(self.deployment_id))];
+        deployment_fields.extend(deployment_info_fields(&self.deployment));
+        deployment_fields.push(("status".to_owned(), deployment_status_field(self.status)));
+        deployment_fields.push((
+            "active_invocations".to_owned(),
+            active_invocations_field(self.total_active_inv),
+        ));
+        f.detail("deployment", &deployment_fields);
+
+        f.title("🤖", "Services");
+        let mut items = f.start_items("services");
+        for service in &self.services {
+            let Some(latest_service) = latest_service(latest_services, service) else {
+                continue;
+            };
+            let mut item = items.item();
+            service_item(&mut item, service, latest_service);
+            item.finish()?;
+        }
+        items.finish();
+        Ok(())
+    }
+}
+
+pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> {
+    // First get information about these deployments and inspect if they're drained or not.
+    let client = AdminClient::new(&env).await?;
+    let sql_client = DataFusionHttpClient::from(client.clone());
 
     let mut latest_services: HashMap<String, ServiceMetadata> = HashMap::new();
     // To know the latest version of every service.
@@ -77,130 +186,210 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         latest_services.insert(service.name.clone(), service);
     }
 
-    // sum inv_count in active_inv
-    let total_active_inv = active_inv.iter().fold(0, |acc, x| acc + x.inv_count);
-
-    let service_rev_pairs: Vec<_> = deployment_services
+    let inspections = opts
+        .deployment_ids
         .iter()
-        .map(|s| ServiceNameRevPair {
-            name: s.name.clone(),
-            revision: s.revision,
-        })
-        .collect();
+        .copied()
+        .unique()
+        .map(|id| inspect(&client, &sql_client, &latest_services, id));
+    let deployments: Vec<_> = stream::iter(inspections)
+        .buffered(MAX_CONCURRENT_INSPECTIONS)
+        .try_collect()
+        .await?;
 
-    let status = calculate_deployment_status(
-        &deployment_id,
-        &service_rev_pairs,
-        total_active_inv,
-        &latest_services,
-    );
-
-    let mut deployment_fields = vec![(
-        "deployment_id".to_owned(),
-        Field::new(deployment_id.to_string()),
-    )];
-    deployment_fields.extend(deployment_info_fields(&deployment));
-    deployment_fields.push(("status".to_owned(), deployment_status_field(status)));
-    deployment_fields.push((
-        "active_invocations".to_owned(),
-        active_invocations_field(total_active_inv),
-    ));
     let mut f = Formatter::new();
-    f.title("📜", "Deployment Information");
-    f.detail("deployment", &deployment_fields);
-
-    f.title("🤖", "Services");
-    let mut items = f.start_items("services");
-    for service in &deployment_services {
-        let Some(latest_service) = latest_service(&latest_services, service) else {
-            continue;
-        };
-        let mut item = items.item();
-        service_item(&mut item, service, latest_service);
-        item.finish()?;
+    if let [deployment] = &deployments[..] {
+        f.title("📜", "Deployment Information");
+        deployment.describe(&mut f, &latest_services)?;
+    } else {
+        f.title("📜", "Deployments");
+        let mut items = f.start_items("deployments");
+        for deployment in &deployments {
+            let mut item = items.item();
+            deployment.describe(&mut item, &latest_services)?;
+            item.finish()?;
+        }
+        items.finish();
     }
-    items.finish();
-    // The plan, JSON-only: the human output already describes the deployment to remove.
-    f.value(
-        "changes",
-        Field::with_display(
-            json!([{"deployment_id": deployment_id.to_string(), "change": "delete"}]),
-            "",
-        ),
-    );
+    // The plan, JSON-only: the human output already describes the deployments to remove.
+    let changes: Vec<_> = deployments
+        .iter()
+        .map(|d| json!({"deployment_id": d.deployment_id, "change": "delete"}))
+        .collect();
+    f.value("changes", Field::with_display(changes, ""));
 
+    let ids = deployments.iter().map(|d| d.deployment_id).join(" ");
     let json = CliContext::get().json_output();
     // Removing a deployment that isn't drained breaks invocations: refuse unless --force.
-    let risk = match status {
-        DeploymentStatus::Active => Some(
-            "Active. This means that it hosts the latest revision of some of your services as \
-             indicated above. Removing this deployment will cause those services to be unavailable \
-             and current or future invocations on them WILL fail."
-                .to_owned(),
-        ),
-        DeploymentStatus::Draining => Some(format!(
-            "Draining. There are {total_active_inv} invocations that will break if you proceed \
-             with this operation. Please make sure in-flight invocations are completed (deployment \
-             is Drained) or killed/cancelled before continuing."
-        )),
-        DeploymentStatus::Drained => None,
-    };
-    let force_step = format!("restate deployments remove {deployment_id} --force");
-    let force_description = "remove it anyway, if you accept that risk";
-    match risk {
-        Some(risk) if !opts.force && !opts.dry_run.dry_run => {
-            if !json {
-                // Keep the error apart from the services above it.
-                c_eprintln!();
-            }
-            return Err(RestateCliError::bad_input(format!(
-                "Deployment {deployment_id} is still {risk}"
-            ))
+    let risks: Vec<_> = deployments
+        .iter()
+        .filter_map(|d| {
+            d.risk()
+                .map(|risk| format!("Deployment {} is still {risk}", d.deployment_id))
+        })
+        .collect();
+    let force_step = format!("restate deployments remove {ids} --force");
+    let force_description = "remove anyway, if you accept that risk";
+    if !risks.is_empty() && !opts.force && !opts.dry_run.dry_run {
+        if !json {
+            // Keep the error apart from the services above it.
+            c_eprintln!();
+        }
+        return Err(RestateCliError::bad_input(risks.join("\n\n"))
             .with_next_step(force_step, force_description)
             .into());
-        }
-        Some(risk) => {
-            let warning = if opts.force {
-                format!("Deployment is still {risk}")
-            } else {
-                f.next_step(&force_step, force_description, IncludeFormatting::Yes);
-                format!("Deployment is still {risk} Without --force, removing it will be refused.")
-            };
-            f.warning(&warning);
-        }
-        None if !json => {
+    }
+    if risks.is_empty() {
+        if !json {
             c_println!();
-            c_success!("The deployment is fully drained and is safe to remove");
+            if deployments.len() == 1 {
+                c_success!("The deployment is fully drained and is safe to remove");
+            } else {
+                c_success!("The deployments are fully drained and are safe to remove");
+            }
         }
-        None => {}
+    } else if opts.force {
+        for risk in &risks {
+            f.warning(risk);
+        }
+    } else {
+        f.next_step(&force_step, force_description, IncludeFormatting::Yes);
+        for risk in &risks {
+            f.warning(&format!(
+                "{risk} Without --force, removing it will be refused."
+            ));
+        }
     }
 
-    f.confirm(
-        &opts.dry_run,
-        "Are you sure you want to remove this deployment?",
-    )?;
-
-    let result = client
-        .remove_deployment(
-            &deployment_id.to_string(),
-            //TODO: Use opts.force when the server implements the false + validation case!
-            true,
+    let (prompt, removed) = if let [deployment] = &deployments[..] {
+        (
+            "Are you sure you want to remove this deployment?".to_owned(),
+            format!(
+                "Deployment {} removed successfully",
+                deployment.deployment_id
+            ),
         )
-        .await?;
-    result.into_success_status().await?;
+    } else {
+        (
+            format!(
+                "Are you sure you want to remove these {} deployments?",
+                deployments.len()
+            ),
+            format!("{} deployments removed successfully", deployments.len()),
+        )
+    };
+    f.confirm(&opts.dry_run, &prompt)?;
 
-    f.outcome(
-        "result",
-        Field::with_display(
-            "removed",
-            format!("Deployment {deployment_id} removed successfully"),
-        ),
-        Outcome::Success,
+    //TODO: Use opts.force when the server implements the false + validation case!
+    let failed = remove_deployments(&client, &deployments, true).await?;
+    if json {
+        // One row per deployment, like the invocation batch commands.
+        let failures: HashMap<_, _> = failed.iter().map(|f| (f.deployment_id, f)).collect();
+        let rows = deployments.iter().map(|d| {
+            let failure = failures.get(&d.deployment_id);
+            [
+                Field::new(d.deployment_id),
+                Field::new(if failure.is_some() {
+                    "failed"
+                } else {
+                    "removed"
+                }),
+                // A reason unknown to this CLI doesn't serialize, and is left `null`.
+                Field::new(failure.and_then(|f| serde_json::to_value(f.reason).ok())),
+                Field::new(failure.map(|f| f.error.as_str())),
+            ]
+        });
+        f.table(
+            "results",
+            &["deployment_id", "outcome", "reason", "error"],
+            rows,
+            IfEmpty::Nothing,
+        );
+    }
+    if failed.is_empty() {
+        f.outcome(
+            "result",
+            Field::with_display("removed", removed),
+            Outcome::Success,
+        );
+        f.next_step(
+            "restate deployments list",
+            "see the remaining deployments",
+            IncludeFormatting::Yes,
+        );
+        return f.finish();
+    }
+
+    let summary = format!(
+        "Failed to remove {} deployments out of {}",
+        failed.len(),
+        deployments.len()
     );
-    f.next_step(
-        "restate deployments list",
-        "see the remaining deployments",
-        IncludeFormatting::Yes,
-    );
-    f.finish()
+    if json {
+        // The `results` section already carries each failure; keep stdout a single document and
+        // signal the partial failure through the exit code only.
+        f.finish()?;
+        c_eprintln!("{summary}");
+        return Err(exit::AlreadyReported {
+            code: exit::GENERIC_ERROR,
+        }
+        .into());
+    }
+    c_println!();
+    c_warn!("Failed to remove:");
+    let mut table = Table::new_styled();
+    table.set_styled_header(vec!["ID", "REASON"]);
+    for failure in &failed {
+        table.add_row(vec![
+            Cell::new(failure.deployment_id),
+            Cell::new(&failure.error).fg(Color::DarkRed),
+        ]);
+    }
+    c_indent_table!(0, table);
+    bail!(summary)
+}
+
+/// Removes the deployments, in chunks the server accepts, and returns the ones that couldn't be.
+async fn remove_deployments(
+    client: &AdminClient,
+    deployments: &[Inspected],
+    force: bool,
+) -> Result<Vec<FailedDeploymentDeletion>> {
+    // A single deployment goes through the single delete API, which all servers support.
+    if let [deployment] = deployments {
+        remove_deployment(client, deployment.deployment_id, force).await?;
+        return Ok(vec![]);
+    }
+
+    let mut failed = vec![];
+    for (i, chunk) in deployments.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
+        let response = client
+            .bulk_remove_deployments(BulkDeleteDeploymentsRequest {
+                deployment_ids: chunk.iter().map(|d| d.deployment_id).collect(),
+                force,
+            })
+            .await?;
+        if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
+            // Servers without the bulk delete API: remove the deployments one by one.
+            for deployment in &deployments[i * BATCH_OPERATION_MAX_SIZE..] {
+                remove_deployment(client, deployment.deployment_id, force).await?;
+            }
+            break;
+        }
+        failed.extend(response.into_body().await?.failed);
+    }
+    Ok(failed)
+}
+
+async fn remove_deployment(
+    client: &AdminClient,
+    deployment_id: DeploymentId,
+    force: bool,
+) -> Result<()> {
+    client
+        .remove_deployment(&deployment_id.to_string(), force)
+        .await?
+        .into_success_status()
+        .await?;
+    Ok(())
 }

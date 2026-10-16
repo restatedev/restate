@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::time::SystemTime;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::IntoResponse;
@@ -19,6 +20,7 @@ use http::{Method, Uri};
 use serde::Deserialize;
 
 use restate_admin_rest_model::deployments::*;
+use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_errors::warn_it;
 use restate_types::config::Configuration;
@@ -27,12 +29,13 @@ use restate_types::identifiers::{DeploymentId, InvalidLambdaARN, ServiceRevision
 use restate_types::schema;
 use restate_types::schema::deployment::{Deployment, DeploymentType};
 use restate_types::schema::registry::{
-    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DiscoveryClient, MetadataService,
-    Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
+    AddDeploymentResult, AllowBreakingChanges, ApplyMode, DeleteDeploymentsResult, DiscoveryClient,
+    MetadataService, Overwrite, TelemetryClient, effective_http_patch_inputs, validate_http_auth,
 };
 use restate_types::schema::service::ServiceMetadata;
 
 use super::error::*;
+use crate::generate_meta_api_error;
 use crate::rest_api::ErrorDescriptionResponse;
 use crate::state::AdminServiceState;
 
@@ -303,6 +306,79 @@ where
     } else {
         Ok(StatusCode::NOT_IMPLEMENTED)
     }
+}
+
+generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidRequestBodyError, BatchTooLargeError, GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
+
+/// Bulk delete deployments
+///
+/// Delete up to 1000 deployments at once. Duplicate ids are ignored, and an empty list succeeds with empty
+/// results. The request is rejected as a whole if it lists more than 1000 ids, or a malformed id.
+///
+/// All the existing deployments of the request are deleted together, with a single update of the schema.
+/// Deployments that can't be deleted, e.g. because they don't exist, are reported in `failed`, with a
+/// machine-readable `reason`, without failing the others.
+///
+/// Currently, only forced deletions are supported.
+/// **Use with caution**: forcing a deployment deletion can break in-flight invocations.
+#[utoipa::path(
+    post,
+    path = "/deployments/bulk-delete",
+    operation_id = "bulk_delete_deployments",
+    tag = "deployment",
+    request_body = BulkDeleteDeploymentsRequest,
+    responses(
+        (status = 200, description = "The deployments that were deleted, and the ones that were not.", body = BulkDeleteDeploymentsResponse),
+        (status = 400, response = meta_api_error::BadRequest),
+        (status = 501, description = "Not implemented. Graceful deployment deletion (force=false) is not yet supported.", body = ErrorDescriptionResponse),
+        (status = 500, response = meta_api_error::InternalServerError),
+    )
+)]
+pub async fn bulk_delete_deployments<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    payload: Result<Json<BulkDeleteDeploymentsRequest>, JsonRejection>,
+) -> Result<Json<BulkDeleteDeploymentsResponse>, BulkDeleteDeploymentsError>
+where
+    Metadata: MetadataService,
+{
+    let Json(request) = payload.map_err(InvalidRequestBodyError)?;
+    let deployment_ids = validate_bulk_delete(request)?;
+
+    let DeleteDeploymentsResult { deleted, not_found } = state
+        .schema_registry
+        .delete_deployments(deployment_ids)
+        .await
+        .inspect_err(|e| warn_it!(e))
+        .map_err(MetaApiError::from)?;
+
+    Ok(Json(BulkDeleteDeploymentsResponse {
+        succeeded: deleted,
+        failed: not_found
+            .into_iter()
+            .map(|deployment_id| FailedDeploymentDeletion {
+                deployment_id,
+                reason: DeploymentDeletionFailureReason::NotFound,
+                error: MetaApiError::DeploymentNotFound(deployment_id).to_string(),
+            })
+            .collect(),
+    }))
+}
+
+/// Validates the whole bulk delete request before deleting anything, and returns the deployments
+/// to delete. An empty list is a success, whatever `force` says.
+fn validate_bulk_delete(
+    BulkDeleteDeploymentsRequest {
+        deployment_ids,
+        force,
+    }: BulkDeleteDeploymentsRequest,
+) -> Result<Vec<DeploymentId>, BulkDeleteDeploymentsError> {
+    if deployment_ids.len() > BATCH_OPERATION_MAX_SIZE {
+        return Err(BatchTooLargeError(deployment_ids.len(), BATCH_OPERATION_MAX_SIZE).into());
+    }
+    if !force && !deployment_ids.is_empty() {
+        return Err(GracefulDeploymentDeletionNotSupportedError.into());
+    }
+    Ok(deployment_ids)
 }
 
 /// Update deployment
@@ -686,5 +762,54 @@ mod tests {
             .expect_err("the experimental feature must be enabled");
         validate_gcp_federation_admission(AdminApiVersion::V5, true, &auth)
             .expect("an enabled Admin API v5 server accepts federation");
+    }
+
+    #[tokio::test]
+    async fn bulk_delete_validation() {
+        use axum::extract::FromRequest;
+
+        async fn rejection_status(content_type: Option<&str>, body: &'static str) -> StatusCode {
+            let mut request = http::Request::builder();
+            if let Some(content_type) = content_type {
+                request = request.header(header::CONTENT_TYPE, content_type);
+            }
+            let rejection = Json::<BulkDeleteDeploymentsRequest>::from_request(
+                request.body(body.into()).unwrap(),
+                &(),
+            )
+            .await
+            .expect_err("the body must be rejected");
+            InvalidRequestBodyError(rejection).into_response().status()
+        }
+
+        let json = Some("application/json");
+        // A malformed id is a 400, not axum's default 422.
+        assert_eq!(
+            rejection_status(json, r#"{"deployment_ids": ["dp_bogus"], "force": true}"#).await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(rejection_status(json, "{").await, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            rejection_status(None, r#"{"deployment_ids": []}"#).await,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE
+        );
+
+        let validate = |len, force| {
+            validate_bulk_delete(BulkDeleteDeploymentsRequest {
+                deployment_ids: (0..len).map(|_| DeploymentId::new()).collect(),
+                force,
+            })
+        };
+        // An empty list succeeds, even without force.
+        assert!(validate(0, false).unwrap().is_empty());
+        assert_eq!(validate(2, true).unwrap().len(), 2);
+        assert!(matches!(
+            validate(1, false),
+            Err(BulkDeleteDeploymentsError::GracefulDeploymentDeletionNotSupportedError(_))
+        ));
+        assert!(matches!(
+            validate(BATCH_OPERATION_MAX_SIZE + 1, true),
+            Err(BulkDeleteDeploymentsError::BatchTooLargeError(_))
+        ));
     }
 }

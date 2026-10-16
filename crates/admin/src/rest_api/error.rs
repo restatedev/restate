@@ -11,6 +11,7 @@
 use std::ops::RangeInclusive;
 
 use axum::Json;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use codederror::{Code, CodedError};
@@ -144,6 +145,42 @@ impl_meta_api_error!(InvalidQueryParameterError: BAD_REQUEST "A query parameter 
 #[error("Batch size {0} exceeds maximum allowed size of {1}")]
 pub(crate) struct BatchTooLargeError(pub(crate) usize, pub(crate) usize);
 impl_meta_api_error!(BatchTooLargeError: BAD_REQUEST "The batch size exceeds the maximum allowed.");
+
+/// A JSON request body that couldn't be read. Unlike axum's default rejection, a body that doesn't
+/// match the expected type (e.g. a malformed id) is a `400 Bad Request` rather than a `422`.
+#[derive(Debug, thiserror::Error)]
+#[error("Invalid request body: {}", .0.body_text())]
+pub(crate) struct InvalidRequestBodyError(#[from] pub(crate) JsonRejection);
+
+impl IntoResponse for InvalidRequestBodyError {
+    fn into_response(self) -> Response {
+        let status = match &self.0 {
+            JsonRejection::JsonDataError(_) => StatusCode::BAD_REQUEST,
+            rejection => rejection.status(),
+        };
+        let body = Json(ErrorDescriptionResponse {
+            message: self.to_string(),
+            restate_code: None,
+        });
+        (status, body).into_response()
+    }
+}
+
+impl utoipa::IntoResponses for InvalidRequestBodyError {
+    fn responses()
+    -> std::collections::BTreeMap<String, utoipa::openapi::RefOr<utoipa::openapi::Response>> {
+        [(
+            "400".to_owned(),
+            utoipa::openapi::Ref::from_response_name("BadRequest").into(),
+        )]
+        .into()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Graceful deployment deletion (force=false) is not yet supported")]
+pub(crate) struct GracefulDeploymentDeletionNotSupportedError;
+impl_meta_api_error!(GracefulDeploymentDeletionNotSupportedError: NOT_IMPLEMENTED "Not implemented. Graceful deployment deletion (force=false) is not yet supported.");
 
 #[derive(Debug, thiserror::Error)]
 #[error("The requested invocation '{0}' does not exist")]

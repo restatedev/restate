@@ -92,6 +92,7 @@ where
             .routes(routes!(deployments::create_deployment))
             .routes(routes!(deployments::get_deployment))
             .routes(routes!(deployments::delete_deployment))
+            .routes(routes!(deployments::bulk_delete_deployments))
             .routes(routes!(deployments::update_deployment))
             // Service endpoints
             .routes(routes!(services::list_services))
