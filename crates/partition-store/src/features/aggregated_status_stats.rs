@@ -11,10 +11,12 @@
 use rocksdb::WriteBatch;
 use tokio_util::sync::CancellationToken;
 
+use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
 use restate_types::{RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_9_0, SemanticRestateVersion};
 use restate_util_string::ReString;
 
+use crate::stats::aggregated::backfill;
 use crate::{MigrationError, PartitionStore};
 
 use super::{StorageFeature, StorageFeatures};
@@ -38,6 +40,14 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
             || config.common.experimental.is_track_status_gauges_enabled()
     }
 
+    fn should_disable(
+        config: &Configuration,
+        _current_version: &SemanticRestateVersion,
+        _is_store_empty: bool,
+    ) -> bool {
+        config.common.experimental.is_status_gauges_reset_enabled()
+    }
+
     fn is_enabled(features: &StorageFeatures) -> bool {
         features.is_track_status_gauges
     }
@@ -47,12 +57,25 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
     }
 
     async fn enable(
-        _storage: &mut PartitionStore,
-        _cancel: &CancellationToken,
+        storage: &mut PartitionStore,
+        cancel: &CancellationToken,
         _config: &Configuration,
         _finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError> {
-        // This feature does not perform any migration for existing invocations (yet).
+        backfill::run(storage, cancel).await
+    }
+
+    async fn disable(
+        storage: &mut PartitionStore,
+        _cancel: &CancellationToken,
+        _config: &Configuration,
+        finalization: &mut WriteBatch,
+        features: &mut StorageFeatures,
+    ) -> Result<(), MigrationError> {
+        // Also clear partial output from an interrupted, unmarked backfill.
+        backfill::append_reset(storage.partition_db(), finalization)
+            .map_err(StorageError::Generic)?;
+        features.is_track_status_gauges = false;
         Ok(())
     }
 }
