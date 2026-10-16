@@ -13,6 +13,7 @@ use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
 use restate_clock::time::MillisSinceEpoch;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
 };
@@ -63,7 +64,8 @@ where
         + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
