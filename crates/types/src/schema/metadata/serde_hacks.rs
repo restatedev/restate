@@ -10,6 +10,8 @@
 
 use super::*;
 
+use super::lite::DeploymentLite;
+
 use std::collections::HashMap;
 
 use serde_with::serde_as;
@@ -77,6 +79,65 @@ impl From<Schema> for SchemaUnindexed {
         };
 
         SchemaUnindexed {
+            version,
+            deployments: deployments_v2
+                .into_iter()
+                .map(|deployment| (deployment.id, deployment))
+                .collect(),
+            subscriptions,
+            kafka_clusters,
+            bilrost_encoded: false,
+        }
+    }
+}
+
+/// Mirror of [`Schema`] for [`SchemaUnindexedLite`].
+#[serde_as]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SchemaLite {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deployments_v2: Option<Vec<DeploymentLite>>,
+    version: Version,
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    subscriptions: HashMap<SubscriptionId, Subscription>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    kafka_clusters: HashMap<String, KafkaCluster>,
+}
+
+impl From<SchemaUnindexedLite> for SchemaLite {
+    fn from(
+        SchemaUnindexedLite {
+            version,
+            deployments,
+            subscriptions,
+            kafka_clusters,
+            bilrost_encoded: _,
+        }: SchemaUnindexedLite,
+    ) -> Self {
+        Self {
+            deployments_v2: Some(deployments.into_values().collect()),
+            version,
+            subscriptions,
+            kafka_clusters,
+        }
+    }
+}
+
+impl From<SchemaLite> for SchemaUnindexedLite {
+    fn from(
+        SchemaLite {
+            deployments_v2,
+            version,
+            subscriptions,
+            kafka_clusters,
+        }: SchemaLite,
+    ) -> Self {
+        let Some(deployments_v2) = deployments_v2 else {
+            panic!("Missing required field `deployment_v2`")
+        };
+
+        SchemaUnindexedLite {
             version,
             deployments: deployments_v2
                 .into_iter()

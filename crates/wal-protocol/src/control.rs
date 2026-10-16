@@ -20,7 +20,7 @@ use restate_types::logs::{HasRecordKeys, Keys, Lsn, SequenceNumber};
 use restate_types::partitions::PartitionConfiguration;
 use restate_types::partitions::state::{MemberState, ReplicaSetState};
 use restate_types::replication::{NodeSet, ReplicationProperty};
-use restate_types::schema::SchemaUnindexed;
+use restate_types::schema::SchemaUnindexedLite;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
 use restate_types::{
@@ -224,7 +224,10 @@ bilrost_storage_encode_decode!(UpdatePartitionDurabilityCommand);
 
 /// Consistently store schema across partition replicas.
 ///
-/// Uses the same encoding as [`SchemaUnindexed`]: in v1.8, flexbuffers by default, or zstd
+/// Carries a [`SchemaUnindexedLite`], which is wire-compatible with `SchemaUnindexed` but skips
+/// the handlers' JSON schemas, as partition processors don't need them.
+///
+/// Uses the same encoding as `SchemaUnindexed`: in v1.8, flexbuffers by default, or zstd
 /// compressed bilrost if `experimental-enable-schema-bilrost-encoding` is set or this schema has
 /// previously used Bilrost.
 ///
@@ -237,7 +240,7 @@ pub struct UpsertSchemaCommand {
     #[bilrost(tag(1))]
     pub partition_key_range: Keys,
     #[bilrost(tag(2))]
-    pub schema: SchemaUnindexed,
+    pub schema: SchemaUnindexedLite,
 }
 
 mod upsert_schema_storage {
@@ -351,7 +354,7 @@ mod tests {
         schema.set_bilrost_encoded(true);
         let command = UpsertSchemaCommand {
             partition_key_range: Keys::RangeInclusive(10..=20),
-            schema: schema.into(),
+            schema: (&*schema).into(),
         };
 
         for codec in [

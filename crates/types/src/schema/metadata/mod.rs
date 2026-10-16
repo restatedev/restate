@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod lite;
 mod openapi;
 mod serde_hacks;
 pub mod updater;
+
+pub use lite::SchemaUnindexedLite;
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;

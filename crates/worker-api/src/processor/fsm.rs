@@ -15,7 +15,7 @@ use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, W
 use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::partitions::PersistedFeatures;
-use restate_types::schema::Schema;
+use restate_types::schema::{Schema, SchemaUnindexedLite};
 use restate_types::{SemanticRestateVersion, Version};
 
 use super::PartitionFeatures;
@@ -72,7 +72,7 @@ pub trait FsmMut: FsmAccess {
         durable_point: PartitionDurability,
     );
 
-    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: Arc<Schema>);
+    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: SchemaUnindexedLite);
     fn set_rule_book<S: WriteFsmTable>(&mut self, txn: &mut S, rule_book: Arc<RuleBook>);
 
     fn set_enabled_features<S: WriteFsmTable>(
@@ -132,7 +132,7 @@ impl<T: FsmMut> FsmMut for &mut T {
         (**self).set_durable_point(txn, durable_point)
     }
 
-    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: Arc<Schema>) {
+    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: SchemaUnindexedLite) {
         (**self).set_schema(txn, schema)
     }
 
