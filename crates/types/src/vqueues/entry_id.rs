@@ -16,6 +16,7 @@ use crate::identifiers::{
 
 use super::ParseError;
 
+/// The length of the remainder bytes of an entry id.
 const REMAINDER_LEN: usize = 16;
 
 #[derive(
@@ -28,6 +29,7 @@ const REMAINDER_LEN: usize = 16;
     Ord,
     Hash,
     strum::FromRepr,
+    strum::VariantArray,
     bilrost::Enumeration,
     strum::Display,
     zerocopy::Immutable,
@@ -54,6 +56,14 @@ pub enum EntryKind {
 impl EntryKind {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Invocation => "invocation",
+            Self::StateMutation => "state-mutation",
+        }
     }
 }
 
