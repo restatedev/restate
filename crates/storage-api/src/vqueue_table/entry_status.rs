@@ -14,39 +14,68 @@ use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
-#[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
+#[derive(
+    Debug,
+    strum::Display,
+    strum::EnumCount,
+    strum::FromRepr,
+    strum::VariantArray,
+    Clone,
+    Copy,
+    Eq,
+    PartialEq,
+    bilrost::Enumeration,
+)]
+#[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Status {
     #[bilrost(0)]
-    Unknown,
+    Unknown = 0,
     #[bilrost(1)]
-    New,
+    New = 1,
     #[bilrost(2)]
-    Scheduled,
+    Scheduled = 2,
     /// Invocation has started running with at least one attempt.
     #[bilrost(3)]
-    Started,
+    Started = 3,
     /// Invocation has previously started but has been placed back on the inbox stage
     /// due to an attempt error.
     #[bilrost(4)]
-    BackingOff,
+    BackingOff = 4,
     /// Invocation has previously started but has been placed back on the inbox stage.
     /// This does not mean that the invocation attempt has failed, it just means that
     /// it has been evicted from the run queue and will be resumed later.
     #[bilrost(5)]
-    Yielded,
+    Yielded = 5,
     ///
     /// -- Terminal states, invocation cannot transition back to any of the previous
     /// statuses
     ///
     #[bilrost(6)]
-    Killed,
+    Killed = 6,
     #[bilrost(7)]
-    Cancelled,
+    Cancelled = 7,
     #[bilrost(8)]
-    Failed,
+    Failed = 8,
     #[bilrost(9)]
-    Succeeded,
+    Succeeded = 9,
+}
+
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::New => "new",
+            Status::Scheduled => "scheduled",
+            Status::Started => "started",
+            Status::BackingOff => "backing-off",
+            Status::Yielded => "yielded",
+            Status::Killed => "killed",
+            Status::Cancelled => "cancelled",
+            Status::Failed => "failed",
+            Status::Succeeded => "succeeded",
+        }
+    }
 }
 
 /// Borrowing version of [`RawStatusHeader`].
