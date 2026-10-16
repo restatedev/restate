@@ -42,7 +42,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
-constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
@@ -150,10 +149,8 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd-582f2526e08bb6a0 = { package = "zstd", version = "0.14" }
-zstd-594e8ee84c453af0 = { package = "zstd", version = "0.13" }
-zstd-safe-15128469a54ed75a = { package = "zstd-safe", version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
-zstd-safe-181b0d20215bb231 = { package = "zstd-safe", version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd = { version = "0.14" }
+zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [build-dependencies]
@@ -183,7 +180,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", default-features = false, features = ["color", "derive", "env", "error-context", "help", "std", "suggestions", "usage", "wrap_help"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 compact_str = { version = "0.10", default-features = false, features = ["bytes", "serde", "std"] }
-constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
@@ -297,10 +293,8 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd-582f2526e08bb6a0 = { package = "zstd", version = "0.14" }
-zstd-594e8ee84c453af0 = { package = "zstd", version = "0.13" }
-zstd-safe-15128469a54ed75a = { package = "zstd-safe", version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
-zstd-safe-181b0d20215bb231 = { package = "zstd-safe", version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd = { version = "0.14" }
+zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
