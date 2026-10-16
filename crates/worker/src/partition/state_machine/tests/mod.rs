@@ -710,6 +710,110 @@ async fn invocation_creation_seq() -> TestResult {
     Ok(())
 }
 
+/// Invocations created before the creation seq was introduced get it backfilled from their
+/// vqueue entry on transitions that write the invocation status anyway.
+#[test(restate_core::test)]
+async fn invocation_creation_seq_backfill() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let invocation_id = InvocationId::mock_random();
+    test_env
+        .apply_at(
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                ..ServiceInvocation::mock()
+            }),
+            MillisSinceEpoch::now(),
+            Lsn::new(10),
+        )
+        .await;
+    let entry_seq = Seq::from(Lsn::new(10));
+
+    // Mimics an invocation created by an older version
+    async fn clear_creation_seq(test_env: &mut TestEnv, invocation_id: InvocationId) {
+        test_env
+            .modify_invocation_status(invocation_id, |status| match status {
+                InvocationStatus::Scheduled(scheduled) => scheduled.metadata.creation_seq = None,
+                InvocationStatus::Inboxed(inboxed) => inboxed.metadata.creation_seq = None,
+                status => status.get_invocation_metadata_mut().unwrap().creation_seq = None,
+            })
+            .await;
+    }
+    async fn get_creation_seq(test_env: &mut TestEnv, invocation_id: InvocationId) -> Option<Seq> {
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+            .get_creation_seq()
+    }
+
+    // Run
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    let header = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(invocation_id.partition_key(), &EntryId::from(invocation_id))
+        .await?
+        .unwrap();
+    test_env
+        .apply(run_decision(header.vqueue_id(), *header.entry_key()))
+        .await;
+    assert_eq!(
+        get_creation_seq(&mut test_env, invocation_id).await,
+        Some(entry_seq)
+    );
+
+    // Pin deployment
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
+    assert_eq!(
+        get_creation_seq(&mut test_env, invocation_id).await,
+        Some(entry_seq)
+    );
+
+    // Suspend
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    test_env
+        .apply(fixtures::invoker_suspended(
+            invocation_id,
+            NotificationId::for_completion(1),
+        ))
+        .await;
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_that!(status, pat!(InvocationStatus::Suspended { .. }));
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    // Resume
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    test_env
+        .apply(commands::ResumeInvocationCommand::test_envelope(
+            ResumeInvocationRequest {
+                invocation_id,
+                update_deployment_id: None,
+                update_pinned_deployment_id: None,
+                run_at: None,
+                response_sink: None,
+            },
+        ))
+        .await;
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_that!(status, pat!(InvocationStatus::Invoked(_)));
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 /// Replicas might store state mutations that were enqueued before #5416 was fixed under different
 /// ids. A decision to run them must still find the local entry.
 #[test(restate_core::test)]

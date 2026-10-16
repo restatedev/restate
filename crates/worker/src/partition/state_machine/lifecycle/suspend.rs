@@ -137,6 +137,11 @@ where
                 .await?
                 .expect("suspending in a non-existent vqueue")
                 .suspend_entry(now, &header);
+
+                // Backfill for invocations created before creation_seq was introduced
+                in_flight_invocation_metadata
+                    .creation_seq
+                    .get_or_insert_with(|| header.seq());
             }
 
             invocation_status = InvocationStatus::Suspended {
