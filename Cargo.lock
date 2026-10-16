@@ -8517,6 +8517,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.15.0",
  "jiff",
  "metrics",
  "num-bigint 0.5.1",
@@ -8557,6 +8558,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zerocopy",
 ]
 
 [[package]]
