@@ -104,6 +104,14 @@ impl PartitionStore {
             + Send
             + 'static,
     {
+        // Query scanners can acquire a store while its processor is still starting.
+        // The feature ledger is published only after the complete baseline is durable.
+        if !self.storage_features().is_track_status_gauges {
+            return Err(StorageError::Generic(anyhow::anyhow!(
+                "status gauges are not ready for partition {}",
+                self.partition_id()
+            )));
+        }
         // Counters
         let mut counters = IteratorCounters {
             partition_id: self.partition_id(),
