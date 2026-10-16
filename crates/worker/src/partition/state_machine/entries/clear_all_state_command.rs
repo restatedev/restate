@@ -33,7 +33,7 @@ where
             .expect("In-Flight invocation metadata must be present");
 
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
-            debug_if_leader!(ctx.is_leader, "Clear all state");
+            debug_if_leader!(ctx.is_leader(), "Clear all state");
 
             ctx.storage.delete_all_user_state(&service_id)?;
         } else {
