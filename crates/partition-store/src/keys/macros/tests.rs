@@ -17,7 +17,7 @@ use restate_storage_api::vqueue_table::Stage;
 use restate_types::ServiceName;
 use restate_types::sharding::PartitionId;
 use restate_types::vqueues::EntryKind;
-use restate_util_string::ReString;
+use restate_util_string::{ReString, encoded_mem_cmp_str};
 
 use crate::keys::filter::KeyMatch;
 use crate::keys::{KeyDecode, KeyDecoder, KeyEncode, KeyKind};
@@ -118,10 +118,10 @@ fn unfiltered_keys_decode_owned_and_progressively() {
     assert_eq!(stage.as_bytes(), &[20]);
     assert_eq!(stage.decode().unwrap(), Stage::Inbox);
     let (service_name1, decoder) = decoder.take_service_name1().unwrap();
-    assert_eq!(service_name1.encoded(), crate::encoded_mem_cmp_str!("Timo"));
+    assert_eq!(service_name1.encoded(), encoded_mem_cmp_str!("Timo"));
     assert_eq!(service_name1.decode().unwrap(), "Timo");
     let (service_name2, decoder) = decoder.take_service_name2().unwrap();
-    assert_eq!(service_name2.encoded(), crate::encoded_mem_cmp_str!("Kimo"));
+    assert_eq!(service_name2.encoded(), encoded_mem_cmp_str!("Kimo"));
     assert_eq!(service_name2.decode().unwrap(), "Kimo");
     let datum = decoder.take_datum().unwrap();
     assert_eq!(datum.as_bytes(), 18_u64.to_be_bytes());
@@ -257,7 +257,7 @@ fn non_stat_keys_share_codecs_prefixes_and_filter_binding() {
     let (category, decoder) = decoder.take_category().unwrap();
     assert_eq!(
         category.encoded().as_option(),
-        Some(crate::encoded_mem_cmp_str!("alpha"))
+        Some(encoded_mem_cmp_str!("alpha"))
     );
     assert_eq!(category.decode().unwrap().unwrap().as_str(), "alpha");
     let (name, decoder) = decoder.take_name().unwrap();
