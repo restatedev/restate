@@ -599,10 +599,9 @@ async fn get_entry_status(
     test_env: &mut TestEnv,
     id: &StateMutationId,
 ) -> Option<(Stage, EntryKey, VQueueId)> {
-    let entry_id = EntryId::from(id);
     let transaction = test_env.storage.transaction();
     let header = transaction
-        .get_vqueue_entry_status(id.partition_key(), &entry_id)
+        .get_vqueue_entry_status(&BaseEntryId::from(id))
         .await
         .unwrap()?;
     Some((
@@ -695,7 +694,7 @@ async fn invocation_creation_seq() -> TestResult {
     let entry_seq = test_env
         .storage
         .transaction()
-        .get_vqueue_entry_status(invocation_id.partition_key(), &EntryId::from(invocation_id))
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
         .await?
         .unwrap()
         .seq();
@@ -756,7 +755,7 @@ async fn invocation_creation_seq_backfill() -> TestResult {
     let header = test_env
         .storage
         .transaction()
-        .get_vqueue_entry_status(invocation_id.partition_key(), &EntryId::from(invocation_id))
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
         .await?
         .unwrap();
     test_env

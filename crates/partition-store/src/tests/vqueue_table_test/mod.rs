@@ -38,7 +38,7 @@ use restate_storage_api::vqueue_table::{ScanVQueueEntries, ScanVQueueEntryStatus
 use restate_types::clock::UniqueTimestamp;
 use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind, VQueueEntryId, VQueueId};
+use restate_types::vqueues::{EntryId, EntryKind, VQueueId};
 
 use crate::PartitionStore;
 
@@ -627,31 +627,30 @@ async fn entry_status_scan_batches_large_id_set(rocksdb: &mut PartitionStore) {
                 Status::Started,
             );
 
-            requested_ids.insert(VQueueEntryId::Invocation(
-                partition_key,
-                entry_id.to_remainder_bytes(),
-            ));
+            requested_ids.insert(entry_id.to_base_id(partition_key));
             expected_ids.push(entry_id);
         }
         txn.commit().await.expect("commit should succeed");
     }
 
     let missing_entry_id = entry_id_from_u64(10_000);
-    requested_ids.insert(VQueueEntryId::Invocation(
-        partition_key,
-        missing_entry_id.to_remainder_bytes(),
-    ));
+    requested_ids.insert(missing_entry_id.to_base_id(partition_key));
 
     let rows = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let rows_for_scan = rows.clone();
     rocksdb
         .for_each_vqueue_entry_status(
             ScanEntryIdFilter::EntryIdSet(requested_ids),
-            move |partition_key, entry_id, header| {
+            move |id, header| {
                 rows_for_scan
                     .lock()
                     .expect("entry-status scan lock should not be poisoned")
-                    .push((partition_key, *entry_id, header.stage, header.status));
+                    .push((
+                        id.partition_key(),
+                        id.to_entry_id(),
+                        header.stage,
+                        header.status,
+                    ));
                 std::ops::ControlFlow::Continue(())
             },
         )
