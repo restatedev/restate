@@ -12,6 +12,22 @@
 // generate code that references all variants including deprecated ones.
 #![allow(deprecated)]
 
+mod codec;
+mod fields;
+pub(crate) mod filter;
+mod index_key_codec;
+mod key_decoder;
+pub(crate) mod macros;
+pub(crate) mod predicate;
+
+// Re-exports
+pub use codec::{
+    EncodedOption, FieldDecoder, IndexFieldDecode, IndexFieldEncode, IndexFieldView,
+    IntoIndexFieldRef,
+};
+
+pub use key_decoder::KeyDecoder;
+
 use std::mem;
 
 use anyhow::anyhow;
@@ -627,7 +643,7 @@ use restate_storage_api::timer_table::TimerKeyKind;
 use restate_types::identifiers::InvocationUuid;
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
-pub(crate) trait KeyEncode {
+pub trait KeyEncode {
     fn encode<B: BufMut>(&self, target: &mut B);
 
     fn serialized_length(&self) -> usize;
@@ -643,7 +659,7 @@ impl<T: KeyEncode> KeyEncode for &T {
     }
 }
 
-pub(crate) trait KeyDecode: Sized {
+pub trait KeyDecode: Sized {
     fn decode(source: &mut &[u8]) -> crate::Result<Self>;
 }
 
