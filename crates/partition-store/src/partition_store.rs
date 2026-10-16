@@ -1088,7 +1088,6 @@ impl<'a> PartitionStoreTransaction<'a> {
 }
 
 impl<'a> PartitionStoreTransaction<'a> {
-    #[allow(unused)]
     pub(crate) fn aggregated_stats<'b>(&'b mut self) -> AggregatedStatsMut<'b, 'a> {
         AggregatedStatsMut::new(self)
     }
