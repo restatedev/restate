@@ -31,7 +31,7 @@ use restate_util_string::ReString;
 
 use crate::TableKind::State;
 use crate::features::StorageFeatures;
-use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
+use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, OptionalScope, define_table_key};
 use crate::{
     PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan,
     TableScanIterationDecision, break_on_err,
@@ -53,7 +53,7 @@ define_table_key!(
     KeyKind::ScopedState,
     ScopedStateKey(
         partition_key: PartitionKey,
-        scope: Option<Scope>,
+        scope: Option<Scope> => OptionalScope,
         service_name: ServiceName,
         service_key: ReString,
         // unfortunately, journal v1 allowed to pass in Bytes as a state key :-(

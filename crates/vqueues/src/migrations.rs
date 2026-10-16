@@ -160,7 +160,7 @@ pub async fn remove_pending_state_mutations(
         let (qid, seq, id) = InputPayloadKey::deserialize_from(&mut key)?.split();
 
         if id.kind() == EntryKind::StateMutation {
-            let partition_key = qid.partition_key();
+            let base_id = id.to_base_id(qid.partition_key());
             if let Ok(input) = StateMutationInput::decode(value) {
                 warn!(
                     "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
@@ -168,14 +168,14 @@ pub async fn remove_pending_state_mutations(
                 );
             }
 
-            if let Some(header) = txn.get_vqueue_entry_status(partition_key, &id).await? {
+            if let Some(header) = txn.get_vqueue_entry_status(&base_id).await? {
                 VQueue::<VQueueEvent, _>::get(&qid, &mut txn, cache, None)
                     .await?
                     .expect("vqueue of a pending state mutation must exist")
                     .end(at, &header, Status::Killed, Duration::ZERO);
             } else {
                 // Only the input payload is left
-                txn.delete_vqueue_input_payload(&qid, seq, &id);
+                txn.delete_vqueue_input_payload(&qid, &base_id.canonicalize(seq));
             }
             removed += 1;
 
@@ -723,9 +723,7 @@ async fn migrate_suspended_invocation(
 }
 
 #[inline]
-fn invocation_id_from_key_bytes<B: bytes::Buf>(
-    bytes: &mut B,
-) -> Result<InvocationId, StorageError> {
+fn invocation_id_from_key_bytes(bytes: &mut &[u8]) -> Result<InvocationId, StorageError> {
     let key = InvocationStatusKey::deserialize_from(bytes)?;
     Ok(InvocationId::from_parts(
         key.partition_key,

@@ -331,6 +331,8 @@ where
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
             random_seed,
+            // The new invocation is created by the record being applied
+            creation_seq: Some(ctx.record_lsn.into()),
 
             // We don't set those
             idempotency_key: None,
@@ -364,7 +366,7 @@ mod tests {
     };
     use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Stage};
     use restate_types::identifiers::{
-        DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
+        BaseEntryId, DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
         WithPartitionKey,
     };
     use restate_types::invocation::client::RestartAsNewInvocationResponse;
@@ -379,7 +381,6 @@ mod tests {
     use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
-    use restate_types::vqueues::EntryId;
     use restate_util_string::ToReString;
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
@@ -895,11 +896,10 @@ mod tests {
             Some(new_deployment_id)
         );
 
-        let entry_id = EntryId::from(new_invocation_id);
         let entry_status = {
             let transaction = test_env.storage.transaction();
             transaction
-                .get_vqueue_entry_status(new_invocation_id.partition_key(), &entry_id)
+                .get_vqueue_entry_status(&BaseEntryId::from(new_invocation_id))
                 .await
                 .unwrap()
                 .expect("restarted invocation must have a vqueue entry")
