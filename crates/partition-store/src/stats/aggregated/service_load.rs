@@ -17,6 +17,9 @@ use crate::stats::macros::define_aggregated_stat;
 
 use super::StageStatusGauge;
 
+#[cfg(test)]
+mod filter_tests;
+
 // A gauge for the number of vqueue entries in a given stage/status and a service name.
 define_aggregated_stat!(
     table: ServiceLoad,

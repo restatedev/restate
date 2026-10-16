@@ -236,18 +236,7 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 format!("expected {} bytes for a gauge value", size_of::<u64>()),
             ),
         },
-        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
-            Ok(value) => DecodedValue::decoded(
-                None,
-                value.serialized_len(),
-                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
-            ),
-            Err(_) => DecodedValue::error(
-                None,
-                value.len(),
-                "invalid stage-bucketed gauge value".to_owned(),
-            ),
-        },
+        StatKind::StageBucketedGauge => decode_stage_counts(value),
         StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
             Ok(value) => DecodedValue::decoded(
                 None,
@@ -260,6 +249,21 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 "invalid stage/status-bucketed gauge value".to_owned(),
             ),
         },
+    }
+}
+
+fn decode_stage_counts(value: &[u8]) -> DecodedValue {
+    match StageCounts::deserialize_from(value) {
+        Ok(value) => DecodedValue::decoded(
+            None,
+            value.serialized_len(),
+            format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+        ),
+        Err(_) => DecodedValue::error(
+            None,
+            value.len(),
+            "invalid stage-bucketed gauge value".to_owned(),
+        ),
     }
 }
 
