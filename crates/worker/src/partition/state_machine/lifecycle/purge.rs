@@ -111,7 +111,7 @@ where
                         vqueue_id,
                         ctx.storage,
                         ctx.processor.vqueues_mut(),
-                        ctx.is_leader.then_some(ctx.action_collector),
+                        ctx.leader.is_some().then_some(ctx.action_collector),
                     )
                     .await?
                     .expect("purging in a non-existent vqueue")

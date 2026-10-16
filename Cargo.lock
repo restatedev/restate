@@ -5470,15 +5470,6 @@ dependencies = [
 
 [[package]]
 name = "lzma-rust2"
-version = "0.16.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ca93e534d1142d1d0dcca6d25fe302508a5dfb40b302802904577725ea0b695b"
-dependencies = [
- "sha2",
-]
-
-[[package]]
-name = "lzma-rust2"
 version = "0.22.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7277c9742229dc25243236d578b6471a798c554512c6f6a04365ec2e87c2a3bb"
@@ -7730,7 +7721,7 @@ dependencies = [
  "tracing",
  "url",
  "vergen-gitcl",
- "zip 9.0.4",
+ "zip",
 ]
 
 [[package]]
@@ -9203,12 +9194,12 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.36"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.36#2407c8f47b73182fdbfcd261258f25ef37fd9583"
+version = "1.0.37"
+source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.37#c6690ca50e9fffeb54519650fe20b4f47952e724"
 dependencies = [
  "anyhow",
  "include_dir",
- "zip 8.6.0",
+ "zip",
 ]
 
 [[package]]
@@ -9336,7 +9327,6 @@ dependencies = [
  "clap",
  "clap_builder",
  "compact_str",
- "constant_time_eq 0.4.2",
  "crc32fast",
  "criterion",
  "crossbeam-epoch",
@@ -9463,9 +9453,7 @@ dependencies = [
  "zerocopy",
  "zeroize",
  "zlib-rs",
- "zstd 0.13.3",
  "zstd 0.14.0",
- "zstd-safe 7.3.0",
  "zstd-safe 8.0.0",
  "zstd-sys",
 ]
@@ -10646,7 +10634,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",
@@ -12328,33 +12316,6 @@ dependencies = [
 
 [[package]]
 name = "zip"
-version = "8.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b"
-dependencies = [
- "aes",
- "bzip2",
- "constant_time_eq 0.4.2",
- "crc32fast",
- "deflate64",
- "flate2",
- "getrandom 0.4.3",
- "hmac",
- "indexmap 2.14.2",
- "lzma-rust2 0.16.5",
- "memchr",
- "pbkdf2",
- "ppmd-rust",
- "sha1 0.11.0",
- "time",
- "typed-path",
- "zeroize",
- "zopfli",
- "zstd 0.13.3",
-]
-
-[[package]]
-name = "zip"
 version = "9.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a954114b47a54df49f83d2722814e86b23d4bb1b54a1b90fb7d92b41619ddc22"
@@ -12368,7 +12329,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "indexmap 2.14.2",
- "lzma-rust2 0.22.0",
+ "lzma-rust2",
  "memchr",
  "nix",
  "pbkdf2",

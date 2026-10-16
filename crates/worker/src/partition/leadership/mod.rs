@@ -79,7 +79,7 @@ use crate::partition::leadership::self_proposer::SelfProposer;
 use crate::partition::processor::FsmAccess;
 use crate::partition::shuffle;
 use crate::partition::shuffle::{OutboxReaderError, Shuffle, ShuffleMetadata};
-use crate::partition::state_machine::Action;
+use crate::partition::state_machine::{Action, LeaderContext};
 use crate::partition::types::InvokerEffect;
 
 use super::node::NodeContext;
@@ -187,6 +187,7 @@ enum State {
         leader_epoch: LeaderEpoch,
         // to be able to move out of it
         self_proposer: Option<SelfProposer>,
+        leader_context: LeaderContext,
     },
     Leader(Box<LeaderState>),
 }
@@ -229,6 +230,15 @@ where
 
     pub(crate) fn is_leader(&self) -> bool {
         matches!(self.state, State::Leader(_) | State::BecomingLeader { .. })
+    }
+
+    /// Returns the [`LeaderContext`] if this processor is the (becoming) leader.
+    pub(crate) fn leader_context(&self) -> Option<LeaderContext> {
+        match &self.state {
+            State::Follower | State::Candidate { .. } => None,
+            State::BecomingLeader { leader_context, .. } => Some(*leader_context),
+            State::Leader(leader_state) => Some(leader_state.leader_context),
+        }
     }
 
     pub(crate) fn partition_id(&self) -> PartitionId {
@@ -501,6 +511,12 @@ where
         {
             let live_config = &mut node_ctx.config;
             let config = live_config.live_load();
+            let leader_context = LeaderContext::new(
+                config
+                    .worker
+                    .quantized_action_size()
+                    .map(|size| size.as_non_zero_usize()),
+            );
 
             let mut self_proposer = self_proposer.take().expect("must be present");
             self_proposer.mark_as_leader();
@@ -626,6 +642,7 @@ where
                     campaign_started_at,
                     leader_epoch,
                     self_proposer: Some(self_proposer),
+                    leader_context,
                 };
 
                 return Ok(());
@@ -807,6 +824,7 @@ where
                 durability_tracker,
                 leader_query_guard,
                 node_ctx.rule_book_cache.subscribe(),
+                leader_context,
             )));
 
             Ok(())

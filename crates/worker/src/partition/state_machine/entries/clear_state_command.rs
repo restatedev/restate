@@ -34,7 +34,7 @@ where
 
         if let Some(service_id) = invocation_metadata.invocation_target.as_keyed_service_id() {
             debug_if_leader!(
-                ctx.is_leader,
+                ctx.is_leader(),
                 restate.state.key = ?self.entry.key,
                 "Clear state"
             );
