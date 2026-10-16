@@ -9,5 +9,6 @@ ID followed by that position, e.g. `inv_..._42`.
 
 ### Impact on Users
 - `canonical_id` is set for invocations created after upgrading to this version.
-- Invocations created before the upgrade show a NULL `canonical_id`.
+- Invocations created before the upgrade get a `canonical_id` the next time they start
+  running, suspend, pause or resume. Until then, they show a NULL `canonical_id`.
 - No action is needed.
