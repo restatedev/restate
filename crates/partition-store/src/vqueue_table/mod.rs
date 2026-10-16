@@ -109,7 +109,7 @@ impl ScanVQueueTable for PartitionDb {
 
         let rocksdb = self.rocksdb().inner().as_raw_db();
 
-        let cf = self.table_cf_handle(crate::TableKind::VQueue);
+        let cf = self.cf_handle_for_key_kind(<ActiveKey as EncodeTableKey>::KEY_KIND);
 
         let mut it = rocksdb.raw_iterator_cf_opt(cf, iterator_opts);
 
