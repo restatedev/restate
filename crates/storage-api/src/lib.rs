@@ -62,6 +62,7 @@ impl From<OutOfMemory> for BudgetedReadError {
     }
 }
 
+pub mod blob_table;
 pub mod deduplication_table;
 pub mod fsm_table;
 pub mod inbox_table;
@@ -71,7 +72,6 @@ pub mod journal_table;
 pub mod journal_table_v2;
 pub mod lock_table;
 pub mod outbox_table;
-pub mod output_table;
 pub mod promise_table;
 pub mod protobuf_types;
 pub mod service_status_table;
@@ -136,8 +136,8 @@ pub trait Transaction:
     + vqueue_table::ReadVQueueTable
     + vqueue_table::WriteVQueueTable
     + lock_table::WriteLockTable
-    + output_table::WriteInvocationOutputTable
-    + output_table::ReadInvocationOutputTable
+    + blob_table::WriteBlobTable
+    + blob_table::ReadBlobTable
     + Send
 {
     fn commit(&mut self) -> impl Future<Output = Result<()>> + Send;

@@ -8,8 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use restate_storage_api::blob_table::ReadBlobTable;
 use restate_storage_api::invocation_status_table::{InvocationStatus, ReadInvocationStatusTable};
-use restate_storage_api::output_table::ReadInvocationOutputTable;
 use restate_types::invocation;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::invocation::{
@@ -21,14 +21,14 @@ use restate_types::net::partition_processor::{
 };
 use restate_wal_protocol::v2::commands;
 
-use crate::ReadOutputTableExt;
+use crate::ReadBlobTableExt;
 use crate::partition::state_machine;
 
 use super::*;
 
 impl<'a, TSchemas, TStorage> RpcContext<'a, TSchemas, TStorage>
 where
-    TStorage: ReadInvocationStatusTable + ReadInvocationOutputTable,
+    TStorage: ReadInvocationStatusTable + ReadBlobTable,
 {
     async fn get_invocation_output(
         &mut self,
@@ -73,7 +73,7 @@ where
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationOutputRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable + ReadInvocationOutputTable,
+    Storage: ReadInvocationStatusTable + ReadBlobTable,
 {
     async fn handle(
         mut self,

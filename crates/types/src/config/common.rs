@@ -872,14 +872,14 @@ experimental! {
     /// Since v1.8.0
     inconsistent_state_mutation_cleanup,
 
-    /// # Write invocation response result into output table
+    /// # Write invocation response result into blob table
     ///
     /// Instead of embedding the response result (which can be huge)
     /// in the invocation status, we instead keep a reference to the
-    /// output that is written to the output table
+    /// output that is written to the blob table
     ///
     /// Since v1.9.0
-    write_output_table,
+    write_blob_table,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

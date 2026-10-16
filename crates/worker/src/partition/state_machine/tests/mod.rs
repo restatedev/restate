@@ -968,7 +968,7 @@ async fn inconsistent_state_mutation_cleanup() -> TestResult {
 }
 
 /// A terminal failure reported by the invoker must classify ABORTED as cancelled in the retained
-/// vqueue entry, independently of the output table feature.
+/// vqueue entry, independently of the blob table feature.
 #[test(restate_core::test)]
 async fn invoker_failure_retained_vqueue_status() -> TestResult {
     let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([

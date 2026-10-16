@@ -16,7 +16,7 @@ use googletest::all;
 use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
-use restate_storage_api::output_table::WriteInvocationOutputTable;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::ResponseResult;
@@ -46,12 +46,12 @@ async fn get_outputs() {
 
     {
         let mut tx = engine.partition_store().transaction();
-        tx.put_invocation_output(
+        tx.put_blob(
             &success_id,
             &ResponseResult::Success(Bytes::from_static(b"{\"greeting\":\"hi\"}")),
         )
         .unwrap();
-        tx.put_invocation_output(&failure_id, &ResponseResult::Failure(failure.clone()))
+        tx.put_blob(&failure_id, &ResponseResult::Failure(failure.clone()))
             .unwrap();
         tx.commit().await.unwrap();
     }
@@ -59,7 +59,7 @@ async fn get_outputs() {
     // 'failure' sorts before 'success', so the row order is deterministic.
     let records = query(
         &engine,
-        "SELECT id, result, output, output_utf8, failure_code, failure_json          FROM sys_invocation_output ORDER BY result",
+        "SELECT id, result, output, output_utf8, failure_code, failure_json          FROM sys_blob ORDER BY result",
     )
     .await;
 
@@ -92,9 +92,7 @@ async fn get_outputs() {
     let missing_id = InvocationId::mock_random();
     let records = query(
         &engine,
-        &format!(
-            "SELECT id, result FROM sys_invocation_output WHERE id IN ('{success_id}', '{missing_id}')"
-        ),
+        &format!("SELECT id, result FROM sys_blob WHERE id IN ('{success_id}', '{missing_id}')"),
     )
     .await;
 

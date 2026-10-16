@@ -18,8 +18,8 @@ use restate_types::sharding::KeyRange;
 use crate::Result;
 use crate::protobuf_types::PartitionStoreProtobufValue;
 
-pub trait ReadInvocationOutputTable {
-    fn get_invocation_output(
+pub trait ReadBlobTable {
+    fn get_blob(
         &mut self,
         invocation_id: &InvocationId,
     ) -> impl Future<Output = Result<Option<ResponseResult>>> + Send;
@@ -30,28 +30,24 @@ impl PartitionStoreProtobufValue for ResponseResult {
 }
 
 #[derive(Debug, Clone)]
-pub enum ScanOutputTableRange {
+pub enum ScanBlobTableRange {
     PartitionKey(KeyRange),
     InvocationId(RangeInclusive<InvocationId>),
     InvocationIdSet(BTreeSet<InvocationId>),
 }
 
-pub trait ScanInvocationOutputTable {
-    fn for_each_output<
+pub trait ScanBlobTable {
+    fn for_each_blob<
         F: FnMut((InvocationId, ResponseResult)) -> std::ops::ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: ScanOutputTableRange,
+        range: ScanBlobTableRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
 }
 
-pub trait WriteInvocationOutputTable {
-    fn put_invocation_output(
-        &mut self,
-        invocation_id: &InvocationId,
-        result: &ResponseResult,
-    ) -> Result<()>;
+pub trait WriteBlobTable {
+    fn put_blob(&mut self, invocation_id: &InvocationId, result: &ResponseResult) -> Result<()>;
 
-    fn delete_invocation_output(&mut self, invocation_id: &InvocationId) -> Result<()>;
+    fn delete_blob(&mut self, invocation_id: &InvocationId) -> Result<()>;
 }

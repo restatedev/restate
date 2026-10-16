@@ -36,6 +36,7 @@ use restate_clock::RoughTimestamp;
 use restate_limiter::LimitKey;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
@@ -50,7 +51,6 @@ use restate_storage_api::journal_table::ReadJournalTable;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::{OpaqueMessage, OutboxMessage, WriteOutboxTable};
-use restate_storage_api::output_table::{ReadInvocationOutputTable, WriteInvocationOutputTable};
 use restate_storage_api::promise_table::{
     Promise, PromiseState, ReadPromiseTable, WritePromiseTable,
 };
@@ -124,7 +124,7 @@ use restate_wal_protocol::v2::{CommandKind, commands};
 use restate_worker_api::invoker::Effect;
 
 use self::utils::SpanExt;
-use crate::ReadOutputTableExt;
+use crate::ReadBlobTableExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
@@ -393,8 +393,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
-            + WriteInvocationOutputTable
-            + ReadInvocationOutputTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         match envelope.kind() {
             CommandKind::Unknown => Err(Error::UnknownCommandKind),
@@ -705,7 +705,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalTable
             + WriteLockTable
             + journal_table_v2::WriteJournalTable
-            + ReadInvocationOutputTable,
+            + ReadBlobTable,
     {
         let invocation_id = service_invocation.invocation_id;
         debug_assert!(
@@ -1045,7 +1045,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<Option<ServiceInvocation>, Error>
     where
         S: ReadInvocationStatusTable
-            + ReadInvocationOutputTable
+            + ReadBlobTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -1552,7 +1552,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1590,7 +1590,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1666,7 +1666,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteTimerTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1826,7 +1826,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteTimerTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1987,7 +1987,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalEventsTable
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -2155,7 +2155,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2197,7 +2197,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2431,8 +2431,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteJournalEventsTable
-            + ReadInvocationOutputTable
-            + WriteInvocationOutputTable,
+            + ReadBlobTable
+            + WriteBlobTable,
     {
         let (key, value) = timer_value.into_inner();
         self.do_delete_timer(key).await?;
@@ -2563,7 +2563,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -2598,11 +2598,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteInvocationOutputTable,
+            + WriteBlobTable,
     {
         if matches!(
             (&invocation_status, &effect.kind),
-            (InvocationStatus::Completed(_), InvokerEffectKind::End) if self.processor.fsm().features().is_write_output_table_enabled()
+            (InvocationStatus::Completed(_), InvokerEffectKind::End) if self.processor.fsm().features().is_write_blob_table_enabled()
         ) {
             // it is possible to receive an End effect while the invocation is actually completed
             // since we end the invocation on Output. So we just ignore it.
@@ -2815,7 +2815,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteInboxTable
             + WriteVirtualObjectStatusTable
             + WriteJournalEventsTable
-            + WriteInvocationOutputTable
+            + WriteBlobTable
             + ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -4164,7 +4164,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     ) -> Result<(), Error>
     where
         S: ReadInvocationStatusTable
-            + ReadInvocationOutputTable
+            + ReadBlobTable
             + WriteInvocationStatusTable
             + WriteOutboxTable
             + WriteFsmTable,
@@ -4577,7 +4577,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn do_free_invocation(&mut self, invocation_id: &InvocationId) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable + WriteInvocationOutputTable,
+        S: WriteInvocationStatusTable + WriteBlobTable,
     {
         debug_if_leader!(
             self.is_leader,
@@ -4589,9 +4589,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .processor
             .fsm()
             .features()
-            .is_write_output_table_enabled()
+            .is_write_blob_table_enabled()
         {
-            self.storage.delete_invocation_output(invocation_id)?;
+            self.storage.delete_blob(invocation_id)?;
         }
 
         self.storage

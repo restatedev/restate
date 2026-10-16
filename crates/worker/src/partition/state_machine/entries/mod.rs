@@ -27,9 +27,9 @@ mod sleep_command;
 use std::collections::VecDeque;
 
 use metrics::counter;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::journal_events::WriteJournalEventsTable;
-use restate_storage_api::output_table::WriteInvocationOutputTable;
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_worker_api::processor::{FsmAccess, PartitionFeatures};
 use tracing::debug;
@@ -119,7 +119,7 @@ where
     S: WriteInboxTable
         + WriteVirtualObjectStatusTable
         + WriteJournalEventsTable
-        + WriteInvocationOutputTable
+        + WriteBlobTable
         + WriteJournalTable
         + ReadJournalTable
         + journal_table_v1::WriteJournalTable
@@ -206,17 +206,12 @@ where
                             // For these entries, we don't need to perform operations, we just need to store them
                         }
                         Command::Output(output) => {
-                            if ctx
-                                .processor
-                                .fsm()
-                                .features()
-                                .is_write_output_table_enabled()
-                            {
-                                // When write_output_table feature is enabled, we no longer
+                            if ctx.processor.fsm().features().is_write_blob_table_enabled() {
+                                // When write_blob_table feature is enabled, we no longer
                                 // write the output journal to the journal table and instead
                                 // go directly to end invocations.
                                 // EndInvocationCommand will write the output directly to the
-                                // output table and only store a reference to the output.
+                                // blob table and only store a reference to the output.
                                 debug_assert!(entries.is_empty(), "output entry is not last entry");
                                 return EndInvocationCommand::new(
                                     self.invocation_id,

@@ -13,6 +13,7 @@ pub mod context;
 pub mod remote_query_scanner_server;
 
 pub mod bifrost_read_stream;
+mod blob;
 pub mod config;
 mod deployment;
 mod inbox;
@@ -25,7 +26,6 @@ mod log;
 pub mod loglet_worker;
 mod node;
 pub mod node_fan_out;
-mod output;
 mod partition;
 mod partition_replica_set;
 mod partition_state;

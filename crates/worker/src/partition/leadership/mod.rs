@@ -576,10 +576,10 @@ where
                     .push(PartitionFeatureChange::EnableInconsistentStateMutationCleanup);
             }
 
-            if config.common.experimental.is_write_output_table_enabled()
-                && !processor.fsm().features().is_write_output_table_enabled()
+            if config.common.experimental.is_write_blob_table_enabled()
+                && !processor.fsm().features().is_write_blob_table_enabled()
             {
-                feature_changes.push(PartitionFeatureChange::EnableWriteOutputTable);
+                feature_changes.push(PartitionFeatureChange::EnableWriteBlobTable);
             }
 
             if !feature_changes.is_empty() {
@@ -1223,7 +1223,7 @@ mod tests {
                 unique_random_seeds: true,
                 preflight_invocation_termination_retention: true,
                 inconsistent_state_mutation_cleanup: true,
-                write_output_table: true,
+                write_blob_table: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

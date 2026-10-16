@@ -75,12 +75,12 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
-    /// Write invocation results into the output
+    /// Write invocation results into the blob
     /// table and only reference this value from
     /// the invocation status.
     ///
     /// *Since v1.8.0*
-    EnableWriteOutputTable = 7,
+    EnableWriteBlobTable = 7,
 }
 
 impl PartitionFeatureChange {
@@ -100,7 +100,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
-            Self::EnableWriteOutputTable => &RESTATE_VERSION_1_8_0,
+            Self::EnableWriteBlobTable => &RESTATE_VERSION_1_8_0,
         }
     }
 
@@ -128,9 +128,7 @@ impl PartitionFeatureChange {
             Self::EnableInconsistentStateMutationCleanup => {
                 !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
             }
-            Self::EnableWriteOutputTable => {
-                !std::mem::replace(&mut features.write_output_table, true)
-            }
+            Self::EnableWriteBlobTable => !std::mem::replace(&mut features.write_blob_table, true),
         }
     }
 }
@@ -195,13 +193,13 @@ pub struct PersistedFeatures {
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
 
-    /// Write invocation results into the output
+    /// Write invocation results into the blob
     /// table and only reference this value from
     /// the invocation status.
     ///
     /// *Since v1.8.0*
     #[bilrost(tag(7))]
-    pub write_output_table: bool,
+    pub write_blob_table: bool,
 }
 
 impl PersistedFeatures {
@@ -219,7 +217,7 @@ impl PersistedFeatures {
                 .then_some("preflight_invocation_termination_retention"),
             self.inconsistent_state_mutation_cleanup
                 .then_some("inconsistent_state_mutation_cleanup"),
-            self.write_output_table.then_some("write_output_table"),
+            self.write_blob_table.then_some("write_blob_table"),
         ]
         .into_iter()
         .flatten()

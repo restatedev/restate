@@ -14,6 +14,15 @@ pub struct SqlColumnDoc { pub name: &'static str, pub ty: &'static str, pub desc
 pub struct SqlTableDoc { pub name: &'static str, pub description: &'static str, pub columns: &'static [SqlColumnDoc] }
 
 pub static SQL_TABLES: &[SqlTableDoc] = &[
+    SqlTableDoc { name: "sys_blob", description: "", columns: &[
+        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
+        SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/operate/invocation#invocation-identifier)." },
+        SqlColumnDoc { name: "result", ty: "Utf8", description: "Either `success` or `failure`." },
+        SqlColumnDoc { name: "output", ty: "Binary", description: "A binary, uninterpreted representation of the invocation output. NULL if `result = 'failure'`. You can use the more specific column `output_utf8` if the output is a string." },
+        SqlColumnDoc { name: "output_utf8", ty: "Utf8", description: "Only contains meaningful values when the handler returns its output as `utf8`. This is the case for handlers that serialize their output using JSON (the SDK default)." },
+        SqlColumnDoc { name: "failure_code", ty: "UInt32", description: "If `result = 'failure'`, this contains the error code." },
+        SqlColumnDoc { name: "failure_json", ty: "Utf8", description: "If `result = 'failure'`, this contains the error serialized as a JSON string." },
+    ] },
     SqlTableDoc { name: "sys_deployment", description: "Registered deployments. A deployment is a version of your service(s) code that Restate calls.", columns: &[
         SqlColumnDoc { name: "id", ty: "Utf8", description: "The ID of the service deployment." },
         SqlColumnDoc { name: "ty", ty: "Utf8", description: "The type of the endpoint. Either `http` or `lambda`." },
@@ -63,15 +72,6 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "lock_name", ty: "Utf8", description: "The name of the lock (in the format of `service/key`)" },
         SqlColumnDoc { name: "acquired_at", ty: "TimestampMillisecond", description: "Timestamp of lock acquisition" },
         SqlColumnDoc { name: "acquired_by", ty: "Utf8", description: "The invocation (or other operation) that acquired this lock." },
-    ] },
-    SqlTableDoc { name: "sys_invocation_output", description: "", columns: &[
-        SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
-        SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/operate/invocation#invocation-identifier)." },
-        SqlColumnDoc { name: "result", ty: "Utf8", description: "Either `success` or `failure`." },
-        SqlColumnDoc { name: "output", ty: "Binary", description: "A binary, uninterpreted representation of the invocation output. NULL if `result = 'failure'`. You can use the more specific column `output_utf8` if the output is a string." },
-        SqlColumnDoc { name: "output_utf8", ty: "Utf8", description: "Only contains meaningful values when the handler returns its output as `utf8`. This is the case for handlers that serialize their output using JSON (the SDK default)." },
-        SqlColumnDoc { name: "failure_code", ty: "UInt32", description: "If `result = 'failure'`, this contains the error code." },
-        SqlColumnDoc { name: "failure_json", ty: "Utf8", description: "If `result = 'failure'`, this contains the error serialized as a JSON string." },
     ] },
     SqlTableDoc { name: "sys_promise", description: "Durable promises of Workflows. One row per promise of a workflow instance, with its completion value or failure once completed.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the services invocations. Can be ignored." },
@@ -284,4 +284,4 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
 ];
 
-pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_invocation_output, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";
+pub static SQL_TABLES_HELP: &str = "Queryable introspection tables:\n  sys_blob, sys_deployment, sys_inbox, sys_journal, sys_journal_events, sys_locks, sys_promise, sys_rules, sys_scheduler, sys_service, state, sys_user_limits, sys_vqueue_entry_status, sys_vqueue_meta, sys_vqueues, sys_invocation\n\nRun `restate sql describe <table>` for a table's columns.";

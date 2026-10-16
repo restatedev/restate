@@ -9,12 +9,12 @@
 // by the Apache License, Version 2.0.
 
 use assert2::assert;
-use restate_storage_api::output_table::WriteInvocationOutputTable;
 use tracing::warn;
 
 use restate_clock::UniqueTimestamp;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -176,7 +176,7 @@ where
         + WriteTimerTable
         + ReadPromiseTable
         + WritePromiseTable
-        + WriteInvocationOutputTable,
+        + WriteBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -207,13 +207,10 @@ where
             pinned_service_protocol_version.unwrap_or_default(),
         );
 
-        // The feature stores a *reference* (journal entry index) to the output table instead of
+        // The feature stores a *reference* (journal entry index) to the blob table instead of
         // inlining the result bytes, and synthesizes a missing output entry on Killed/Failed.
-        let is_write_output_table_enabled = ctx
-            .processor
-            .fsm()
-            .features()
-            .is_write_output_table_enabled();
+        let is_write_blob_table_enabled =
+            ctx.processor.fsm().features().is_write_blob_table_enabled();
 
         let vqueue_id = invocation_metadata.vqueue_id.clone();
 
@@ -262,8 +259,8 @@ where
                 }
             };
 
-            if is_write_output_table_enabled && !completion_retention.is_zero() {
-                ctx.storage.put_invocation_output(&invocation_id, &output)?;
+            if is_write_blob_table_enabled && !completion_retention.is_zero() {
+                ctx.storage.put_blob(&invocation_id, &output)?;
             }
 
             if let (
@@ -278,7 +275,7 @@ where
                 };
             }
 
-            let response_result_ref = match is_write_output_table_enabled {
+            let response_result_ref = match is_write_blob_table_enabled {
                 // always inline, we can't reference the output entry
                 false => match reason {
                     EndInvocationReason::Killed => {

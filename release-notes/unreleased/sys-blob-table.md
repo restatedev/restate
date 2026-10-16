@@ -1,4 +1,4 @@
-# Release Notes: `sys_invocation_output` SQL table
+# Release Notes: `sys_blob` SQL table
 
 ## New Feature
 
@@ -6,7 +6,7 @@
 
 A new experimental option stores invocation output payloads in a dedicated table instead of
 embedding them in the invocation status record. When the option is enabled, a new SQL table,
-`sys_invocation_output`, exposes them:
+`sys_blob`, exposes them:
 
 | Column | Type | Description |
 | --- | --- | --- |
@@ -24,12 +24,12 @@ inspector (`restate-doctor snapshot`).
 ### Why This Matters
 
 Large responses no longer bloat the invocation status record. `sys_invocation_status` still
-reports *whether* an invocation completed successfully, and `sys_invocation_output` is where the
+reports *whether* an invocation completed successfully, and `sys_blob` is where the
 response payload is readable.
 
 ### Impact on Users
 
-Without the option, nothing changes and `sys_invocation_output` stays empty.
+Without the option, nothing changes and `sys_blob` stays empty.
 
 With the option enabled, invocations that complete afterwards are reported differently in
 `sys_invocation_status`:
@@ -37,7 +37,7 @@ With the option enabled, invocations that complete afterwards are reported diffe
 - `completion_result` is `killed` for killed invocations (previously `failure`). Queries that
   filter on `completion_result = 'failure'` to find killed invocations must also match `'killed'`.
 - `completion_failure` contains only the error code (e.g. `[500]`) and no longer includes the
-  error message. Read the message from `sys_invocation_output.failure_json` instead.
+  error message. Read the message from `sys_blob.failure_json` instead.
 - `completion_failure_code` is unchanged.
 
 Invocations that completed before the option was enabled keep their previous representation.
@@ -50,16 +50,16 @@ switch already-upgraded partitions back.
 Enable the option on every node, after the whole cluster runs this version:
 
 ```toml
-experimental-enable-write-output-table = true
+experimental-enable-write-blob-table = true
 ```
 
-Or via the environment variable `RESTATE_EXPERIMENTAL_ENABLE_WRITE_OUTPUT_TABLE=true`.
+Or via the environment variable `RESTATE_EXPERIMENTAL_ENABLE_WRITE_BLOB_TABLE=true`.
 
 Read the payload from the new table:
 
 ```sql
 SELECT s.id, s.target, o.result, o.output_utf8
 FROM sys_invocation_status s
-JOIN sys_invocation_output o ON s.id = o.id
+JOIN sys_blob o ON s.id = o.id
 WHERE s.status = 'completed';
 ```

@@ -16,9 +16,8 @@ use futures::FutureExt;
 use rocksdb::ReadOptions;
 
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
-use restate_storage_api::output_table::{
-    ReadInvocationOutputTable, ScanInvocationOutputTable, ScanOutputTableRange,
-    WriteInvocationOutputTable,
+use restate_storage_api::blob_table::{
+    ReadBlobTable, ScanBlobTable, ScanBlobTableRange, WriteBlobTable,
 };
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
 use restate_storage_api::{Result, StorageError};
@@ -26,21 +25,21 @@ use restate_types::identifiers::{InvocationId, InvocationUuid};
 use restate_types::invocation::ResponseResult;
 use restate_types::sharding::{PartitionKey, WithPartitionKey};
 
-use crate::TableKind::InvocationOutput;
+use crate::TableKind::Blob;
 use crate::error::break_on_err;
 use crate::keys::{DecodeTableKey, EncodeTableKey, KeyKind, define_table_key};
 use crate::{PartitionStore, PartitionStoreTransaction, StorageAccess, TableScan};
 
 define_table_key!(
-    InvocationOutput,
-    KeyKind::InvocationOutput,
-    InvocationOutputKey(
+    Blob,
+    KeyKind::Blob,
+    BlobKey(
         partition_key: PartitionKey,
         invocation_uuid: InvocationUuid
     )
 );
 
-impl InvocationOutputKey {
+impl BlobKey {
     pub const fn serialized_length_fixed() -> usize {
         KeyKind::SERIALIZED_LENGTH
             + std::mem::size_of::<PartitionKey>()
@@ -48,39 +47,39 @@ impl InvocationOutputKey {
     }
 }
 
-/// Maximum number of invocation-output keys passed to one RocksDB multi-get call.
+/// Maximum number of blob keys passed to one RocksDB multi-get call.
 /// Kept low since each value holds a (potentially large) invocation output payload.
-const INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE: usize = 25;
+const BLOB_MULTI_GET_BATCH_SIZE: usize = 25;
 
 #[inline]
-fn create_invocation_output_key(invocation_id: &InvocationId) -> InvocationOutputKey {
-    InvocationOutputKey {
+fn create_blob_key(invocation_id: &InvocationId) -> BlobKey {
+    BlobKey {
         partition_key: invocation_id.partition_key(),
         invocation_uuid: invocation_id.invocation_uuid(),
     }
 }
 
-fn put_output<S: StorageAccess>(
+fn put_blob<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
-    output_message: &ResponseResult,
+    value: &ResponseResult,
 ) -> Result<()> {
-    storage.put_kv_proto(create_invocation_output_key(invocation_id), output_message)
+    storage.put_kv_proto(create_blob_key(invocation_id), value)
 }
 
-fn delete_output<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) -> Result<()> {
-    storage.delete_key(&create_invocation_output_key(invocation_id))
+fn delete_blob<S: StorageAccess>(storage: &mut S, invocation_id: &InvocationId) -> Result<()> {
+    storage.delete_key(&create_blob_key(invocation_id))
 }
 
-fn get_invocation_output<S: StorageAccess>(
+fn get_blob<S: StorageAccess>(
     storage: &mut S,
     invocation_id: &InvocationId,
 ) -> Result<Option<ResponseResult>> {
-    let _x = RocksDbReadPerfGuard::new("get-output");
-    storage.get_value_proto(create_invocation_output_key(invocation_id))
+    let _x = RocksDbReadPerfGuard::new("get-blob");
+    storage.get_value_proto(create_blob_key(invocation_id))
 }
 
-fn multi_get_invocation_output<F>(
+fn multi_get_blob<F>(
     store: &PartitionStore,
     ids: BTreeSet<InvocationId>,
     mut f: F,
@@ -88,7 +87,7 @@ fn multi_get_invocation_output<F>(
 where
     F: FnMut((InvocationId, ResponseResult)) -> ControlFlow<()> + Send + Sync + 'static,
 {
-    const KEY_LEN: usize = InvocationOutputKey::serialized_length_fixed();
+    const KEY_LEN: usize = BlobKey::serialized_length_fixed();
 
     let rocksdb = store.partition_db().rocksdb().clone();
     let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
@@ -96,17 +95,17 @@ where
     async move {
         rocksdb
             .run_background_read_op(
-                "df-invocation-output",
+                "df-blob",
                 StorageTaskKind::MultiGet,
                 Priority::Low,
                 move |raw_db| -> Result<()> {
                     let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
                         return Err(StorageError::Generic(anyhow::anyhow!(
-                            "column family {cf_name} not found for invocation-output multi-get"
+                            "column family {cf_name} not found for blob multi-get"
                         )));
                     };
 
-                    let batch_capacity = ids.len().min(INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE);
+                    let batch_capacity = ids.len().min(BLOB_MULTI_GET_BATCH_SIZE);
                     let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
                     let mut batch_ids = Vec::with_capacity(batch_capacity);
 
@@ -119,11 +118,8 @@ where
                         key_buf.clear();
                         batch_ids.clear();
 
-                        for id in ids.by_ref().take(INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE) {
-                            EncodeTableKey::serialize_to(
-                                &create_invocation_output_key(&id),
-                                &mut key_buf,
-                            );
+                        for id in ids.by_ref().take(BLOB_MULTI_GET_BATCH_SIZE) {
+                            EncodeTableKey::serialize_to(&create_blob_key(&id), &mut key_buf);
                             batch_ids.push(id);
                         }
 
@@ -134,7 +130,7 @@ where
                         let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
                         debug_assert!(
                             remainder.is_empty(),
-                            "Each serialized InvocationOutputKey should have KEY_LEN"
+                            "Each serialized BlobKey should have KEY_LEN"
                         );
 
                         let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
@@ -152,7 +148,7 @@ where
                             }
                         }
 
-                        if batch_ids.len() < INVOCATION_OUTPUT_MULTI_GET_BATCH_SIZE {
+                        if batch_ids.len() < BLOB_MULTI_GET_BATCH_SIZE {
                             break;
                         }
                     }
@@ -165,52 +161,49 @@ where
     }
 }
 
-impl ReadInvocationOutputTable for PartitionStore {
-    async fn get_invocation_output(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> Result<Option<ResponseResult>> {
-        get_invocation_output(self, invocation_id)
+impl ReadBlobTable for PartitionStore {
+    async fn get_blob(&mut self, invocation_id: &InvocationId) -> Result<Option<ResponseResult>> {
+        get_blob(self, invocation_id)
     }
 }
 
-impl ScanInvocationOutputTable for PartitionStore {
-    fn for_each_output<
+impl ScanBlobTable for PartitionStore {
+    fn for_each_blob<
         F: FnMut((InvocationId, ResponseResult)) -> ControlFlow<()> + Send + Sync + 'static,
     >(
         &self,
-        range: ScanOutputTableRange,
+        range: ScanBlobTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
-        if let ScanOutputTableRange::InvocationIdSet(ids) = range {
-            return Ok(multi_get_invocation_output(self, ids, f).boxed());
+        if let ScanBlobTableRange::InvocationIdSet(ids) = range {
+            return Ok(multi_get_blob(self, ids, f).boxed());
         }
 
         let scan = match range {
-            ScanOutputTableRange::PartitionKey(partition_key) => {
-                TableScan::ScanPartitionKeyRange::<InvocationOutputKeyBuilder>(partition_key)
+            ScanBlobTableRange::PartitionKey(partition_key) => {
+                TableScan::ScanPartitionKeyRange::<BlobKeyBuilder>(partition_key)
             }
-            ScanOutputTableRange::InvocationId(invocation_id) => {
-                let start = InvocationOutputKey::builder()
+            ScanBlobTableRange::InvocationId(invocation_id) => {
+                let start = BlobKey::builder()
                     .partition_key(invocation_id.start().partition_key())
                     .invocation_uuid(invocation_id.start().invocation_uuid());
 
-                let end = InvocationOutputKey::builder()
+                let end = BlobKey::builder()
                     .partition_key(invocation_id.end().partition_key())
                     .invocation_uuid(invocation_id.end().invocation_uuid());
 
                 TableScan::RangeInclusive(start, end)
             }
-            ScanOutputTableRange::InvocationIdSet(_) => unreachable!("handled above"),
+            ScanBlobTableRange::InvocationIdSet(_) => unreachable!("handled above"),
         };
 
         let scan_fut = self
             .iterator_for_each(
-                "df-invocation-output",
+                "df-blob",
                 Priority::Low,
                 scan,
                 move |(mut key, mut value)| {
-                    let output_key = break_on_err(InvocationOutputKey::deserialize_from(&mut key))?;
+                    let output_key = break_on_err(BlobKey::deserialize_from(&mut key))?;
                     let (partition_key, invocation_uuid) = output_key.split();
                     let output = break_on_err(ResponseResult::decode(&mut value))?;
 
@@ -227,25 +220,18 @@ impl ScanInvocationOutputTable for PartitionStore {
     }
 }
 
-impl ReadInvocationOutputTable for PartitionStoreTransaction<'_> {
-    async fn get_invocation_output(
-        &mut self,
-        invocation_id: &InvocationId,
-    ) -> Result<Option<ResponseResult>> {
-        get_invocation_output(self, invocation_id)
+impl ReadBlobTable for PartitionStoreTransaction<'_> {
+    async fn get_blob(&mut self, invocation_id: &InvocationId) -> Result<Option<ResponseResult>> {
+        get_blob(self, invocation_id)
     }
 }
 
-impl WriteInvocationOutputTable for PartitionStoreTransaction<'_> {
-    fn put_invocation_output(
-        &mut self,
-        invocation_id: &InvocationId,
-        result: &ResponseResult,
-    ) -> Result<()> {
-        put_output(self, invocation_id, result)
+impl WriteBlobTable for PartitionStoreTransaction<'_> {
+    fn put_blob(&mut self, invocation_id: &InvocationId, result: &ResponseResult) -> Result<()> {
+        put_blob(self, invocation_id, result)
     }
 
-    fn delete_invocation_output(&mut self, invocation_id: &InvocationId) -> Result<()> {
-        delete_output(self, invocation_id)
+    fn delete_blob(&mut self, invocation_id: &InvocationId) -> Result<()> {
+        delete_blob(self, invocation_id)
     }
 }

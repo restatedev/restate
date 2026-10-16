@@ -147,9 +147,9 @@ mod tests {
 
     #[rstest]
     #[restate_core::test]
-    async fn purge_journal_then_invocation(#[values(false, true)] write_output_table: bool) {
+    async fn purge_journal_then_invocation(#[values(false, true)] write_blob_table: bool) {
         let mut test_env = TestEnv::create_with_features(PersistedFeatures {
-            write_output_table,
+            write_blob_table,
             ..Default::default()
         })
         .await;
@@ -201,9 +201,9 @@ mod tests {
             }))
         );
 
-        // With the output table, the Output command is not written to the journal
+        // With the blob table, the Output command is not written to the journal
         let mut expected_commands = vec![CommandType::Input.into()];
-        if !write_output_table {
+        if !write_blob_table {
             expected_commands.push(CommandType::Output.into());
         }
         let expected_length = expected_commands.len() as u32;

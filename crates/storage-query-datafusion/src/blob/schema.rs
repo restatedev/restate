@@ -12,9 +12,9 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_invocation_output(partition_key));
+define_sort_order!(sys_blob(partition_key));
 
-define_table!(sys_invocation_output(
+define_table!(sys_blob(
     /// Internal column that is used for partitioning the services invocations. Can be ignored.
     partition_key: DataType::UInt64,
 

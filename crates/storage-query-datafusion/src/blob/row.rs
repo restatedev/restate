@@ -11,11 +11,11 @@
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::ResponseResult;
 
-use super::schema::SysInvocationOutputBuilder;
+use super::schema::SysBlobBuilder;
 
 #[inline]
-pub(crate) fn append_output_row(
-    builder: &mut SysInvocationOutputBuilder,
+pub(crate) fn append_blob_row(
+    builder: &mut SysBlobBuilder,
     invocation_id: InvocationId,
     output: ResponseResult,
 ) {

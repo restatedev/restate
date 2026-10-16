@@ -104,7 +104,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
     match key_kind {
         // Fixed-size keys after partition
         #[allow(deprecated)]
-        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 | KeyKind::InvocationOutput => {
+        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 | KeyKind::Blob => {
             // InvocationUuid (16 bytes)
             if remaining >= 16 {
                 segments.push(Segment {

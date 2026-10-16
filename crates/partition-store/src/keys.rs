@@ -83,10 +83,10 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
-    // # Output
-    // stores the invocation output separated from the invocation
-    // status
-    InvocationOutput,
+    // # Blob
+    // stores large values (e.g. invocation outputs) separated from
+    // the records referencing them
+    Blob,
 }
 
 impl KeyKind {
@@ -150,7 +150,7 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
-            KeyKind::InvocationOutput => b"io",
+            KeyKind::Blob => b"bl",
         }
     }
 
@@ -164,13 +164,13 @@ impl KeyKind {
     /// ```
     pub const fn from_bytes(bytes: &[u8; Self::SERIALIZED_LENGTH]) -> Option<Self> {
         match bytes {
+            b"bl" => Some(KeyKind::Blob),
             b"de" => Some(KeyKind::Deduplication),
             b"fs" => Some(KeyKind::Fsm),
             b"ip" => Some(KeyKind::Idempotency),
             b"ib" => Some(KeyKind::Inbox),
             b"is" => Some(KeyKind::InvocationStatusV1),
             b"iS" => Some(KeyKind::InvocationStatus),
-            b"io" => Some(KeyKind::InvocationOutput),
             b"jo" => Some(KeyKind::Journal),
             b"j2" => Some(KeyKind::JournalV2),
             b"je" => Some(KeyKind::JournalEvent),
