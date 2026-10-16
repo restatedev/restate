@@ -9,15 +9,26 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::VecDeque;
+use std::ops::{Add, AddAssign, Sub, SubAssign};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::task::{Context, Wake, Waker};
+use std::time::Instant;
 
 use enum_map::{Array, Enum, EnumMap};
+use futures::FutureExt;
 use futures::task::AtomicWaker;
+use metrics::{gauge, histogram};
 use tracing::warn;
 
-use restate_bifrost::WrittenRecords;
+use restate_bifrost::{CommitToken, WrittenRecords};
+use restate_types::logs::Lsn;
+use restate_types::sharding::PartitionId;
+
+use crate::metric_definitions::{
+    PARTITION_LABEL, SELF_PROPOSER_ADMIT_TO_APPLY_LATENCY, SELF_PROPOSER_INFLIGHT,
+};
 
 const QUANTUM: i64 = 64 * 1024; // 64KiB
 
@@ -132,6 +143,20 @@ impl SelfProposerSchedulerFlow {
     fn bit(self) -> u16 {
         1 << self.into_usize()
     }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            SelfProposerSchedulerFlow::Invoker => "invoker",
+            SelfProposerSchedulerFlow::Timer => "timer",
+            SelfProposerSchedulerFlow::Shuffle => "shuffle",
+            SelfProposerSchedulerFlow::Cleaner => "cleaner",
+            SelfProposerSchedulerFlow::UpsertSchema => "upsert-schema",
+            SelfProposerSchedulerFlow::UpsertRuleBook => "upsert-rule-book",
+            SelfProposerSchedulerFlow::NetworkService => "network-service",
+            SelfProposerSchedulerFlow::PartitionMaintenance => "partition-maintenance",
+            SelfProposerSchedulerFlow::Scheduler => "scheduler",
+        }
+    }
 }
 
 /// The scheduler's decision of which flow to poll next. The caller must then poll the returned flow and
@@ -144,6 +169,7 @@ pub(crate) struct SchedulerDecision<'a> {
     pub(crate) waker: &'a Waker,
     state: &'a mut EnumMap<SelfProposerSchedulerFlow, FlowState>,
     ready_ring: &'a mut VecDeque<SelfProposerSchedulerFlow>,
+    inflight: &'a mut InflightBatches,
     shared: &'a Shared,
     received_feedback: bool,
 }
@@ -179,6 +205,7 @@ impl<'a> SchedulerDecision<'a> {
         state.deficit = state.deficit.saturating_sub(cost);
         std::debug_assert_matches!(state.state, State::Polling);
         self.requeue(result.bytes_written == 0);
+        self.inflight.add(self.flow, result);
     }
 
     /// Reports back that the flow was ready, but reported an error without proposing any bytes.
@@ -232,6 +259,168 @@ impl Drop for SchedulerDecision<'_> {
     }
 }
 
+struct FlowMetrics {
+    in_flight: metrics::Gauge,
+}
+
+impl Drop for FlowMetrics {
+    fn drop(&mut self) {
+        self.in_flight.set(0.0);
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct InflightBatchStats {
+    total_bytes: usize,
+    total_records: usize,
+}
+
+impl Add for InflightBatchStats {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            total_bytes: self.total_bytes.saturating_add(rhs.total_bytes),
+            total_records: self.total_records.saturating_add(rhs.total_records),
+        }
+    }
+}
+
+impl AddAssign for InflightBatchStats {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
+impl Sub for InflightBatchStats {
+    type Output = Self;
+
+    fn sub(self, rhs: Self) -> Self::Output {
+        Self {
+            total_bytes: self.total_bytes.saturating_sub(rhs.total_bytes),
+            total_records: self.total_records.saturating_sub(rhs.total_records),
+        }
+    }
+}
+
+impl SubAssign for InflightBatchStats {
+    fn sub_assign(&mut self, rhs: Self) {
+        *self = *self - rhs;
+    }
+}
+
+struct InflightBatch {
+    // Using MaybeDone to fuse the commit token to its resolved LSN once completed.
+    commit: futures::future::MaybeDone<CommitToken>,
+    inflight: EnumMap<SelfProposerSchedulerFlow, InflightBatchStats>,
+    enqueued_at: Instant,
+}
+
+struct InflightBatches {
+    // Batch Tracking
+    batches: VecDeque<InflightBatch>,
+    current_batch: EnumMap<SelfProposerSchedulerFlow, InflightBatchStats>,
+
+    // Stat Aggregates
+    total_pre_flow_inflight: EnumMap<SelfProposerSchedulerFlow, InflightBatchStats>,
+    total_inflight: InflightBatchStats,
+
+    // Metrics
+    metrics: EnumMap<SelfProposerSchedulerFlow, FlowMetrics>,
+    admit_to_apply_latency: metrics::Histogram,
+}
+
+impl InflightBatches {
+    fn new(partition_id: PartitionId) -> Self {
+        Self {
+            batches: VecDeque::new(),
+            current_batch: Default::default(),
+
+            total_pre_flow_inflight: Default::default(),
+            total_inflight: Default::default(),
+
+            metrics: EnumMap::from_fn(|flow: SelfProposerSchedulerFlow| FlowMetrics {
+                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition_id.to_string(), "flow" => flow.as_str()),
+            }),
+            admit_to_apply_latency: histogram!(SELF_PROPOSER_ADMIT_TO_APPLY_LATENCY),
+        }
+    }
+
+    fn add(&mut self, flow: SelfProposerSchedulerFlow, written: WrittenRecords) {
+        let written = InflightBatchStats {
+            total_bytes: written.bytes_written,
+            total_records: written.records_written,
+        };
+
+        self.current_batch[flow] += written;
+        self.total_pre_flow_inflight[flow] += written;
+        self.total_inflight += written;
+    }
+
+    fn drop_batch(&mut self, batch: InflightBatch) {
+        for (flow, stats) in batch.inflight.iter() {
+            self.total_pre_flow_inflight[flow] -= *stats;
+            self.total_inflight -= *stats;
+        }
+    }
+
+    fn finalize_batch(&mut self, commit_token: CommitToken) {
+        self.batches.push_back(InflightBatch {
+            commit: futures::future::maybe_done(commit_token),
+            inflight: std::mem::take(&mut self.current_batch),
+            enqueued_at: Instant::now(),
+        });
+    }
+
+    fn poll_on_progress(&mut self, cx: &mut Context<'_>, applied_lsn: Lsn) {
+        while let Some(batch) = self.batches.front_mut() {
+            // `MaybeDone` fuses the commit token: once it resolves it keeps reporting `Ready` and
+            // re-exposes its output, so it's safe to poll it again on subsequent calls. It's
+            // `Unpin`, so we can pin the field in place without moving it out.
+            if batch.commit.poll_unpin(cx).is_pending() {
+                return;
+            }
+
+            // Resolving the output borrows `batch.commit`; copy the committed LSN out so that the
+            // borrow ends before we possibly drop the batch below.
+            let committed = match Pin::new(&mut batch.commit).output_mut() {
+                Some(Ok(lsn)) => Ok(*lsn),
+                Some(Err(e)) => {
+                    warn!(?e, "Failed to commit inflight batch, dropping it");
+                    Err(())
+                }
+                None => unreachable!("commit token resolved but has no output"),
+            };
+
+            match committed {
+                // The head batch is committed but not applied yet. Batches are applied in order,
+                // so the ones behind it can't be applied either.
+                Ok(committed_lsn) if applied_lsn < committed_lsn => return,
+                // This batch is already applied, drop it and measure the admit-to-apply latency.
+                Ok(_) => {
+                    let batch = self.batches.pop_front().unwrap();
+                    self.admit_to_apply_latency
+                        .record(batch.enqueued_at.elapsed());
+                    self.drop_batch(batch);
+                }
+                // Failed batches are dropped without being measured.
+                Err(()) => {
+                    let batch = self.batches.pop_front().unwrap();
+                    self.drop_batch(batch);
+                }
+            }
+        }
+    }
+
+    fn report_metrics(&self) {
+        for (flow, metrics) in self.metrics.iter() {
+            metrics
+                .in_flight
+                .set(self.total_pre_flow_inflight[flow].total_records as f64);
+        }
+    }
+}
+
 /// A scheduler that sits in front of the self-proposer to decide which one of the possible self-proposer writers
 /// should be allowed to write next. This is a byte-aware DRR scheduler that tries to ensure fairness among the writers
 /// based on the amount of bytes each one have proposed.
@@ -246,16 +435,13 @@ pub(crate) struct SelfProposerScheduler {
     ready_ring: VecDeque<SelfProposerSchedulerFlow>,
     /// A cache for the per-flow wakers
     wakers: EnumMap<SelfProposerSchedulerFlow, Waker>,
-}
 
-impl Default for SelfProposerScheduler {
-    fn default() -> Self {
-        Self::new()
-    }
+    // Inflight proposal tracking
+    inflight: InflightBatches,
 }
 
 impl SelfProposerScheduler {
-    pub(crate) fn new() -> SelfProposerScheduler {
+    pub(crate) fn new(partition_id: PartitionId) -> SelfProposerScheduler {
         let state = EnumMap::from_fn(|_| FlowState {
             deficit: 0,
             state: State::Queued,
@@ -278,6 +464,7 @@ impl SelfProposerScheduler {
             ready_ring: VecDeque::from_iter(state.iter().map(|(flow, _)| flow)),
             state,
             wakers,
+            inflight: InflightBatches::new(partition_id),
         }
     }
 
@@ -303,6 +490,18 @@ impl SelfProposerScheduler {
                 }
             }
         }
+    }
+
+    pub fn on_round_end(&mut self, token: CommitToken) {
+        self.inflight.finalize_batch(token);
+        self.inflight.report_metrics();
+    }
+
+    /// Drops the inflight batches that are committed at or below `applied_lsn`. Should be called
+    /// from the partition processor's loop as the applied LSN advances.
+    pub fn poll_on_progress(&mut self, cx: &mut Context<'_>, applied_lsn: Lsn) {
+        self.inflight.poll_on_progress(cx, applied_lsn);
+        self.inflight.report_metrics();
     }
 
     /// Polls the scheduler for the next decision. The returned [`SchedulerDecision`] is a handle to the flow that's
@@ -342,6 +541,7 @@ impl SelfProposerScheduler {
                         waker: &self.wakers[flow],
                         state: &mut self.state,
                         ready_ring: &mut self.ready_ring,
+                        inflight: &mut self.inflight,
                         shared: &self.shared,
                         received_feedback: false,
                     });
@@ -372,7 +572,9 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Wake, Waker};
 
-    use restate_bifrost::WrittenRecords;
+    use restate_bifrost::{CommitToken, WrittenRecords};
+    use restate_types::logs::Lsn;
+    use restate_types::sharding::PartitionId;
 
     use crate::partition::leadership::self_proposer_scheduler::{
         QUANTUM, SelfProposerSchedulerFlow,
@@ -411,7 +613,7 @@ mod tests {
         let waker = Waker::from(Arc::clone(&test_waker));
         let mut cx = Context::from_waker(&waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new();
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
 
         // First poll, expecting the invoker flow.
         let dec = scheduler
@@ -494,7 +696,7 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new();
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
 
         // Report 100x the quantum for the invoker
         let dec = scheduler
@@ -545,5 +747,92 @@ mod tests {
 
         // Now all are pending
         assert!(scheduler.poll_next_ready(&mut cx).is_none());
+    }
+
+    #[test]
+    fn tracks_inflight_records() {
+        let waker = Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+
+        // The invoker proposes 1 KiB across 2 records.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("expected flow, got none");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
+        dec.on_proposal_enqueued(WrittenRecords {
+            bytes_written: 1024,
+            records_written: 2,
+        });
+
+        // The invoker still has credits, so it gets polled again; move on to the timer.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("expected flow, got none");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
+        dec.on_pending();
+
+        // The timer proposes 512 B across a single record.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("expected flow, got none");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Timer);
+        dec.on_proposal_enqueued(WrittenRecords {
+            bytes_written: 512,
+            records_written: 1,
+        });
+
+        // The inflight total accounts for everything proposed by both flows.
+        let inflight = scheduler.inflight.total_inflight;
+        assert_eq!(inflight.total_bytes, 1024 + 512);
+        assert_eq!(inflight.total_records, 2 + 1);
+
+        // Ending the round seals the current batch, but it stays inflight until applied.
+        let (tx, rx) = tokio::sync::oneshot::channel::<Lsn>();
+        scheduler.on_round_end(CommitToken::new(rx));
+        assert_eq!(scheduler.inflight.batches.len(), 1);
+
+        // The commit token hasn't resolved yet, so nothing can be dropped.
+        scheduler.inflight.poll_on_progress(&mut cx, Lsn::new(5));
+        assert_eq!(scheduler.inflight.batches.len(), 1);
+
+        // The batch commits at LSN 10, but the applied LSN (5) hasn't reached it yet: it's still
+        // inflight, and the resolved token isn't polled again.
+        tx.send(Lsn::new(10)).expect("receiver is alive");
+        scheduler.inflight.poll_on_progress(&mut cx, Lsn::new(5));
+        let inflight = scheduler.inflight.total_inflight;
+        assert_eq!(scheduler.inflight.batches.len(), 1);
+        assert_eq!(inflight.total_bytes, 1024 + 512);
+        assert_eq!(inflight.total_records, 2 + 1);
+
+        // Records proposed in the next (not yet sealed) round must not be affected by dropping
+        // the previous batch.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("expected flow, got none");
+        let next_flow = dec.flow;
+        dec.on_proposal_enqueued(WrittenRecords {
+            bytes_written: 256,
+            records_written: 1,
+        });
+
+        // Once the applied LSN reaches the batch's commit LSN, it's dropped and stops counting.
+        scheduler.inflight.poll_on_progress(&mut cx, Lsn::new(10));
+        assert!(scheduler.inflight.batches.is_empty());
+        let inflight = scheduler.inflight.total_inflight;
+        assert_eq!(inflight.total_bytes, 256);
+        assert_eq!(inflight.total_records, 1);
+        assert_eq!(scheduler.inflight.current_batch[next_flow].total_bytes, 256);
+
+        // Sealing and applying the second round drains everything.
+        let (tx, rx) = tokio::sync::oneshot::channel::<Lsn>();
+        scheduler.on_round_end(CommitToken::new(rx));
+        tx.send(Lsn::new(11)).expect("receiver is alive");
+        scheduler.inflight.poll_on_progress(&mut cx, Lsn::new(11));
+        assert!(scheduler.inflight.batches.is_empty());
+        let inflight = scheduler.inflight.total_inflight;
+        assert_eq!(inflight.total_bytes, 0);
+        assert_eq!(inflight.total_records, 0);
     }
 }
