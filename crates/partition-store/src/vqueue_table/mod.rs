@@ -38,8 +38,8 @@ use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
 use restate_storage_api::vqueue_table::{
-    EntryChange, EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader,
-    EntryValue, ReadVQueueTable, ScanVQueueTable, Stage, VQueueDisposition, WriteVQueueTable,
+    EntryChange, EntryContext, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue,
+    ReadVQueueTable, ScanVQueueTable, Stage, VQueueDisposition, WriteVQueueTable,
 };
 use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
@@ -225,7 +225,6 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &restate_storage_api::vqueue_table::metadata::Update,
-        _entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition {
         // Vqueues that was touched more than 1 hour ago will always be fully written.
         const HOUR_MS: u64 = const { 60 * 60 * 1000 };
