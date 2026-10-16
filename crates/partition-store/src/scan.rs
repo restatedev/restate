@@ -14,7 +14,7 @@ use restate_types::sharding::KeyRange;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{Prefix, RangeInclusive, ScanPartitionKeyRange};
-use crate::{ScanMode, TableKind, convert_to_upper_bound};
+use crate::{ScanMode, convert_to_upper_bound};
 
 #[derive(Debug)]
 pub enum TableScan<K> {
@@ -31,7 +31,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
         match self {
             Prefix(key) => {
                 key.serialize_to(arena);
-                PhysicalScan::Prefix(K::TABLE, arena.split().freeze())
+                PhysicalScan::Prefix(K::KEY_KIND, arena.split().freeze())
             }
             RangeInclusive(start, end) => {
                 arena.reserve(start.serialized_length() + end.serialized_length());
@@ -40,7 +40,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                 end.serialize_to(arena);
                 let mut end = arena.split();
                 if start == end {
-                    return PhysicalScan::Prefix(K::TABLE, start);
+                    return PhysicalScan::Prefix(K::KEY_KIND, start);
                 }
 
                 if !convert_to_upper_bound(&mut end) {
@@ -54,7 +54,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                 // total-order seek is disabled.
                 let scan_mode = ScanMode::from_range(&start, &end);
 
-                PhysicalScan::RangeExclusive(K::TABLE, scan_mode, start, end)
+                PhysicalScan::RangeExclusive(K::KEY_KIND, scan_mode, start, end)
             }
             ScanPartitionKeyRange(range) => {
                 let start = range.start();
@@ -64,7 +64,7 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                     arena.reserve(start.serialized_length() + KeyKind::SERIALIZED_LENGTH);
                     K::serialize_key_kind(arena);
                     start.encode(arena);
-                    return PhysicalScan::Prefix(K::TABLE, arena.split().freeze());
+                    return PhysicalScan::Prefix(K::KEY_KIND, arena.split().freeze());
                 }
 
                 arena.reserve(2 * (start.serialized_length() + KeyKind::SERIALIZED_LENGTH));
@@ -82,15 +82,20 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
                     panic!("Key range end overflowed, start key {:x?}", start);
                 }
                 let end_bytes = end_bytes.freeze();
-                PhysicalScan::RangeExclusive(K::TABLE, ScanMode::TotalOrder, start_bytes, end_bytes)
+                PhysicalScan::RangeExclusive(
+                    K::KEY_KIND,
+                    ScanMode::TotalOrder,
+                    start_bytes,
+                    end_bytes,
+                )
             }
         }
     }
 }
 
 pub(crate) enum PhysicalScan<B> {
-    Prefix(TableKind, B),
-    RangeExclusive(TableKind, ScanMode, B, B),
+    Prefix(KeyKind, B),
+    RangeExclusive(KeyKind, ScanMode, B, B),
 }
 
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {

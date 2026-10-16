@@ -90,7 +90,7 @@ toml_edit = "0.25.15"
 tower = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-zip = { version = "8.0" }
+zip = { version = "9.0" }
 
 
 [dev-dependencies]

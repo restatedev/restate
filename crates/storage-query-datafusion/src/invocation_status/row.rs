@@ -11,8 +11,9 @@
 use restate_storage_api::protobuf_types::v1::lazy::InvocationStatusV2Lazy;
 use restate_storage_api::protobuf_types::v1::source::Source;
 use restate_types::errors::ConversionError;
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::{BaseEntryId, InvocationId, WithPartitionKey};
 use restate_types::invocation::{ServiceType, TraceId};
+use restate_types::vqueues::Seq;
 
 use crate::invocation_status::schema::{SysInvocationStatusBuilder, SysInvocationStatusRowBuilder};
 
@@ -67,6 +68,12 @@ pub(crate) fn append_invocation_status_row<'a>(
     // Invocation id
     if row.is_id_defined() {
         row.fmt_id(invocation_id);
+    }
+
+    if row.is_canonical_id_defined()
+        && let Some(seq) = invocation_status.inner.creation_seq
+    {
+        row.fmt_canonical_id(BaseEntryId::from(invocation_id).canonicalize(Seq::new(seq)));
     }
 
     if row.is_vqueue_id_defined()
