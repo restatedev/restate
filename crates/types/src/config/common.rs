@@ -874,12 +874,26 @@ experimental! {
 
     /// # Status Gauges For Services
     ///
-    /// Enables tracking service-level status gauges for invocations. This impacts
-    /// new invocations and and any existing invocation that goes through an status
-    /// transition. Existing completed invocations will not be accounted for.
+    /// Enables tracking status gauges for VQueue entries by service, deployment,
+    /// and virtual object. Existing entries, including retained completed entries,
+    /// are counted before each local partition starts for the first time with this
+    /// feature enabled. This initial scan can increase partition startup time.
     ///
     /// Since v1.8.1
     track_status_gauges,
+
+    /// # Reset status gauges
+    ///
+    /// Deletes the local service, deployment, and virtual-object status gauges and
+    /// disables their storage feature when each partition starts. While enabled,
+    /// this takes precedence over status-gauge collection, including automatic
+    /// enablement in v1.9. Statistics queries are unavailable during reset mode.
+    ///
+    /// To rebuild the counts from retained VQueue entries, turn this option off,
+    /// enable `experimental-enable-track-status-gauges`, and restart the nodes.
+    ///
+    /// Since v1.8.1
+    status_gauges_reset,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
