@@ -22,7 +22,7 @@ use restate_storage_api::{StorageError, Transaction};
 use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::message::MessageIndex;
 use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
-use restate_types::schema::Schema;
+use restate_types::schema::{Schema, SchemaUnindexedLite};
 use restate_types::{SemanticRestateVersion, Version, Versioned};
 use restate_worker_api::processor::{FsmAccess, FsmMut, PartitionFeatures};
 
@@ -90,7 +90,10 @@ impl Fsm {
         let durable_point = storage.get_partition_durability().await?;
         let last_applied_lsn = storage.get_applied_lsn().await?.unwrap_or(Lsn::INVALID);
         // Load persisted partition configuration state (since v1.7.2)
-        let mut schema = storage.get_schema().await?.map(Arc::new);
+        let mut schema = storage
+            .get_schema()
+            .await?
+            .map(|schema| Arc::new(Schema::from(schema)));
         dedup_in_memory_schema(&mut schema);
         // Load persisted partition configuration state (since v1.7.0)
         let rule_book = Arc::new(storage.get_rule_book().await?.unwrap_or_default());
@@ -275,9 +278,9 @@ impl FsmMut for Fsm {
         self.durable_point = Some(durable_point);
     }
 
-    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: Arc<Schema>) {
+    fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: SchemaUnindexedLite) {
         txn.put_schema(&schema).expect("infallible serde");
-        self.schema = Some(schema);
+        self.schema = Some(Arc::new(schema.into()));
         dedup_in_memory_schema(&mut self.schema);
     }
 
@@ -307,9 +310,10 @@ impl FsmMut for Fsm {
     }
 }
 
-/// The Schema's in-memory representation can be quite large (100s of MBs), each partition stores
-/// a copy of the schema in its FSM and deserializes it on startup, and updates it on UpsertSchema
-/// commands. This can result into a large steady memory footprint due to duplicating the schemas in memory.
+/// Each partition stores a copy of the schema in its FSM and deserializes it on startup, and
+/// updates it on UpsertSchema commands. The copy is decoded as a [`SchemaUnindexedLite`], which
+/// skips the handlers' JSON schemas (the bulk of the schema's size), but it is still duplicated in
+/// memory for every partition.
 ///
 /// All nodes have access to the latest global schema. So as a best-effort optimization, we can drop
 /// the partition's copy of the schema if its version matches the global schema version by Arc::clone-ing the
@@ -321,10 +325,6 @@ impl FsmMut for Fsm {
 ///   - This doesn't save us from the initial memory spike due to parsing the schema object before deduping
 ///     it. A better approach would be to store the version separately, and load the global schema directly
 ///     if it matches (skipping parsing the locally stored schema altogether).
-///
-/// TODO: The large in-memory footprint of the schemas is coming from the JSON-schema definition of the
-/// handlers which the partition processors don't care about. Parsing only the relevant fields in the
-/// schema (via a SchemaLite adapter) can probably reduce the in-memory footprint quite a bit.
 fn dedup_in_memory_schema(schema: &mut Option<Arc<Schema>>) {
     if let Some(schema) = schema {
         let global_schema = Metadata::with_current(|m| m.schema());

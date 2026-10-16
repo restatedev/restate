@@ -8,8 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use tracing::{debug, trace};
 
 use restate_bifrost::DataRecord;
@@ -45,9 +43,7 @@ impl<P: Processor + HasFsmMut> ApplyPartitionCommand<UpsertSchemaCommand>
         if self.processor.fsm().schema_version() < upsert.schema.version() {
             // only update if schema is none or has a smaller version
             debug!("Schema updated to version '{}'", upsert.schema.version());
-            self.processor
-                .fsm_mut()
-                .set_schema(self.txn, Arc::new(upsert.schema.into()));
+            self.processor.fsm_mut().set_schema(self.txn, upsert.schema);
         }
 
         Ok(NextStep::AdvanceLastAppliedLsn {

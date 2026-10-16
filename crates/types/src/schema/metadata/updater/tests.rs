@@ -3315,3 +3315,78 @@ mod bilrost_encoded {
         assert!(schema.is_bilrost_encoded());
     }
 }
+
+mod lite {
+    use super::*;
+
+    use bytes::BytesMut;
+    use serde_json::json;
+    use test_log::test;
+
+    use restate_platform::storage::StorageCodecKind;
+    use restate_test_util::{assert, assert_eq};
+
+    use crate::schema::SchemaUnindexedLite;
+    use crate::storage::StorageCodec;
+
+    fn json_schemas(schema: &Schema) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        let handler = schema
+            .resolve_latest_service(GREETER_SERVICE_NAME)
+            .unwrap()
+            .handlers
+            .remove(GREET_HANDLER_NAME)
+            .unwrap();
+        (handler.input_json_schema, handler.output_json_schema)
+    }
+
+    #[test]
+    fn wire_compatible_with_full_schema_and_drops_json_schemas() {
+        let mut service = greeter_service();
+        service.handlers[0].input = Some(endpoint_manifest::InputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({"type": "object", "title": "Greeting"})),
+            required: Some(false),
+        });
+        service.handlers[0].output = Some(endpoint_manifest::OutputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({"type": "string"})),
+            set_content_type_if_empty: None,
+        });
+        let mut full = SchemaUpdater::update(Schema::default(), |updater| {
+            updater
+                .add_deployment(add_deployment_request(vec![service]))
+                .map(|_| ())
+        })
+        .unwrap();
+        assert!(json_schemas(&full).0.is_some());
+        assert!(json_schemas(&full).1.is_some());
+
+        let stripped = Schema::from(SchemaUnindexedLite::from(&full));
+        assert_eq!(json_schemas(&stripped), (None, None));
+        let expected = serde_json::to_value(&stripped).unwrap();
+
+        for codec in [
+            StorageCodecKind::FlexbuffersSerde,
+            StorageCodecKind::ZstdBilrostDefault,
+        ] {
+            full.set_bilrost_encoded(codec == StorageCodecKind::ZstdBilrostDefault);
+
+            // full payload decodes as lite, skipping the JSON schemas
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&full, &mut buf).unwrap();
+            let lite = StorageCodec::decode::<SchemaUnindexedLite, _>(&mut buf).unwrap();
+            assert_eq!(lite.version(), full.version());
+            assert_eq!(lite.is_bilrost_encoded(), full.is_bilrost_encoded());
+
+            // lite payload decodes as full schema (e.g. after a rollback)
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&lite, &mut buf).unwrap();
+            let decoded = StorageCodec::decode::<Schema, _>(&mut buf).unwrap();
+            assert_eq!(decoded.is_bilrost_encoded(), full.is_bilrost_encoded());
+
+            let lite = Schema::from(lite);
+            assert_eq!(serde_json::to_value(&lite).unwrap(), expected);
+            assert_eq!(serde_json::to_value(&decoded).unwrap(), expected);
+        }
+    }
+}
