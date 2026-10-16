@@ -12,6 +12,7 @@ use restate_storage_api::invocation_status_table::InvocationStatus;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
+use restate_types::vqueues::EntryTargetExt;
 
 use crate::debug_if_leader;
 use crate::partition::processor::ProcessorContext;
@@ -43,7 +44,10 @@ where
 
         if metadata.vqueue_id.is_some() {
             let seq = ctx
-                .vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
+                .vqueue_move_invocation_to_inbox_stage(
+                    &self.invocation_id,
+                    &metadata.invocation_target.entry_target_ref(),
+                )
                 .await?;
             // Backfill for invocations created before creation_seq was introduced
             metadata.creation_seq.get_or_insert(seq);
