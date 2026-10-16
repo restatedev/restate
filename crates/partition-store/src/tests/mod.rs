@@ -82,6 +82,7 @@ async fn read_write() {
     vqueue_table_test::run_tests(store.clone()).await;
     locks_table_test::run_tests(store.clone()).await;
 
+    snapshots_test::export_failure_leaves_no_directory(store.clone()).await;
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
     RocksDbManager::get().shutdown().await;
 }
