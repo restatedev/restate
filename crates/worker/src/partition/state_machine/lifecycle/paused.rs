@@ -89,7 +89,7 @@ where
         + ReadVQueueTable,
     P: Processor + HasVQueuesMut,
 {
-    debug_if_leader!(ctx.is_leader, "Paused the invocation");
+    debug_if_leader!(ctx.is_leader(), "Paused the invocation");
 
     if metadata.vqueue_id.is_some() {
         let Some(header) = ctx
@@ -109,7 +109,7 @@ where
             header.vqueue_id(),
             ctx.storage,
             ctx.processor.vqueues_mut(),
-            ctx.is_leader.then_some(ctx.action_collector),
+            ctx.leader.is_some().then_some(ctx.action_collector),
         )
         .await?
         .expect("pausing in a non-existent vqueue")

@@ -41,7 +41,7 @@ where
     P: Processor + HasVQueuesMut,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
-        debug_if_leader!(ctx.is_leader, "Effect: Yield");
+        debug_if_leader!(ctx.is_leader(), "Effect: Yield");
 
         // From scheduler's yield
         let at = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
@@ -72,7 +72,7 @@ where
             header.vqueue_id(),
             ctx.storage,
             ctx.processor.vqueues_mut(),
-            ctx.is_leader.then_some(ctx.action_collector),
+            ctx.leader.is_some().then_some(ctx.action_collector),
         )
         .await?
         .expect("yielding in a non-existent vqueue")

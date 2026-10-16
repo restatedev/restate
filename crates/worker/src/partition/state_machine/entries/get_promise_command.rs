@@ -75,7 +75,7 @@ where
             };
 
             debug_if_leader!(
-                ctx.is_leader,
+                ctx.is_leader(),
                 rpc.service = %service_id.service_name,
                 "Append listener to promise {} in non completed state",
                 self.entry.key
