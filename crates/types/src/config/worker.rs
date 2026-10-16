@@ -116,19 +116,6 @@ pub struct WorkerOptions {
     /// Since v1.7.1
     pub max_command_batch_bytes: NonZeroByteCount,
 
-    /// # Quantized action size
-    ///
-    /// If set, partition leaders emit the `restate.usage.leader_quantized_action_count.total`
-    /// metric, where a journal entry accounts for `max(1, ceil(entry size / quantized-action-size))`
-    /// quantized actions. Changes take effect when a partition processor becomes leader.
-    ///
-    /// Default: unset (metric disabled)
-    ///
-    /// Since v1.8.1
-    #[cfg_attr(feature = "schemars", schemars(skip))]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    quantized_action_size: Option<NonZeroByteCount>,
-
     /// # Snapshots
     ///
     /// Snapshots provide a mechanism for safely trimming the log and efficient bootstrapping of new
@@ -256,10 +243,6 @@ impl WorkerOptions {
         self.cleanup_max_in_flight_purges
     }
 
-    pub fn quantized_action_size(&self) -> Option<NonZeroByteCount> {
-        self.quantized_action_size
-    }
-
     pub fn trim_delay_interval(&self) -> Duration {
         self.trim_delay_interval.into()
     }
@@ -281,7 +264,6 @@ impl Default for WorkerOptions {
             invoker: Default::default(),
             max_command_batch_size: NonZeroUsize::new(32).expect("Non zero number"),
             max_command_batch_bytes: NonZeroByteCount::new(NonZeroUsize::new(1024 * 1024).unwrap()),
-            quantized_action_size: None,
             snapshots: SnapshotsOptions::default(),
             // 10 minutes delayed trimming by default to give time for followers to catch up
             // to the new durable LSN before observing the trim gap.

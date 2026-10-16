@@ -67,7 +67,7 @@ use crate::partition::leadership::{
 use crate::partition::processor::{FsmAccess, Processor};
 use crate::partition::shuffle;
 use crate::partition::shuffle::HintSender;
-use crate::partition::state_machine::{Action, LeaderContext};
+use crate::partition::state_machine::Action;
 use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
@@ -84,7 +84,6 @@ pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
     pub at: Instant,
     pub leader_epoch: LeaderEpoch,
-    pub leader_context: LeaderContext,
     // only needed for proposing TruncateOutbox to ourselves
     partition_key_range: KeyRange,
 
@@ -143,14 +142,12 @@ impl LeaderState {
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
         rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
-        leader_context: LeaderContext,
     ) -> Self {
         let (network_events_tx, network_events_rx) = tokio::sync::mpsc::unbounded_channel();
         LeaderState {
             at: Instant::now(),
             partition_id,
             leader_epoch,
-            leader_context,
             partition_key_range,
             shuffle_task_handle: Some(shuffle_task_handle),
             cleaner_handle,

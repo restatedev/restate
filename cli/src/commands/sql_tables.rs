@@ -132,7 +132,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     ] },
     SqlTableDoc { name: "sys_vqueue_entry_status", description: "Status of every vqueue entry. One row per entry (an invocation or a state mutation), with its stage, its attempts and how long it was blocked on each resource.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },
-        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource identifier of the entry: an invocation ID or a state mutation ID, without its sequence number. Use `canonical_id` to distinguish incarnations of the same resource. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_invocation_status` for dynamic filter pushdown." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Identifier of the entry. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_invocation_status` for dynamic filter pushdown." },
         SqlColumnDoc { name: "vqueue_id", ty: "Utf8", description: "The VQueue Identifier (vq_...)." },
         SqlColumnDoc { name: "stage", ty: "Utf8", description: "The stage this entry currently belongs to. Choices are 'inbox', 'running', 'paused', 'suspended', and 'finished'." },
         SqlColumnDoc { name: "status", ty: "Utf8", description: "The entry processing status. Examples are `new`, `scheduled`, `started`, `backing-off`, `yielded`, `killed`, `cancelled`, `failed`, and `succeeded`." },
@@ -168,7 +168,6 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "total_blocked_on_concurrency_rules", ty: "DurationMillisecond", description: "Total time spent waiting on user-defined concurrency limits across all attempts." },
         SqlColumnDoc { name: "total_blocked_on_lock", ty: "DurationMillisecond", description: "Total time spent waiting to acquire a virtual object lock across all attempts." },
         SqlColumnDoc { name: "total_blocked_on_deployment_concurrency", ty: "DurationMillisecond", description: "Total time spent blocked on deployment concurrency capacity across all attempts." },
-        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical identifier of the entry: its resource ID followed by `_` and its sequence number." },
     ] },
     SqlTableDoc { name: "sys_vqueue_meta", description: "Metadata and statistics of each vqueue. Number of entries per stage, latest activity timestamps, and moving averages of wait, run and blocking times.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning. Can be ignored." },
@@ -207,7 +206,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "has_lock", ty: "Boolean", description: "Whether this entry currently holds a lock." },
         SqlColumnDoc { name: "run_at", ty: "TimestampMillisecond", description: "The entry will be eligible to run after this timestamp. Only present for entries that are in the stage=inbox." },
         SqlColumnDoc { name: "sequence_number", ty: "UInt64", description: "Sequence number encoded in the queue ordering key." },
-        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Resource identifier of the entry: an invocation ID or a state mutation ID, without its sequence number. Use `canonical_id` to distinguish incarnations of the same resource. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_invocation_status` for dynamic filter pushdown." },
+        SqlColumnDoc { name: "entry_id", ty: "Utf8", description: "Identifier of the entry. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_invocation_status` for dynamic filter pushdown." },
         SqlColumnDoc { name: "entry_kind", ty: "Utf8", description: "Entry kind (`invocation` or `state-mutation`)." },
         SqlColumnDoc { name: "created_at", ty: "TimestampMillisecond", description: "Creation timestamp of the entry." },
         SqlColumnDoc { name: "transitioned_at", ty: "TimestampMillisecond", description: "Timestamp of the latest stage transition." },
@@ -220,7 +219,6 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
         SqlColumnDoc { name: "latest_attempt_at", ty: "TimestampMillisecond", description: "Timestamp of the latest attempt to run this entry." },
         SqlColumnDoc { name: "first_runnable_at", ty: "TimestampMillisecond", description: "The realistic earliest time at which this entry can run its first attempt." },
         SqlColumnDoc { name: "deployment", ty: "Utf8", description: "If set, the entry's pinned deployment identifier. Due to quirks in DataFusion, this should remain `LargeUtf8` to match `id` in `sys_deployment` for dynamic filter pushdown." },
-        SqlColumnDoc { name: "canonical_id", ty: "Utf8", description: "Canonical identifier of the entry: its resource ID followed by `_` and its sequence number." },
     ] },
     SqlTableDoc { name: "sys_invocation", description: "All invocations, whatever their status. One row per invocation, with its target and caller, lifecycle timestamps, and the retry and failure details of the current attempt.", columns: &[
         SqlColumnDoc { name: "id", ty: "Utf8", description: "[Invocation ID](/services/invocation/managing-invocations#invocation-id)." },

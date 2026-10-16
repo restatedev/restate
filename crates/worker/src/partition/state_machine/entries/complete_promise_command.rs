@@ -59,7 +59,7 @@ where
             match promise_metadata {
                 None => {
                     debug_if_leader!(
-                        ctx.is_leader(),
+                        ctx.is_leader,
                         rpc.service = %service_id.service_name,
                         "Complete promise {} without listeners",
                         self.entry.key
@@ -98,7 +98,7 @@ where
                     }
 
                     debug_if_leader!(
-                        ctx.is_leader(),
+                        ctx.is_leader,
                         rpc.service = %service_id.service_name,
                         "Complete promise {} with listeners waiting on it",
                         self.entry.key

@@ -86,7 +86,7 @@ where
         in_flight_invocation_metadata.hotfix_apply_cancellation_after_deployment_is_pinned = false;
 
         debug_if_leader!(
-            ctx.is_leader(),
+            ctx.is_leader,
             restate.deployment.id = %self.pinned_deployment.deployment_id,
             restate.deployment.service_protocol_version = %self.pinned_deployment.service_protocol_version.as_repr(),
             "Store chosen deployment to storage"
@@ -110,7 +110,7 @@ where
                 vqueue_id,
                 ctx.storage,
                 ctx.processor.vqueues_mut(),
-                ctx.leader.is_some().then_some(ctx.action_collector),
+                ctx.is_leader.then_some(ctx.action_collector),
             )
             .await?
             .expect("pinning in a non-existent vqueue")

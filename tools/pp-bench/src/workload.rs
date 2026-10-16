@@ -151,7 +151,7 @@ pub async fn run(
                     &mut txn,
                     DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
                     &mut action_collector,
-                    None,
+                    false,
                     &mut arena,
                 )
                 .await?;
@@ -188,7 +188,7 @@ pub async fn run(
                 &mut txn,
                 DataRecord::new(MillisSinceEpoch::now().into(), Keys::None, lsn, cmd),
                 &mut action_collector,
-                None,
+                false,
                 &mut arena,
             )
             .await?;

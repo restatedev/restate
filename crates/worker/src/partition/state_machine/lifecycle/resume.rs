@@ -34,7 +34,7 @@ where
         };
 
         debug_if_leader!(
-            ctx.is_leader(),
+            ctx.is_leader,
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Resume service"
         );
