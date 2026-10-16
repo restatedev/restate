@@ -33,6 +33,9 @@ define_aggregated_stat!(
 );
 
 #[cfg(test)]
+mod filter_tests;
+
+#[cfg(test)]
 mod tests {
     use crate::stats::Stat;
     use restate_types::sharding::PartitionId;

@@ -13,6 +13,7 @@
 mod bucketed_gauge;
 mod deployment_load;
 mod gauge;
+pub mod scan;
 mod service_load;
 mod virtual_object_load;
 
