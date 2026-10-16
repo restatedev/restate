@@ -18,9 +18,8 @@ use restate_storage_api::invocation_status_table::{
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
-use restate_types::identifiers::{InvocationId, WithPartitionKey as _};
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
-use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
@@ -79,7 +78,7 @@ where
 pub(crate) async fn pause_invocation<'ctx, 's: 'ctx, S, P>(
     ctx: &'ctx mut StateMachineApplyContext<'s, S, P>,
     invocation_id: &InvocationId,
-    metadata: InFlightInvocationMetadata,
+    mut metadata: InFlightInvocationMetadata,
     paused_event: RawEvent,
 ) -> Result<(), Error>
 where
@@ -90,13 +89,12 @@ where
         + ReadVQueueTable,
     P: Processor + HasVQueuesMut,
 {
-    debug_if_leader!(ctx.is_leader, "Paused the invocation");
+    debug_if_leader!(ctx.is_leader(), "Paused the invocation");
 
     if metadata.vqueue_id.is_some() {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = ctx
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // This is equivalent to InvocationStatus::Free.
@@ -111,11 +109,14 @@ where
             header.vqueue_id(),
             ctx.storage,
             ctx.processor.vqueues_mut(),
-            ctx.is_leader.then_some(ctx.action_collector),
+            ctx.leader.is_some().then_some(ctx.action_collector),
         )
         .await?
         .expect("pausing in a non-existent vqueue")
         .pause_entry(at, &header);
+
+        // Backfill for invocations created before creation_seq was introduced
+        metadata.creation_seq.get_or_insert_with(|| header.seq());
     }
 
     let mut invocation_status = InvocationStatus::Paused(metadata);

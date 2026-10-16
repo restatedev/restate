@@ -168,7 +168,7 @@ impl TestEnv {
             &mut transaction,
             DataRecord::new(created_at.into(), Keys::None, lsn, envelope),
             &mut action_collector,
-            true,
+            Some(LeaderContext::new(NonZeroUsize::new(64 * 1024))),
             &mut arena,
         )
         .await
@@ -599,10 +599,9 @@ async fn get_entry_status(
     test_env: &mut TestEnv,
     id: &StateMutationId,
 ) -> Option<(Stage, EntryKey, VQueueId)> {
-    let entry_id = EntryId::from(id);
     let transaction = test_env.storage.transaction();
     let header = transaction
-        .get_vqueue_entry_status(id.partition_key(), &entry_id)
+        .get_vqueue_entry_status(&BaseEntryId::from(id))
         .await
         .unwrap()?;
     Some((
@@ -666,6 +665,149 @@ async fn state_mutation_ids_are_deterministic() -> TestResult {
             .await?
             .is_none()
     );
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// New invocations persist the sequence of the record that created them, which matches the
+/// sequence of their vqueue entry.
+#[test(restate_core::test)]
+async fn invocation_creation_seq() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let invocation_id = InvocationId::mock_random();
+    test_env
+        .apply_at(
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                ..ServiceInvocation::mock()
+            }),
+            MillisSinceEpoch::now(),
+            Lsn::new(10),
+        )
+        .await;
+
+    let entry_seq = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+        .await?
+        .unwrap()
+        .seq();
+    assert_eq!(entry_seq, Seq::from(Lsn::new(10)));
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
+/// Invocations created before the creation seq was introduced get it backfilled from their
+/// vqueue entry on transitions that write the invocation status anyway.
+#[test(restate_core::test)]
+async fn invocation_creation_seq_backfill() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableVqueues,
+    ]))
+    .await;
+    let invocation_id = InvocationId::mock_random();
+    test_env
+        .apply_at(
+            commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                ..ServiceInvocation::mock()
+            }),
+            MillisSinceEpoch::now(),
+            Lsn::new(10),
+        )
+        .await;
+    let entry_seq = Seq::from(Lsn::new(10));
+
+    // Mimics an invocation created by an older version
+    async fn clear_creation_seq(test_env: &mut TestEnv, invocation_id: InvocationId) {
+        test_env
+            .modify_invocation_status(invocation_id, |status| match status {
+                InvocationStatus::Scheduled(scheduled) => scheduled.metadata.creation_seq = None,
+                InvocationStatus::Inboxed(inboxed) => inboxed.metadata.creation_seq = None,
+                status => status.get_invocation_metadata_mut().unwrap().creation_seq = None,
+            })
+            .await;
+    }
+    async fn get_creation_seq(test_env: &mut TestEnv, invocation_id: InvocationId) -> Option<Seq> {
+        test_env
+            .storage
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap()
+            .get_creation_seq()
+    }
+
+    // Run
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    let header = test_env
+        .storage
+        .transaction()
+        .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
+        .await?
+        .unwrap();
+    test_env
+        .apply(run_decision(header.vqueue_id(), *header.entry_key()))
+        .await;
+    assert_eq!(
+        get_creation_seq(&mut test_env, invocation_id).await,
+        Some(entry_seq)
+    );
+
+    // Pin deployment
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    fixtures::mock_pinned_deployment_v7(&mut test_env, invocation_id).await;
+    assert_eq!(
+        get_creation_seq(&mut test_env, invocation_id).await,
+        Some(entry_seq)
+    );
+
+    // Suspend
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    test_env
+        .apply(fixtures::invoker_suspended(
+            invocation_id,
+            NotificationId::for_completion(1),
+        ))
+        .await;
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_that!(status, pat!(InvocationStatus::Suspended { .. }));
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
+
+    // Resume
+    clear_creation_seq(&mut test_env, invocation_id).await;
+    test_env
+        .apply(commands::ResumeInvocationCommand::test_envelope(
+            ResumeInvocationRequest {
+                invocation_id,
+                update_deployment_id: None,
+                update_pinned_deployment_id: None,
+                run_at: None,
+                response_sink: None,
+            },
+        ))
+        .await;
+    let status = test_env
+        .storage
+        .get_invocation_status(&invocation_id)
+        .await?;
+    assert_that!(status, pat!(InvocationStatus::Invoked(_)));
+    assert_eq!(status.get_creation_seq(), Some(entry_seq));
 
     test_env.shutdown().await;
     Ok(())
@@ -1172,4 +1314,17 @@ async fn deduplicate_requests_with_same_pp_rpc_request_id() -> TestResult {
 
     test_env.shutdown().await;
     Ok(())
+}
+
+#[test]
+fn quantized_actions_count_every_started_chunk() {
+    let size_64k = NonZeroUsize::new(64 * 1024).unwrap();
+    assert_eq!(quantized_actions(0, size_64k), 1);
+    assert_eq!(quantized_actions(1, size_64k), 1);
+    assert_eq!(quantized_actions(64 * 1024, size_64k), 1);
+    assert_eq!(quantized_actions(64 * 1024 + 1, size_64k), 2);
+    assert_eq!(quantized_actions(1024 * 1024, size_64k), 16);
+
+    let size_32k = NonZeroUsize::new(32 * 1024).unwrap();
+    assert_eq!(quantized_actions(64 * 1024 + 1, size_32k), 3);
 }

@@ -34,7 +34,7 @@ where
         };
 
         debug_if_leader!(
-            ctx.is_leader,
+            ctx.is_leader(),
             restate.journal.length = metadata.journal_metadata.length,
             "Effect: Resume service"
         );
@@ -42,8 +42,11 @@ where
         metadata.timestamps.update(ctx.record_created_at);
 
         if metadata.vqueue_id.is_some() {
-            ctx.vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
+            let seq = ctx
+                .vqueue_move_invocation_to_inbox_stage(&self.invocation_id)
                 .await?;
+            // Backfill for invocations created before creation_seq was introduced
+            metadata.creation_seq.get_or_insert(seq);
         }
 
         *self.invocation_status = InvocationStatus::Invoked(metadata.clone());

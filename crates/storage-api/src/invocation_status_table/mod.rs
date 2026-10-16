@@ -26,7 +26,7 @@ use restate_types::invocation::{
 use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::KeyRange;
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::VQueueId;
+use restate_types::vqueues::{Seq, VQueueId};
 use restate_types::{LimitKey, RestateVersion};
 use restate_util_string::ReString;
 
@@ -373,6 +373,20 @@ impl InvocationStatus {
         }
     }
 
+    /// Sequence number of the record that created this invocation, if known.
+    #[inline]
+    pub fn get_creation_seq(&self) -> Option<Seq> {
+        match self {
+            InvocationStatus::Scheduled(metadata) => metadata.metadata.creation_seq,
+            InvocationStatus::Inboxed(metadata) => metadata.metadata.creation_seq,
+            InvocationStatus::Invoked(metadata)
+            | InvocationStatus::Suspended { metadata, .. }
+            | InvocationStatus::Paused(metadata) => metadata.creation_seq,
+            InvocationStatus::Completed(completed) => completed.creation_seq,
+            InvocationStatus::Free => None,
+        }
+    }
+
     #[inline]
     pub fn discriminant(&self) -> Option<InvocationStatusDiscriminants> {
         match self {
@@ -505,6 +519,12 @@ pub struct PreFlightInvocationMetadata {
     ///
     /// When None, infer the seed from the invocation id.
     pub random_seed: Option<u64>,
+
+    /// Sequence number of the record that created this invocation. Combined with the
+    /// invocation id, it forms the invocation's canonical id.
+    ///
+    /// None for invocations created before this field was introduced.
+    pub creation_seq: Option<Seq>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -531,6 +551,7 @@ impl PreFlightInvocationMetadata {
         service_invocation: ServiceInvocation,
         vqueue_id: Option<VQueueId>,
         random_seed: Option<u64>,
+        creation_seq: Seq,
     ) -> Self {
         Self {
             vqueue_id,
@@ -545,6 +566,7 @@ impl PreFlightInvocationMetadata {
             idempotency_key: service_invocation.idempotency_key,
             created_using_restate_version: service_invocation.restate_version,
             random_seed,
+            creation_seq: Some(creation_seq),
             input: PreFlightInvocationArgument::Input(PreFlightInvocationInput {
                 argument: service_invocation.argument,
                 headers: service_invocation.headers,
@@ -628,6 +650,12 @@ pub struct InFlightInvocationMetadata {
     ///
     /// When None, infer the seed from the invocation id.
     pub random_seed: Option<u64>,
+
+    /// Sequence number of the record that created this invocation. Combined with the
+    /// invocation id, it forms the invocation's canonical id.
+    ///
+    /// None for invocations created before this field was introduced.
+    pub creation_seq: Option<Seq>,
 }
 
 impl InFlightInvocationMetadata {
@@ -664,6 +692,7 @@ impl InFlightInvocationMetadata {
                     idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                     hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     random_seed: pre_flight_invocation_metadata.random_seed,
+                    creation_seq: pre_flight_invocation_metadata.creation_seq,
                 },
                 Some(InvocationInput { argument, headers }),
             ),
@@ -690,6 +719,7 @@ impl InFlightInvocationMetadata {
                     idempotency_key: pre_flight_invocation_metadata.idempotency_key,
                     hotfix_apply_cancellation_after_deployment_is_pinned: false,
                     random_seed: pre_flight_invocation_metadata.random_seed,
+                    creation_seq: pre_flight_invocation_metadata.creation_seq,
                 },
                 None,
             ),
@@ -747,6 +777,12 @@ pub struct CompletedInvocation {
     ///
     /// When None, infer the seed from the invocation id.
     pub random_seed: Option<u64>,
+
+    /// Sequence number of the record that created this invocation. Combined with the
+    /// invocation id, it forms the invocation's canonical id.
+    ///
+    /// None for invocations created before this field was introduced.
+    pub creation_seq: Option<Seq>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -796,6 +832,7 @@ impl CompletedInvocation {
             journal_metadata,
             pinned_deployment,
             random_seed: metadata.random_seed,
+            creation_seq: metadata.creation_seq,
         }
     }
 
@@ -830,6 +867,7 @@ impl CompletedInvocation {
             },
             pinned_deployment: in_flight_invocation_metadata.pinned_deployment,
             random_seed: in_flight_invocation_metadata.random_seed,
+            creation_seq: in_flight_invocation_metadata.creation_seq,
         }
     }
 
@@ -959,6 +997,7 @@ mod test_util {
                     span_context: Default::default(),
                 }),
                 random_seed: None,
+                creation_seq: None,
             }
         }
 
@@ -986,6 +1025,7 @@ mod test_util {
                     span_context: Default::default(),
                 }),
                 random_seed: None,
+                creation_seq: None,
             }
         }
     }
@@ -1013,6 +1053,7 @@ mod test_util {
                 idempotency_key: None,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 random_seed: None,
+                creation_seq: None,
             }
         }
         pub fn mock() -> Self {
@@ -1037,6 +1078,7 @@ mod test_util {
                 idempotency_key: None,
                 hotfix_apply_cancellation_after_deployment_is_pinned: false,
                 random_seed: None,
+                creation_seq: None,
             }
         }
     }
@@ -1068,6 +1110,7 @@ mod test_util {
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
                 random_seed: None,
+                creation_seq: None,
             }
         }
         pub fn mock_neo() -> Self {
@@ -1096,6 +1139,7 @@ mod test_util {
                 journal_metadata: JournalMetadata::empty(),
                 pinned_deployment: None,
                 random_seed: None,
+                creation_seq: None,
             }
         }
     }
@@ -1107,6 +1151,7 @@ pub struct InvocationLite {
     pub status: InvocationStatusDiscriminants,
     pub invocation_target: InvocationTarget,
     pub vqueue_id: Option<VQueueId>,
+    pub creation_seq: Option<Seq>,
 }
 
 impl PartitionStoreProtobufValue for InvocationLite {

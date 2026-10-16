@@ -12,16 +12,17 @@ use std::collections::BTreeSet;
 use std::range::RangeInclusive;
 
 use restate_sharding::KeyRange;
-use restate_types::vqueues::{VQueueEntryId, VQueueId};
+use restate_types::identifiers::BaseEntryId;
+use restate_types::vqueues::VQueueId;
 
 /// Filter vqueue entries by partition keys, entry ID range, or an exact set of entry IDs.
 #[derive(Debug, Clone)]
 pub enum ScanEntryIdFilter {
     PartitionKey(KeyRange),
-    EntryIdRange(RangeInclusive<VQueueEntryId>),
+    EntryIdRange(RangeInclusive<BaseEntryId>),
     /// A known set of entry IDs served via batched multi-get calls instead of a
     /// range scan. The set is sorted in on-disk key order.
-    EntryIdSet(BTreeSet<VQueueEntryId>),
+    EntryIdSet(BTreeSet<BaseEntryId>),
 }
 
 /// Filter vqueue metadata rows by partition keys, vqueue ID range, or an exact

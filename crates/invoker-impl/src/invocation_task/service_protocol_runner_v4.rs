@@ -33,7 +33,8 @@ use restate_service_client::{Endpoint, Method, Parts, Request};
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_service_protocol_v4::message_codec::{
-    Decoder, Encoder, Message, MessageHeader, MessageType, StateEntry, proto,
+    Decoder, Encoder, EncodingError, Message, MessageHeader, MessageType, ServiceWireDecoder,
+    StateEntry, proto,
 };
 use restate_service_protocol_v4::proto_lite;
 use restate_tracing_instrumentation::ServiceSpan;
@@ -45,10 +46,10 @@ use restate_types::invocation::{
     SpanRelation,
 };
 use restate_types::journal;
-use restate_types::journal_v2::command::{
-    CallCommand, CallRequest, InputCommand, OneWayCallCommand,
+use restate_types::journal_v2::command::{CallRequest, InputCommand};
+use restate_types::journal_v2::raw::{
+    CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
 };
-use restate_types::journal_v2::raw::{RawCommand, RawEntry, RawNotification};
 use restate_types::journal_v2::{
     CommandIndex, CommandType, Entry, EntryMetadata, EntryType, RunCommand, RunCompletion,
     RunResult, SleepCommand, UnresolvedFuture,
@@ -1118,87 +1119,103 @@ where
                 self.handle_new_command(mh, raw, attempt_span, None);
                 TerminalLoopState::Continue(())
             }
-            Message::OneWayCallCommand(cmd) => {
-                let name = cmd.name;
-                let entry: Entry = OneWayCallCommand {
-                    request: shortcircuit!(
-                        resolve_call_request(
-                            self.invocation_task.schemas.live_load(),
-                            InvokeRequest {
-                                service_name: cmd.service_name.into(),
-                                handler_name: cmd.handler_name.into(),
-                                parameter: cmd.parameter,
-                                headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                key: cmd.key.into(),
-                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                scope: cmd.scope,
-                                limit_key: cmd.limit_key,
-                                span_relation: SpanRelation::Linked(
-                                    attempt_span.span_context().clone().into()
-                                )
-                            }
-                        )
-                        .map_err(|e| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::OneWayCall),
-                            e
-                        ))
-                    ),
-                    invoke_time: cmd.invoke_time.into(),
-                    invocation_id_completion_id: cmd.invocation_id_notification_idx,
-                    name: name.clone().into(),
-                }
-                .into();
+            Message::OneWayCallCommand(raw) => {
+                // Registered as `noparse`: decode to resolve the request, then forward the
+                // original bytes downstream to avoid a re-encode round trip.
+                let cmd = shortcircuit!(
+                    <proto::OneWayCallCommandMessage as ServiceWireDecoder>::decode(
+                        raw.clone(),
+                        self.service_protocol_version
+                    )
+                    .map_err(|err| InvokerError::Encoder(
+                        EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
+                    ))
+                );
+                let request = shortcircuit!(
+                    resolve_call_request(
+                        self.invocation_task.schemas.live_load(),
+                        InvokeRequest {
+                            service_name: cmd.service_name.into(),
+                            handler_name: cmd.handler_name.into(),
+                            parameter: cmd.parameter,
+                            headers: cmd.headers.into_iter().map(Into::into).collect(),
+                            key: cmd.key.into(),
+                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                            scope: cmd.scope,
+                            limit_key: cmd.limit_key,
+                            span_relation: SpanRelation::Linked(
+                                attempt_span.span_context().clone().into()
+                            )
+                        }
+                    )
+                    .map_err(|e| InvokerError::CommandPrecondition(
+                        self.command_index,
+                        EntryType::Command(CommandType::OneWayCall),
+                        e
+                    ))
+                );
                 self.handle_new_command(
                     mh,
-                    entry
-                        .encode::<ServiceProtocolV4Codec>()
-                        .try_into()
-                        .expect("a raw command"),
+                    RawCommand::new(CommandType::OneWayCall, raw).with_command_specific_metadata(
+                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                            invocation_id: request.invocation_id,
+                            invocation_target: request.invocation_target,
+                            span_context: request.span_context,
+                            completion_retention_duration: request.completion_retention_duration,
+                            journal_retention_duration: request.journal_retention_duration,
+                        })),
+                    ),
                     attempt_span,
-                    Some(name),
+                    Some(cmd.name),
                 );
                 TerminalLoopState::Continue(())
             }
-            Message::CallCommand(cmd) => {
-                let name = cmd.name;
-                let entry: Entry = CallCommand {
-                    request: shortcircuit!(
-                        resolve_call_request(
-                            self.invocation_task.schemas.live_load(),
-                            InvokeRequest {
-                                service_name: cmd.service_name.into(),
-                                handler_name: cmd.handler_name.into(),
-                                parameter: cmd.parameter,
-                                headers: cmd.headers.into_iter().map(Into::into).collect(),
-                                key: cmd.key.into(),
-                                idempotency_key: cmd.idempotency_key.map(|s| s.into()),
-                                scope: cmd.scope,
-                                limit_key: cmd.limit_key,
-                                span_relation: SpanRelation::Parent(
-                                    attempt_span.span_context().clone().into()
-                                )
-                            }
-                        )
-                        .map_err(|e| InvokerError::CommandPrecondition(
-                            self.command_index,
-                            EntryType::Command(CommandType::Call),
-                            e
-                        ))
-                    ),
-                    invocation_id_completion_id: cmd.invocation_id_notification_idx,
-                    result_completion_id: cmd.result_completion_id,
-                    name: name.clone().into(),
-                }
-                .into();
+            Message::CallCommand(raw) => {
+                let cmd = shortcircuit!(
+                    <proto::CallCommandMessage as ServiceWireDecoder>::decode(
+                        raw.clone(),
+                        self.service_protocol_version
+                    )
+                    .map_err(|err| InvokerError::Encoder(
+                        EncodingError::MessageEncoding(MessageType::CallCommand, err)
+                    ))
+                );
+                let request = shortcircuit!(
+                    resolve_call_request(
+                        self.invocation_task.schemas.live_load(),
+                        InvokeRequest {
+                            service_name: cmd.service_name.into(),
+                            handler_name: cmd.handler_name.into(),
+                            parameter: cmd.parameter,
+                            headers: cmd.headers.into_iter().map(Into::into).collect(),
+                            key: cmd.key.into(),
+                            idempotency_key: cmd.idempotency_key.map(|s| s.into()),
+                            scope: cmd.scope,
+                            limit_key: cmd.limit_key,
+                            span_relation: SpanRelation::Parent(
+                                attempt_span.span_context().clone().into()
+                            )
+                        }
+                    )
+                    .map_err(|e| InvokerError::CommandPrecondition(
+                        self.command_index,
+                        EntryType::Command(CommandType::Call),
+                        e
+                    ))
+                );
                 self.handle_new_command(
                     mh,
-                    entry
-                        .encode::<ServiceProtocolV4Codec>()
-                        .try_into()
-                        .expect("a raw command"),
+                    RawCommand::new(CommandType::Call, raw).with_command_specific_metadata(
+                        RawCommandSpecificMetadata::CallOrSend(Box::new(CallOrSendMetadata {
+                            invocation_id: request.invocation_id,
+                            invocation_target: request.invocation_target,
+                            span_context: request.span_context,
+                            completion_retention_duration: request.completion_retention_duration,
+                            journal_retention_duration: request.journal_retention_duration,
+                        })),
+                    ),
                     attempt_span,
-                    Some(name),
+                    Some(cmd.name),
                 );
                 TerminalLoopState::Continue(())
             }

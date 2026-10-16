@@ -9,7 +9,6 @@
 // by the Apache License, Version 2.0.
 
 use ahash::HashSet;
-use metrics::counter;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::fsm_table::WriteFsmTable;
@@ -37,9 +36,6 @@ use restate_types::journal_v2::{CommandMetadata, EntryMetadata, EntryType, Notif
 use restate_vqueues::VQueue;
 
 use crate::debug_if_leader;
-use crate::metric_definitions::{
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-};
 use crate::partition::processor::*;
 use crate::partition::state_machine::{
     Action, CommandHandler, Error, RpcReply, StateMachineApplyContext,
@@ -62,7 +58,7 @@ impl<'ctx, 's: 'ctx, S, P> StateMachineApplyContext<'s, S, P> {
     ) {
         if let Some(InvocationMutationResponseSink::Ingress(sink)) = response_sink {
             debug_if_leader!(
-                self.is_leader,
+                self.is_leader(),
                 "Send restart as new response to request id '{:?}': {:?}",
                 sink.request_id,
                 response
@@ -150,17 +146,11 @@ where
                 break;
             };
 
-            if ctx.is_leader {
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(1);
-                counter!(
-                    USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                    "entry" => entry.ty().prometheus_label(),
-                )
-                .increment(entry.inner.serialized_length() as u64);
+            if let Some(leader) = ctx.leader {
+                leader.record_journal_entry_usage(
+                    entry.ty().prometheus_label(),
+                    entry.inner.serialized_length(),
+                );
             }
 
             match entry.ty() {
@@ -219,17 +209,11 @@ where
                 && let NotificationId::CompletionId(completion_id) = notification.id()
                 && missing_completions.remove(&completion_id)
             {
-                if ctx.is_leader {
-                    counter!(
-                        USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-                        "entry" => entry.ty().prometheus_label(),
-                    )
-                    .increment(1);
-                    counter!(
-                        USAGE_LEADER_JOURNAL_ENTRY_BYTES,
-                        "entry" => entry.ty().prometheus_label(),
-                    )
-                    .increment(entry.inner.serialized_length() as u64);
+                if let Some(leader) = ctx.leader {
+                    leader.record_journal_entry_usage(
+                        entry.ty().prometheus_label(),
+                        entry.inner.serialized_length(),
+                    );
                 }
                 // Copy over this notification
                 journal_table_v2::WriteJournalTable::put_journal_entry(
@@ -331,6 +315,8 @@ where
             completion_retention_duration: completed_invocation.completion_retention_duration,
             journal_retention_duration: completed_invocation.journal_retention_duration,
             random_seed,
+            // The new invocation is created by the record being applied
+            creation_seq: Some(ctx.record_lsn.into()),
 
             // We don't set those
             idempotency_key: None,
@@ -364,7 +350,7 @@ mod tests {
     };
     use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Stage};
     use restate_types::identifiers::{
-        DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
+        BaseEntryId, DeploymentId, InvocationId, InvocationUuid, PartitionProcessorRpcRequestId,
         WithPartitionKey,
     };
     use restate_types::invocation::client::RestartAsNewInvocationResponse;
@@ -379,7 +365,6 @@ mod tests {
     use restate_types::partitions::{PartitionFeatureChange, PersistedFeatures};
     use restate_types::service_protocol::ServiceProtocolVersion;
     use restate_types::time::MillisSinceEpoch;
-    use restate_types::vqueues::EntryId;
     use restate_util_string::ToReString;
     use restate_wal_protocol::timer::TimerKeyValue;
     use restate_wal_protocol::v2::{Command, commands};
@@ -895,11 +880,10 @@ mod tests {
             Some(new_deployment_id)
         );
 
-        let entry_id = EntryId::from(new_invocation_id);
         let entry_status = {
             let transaction = test_env.storage.transaction();
             transaction
-                .get_vqueue_entry_status(new_invocation_id.partition_key(), &entry_id)
+                .get_vqueue_entry_status(&BaseEntryId::from(new_invocation_id))
                 .await
                 .unwrap()
                 .expect("restarted invocation must have a vqueue entry")

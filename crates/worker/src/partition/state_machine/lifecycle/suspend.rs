@@ -18,11 +18,10 @@ use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table_v2::ReadJournalTable;
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, WriteVQueueTable};
-use restate_types::identifiers::{InvocationId, WithPartitionKey};
+use restate_types::identifiers::{BaseEntryId, InvocationId};
 use restate_types::journal_events::raw::RawEvent;
 use restate_types::journal_events::{Event, SuspendedEvent};
 use restate_types::journal_v2::UnresolvedFuture;
-use restate_types::vqueues::EntryId;
 use restate_vqueues::VQueue;
 
 use crate::partition::processor::ProcessorContext;
@@ -115,10 +114,9 @@ where
 
             if in_flight_invocation_metadata.vqueue_id.is_some() {
                 let now = UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at);
-                let entry_id = EntryId::from(&self.invocation_id);
                 let Some(header) = ctx
                     .storage
-                    .get_vqueue_entry_status(self.invocation_id.partition_key(), &entry_id)
+                    .get_vqueue_entry_status(&BaseEntryId::from(self.invocation_id))
                     .await?
                 else {
                     // todo resolve once we decided on the actual migration strategy
@@ -132,11 +130,16 @@ where
                     header.vqueue_id(),
                     ctx.storage,
                     ctx.processor.vqueues_mut(),
-                    ctx.is_leader.then_some(ctx.action_collector),
+                    ctx.leader.is_some().then_some(ctx.action_collector),
                 )
                 .await?
                 .expect("suspending in a non-existent vqueue")
                 .suspend_entry(now, &header);
+
+                // Backfill for invocations created before creation_seq was introduced
+                in_flight_invocation_metadata
+                    .creation_seq
+                    .get_or_insert_with(|| header.seq());
             }
 
             invocation_status = InvocationStatus::Suspended {

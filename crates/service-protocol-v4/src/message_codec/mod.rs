@@ -363,10 +363,10 @@ gen_message!(
 
     Sleep Command noparse allows_ack = 0x040C,
     Sleep CompletionNotification noparse = 0x800C,
-    Call Command allows_ack = 0x040D,
+    Call Command noparse allows_ack = 0x040D,
     CallInvocationId CompletionNotification noparse = 0x800E,
     Call CompletionNotification noparse = 0x800D,
-    OneWayCall Command allows_ack = 0x040E,
+    OneWayCall Command noparse allows_ack = 0x040E,
 
     SendSignal Command noparse allows_ack = 0x0410,
 

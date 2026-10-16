@@ -133,6 +133,7 @@ async fn complete_already_completed_invocation() {
             journal_metadata: JournalMetadata::empty(),
             pinned_deployment: None,
             random_seed: None,
+            creation_seq: None,
         }),
     )
     .unwrap();
