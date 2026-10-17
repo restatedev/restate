@@ -113,11 +113,11 @@ async fn drive_until_ready<S: VQueueStore>(
 
 /// Pops everything currently in the cache (no refill, no I/O) and returns
 /// the keys in head-to-tail order.
-fn drain_cache<S: VQueueStore>(queue: &mut Queue<S>) -> Vec<EntryKey> {
+fn drain_cache<S: VQueueStore>(queue: &mut Queue<S>, qid: &VQueueId) -> Vec<EntryKey> {
     let mut keys = vec![];
     while let Some(QueueItem::Inbox { key, .. }) = queue.head() {
         keys.push(*key);
-        queue.try_advance().unwrap();
+        queue.try_advance(qid).unwrap();
     }
     keys
 }
@@ -138,6 +138,40 @@ fn blocking_refill_completes_inline() {
         panic!("blocking refill should complete inline");
     };
     assert_eq!(*key, entry.0);
+}
+
+/// A running count in the metadata that no running-stage row backs must not
+/// take the queue down: the queue falls through to the inbox stage and serves
+/// it normally, and an empty inbox resolves to `Empty` instead of hanging.
+#[test]
+fn unbacked_running_count_falls_through_to_inbox() {
+    let qid = test_qid(1);
+    let skip = UnconfirmedAssignments::new();
+    let mut cx = Context::from_waker(Waker::noop());
+
+    let entry = entry_at_seq(1);
+    let storage = GatedStore::new(vec![entry.clone()]);
+    storage.release_refill_thread();
+    let mut queue = Queue::new(1, &storage, &qid);
+    assert_eq!(queue.remaining_in_running_stage(), 1);
+
+    let Poll::Ready(Ok(QueueItem::Inbox { key, .. })) =
+        queue.poll_advance_if_needed(&mut cx, &storage, &skip, &qid, false, RefillMode::Blocking)
+    else {
+        panic!("queue should continue with the inbox stage");
+    };
+    assert_eq!(*key, entry.0);
+    assert_eq!(queue.remaining_in_running_stage(), 0);
+
+    let storage = GatedStore::new(vec![]);
+    storage.release_refill_thread();
+    let mut queue = Queue::new(3, &storage, &qid);
+    let Poll::Ready(Ok(QueueItem::None)) =
+        queue.poll_advance_if_needed(&mut cx, &storage, &skip, &qid, true, RefillMode::Blocking)
+    else {
+        panic!("queue with an empty inbox should resolve to Empty");
+    };
+    assert!(queue.is_empty());
 }
 
 // ---------- fake VQueueStore ----------
@@ -251,9 +285,8 @@ impl VQueueCursor for GatedReader {
     }
 }
 
-/// Stub for the running stage. Tests construct queues with
-/// `num_running = 0`, so this is never actually exercised; it only exists
-/// to satisfy the [`VQueueStore`] trait bound.
+/// Stub for the running stage: it never yields a row, so a queue created
+/// with `num_running > 0` sees a running count that storage does not back.
 struct StubRunningReader;
 
 impl VQueueRunningCursor for StubRunningReader {
@@ -427,7 +460,7 @@ async fn refill_without_overlay_activity() {
     storage.release_refill_thread();
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
-    let drained = drain_cache(&mut queue);
+    let drained = drain_cache(&mut queue, &qid);
     assert_eq!(
         drained,
         entries.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
@@ -455,7 +488,7 @@ async fn tombstone_in_overlay_suppresses_storage_row() {
     storage.release_refill_thread();
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
-    let drained = drain_cache(&mut queue);
+    let drained = drain_cache(&mut queue, &qid);
     assert!(
         !drained.contains(&r_target.0),
         "deleted row should be suppressed by overlay tombstone, got: {drained:?}",
@@ -544,7 +577,7 @@ async fn tombstone_evicted_on_overlay_overflow_leaks_deleted_row() {
     storage.release_refill_thread();
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
-    let drained = drain_cache(&mut queue);
+    let drained = drain_cache(&mut queue, &qid);
 
     // Regression: r_target must NOT appear in the cache. The horizon
     // mechanism seals it from the merge so the deleted row stays out
@@ -584,7 +617,7 @@ async fn overlay_tombstone_then_add_resurrects_row() {
     storage.release_refill_thread();
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
-    let drained = drain_cache(&mut queue);
+    let drained = drain_cache(&mut queue, &qid);
     assert_eq!(
         drained,
         vec![target.0],
@@ -625,7 +658,7 @@ async fn overflowed_overlay_refills_deferred_entries() {
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
     assert_eq!(
-        drain_cache(&mut queue),
+        drain_cache(&mut queue, &qid),
         vec![target.0],
         "the next refill must recover the target deferred beyond the overlay horizon"
     );
@@ -650,7 +683,7 @@ async fn tombstone_beyond_full_refill_does_not_advance_anchor() {
     drive_until_ready(&mut queue, &storage, &skip, &qid).await;
 
     assert_eq!(
-        drain_cache(&mut queue),
+        drain_cache(&mut queue, &qid),
         entries[..INBOX_CACHE_CAPACITY]
             .iter()
             .map(|(key, _)| *key)
@@ -745,7 +778,7 @@ async fn real_non_blocking_refill_merges_committed_updates() {
             match queue.head() {
                 Some(QueueItem::Inbox { key, value }) => {
                     drained.push((*key, value.status));
-                    queue.try_advance().unwrap();
+                    queue.try_advance(&qid).unwrap();
                 }
                 Some(QueueItem::None) => break drained,
                 other => panic!("unexpected queue head: {other:?}"),
