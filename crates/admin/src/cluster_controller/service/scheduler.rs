@@ -22,7 +22,9 @@ use restate_core::{Metadata, MetadataWriter, ShutdownError, SyncError, TaskCente
 use restate_metadata_store::{
     MetadataStoreClient, ReadError, ReadModifyWriteError, ReadWriteError, WriteError,
 };
-use restate_types::cluster::cluster_state::LegacyClusterState;
+use restate_types::cluster::cluster_state::{
+    LegacyClusterState, NodeState as LegacyNodeState, ReplayStatus,
+};
 use restate_types::cluster_state::ClusterState;
 use restate_types::epoch::EpochMetadata;
 use restate_types::identifiers::PartitionId;
@@ -578,7 +580,8 @@ impl<T: TransportConnect> Scheduler<T> {
     ///
     /// * The next configuration is empty
     /// * All workers in the current configuration are disabled
-    /// * Any of the partition processors in the next configuration is active (== caught up)
+    /// * Any newly added partition processor is active (== caught up), or any processor in a
+    ///   removal-only next configuration is active
     ///
     /// Note: We don't complete the reconfiguration if all current nodes are dead for some time,
     /// because we might need any of them to send a partition store snapshot to the next nodes once
@@ -600,14 +603,33 @@ impl<T: TransportConnect> Scheduler<T> {
             .iter()
             .all(|node_id| nodes_config.get_worker_state(node_id) == WorkerState::Disabled);
 
-        // check whether we can transition from the current configuration to the next
-        // configuration, which is possible as soon as a single partition processor from the
-        // next configuration has become active
-        let any_next_pp_active = next.replica_set().iter().any(|node_id| {
-            legacy_cluster_state.is_partition_processor_active(&partition_id, node_id)
-        });
+        if next.replica_set().is_empty() || all_current_workers_disabled {
+            return true;
+        }
 
-        next.replica_set().is_empty() || all_current_workers_disabled || any_next_pp_active
+        let is_ready = |node_id| {
+            is_partition_processor_active_on_current_generation(
+                partition_id,
+                node_id,
+                nodes_config,
+                legacy_cluster_state,
+            )
+        };
+
+        let mut newly_added = next
+            .replica_set()
+            .difference(partition_state.current.replica_set())
+            .peekable();
+        if newly_added.peek().is_some() {
+            // If `next` adds processors to the replica set, wait for at least one addition to
+            // demonstrate readiness before making `next` current. Committing while every addition
+            // is still catching up admits unready replicas to leader election and, during
+            // replacement, can drop warm followers from the current replica set.
+            newly_added.any(is_ready)
+        } else {
+            // Removal-only: at least one retained member must be ready before we drop replicas
+            next.replica_set().iter().copied().any(is_ready)
+        }
     }
 
     async fn load_partition_configuration(
@@ -1074,6 +1096,34 @@ impl<T: TransportConnect> Scheduler<T> {
     }
 }
 
+/// Like [`LegacyClusterState::is_partition_processor_active`], but only trusts a status report
+/// coming from the node generation currently registered in the nodes configuration.
+///
+/// `LegacyClusterState` can retain a status observed from a previous incarnation of a node. After a
+/// restart (e.g. during a rolling update), a leftover `Active` report says nothing about the
+/// current process, which may still be restoring or replaying — so it must not certify
+/// reconfiguration completion. Any mismatch, in either direction, fails toward "not ready", which
+/// only delays completion by a refresh round.
+fn is_partition_processor_active_on_current_generation(
+    partition_id: PartitionId,
+    node_id: PlainNodeId,
+    nodes_config: &NodesConfiguration,
+    legacy_cluster_state: &LegacyClusterState,
+) -> bool {
+    let Ok(node_config) = nodes_config.find_node_by_id(node_id) else {
+        return false;
+    };
+    let Some(LegacyNodeState::Alive(node_state)) = legacy_cluster_state.nodes.get(&node_id) else {
+        return false;
+    };
+
+    node_state.generational_node_id == node_config.current_generation
+        && node_state
+            .partitions
+            .get(&partition_id)
+            .is_some_and(|status| status.replay_status == ReplayStatus::Active)
+}
+
 /// Returns `true` if the given node matches the leader affinity expression.
 fn matches_affinity(
     node_id: PlainNodeId,
@@ -1095,20 +1145,315 @@ fn matches_affinity(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
     use restate_core::network::FailingConnector;
+    use restate_types::cluster::cluster_state::{
+        AliveNode, NodeState, PartitionProcessorStatus, ReplayStatus,
+    };
     use restate_types::metadata::Precondition;
-    use restate_types::nodes_config::{Role, WorkerConfig};
+    use restate_types::nodes_config::{NodeConfig, Role, WorkerConfig};
     use restate_types::partitions::placement_policy::{PlacementFreeze, PlacementPolicy};
+    use restate_types::time::MillisSinceEpoch;
     use restate_types::{GenerationalNodeId, RestateVersion};
 
     use super::*;
 
     fn configuration(node_id: u32) -> PartitionConfiguration {
+        configuration_with_nodes([node_id])
+    }
+
+    fn configuration_with_nodes(node_ids: impl IntoIterator<Item = u32>) -> PartitionConfiguration {
+        let replica_set: NodeSet = node_ids.into_iter().map(PlainNodeId::from).collect();
+        let replication_factor = u8::try_from(replica_set.len().max(1)).unwrap();
         PartitionConfiguration::new(
-            ReplicationProperty::new_unchecked(1),
-            [PlainNodeId::from(node_id)].into_iter().collect(),
+            ReplicationProperty::new_unchecked(replication_factor),
+            replica_set,
             HashMap::default(),
         )
+    }
+
+    struct Reconfiguring<'a> {
+        current: &'a [u32],
+        next: Option<&'a [u32]>,
+    }
+
+    fn partition_state(Reconfiguring { current, next }: Reconfiguring<'_>) -> PartitionState {
+        PartitionState::new(
+            configuration_with_nodes(current.iter().copied()),
+            next.map(|next| configuration_with_nodes(next.iter().copied())),
+            LeadershipPolicy::default(),
+            PlacementPolicy::default(),
+        )
+    }
+
+    fn nodes_configuration(
+        node_generations: impl IntoIterator<Item = (u32, u32)>,
+    ) -> NodesConfiguration {
+        let mut nodes_config = NodesConfiguration::new_for_testing();
+        for (node_id, generation) in node_generations {
+            nodes_config.upsert_node(
+                NodeConfig::builder()
+                    .name(format!("node-{node_id}"))
+                    .current_generation(GenerationalNodeId::new(node_id, generation))
+                    .address(format!("unix:/tmp/node-{node_id}").parse().unwrap())
+                    .roles(Role::Worker.into())
+                    .binary_version(RestateVersion::current())
+                    .build(),
+            );
+        }
+        nodes_config
+    }
+
+    /// None = node reports alive but has no processor status for this partition.
+    fn reconfiguration_legacy_state(
+        partition_id: PartitionId,
+        statuses: impl IntoIterator<Item = (u32, Option<ReplayStatus>)>,
+    ) -> LegacyClusterState {
+        let nodes = statuses
+            .into_iter()
+            .map(|(node_id, replay_status)| {
+                let partitions = replay_status
+                    .map(|replay_status| {
+                        let status = PartitionProcessorStatus {
+                            replay_status,
+                            ..PartitionProcessorStatus::default()
+                        };
+                        (partition_id, status)
+                    })
+                    .into_iter()
+                    .collect();
+                (
+                    PlainNodeId::from(node_id),
+                    NodeState::Alive(AliveNode {
+                        last_heartbeat_at: MillisSinceEpoch::now(),
+                        generational_node_id: GenerationalNodeId::new(node_id, 1),
+                        partitions,
+                        uptime: Duration::ZERO,
+                    }),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        LegacyClusterState {
+            last_refreshed: None,
+            nodes_config_version: Version::INVALID,
+            partition_table_version: Version::INVALID,
+            logs_metadata_version: Version::INVALID,
+            nodes,
+        }
+    }
+
+    fn should_complete(
+        partition_id: PartitionId,
+        nodes_config: &NodesConfiguration,
+        state: &PartitionState,
+        statuses: impl IntoIterator<Item = (u32, Option<ReplayStatus>)>,
+    ) -> bool {
+        Scheduler::<FailingConnector>::should_complete_reconfiguration(
+            partition_id,
+            nodes_config,
+            state,
+            &reconfiguration_legacy_state(partition_id, statuses),
+        )
+    }
+
+    #[test]
+    fn reconfiguration_waits_for_added_follower_to_be_active() {
+        let partition_id = PartitionId::MIN;
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1]),
+        });
+        let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1)]);
+
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [
+                (2, Some(ReplayStatus::Active)),
+                (1, Some(ReplayStatus::Starting)),
+            ],
+        ));
+        assert!(should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [(1, Some(ReplayStatus::Active))],
+        ));
+    }
+
+    #[test]
+    fn reconfiguration_waits_for_added_follower_when_replacing_replica() {
+        let partition_id = PartitionId::MIN;
+        // N1 and N2 are retained; N3 joins.
+        let state = partition_state(Reconfiguring {
+            current: &[2, 1],
+            next: Some(&[2, 1, 3]),
+        });
+        let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1)]);
+
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [
+                (1, Some(ReplayStatus::Active)),
+                (2, Some(ReplayStatus::Active)),
+                (3, Some(ReplayStatus::Starting)),
+            ],
+        ));
+        assert!(should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [
+                (1, Some(ReplayStatus::Active)),
+                (2, Some(ReplayStatus::Active)),
+                (3, Some(ReplayStatus::Active)),
+            ],
+        ));
+    }
+
+    #[test]
+    fn reconfiguration_with_multiple_additions_completes_when_one_is_active() {
+        let partition_id = PartitionId::MIN;
+        // N3 departs, N2 is retained, and N1 and N4 join.
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1, 4]),
+        });
+        let nodes_config = nodes_configuration([(1, 1), (2, 1), (3, 1), (4, 1)]);
+
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [
+                (2, Some(ReplayStatus::Active)),
+                (1, Some(ReplayStatus::Starting)),
+                (4, Some(ReplayStatus::Starting)),
+            ],
+        ));
+        assert!(should_complete(
+            partition_id,
+            &nodes_config,
+            &state,
+            [
+                (1, Some(ReplayStatus::Active)),
+                (4, Some(ReplayStatus::Starting)),
+            ],
+        ));
+    }
+
+    #[test]
+    fn reconfiguration_requires_active_status_from_current_node_generation() {
+        let partition_id = PartitionId::MIN;
+        let state = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2, 1]),
+        });
+        let nodes_config = nodes_configuration([(1, 2), (2, 1), (3, 1)]);
+        let mut n1_active_from_old_generation =
+            reconfiguration_legacy_state(partition_id, [(1, Some(ReplayStatus::Active))]);
+
+        assert!(
+            !Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &state,
+                &n1_active_from_old_generation,
+            )
+        );
+
+        let NodeState::Alive(n1) = n1_active_from_old_generation
+            .nodes
+            .get_mut(&PlainNodeId::from(1))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        n1.generational_node_id = GenerationalNodeId::new(1, 2);
+
+        assert!(
+            Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &state,
+                &n1_active_from_old_generation,
+            )
+        );
+    }
+
+    #[test]
+    fn reconfiguration_without_additions_requires_an_active_retained_follower() {
+        let partition_id = PartitionId::MIN;
+        let nodes_config = nodes_configuration([(2, 2), (3, 1)]);
+        let pure_removal = partition_state(Reconfiguring {
+            current: &[3, 2],
+            next: Some(&[2]),
+        });
+
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &pure_removal,
+            [],
+        ));
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &pure_removal,
+            [(2, Some(ReplayStatus::Starting))],
+        ));
+        let mut n2_active_from_old_generation =
+            reconfiguration_legacy_state(partition_id, [(2, Some(ReplayStatus::Active))]);
+        assert!(
+            !Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &pure_removal,
+                &n2_active_from_old_generation,
+            )
+        );
+
+        let NodeState::Alive(n2) = n2_active_from_old_generation
+            .nodes
+            .get_mut(&PlainNodeId::from(2))
+            .unwrap()
+        else {
+            unreachable!()
+        };
+        n2.generational_node_id = GenerationalNodeId::new(2, 2);
+
+        assert!(
+            Scheduler::<FailingConnector>::should_complete_reconfiguration(
+                partition_id,
+                &nodes_config,
+                &pure_removal,
+                &n2_active_from_old_generation,
+            )
+        );
+        assert!(should_complete(
+            partition_id,
+            &nodes_config,
+            &partition_state(Reconfiguring {
+                current: &[3, 2],
+                next: Some(&[]),
+            }),
+            [],
+        ));
+        assert!(!should_complete(
+            partition_id,
+            &nodes_config,
+            &partition_state(Reconfiguring {
+                current: &[3, 2],
+                next: None,
+            }),
+            [],
+        ));
     }
 
     #[tokio::test]
