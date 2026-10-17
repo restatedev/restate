@@ -72,8 +72,8 @@ use restate_types::errors::{
     WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
-    AwakeableIdentifier, EntryIndex, ExternalSignalIdentifier, InvocationId, InvocationUuid,
-    PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
+    AwakeableIdentifier, BaseEntryId, EntryIndex, ExternalSignalIdentifier, InvocationId,
+    InvocationUuid, PartitionProcessorRpcRequestId, ServiceId, StateMutationId,
 };
 use restate_types::identifiers::{DeploymentId, WithPartitionKey};
 use restate_types::invocation::client::{
@@ -113,7 +113,7 @@ use restate_types::storage::{
     StorageDecodeError, StorageEncodeError, StoredRawEntry, StoredRawEntryHeader,
 };
 use restate_types::time::MillisSinceEpoch;
-use restate_types::vqueues::{self, EntryId, VQueueId};
+use restate_types::vqueues::{self, EntryId, Seq, VQueueId};
 use restate_types::{RESTATE_VERSION_1_9_0, journal::*};
 use restate_types::{RestateVersion, SemanticRestateVersion};
 use restate_util_string::{ReString, ToReString};
@@ -770,6 +770,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             service_invocation,
             qid,
             random_seed,
+            // Older versions ignore this field, so setting it is rollback-safe.
+            self.record_lsn.into(),
         );
 
         self.on_pre_flight_invocation(
@@ -1855,10 +1857,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
                 let record_unique_ts =
@@ -1882,6 +1881,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     new_status,
                     completion_retention,
                 );
+
+                // Backfill for invocations created before creation_seq was introduced
+                metadata
+                    .creation_seq
+                    .get_or_insert_with(|| entry_status.seq());
             }
         } else {
             // Delete the inbox entry.
@@ -2008,10 +2012,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             {
                 let record_unique_ts =
@@ -2035,6 +2036,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     new_status,
                     completion_retention,
                 );
+
+                // Backfill for invocations created before creation_seq was introduced
+                metadata
+                    .creation_seq
+                    .get_or_insert_with(|| entry_status.seq());
             }
         } else {
             // Delete timer
@@ -2927,10 +2933,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         if let Some(vqueue_id) = vqueue_id {
             let Some(entry_status) = self
                 .storage
-                .get_vqueue_entry_status(
-                    invocation_id.partition_key(),
-                    &EntryId::from(invocation_id),
-                )
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             else {
                 // Invocation has been removed already!
@@ -3044,7 +3047,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 let local_key;
                 let mut state_header = self
                     .storage
-                    .get_vqueue_entry_status(partition_key, entry_key.entry_id())
+                    .get_vqueue_entry_status(&entry_key.entry_id().to_base_id(partition_key))
                     .await?;
 
                 // State mutations enqueued before v1.8.0 got a random id on every replica (see
@@ -3065,17 +3068,14 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     local_key = key;
                     state_header = self
                         .storage
-                        .get_vqueue_entry_status(partition_key, local_key.entry_id())
+                        .get_vqueue_entry_status(&local_key.entry_id().to_base_id(partition_key))
                         .await?;
                     &local_key
                 } else {
                     entry_key
                 };
 
-                let mutation_id = entry_key
-                    .entry_id()
-                    .to_state_mutation_id(partition_key)
-                    .unwrap();
+                let mutation_id = entry_key.entry_id().to_base_id(partition_key);
 
                 let Some(state_header) = state_header else {
                     info!(
@@ -3175,16 +3175,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     {
         let record_unique_ts = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
 
-        let invocation_id = entry_key
-            .entry_id()
-            .to_invocation_id(qid.partition_key())
-            .expect("call run_invocation() on invocation entries only");
+        let base_id = entry_key.entry_id().to_base_id(qid.partition_key());
+        let invocation_id = base_id
+            .to_invocation_id()
+            .expect("run_invocation requires an invocation entry");
 
-        let Some(header) = self
-            .storage
-            .get_vqueue_entry_status(qid.partition_key(), entry_key.entry_id())
-            .await?
-        else {
+        let Some(header) = self.storage.get_vqueue_entry_status(&base_id).await? else {
             // This can happen if the invocation was killed (and) expired/removed from the vqueue
             // between the time the scheduler decided to run it and the time we observed its
             // decision. In particular, if we are configured with a retention policy that removes
@@ -3203,7 +3199,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             // Similar to the case above.
             debug!(
                 vqueue = %qid,
-                "Ignoring the scheduler's decision to run {invocation_id} because the entry has
+                "Ignoring the scheduler's decision to run {base_id} because the entry has
                 already moved to {} stage!",
                 header.stage(),
             );
@@ -3262,8 +3258,10 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         let status = self.get_invocation_status(&invocation_id).await?;
 
         match status {
-            InvocationStatus::Scheduled(ScheduledInvocation { metadata, .. })
-            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+            InvocationStatus::Scheduled(ScheduledInvocation { mut metadata, .. })
+            | InvocationStatus::Inboxed(InboxedInvocation { mut metadata, .. }) => {
+                // Backfill for invocations created before creation_seq was introduced
+                metadata.creation_seq.get_or_insert_with(|| header.seq());
                 let (metadata, invocation_input) =
                     InFlightInvocationMetadata::from_pre_flight_invocation_metadata(
                         metadata,
@@ -4618,8 +4616,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         metadata.timestamps.update(self.record_created_at);
 
         if metadata.vqueue_id.is_some() {
-            self.vqueue_move_invocation_to_inbox_stage(&invocation_id)
+            let seq = self
+                .vqueue_move_invocation_to_inbox_stage(&invocation_id)
                 .await?;
+            // Backfill for invocations created before creation_seq was introduced
+            metadata.creation_seq.get_or_insert(seq);
         }
 
         self.storage
@@ -4659,10 +4660,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         if metadata.vqueue_id.is_some() {
             let now = UniqueTimestamp::from_unix_millis_unchecked(self.record_created_at);
-            let entry_id = EntryId::from(&invocation_id);
             let Some(header) = self
                 .storage
-                .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+                .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
                 .await?
             else {
                 // todo resolve once we decided on the actual migration strategy
@@ -4680,6 +4680,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .await?
             .expect("suspending in a non-existent vqueue")
             .suspend_entry(now, &header);
+
+            // Backfill for invocations created before creation_seq was introduced
+            metadata.creation_seq.get_or_insert_with(|| header.seq());
         }
 
         self.storage
@@ -5329,18 +5332,19 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     /// Moves the given invocation to the inbox and making it eligible for scheduling. Depending on its
     /// current [`Stage`], it will either yield the invocation from running, wake it up or be a noop
     /// if the invocation is already in the inbox stage.
+    ///
+    /// Returns the sequence of the invocation's vqueue entry.
     // [vqueues only]
     async fn vqueue_move_invocation_to_inbox_stage(
         &mut self,
         invocation_id: &InvocationId,
-    ) -> Result<(), Error>
+    ) -> Result<Seq, Error>
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = self
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // todo resolve once we decided on the actual migration strategy
@@ -5383,7 +5387,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             }
         };
 
-        Ok(())
+        Ok(header.seq())
     }
 
     /// Reschedules a waiting VQueue invocation to a new `run_at` so the scheduler re-evaluates its
@@ -5411,10 +5415,9 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     where
         S: WriteVQueueTable + WriteLockTable + ReadVQueueTable,
     {
-        let entry_id = EntryId::from(invocation_id);
         let Some(header) = self
             .storage
-            .get_vqueue_entry_status(invocation_id.partition_key(), &entry_id)
+            .get_vqueue_entry_status(&BaseEntryId::from(invocation_id))
             .await?
         else {
             // todo resolve once we decided on the actual migration strategy
@@ -5477,7 +5480,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             Some(id) => {
                 if self
                     .storage
-                    .get_vqueue_entry_status(partition_key, &EntryId::from(&id))
+                    .get_vqueue_entry_status(&BaseEntryId::from(&id))
                     .await?
                     .is_some()
                 {

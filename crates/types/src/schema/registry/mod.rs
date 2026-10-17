@@ -140,17 +140,20 @@ impl HttpAuthValidationError {
 
 /// Validate the per-deployment HTTP `auth` invariants against the effective (uri,
 /// additional_headers) tuple. The URI must be https or point to a loopback/private host to avoid
-/// leaking bearer tokens in cleartext. A customer-supplied `X-Serverless-Authorization` header is
-/// rejected because the dispatch path always uses that header for the minted ID token.
+/// leaking bearer tokens in cleartext, unless the customer set `allow_insecure_transport`. A
+/// customer-supplied `X-Serverless-Authorization` header is rejected because the dispatch path
+/// always uses that header for the minted ID token.
 pub fn validate_http_auth(
     uri: &Uri,
     additional_headers: Option<&Headers>,
+    allow_insecure_transport: bool,
 ) -> Result<(), HttpAuthValidationError> {
     let scheme_ok = uri
         .scheme()
         .map(|s| s.as_str().eq_ignore_ascii_case("https"))
         .unwrap_or(false);
-    if !scheme_ok && !is_loopback_or_private_host(uri) {
+    let insecure_public = !scheme_ok && !is_loopback_or_private_host(uri);
+    if insecure_public && !allow_insecure_transport {
         return Err(HttpAuthValidationError::invalid_field(
             "auth",
             format!(
@@ -181,6 +184,12 @@ pub fn validate_http_auth(
             uri = %uri,
             "GCP auth configured for a loopback/private deployment URI; \
              tokens will still be minted and attached"
+        );
+    } else if insecure_public {
+        tracing::warn!(
+            uri = %uri,
+            "GCP auth configured with allow_insecure_transport for a non-https deployment URI; \
+             tokens will be sent in cleartext"
         );
     }
 

@@ -126,6 +126,19 @@ impl Concurrency {
         }
     }
 
+    /// Abandons an acquisition started by a [`Self::poll_acquire`] that returned `Poll::Pending`.
+    ///
+    /// A pending acquisition keeps its place in the semaphore's wait queue and is assigned
+    /// released permits even if it's never polled again, withholding them from other holders
+    /// of the semaphore. Call this when the caller no longer needs the permit.
+    pub fn cancel_pending_acquire(&mut self) {
+        if let Inner::Limited { semaphore, .. } = &mut self.0 {
+            // A cloned PollSemaphore starts without a pending acquisition. Dropping the old one
+            // returns any permits already assigned to it.
+            *semaphore = semaphore.clone();
+        }
+    }
+
     /// Acquire a permit from the concurrency semaphore.
     pub async fn acquire(&mut self) -> Permit {
         poll_fn(|cx| self.poll_acquire(cx)).await
@@ -402,6 +415,17 @@ mod tests {
         // available permit since we have one that will be cached for that previously polled
         // future.
         assert!(concurrency.poll_acquire(&mut cx).is_ready());
+        assert_eq!(concurrency.available_permits(), 2);
+
+        // An abandoned pending acquisition must not keep permits released after it started.
+        let Poll::Ready(mut permit) = concurrency.poll_acquire(&mut cx) else {
+            panic!("should be able to acquire immediately");
+        };
+        assert!(concurrency.poll_and_merge(&mut cx, &mut permit).is_ready());
+        assert!(concurrency.poll_acquire(&mut cx).is_pending());
+        drop(permit);
+        assert_eq!(concurrency.available_permits(), 1);
+        concurrency.cancel_pending_acquire();
         assert_eq!(concurrency.available_permits(), 2);
     }
 

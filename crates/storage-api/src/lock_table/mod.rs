@@ -9,9 +9,9 @@
 // by the Apache License, Version 2.0.
 
 use restate_clock::UniqueTimestamp;
-use restate_types::identifiers::{InvocationId, PartitionKey, StateMutationId};
+use restate_types::identifiers::{BaseEntryId, InvocationId, PartitionKey, StateMutationId};
 use restate_types::sharding::KeyRange;
-use restate_types::vqueues::{EntryId, EntryKind};
+use restate_types::vqueues::EntryKind;
 use restate_types::{LockName, Scope};
 use restate_util_string::ReString;
 
@@ -39,15 +39,11 @@ pub enum AcquiredBy {
 }
 
 impl AcquiredBy {
-    pub fn from_entry_id(partition_key: PartitionKey, entry_id: &EntryId) -> Self {
-        match entry_id.kind() {
+    pub fn from_entry(id: &BaseEntryId) -> Self {
+        match id.kind() {
             EntryKind::Unknown => Self::Empty,
-            EntryKind::Invocation => {
-                Self::InvocationId(entry_id.to_invocation_id(partition_key).unwrap())
-            }
-            EntryKind::StateMutation => {
-                Self::StateMutation(entry_id.to_state_mutation_id(partition_key).unwrap())
-            }
+            EntryKind::Invocation => Self::InvocationId(id.to_invocation_id().unwrap()),
+            EntryKind::StateMutation => Self::StateMutation(id.to_state_mutation_id().unwrap()),
         }
     }
 }

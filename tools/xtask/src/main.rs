@@ -47,6 +47,11 @@ fn generate_config_schema() -> anyhow::Result<()> {
     let schema = SchemaSettings::draft2020_12()
         .into_generator()
         .into_root_schema_for::<Configuration>();
+    // schemars emits properties in declaration order because serde_json's
+    // preserve_order feature is enabled transitively; sort to keep the
+    // generated config reference lexicographically ordered.
+    let mut schema = serde_json::to_value(&schema)?;
+    schema.sort_all_objects();
     println!("{}", serde_json::to_string_pretty(&schema)?);
     Ok(())
 }
