@@ -45,15 +45,16 @@ use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::journal_v2::raw::RawEntry;
 use restate_types::journal_v2::{
-    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType,
+    Command, CommandMetadata, Completion, Entry, EntryMetadata, EntryType, NotificationType,
 };
 use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_worker_api::processor::PartitionFeatures;
 
 use crate::debug_if_leader;
 use crate::metric_definitions::{
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
-use crate::partition::processor::ProcessorContext;
+use crate::partition::processor::{FsmAccess, ProcessorContext};
 use crate::partition::state_machine::entries::attach_invocation_command::ApplyAttachInvocationCommand;
 use crate::partition::state_machine::entries::call_commands::{
     ApplyCallCommand, ApplyOneWayCallCommand,
@@ -131,10 +132,24 @@ where
         mut self,
         ctx: &'ctx mut StateMachineApplyContext<'s, S, P>,
     ) -> Result<(), Error> {
-        if !matches!(self.invocation_status, InvocationStatus::Invoked(_))
-            && !matches!(self.invocation_status, InvocationStatus::Suspended { .. })
-            && !matches!(self.invocation_status, InvocationStatus::Paused(_))
-        {
+        let accepts_entry = match &self.invocation_status {
+            InvocationStatus::Invoked(_)
+            | InvocationStatus::Suspended { .. }
+            | InvocationStatus::Paused(_) => true,
+            // Signals for invocations that haven't started yet are recorded in their journal, so
+            // they're delivered once the invocation starts.
+            InvocationStatus::Scheduled(_) | InvocationStatus::Inboxed(_) => {
+                self.entry.ty() == EntryType::Notification(NotificationType::Signal)
+                    && self.invocation_status.get_journal_metadata().is_some()
+                    && ctx
+                        .processor
+                        .fsm()
+                        .features()
+                        .is_preflight_signal_recording_enabled()
+            }
+            InvocationStatus::Completed(_) | InvocationStatus::Free => false,
+        };
+        if !accepts_entry {
             debug!(
                 "Received entry for invocation that is not invoked nor suspended nor paused. Ignoring the effect."
             );

@@ -871,6 +871,18 @@ experimental! {
     ///
     /// Since v1.8.0
     inconsistent_state_mutation_cleanup,
+
+    /// # Record signals sent to invocations that haven't started yet
+    ///
+    /// When enabled, signals (e.g. awakeable completions) sent to scheduled or inboxed
+    /// invocations are recorded in their journal and delivered once the invocation starts,
+    /// instead of being discarded.
+    ///
+    /// Only enable once all nodes run v1.8.1 or newer. Once a partition has enabled it, it stays
+    /// enabled even if this option is removed.
+    ///
+    /// Since v1.8.1
+    preflight_signal_recording,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

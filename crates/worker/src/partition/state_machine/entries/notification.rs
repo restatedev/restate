@@ -92,8 +92,10 @@ mod tests {
         InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
     };
     use restate_storage_api::journal_table_v2::ReadJournalTable;
+    use restate_types::identifiers::InvocationId;
     use restate_types::invocation::{
-        InvocationTermination, NotifySignalRequest, TerminationFlavor,
+        InvocationTarget, InvocationTermination, NotifySignalRequest, ServiceInvocation,
+        TerminationFlavor,
     };
     use restate_types::journal_v2::EntryMetadata;
     use restate_types::journal_v2::{
@@ -310,6 +312,83 @@ mod tests {
             cancel_signal.id,
             SignalId::for_builtin_signal(BuiltInSignal::Cancel)
         );
+
+        test_env.shutdown().await;
+    }
+
+    #[rstest]
+    #[case::recording_enabled(true)]
+    #[case::recording_disabled(false)]
+    #[restate_core::test]
+    async fn notify_signal_to_scheduled_invocation(#[case] recording_enabled: bool) {
+        let mut features = vec![PartitionFeatureChange::EnableJournalV2];
+        if recording_enabled {
+            features.push(PartitionFeatureChange::EnablePreflightSignalRecording);
+        }
+        let mut test_env =
+            TestEnv::create_with_features(PersistedFeatures::from_iter(features)).await;
+
+        let invocation_id = InvocationId::mock_random();
+        let wake_up_time = MillisSinceEpoch::now() + Duration::from_secs(60);
+        let _ = test_env
+            .apply(commands::InvokeCommand::test_envelope(ServiceInvocation {
+                invocation_id,
+                invocation_target: InvocationTarget::mock_service(),
+                execution_time: Some(wake_up_time),
+                ..ServiceInvocation::mock()
+            }))
+            .await;
+
+        let signal = Signal::new(SignalId::for_index(17), SignalResult::Void);
+        let _ = test_env
+            .apply(commands::NotifySignalCommand::test_envelope(
+                NotifySignalRequest {
+                    invocation_id,
+                    signal: signal.clone(),
+                },
+            ))
+            .await;
+
+        let expected_journal_length = if recording_enabled { 2 } else { 1 };
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::is_variant(InvocationStatusDiscriminants::Scheduled),
+                matchers::storage::has_journal_length(expected_journal_length),
+                matchers::storage::has_commands(1)
+            )
+        );
+
+        // Once started, the invocation sees the signal in its journal
+        let _ = test_env
+            .apply(commands::TimerCommand::test_envelope(
+                TimerKeyValue::neo_invoke(wake_up_time, invocation_id),
+            ))
+            .await;
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap(),
+            all!(
+                matchers::storage::is_variant(InvocationStatusDiscriminants::Invoked),
+                matchers::storage::has_journal_length(expected_journal_length)
+            )
+        );
+        if recording_enabled {
+            assert_that!(
+                test_env.read_journal_to_vec(invocation_id, 2).await,
+                elements_are![
+                    property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                    matchers::entry_eq(signal),
+                ]
+            );
+        }
 
         test_env.shutdown().await;
     }
