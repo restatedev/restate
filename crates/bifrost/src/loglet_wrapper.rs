@@ -454,13 +454,38 @@ mod tests {
         assert_eq!(loglet.last_trim(), None);
     }
 
-    /// Relative offsets beyond the loglet's u32 range saturate to the loglet maximum.
+    /// A trim point equal to the segment base trims exactly the first record.
+    #[test]
+    fn trim_point_at_segment_base_maps_to_oldest() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(SEGMENT_32_BASE, loglet.clone());
+
+        trim(&wrapper, SEGMENT_32_BASE).unwrap();
+
+        assert_eq!(loglet.last_trim(), Some(LogletOffset::OLDEST));
+    }
+
+    /// The last addressable LSN of a segment maps to the loglet maximum without saturating.
+    #[test]
+    fn trim_point_at_segment_max_maps_to_max_offset() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(SEGMENT_32_BASE, loglet.clone());
+        let last_addressable = SEGMENT_32_BASE + u64::from(u32::MAX) - 1;
+
+        trim(&wrapper, last_addressable).unwrap();
+
+        assert_eq!(loglet.last_trim(), Some(LogletOffset::MAX));
+    }
+
+    /// Relative offsets beyond the loglet's u32 range saturate to the loglet maximum. The
+    /// base is above 1 so that clamping in LSN space (the old behaviour) would give a
+    /// different, smaller offset.
     #[test]
     fn trim_point_saturates_at_loglet_max_offset() {
         let loglet = Arc::new(RecordingLoglet::default());
-        let wrapper = wrapper(1, loglet.clone());
+        let wrapper = wrapper(1_000, loglet.clone());
 
-        trim(&wrapper, u64::from(u32::MAX) + 1_000).unwrap();
+        trim(&wrapper, 1_000 + u64::from(u32::MAX) + 1_000).unwrap();
 
         assert_eq!(loglet.last_trim(), Some(LogletOffset::MAX));
     }
