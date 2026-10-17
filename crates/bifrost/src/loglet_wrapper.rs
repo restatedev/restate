@@ -208,13 +208,16 @@ impl LogletWrapper {
 
     // trim_point is inclusive.
     pub async fn trim(&self, trim_point: Lsn) -> Result<(), OperationError> {
-        // trimming to INVALID is no-op
-        if trim_point == Lsn::INVALID {
+        // trimming to INVALID, or to a point before this segment starts, is a no-op
+        if trim_point == Lsn::INVALID || trim_point < self.base_lsn {
             return Ok(());
         }
-        // saturate to the loglet max possible offset.
-        let trim_point = trim_point.min(Lsn::new(LogletOffset::MAX.into()));
-        let trim_point = trim_point.into_offset(self.base_lsn);
+        // saturate to the highest LSN this loglet can address. The saturation has to be
+        // relative to base_lsn: clamping the absolute LSN to LogletOffset::MAX stops
+        // trimming once a log passes 2^32 records, and panics in into_offset() for
+        // segments whose base_lsn is itself above LogletOffset::MAX.
+        let max_lsn = self.base_lsn.offset_by(LogletOffset::MAX);
+        let trim_point = trim_point.min(max_lsn).into_offset(self.base_lsn);
         self.loglet.trim(trim_point).await
     }
 
@@ -317,3 +320,148 @@ impl Stream for LogletReadStreamWrapper {
 }
 
 static_assertions::assert_impl_all!(LogletWrapper: Send, Sync, Clone);
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use futures::stream::BoxStream;
+
+    use crate::loglet::{FindTailOptions, LogletCommit};
+
+    use super::*;
+
+    /// A loglet that only records the offsets it is asked to trim to.
+    #[derive(Default)]
+    struct RecordingLoglet {
+        trims: Mutex<Vec<LogletOffset>>,
+    }
+
+    impl RecordingLoglet {
+        fn last_trim(&self) -> Option<LogletOffset> {
+            self.trims.lock().unwrap().last().copied()
+        }
+    }
+
+    #[async_trait]
+    impl Loglet for RecordingLoglet {
+        fn id(&self) -> Option<LogletId> {
+            None
+        }
+
+        fn debug_str(&self) -> Cow<'static, str> {
+            "recording-loglet".into()
+        }
+
+        async fn create_read_stream(
+            self: Arc<Self>,
+            _filter: KeyFilter,
+            _from: LogletOffset,
+            _to: Option<LogletOffset>,
+        ) -> Result<SendableLogletReadStream, OperationError> {
+            unimplemented!()
+        }
+
+        fn watch_tail(&self) -> BoxStream<'static, TailState<LogletOffset>> {
+            unimplemented!()
+        }
+
+        async fn enqueue_batch(
+            &self,
+            _payloads: Arc<[Record]>,
+        ) -> Result<LogletCommit, OperationError> {
+            unimplemented!()
+        }
+
+        async fn find_tail(
+            &self,
+            _opts: FindTailOptions,
+        ) -> Result<TailState<LogletOffset>, OperationError> {
+            unimplemented!()
+        }
+
+        async fn get_trim_point(&self) -> Result<Option<LogletOffset>, OperationError> {
+            Ok(self.last_trim())
+        }
+
+        async fn trim(&self, trim_point: LogletOffset) -> Result<(), OperationError> {
+            self.trims.lock().unwrap().push(trim_point);
+            Ok(())
+        }
+
+        async fn seal(&self) -> Result<(), OperationError> {
+            Ok(())
+        }
+    }
+
+    fn wrapper(base_lsn: u64, loglet: Arc<RecordingLoglet>) -> LogletWrapper {
+        LogletWrapper::new(
+            SegmentIndex::from(31),
+            Lsn::new(base_lsn),
+            None,
+            LogletConfig::for_testing(),
+            loglet,
+        )
+    }
+
+    fn trim(wrapper: &LogletWrapper, lsn: u64) -> Result<(), OperationError> {
+        futures::executor::block_on(wrapper.trim(Lsn::new(lsn)))
+    }
+
+    // The LSNs below come from a production log whose tail passed 2^32 records.
+    // Segment 31 starts below u32::MAX, segment 32 starts above it.
+    const SEGMENT_31_BASE: u64 = 3_435_583_584;
+    const SEGMENT_32_BASE: u64 = 4_505_162_431;
+    const SEGMENT_33_BASE: u64 = 4_505_225_006;
+
+    /// A trim point above u32::MAX must map to the segment-relative offset, not get
+    /// clamped in LSN space. On the buggy code the loglet receives offset 859_383_712
+    /// (== u32::MAX - base + 1), exactly what the log servers reported in production.
+    #[test]
+    fn trim_point_above_u32_max_is_segment_relative() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(SEGMENT_31_BASE, loglet.clone());
+        let last_record = SEGMENT_32_BASE - 1;
+
+        trim(&wrapper, last_record).unwrap();
+
+        let expected = LogletOffset::new((last_record - SEGMENT_31_BASE + 1) as u32); // 1_069_578_847
+        assert_eq!(loglet.last_trim(), Some(expected));
+    }
+
+    /// Trimming a segment whose base is above u32::MAX must not panic.
+    #[test]
+    fn trim_segment_with_base_above_u32_max_does_not_panic() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(SEGMENT_32_BASE, loglet.clone());
+        let last_record = SEGMENT_33_BASE - 1;
+
+        trim(&wrapper, last_record).unwrap();
+
+        let expected = LogletOffset::new((last_record - SEGMENT_32_BASE + 1) as u32); // 62_575
+        assert_eq!(loglet.last_trim(), Some(expected));
+    }
+
+    /// A trim point below the segment's base has nothing to trim in this segment.
+    #[test]
+    fn trim_point_below_segment_base_is_a_noop() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(SEGMENT_32_BASE, loglet.clone());
+
+        trim(&wrapper, SEGMENT_32_BASE - 1_000).unwrap();
+
+        assert_eq!(loglet.last_trim(), None);
+    }
+
+    /// Relative offsets beyond the loglet's u32 range saturate to the loglet maximum.
+    #[test]
+    fn trim_point_saturates_at_loglet_max_offset() {
+        let loglet = Arc::new(RecordingLoglet::default());
+        let wrapper = wrapper(1, loglet.clone());
+
+        trim(&wrapper, u64::from(u32::MAX) + 1_000).unwrap();
+
+        assert_eq!(loglet.last_trim(), Some(LogletOffset::MAX));
+    }
+}
