@@ -17,7 +17,7 @@ use std::task::{Poll, ready};
 
 use itertools::{EitherOrBoth, Itertools as _};
 use tokio::time::Instant;
-use tracing::trace;
+use tracing::{trace, warn};
 
 use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::vqueue_table::CursorError;
@@ -532,7 +532,7 @@ impl<S: VQueueStore> Queue<S> {
             if !needs_advance {
                 break;
             }
-            if !self.try_advance()? {
+            if !self.try_advance(qid)? {
                 // We cannot advance without a refill
                 if self.refill_state.is_in_flight() {
                     ready!(self.poll_refill_task(cx, skip));
@@ -585,7 +585,12 @@ impl<S: VQueueStore> Queue<S> {
     /// `try_refill`, not this method.
     ///
     /// Returns false if advance was not possible and we need to perform a refill.
-    pub fn try_advance(&mut self) -> Result<bool, StorageError> {
+    ///
+    /// The running stage is driven by the stored rows; the `num_running` counter
+    /// from the vqueue metadata is only a hint. A counter that disagrees with the
+    /// rows is reported and the queue moves on to the inbox stage, so one
+    /// mis-accounted vqueue cannot take the partition processor down.
+    pub fn try_advance(&mut self, qid: &VQueueId) -> Result<bool, StorageError> {
         // Split into disjoint borrows so the `Stage::Inbox` arm below can
         // mutate both `stage` and `inbox_cache` without fighting the
         // borrow checker.
@@ -606,10 +611,15 @@ impl<S: VQueueStore> Queue<S> {
                         };
                         return Ok(true);
                     }
-                    panic!(
-                        "vqueue has no running items but its metadata says it has {}",
-                        already_running.get(),
+                    // The probe that runs before this stage opens has already logged the
+                    // full description of the vqueue at error level.
+                    warn!(
+                        vqueue = %qid,
+                        num_running = already_running.get(),
+                        "vqueue metadata counts running entries but its running stage holds none; \
+                         continuing with the inbox stage"
                     );
+                    *stage = Stage::Inbox;
                 }
                 Stage::Running {
                     reader,
@@ -620,12 +630,18 @@ impl<S: VQueueStore> Queue<S> {
                     *remaining = remaining.saturating_sub(1);
                     match reader.peek()? {
                         Some(next) => {
-                            debug_assert!(*remaining > 0);
                             *head = next;
                             return Ok(true);
                         }
                         None => {
-                            debug_assert_eq!(0, *remaining);
+                            if *remaining > 0 {
+                                warn!(
+                                    vqueue = %qid,
+                                    unaccounted = *remaining,
+                                    "vqueue running stage ended before its metadata's running \
+                                     count was exhausted; continuing with the inbox stage"
+                                );
+                            }
                             *stage = Stage::Inbox;
                         }
                     }
