@@ -232,6 +232,7 @@ where
                 invoked_status.timestamps.modification_time(),
                 random_seed,
                 journal_kind,
+                invoked_status.source,
             )))
         } else {
             Ok(None)

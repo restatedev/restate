@@ -16,7 +16,7 @@ use futures::Stream;
 use restate_memory::{LocalMemoryLease, LocalMemoryPool, OutOfMemory, PinnableMemoryStream};
 use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
-use restate_types::invocation::ServiceInvocationSpanContext;
+use restate_types::invocation::{ServiceInvocationSpanContext, Source};
 use restate_types::journal::CompletionResult;
 use restate_types::journal::raw::PlainRawEntry;
 use restate_types::schema::invocation_target::StatePreloadPolicy;
@@ -45,6 +45,7 @@ pub struct JournalMetadata {
     pub last_modification_date: MillisSinceEpoch,
     pub random_seed: u64,
     pub journal_kind: JournalKind,
+    pub source: Source,
 }
 
 impl JournalMetadata {
@@ -55,6 +56,7 @@ impl JournalMetadata {
         last_modification_date: MillisSinceEpoch,
         random_seed: u64,
         journal_kind: JournalKind,
+        source: Source,
     ) -> Self {
         Self {
             pinned_deployment,
@@ -63,6 +65,7 @@ impl JournalMetadata {
             last_modification_date,
             random_seed,
             journal_kind,
+            source,
         }
     }
 }

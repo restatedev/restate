@@ -189,6 +189,7 @@ where
                 limit_key,
                 idempotency_key,
                 opts.max_awaited_future_depth,
+                opts.forwarded_invocation_headers(),
             )
             .run(storage_reader, budget),
         )
