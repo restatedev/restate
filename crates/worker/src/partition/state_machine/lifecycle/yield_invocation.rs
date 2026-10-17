@@ -8,7 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use tracing::{debug, info};
+use metrics::counter;
+use tracing::info;
 
 use restate_clock::{RoughTimestamp, UniqueTimestamp};
 use restate_storage_api::invocation_status_table::ReadInvocationStatusTable;
@@ -24,6 +25,10 @@ use restate_vqueues::VQueue;
 use restate_vqueues::context::HasVQueuesMut;
 
 use crate::debug_if_leader;
+use crate::metric_definitions::{
+    DECISION_TYPE_YIELD, REASON_LABEL, SKIP_REASON_NO_ENTRY, SKIP_REASON_WRONG_STAGE, TYPE_LABEL,
+    VQUEUE_DECISION_SKIPPED,
+};
 use crate::partition::processor::Processor;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
@@ -57,6 +62,8 @@ where
             .await?
         else {
             // It could be that the invocation was killed and purged before the invoker yielded it.
+            counter!(VQUEUE_DECISION_SKIPPED, TYPE_LABEL => DECISION_TYPE_YIELD, REASON_LABEL => SKIP_REASON_NO_ENTRY)
+                .increment(1);
             info!(
                 "Not yielding {} because it has no vqueue state, yield_reason: {}",
                 self.invocation_id, self.yield_reason
@@ -65,7 +72,9 @@ where
         };
 
         if !matches!(header.stage(), Stage::Running) {
-            debug!(
+            counter!(VQUEUE_DECISION_SKIPPED, TYPE_LABEL => DECISION_TYPE_YIELD, REASON_LABEL => SKIP_REASON_WRONG_STAGE)
+                .increment(1);
+            info!(
                 "Not yielding {} because it is not in running stage. Current stage is {}",
                 self.invocation_id,
                 header.stage()

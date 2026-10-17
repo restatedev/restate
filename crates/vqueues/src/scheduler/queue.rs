@@ -323,6 +323,17 @@ impl<S: VQueueStore> Queue<S> {
         matches!(self.stage, Stage::Empty)
     }
 
+    /// The running count the queue was created with, as long as its running stage has not
+    /// been opened yet.
+    pub fn pending_running_count(&self) -> Option<u32> {
+        match &self.stage {
+            Stage::New {
+                already_running, ..
+            } => Some(already_running.get()),
+            _ => None,
+        }
+    }
+
     /// Returns `true` iff the removed key was the head of the queue.
     ///
     /// While the queue is still in the running stage, this is a no-op: the

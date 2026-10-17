@@ -127,9 +127,10 @@ use restate_worker_api::processor::PartitionFeatures;
 
 use self::utils::SpanExt;
 use crate::metric_definitions::{
-    LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
-    USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
-    USAGE_LEADER_QUANTIZED_ACTION_COUNT,
+    DECISION_TYPE_RUN, LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER,
+    PARTITION_APPLY_COMMAND, REASON_LABEL, SKIP_REASON_KEY_MISMATCH, SKIP_REASON_NO_ENTRY,
+    SKIP_REASON_WRONG_STAGE, TYPE_LABEL, USAGE_LEADER_JOURNAL_ENTRY_BYTES,
+    USAGE_LEADER_JOURNAL_ENTRY_COUNT, USAGE_LEADER_QUANTIZED_ACTION_COUNT, VQUEUE_DECISION_SKIPPED,
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
@@ -244,6 +245,14 @@ pub(crate) struct StateMachineApplyContext<'a, S, P> {
 }
 
 impl<S, P> StateMachineApplyContext<'_, S, P> {
+    /// Records a scheduler decision that the stored entry status no longer supports. These
+    /// are the moments the leader's view and the stored vqueue state disagreed, so they are
+    /// counted on every replica and logged at info level.
+    fn note_skipped_decision(decision: &'static str, reason: &'static str) {
+        counter!(VQUEUE_DECISION_SKIPPED, TYPE_LABEL => decision, REASON_LABEL => reason)
+            .increment(1);
+    }
+
     fn is_leader(&self) -> bool {
         self.leader.is_some()
     }
@@ -3107,6 +3116,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 let mutation_id = entry_key.entry_id().to_base_id(partition_key);
 
                 let Some(state_header) = state_header else {
+                    Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_NO_ENTRY);
                     info!(
                         "Will not run {mutation_id} because we cannot find a vqueue entry state for it!"
                     );
@@ -3114,6 +3124,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 };
 
                 if !matches!(state_header.stage(), Stage::Inbox) {
+                    Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_WRONG_STAGE);
                     info!(
                         vqueue = %qid,
                         "Not running vqueue entry key {mutation_id} since its not runnable anymore, current stage is {}.",
@@ -3126,7 +3137,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     // Stale decision: the entry was rescheduled (re-keyed) after the scheduler
                     // proposed this run. A fresh decision for the new key will run it. See the
                     // matching guard in `run_invocation` for the full rationale.
-                    debug!(
+                    Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_KEY_MISMATCH);
+                    info!(
                         vqueue = %qid,
                         "Ignoring a stale decision to run {mutation_id}: it was rescheduled (decision run_at {} != current {})",
                         entry_key.run_at(),
@@ -3218,7 +3230,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             //
             // We assume that the activity that removed/killed the invocation has already notified
             // the scheduler, so we don't need to do anything here.
-            debug!(
+            Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_NO_ENTRY);
+            info!(
                 vqueue = %qid,
                 "Will not run {invocation_id} because we cannot find a vqueue entry state for it!",
             );
@@ -3227,10 +3240,11 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
         if !matches!(header.stage(), Stage::Inbox) {
             // Similar to the case above.
-            debug!(
+            Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_WRONG_STAGE);
+            info!(
                 vqueue = %qid,
-                "Ignoring the scheduler's decision to run {base_id} because the entry has
-                already moved to {} stage!",
+                "Ignoring the scheduler's decision to run {base_id} because the entry has \
+                 already moved to {} stage!",
                 header.stage(),
             );
             return Ok(());
@@ -3245,7 +3259,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             // run the entry otherwise. This holds for both directions: a future reschedule must
             // not run now, and an earlier reschedule runs via its fresh decision (avoiding a
             // double dispatch). No state transition / stats update happens on skip.
-            debug!(
+            Self::note_skipped_decision(DECISION_TYPE_RUN, SKIP_REASON_KEY_MISMATCH);
+            info!(
                 vqueue = %qid,
                 "Ignoring a stale decision to run {invocation_id}: it was rescheduled (decision run_at {} != current {})",
                 entry_key.run_at(),
