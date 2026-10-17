@@ -212,6 +212,13 @@ impl InvocationStatus {
     #[inline]
     pub fn into_journal_metadata(self) -> Option<JournalMetadata> {
         match self {
+            InvocationStatus::Scheduled(ScheduledInvocation { metadata })
+            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+                match metadata.input {
+                    PreFlightInvocationArgument::Journal(journal) => Some(journal.journal_metadata),
+                    PreFlightInvocationArgument::Input(_) => None,
+                }
+            }
             InvocationStatus::Invoked(InFlightInvocationMetadata {
                 journal_metadata, ..
             })
@@ -235,6 +242,10 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata(&self) -> Option<&JournalMetadata> {
         match self {
+            InvocationStatus::Scheduled(ScheduledInvocation { metadata })
+            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+                metadata.input.journal_metadata()
+            }
             InvocationStatus::Invoked(InFlightInvocationMetadata {
                 journal_metadata, ..
             })
@@ -258,6 +269,10 @@ impl InvocationStatus {
     #[inline]
     pub fn get_journal_metadata_mut(&mut self) -> Option<&mut JournalMetadata> {
         match self {
+            InvocationStatus::Scheduled(ScheduledInvocation { metadata })
+            | InvocationStatus::Inboxed(InboxedInvocation { metadata, .. }) => {
+                metadata.input.journal_metadata_mut()
+            }
             InvocationStatus::Invoked(InFlightInvocationMetadata {
                 journal_metadata, ..
             })
@@ -467,6 +482,20 @@ impl PreFlightInvocationArgument {
         match self {
             PreFlightInvocationArgument::Input(_) => None,
             PreFlightInvocationArgument::Journal(journal) => journal.pinned_deployment.as_ref(),
+        }
+    }
+
+    pub fn journal_metadata(&self) -> Option<&JournalMetadata> {
+        match self {
+            PreFlightInvocationArgument::Input(_) => None,
+            PreFlightInvocationArgument::Journal(journal) => Some(&journal.journal_metadata),
+        }
+    }
+
+    pub fn journal_metadata_mut(&mut self) -> Option<&mut JournalMetadata> {
+        match self {
+            PreFlightInvocationArgument::Input(_) => None,
+            PreFlightInvocationArgument::Journal(journal) => Some(&mut journal.journal_metadata),
         }
     }
 }
