@@ -78,8 +78,9 @@ The Internals dashboard has additional variables:
 - **Errors & Diagnostics** - Error rate, errors by node/partition, task status
 - **Ingress (HTTP & Kafka)** - Request rates, latencies, status breakdown
 - **Invoker (Detailed)** - Task rates, duration, capacity per node
+- **VQueue Scheduler** - Enqueue/run/yield rates, time blocked by reason
 - **Bifrost - Log System** - Sequencer rates, latencies, loglet read/write
-- **Partition Processor** - Command processing rate, latency, LSN lag
+- **Partition Processor** - Command processing rate, latency, LSN lag, cleaner purge delay
 - **RocksDB** - Read/write ops, latencies, cache hit/miss per node
 - **Metadata Server** - Operations, latencies, Raft replication
 
