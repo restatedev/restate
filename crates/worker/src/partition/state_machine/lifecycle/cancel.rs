@@ -27,10 +27,11 @@ use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::client::CancelInvocationResponse;
 use restate_types::invocation::{InvocationMutationResponseSink, TerminationFlavor};
-use restate_types::journal_v2::CANCEL_SIGNAL;
+use restate_types::journal_v2::{CANCEL_NOTIFICATION_ID, CANCEL_SIGNAL};
 
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::entries::OnJournalEntryCommand;
+use crate::partition::state_machine::lifecycle::ResumeInvocationCommand;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
 
 pub struct OnCancelCommand {
@@ -64,12 +65,30 @@ where
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
         match self.invocation_status {
-            is @ InvocationStatus::Invoked(_)
-            | is @ InvocationStatus::Suspended { .. }
-            | is @ InvocationStatus::Paused(_) => {
-                OnJournalEntryCommand::from_entry(self.invocation_id, is, CANCEL_SIGNAL.into())
-                    .apply(ctx)
-                    .await?;
+            mut is @ InvocationStatus::Invoked(_)
+            | mut is @ InvocationStatus::Suspended { .. }
+            | mut is @ InvocationStatus::Paused(_) => {
+                let has_cancel_notification = ctx
+                    .storage
+                    .get_notifications_index(self.invocation_id)
+                    .await?
+                    .contains_key(&CANCEL_NOTIFICATION_ID);
+                if has_cancel_notification {
+                    if matches!(is, InvocationStatus::Paused(_)) {
+                        ResumeInvocationCommand {
+                            invocation_id: self.invocation_id,
+                            invocation_status: &mut is,
+                        }
+                        .apply(ctx)
+                        .await?;
+                        ctx.storage
+                            .put_invocation_status(&self.invocation_id, &is)?;
+                    }
+                } else {
+                    OnJournalEntryCommand::from_entry(self.invocation_id, is, CANCEL_SIGNAL.into())
+                        .apply(ctx)
+                        .await?;
+                }
                 ctx.reply_to_cancel(self.response_sink, CancelInvocationResponse::Appended);
             }
             InvocationStatus::Inboxed(inboxed) => {
@@ -174,6 +193,112 @@ mod tests {
                 1,
                 CANCEL_NOTIFICATION_ID,
             ))
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn cancel_invoked_invocation_is_idempotent() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        let actions = test_env
+            .apply(commands::TerminateInvocationCommand::test_envelope(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
+            .await;
+        assert_that!(
+            actions,
+            contains(matchers::actions::forward_notification(
+                invocation_id,
+                1,
+                CANCEL_NOTIFICATION_ID,
+            ))
+        );
+
+        let actions = test_env
+            .apply(commands::TerminateInvocationCommand::test_envelope(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
+            .await;
+        assert!(actions.is_empty());
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(CANCEL_SIGNAL),
+            ]
+        );
+        assert_eq!(
+            test_env
+                .storage()
+                .get_invocation_status(&invocation_id)
+                .await
+                .unwrap()
+                .get_journal_metadata()
+                .unwrap()
+                .length,
+            2
+        );
+
+        test_env.shutdown().await;
+    }
+
+    #[restate_core::test]
+    async fn cancel_already_cancelled_paused_invocation_resumes_without_duplicate_signal() {
+        let mut test_env = TestEnv::create().await;
+        let invocation_id = fixtures::mock_start_invocation(&mut test_env).await;
+        fixtures::mock_pinned_deployment_v5(&mut test_env, invocation_id).await;
+
+        test_env
+            .apply(commands::TerminateInvocationCommand::test_envelope(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
+            .await;
+        test_env
+            .modify_invocation_status(invocation_id, |status| {
+                *status =
+                    InvocationStatus::Paused(status.get_invocation_metadata().unwrap().clone());
+            })
+            .await;
+
+        test_env
+            .apply(commands::TerminateInvocationCommand::test_envelope(
+                InvocationTermination {
+                    invocation_id,
+                    flavor: TerminationFlavor::Cancel,
+                    response_sink: None,
+                },
+            ))
+            .await;
+
+        let status = test_env
+            .storage()
+            .get_invocation_status(&invocation_id)
+            .await
+            .unwrap();
+        assert!(matches!(status, InvocationStatus::Invoked(_)));
+        assert_eq!(status.get_journal_metadata().unwrap().length, 2);
+        assert_that!(
+            test_env.read_journal_to_vec(invocation_id, 3).await,
+            elements_are![
+                property!(Entry.ty(), eq(EntryType::Command(CommandType::Input))),
+                matchers::entry_eq(CANCEL_SIGNAL),
+            ]
         );
 
         test_env.shutdown().await;
