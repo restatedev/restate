@@ -574,10 +574,9 @@ impl<K: TimerKey> InvocationStateMachine<K> {
             RequestedErrorBehavior::RetryWithIntervalOverride(interval) => Some(interval),
         };
 
-        if error_is_transient
-            && let Some(next_timer) =
-                next_retry_interval_override.or_else(|| self.retry_policy_state.retry_iter.next())
+        if error_is_transient && let Some(policy_timer) = self.retry_policy_state.retry_iter.next()
         {
+            let next_timer = next_retry_interval_override.unwrap_or(policy_timer);
             if should_bump_start_message_retry_count_since_last_stored_command {
                 self.start_message_retry_count_since_last_stored_command += 1;
             }
@@ -805,6 +804,93 @@ mod tests {
             ),
             pat!(OnTaskError::Fail)
         );
+    }
+
+    #[test]
+    fn retry_interval_override_consumes_retry_budget() {
+        for on_max_attempts in [OnMaxAttempts::Kill, OnMaxAttempts::Pause] {
+            let mut ism = create_test_invocation_state_machine();
+            ism.retry_policy_state.retry_iter =
+                RetryPolicy::fixed_delay(Duration::from_secs(1), Some(2)).into_iter();
+            ism.retry_policy_state.on_max_attempts = on_max_attempts;
+            let interval = Duration::from_millis(10);
+
+            for attempt in 1..=2 {
+                assert_that!(
+                    ism.handle_task_error(
+                        true,
+                        RequestedErrorBehavior::RetryWithIntervalOverride(interval),
+                        true,
+                        |timer| {
+                            assert_eq!(timer, interval);
+                            0
+                        }
+                    ),
+                    pat!(OnTaskError::Retrying(eq(interval)))
+                );
+                assert_eq!(ism.retry_policy_state.retry_iter.attempts(), attempt);
+                ism.notify_retry_timer_fired(0);
+            }
+
+            let outcome = ism.handle_task_error(
+                true,
+                RequestedErrorBehavior::RetryWithIntervalOverride(interval),
+                true,
+                |_| panic!("Exhausted retry policy must not register a timer"),
+            );
+            match on_max_attempts {
+                OnMaxAttempts::Kill => assert_that!(outcome, pat!(OnTaskError::Fail)),
+                OnMaxAttempts::Pause => assert_that!(outcome, pat!(OnTaskError::Pause)),
+            }
+        }
+    }
+
+    #[test]
+    fn retry_interval_override_cannot_enable_disabled_retries() {
+        for on_max_attempts in [OnMaxAttempts::Kill, OnMaxAttempts::Pause] {
+            let mut ism = create_test_invocation_state_machine();
+            ism.retry_policy_state.retry_iter = RetryPolicy::None.into_iter();
+            ism.retry_policy_state.on_max_attempts = on_max_attempts;
+
+            let outcome = ism.handle_task_error(
+                true,
+                RequestedErrorBehavior::RetryWithIntervalOverride(Duration::from_millis(10)),
+                true,
+                |_| panic!("Disabled retries must not register a timer"),
+            );
+            match on_max_attempts {
+                OnMaxAttempts::Kill => assert_that!(outcome, pat!(OnTaskError::Fail)),
+                OnMaxAttempts::Pause => assert_that!(outcome, pat!(OnTaskError::Pause)),
+            }
+        }
+    }
+
+    #[test]
+    fn retry_interval_override_reports_scheduler_attempts() {
+        let mut ism = create_test_invocation_state_machine();
+        let interval = *Configuration::pinned()
+            .invocation
+            .invocation_yield_threshold();
+
+        for attempt in 1..=2 {
+            assert_that!(
+                ism.handle_task_error(
+                    true,
+                    RequestedErrorBehavior::RetryWithIntervalOverride(interval),
+                    true,
+                    |_| panic!("Scheduler retry must not register a timer")
+                ),
+                pat!(OnTaskError::RetryViaScheduler {
+                    retry_after: eq(interval),
+                    retry_attempts: eq(attempt),
+                    retry_count_since_last_stored_command: eq(attempt),
+                })
+            );
+            assert_eq!(
+                ism.retry_policy_state.retry_iter.attempts(),
+                attempt as usize
+            );
+        }
     }
 
     #[test(tokio::test)]
