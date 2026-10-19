@@ -16,6 +16,7 @@ use crate::identifiers::{
 
 use super::ParseError;
 
+/// The length of the remainder bytes of an entry id.
 const REMAINDER_LEN: usize = 16;
 
 #[derive(
