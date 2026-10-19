@@ -282,7 +282,7 @@ impl<S: VQueueStore> VQueueState<S> {
                 next_run_at: None,
                 reason: YieldReason::PartitionLeaderChange,
             };
-            self.queue.try_advance()?;
+            self.queue.try_advance(slot.vqueue_id())?;
             return Ok(Pop::Yield(action));
         }
 
@@ -305,7 +305,7 @@ impl<S: VQueueStore> VQueueState<S> {
                     wait_stats: self.head_stats.finalize(),
                 };
 
-                self.queue.try_advance()?;
+                self.queue.try_advance(slot.vqueue_id())?;
                 Ok(Pop::Run(action))
             }
             AcquireOutcome::BlockedOn(resource) => {
