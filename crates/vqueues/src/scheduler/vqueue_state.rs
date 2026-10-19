@@ -349,10 +349,10 @@ impl<S: VQueueStore> VQueueState<S> {
         Poll::Ready(Ok(self.check_eligibility(slot.meta()).as_compact()))
     }
 
-    /// The metadata's running count is only a hint; the running-stage rows are the truth.
-    /// Before the queue opens its running stage for the first time, check that rows exist
-    /// behind the count and leave a full description of the vqueue in the log if they do not,
-    /// so that whatever happens next can be explained.
+    /// The scheduler relies on the metadata's running count matching the running-stage rows;
+    /// a mismatch is a bug. Before the queue opens its running stage for the first time, check
+    /// that rows exist behind the count and, if they do not, log a full description of the
+    /// vqueue so the divergence can be traced.
     fn check_running_stage_is_backed(slot: &cache::Slot, storage: &S, num_running: u32) {
         let mut probe = storage.new_run_reader(slot.vqueue_id());
         probe.seek_to_first();
