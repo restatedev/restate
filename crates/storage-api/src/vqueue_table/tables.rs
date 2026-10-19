@@ -28,10 +28,16 @@ use crate::Result;
     PartialOrd,
     Ord,
     bilrost::Enumeration,
+    enum_map::Enum,
     strum::EnumCount,
     strum::FromRepr,
     strum::Display,
     strum::VariantArray,
+    zerocopy::IntoBytes,
+    zerocopy::TryFromBytes,
+    zerocopy::KnownLayout,
+    zerocopy::Immutable,
+    zerocopy::Unaligned,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
