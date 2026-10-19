@@ -243,7 +243,7 @@ fn deterministic_partition_key(
 ///
 /// Note: If this value ever changes, please keep it as a power of two so that the compiler can
 /// optimize it to a single AND instruction instead of a real mul+shift operation.
-const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u64 = 512;
+pub const UNSCOPED_SERVICE_PARTITION_KEY_FANOUT: u64 = 512;
 
 static CONTROLLED_IDEMPOTENT_SHARDING: AtomicBool = AtomicBool::new(false);
 
@@ -259,7 +259,7 @@ pub fn enable_controlled_idempotent_sharding() {
 /// Computes one of the deterministic partition keys assigned to an unscoped service.
 ///
 /// The key set for a service name is generated as:
-/// - `key(bucket) = H((service_name, "unscoped_partition_key_fanout", bucket))`
+/// - `key(bucket) = H((seed, "unscoped_partition_key_fanout", bucket))`
 ///
 /// This keeps bucket-to-key mapping deterministic per service while preserving uniform hash
 /// distribution over the full `PartitionKey` space. The random selection happens at bucket level,
@@ -270,10 +270,10 @@ pub fn enable_controlled_idempotent_sharding() {
 /// - bucket `1` selects `H((S, "unscoped/service", 1))`
 /// - bucket `7` selects `H((S, "unscoped/service", 7))`
 #[inline]
-fn unscoped_service_partition_key(service_name: &str, bucket: u64) -> PartitionKey {
+pub fn unscoped_service_partition_key(seed: impl Hash, bucket: u64) -> PartitionKey {
     debug_assert!(bucket < UNSCOPED_SERVICE_PARTITION_KEY_FANOUT);
 
-    partitioner::HashPartitioner::compute_partition_key((service_name, "unscoped/service", bucket))
+    partitioner::HashPartitioner::compute_partition_key((seed, "unscoped/service", bucket))
 }
 
 #[inline]
