@@ -8,6 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! State storage with legacy, non-mem-comparable keys.
+//!
+//! Both [`StateKey`] and [`ScopedStateKey`] are **not ordered across all logical
+//! fields**: their service names, service keys, and state keys are length-prefixed;
+//! scoped keys also use the legacy optional-scope codec. The partition-key prefix
+//! supports range scans, but iteration does not imply lexicographic state-key order.
+//! See the [key encoding families](crate::keys#two-encoding-families).
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
