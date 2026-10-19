@@ -111,11 +111,12 @@ fn main() {
     let cli_args = RestateArguments::parse();
 
     // We capture the absolute path of the config file on startup before we change the current
-    // working directory (base-dir arg)
+    // working directory (base-dir arg). Symlinks are kept unresolved so that a swapped target
+    // (a Kubernetes ConfigMap update) is still found by the config watcher.
     let config_path = cli_args
         .config_file
         .as_ref()
-        .map(|p| std::fs::canonicalize(p).expect("config-file path is valid"));
+        .map(|p| std::path::absolute(p).expect("config-file path is valid"));
 
     // Initial configuration loading
     let mut config_loader_builder = ConfigLoaderBuilder::default();
