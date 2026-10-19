@@ -8,6 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Lock storage with a legacy, non-mem-comparable scope encoding.
+//!
+//! [`LockKey`] is **not ordered across all logical fields**: the optional scope
+//! uses legacy presence tags and a length-prefixed name. Within a fixed scope,
+//! the raw `service/key` lock-name suffix supports byte-prefix scans, but it must
+//! remain the final field because it is not self-delimiting or prefix-free.
+//! See the [key encoding families](crate::keys#two-encoding-families).
+
 use anyhow::Context;
 use bilrost::{Message, OwnedMessage};
 use bytes::{Buf, BufMut};

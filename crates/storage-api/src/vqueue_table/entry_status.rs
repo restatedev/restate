@@ -14,7 +14,9 @@ use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId
 use super::stats::EntryStatistics;
 use super::{EntryKey, EntryMetadata, EntryMetadataRef, Stage};
 
-#[derive(Debug, strum::Display, Clone, Copy, Eq, PartialEq, bilrost::Enumeration)]
+#[derive(
+    Debug, strum::Display, strum::VariantArray, Clone, Copy, Eq, PartialEq, bilrost::Enumeration,
+)]
 #[strum(serialize_all = "kebab-case")]
 pub enum Status {
     #[bilrost(0)]
@@ -47,6 +49,23 @@ pub enum Status {
     Failed,
     #[bilrost(9)]
     Succeeded,
+}
+
+impl Status {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Status::Unknown => "unknown",
+            Status::New => "new",
+            Status::Scheduled => "scheduled",
+            Status::Started => "started",
+            Status::BackingOff => "backing-off",
+            Status::Yielded => "yielded",
+            Status::Killed => "killed",
+            Status::Cancelled => "cancelled",
+            Status::Failed => "failed",
+            Status::Succeeded => "succeeded",
+        }
+    }
 }
 
 /// Borrowing version of [`RawStatusHeader`].
