@@ -8090,6 +8090,7 @@ dependencies = [
  "parking_lot",
  "rdkafka",
  "restate-core",
+ "restate-futures-util",
  "restate-ingestion-client",
  "restate-storage-api",
  "restate-timer-queue",

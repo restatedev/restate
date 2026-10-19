@@ -19,6 +19,7 @@ oidc = ["rdkafka/curl-static", "rdkafka/gssapi-vendored"]
 restate-workspace-hack = { workspace = true }
 
 restate-core = { workspace = true }
+restate-futures-util = { workspace = true }
 restate-ingestion-client = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-timer-queue = { workspace = true }
