@@ -8,9 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Opt-in before v1.9, automatic from v1.9, and persisted once enabled.
-//! Initial activation requires an empty store until the backfill is implemented:
-//! decrementing an uncounted existing entry would invalidate its unsigned gauge.
+//! Opt-in before v1.9, automatic from v1.9, and persisted until explicitly reset.
+//! Existing stores are backfilled before publishing the feature marker so that
+//! incremental updates start from a complete baseline of retained entries.
 
 use rocksdb::WriteBatch;
 use tokio_util::sync::CancellationToken;
@@ -20,6 +20,7 @@ use restate_types::config::Configuration;
 use restate_types::{RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_9_0, SemanticRestateVersion};
 use restate_util_string::ReString;
 
+use crate::stats::aggregated::backfill;
 use crate::{MigrationError, PartitionStore};
 
 use super::{StorageFeature, StorageFeatures};
@@ -37,13 +38,18 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
     fn should_enable(
         config: &Configuration,
         current_version: &SemanticRestateVersion,
-        is_store_empty: bool,
+        _is_store_empty: bool,
     ) -> bool {
-        // This restriction is temporary and gets removed later in the commit stack
-        // when backfill is implemented.
-        is_store_empty
-            && (current_version.is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
-                || config.common.experimental.is_track_status_gauges_enabled())
+        current_version.is_equal_or_newer_than(&RESTATE_VERSION_1_9_0)
+            || config.common.experimental.is_track_status_gauges_enabled()
+    }
+
+    fn should_disable(
+        config: &Configuration,
+        _current_version: &SemanticRestateVersion,
+        _is_store_empty: bool,
+    ) -> bool {
+        config.common.experimental.is_status_gauges_reset_enabled()
     }
 
     fn is_enabled(features: &StorageFeatures) -> bool {
@@ -55,16 +61,25 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
     }
 
     async fn enable(
-        _storage: &mut PartitionStore,
-        _cancel: &CancellationToken,
+        storage: &mut PartitionStore,
+        cancel: &CancellationToken,
         _config: &Configuration,
         _finalization: &mut WriteBatch,
     ) -> Result<(), MigrationError> {
-        // Empty stores skip this hook. Nonempty stores need a backfill before
-        // publishing the feature marker and starting incremental maintenance.
-        Err(StorageError::Generic(anyhow::anyhow!(
-            "status gauges require a backfill before enabling on a nonempty store"
-        ))
-        .into())
+        backfill::run(storage, cancel).await
+    }
+
+    async fn disable(
+        storage: &mut PartitionStore,
+        _cancel: &CancellationToken,
+        _config: &Configuration,
+        finalization: &mut WriteBatch,
+        features: &mut StorageFeatures,
+    ) -> Result<(), MigrationError> {
+        // Also clear partial output from an interrupted, unmarked backfill.
+        backfill::append_reset(storage.partition_db(), finalization)
+            .map_err(StorageError::Generic)?;
+        features.is_track_status_gauges = false;
+        Ok(())
     }
 }
