@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod aggregated_status_stats;
 mod scoped_promise_migration;
 mod scoped_state_migration;
 mod state_promise_migration_combined;
@@ -87,8 +88,18 @@ storage_features! {
     ///
     /// This records one sweep rather than requiring repeated startup scans.
     ///
-    /// *Since v1.7.10*
+    /// Since v1.7.10
     pub VqueueMetadataCleanupV1,
+
+    /// Maintains current VQueue stage/status counts by service, deployment, and
+    /// virtual object in the same transaction as entry lifecycle writes.
+    ///
+    /// The persisted marker keeps maintenance enabled across restarts, even if the
+    /// opt-in flag is later removed. Initial activation is limited to empty stores
+    /// until a backfill can establish the baseline for existing entries.
+    ///
+    /// Since v1.8.1
+    pub TrackStatusGauges,
 }
 
 trait StorageFeature: Sized + 'static {
@@ -673,7 +684,53 @@ mod tests {
                 KnownStorageFeature::MigratedToScopedStateTable,
                 KnownStorageFeature::MigratedToScopedPromiseTable,
                 KnownStorageFeature::VqueueMetadataCleanupV1,
+                KnownStorageFeature::TrackStatusGauges,
             ]
+        );
+    }
+
+    #[test]
+    fn status_gauges_require_a_baseline_and_remain_enabled_after_opt_in() {
+        for (version, opt_in, expected) in [
+            (SemanticRestateVersion::new(1, 8, 0), true, false),
+            (SemanticRestateVersion::new(1, 8, 1), false, false),
+            (SemanticRestateVersion::new(1, 8, 1), true, true),
+            (SemanticRestateVersion::new(1, 9, 0), false, true),
+        ] {
+            let features =
+                LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+            let mut config = Configuration::default();
+            config.common.experimental.set_track_status_gauges(opt_in);
+            for empty in [false, true] {
+                assert_eq!(
+                    features
+                        .automatic_changes(&config, &version, empty)
+                        .contains(&KnownStorageFeature::TrackStatusGauges),
+                    empty && expected,
+                    "version={version}, opt_in={opt_in}, empty={empty}",
+                );
+            }
+        }
+
+        let version = SemanticRestateVersion::new(1, 8, 1);
+        let mut features =
+            LoadedStorageFeatures::load(None, StorageVersion::V1_5, &version).unwrap();
+        features.set_enabled::<TrackStatusGaugesFeature>(Some(&version));
+        let persisted =
+            serde_json::from_value(serde_json::to_value(features.ledger()).unwrap()).unwrap();
+        let reloaded =
+            LoadedStorageFeatures::load(Some(persisted), StorageVersion::V1_5, &version).unwrap();
+        assert!(reloaded.enabled().is_track_status_gauges);
+        assert!(
+            !reloaded
+                .automatic_changes(&Configuration::default(), &version, false)
+                .contains(&KnownStorageFeature::TrackStatusGauges)
+        );
+        assert!(
+            reloaded
+                .ledger()
+                .verify_compatible(&SemanticRestateVersion::new(1, 8, 0))
+                .is_err()
         );
     }
 }

@@ -26,9 +26,10 @@
 /// `Stat::encode_key` and the generated prefix builder prepend the same
 /// `StatKeyPrefix`. The generated `prepare_filter` accepts `Selection<table>` and
 /// inherits its physical codecs from the key schema.
-#[allow(unused_macros)]
+/// Attributes before `table` document the generated owned key.
 macro_rules! define_aggregated_stat {
     (
+        $(#[$meta:meta])*
         table: $stat:ident,
         value: $kind:ty,
         key: $key:ident(
@@ -47,6 +48,7 @@ macro_rules! define_aggregated_stat {
         }
 
         crate::keys::macros::define_index_key!(
+            $(#[$meta])*
             $key,
             key_kind: crate::keys::KeyKind::Stats,
             context: restate_types::sharding::PartitionId,
@@ -82,5 +84,4 @@ macro_rules! define_aggregated_stat {
     };
 }
 
-#[allow(unused_macros, unused_imports)]
 pub(crate) use define_aggregated_stat;
