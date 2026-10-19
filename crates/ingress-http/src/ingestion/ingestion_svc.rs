@@ -86,7 +86,7 @@ use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
     DeploymentId, InvocationId, PartitionProcessorRpcRequestId,
-    UNSCOPED_SERVICE_PARTITION_KEY_FANOUT, unscoped_service_partition_key,
+    UNSCOPED_SERVICE_PARTITION_KEY_FANOUT, partitioner, unscoped_service_partition_key,
 };
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
@@ -821,7 +821,10 @@ where
                 // services respecting key fanout.
                 unscoped_service_partition_key(
                     invocation_target.service_name(),
-                    record.offset % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT,
+                    partitioner::HashPartitioner::compute_partition_key((
+                        &state.producer,
+                        record.offset,
+                    )) % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT,
                 )
             });
 
