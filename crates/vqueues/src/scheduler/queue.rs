@@ -532,7 +532,7 @@ impl<S: VQueueStore> Queue<S> {
             if !needs_advance {
                 break;
             }
-            if !self.try_advance()? {
+            if !self.try_advance(qid)? {
                 // We cannot advance without a refill
                 if self.refill_state.is_in_flight() {
                     ready!(self.poll_refill_task(cx, skip));
@@ -585,7 +585,12 @@ impl<S: VQueueStore> Queue<S> {
     /// `try_refill`, not this method.
     ///
     /// Returns false if advance was not possible and we need to perform a refill.
-    pub fn try_advance(&mut self) -> Result<bool, StorageError> {
+    ///
+    /// Fails if the metadata counts running entries that the running stage does not hold.
+    /// The scheduler cannot make decisions for a vqueue whose metadata disagrees with its
+    /// rows, so the error stops the partition processor, which is restarted on its own,
+    /// instead of taking the node down.
+    pub fn try_advance(&mut self, qid: &VQueueId) -> Result<bool, StorageError> {
         // Split into disjoint borrows so the `Stage::Inbox` arm below can
         // mutate both `stage` and `inbox_cache` without fighting the
         // borrow checker.
@@ -606,10 +611,10 @@ impl<S: VQueueStore> Queue<S> {
                         };
                         return Ok(true);
                     }
-                    panic!(
-                        "vqueue has no running items but its metadata says it has {}",
+                    return Err(StorageError::Generic(anyhow::anyhow!(
+                        "vqueue {qid} has no running items but its metadata says it has {}",
                         already_running.get(),
-                    );
+                    )));
                 }
                 Stage::Running {
                     reader,

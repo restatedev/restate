@@ -482,6 +482,7 @@ mod tests {
     use restate_storage_api::vqueue_table::stats::WaitStats;
     use restate_storage_api::vqueue_table::{
         EntryKey, EntryMetadata, EntryStatusHeader, ReadVQueueTable, Stage, Status,
+        WriteVQueueTable,
     };
     use restate_types::ServiceName;
     use restate_types::clock::UniqueTimestamp;
@@ -1092,6 +1093,34 @@ mod tests {
         assert_eq!(keys.len(), 1);
         assert_eq!(keys[0], overdue_key);
         assert_ne!(keys[0], future_key);
+    }
+
+    /// A vqueue whose metadata counts a running entry that storage no longer holds makes the
+    /// scheduler fail with an error when it starts (leader takeover), instead of panicking.
+    /// The error stops the partition processor, which the manager restarts on its own.
+    #[restate_core::test]
+    async fn unbacked_running_count_fails_the_scheduler() {
+        let mut rocksdb = storage_test_environment().await;
+        let mut cache = VQueuesMetaCache::new_empty(TEST_VQUEUES_CAPACITY);
+        let qid = test_qid(2_200);
+
+        let mut txn = rocksdb.transaction();
+        let key = enqueue_entry(&mut txn, &mut cache, &qid, 1, 0, None).await;
+        let running_key = move_to_running(&mut txn, &mut cache, &qid, &key, None).await;
+        // Drop the running-stage row behind the metadata's back; the counter still says 1.
+        txn.delete_vqueue_inbox(&qid, Stage::Running, &running_key);
+        txn.commit().await.expect("commit should succeed");
+        drop(txn);
+
+        let handle = cache.view().handle_for(&qid).expect("vqueue is cached");
+        assert_eq!(cache.get(handle).unwrap().meta().num_running(), 1);
+
+        let db = rocksdb.partition_db();
+        let mut scheduler = create_scheduler(db, &cache).await;
+        let Poll::Ready(Err(err)) = poll_scheduler(Pin::new(&mut scheduler), cache.view()) else {
+            panic!("an unbacked running count must fail the scheduler");
+        };
+        assert!(err.to_string().contains("has no running items"), "{err}");
     }
 
     /// `reschedule` re-keys an entry's `run_at` for the waiting stages and is a no-op otherwise:
