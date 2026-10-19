@@ -31,6 +31,7 @@ use crate::Result;
     strum::EnumCount,
     strum::FromRepr,
     strum::Display,
+    strum::VariantArray,
 )]
 #[repr(u8)]
 #[strum(serialize_all = "kebab-case")]
@@ -56,9 +57,21 @@ pub enum Stage {
     #[bilrost(5)]
     Finished = b'f',
 }
+
 impl Stage {
     pub const fn serialized_length_fixed() -> usize {
         std::mem::size_of::<Self>()
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Stage::Unknown => "unknown",
+            Stage::Inbox => "inbox",
+            Stage::Running => "running",
+            Stage::Suspended => "suspended",
+            Stage::Paused => "paused",
+            Stage::Finished => "finished",
+        }
     }
 }
 

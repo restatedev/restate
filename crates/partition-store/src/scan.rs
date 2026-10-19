@@ -98,6 +98,20 @@ pub(crate) enum PhysicalScan<B> {
     RangeExclusive(KeyKind, ScanMode, B, B),
 }
 
+impl<B: AsRef<[u8]>> PhysicalScan<B> {
+    /// Whether a potential seek target lies inside this scan's original bounds.
+    /// Prefix scans test the byte prefix; range scans use `start <= key < end`.
+    /// The target need not be a stored or decodable key. This checks byte bounds,
+    /// not field predicates or the key-kind encoding.
+    pub(crate) fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
+        let key = key.as_ref();
+        match self {
+            Self::Prefix(_, prefix) => key.starts_with(prefix.as_ref()),
+            Self::RangeExclusive(_, _, start, end) => start.as_ref() <= key && key < end.as_ref(),
+        }
+    }
+}
+
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
     fn from(scan: TableScan<K>) -> Self {
         let mut arena = BytesMut::new();

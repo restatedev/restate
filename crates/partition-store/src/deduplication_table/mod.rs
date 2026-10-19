@@ -8,6 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+//! Deduplication storage with a table-specific producer encoding.
+//!
+//! [`DeduplicationKey`] is **not ordered across all logical fields**:
+//! [`ProducerId::Other`] contains a legacy length-prefixed string. The numeric
+//! producer variants and ordered partition prefix do not make the entire producer
+//! domain mem-comparable. See the [key encoding families](crate::keys#two-encoding-families).
+
 use restate_rocksdb::RocksDbReadPerfGuard;
 use restate_storage_api::Result;
 use restate_storage_api::deduplication_table::{
