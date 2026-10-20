@@ -821,7 +821,7 @@ where
                 // services respecting key fanout.
                 unscoped_service_partition_key(
                     invocation_target.service_name(),
-                    state.dedup_mode_hash.wrapping_add(record.offset)
+                    state.producer_hash.wrapping_add(record.offset)
                         % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT,
                 )
             });
@@ -1106,8 +1106,8 @@ struct ProcessorState {
     /// Hash of the producer id used for deduplication, or `None` when the
     /// producer id was empty (deduplication disabled for the stream).
     dedup_mode: DedupMode,
-    /// Hash of the dedup_mode used to calculate the scatter bucket
-    dedup_mode_hash: u64,
+    /// Hash of the producer used to calculate the scatter bucket
+    producer_hash: u64,
     /// The raw producer id from the `Start` frame, used for metric labels and
     /// logging.
     producer: ReString,
@@ -1139,12 +1139,14 @@ impl ProcessorState {
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
+        // NOTE: We cannot change this hasher because this would
+        // produce a different bucket.
         let mut hasher = xxhash_rust::xxh3::Xxh3::default();
         producer.hash(&mut hasher);
 
         Self {
             dedup_mode,
-            dedup_mode_hash: hasher.digest(),
+            producer_hash: hasher.digest(),
             producer,
             integration,
             defaults,
