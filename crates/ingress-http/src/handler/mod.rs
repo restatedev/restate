@@ -10,6 +10,7 @@
 
 mod awakeables;
 pub(crate) mod error;
+mod generic;
 mod health;
 mod invocation;
 mod lookup;
@@ -76,6 +77,8 @@ enum RequestType {
     StatusByTarget,
     /// `POST /restate/lookup`
     Lookup,
+    /// `POST /restate/generic/{call|send}` with a generic invocation envelope
+    Generic(path_parsing::InvokeType),
 }
 
 #[derive(Clone)]
@@ -167,6 +170,7 @@ where
                 RequestType::OutputByTarget => this.handle_output_by_target(req).await,
                 RequestType::StatusByTarget => this.handle_status_by_target(req).await,
                 RequestType::Lookup => this.handle_lookup(req).await,
+                RequestType::Generic(invoke_ty) => this.handle_generic(req, invoke_ty).await,
             }
         }
         .map(|r| Ok::<_, Infallible>(r.unwrap_or_else(|e| e.into_response())))

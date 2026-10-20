@@ -246,6 +246,7 @@ impl ServiceRequestType {
 ///   - `attach/{invocation_id}` or `output/{invocation_id}` or `status/{invocation_id}`
 ///   - `attach` or `output` or `status` (POST with body describing the target)
 ///   - `lookup`
+///   - `generic/call` or `generic/send` (POST with the generic invocation envelope)
 fn parse_restate_api_verb<'a, Schemas>(
     verb: &str,
     mut path_parts: impl Iterator<Item = &'a str>,
@@ -293,6 +294,17 @@ where
                 return Err(HandlerError::BadRestateApiPath);
             }
             Ok(RequestType::Lookup)
+        }
+        "generic" => {
+            let invoke_ty = match path_parts.next() {
+                Some("call") => InvokeType::Call,
+                Some("send") => InvokeType::Send,
+                _ => return Err(HandlerError::NotFound),
+            };
+            if path_parts.next().is_some() {
+                return Err(HandlerError::NotFound);
+            }
+            Ok(RequestType::Generic(invoke_ty))
         }
         _ => Err(HandlerError::NotFound),
     }

@@ -1663,3 +1663,166 @@ async fn scoped_virtual_object_allowed() {
     .await;
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+// -- /restate/generic -------------------------------------------------------
+
+fn enable_generic_invoke() {
+    let mut config = restate_types::config::Configuration::default();
+    config.ingress.experimental_generic_invoke = true;
+    restate_types::config::set_current_config(config);
+}
+
+fn generic_request(
+    invoke_ty: &str,
+    content_type: &str,
+    body: impl Into<Bytes>,
+) -> Request<Full<Bytes>> {
+    hyper::Request::post(format!("http://localhost/restate/generic/{invoke_ty}"))
+        .header("content-type", content_type)
+        .body(Full::new(body.into()))
+        .unwrap()
+}
+
+fn generic_cbor_envelope() -> Vec<u8> {
+    use ciborium::Value;
+    let mut body = Vec::new();
+    ciborium::into_writer(
+        &Value::Map(vec![
+            (Value::Text("service".into()), Value::Text("cron".into())),
+            (Value::Text("handler".into()), Value::Text("create".into())),
+            (
+                Value::Text("targetType".into()),
+                Value::Text("virtual_object_exclusive".into()),
+            ),
+            (Value::Text("key".into()), Value::Text("project".into())),
+            (Value::Text("payload".into()), Value::Bytes(b"123".to_vec())),
+        ]),
+        &mut body,
+    )
+    .unwrap();
+    body
+}
+
+#[restate_core::test]
+async fn generic_endpoint_disabled_is_404() {
+    let response = handle(
+        generic_request(
+            "call",
+            "application/vnd.restate.generic-invocation.v1+cbor",
+            generic_cbor_envelope(),
+        ),
+        MockRequestDispatcher::default(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[restate_core::test]
+async fn generic_call_dispatches_the_envelope() {
+    enable_generic_invoke();
+    let (request_tx, request_rx) = std::sync::mpsc::channel();
+    let mut mock_dispatcher = MockRequestDispatcher::new();
+    mock_dispatcher
+        .expect_call()
+        .return_once(move |invocation_request| {
+            request_tx
+                .send((
+                    invocation_request.header.target.clone(),
+                    invocation_request.body.clone(),
+                ))
+                .unwrap();
+            ready(Ok(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_request.invocation_id()),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    invocation_request.header.target.clone(),
+                    Bytes::from_static(b"{}"),
+                ),
+            }))
+            .boxed()
+        });
+
+    let response = handle(
+        generic_request(
+            "call",
+            "application/vnd.restate.generic-invocation.v1+cbor",
+            generic_cbor_envelope(),
+        ),
+        mock_dispatcher,
+    )
+    .await;
+
+    assert_eq!(
+        (response.status(), request_rx.recv().unwrap()),
+        (
+            StatusCode::OK,
+            (
+                InvocationTarget::virtual_object(
+                    "cron",
+                    "project",
+                    "create",
+                    VirtualObjectHandlerType::Exclusive
+                ),
+                Bytes::from_static(b"123")
+            )
+        )
+    );
+}
+
+#[restate_core::test]
+async fn generic_send_json_is_accepted() {
+    enable_generic_invoke();
+    let mut mock_dispatcher = MockRequestDispatcher::new();
+    mock_dispatcher.expect_send().return_once(|_| {
+        ready(Ok(SubmittedInvocationNotification {
+            request_id: Default::default(),
+            execution_time: None,
+            is_new_invocation: true,
+        }))
+        .boxed()
+    });
+
+    let response = handle(
+        generic_request(
+            "send",
+            "application/vnd.restate.generic-invocation.v1+json",
+            serde_json::to_vec(&serde_json::json!({
+                "service": "checkout", "handler": "run", "targetType": "service",
+                "idempotencyKey": "run-1", "scope": "project", "payload": "e30=",
+            }))
+            .unwrap(),
+        ),
+        mock_dispatcher,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+}
+
+#[restate_core::test]
+async fn generic_endpoint_rejects_other_content_types() {
+    enable_generic_invoke();
+    let response = handle(
+        generic_request("call", "application/json", "{}"),
+        MockRequestDispatcher::default(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[restate_core::test]
+async fn unregistered_service_is_404_in_preflight_mode() {
+    let mut config = restate_types::config::Configuration::default();
+    config.worker.invoker.single_endpoint_mode =
+        restate_types::config::SingleEndpointMode::Preflight;
+    restate_types::config::set_current_config(config);
+
+    let response = handle(
+        hyper::Request::post("http://localhost/restate/send/cron/project/create")
+            .body(Empty::<Bytes>::default())
+            .unwrap(),
+        MockRequestDispatcher::default(),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
