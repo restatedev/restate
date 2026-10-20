@@ -21,6 +21,7 @@ fn main() -> std::io::Result<()> {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/protocol.proto");
     println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/legacy.proto");
+    println!("cargo:rerun-if-changed=../../service-protocol/dev/restate/service/preflight.proto");
     println!("cargo:rerun-if-changed=../../service-protocol/endpoint_manifest_schema.json");
 
     prost_build::Config::new()
@@ -32,6 +33,9 @@ fn main() -> std::io::Result<()> {
                     .canonicalize()
                     .unwrap(),
                 Path::new("../../service-protocol/dev/restate/service/legacy.proto")
+                    .canonicalize()
+                    .unwrap(),
+                Path::new("../../service-protocol/dev/restate/service/preflight.proto")
                     .canonicalize()
                     .unwrap(),
             ],

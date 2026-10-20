@@ -34,6 +34,8 @@ use restate_worker_api::invoker::{InvocationErrorReport, InvocationReaderError};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub(crate) enum InvokerError {
+    // Unused in the schemaless prototype: unregistered services go to the single endpoint.
+    #[allow(dead_code)]
     #[error("no deployment was found to process the invocation")]
     #[code(restate_errors::RT0011)]
     NoDeploymentForService,
@@ -41,6 +43,7 @@ pub(crate) enum InvokerError {
         "the invocation has a deployment id associated, but it was not found in the registry. This might indicate that a deployment was forcefully removed from the registry, but there are still in-flight invocations pinned to it"
     )]
     #[code(restate_errors::RT0011)]
+    #[allow(dead_code)]
     UnknownDeployment(DeploymentId),
 
     #[error("unexpected http status code: {0}")]
@@ -167,6 +170,13 @@ pub(crate) enum InvokerError {
     )]
     #[code(restate_errors::RT0020)]
     DeploymentDeprecated(String, DeploymentId),
+
+    #[error("bad preflight response from the single endpoint: {0}")]
+    #[code(restate_errors::RT0012)]
+    BadPreflightResponse(String),
+    #[error("the single endpoint didn't answer the preflight within {0}")]
+    #[code(restate_errors::RT0010)]
+    PreflightTimeout(FriendlyDuration),
 
     #[error("{0}")]
     #[code(restate_errors::RT0001)]
@@ -367,6 +377,12 @@ pub(crate) enum CommandPreconditionError {
     InvalidLimitKey(String, restate_types::limit_key::ParseError),
     #[error("invalid invocation id {0}: {1}")]
     InvalidInvocationId(String, IdDecodeError),
+    #[error(
+        "the relay did not resolve the callee {0}/{1}, probably because the schema registry is unavailable"
+    )]
+    UnresolvedCallTarget(String, String),
+    #[error("the command carries relay-only fields, but this stream is not in preflight mode")]
+    UnexpectedRelayField,
 }
 
 #[derive(Debug)]

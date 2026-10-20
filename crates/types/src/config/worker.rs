@@ -564,20 +564,37 @@ pub struct InvokerOptions {
     // -- Schemaless (schemaregistryless) experimental single-endpoint mode --
     /// # Single endpoint address
     ///
-    /// Base URI of the single SDK endpoint every invocation is shipped to in schemaless mode.
-    /// The invoker appends `/invoke/{service}/{handler}` to this base.
-    pub single_endpoint_address: String,
+    /// Base URI of the single SDK endpoint every invocation of a service that is not registered
+    /// is shipped to in schemaless mode. The invoker appends `invoke/{service}/{handler}` to this
+    /// base. In `preflight` mode this is the relay's preflight base, e.g.
+    /// `http://relay:9080/_/preflight/`.
+    ///
+    /// Since v1.8.1
+    #[serde_as(as = "serde_with::DisplayFromStr")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub single_endpoint_address: http::Uri,
 
     /// # Single endpoint auth header name
     ///
     /// Header name used to carry the `single-endpoint-auth-token` on every outgoing request.
-    pub single_endpoint_auth_header: String,
+    ///
+    /// Since v1.8.1
+    #[serde(with = "serde_with::As::<restate_serde_util::HeaderNameSerde>")]
+    #[cfg_attr(feature = "schemars", schemars(with = "String"))]
+    pub single_endpoint_auth_header: http::HeaderName,
 
     /// # Single endpoint auth token
     ///
     /// Optional auth token value sent (verbatim) under `single-endpoint-auth-header`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub single_endpoint_auth_token: Option<String>,
+    ///
+    /// Since v1.8.1
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "serde_with::As::<Option<restate_serde_util::HeaderValueSerde>>"
+    )]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<String>"))]
+    pub single_endpoint_auth_token: Option<http::HeaderValue>,
 
     /// # Single endpoint protocol mode
     ///
@@ -585,6 +602,10 @@ pub struct InvokerOptions {
     /// - `bidi`: bidirectional stream over HTTP/2
     /// - `reqreshttp2`: request/response over HTTP/2
     /// - `reqreshttp1`: request/response over HTTP/1.1
+    /// - `preflight`: the single endpoint is a relay speaking the preflight protocol, which picks
+    ///   the deployment, the protocol version and the protocol type of every attempt.
+    ///
+    /// Since v1.8.1
     pub single_endpoint_mode: SingleEndpointMode,
 }
 
@@ -600,13 +621,22 @@ pub enum SingleEndpointMode {
     ReqresHttp2,
     /// Request/response over HTTP/1.1.
     ReqresHttp1,
+    /// The single endpoint is a relay speaking the preflight protocol over HTTP/2: it picks the
+    /// deployment, the protocol version and the protocol type of every attempt, and decides the
+    /// semantics of the calls the invocation makes.
+    ///
+    /// Since v1.8.1
+    Preflight,
 }
 
 impl SingleEndpointMode {
-    /// Returns the `(ProtocolType, http::Version)` pair for this mode.
+    /// Returns the `(ProtocolType, http::Version)` pair for this mode. In `preflight` mode the
+    /// invoker to relay leg is always a full duplex HTTP/2 stream.
     pub fn protocol_and_http_version(self) -> (ProtocolType, http::Version) {
         match self {
-            SingleEndpointMode::Bidi => (ProtocolType::BidiStream, http::Version::HTTP_2),
+            SingleEndpointMode::Bidi | SingleEndpointMode::Preflight => {
+                (ProtocolType::BidiStream, http::Version::HTTP_2)
+            }
             SingleEndpointMode::ReqresHttp2 => {
                 (ProtocolType::RequestResponse, http::Version::HTTP_2)
             }
@@ -618,6 +648,11 @@ impl SingleEndpointMode {
 }
 
 impl InvokerOptions {
+    /// Whether unregistered services are invoked through a relay speaking the preflight protocol.
+    pub fn is_preflight(&self) -> bool {
+        self.single_endpoint_mode == SingleEndpointMode::Preflight
+    }
+
     pub fn concurrent_invocations_limit(&self) -> Option<NonZeroUsize> {
         self.concurrent_invocations_limit
     }
@@ -738,8 +773,8 @@ impl Default for InvokerOptions {
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
             service_client: ServiceClientOptions::default(),
             max_awaited_future_depth: 1000,
-            single_endpoint_address: "http://localhost:9080".to_owned(),
-            single_endpoint_auth_header: "authorization".to_owned(),
+            single_endpoint_address: http::Uri::from_static("http://localhost:9080"),
+            single_endpoint_auth_header: http::header::AUTHORIZATION,
             single_endpoint_auth_token: None,
             single_endpoint_mode: SingleEndpointMode::Bidi,
         }

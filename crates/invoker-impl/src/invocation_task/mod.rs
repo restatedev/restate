@@ -46,7 +46,9 @@ use restate_types::schema::deployment::{Deployment, DeploymentResolver};
 use restate_types::schema::invocation_target::{
     InvocationAttemptOptions, InvocationTargetResolver, StatePreloadPolicy,
 };
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::service_protocol::{
+    MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, ServiceProtocolVersion,
+};
 use restate_util_bytecount::{ByteCount, NonZeroByteCount};
 use restate_util_string::ReString;
 use restate_worker_api::invoker::InvocationReaderError;
@@ -65,33 +67,53 @@ static SCHEMALESS_DEPLOYMENT_ID: LazyLock<DeploymentId> = LazyLock::new(Deployme
 
 /// Build the single configured endpoint deployment, used as a fallback for services that are not
 /// found in the schema registry (schemaless demo mode).
-fn single_endpoint_deployment(id: DeploymentId) -> Result<Deployment, InvokerError> {
+fn single_endpoint_deployment(id: DeploymentId) -> Deployment {
     let config = Configuration::pinned();
     let invoker = &config.worker.invoker;
-
-    let address: Uri = invoker
-        .single_endpoint_address
-        .parse()
-        .map_err(|_| InvokerError::NoDeploymentForService)?;
     let (protocol_type, http_version) = invoker.single_endpoint_mode.protocol_and_http_version();
 
-    let mut additional_headers = HashMap::default();
-    if let Some(token) = &invoker.single_endpoint_auth_token {
-        additional_headers.insert(
-            HeaderName::from_bytes(invoker.single_endpoint_auth_header.as_bytes())
-                .expect("single-endpoint-auth-header must be a valid header name"),
-            HeaderValue::from_str(token)
-                .expect("single-endpoint-auth-token must be a valid header value"),
-        );
-    }
-
-    Ok(Deployment::single_http_endpoint(
+    Deployment::single_http_endpoint(
         id,
-        address,
+        invoker.single_endpoint_address.clone(),
         protocol_type,
         http_version,
-        additional_headers,
-    ))
+        single_endpoint_headers(
+            &invoker.single_endpoint_auth_header,
+            invoker.single_endpoint_auth_token.as_ref(),
+        ),
+    )
+}
+
+fn single_endpoint_headers(
+    auth_header: &HeaderName,
+    auth_token: Option<&HeaderValue>,
+) -> HashMap<HeaderName, HeaderValue> {
+    auth_token
+        .map(|token| (auth_header.clone(), token.clone()))
+        .into_iter()
+        .collect()
+}
+
+/// Metrics label of the requests sent to the relay in preflight mode.
+const PREFLIGHT_DEPLOYMENT_TYPE: &str = "Http/preflight";
+
+/// Where an invocation attempt is sent.
+// Built once per attempt and moved into the runner, boxing wouldn't save anything.
+#[allow(clippy::large_enum_variant)]
+pub(super) enum AttemptTarget {
+    /// A deployment chosen by the invoker: registered, or the single endpoint fallback.
+    Deployment(Deployment),
+    /// The single endpoint is a relay in preflight mode: it picks the deployment, the protocol
+    /// version and the protocol type in the preflight exchange.
+    Preflight(PreflightTarget),
+}
+
+pub(super) struct PreflightTarget {
+    /// The relay's preflight base address.
+    pub(super) address: Uri,
+    pub(super) additional_headers: HashMap<HeaderName, HeaderValue>,
+    /// The pin stored in the journal metadata, sent back to the relay.
+    pub(super) pin: Option<PinnedDeployment>,
 }
 
 // Clippy false positive, might be caused by Bytes contained within HeaderValue.
@@ -123,6 +145,10 @@ const SERVICE_PROTOCOL_VERSION_V6: HeaderValue =
 #[allow(clippy::declare_interior_mutable_const)]
 const SERVICE_PROTOCOL_VERSION_V7: HeaderValue =
     HeaderValue::from_static("application/vnd.restate.invocation.v7");
+
+#[allow(clippy::declare_interior_mutable_const)]
+const PREFLIGHT_CONTENT_TYPE: HeaderValue =
+    HeaderValue::from_static("application/vnd.restate.invocation.preflight.v1");
 
 #[allow(clippy::declare_interior_mutable_const)]
 const X_RESTATE_SERVER: HeaderName = HeaderName::from_static("x-restate-server");
@@ -482,20 +508,74 @@ where
                 .and_then(|opt| opt.ok_or_else(|| InvokerError::NotInvoked))
         );
 
-        // Resolve the deployment metadata from the schema registry. For services that are not
-        // registered (schemaless demo mode), fall back to a single configured endpoint.
+        // Resolve the deployment from the schema registry: the pinned one if any, otherwise the
+        // latest one for the service.
         let schemas = self.schemas.live_load();
+        let registered_deployment = match &journal_metadata.pinned_deployment {
+            Some(pinned_deployment) => schemas.get_deployment(&pinned_deployment.deployment_id),
+            None => {
+                schemas.resolve_latest_deployment_for_service(self.invocation_target.service_name())
+            }
+        };
+
+        // Services that are not registered go to the single configured endpoint. In preflight
+        // mode it's a relay, which picks the deployment and the protocol version at preflight.
+        if registered_deployment.is_none() {
+            let preflight_target = {
+                let config = Configuration::pinned();
+                let invoker = &config.worker.invoker;
+                invoker.is_preflight().then(|| PreflightTarget {
+                    address: invoker.single_endpoint_address.clone(),
+                    additional_headers: single_endpoint_headers(
+                        &invoker.single_endpoint_auth_header,
+                        invoker.single_endpoint_auth_token.as_ref(),
+                    ),
+                    pin: journal_metadata.pinned_deployment.clone(),
+                })
+            };
+            if let Some(preflight_target) = preflight_target {
+                if let Some(pin) = &preflight_target.pin
+                    && !pin
+                        .service_protocol_version
+                        .is_supported_for_inflight_invocation()
+                {
+                    shortcircuit!(Err(InvokerError::ResumeWithWrongServiceProtocolVersion(
+                        pin.service_protocol_version
+                    )));
+                }
+
+                // Attempt options of unknown deployments are the server defaults (eager state
+                // with the server default policy, default timeouts).
+                let state_read =
+                    (self.eager_state_size_limit > 0).then_some(StatePreloadPolicy::All);
+                let service_protocol_runner =
+                    service_protocol_runner_v4::ServiceProtocolRunner::new(
+                        self,
+                        // Placeholder until the preflight negotiates the version.
+                        MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION,
+                        PREFLIGHT_DEPLOYMENT_TYPE,
+                        self.max_awaited_future_depth,
+                    );
+                return service_protocol_runner
+                    .run(
+                        txn,
+                        journal_metadata,
+                        state_read,
+                        AttemptTarget::Preflight(preflight_target),
+                        reader_for_bidi,
+                        invocation_budget,
+                    )
+                    .await;
+            }
+        }
+
         let (deployment, chosen_service_protocol_version, deployment_changed) =
             if let Some(pinned_deployment) = &journal_metadata.pinned_deployment {
                 // We have a pinned deployment that we can't change even if newer
-                // deployments have been registered for the same service.
-                let deployment_metadata =
-                    match schemas.get_deployment(&pinned_deployment.deployment_id) {
-                        Some(deployment) => deployment,
-                        None => shortcircuit!(single_endpoint_deployment(
-                            pinned_deployment.deployment_id
-                        )),
-                    };
+                // deployments have been registered for the same service. Unregistered pinned
+                // deployments come from the single endpoint fallback (schemaless demo mode).
+                let deployment_metadata = registered_deployment
+                    .unwrap_or_else(|| single_endpoint_deployment(pinned_deployment.deployment_id));
 
                 // todo: We should support resuming an invocation with a newer protocol version if
                 //  the endpoint supports it
@@ -516,12 +596,8 @@ where
             } else {
                 // We can choose the freshest deployment for the latest revision of the registered
                 // service, or fall back to the single configured endpoint if it's not registered.
-                let deployment = match schemas
-                    .resolve_latest_deployment_for_service(self.invocation_target.service_name())
-                {
-                    Some(deployment) => deployment,
-                    None => shortcircuit!(single_endpoint_deployment(*SCHEMALESS_DEPLOYMENT_ID)),
-                };
+                let deployment = registered_deployment
+                    .unwrap_or_else(|| single_endpoint_deployment(*SCHEMALESS_DEPLOYMENT_ID));
 
                 let chosen_service_protocol_version = shortcircuit!(
                     ServiceProtocolVersion::pick(&deployment.supported_protocol_versions)
@@ -585,7 +661,7 @@ where
         let service_protocol_runner = service_protocol_runner_v4::ServiceProtocolRunner::new(
             self,
             chosen_service_protocol_version,
-            &deployment.ty,
+            deployment.ty.as_static_str(),
             self.max_awaited_future_depth,
         );
         service_protocol_runner
@@ -593,7 +669,7 @@ where
                 txn,
                 journal_metadata,
                 state_read,
-                deployment,
+                AttemptTarget::Deployment(deployment),
                 reader_for_bidi,
                 invocation_budget,
             )

@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package dev.restate.service.preflight;
+
+// Type: 0x00F0. invoker -> relay, first frame of a preflight-mode request.
+message PreflightRequest {
+  string service_name = 1;
+  string handler_name = 2;
+  // Empty when the target has no key.
+  string key = 3;
+  // The invocation's scope. Absent: unscoped.
+  optional string scope = 4;
+  // The invocation id, display form (inv_...). Logs and tracing only.
+  string invocation_id = 5;
+
+  // Service protocol versions this runtime can speak (inclusive).
+  uint32 min_protocol_version = 6;
+  uint32 max_protocol_version = 7;
+
+  // The pin, on every attempt after the one that pinned:
+  // - both set: the relay must use exactly this deployment and version;
+  // - only pinned_protocol_version set: the invocation has a journal in that version but no
+  //   deployment (e.g. a manual "resume on the latest deployment"): the relay picks the latest
+  //   deployment that supports that version;
+  // - neither set: first attempt, the relay picks freely.
+  optional string pinned_deployment_id = 8;
+  optional uint32 pinned_protocol_version = 9;
+
+  // For the relay's retry policy. Same value the invoker puts in
+  // StartMessage.retry_count_since_last_stored_entry: failed attempts since the invocation last
+  // stored a command (0 on the first try after progress). Not exact across leader changes, but it
+  // survives the scheduler's retry path. The relay's policy counts this.
+  uint32 retry_count_since_last_stored_entry = 10;
+  // Total attempts since the invocation started, 1-based. 0 = not provided (v1 runtimes send 0:
+  // the durable count lives in the vqueue entry stats and isn't plumbed to the invoker yet).
+  uint32 attempt = 11;
+}
+
+enum ProtocolType {
+  PROTOCOL_TYPE_UNSPECIFIED = 0;
+  BIDI_STREAM = 1;
+  REQUEST_RESPONSE = 2;
+}
+
+// Type: 0x00F1. relay -> invoker, first frame of the response.
+message PreflightResponse {
+  // The deployment that runs this attempt (dp_...). The invoker pins it.
+  string deployment_id = 1;
+  // The negotiated service protocol version. Every frame after this one, both ways, uses it.
+  uint32 protocol_version = 2;
+  // How the deployment is driven. REQUEST_RESPONSE: the invoker closes its request body after sending
+  // StartMessage + the journal it has (same as for a request/response deployment today).
+  ProtocolType protocol_type = 3;
+  // The deployment's SDK version (what x-restate-server would have said). Introspection only.
+  optional string sdk_version = 4;
+
+  // 10-19 reserved for per-attempt tunables (future, see 90-future.md): inactivity timeout,
+  // abort timeout, state preload policy.
+  reserved 10 to 19;
+}

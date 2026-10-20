@@ -685,12 +685,14 @@ pub fn create_invocation_start_span(
     .into()
 }
 
+/// `deployment_id` and `service_protocol_version` are `None` when not known yet when the attempt
+/// starts (preflight mode): they can be set later as attributes of the span.
 pub fn create_invocation_attempt_span(
     invocation_id: &InvocationId,
     invocation_target: &InvocationTarget,
-    deployment_id: DeploymentId,
+    deployment_id: Option<DeploymentId>,
     deployment_address: &impl Display,
-    service_protocol_version: ServiceProtocolVersion,
+    service_protocol_version: Option<ServiceProtocolVersion>,
     span_ctx: &ServiceInvocationSpanContext,
 ) -> ServiceSpan {
     if !is_service_tracing_enabled() {
@@ -701,40 +703,46 @@ pub fn create_invocation_attempt_span(
 
     let tracer = get_services_tracer();
 
+    let mut attributes = vec![
+        KeyValue::new(semconv::attribute::RPC_SYSTEM, "restate"),
+        KeyValue::new(
+            semconv::attribute::RPC_SERVICE,
+            invocation_target.service_name().to_string(),
+        ),
+        KeyValue::new(
+            semconv::attribute::RPC_METHOD,
+            invocation_target.handler_name().to_string(),
+        ),
+        KeyValue::new(
+            semconv::attribute::RESTATE_INVOCATION_ID,
+            invocation_id.to_string(),
+        ),
+        KeyValue::new(
+            semconv::attribute::RESTATE_INVOCATION_TARGET,
+            invocation_target.to_string(),
+        ),
+        KeyValue::new(
+            semconv::attribute::RESTATE_DEPLOYMENT_ADDRESS,
+            deployment_address.to_string(),
+        ),
+    ];
+    if let Some(deployment_id) = deployment_id {
+        attributes.push(KeyValue::new(
+            semconv::attribute::RESTATE_DEPLOYMENT_ID,
+            deployment_id.to_string(),
+        ));
+    }
+    if let Some(service_protocol_version) = service_protocol_version {
+        attributes.push(KeyValue::new(
+            semconv::attribute::RESTATE_DEPLOYMENT_SERVICE_PROTOCOL_VERSION,
+            i64::from(service_protocol_version.as_repr()),
+        ));
+    }
+
     tracer
         .span_builder(format!("invocation-attempt {}", invocation_target.short()))
         .with_start_time(std::time::SystemTime::now())
-        .with_attributes(vec![
-            KeyValue::new(semconv::attribute::RPC_SYSTEM, "restate"),
-            KeyValue::new(
-                semconv::attribute::RPC_SERVICE,
-                invocation_target.service_name().to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RPC_METHOD,
-                invocation_target.handler_name().to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RESTATE_INVOCATION_ID,
-                invocation_id.to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RESTATE_INVOCATION_TARGET,
-                invocation_target.to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RESTATE_DEPLOYMENT_ID,
-                deployment_id.to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RESTATE_DEPLOYMENT_ADDRESS,
-                deployment_address.to_string(),
-            ),
-            KeyValue::new(
-                semconv::attribute::RESTATE_DEPLOYMENT_SERVICE_PROTOCOL_VERSION,
-                i64::from(service_protocol_version.as_repr()),
-            ),
-        ])
+        .with_attributes(attributes)
         .start_with_context(
             &tracer,
             &Context::new().with_remote_span_context(span_ctx.span_context().clone().into()),
@@ -853,9 +861,9 @@ mod test {
         drop(create_invocation_attempt_span(
             &id,
             &target,
-            DeploymentId::new(),
+            Some(DeploymentId::new()),
             &"http://localhost",
-            ServiceProtocolVersion::V5,
+            Some(ServiceProtocolVersion::V5),
             &context,
         ));
         drop(create_invocation_end_span(&id, &target, &context));

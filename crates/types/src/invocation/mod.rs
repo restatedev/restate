@@ -172,6 +172,23 @@ impl InvocationTargetType {
         }
     }
 
+    /// Parse the target type spelling used by the external schema registry (`target_ty`) and
+    /// the generic invoke envelope (`targetType`).
+    pub fn from_registry_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "service" => InvocationTargetType::Service,
+            "virtual_object_exclusive" => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+            }
+            "virtual_object_shared" => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+            }
+            "workflow" => InvocationTargetType::Workflow(WorkflowHandlerType::Workflow),
+            "workflow_shared" => InvocationTargetType::Workflow(WorkflowHandlerType::Shared),
+            _ => return None,
+        })
+    }
+
     pub fn is_keyed(&self) -> bool {
         matches!(
             self,
