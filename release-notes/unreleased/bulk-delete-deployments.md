@@ -23,6 +23,12 @@ Cleaning up old deployments, for example all drained ones, previously required o
 API call per deployment.
 
 ### Impact on Users
-- No changes are needed for existing usage: removing a single deployment works as before.
+- `restate deployments remove <id>` keeps working as before, but its output now has the same
+  shape for one or several deployments. With `--json`, the deployment details move from the
+  top-level `deployment` and `services` keys into a `deployments` array, and a `results` array
+  reports the outcome for each deployment. Scripts that parse the JSON output of this command
+  need to be updated.
+- `DELETE /deployments/{deployment}` without `force=true` still returns `501 Not Implemented`,
+  now with an error message in the response body.
 - When used against an older server without the bulk endpoint, the CLI removes the
   deployments one by one instead.

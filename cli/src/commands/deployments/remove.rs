@@ -10,9 +10,8 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use cling::prelude::*;
-use comfy_table::{Cell, Color, Table};
 use futures::{StreamExt, TryStreamExt, stream};
 use http::StatusCode;
 use itertools::Itertools;
@@ -22,10 +21,8 @@ use restate_admin_rest_model::deployments::{
     BulkDeleteDeploymentsRequest, FailedDeploymentDeletion, ServiceNameRevPair,
 };
 use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
-use restate_cli_util::ui::console::StyledTable;
-use restate_cli_util::{
-    CliContext, c_eprintln, c_indent_table, c_println, c_success, c_warn, exit,
-};
+use restate_cli_util::ui::stylesheet::Style;
+use restate_cli_util::{CliContext, c_eprintln, c_println, c_success, exit};
 use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
@@ -198,19 +195,14 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         .await?;
 
     let mut f = Formatter::new();
-    if let [deployment] = &deployments[..] {
-        f.title("📜", "Deployment Information");
-        deployment.describe(&mut f, &latest_services)?;
-    } else {
-        f.title("📜", "Deployments");
-        let mut items = f.start_items("deployments");
-        for deployment in &deployments {
-            let mut item = items.item();
-            deployment.describe(&mut item, &latest_services)?;
-            item.finish()?;
-        }
-        items.finish();
+    f.title("📜", "Deployments");
+    let mut items = f.start_items("deployments");
+    for deployment in &deployments {
+        let mut item = items.item();
+        deployment.describe(&mut item, &latest_services)?;
+        item.finish()?;
     }
+    items.finish();
     // The plan, JSON-only: the human output already describes the deployments to remove.
     let changes: Vec<_> = deployments
         .iter()
@@ -242,11 +234,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     if risks.is_empty() {
         if !json {
             c_println!();
-            if deployments.len() == 1 {
-                c_success!("The deployment is fully drained and is safe to remove");
-            } else {
-                c_success!("The deployments are fully drained and are safe to remove");
-            }
+            c_success!("The deployments are fully drained and are safe to remove");
         }
     } else if opts.force {
         for risk in &risks {
@@ -261,55 +249,48 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         }
     }
 
-    let (prompt, removed) = if let [deployment] = &deployments[..] {
-        (
-            "Are you sure you want to remove this deployment?".to_owned(),
-            format!(
-                "Deployment {} removed successfully",
-                deployment.deployment_id
-            ),
-        )
-    } else {
-        (
-            format!(
-                "Are you sure you want to remove these {} deployments?",
-                deployments.len()
-            ),
-            format!("{} deployments removed successfully", deployments.len()),
-        )
-    };
-    f.confirm(&opts.dry_run, &prompt)?;
+    f.confirm(
+        &opts.dry_run,
+        "Are you sure you want to remove these deployments?",
+    )?;
 
     //TODO: Use opts.force when the server implements the false + validation case!
     let failed = remove_deployments(&client, &deployments, true).await?;
-    if json {
-        // One row per deployment, like the invocation batch commands.
-        let failures: HashMap<_, _> = failed.iter().map(|f| (f.deployment_id, f)).collect();
-        let rows = deployments.iter().map(|d| {
-            let failure = failures.get(&d.deployment_id);
-            [
+
+    // One row per deployment: `removed`, or why it wasn't.
+    let failures: HashMap<_, _> = failed.iter().map(|f| (f.deployment_id, f)).collect();
+    let rows = deployments
+        .iter()
+        .map(|d| match failures.get(&d.deployment_id) {
+            None => [
                 Field::new(d.deployment_id),
-                Field::new(if failure.is_some() {
-                    "failed"
-                } else {
-                    "removed"
-                }),
-                // A reason unknown to this CLI doesn't serialize, and is left `null`.
-                Field::new(failure.and_then(|f| serde_json::to_value(f.reason).ok())),
-                Field::new(failure.map(|f| f.error.as_str())),
-            ]
+                Field::styled("removed", Style::Success),
+                Field::new(None::<&str>),
+            ],
+            Some(failure) => [
+                Field::new(d.deployment_id),
+                // A reason unknown to this CLI doesn't serialize: show it as a plain failure.
+                Field::styled(
+                    serde_json::to_value(failure.reason).unwrap_or_else(|_| "failed".into()),
+                    Style::Danger,
+                ),
+                Field::new(failure.error.as_str()),
+            ],
         });
-        f.table(
-            "results",
-            &["deployment_id", "outcome", "reason", "error"],
-            rows,
-            IfEmpty::Nothing,
-        );
-    }
+    f.table(
+        "results",
+        &["deployment_id", "outcome", "error"],
+        rows,
+        IfEmpty::Nothing,
+    );
+
     if failed.is_empty() {
         f.outcome(
             "result",
-            Field::with_display("removed", removed),
+            Field::with_display(
+                "removed",
+                format!("Deployments removed: {}", deployments.len()),
+            ),
             Outcome::Success,
         );
         f.next_step(
@@ -319,34 +300,24 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         );
         return f.finish();
     }
-
-    let summary = format!(
-        "Failed to remove {} deployments out of {}",
-        failed.len(),
-        deployments.len()
+    f.outcome(
+        "result",
+        Field::with_display(
+            "partially_removed",
+            format!(
+                "Deployments removed: {} of {}, see the errors above",
+                deployments.len() - failed.len(),
+                deployments.len()
+            ),
+        ),
+        Outcome::Failure,
     );
-    if json {
-        // The `results` section already carries each failure; keep stdout a single document and
-        // signal the partial failure through the exit code only.
-        f.finish()?;
-        c_eprintln!("{summary}");
-        return Err(exit::AlreadyReported {
-            code: exit::GENERIC_ERROR,
-        }
-        .into());
+    f.finish()?;
+    // The output already describes the failures: only signal them through the exit code.
+    Err(exit::AlreadyReported {
+        code: exit::GENERIC_ERROR,
     }
-    c_println!();
-    c_warn!("Failed to remove:");
-    let mut table = Table::new_styled();
-    table.set_styled_header(vec!["ID", "REASON"]);
-    for failure in &failed {
-        table.add_row(vec![
-            Cell::new(failure.deployment_id),
-            Cell::new(&failure.error).fg(Color::DarkRed),
-        ]);
-    }
-    c_indent_table!(0, table);
-    bail!(summary)
+    .into())
 }
 
 /// Removes the deployments, in chunks the server accepts, and returns the ones that couldn't be.
@@ -355,12 +326,6 @@ async fn remove_deployments(
     deployments: &[Inspected],
     force: bool,
 ) -> Result<Vec<FailedDeploymentDeletion>> {
-    // A single deployment goes through the single delete API, which all servers support.
-    if let [deployment] = deployments {
-        remove_deployment(client, deployment.deployment_id, force).await?;
-        return Ok(vec![]);
-    }
-
     let mut failed = vec![];
     for (i, chunk) in deployments.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
         let response = client
@@ -370,7 +335,7 @@ async fn remove_deployments(
             })
             .await?;
         if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
-            // Servers without the bulk delete API: remove the deployments one by one.
+            // Servers before the bulk delete API: remove the deployments one by one.
             for deployment in &deployments[i * BATCH_OPERATION_MAX_SIZE..] {
                 remove_deployment(client, deployment.deployment_id, force).await?;
             }

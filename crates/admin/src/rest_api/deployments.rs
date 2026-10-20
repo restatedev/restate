@@ -36,7 +36,6 @@ use restate_types::schema::service::ServiceMetadata;
 
 use super::error::*;
 use crate::generate_meta_api_error;
-use crate::rest_api::ErrorDescriptionResponse;
 use crate::state::AdminServiceState;
 
 /// Register deployment
@@ -284,29 +283,30 @@ pub struct DeleteDeploymentParams {
     ),
     responses(
         (status = 202, description = "Deployment deletion accepted and will be processed asynchronously"),
-        (status = 501, description = "Not implemented. Graceful deployment deletion (force=false) is not yet supported.", body = ErrorDescriptionResponse),
-        MetaApiError
+        DeleteDeploymentError
     )
 )]
 pub async fn delete_deployment<Metadata, Discovery, Telemetry, Invocations, Transport>(
     State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
     Path(deployment_id): Path<DeploymentId>,
     Query(DeleteDeploymentParams { force }): Query<DeleteDeploymentParams>,
-) -> Result<StatusCode, MetaApiError>
+) -> Result<StatusCode, DeleteDeploymentError>
 where
     Metadata: MetadataService,
 {
-    if let Some(true) = force {
-        state
-            .schema_registry
-            .delete_deployment(deployment_id)
-            .await
-            .inspect_err(|e| warn_it!(e))?;
-        Ok(StatusCode::ACCEPTED)
-    } else {
-        Ok(StatusCode::NOT_IMPLEMENTED)
+    if force != Some(true) {
+        return Err(GracefulDeploymentDeletionNotSupportedError.into());
     }
+    state
+        .schema_registry
+        .delete_deployment(deployment_id)
+        .await
+        .inspect_err(|e| warn_it!(e))
+        .map_err(MetaApiError::from)?;
+    Ok(StatusCode::ACCEPTED)
 }
+
+generate_meta_api_error!(DeleteDeploymentError: [GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
 
 generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidRequestBodyError, BatchTooLargeError, GracefulDeploymentDeletionNotSupportedError, MetaApiError]);
 
@@ -330,7 +330,7 @@ generate_meta_api_error!(BulkDeleteDeploymentsError: [InvalidRequestBodyError, B
     responses(
         (status = 200, description = "The deployments that were deleted, and the ones that were not.", body = BulkDeleteDeploymentsResponse),
         (status = 400, response = meta_api_error::BadRequest),
-        (status = 501, description = "Not implemented. Graceful deployment deletion (force=false) is not yet supported.", body = ErrorDescriptionResponse),
+        GracefulDeploymentDeletionNotSupportedError,
         (status = 500, response = meta_api_error::InternalServerError),
     )
 )]
