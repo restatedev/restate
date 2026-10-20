@@ -8,11 +8,6 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-// Remove in next commits
-#![allow(dead_code)]
-#![allow(unused_macros)]
-#![allow(unused_imports)]
-
 /// Defines an ordered key payload, its encoding inputs and decoded views, and
 /// typed prefix/decoder steps. Fields appear on disk in declaration order.
 ///
@@ -45,6 +40,7 @@
 /// constrained fields absent from this key and unsupported prefix clauses.
 macro_rules! define_index_key {
     (
+        $(#[$meta:meta])*
         $key:ident,
         key_kind: $key_kind:expr,
         context: $context:ty,
@@ -52,6 +48,7 @@ macro_rules! define_index_key {
         fields { $($field:ident: $codec:ty $(=> $borrowed:ty)?),+ $(,)? }
         $(selector: $target:ty)?
     ) => {
+        $(#[$meta])*
         #[allow(dead_code)]
         pub struct $key {
             $(pub $field: <$codec as crate::keys::FieldCodec>::Value,)+
@@ -319,6 +316,7 @@ macro_rules! define_key_selection {
         paste::paste! {
             impl $key {
                 /// Binds logical clauses to this key's declared physical codecs.
+                #[allow(dead_code)] // Some schemas are written before they gain scan callers.
                 pub(crate) fn prepare_selection(
                     selection: &restate_storage_api::selection::Selection<$target>,
                 ) -> crate::Result<crate::keys::selection::PreparedKeySelection<Self>> {

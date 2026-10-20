@@ -15,13 +15,20 @@
 //! the original operands when RocksDB later performs a full merge.
 
 mod bucketed_gauge;
+mod deployment_load;
 mod gauge;
+mod service_load;
+mod virtual_object_load;
 
 // Re-exports
 pub use bucketed_gauge::{
     BucketedGauge, StageCounts, StageGauge, StageStatus, StageStatusCounts, StageStatusGauge,
 };
+
+pub use deployment_load::DeploymentLoadKey;
 pub use gauge::{Gauge, GaugeOp};
+pub use service_load::ServiceLoadKey;
+pub use virtual_object_load::VirtualObjectLoadKey;
 
 use tracing::error;
 
@@ -71,7 +78,6 @@ pub(crate) struct AggregatedStatsMut<'a, 'b> {
     storage: &'a mut PartitionStoreTransaction<'b>,
 }
 
-#[allow(dead_code)] // Concrete statistic tables supply callers for these update methods.
 impl<'a, 'b> AggregatedStatsMut<'a, 'b> {
     pub fn new(storage: &'a mut PartitionStoreTransaction<'b>) -> Self {
         Self { storage }

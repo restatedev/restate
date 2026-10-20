@@ -78,6 +78,7 @@ pub mod protobuf_types;
 pub mod selection;
 pub mod service_status_table;
 pub mod state_table;
+pub mod stats;
 mod table;
 pub mod timer_table;
 pub mod vqueue_table;
