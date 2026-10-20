@@ -125,18 +125,24 @@ async fn inspect(
 impl Inspected {
     /// Why removing this deployment is risky, if it isn't drained.
     fn risk(&self) -> Option<String> {
-        let total_active_inv = self.total_active_inv;
-        match self.status {
-            DeploymentStatus::Active => Some(
-                "Active. This means that it hosts the latest revision of some of your services as \
-                 indicated above. Removing this deployment will cause those services to be \
-                 unavailable and current or future invocations on them WILL fail."
-                    .to_owned(),
-            ),
+        let Self {
+            deployment_id,
+            status,
+            total_active_inv,
+            ..
+        } = self;
+        match status {
+            DeploymentStatus::Active => Some(format!(
+                "Deployment {deployment_id} is still Active. This means that it hosts the latest \
+                 revision of some of your services as indicated above. Removing this deployment \
+                 will cause those services to be unavailable and current or future invocations on \
+                 them WILL fail."
+            )),
             DeploymentStatus::Draining => Some(format!(
-                "Draining. There are {total_active_inv} invocations that will break if you proceed \
-                 with this operation. Please make sure in-flight invocations are completed \
-                 (deployment is Drained) or killed/cancelled before continuing."
+                "Deployment {deployment_id} is still Draining. There are {total_active_inv} \
+                 invocations that will break if you proceed with this operation. Please make sure \
+                 in-flight invocations are completed (deployment is Drained) or killed/cancelled \
+                 before continuing."
             )),
             DeploymentStatus::Drained => None,
         }
@@ -213,13 +219,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     let ids = deployments.iter().map(|d| d.deployment_id).join(" ");
     let json = CliContext::get().json_output();
     // Removing a deployment that isn't drained breaks invocations: refuse unless --force.
-    let risks: Vec<_> = deployments
-        .iter()
-        .filter_map(|d| {
-            d.risk()
-                .map(|risk| format!("Deployment {} is still {risk}", d.deployment_id))
-        })
-        .collect();
+    let risks: Vec<_> = deployments.iter().filter_map(Inspected::risk).collect();
     let force_step = format!("restate deployments remove {ids} --force");
     let force_description = "remove anyway, if you accept that risk";
     if !risks.is_empty() && !opts.force && !opts.dry_run.dry_run {
