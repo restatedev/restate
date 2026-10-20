@@ -15,6 +15,7 @@ use bytes::Bytes;
 use restate_errors::NotRunningError;
 use restate_memory::{IgnorePinnableMemoryStream, LocalMemoryLease, LocalMemoryPool};
 use restate_types::LimitKey;
+use restate_types::deployment::PinnedDeployment;
 use restate_types::identifiers::{EntryIndex, InvocationId, ServiceId};
 use restate_types::invocation::{FencingToken, InvocationTarget, ServiceInvocationSpanContext};
 use restate_types::journal_v2::CommandIndex;
@@ -36,7 +37,7 @@ impl InvocationReader for EmptyStorageReader {
     type Error = Infallible;
 
     fn transaction(&mut self) -> Self::Transaction<'_> {
-        EmptyStorageReaderTransaction
+        EmptyStorageReaderTransaction(None)
     }
 
     async fn read_journal_entry(
@@ -59,7 +60,39 @@ impl InvocationReader for EmptyStorageReader {
     }
 }
 
-pub struct EmptyStorageReaderTransaction;
+/// An empty invocation whose journal metadata carries the given pin.
+#[derive(Debug, Clone)]
+pub struct PinnedStorageReader(pub PinnedDeployment);
+
+impl InvocationReader for PinnedStorageReader {
+    type Transaction<'a> = EmptyStorageReaderTransaction;
+    type Error = Infallible;
+
+    fn transaction(&mut self) -> Self::Transaction<'_> {
+        EmptyStorageReaderTransaction(Some(self.0.clone()))
+    }
+
+    async fn read_journal_entry(
+        &mut self,
+        _invocation_id: &InvocationId,
+        _entry_index: EntryIndex,
+        _journal_kind: JournalKind,
+    ) -> Result<Option<JournalEntry>, Infallible> {
+        Ok(None)
+    }
+
+    async fn read_journal_entry_budgeted(
+        &mut self,
+        _invocation_id: &InvocationId,
+        _entry_index: EntryIndex,
+        _journal_kind: JournalKind,
+        _budget: &mut LocalMemoryPool,
+    ) -> Result<Option<(JournalEntry, LocalMemoryLease)>, Infallible> {
+        Ok(None)
+    }
+}
+
+pub struct EmptyStorageReaderTransaction(Option<PinnedDeployment>);
 
 impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
     type JournalStream<'a> = futures::stream::Empty<Result<JournalEntry, Self::Error>>;
@@ -78,7 +111,7 @@ impl InvocationReaderTransaction for EmptyStorageReaderTransaction {
         Ok(Some(JournalMetadata::new(
             0,
             ServiceInvocationSpanContext::empty(),
-            None,
+            self.0.clone(),
             MillisSinceEpoch::UNIX_EPOCH,
             0,
             JournalKind::V2,

@@ -8102,6 +8102,8 @@ dependencies = [
  "http 1.5.0",
  "http-body 1.1.0",
  "http-body-util",
+ "hyper",
+ "hyper-util",
  "itertools 0.15.0",
  "metrics",
  "opentelemetry",
