@@ -57,6 +57,14 @@ pub trait PartitionFeatures {
     fn is_inconsistent_state_mutation_cleanup_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnableInconsistentStateMutationCleanup)
     }
+
+    /// Whether signals sent to an invocation before it starts running are recorded in its
+    /// journal.
+    ///
+    /// *Since v1.8.1*
+    fn is_preflight_signal_recording_enabled(&self) -> bool {
+        self.has_feature(PartitionFeatureChange::EnablePreflightSignalRecording)
+    }
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -72,6 +80,9 @@ impl PartitionFeatures for PersistedFeatures {
             }
             PartitionFeatureChange::EnableInconsistentStateMutationCleanup => {
                 self.inconsistent_state_mutation_cleanup
+            }
+            PartitionFeatureChange::EnablePreflightSignalRecording => {
+                self.preflight_signal_recording
             }
         }
     }

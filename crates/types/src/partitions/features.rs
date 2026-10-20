@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -75,6 +75,11 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.0*
     EnableInconsistentStateMutationCleanup = 6,
+    /// Record signals sent to scheduled or inboxed invocations in their journal instead of
+    /// discarding them.
+    ///
+    /// *Since v1.8.1*
+    EnablePreflightSignalRecording = 7,
 }
 
 impl PartitionFeatureChange {
@@ -94,6 +99,7 @@ impl PartitionFeatureChange {
             Self::EnableVqueuesSkipCompleted => &RESTATE_VERSION_1_7_5,
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
+            Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
         }
     }
 
@@ -120,6 +126,9 @@ impl PartitionFeatureChange {
             ),
             Self::EnableInconsistentStateMutationCleanup => {
                 !std::mem::replace(&mut features.inconsistent_state_mutation_cleanup, true)
+            }
+            Self::EnablePreflightSignalRecording => {
+                !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
         }
     }
@@ -184,6 +193,12 @@ pub struct PersistedFeatures {
     /// *Since v1.8.0*
     #[bilrost(tag(6))]
     pub inconsistent_state_mutation_cleanup: bool,
+
+    /// Signals sent to scheduled or inboxed invocations are recorded in their journal.
+    ///
+    /// *Since v1.8.1*
+    #[bilrost(tag(7))]
+    pub preflight_signal_recording: bool,
 }
 
 impl PersistedFeatures {
@@ -201,6 +216,8 @@ impl PersistedFeatures {
                 .then_some("preflight_invocation_termination_retention"),
             self.inconsistent_state_mutation_cleanup
                 .then_some("inconsistent_state_mutation_cleanup"),
+            self.preflight_signal_recording
+                .then_some("preflight_signal_recording"),
         ]
         .into_iter()
         .flatten()
