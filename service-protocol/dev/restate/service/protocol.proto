@@ -570,11 +570,11 @@ message CallCommandMessage {
   RelayTargetType relay_target_type = 1000;
   // Scope the runtime must create the callee in. "" = unscoped. Absent = not decided by the relay.
   optional string relay_effective_scope = 1001;
-  // The callee's retentions, same meaning and rules as the generic invoke envelope.
-  // UINT64_MAX (or absent) = server default. The relay always writes all three.
-  optional uint64 relay_idempotency_retention_millis = 1002;
-  optional uint64 relay_workflow_completion_retention_millis = 1003;
-  optional uint64 relay_journal_retention_millis = 1004;
+  // The callee's retentions. Completion: for a workflow (run) handler the registry's
+  // workflow_completion_retention, otherwise its idempotency_retention. UINT64_MAX (or absent) =
+  // server default. The relay always writes both.
+  optional uint64 relay_completion_retention_millis = 1002;
+  optional uint64 relay_journal_retention_millis = 1003;
 }
 
 // Notification for CallCommandMessage and OneWayCallCommandMessage
@@ -639,9 +639,8 @@ message OneWayCallCommandMessage {
   // Relay extension, see CallCommandMessage.
   RelayTargetType relay_target_type = 1000;
   optional string relay_effective_scope = 1001;
-  optional uint64 relay_idempotency_retention_millis = 1002;
-  optional uint64 relay_workflow_completion_retention_millis = 1003;
-  optional uint64 relay_journal_retention_millis = 1004;
+  optional uint64 relay_completion_retention_millis = 1002;
+  optional uint64 relay_journal_retention_millis = 1003;
 }
 
 // Completable: No

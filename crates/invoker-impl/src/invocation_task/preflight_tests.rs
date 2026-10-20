@@ -477,8 +477,7 @@ async fn call_takes_the_relay_fields_appended_to_the_sdk_bytes() {
         proto::OneWayCallCommandMessage {
             relay_target_type: proto::RelayTargetType::RelayTargetService.into(),
             relay_effective_scope: Some("tenant".to_owned()),
-            relay_idempotency_retention_millis: Some(60_000),
-            relay_workflow_completion_retention_millis: Some(u64::MAX),
+            relay_completion_retention_millis: Some(60_000),
             relay_journal_retention_millis: Some(0),
             ..Default::default()
         }

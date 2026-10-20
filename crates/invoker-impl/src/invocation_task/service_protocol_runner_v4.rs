@@ -1368,9 +1368,7 @@ where
                 let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
                     effective_scope: cmd.relay_effective_scope,
-                    idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
-                    workflow_completion_retention_millis: cmd
-                        .relay_workflow_completion_retention_millis,
+                    completion_retention_millis: cmd.relay_completion_retention_millis,
                     journal_retention_millis: cmd.relay_journal_retention_millis,
                 });
                 let request = shortcircuit!(
@@ -1426,9 +1424,7 @@ where
                 let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
                     effective_scope: cmd.relay_effective_scope,
-                    idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
-                    workflow_completion_retention_millis: cmd
-                        .relay_workflow_completion_retention_millis,
+                    completion_retention_millis: cmd.relay_completion_retention_millis,
                     journal_retention_millis: cmd.relay_journal_retention_millis,
                 });
                 let request = shortcircuit!(
@@ -1863,22 +1859,26 @@ where
 struct RelayCallSemantics {
     target_type: i32,
     effective_scope: Option<String>,
-    idempotency_retention_millis: Option<u64>,
-    workflow_completion_retention_millis: Option<u64>,
+    completion_retention_millis: Option<u64>,
     journal_retention_millis: Option<u64>,
 }
 
 impl RelayCallSemantics {
-    fn retentions(&self) -> RequestedRetentions {
+    fn retentions(&self, target_ty: InvocationTargetType) -> RequestedRetentions {
         // UINT64_MAX (or absent) means the server default.
         let retention = |millis: Option<u64>| {
             millis
                 .filter(|millis| *millis != u64::MAX)
                 .map(Duration::from_millis)
         };
+        // The completion retention is the workflow completion retention for a workflow run
+        // handler, the idempotency retention otherwise.
+        let completion = retention(self.completion_retention_millis);
+        let is_workflow_run =
+            target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
         RequestedRetentions {
-            idempotency: retention(self.idempotency_retention_millis),
-            workflow_completion: retention(self.workflow_completion_retention_millis),
+            idempotency: completion.filter(|_| !is_workflow_run),
+            workflow_completion: completion.filter(|_| is_workflow_run),
             journal: retention(self.journal_retention_millis),
         }
     }
@@ -2034,7 +2034,10 @@ fn resolve_call_request(
                         ));
                     }
                 };
-                InvocationTargetMetadata::from_external_semantics(target_ty, relay.retentions())
+                InvocationTargetMetadata::from_external_semantics(
+                    target_ty,
+                    relay.retentions(target_ty),
+                )
             }
             CallResolution::Guess => {
                 // The handler kind (shared vs exclusive) can't be derived without a schema, so
@@ -2329,8 +2332,7 @@ mod tests {
         CallResolution::Relay(RelayCallSemantics {
             target_type: target_type.into(),
             effective_scope: effective_scope.map(ToOwned::to_owned),
-            idempotency_retention_millis: Some(u64::MAX),
-            workflow_completion_retention_millis: Some(u64::MAX),
+            completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
         })
     }
@@ -2395,8 +2397,7 @@ mod tests {
             CallResolution::Relay(RelayCallSemantics {
                 target_type: proto::RelayTargetType::RelayTargetService.into(),
                 effective_scope: None,
-                idempotency_retention_millis: Some(60_000),
-                workflow_completion_retention_millis: Some(u64::MAX),
+                completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
             }),
         )
@@ -2412,7 +2413,22 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_takes_the_workflow_completion_retention() {
+    fn workflow_run_takes_the_completion_retention() {
+        let call = resolve(
+            request("wf", "run", "k", None),
+            CallResolution::Relay(RelayCallSemantics {
+                target_type: proto::RelayTargetType::RelayTargetWorkflow.into(),
+                effective_scope: None,
+                completion_retention_millis: Some(120_000),
+                journal_retention_millis: Some(u64::MAX),
+            }),
+        )
+        .unwrap();
+        assert_eq!(call.completion_retention_duration, Duration::from_secs(120));
+    }
+
+    #[test]
+    fn workflow_run_defaults_to_the_workflow_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
             relay(proto::RelayTargetType::RelayTargetWorkflow, None),
@@ -2462,8 +2478,7 @@ mod tests {
                 CallResolution::Relay(RelayCallSemantics {
                     target_type: 42,
                     effective_scope: None,
-                    idempotency_retention_millis: None,
-                    workflow_completion_retention_millis: None,
+                    completion_retention_millis: None,
                     journal_retention_millis: None,
                 }),
             ),
