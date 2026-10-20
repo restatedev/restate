@@ -76,7 +76,7 @@ fn single_endpoint_deployment(id: DeploymentId) -> Deployment {
 
     Deployment::single_http_endpoint(
         id,
-        invoker.single_endpoint_address.clone(),
+        (*invoker.single_endpoint_address).clone(),
         protocol_type,
         http_version,
         single_endpoint_headers(
@@ -527,7 +527,7 @@ where
                 let config = Configuration::pinned();
                 let invoker = &config.worker.invoker;
                 invoker.is_preflight().then(|| PreflightTarget {
-                    address: invoker.single_endpoint_address.clone(),
+                    address: (*invoker.single_endpoint_address).clone(),
                     additional_headers: single_endpoint_headers(
                         &invoker.single_endpoint_auth_header,
                         invoker.single_endpoint_auth_token.as_ref(),
