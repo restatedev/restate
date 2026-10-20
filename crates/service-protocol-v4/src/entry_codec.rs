@@ -375,7 +375,6 @@ impl Encoder for ServiceProtocolV4Codec {
                     name: name.to_string(),
                     result_completion_id: completion_id,
                     target: Some(target.into()),
-                    ..Default::default()
                 }
                 .encode_to_vec(),
             )
@@ -390,7 +389,6 @@ impl Encoder for ServiceProtocolV4Codec {
                     name: name.to_string(),
                     result_completion_id: completion_id,
                     target: Some(target.into()),
-                    ..Default::default()
                 }
                 .encode_to_vec(),
             )
@@ -933,12 +931,9 @@ impl Decoder for ServiceProtocolV4Codec {
                         result_completion_id,
                         name,
                         target,
-                        relay_effective_scope,
                     } = decode_or_bail!(cmd.serialized_content(), AttachInvocationCommandMessage);
                     AttachInvocationCommand {
-                        target: get_or_bail!(target)
-                            .with_relay_effective_scope(relay_effective_scope)
-                            .try_into()?,
+                        target: get_or_bail!(target).try_into()?,
                         name: name.into(),
                         completion_id: result_completion_id,
                     }
@@ -949,15 +944,12 @@ impl Decoder for ServiceProtocolV4Codec {
                         result_completion_id,
                         name,
                         target,
-                        relay_effective_scope,
                     } = decode_or_bail!(
                         cmd.serialized_content(),
                         GetInvocationOutputCommandMessage
                     );
                     GetInvocationOutputCommand {
-                        target: get_or_bail!(target)
-                            .with_relay_effective_scope(relay_effective_scope)
-                            .try_into()?,
+                        target: get_or_bail!(target).try_into()?,
                         name: name.into(),
                         completion_id: result_completion_id,
                     }
@@ -1339,13 +1331,10 @@ impl Decoder for ServiceProtocolV4Codec {
                     let proto::AttachInvocationCommandMessage {
                         result_completion_id,
                         target,
-                        relay_effective_scope,
                         ..
                     } = decode_or_bail!(cmd.serialized_content(), AttachInvocationCommandMessage);
                     AttachInvocationCommandLite {
-                        target: get_or_bail!(target)
-                            .with_relay_effective_scope(relay_effective_scope)
-                            .try_into()?,
+                        target: get_or_bail!(target).try_into()?,
                         completion_id: result_completion_id,
                     }
                     .into()
@@ -1354,16 +1343,13 @@ impl Decoder for ServiceProtocolV4Codec {
                     let proto::GetInvocationOutputCommandMessage {
                         result_completion_id,
                         target,
-                        relay_effective_scope,
                         ..
                     } = decode_or_bail!(
                         cmd.serialized_content(),
                         GetInvocationOutputCommandMessage
                     );
                     GetInvocationOutputCommandLite {
-                        target: get_or_bail!(target)
-                            .with_relay_effective_scope(relay_effective_scope)
-                            .try_into()?,
+                        target: get_or_bail!(target).try_into()?,
                         completion_id: result_completion_id,
                     }
                     .into()
@@ -1628,32 +1614,6 @@ impl TryFrom<proto::send_signal_command_message::Result> for SignalResult {
         })
     }
 }
-
-/// Applies the relay extension field `relay_effective_scope` to the scope of a workflow or
-/// idempotent request target (invocation id targets have no scope). `""` means unscoped.
-///
-/// The invoker accepts the field only on preflight-mode streams, where the relay always writes it,
-/// and validates the scope before the command is journaled.
-macro_rules! impl_with_relay_effective_scope {
-    ($target:ty) => {
-        impl $target {
-            fn with_relay_effective_scope(mut self, relay_effective_scope: Option<String>) -> Self {
-                if let Some(effective_scope) = relay_effective_scope {
-                    let scope = match &mut self {
-                        Self::InvocationId(_) => return self,
-                        Self::IdempotentRequestTarget(target) => &mut target.scope,
-                        Self::WorkflowTarget(target) => &mut target.scope,
-                    };
-                    *scope = (!effective_scope.is_empty()).then_some(effective_scope);
-                }
-                self
-            }
-        }
-    };
-}
-
-impl_with_relay_effective_scope!(proto::attach_invocation_command_message::Target);
-impl_with_relay_effective_scope!(proto::get_invocation_output_command_message::Target);
 
 impl From<AttachInvocationTarget> for proto::attach_invocation_command_message::Target {
     fn from(value: AttachInvocationTarget) -> Self {
@@ -2065,67 +2025,51 @@ impl From<proto::ErrorMessage> for InvocationError {
 mod tests {
     use super::*;
 
-    fn decode_attach(relay_effective_scope: Option<&str>) -> AttachInvocationTarget {
-        let raw = RawCommand::new(
-            CommandType::AttachInvocation,
+    #[test]
+    fn appended_target_scope_is_merged_into_the_target() {
+        // The relay sets the scope of an attach target by appending a second copy of the same target
+        // variant holding only the scope: protobuf merges it into the first one.
+        let mut bytes = proto::AttachInvocationCommandMessage {
+            target: Some(
+                proto::attach_invocation_command_message::Target::WorkflowTarget(
+                    proto::WorkflowTarget {
+                        workflow_name: "wf".to_owned(),
+                        workflow_key: "key".to_owned(),
+                        scope: None,
+                    },
+                ),
+            ),
+            result_completion_id: 1,
+            name: String::new(),
+        }
+        .encode_to_vec();
+        bytes.extend(
             proto::AttachInvocationCommandMessage {
                 target: Some(
                     proto::attach_invocation_command_message::Target::WorkflowTarget(
                         proto::WorkflowTarget {
-                            workflow_name: "wf".to_owned(),
-                            workflow_key: "key".to_owned(),
-                            scope: Some("sdk-scope".to_owned()),
+                            scope: Some("tenant".to_owned()),
+                            ..Default::default()
                         },
                     ),
                 ),
-                result_completion_id: 1,
-                relay_effective_scope: relay_effective_scope.map(ToOwned::to_owned),
                 ..Default::default()
             }
             .encode_to_vec(),
         );
-        raw.decode::<ServiceProtocolV4Codec, AttachInvocationCommand>()
+
+        let target = RawCommand::new(CommandType::AttachInvocation, bytes)
+            .decode::<ServiceProtocolV4Codec, AttachInvocationCommand>()
             .unwrap()
-            .target
-    }
+            .target;
 
-    fn workflow_scope(relay_effective_scope: Option<&str>) -> Option<Scope> {
-        match decode_attach(relay_effective_scope) {
-            AttachInvocationTarget::Workflow(service_id) => service_id.scope,
-            other => panic!("unexpected target {other:?}"),
-        }
-    }
-
-    #[test]
-    fn attach_without_relay_scope_keeps_target_scope() {
         assert_eq!(
-            workflow_scope(None),
-            Some(Scope::try_new("sdk-scope").unwrap())
-        );
-    }
-
-    #[test]
-    fn attach_relay_scope_overrides_target_scope() {
-        assert_eq!(
-            workflow_scope(Some("tenant")),
-            Some(Scope::try_new("tenant").unwrap())
-        );
-    }
-
-    #[test]
-    fn attach_empty_relay_scope_is_unscoped() {
-        assert_eq!(workflow_scope(Some("")), None);
-    }
-
-    #[test]
-    fn relay_scope_ignored_for_invocation_id_target() {
-        let target =
-            proto::get_invocation_output_command_message::Target::InvocationId("inv_1".to_owned());
-        assert_eq!(
-            target
-                .clone()
-                .with_relay_effective_scope(Some("tenant".to_owned())),
-            target
+            target,
+            AttachInvocationTarget::Workflow(ServiceId::new(
+                Some(Scope::try_new("tenant").unwrap()),
+                "wf",
+                "key"
+            ))
         );
     }
 }

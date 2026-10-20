@@ -1292,19 +1292,15 @@ where
                     proto_lite::GetInvocationOutputCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
-                shortcircuit!(
-                    self.validate_target(
-                        parsed.target.as_ref(),
-                        parsed.relay_effective_scope.as_deref()
-                    )
-                    .map_err(|err| {
+                if let Some(target) = parsed.target.as_ref() {
+                    shortcircuit!(Self::validate_target(target).map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::GetInvocationOutput),
                             err,
                         )
-                    })
-                );
+                    }));
+                }
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::GetInvocationOutput, cmd),
@@ -1319,19 +1315,15 @@ where
                     proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
-                shortcircuit!(
-                    self.validate_target(
-                        parsed.target.as_ref(),
-                        parsed.relay_effective_scope.as_deref()
-                    )
-                    .map_err(|err| {
+                if let Some(target) = parsed.target.as_ref() {
+                    shortcircuit!(Self::validate_target(target).map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::AttachInvocation),
                             err,
                         )
-                    })
-                );
+                    }));
+                }
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::AttachInvocation, cmd),
@@ -1367,7 +1359,6 @@ where
                 );
                 let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
-                    effective_scope: cmd.relay_effective_scope,
                     completion_retention_millis: cmd.relay_completion_retention_millis,
                     journal_retention_millis: cmd.relay_journal_retention_millis,
                 });
@@ -1423,7 +1414,6 @@ where
                 );
                 let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
-                    effective_scope: cmd.relay_effective_scope,
                     completion_retention_millis: cmd.relay_completion_retention_millis,
                     journal_retention_millis: cmd.relay_journal_retention_millis,
                 });
@@ -1793,55 +1783,39 @@ where
         })
     }
 
-    /// Validates the target of a `GetInvocationOutput` or `AttachInvocation` command.
+    /// Validates the target of a `GetInvocationOutput` command.
     ///
     /// We only validate the syntactic shape of the target (invocation id parses, scope is a
     /// valid `RestrictedValue`). We do not check that the service/handler/workflow currently
     /// exists in the schema, because the user may legitimately query the output of an invocation
     /// whose service has since been removed from the registry.
-    ///
-    /// `relay_effective_scope` replaces the scope of workflow and idempotent request targets when
-    /// the command is decoded (see the entry codec), so it's validated instead of the target's
-    /// scope. Only the relay writes it, on preflight-mode streams: elsewhere it's rejected.
-    fn validate_target(
-        &self,
-        target: Option<&proto_lite::TargetLite>,
-        relay_effective_scope: Option<&str>,
-    ) -> Result<(), CommandPreconditionError> {
-        if relay_effective_scope.is_some() && !self.preflight {
-            return Err(CommandPreconditionError::UnexpectedRelayField);
-        }
-        let validate_scope = |target_scope: Option<&String>| {
-            match relay_effective_scope.or_else(|| target_scope.map(String::as_str)) {
-                // "" is unscoped
-                Some(scope) if !(relay_effective_scope.is_some() && scope.is_empty()) => {
-                    RestrictedValue::new(scope)
-                        .map(|_| ())
-                        .map_err(|e| CommandPreconditionError::InvalidScope(scope.to_owned(), e))
-                }
-                _ => Ok(()),
-            }
-        };
-
+    fn validate_target(target: &proto_lite::TargetLite) -> Result<(), CommandPreconditionError> {
         match target {
-            None => {}
-            Some(proto_lite::TargetLite::InvocationId(invocation_id)) => {
+            proto_lite::TargetLite::InvocationId(invocation_id) => {
                 invocation_id.parse::<InvocationId>().map_err(|err| {
                     CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
                 })?;
             }
-            Some(proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target)) => {
-                validate_scope(idempotent_request_target.scope.as_ref())?
+            proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target) => {
+                if let Some(scope) = idempotent_request_target.scope.as_ref() {
+                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
+                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
+                    })?;
+                }
             }
-            Some(proto_lite::TargetLite::WorkflowTarget(workflow_target)) => {
-                validate_scope(workflow_target.scope.as_ref())?
+            proto_lite::TargetLite::WorkflowTarget(workflow_target) => {
+                if let Some(scope) = workflow_target.scope.as_ref() {
+                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
+                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
+                    })?;
+                }
             }
         }
 
         Ok(())
     }
 
-    /// How to resolve what the local registry doesn't decide about a callee.
+    /// How to resolve a callee that is not in the local registry.
     fn call_resolution(&self, relay: RelayCallSemantics) -> CallResolution {
         if self.preflight {
             CallResolution::Relay(relay)
@@ -1858,7 +1832,6 @@ where
 /// The relay-only fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
 struct RelayCallSemantics {
     target_type: i32,
-    effective_scope: Option<String>,
     completion_retention_millis: Option<u64>,
     journal_retention_millis: Option<u64>,
 }
@@ -1884,10 +1857,9 @@ impl RelayCallSemantics {
     }
 }
 
-/// How a call resolves what the local registry doesn't decide.
+/// How a call resolves a callee that is not in the local registry.
 enum CallResolution {
-    /// Preflight-mode stream: the relay decided the effective scope and the semantics of
-    /// unregistered callees.
+    /// Preflight-mode stream: the relay decided the semantics of unregistered callees.
     Relay(RelayCallSemantics),
     /// Schemaless prototype modes: guess the target type from the key and the
     /// `x-restate-handler-kind` header.
@@ -1982,16 +1954,9 @@ pub struct InvokeRequest {
 
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
-    mut request: InvokeRequest,
-    mut call_resolution: CallResolution,
+    request: InvokeRequest,
+    call_resolution: CallResolution,
 ) -> Result<CallRequest, CommandPreconditionError> {
-    // The relay's effective scope applies whoever resolves the callee.
-    if let CallResolution::Relay(relay) = &mut call_resolution
-        && let Some(effective_scope) = relay.effective_scope.take()
-    {
-        request.scope = Some(effective_scope);
-    }
-
     let not_found = |request: &InvokeRequest| {
         CommandPreconditionError::ServiceHandlerNotFound(
             request.service_name.to_string(),
@@ -2328,10 +2293,9 @@ mod tests {
         }
     }
 
-    fn relay(target_type: proto::RelayTargetType, effective_scope: Option<&str>) -> CallResolution {
+    fn relay(target_type: proto::RelayTargetType) -> CallResolution {
         CallResolution::Relay(RelayCallSemantics {
             target_type: target_type.into(),
-            effective_scope: effective_scope.map(ToOwned::to_owned),
             completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
         })
@@ -2349,42 +2313,16 @@ mod tests {
     }
 
     #[test]
-    fn relay_type_and_effective_scope_build_the_target() {
+    fn relay_type_builds_the_target_in_the_command_scope() {
         let call = resolve(
-            request("checkout", "run", "", Some("sdk-scope")),
-            relay(proto::RelayTargetType::RelayTargetService, Some("tenant")),
+            request("checkout", "run", "", Some("tenant")),
+            relay(proto::RelayTargetType::RelayTargetService),
         )
         .unwrap();
         assert_eq!(
             call.invocation_target,
             InvocationTarget::service("checkout", "run").with_scope(scope("tenant"))
         );
-    }
-
-    #[test]
-    fn empty_effective_scope_is_unscoped() {
-        let call = resolve(
-            request("obj", "get", "k", Some("sdk-scope")),
-            relay(
-                proto::RelayTargetType::RelayTargetVirtualObjectShared,
-                Some(""),
-            ),
-        )
-        .unwrap();
-        assert_eq!(
-            call.invocation_target,
-            InvocationTarget::virtual_object("obj", "k", "get", VirtualObjectHandlerType::Shared)
-        );
-    }
-
-    #[test]
-    fn absent_effective_scope_keeps_the_command_scope() {
-        let call = resolve(
-            request("obj", "get", "k", Some("sdk-scope")),
-            relay(proto::RelayTargetType::RelayTargetVirtualObjectShared, None),
-        )
-        .unwrap();
-        assert_eq!(call.invocation_target.scope(), scope("sdk-scope").as_ref());
     }
 
     #[test]
@@ -2396,7 +2334,6 @@ mod tests {
             },
             CallResolution::Relay(RelayCallSemantics {
                 target_type: proto::RelayTargetType::RelayTargetService.into(),
-                effective_scope: None,
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
             }),
@@ -2418,7 +2355,6 @@ mod tests {
             request("wf", "run", "k", None),
             CallResolution::Relay(RelayCallSemantics {
                 target_type: proto::RelayTargetType::RelayTargetWorkflow.into(),
-                effective_scope: None,
                 completion_retention_millis: Some(120_000),
                 journal_retention_millis: Some(u64::MAX),
             }),
@@ -2431,7 +2367,7 @@ mod tests {
     fn workflow_run_defaults_to_the_workflow_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
-            relay(proto::RelayTargetType::RelayTargetWorkflow, None),
+            relay(proto::RelayTargetType::RelayTargetWorkflow),
         )
         .unwrap();
         assert_eq!(call.completion_retention_duration, DAY);
@@ -2442,7 +2378,7 @@ mod tests {
         assert_that!(
             resolve(
                 request("checkout", "run", "k", None),
-                relay(proto::RelayTargetType::RelayTargetService, None),
+                relay(proto::RelayTargetType::RelayTargetService),
             ),
             err(pat!(CommandPreconditionError::UnexpectedKey(_)))
         );
@@ -2453,7 +2389,7 @@ mod tests {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                relay(proto::RelayTargetType::RelayTargetNotFound, None),
+                relay(proto::RelayTargetType::RelayTargetNotFound),
             ),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
@@ -2464,7 +2400,7 @@ mod tests {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                relay(proto::RelayTargetType::Unspecified, None),
+                relay(proto::RelayTargetType::Unspecified),
             ),
             err(pat!(CommandPreconditionError::UnresolvedCallTarget(_, _)))
         );
@@ -2477,7 +2413,6 @@ mod tests {
                 request("unknown", "h", "", None),
                 CallResolution::Relay(RelayCallSemantics {
                     target_type: 42,
-                    effective_scope: None,
                     completion_retention_millis: None,
                     journal_retention_millis: None,
                 }),
@@ -2490,7 +2425,7 @@ mod tests {
     fn local_registry_wins_over_relay() {
         let call = resolve(
             request("registered", "h", "k", None),
-            relay(proto::RelayTargetType::RelayTargetService, None),
+            relay(proto::RelayTargetType::RelayTargetService),
         )
         .unwrap();
         assert_eq!(
@@ -2505,21 +2440,11 @@ mod tests {
     }
 
     #[test]
-    fn local_registry_callee_takes_the_effective_scope() {
-        let call = resolve(
-            request("registered", "h", "k", Some("sdk-scope")),
-            relay(proto::RelayTargetType::RelayTargetService, Some("tenant")),
-        )
-        .unwrap();
-        assert_eq!(call.invocation_target.scope(), scope("tenant").as_ref());
-    }
-
-    #[test]
     fn registered_service_unknown_handler_is_not_found_with_relay() {
         assert_that!(
             resolve(
                 request("registered", "other", "k", None),
-                relay(proto::RelayTargetType::RelayTargetService, None),
+                relay(proto::RelayTargetType::RelayTargetService),
             ),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );

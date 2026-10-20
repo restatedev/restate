@@ -291,9 +291,6 @@ pub mod proto_lite {
     pub struct AttachInvocationCommandMessageLite {
         #[prost(oneof = "TargetLite", tags = "1, 3, 4")]
         pub target: Option<TargetLite>,
-        /// Relay extension, see [`super::proto::AttachInvocationCommandMessage::relay_effective_scope`].
-        #[prost(string, optional, tag = "1001")]
-        pub relay_effective_scope: Option<String>,
     }
 
     /// Shadow of [`super::proto::get_invocation_output_command_message::Target`] and
@@ -315,9 +312,6 @@ pub mod proto_lite {
     pub struct GetInvocationOutputCommandMessageLite {
         #[prost(oneof = "TargetLite", tags = "1, 3, 4")]
         pub target: Option<TargetLite>,
-        /// Relay extension, see [`super::proto::GetInvocationOutputCommandMessage::relay_effective_scope`].
-        #[prost(string, optional, tag = "1001")]
-        pub relay_effective_scope: Option<String>,
     }
 
     /// Shadow of [`super::proto::WorkflowTarget`]. Only the `scope` field is
@@ -358,7 +352,6 @@ pub mod proto_lite {
                 )),
                 result_completion_id: 42,
                 name: "ignored".into(),
-                relay_effective_scope: None,
             };
 
             let bytes = full.encode_to_vec();
@@ -386,7 +379,6 @@ pub mod proto_lite {
                 ),
                 result_completion_id: 7,
                 name: "ignored".into(),
-                relay_effective_scope: None,
             };
 
             let bytes = full.encode_to_vec();
@@ -412,7 +404,6 @@ pub mod proto_lite {
                 ),
                 result_completion_id: 11,
                 name: "ignored".into(),
-                relay_effective_scope: None,
             };
 
             let bytes = full.encode_to_vec();
@@ -438,7 +429,6 @@ pub mod proto_lite {
                 ),
                 result_completion_id: 11,
                 name: "ignored".into(),
-                relay_effective_scope: None,
             };
 
             let bytes = full.encode_to_vec();

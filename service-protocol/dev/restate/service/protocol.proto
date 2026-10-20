@@ -525,7 +525,8 @@ message SleepCompletionNotificationMessage {
 
 // Relay extension. Set only by the relay on preflight-mode streams; read only by the patched runtime.
 // Field numbers 1000-1099 are reserved for this extension in CallCommandMessage,
-// OneWayCallCommandMessage, AttachInvocationCommandMessage and GetInvocationOutputCommandMessage.
+// OneWayCallCommandMessage, AttachInvocationCommandMessage and GetInvocationOutputCommandMessage
+// (the relay may also use them for its own markers, which the runtime never reads).
 enum RelayTargetType {
   RELAY_TARGET_TYPE_UNSPECIFIED = 0; // the relay didn't decide (lookup failed)
   RELAY_TARGET_NOT_FOUND = 1;        // the registry has no such service/handler for that scope
@@ -568,8 +569,6 @@ message CallCommandMessage {
 
   // Relay extension, see RelayTargetType.
   RelayTargetType relay_target_type = 1000;
-  // Scope the runtime must create the callee in. "" = unscoped. Absent = not decided by the relay.
-  optional string relay_effective_scope = 1001;
   // The callee's retentions. Completion: for a workflow (run) handler the registry's
   // workflow_completion_retention, otherwise its idempotency_retention. UINT64_MAX (or absent) =
   // server default. The relay always writes both.
@@ -638,7 +637,6 @@ message OneWayCallCommandMessage {
 
   // Relay extension, see CallCommandMessage.
   RelayTargetType relay_target_type = 1000;
-  optional string relay_effective_scope = 1001;
   optional uint64 relay_completion_retention_millis = 1002;
   optional uint64 relay_journal_retention_millis = 1003;
 }
@@ -703,9 +701,6 @@ message AttachInvocationCommandMessage {
 
   uint32 result_completion_id = 11;
   string name = 12;
-
-  // Relay extension. Scope for workflow_target / idempotent_request_target. Ignored for invocation_id targets.
-  optional string relay_effective_scope = 1001;
 }
 
 // Notification for AttachInvocationCommandMessage
@@ -737,9 +732,6 @@ message GetInvocationOutputCommandMessage {
 
   uint32 result_completion_id = 11;
   string name = 12;
-
-  // Relay extension, see AttachInvocationCommandMessage.
-  optional string relay_effective_scope = 1001;
 }
 
 // Notification for GetInvocationOutputCommandMessage
