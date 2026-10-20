@@ -874,16 +874,33 @@ experimental! {
 
     /// # Status Gauges For VQueue Entries
     ///
-    /// Enables current stage/status counts by service, deployment, and virtual object
-    /// when an empty local partition store starts. Counts include invocations and
-    /// state mutations, and retain completed entries until they are deleted.
-    /// Existing stores require a backfill before this feature can be enabled.
+    /// Enables current stage/status counts for VQueue entries by service, deployment,
+    /// and virtual object. Counts include invocations and state mutations, retaining
+    /// completed entries until deletion. Existing entries are counted before each
+    /// local partition starts for the first time with this feature enabled. This
+    /// initial scan can increase partition startup time and temporarily requires
+    /// additional local disk space.
     ///
-    /// Once enabled, tracking persists across restarts even if this flag is removed.
-    /// Eligible stores enable tracking automatically from v1.9.
+    /// Tracking persists across restarts even if this flag is removed, unless status
+    /// gauges are explicitly reset. Tracking is enabled automatically from v1.9.
     ///
     /// Since v1.8.1
     track_status_gauges,
+
+    /// # Reset status gauges
+    ///
+    /// Deletes the local service, deployment, and virtual-object status gauges and
+    /// disables their storage feature when each partition starts. While enabled,
+    /// this takes precedence over status-gauge collection, including automatic
+    /// enablement in v1.9. Statistics queries are unavailable during reset mode.
+    ///
+    /// To rebuild the counts from retained VQueue entries, turn this option off,
+    /// enable `experimental-enable-track-status-gauges`, and restart the nodes.
+    /// Rebuilding has the same startup-time and temporary disk-space cost as initial
+    /// collection. Invocation and VQueue entry data are preserved during reset.
+    ///
+    /// Since v1.8.1
+    status_gauges_reset,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
