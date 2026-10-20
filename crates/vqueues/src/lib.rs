@@ -1280,7 +1280,7 @@ where
         &mut self,
         invocation_id: &InvocationId,
         invoked: &InFlightInvocationMetadata,
-    ) {
+    ) -> Seq {
         let meta = self.cache.get(self.handle).unwrap();
 
         // We use a special value (0) for all running invocations under the following assumptions:
@@ -1375,6 +1375,8 @@ where
             },
             EntryStateRef::from_value(stage, &key, &value),
         );
+
+        Seq::new(seq)
     }
 
     /// Backfills the vqueue with an existing completed invocation
@@ -1382,7 +1384,7 @@ where
         &mut self,
         invocation_id: &InvocationId,
         completed: &CompletedInvocation,
-    ) {
+    ) -> Seq {
         // We use a special value (0) for invocations under the following assumptions:
         // - We don't allow two invocations with the same ID to co-exist (prior to vqueues)
         // - Any new invocation with the same ID will be created with Lsn > 0 after migration.
@@ -1487,6 +1489,8 @@ where
             },
             EntryStateRef::from_value(stage, &key, &value),
         );
+
+        Seq::new(seq)
     }
 
     /// Backfills the vqueue with an existing parked (suspended or paused) invocations
@@ -1495,7 +1499,7 @@ where
         invocation_id: &InvocationId,
         parked: &InFlightInvocationMetadata,
         stage: Stage,
-    ) {
+    ) -> Seq {
         debug_assert_matches!(stage, Stage::Paused | Stage::Suspended);
         let meta = self.cache.get(self.handle).unwrap();
 
@@ -1599,6 +1603,8 @@ where
             },
             EntryStateRef::from_value(stage, &key, &value),
         );
+
+        Seq::new(seq)
     }
 }
 
