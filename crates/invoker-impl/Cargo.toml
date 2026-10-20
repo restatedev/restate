@@ -60,7 +60,10 @@ restate-test-util = { workspace = true }
 restate-types = { workspace = true }
 
 googletest = { workspace = true }
+hyper = { workspace = true, features = ["server", "http2"] }
+hyper-util = { workspace = true, features = ["tokio"] }
 test-log = { workspace = true }
+tokio = { workspace = true, features = ["net"] }
 tokio-util = { workspace = true }
 
 [lints]

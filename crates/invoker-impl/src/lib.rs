@@ -1834,7 +1834,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct MockSchemas(Option<RetryPolicy>, Option<OnMaxAttempts>);
+    pub(crate) struct MockSchemas(Option<RetryPolicy>, Option<OnMaxAttempts>);
 
     impl DeploymentResolver for MockSchemas {
         fn resolve_latest_deployment_for_service(&self, _: impl AsRef<str>) -> Option<Deployment> {
