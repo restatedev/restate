@@ -440,7 +440,7 @@ impl LeaderState {
                             // skip the in-memory indexes and the JSON schemas, the partition
                             // processors need neither
                             FlowPoll::Ready(Metadata::with_current(|m| {
-                                SchemaUnindexedLite::from(m.schema().as_ref())
+                                SchemaUnindexedLite::clone_from_schema(m.schema().as_ref())
                             }))
                         } else {
                             // The stream was ready, but no action is needed.

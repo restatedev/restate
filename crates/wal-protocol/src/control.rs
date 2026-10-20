@@ -341,7 +341,7 @@ mod tests {
 
     use restate_types::Versioned;
     use restate_types::logs::Keys;
-    use restate_types::schema::Schema;
+    use restate_types::schema::{Schema, SchemaUnindexedLite};
     use restate_types::storage::{StorageCodecKind, encode};
 
     use super::UpsertSchemaCommand;
@@ -352,9 +352,10 @@ mod tests {
         let mut schema = Schema::default();
         schema.touch();
         schema.set_bilrost_encoded(true);
+
         let command = UpsertSchemaCommand {
             partition_key_range: Keys::RangeInclusive(10..=20),
-            schema: (&*schema).into(),
+            schema: SchemaUnindexedLite::clone_from_schema(&schema),
         };
 
         for codec in [

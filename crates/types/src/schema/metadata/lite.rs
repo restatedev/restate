@@ -58,16 +58,8 @@ impl SchemaUnindexedLite {
     pub fn is_bilrost_encoded(&self) -> bool {
         self.bilrost_encoded
     }
-}
 
-impl Versioned for SchemaUnindexedLite {
-    fn version(&self) -> Version {
-        self.version
-    }
-}
-
-impl From<&SchemaUnindexed> for SchemaUnindexedLite {
-    fn from(
+    pub fn clone_from_schema_unindexed(
         SchemaUnindexed {
             version,
             deployments,
@@ -80,18 +72,22 @@ impl From<&SchemaUnindexed> for SchemaUnindexedLite {
             version: *version,
             deployments: deployments
                 .iter()
-                .map(|(id, deployment)| (*id, deployment.into()))
+                .map(|(id, deployment)| (*id, DeploymentLite::clone_from(deployment)))
                 .collect(),
             subscriptions: subscriptions.clone(),
             kafka_clusters: kafka_clusters.clone(),
             bilrost_encoded: *bilrost_encoded,
         }
     }
+
+    pub fn clone_from_schema(schema: &Schema) -> Self {
+        Self::clone_from_schema_unindexed(&schema.unindexed)
+    }
 }
 
-impl From<&Schema> for SchemaUnindexedLite {
-    fn from(schema: &Schema) -> Self {
-        Self::from(&schema.unindexed)
+impl Versioned for SchemaUnindexedLite {
+    fn version(&self) -> Version {
+        self.version
     }
 }
 
@@ -151,8 +147,8 @@ pub(super) struct DeploymentLite {
     limits: Option<DeploymentLimits>,
 }
 
-impl From<&Deployment> for DeploymentLite {
-    fn from(
+impl DeploymentLite {
+    fn clone_from(
         Deployment {
             id,
             ty,
@@ -175,7 +171,12 @@ impl From<&Deployment> for DeploymentLite {
             metadata: metadata.clone(),
             services: services
                 .iter()
-                .map(|(name, service)| (name.clone(), Arc::new(service.as_ref().into())))
+                .map(|(name, service)| {
+                    (
+                        name.clone(),
+                        Arc::new(ServiceRevisionLite::clone_from(service)),
+                    )
+                })
                 .collect(),
             limits: *limits,
         }
@@ -307,8 +308,8 @@ impl MapAsVecItem for ServiceRevisionLite {
     }
 }
 
-impl From<&ServiceRevision> for ServiceRevisionLite {
-    fn from(
+impl ServiceRevisionLite {
+    fn clone_from(
         ServiceRevision {
             name,
             handlers,
@@ -336,7 +337,7 @@ impl From<&ServiceRevision> for ServiceRevisionLite {
             name: name.clone(),
             handlers: handlers
                 .iter()
-                .map(|(name, handler)| (name.clone(), handler.into()))
+                .map(|(name, handler)| (name.clone(), HandlerLite::clone_from(handler)))
                 .collect(),
             ty: *ty,
             documentation: documentation.clone(),
@@ -485,8 +486,8 @@ impl MapAsVecItem for HandlerLite {
     }
 }
 
-impl From<&Handler> for HandlerLite {
-    fn from(
+impl HandlerLite {
+    fn clone_from(
         Handler {
             name,
             target_ty,
@@ -512,8 +513,8 @@ impl From<&Handler> for HandlerLite {
         Self {
             name: name.clone(),
             target_ty: *target_ty,
-            input_rules: input_rules.as_ref().into(),
-            output_rules: output_rules.as_ref().into(),
+            input_rules: InputRulesLite::clone_from(input_rules),
+            output_rules: OutputRulesLite::clone_from(output_rules),
             public: *public,
             idempotency_retention: *idempotency_retention,
             workflow_completion_retention: *workflow_completion_retention,
@@ -587,14 +588,17 @@ struct InputRulesLite {
     input_validation_rules: Vec<InputValidationRuleLite>,
 }
 
-impl From<&InputRules> for InputRulesLite {
-    fn from(
+impl InputRulesLite {
+    fn clone_from(
         InputRules {
             input_validation_rules,
         }: &InputRules,
     ) -> Self {
         Self {
-            input_validation_rules: input_validation_rules.iter().map(Into::into).collect(),
+            input_validation_rules: input_validation_rules
+                .iter()
+                .map(InputValidationRuleLite::clone_from)
+                .collect(),
         }
     }
 }
@@ -626,8 +630,8 @@ enum InputValidationRuleLite {
     },
 }
 
-impl From<&InputValidationRule> for InputValidationRuleLite {
-    fn from(rule: &InputValidationRule) -> Self {
+impl InputValidationRuleLite {
+    fn clone_from(rule: &InputValidationRule) -> Self {
         match rule {
             InputValidationRule::NoBodyAndContentType => Self::NoBodyAndContentType,
             InputValidationRule::ContentType { content_type } => Self::ContentType {
@@ -665,8 +669,8 @@ struct OutputRulesLite {
     content_type_rule: OutputContentTypeRule,
 }
 
-impl From<&OutputRules> for OutputRulesLite {
-    fn from(
+impl OutputRulesLite {
+    fn clone_from(
         OutputRules {
             content_type_rule,
             json_schema: _,

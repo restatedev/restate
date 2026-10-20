@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
-use restate_core::Metadata;
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionStore;
 use restate_storage_api::fsm_table::{
@@ -45,6 +44,10 @@ pub(super) struct Fsm {
     /// *Since v1.7.0*
     enabled_features: PersistedFeatures,
     /// Consistent schema
+    ///
+    /// NOTE: Built from [`SchemaUnindexedLite`], which drops the handlers' input
+    /// and output JSON schemas, so those fields are always `None` here. Code using
+    /// this schema must not depend on them. The content-type rules are kept.
     schema: Option<Arc<Schema>>,
     /// Persisted partition configuration state (since v1.6)
     epoch_metadata: Option<CachedEpochMetadata>,
@@ -90,11 +93,10 @@ impl Fsm {
         let durable_point = storage.get_partition_durability().await?;
         let last_applied_lsn = storage.get_applied_lsn().await?.unwrap_or(Lsn::INVALID);
         // Load persisted partition configuration state (since v1.7.2)
-        let mut schema = storage
+        let schema = storage
             .get_schema()
             .await?
             .map(|schema| Arc::new(Schema::from(schema)));
-        dedup_in_memory_schema(&mut schema);
         // Load persisted partition configuration state (since v1.7.0)
         let rule_book = Arc::new(storage.get_rule_book().await?.unwrap_or_default());
         // Load persisted partition configuration state (since v1.6)
@@ -281,7 +283,6 @@ impl FsmMut for Fsm {
     fn set_schema<S: WriteFsmTable>(&mut self, txn: &mut S, schema: SchemaUnindexedLite) {
         txn.put_schema(&schema).expect("infallible serde");
         self.schema = Some(Arc::new(schema.into()));
-        dedup_in_memory_schema(&mut self.schema);
     }
 
     fn set_rule_book<S: WriteFsmTable>(&mut self, txn: &mut S, rule_book: Arc<RuleBook>) {
@@ -307,29 +308,5 @@ impl FsmMut for Fsm {
     fn set_inbox_seq_number<S: WriteFsmTable>(&mut self, txn: &mut S, seq: MessageIndex) {
         self.inbox_seq_number = seq;
         txn.put_inbox_seq_number(seq).expect("infallible serde");
-    }
-}
-
-/// Each partition stores a copy of the schema in its FSM and deserializes it on startup, and
-/// updates it on UpsertSchema commands. The copy is decoded as a [`SchemaUnindexedLite`], which
-/// skips the handlers' JSON schemas (the bulk of the schema's size), but it is still duplicated in
-/// memory for every partition.
-///
-/// All nodes have access to the latest global schema. So as a best-effort optimization, we can drop
-/// the partition's copy of the schema if its version matches the global schema version by Arc::clone-ing the
-/// global schema instead.
-///
-/// Note:
-///   - This is a best-effort because the schema might not have been loaded yet, or if we're starting from
-///     an old snapshot that has a schema that differs from the latest (though it'll eventually converge).
-///   - This doesn't save us from the initial memory spike due to parsing the schema object before deduping
-///     it. A better approach would be to store the version separately, and load the global schema directly
-///     if it matches (skipping parsing the locally stored schema altogether).
-fn dedup_in_memory_schema(schema: &mut Option<Arc<Schema>>) {
-    if let Some(schema) = schema {
-        let global_schema = Metadata::with_current(|m| m.schema());
-        if global_schema.version() == schema.version() {
-            *schema = global_schema.into_arc();
-        }
     }
 }

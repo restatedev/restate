@@ -3361,7 +3361,7 @@ mod lite {
         assert!(json_schemas(&full).0.is_some());
         assert!(json_schemas(&full).1.is_some());
 
-        let stripped = Schema::from(SchemaUnindexedLite::from(&full));
+        let stripped = Schema::from(SchemaUnindexedLite::clone_from_schema(&full));
         assert_eq!(json_schemas(&stripped), (None, None));
         let expected = serde_json::to_value(&stripped).unwrap();
 
