@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -18,7 +19,8 @@ use itertools::Itertools;
 use serde_json::json;
 
 use restate_admin_rest_model::deployments::{
-    BulkDeleteDeploymentsRequest, FailedDeploymentDeletion, ServiceNameRevPair,
+    BulkDeleteDeploymentsRequest, DeploymentDeletionFailureReason, FailedDeploymentDeletion,
+    ServiceNameRevPair,
 };
 use restate_admin_rest_model::invocations::BATCH_OPERATION_MAX_SIZE;
 use restate_cli_util::ui::stylesheet::Style;
@@ -255,7 +257,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     )?;
 
     //TODO: Use opts.force when the server implements the false + validation case!
-    let failed = remove_deployments(&client, &deployments, true).await?;
+    let failed = remove_deployments(&client, &deployments, true).await;
 
     // One row per deployment: `removed`, or why it wasn't.
     let failures: HashMap<_, _> = failed.iter().map(|f| (f.deployment_id, f)).collect();
@@ -269,12 +271,8 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
             ],
             Some(failure) => [
                 Field::new(d.deployment_id),
-                // A reason unknown to this CLI doesn't serialize: show it as a plain failure.
-                Field::styled(
-                    serde_json::to_value(failure.reason).unwrap_or_else(|_| "failed".into()),
-                    Style::Danger,
-                ),
-                Field::new(failure.error.as_str()),
+                Field::styled(failure.outcome, Style::Danger),
+                Field::new(failure.error.as_deref()),
             ],
         });
     f.table(
@@ -320,30 +318,116 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
     .into())
 }
 
-/// Removes the deployments, in chunks the server accepts, and returns the ones that couldn't be.
+/// A deployment that wasn't removed.
+#[derive(Debug, PartialEq)]
+struct NotRemoved {
+    deployment_id: DeploymentId,
+    /// The server's reason (e.g. `not_found`), `unknown` when the request failed, so it may or may
+    /// not have been applied, or `not_attempted` after an earlier request failed.
+    outcome: &'static str,
+    error: Option<Arc<str>>,
+}
+
+impl From<FailedDeploymentDeletion> for NotRemoved {
+    fn from(failure: FailedDeploymentDeletion) -> Self {
+        Self {
+            deployment_id: failure.deployment_id,
+            outcome: match failure.reason {
+                DeploymentDeletionFailureReason::NotFound => "not_found",
+                DeploymentDeletionFailureReason::Unknown => "failed",
+            },
+            error: Some(failure.error.into()),
+        }
+    }
+}
+
+/// Records the deployments of a failed request, and the ones not attempted after it.
+fn give_up(
+    not_removed: &mut Vec<NotRemoved>,
+    unknown: impl IntoIterator<Item = DeploymentId>,
+    not_attempted: impl IntoIterator<Item = DeploymentId>,
+    error: &anyhow::Error,
+) {
+    let error: Arc<str> = RestateCliError::from(error).message().into();
+    not_removed.extend(
+        unknown
+            .into_iter()
+            .map(|deployment_id| NotRemoved {
+                deployment_id,
+                outcome: "unknown",
+                error: Some(Arc::clone(&error)),
+            })
+            .chain(not_attempted.into_iter().map(|deployment_id| NotRemoved {
+                deployment_id,
+                outcome: "not_attempted",
+                error: None,
+            })),
+    );
+}
+
+/// Removes the deployments, in chunks the server accepts, and returns the ones that weren't. A
+/// failed request stops the removal, so the chunks before it are still reported.
 async fn remove_deployments(
     client: &AdminClient,
     deployments: &[Inspected],
     force: bool,
-) -> Result<Vec<FailedDeploymentDeletion>> {
-    let mut failed = vec![];
-    for (i, chunk) in deployments.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
-        let response = client
-            .bulk_remove_deployments(BulkDeleteDeploymentsRequest {
-                deployment_ids: chunk.iter().map(|d| d.deployment_id).collect(),
-                force,
-            })
-            .await?;
-        if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
-            // Servers before the bulk delete API: remove the deployments one by one.
-            for deployment in &deployments[i * BATCH_OPERATION_MAX_SIZE..] {
-                remove_deployment(client, deployment.deployment_id, force).await?;
-            }
-            break;
-        }
-        failed.extend(response.into_body().await?.failed);
+) -> Vec<NotRemoved> {
+    fn ids(deployments: &[Inspected]) -> impl Iterator<Item = DeploymentId> + '_ {
+        deployments.iter().map(|d| d.deployment_id)
     }
-    Ok(failed)
+    let mut not_removed = vec![];
+    for (i, chunk) in deployments.chunks(BATCH_OPERATION_MAX_SIZE).enumerate() {
+        let remaining = &deployments[i * BATCH_OPERATION_MAX_SIZE..];
+        match bulk_remove(client, chunk, force).await {
+            Ok(Some(failed)) => not_removed.extend(failed.into_iter().map(NotRemoved::from)),
+            Ok(None) => {
+                // Servers before the bulk delete API: remove the deployments one by one.
+                for (j, deployment) in remaining.iter().enumerate() {
+                    if let Err(err) =
+                        remove_deployment(client, deployment.deployment_id, force).await
+                    {
+                        give_up(
+                            &mut not_removed,
+                            [deployment.deployment_id],
+                            ids(&remaining[j + 1..]),
+                            &err,
+                        );
+                        break;
+                    }
+                }
+                break;
+            }
+            Err(err) => {
+                give_up(
+                    &mut not_removed,
+                    ids(chunk),
+                    ids(&remaining[chunk.len()..]),
+                    &err,
+                );
+                break;
+            }
+        }
+    }
+    not_removed
+}
+
+/// Removes the deployments with the bulk API, and returns the ones that weren't, or `None` when
+/// the server doesn't have the bulk API.
+async fn bulk_remove(
+    client: &AdminClient,
+    deployments: &[Inspected],
+    force: bool,
+) -> Result<Option<Vec<FailedDeploymentDeletion>>> {
+    let response = client
+        .bulk_remove_deployments(BulkDeleteDeploymentsRequest {
+            deployment_ids: deployments.iter().map(|d| d.deployment_id).collect(),
+            force,
+        })
+        .await?;
+    if response.status_code() == StatusCode::METHOD_NOT_ALLOWED {
+        return Ok(None);
+    }
+    Ok(Some(response.into_body().await?.failed))
 }
 
 async fn remove_deployment(
@@ -357,4 +441,48 @@ async fn remove_deployment(
         .into_success_status()
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn give_up_marks_the_failed_request_and_the_rest() {
+        let [failed, also_failed, skipped] = std::array::from_fn(|_| DeploymentId::new());
+        let mut not_removed = vec![NotRemoved::from(FailedDeploymentDeletion {
+            deployment_id: DeploymentId::new(),
+            reason: DeploymentDeletionFailureReason::NotFound,
+            error: "missing".to_owned(),
+        })];
+        give_up(
+            &mut not_removed,
+            [failed, also_failed],
+            [skipped],
+            &anyhow::anyhow!("connection reset"),
+        );
+
+        let error: Option<Arc<str>> = Some("connection reset".into());
+        assert_eq!(not_removed[0].outcome, "not_found");
+        assert_eq!(
+            not_removed[1..],
+            [
+                NotRemoved {
+                    deployment_id: failed,
+                    outcome: "unknown",
+                    error: error.clone(),
+                },
+                NotRemoved {
+                    deployment_id: also_failed,
+                    outcome: "unknown",
+                    error,
+                },
+                NotRemoved {
+                    deployment_id: skipped,
+                    outcome: "not_attempted",
+                    error: None,
+                },
+            ]
+        );
+    }
 }
