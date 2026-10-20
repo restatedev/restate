@@ -10,11 +10,11 @@
 
 use super::*;
 
-use super::lite::DeploymentLite;
-
 use std::collections::HashMap;
 
 use serde_with::serde_as;
+
+use super::lite::DeploymentLite;
 
 // TODO(v1.10): Remove schema serde support
 
@@ -65,20 +65,22 @@ impl From<SchemaUnindexed> for Schema {
     }
 }
 
-impl From<Schema> for SchemaUnindexed {
-    fn from(
+impl TryFrom<Schema> for SchemaUnindexed {
+    type Error = &'static str;
+
+    fn try_from(
         Schema {
             deployments_v2,
             version,
             subscriptions,
             kafka_clusters,
         }: Schema,
-    ) -> Self {
+    ) -> Result<Self, Self::Error> {
         let Some(deployments_v2) = deployments_v2 else {
-            panic!("Missing required field `deployment_v2`")
+            return Err("Missing required field `deployment_v2`");
         };
 
-        SchemaUnindexed {
+        let schema = SchemaUnindexed {
             version,
             deployments: deployments_v2
                 .into_iter()
@@ -87,7 +89,9 @@ impl From<Schema> for SchemaUnindexed {
             subscriptions,
             kafka_clusters,
             bilrost_encoded: false,
-        }
+        };
+
+        Ok(schema)
     }
 }
 
@@ -124,20 +128,22 @@ impl From<SchemaUnindexedLite> for SchemaLite {
     }
 }
 
-impl From<SchemaLite> for SchemaUnindexedLite {
-    fn from(
+impl TryFrom<SchemaLite> for SchemaUnindexedLite {
+    type Error = &'static str;
+
+    fn try_from(
         SchemaLite {
             deployments_v2,
             version,
             subscriptions,
             kafka_clusters,
         }: SchemaLite,
-    ) -> Self {
+    ) -> Result<Self, Self::Error> {
         let Some(deployments_v2) = deployments_v2 else {
-            panic!("Missing required field `deployment_v2`")
+            return Err("Missing required field `deployment_v2`");
         };
 
-        SchemaUnindexedLite {
+        let schema = SchemaUnindexedLite {
             version,
             deployments: deployments_v2
                 .into_iter()
@@ -146,6 +152,8 @@ impl From<SchemaLite> for SchemaUnindexedLite {
             subscriptions,
             kafka_clusters,
             bilrost_encoded: false,
-        }
+        };
+
+        Ok(schema)
     }
 }

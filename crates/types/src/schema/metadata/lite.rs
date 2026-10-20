@@ -26,7 +26,7 @@ use crate::schema::invocation_target::{
 
 /// [`SchemaUnindexed`] without the handlers' JSON schemas.
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
-#[serde(from = "serde_hacks::SchemaLite", into = "serde_hacks::SchemaLite")]
+#[serde(try_from = "serde_hacks::SchemaLite", into = "serde_hacks::SchemaLite")]
 #[debug("SchemaUnindexedLite(version: {version})")]
 pub struct SchemaUnindexedLite {
     #[bilrost(tag(1))]

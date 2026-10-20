@@ -67,7 +67,7 @@ use crate::{Version, Versioned, identifiers};
 ///
 /// This is what gets stored in the metadata store. Use `Schema` for lookups.
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
-#[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
+#[serde(try_from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 #[debug("SchemaUnindexed(version: {version})")]
 pub struct SchemaUnindexed {
     /// This gets bumped on each update.
