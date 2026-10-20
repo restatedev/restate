@@ -570,9 +570,10 @@ pub struct InvokerOptions {
     /// `http://relay:9080/_/preflight/`.
     ///
     /// Since v1.8.1
-    #[serde_as(as = "serde_with::DisplayFromStr")]
+    // Boxed to keep `Configuration` small (it's held across awaits).
+    #[serde_as(as = "Box<serde_with::DisplayFromStr>")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub single_endpoint_address: http::Uri,
+    pub single_endpoint_address: Box<http::Uri>,
 
     /// # Single endpoint auth header name
     ///
@@ -773,7 +774,7 @@ impl Default for InvokerOptions {
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
             service_client: ServiceClientOptions::default(),
             max_awaited_future_depth: 1000,
-            single_endpoint_address: http::Uri::from_static("http://localhost:9080"),
+            single_endpoint_address: Box::new(http::Uri::from_static("http://localhost:9080")),
             single_endpoint_auth_header: http::header::AUTHORIZATION,
             single_endpoint_auth_token: None,
             single_endpoint_mode: SingleEndpointMode::Bidi,

@@ -203,7 +203,7 @@ async fn start_fake_relay(answer: RelayAnswer) -> oneshot::Receiver<Observed> {
     let mut config = Configuration::default();
     config.worker.invoker.single_endpoint_mode = SingleEndpointMode::Preflight;
     config.worker.invoker.single_endpoint_address =
-        format!("http://{address}/_/preflight/").parse().unwrap();
+        Box::new(format!("http://{address}/_/preflight/").parse().unwrap());
     set_current_config(config);
 
     observed_rx
