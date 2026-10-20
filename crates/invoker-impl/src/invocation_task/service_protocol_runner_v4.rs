@@ -1367,7 +1367,7 @@ where
                         EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
                     ))
                 );
-                let unregistered_callee = self.unregistered_callee(RelayCallSemantics {
+                let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
                     effective_scope: cmd.relay_effective_scope,
                     idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
@@ -1391,7 +1391,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        unregistered_callee,
+                        call_resolution,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1425,7 +1425,7 @@ where
                         EncodingError::MessageEncoding(MessageType::CallCommand, err)
                     ))
                 );
-                let unregistered_callee = self.unregistered_callee(RelayCallSemantics {
+                let call_resolution = self.call_resolution(RelayCallSemantics {
                     target_type: cmd.relay_target_type,
                     effective_scope: cmd.relay_effective_scope,
                     idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
@@ -1449,7 +1449,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        unregistered_callee,
+                        call_resolution,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1847,16 +1847,16 @@ where
         Ok(())
     }
 
-    /// How to resolve a callee that is not in the local registry.
-    fn unregistered_callee(&self, relay: RelayCallSemantics) -> UnregisteredCallee {
+    /// How to resolve what the local registry doesn't decide about a callee.
+    fn call_resolution(&self, relay: RelayCallSemantics) -> CallResolution {
         if self.preflight {
-            UnregisteredCallee::Relay(relay)
+            CallResolution::Relay(relay)
         } else if Configuration::pinned().worker.invoker.is_preflight() {
             // A registered deployment calling an unregistered service: the relay didn't see the
             // call, and nothing else can tell its semantics.
-            UnregisteredCallee::NotFound
+            CallResolution::NotFound
         } else {
-            UnregisteredCallee::Guess
+            CallResolution::Guess
         }
     }
 }
@@ -1886,9 +1886,10 @@ impl RelayCallSemantics {
     }
 }
 
-/// How a call resolves a callee that is not in the local registry.
-enum UnregisteredCallee {
-    /// Preflight-mode stream: the relay decided the callee semantics.
+/// How a call resolves what the local registry doesn't decide.
+enum CallResolution {
+    /// Preflight-mode stream: the relay decided the effective scope and the semantics of
+    /// unregistered callees.
     Relay(RelayCallSemantics),
     /// Schemaless prototype modes: guess the target type from the key and the
     /// `x-restate-handler-kind` header.
@@ -1984,8 +1985,15 @@ pub struct InvokeRequest {
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
     mut request: InvokeRequest,
-    unregistered_callee: UnregisteredCallee,
+    mut call_resolution: CallResolution,
 ) -> Result<CallRequest, CommandPreconditionError> {
+    // The relay's effective scope applies whoever resolves the callee.
+    if let CallResolution::Relay(relay) = &mut call_resolution
+        && let Some(effective_scope) = relay.effective_scope.take()
+    {
+        request.scope = Some(effective_scope);
+    }
+
     let not_found = |request: &InvokeRequest| {
         CommandPreconditionError::ServiceHandlerNotFound(
             request.service_name.to_string(),
@@ -2002,8 +2010,8 @@ fn resolve_call_request(
             .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
             .ok_or_else(|| not_found(&request))?
     } else {
-        match unregistered_callee {
-            UnregisteredCallee::Relay(relay) => {
+        match call_resolution {
+            CallResolution::Relay(relay) => {
                 let target_ty = match proto::RelayTargetType::try_from(relay.target_type) {
                     Ok(proto::RelayTargetType::RelayTargetService) => InvocationTargetType::Service,
                     Ok(proto::RelayTargetType::RelayTargetVirtualObjectExclusive) => {
@@ -2028,13 +2036,9 @@ fn resolve_call_request(
                         ));
                     }
                 };
-                let retentions = relay.retentions();
-                if let Some(effective_scope) = relay.effective_scope {
-                    request.scope = Some(effective_scope);
-                }
-                InvocationTargetMetadata::from_external_semantics(target_ty, retentions)
+                InvocationTargetMetadata::from_external_semantics(target_ty, relay.retentions())
             }
-            UnregisteredCallee::Guess => {
+            CallResolution::Guess => {
                 // The handler kind (shared vs exclusive) can't be derived without a schema, so
                 // honor the well-known handler-kind header if the caller set it (defaults to
                 // exclusive).
@@ -2048,7 +2052,7 @@ fn resolve_call_request(
                     RequestedRetentions::default(),
                 )
             }
-            UnregisteredCallee::NotFound => return Err(not_found(&request)),
+            CallResolution::NotFound => return Err(not_found(&request)),
         }
     };
 
@@ -2323,11 +2327,8 @@ mod tests {
         }
     }
 
-    fn relay(
-        target_type: proto::RelayTargetType,
-        effective_scope: Option<&str>,
-    ) -> UnregisteredCallee {
-        UnregisteredCallee::Relay(RelayCallSemantics {
+    fn relay(target_type: proto::RelayTargetType, effective_scope: Option<&str>) -> CallResolution {
+        CallResolution::Relay(RelayCallSemantics {
             target_type: target_type.into(),
             effective_scope: effective_scope.map(ToOwned::to_owned),
             idempotency_retention_millis: Some(u64::MAX),
@@ -2338,9 +2339,9 @@ mod tests {
 
     fn resolve(
         request: InvokeRequest,
-        unregistered_callee: UnregisteredCallee,
+        call_resolution: CallResolution,
     ) -> std::result::Result<CallRequest, CommandPreconditionError> {
-        resolve_call_request(&TestSchemas, request, unregistered_callee)
+        resolve_call_request(&TestSchemas, request, call_resolution)
     }
 
     fn scope(scope: &str) -> Option<Scope> {
@@ -2393,7 +2394,7 @@ mod tests {
                 idempotency_key: Some("idem".into()),
                 ..request("checkout", "run", "", None)
             },
-            UnregisteredCallee::Relay(RelayCallSemantics {
+            CallResolution::Relay(RelayCallSemantics {
                 target_type: proto::RelayTargetType::RelayTargetService.into(),
                 effective_scope: None,
                 idempotency_retention_millis: Some(60_000),
@@ -2460,7 +2461,7 @@ mod tests {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                UnregisteredCallee::Relay(RelayCallSemantics {
+                CallResolution::Relay(RelayCallSemantics {
                     target_type: 42,
                     effective_scope: None,
                     idempotency_retention_millis: None,
@@ -2491,6 +2492,16 @@ mod tests {
     }
 
     #[test]
+    fn local_registry_callee_takes_the_effective_scope() {
+        let call = resolve(
+            request("registered", "h", "k", Some("sdk-scope")),
+            relay(proto::RelayTargetType::RelayTargetService, Some("tenant")),
+        )
+        .unwrap();
+        assert_eq!(call.invocation_target.scope(), scope("tenant").as_ref());
+    }
+
+    #[test]
     fn registered_service_unknown_handler_is_not_found_with_relay() {
         assert_that!(
             resolve(
@@ -2506,30 +2517,23 @@ mod tests {
         assert_that!(
             resolve(
                 request("registered", "other", "k", None),
-                UnregisteredCallee::Guess
+                CallResolution::Guess
             ),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
     #[test]
-    fn unregistered_callee_from_non_preflight_stream_is_not_found() {
+    fn call_resolution_from_non_preflight_stream_is_not_found() {
         assert_that!(
-            resolve(
-                request("unknown", "h", "k", None),
-                UnregisteredCallee::NotFound
-            ),
+            resolve(request("unknown", "h", "k", None), CallResolution::NotFound),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
     #[test]
-    fn unregistered_callee_is_guessed_in_other_modes() {
-        let call = resolve(
-            request("unknown", "h", "k", None),
-            UnregisteredCallee::Guess,
-        )
-        .unwrap();
+    fn call_resolution_is_guessed_in_other_modes() {
+        let call = resolve(request("unknown", "h", "k", None), CallResolution::Guess).unwrap();
         assert_eq!(
             call.invocation_target,
             InvocationTarget::virtual_object(
