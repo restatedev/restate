@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::pin::Pin;
@@ -36,14 +37,16 @@ use restate_service_protocol_v4::message_codec::{
     Decoder, Encoder, EncodingError, Message, MessageHeader, MessageType, ServiceWireDecoder,
     StateEntry, proto,
 };
-use restate_service_protocol_v4::proto_lite;
+use restate_service_protocol_v4::{preflight, proto_lite};
 use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
+use restate_types::config::Configuration;
+use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{GenericError, InvocationError};
-use restate_types::identifiers::{EntryIndex, InvocationId};
+use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
-    SpanRelation, X_RESTATE_HANDLER_KIND_HEADER,
+    SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType, X_RESTATE_HANDLER_KIND_HEADER,
 };
 use restate_types::journal;
 use restate_types::journal_v2::command::{CallRequest, InputCommand};
@@ -55,11 +58,15 @@ use restate_types::journal_v2::{
     RunResult, SleepCommand, UnresolvedFuture,
 };
 use restate_types::limit_key::LimitKey;
-use restate_types::schema::deployment::{Deployment, DeploymentType, ProtocolType};
+use restate_types::schema::deployment::{DeploymentType, ProtocolType};
 use restate_types::schema::invocation_target::{
-    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver, StatePreloadPolicy,
+    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver, RequestedRetentions,
+    StatePreloadPolicy,
 };
-use restate_types::service_protocol::ServiceProtocolVersion;
+use restate_types::service_protocol::{
+    MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION, MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION,
+    ServiceProtocolVersion,
+};
 use restate_util_string::{ReString, RestateString, RestrictedValue, StringLike, ToReString};
 use restate_worker_api::invoker::JournalMetadata;
 use restate_worker_api::invoker::invocation_reader::{
@@ -72,10 +79,10 @@ use crate::error::{
     RequestedErrorBehavior, SdkInvocationErrorV2,
 };
 use crate::invocation_task::{
-    InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
-    ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
-    invocation_id_to_header_value, leased_frame, new_invoker_body, retry_after,
-    service_protocol_version_to_header_value,
+    AttemptTarget, InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType,
+    PREFLIGHT_CONTENT_TYPE, PreflightTarget, ResponseChunk, ResponseStream, TerminalLoopState,
+    X_RESTATE_SERVER, collect_eager_state, invocation_id_to_header_value, leased_frame,
+    new_invoker_body, retry_after, service_protocol_version_to_header_value,
 };
 use crate::metric_definitions::{
     INVOKER_CLIENT_REQUESTS, INVOKER_RECEIVED_BYTES, INVOKER_SENT_BYTES,
@@ -109,6 +116,10 @@ pub struct ServiceProtocolRunner<'a, Schemas> {
     deployment_type_str: &'static str,
 
     max_awaited_future_depth: usize,
+
+    /// Whether this stream was opened in preflight mode: only then the relay-only fields of the
+    /// commands are honored.
+    preflight: bool,
 }
 
 impl<'a, Schemas> ServiceProtocolRunner<'a, Schemas>
@@ -118,7 +129,7 @@ where
     pub fn new(
         invocation_task: &'a mut InvocationTask<Schemas>,
         service_protocol_version: ServiceProtocolVersion,
-        deployment_type: &DeploymentType,
+        deployment_type_str: &'static str,
         max_awaited_future_depth: usize,
     ) -> Self {
         let encoder = Encoder::new(service_protocol_version);
@@ -128,8 +139,9 @@ where
             service_protocol_version,
             encoder,
             command_index: 0,
-            deployment_type_str: deployment_type.as_static_str(),
+            deployment_type_str,
             max_awaited_future_depth,
+            preflight: false,
         }
     }
 
@@ -143,7 +155,7 @@ where
         txn: Txn,
         journal_metadata: JournalMetadata,
         state_read: Option<StatePreloadPolicy>,
-        deployment: Deployment,
+        target: AttemptTarget,
         invocation_reader: IR,
         outbound_budget: &mut LocalMemoryPool,
     ) -> TerminalLoopState<()>
@@ -151,27 +163,60 @@ where
         Txn: InvocationReaderTransaction,
         IR: InvocationReader,
     {
+        let (deployment_id, address, protocol_type, endpoint, additional_headers, preflight_pin) =
+            match target {
+                AttemptTarget::Deployment(deployment) => {
+                    let address = deployment.address_display().to_string();
+                    let protocol_type = deployment.ty.protocol_type();
+                    let endpoint = match deployment.ty {
+                        DeploymentType::Lambda {
+                            arn,
+                            assume_role_arn,
+                            compression,
+                        } => Endpoint::Lambda(arn, assume_role_arn, compression),
+                        DeploymentType::Http {
+                            address,
+                            http_version,
+                            auth,
+                            ..
+                        } => Endpoint::Http(address, Some(http_version), auth),
+                    };
+                    (
+                        Some(deployment.id),
+                        address,
+                        protocol_type,
+                        endpoint,
+                        deployment.additional_headers,
+                        None,
+                    )
+                }
+                AttemptTarget::Preflight(PreflightTarget {
+                    address,
+                    additional_headers,
+                    pin,
+                }) => (
+                    pin.as_ref().map(|pin| pin.deployment_id),
+                    address.to_string(),
+                    // The invoker <-> relay leg is always full duplex, the deployment's protocol
+                    // type comes with the preflight response.
+                    ProtocolType::BidiStream,
+                    Endpoint::Http(address, Some(http::Version::HTTP_2), None),
+                    additional_headers,
+                    Some(pin),
+                ),
+            };
+        self.preflight = preflight_pin.is_some();
+
         let mut attempt_span = restate_tracing_instrumentation::create_invocation_attempt_span(
             &self.invocation_task.invocation_id,
             &self.invocation_task.invocation_target,
-            deployment.id,
-            &deployment.address_display(),
-            self.service_protocol_version,
+            deployment_id,
+            &address,
+            // Not negotiated yet in preflight mode.
+            (!self.preflight).then_some(self.service_protocol_version),
             // The attempt span has as parent the invocation start span created by the PP.
             &journal_metadata.span_context,
         );
-
-        // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
-        let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
-            ProtocolType::RequestResponse
-        } else {
-            deployment.ty.protocol_type()
-        };
-
-        // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
-        if protocol_type == ProtocolType::RequestResponse {
-            self.invocation_task.invoker_rx.close();
-        }
 
         let path: PathAndQuery = format!(
             "/invoke/{}/{}",
@@ -183,19 +228,23 @@ where
 
         debug!(
             restate.invocation.id = %self.invocation_task.invocation_id,
-            deployment.address = %deployment.address_display(),
+            deployment.address = %address,
             deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
+            preflight = self.preflight,
             path = %path,
             "Executing invocation at deployment"
         );
 
-        let deployment_id = deployment.id;
-        let deployment_type_str = deployment.ty.as_static_str();
         // Prepare the request
-        let (http_stream_tx, request) = Self::prepare_request(
+        let (mut http_stream_tx, request) = Self::prepare_request(
             path,
-            deployment,
-            self.service_protocol_version,
+            endpoint,
+            additional_headers,
+            if self.preflight {
+                PREFLIGHT_CONTENT_TYPE
+            } else {
+                service_protocol_version_to_header_value(self.service_protocol_version)
+            },
             &self.invocation_task.invocation_id,
             attempt_span.span_context(),
             self.invocation_task.invocation_target.key(),
@@ -210,13 +259,41 @@ where
                 self.service_protocol_version,
                 self.invocation_task.message_size_warning,
                 self.invocation_task.message_size_limit,
-                deployment_type_str,
+                self.deployment_type_str,
             )
             .throttle(self.invocation_task.action_token_bucket.take())
         );
 
-        let result = self
-            .run_inner(
+        let result = async {
+            let protocol_type = if let Some(pin) = preflight_pin {
+                let negotiated = shortcircuit!(
+                    self.preflight(&mut http_stream_tx, &mut decoder_stream, pin.as_ref())
+                        .await
+                );
+                shortcircuit!(self.apply_preflight_response(
+                    &negotiated,
+                    pin.is_none(),
+                    decoder_stream.as_mut().inner_pin_mut().project().decoder,
+                    &mut attempt_span,
+                ));
+                negotiated.protocol_type
+            } else {
+                protocol_type
+            };
+
+            // Figure out the protocol type. Force RequestResponse if inactivity_timeout is zero
+            let protocol_type = if self.invocation_task.inactivity_timeout.is_zero() {
+                ProtocolType::RequestResponse
+            } else {
+                protocol_type
+            };
+
+            // Close the invoker_rx in case it's request response, this avoids further buffering of messages in this channel.
+            if protocol_type == ProtocolType::RequestResponse {
+                self.invocation_task.invoker_rx.close();
+            }
+
+            self.run_inner(
                 txn,
                 protocol_type,
                 journal_metadata,
@@ -227,7 +304,9 @@ where
                 outbound_budget,
                 &mut attempt_span,
             )
-            .await;
+            .await
+        }
+        .await;
 
         // After successful termination decoder should
         // not have any remaining buffer
@@ -237,7 +316,7 @@ where
                 warn_it!(
                     InvokerError::WriteAfterEndOfStream,
                     restate.invocation.id = %self.invocation_task.invocation_id,
-                    deployment.id = %deployment_id,
+                    deployment.address = %address,
                     deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
                     "The read buffer is non empty after the stream has been closed."
                 );
@@ -263,7 +342,7 @@ where
         {
             warn!(
                 restate.invocation.id = %self.invocation_task.invocation_id,
-                deployment.id = %deployment_id,
+                deployment.address = %address,
                 deployment.service_protocol_version = %self.service_protocol_version.as_repr(),
                 "Response stream draining timeout!"
             );
@@ -298,6 +377,133 @@ where
         }
 
         result
+    }
+
+    /// Preflight exchange with the relay: write the [`proto::PreflightRequestMessage`], then wait
+    /// for the response head and the first frame, either a [`proto::PreflightResponseMessage`] or
+    /// an `ErrorMessage` the relay sends instead.
+    async fn preflight<S>(
+        &mut self,
+        http_stream_tx: &mut InvokerBodySender,
+        http_stream_rx: &mut S,
+        pin: Option<&PinnedDeployment>,
+    ) -> TerminalLoopState<NegotiatedPreflight>
+    where
+        S: Stream<Item = Result<DecoderStreamItem, InvokerError>> + Unpin,
+    {
+        let target = &self.invocation_task.invocation_target;
+        let preflight_request = proto::PreflightRequestMessage {
+            service_name: target.service_name().to_string(),
+            handler_name: target.handler_name().to_string(),
+            key: target.key().map(ToString::to_string).unwrap_or_default(),
+            scope: target.scope().map(ToString::to_string),
+            invocation_id: self.invocation_task.invocation_id.to_string(),
+            min_protocol_version: MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr() as u32,
+            max_protocol_version: MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr() as u32,
+            pinned_deployment_id: pin.map(|pin| pin.deployment_id.to_string()),
+            pinned_protocol_version: pin.map(|pin| pin.service_protocol_version.as_repr() as u32),
+            retry_count_since_last_stored_entry: self
+                .invocation_task
+                .retry_count_since_last_stored_entry,
+            // The durable attempt count is not plumbed to the invoker.
+            attempt: 0,
+        };
+        shortcircuit!(self.write(http_stream_tx, Message::PreflightRequest(preflight_request)));
+
+        // Bound the wait for the relay's answer.
+        let timeout = if self.invocation_task.inactivity_timeout.is_zero() {
+            self.invocation_task.abort_timeout
+        } else {
+            self.invocation_task.inactivity_timeout
+        };
+        let first_frame = tokio::time::timeout(timeout, async {
+            loop {
+                match http_stream_rx.next().await.transpose()? {
+                    Some(DecoderStreamItem::Parts(parts)) => {
+                        self.handle_preflight_response_headers(parts)?
+                    }
+                    Some(DecoderStreamItem::Message(_, message)) => return Ok(Some(message)),
+                    None => return Ok(None),
+                }
+            }
+        })
+        .await;
+
+        match shortcircuit!(first_frame.map_err(|_| InvokerError::PreflightTimeout(timeout.into())))
+        {
+            Ok(Some(Message::PreflightResponse(response))) => {
+                validate_preflight_response(response, pin).into()
+            }
+            // The relay couldn't run the attempt: same handling as an SDK error, no pinning.
+            Ok(Some(Message::Error(error))) => {
+                TerminalLoopState::Failed(self.error_message_to_invoker_error(error))
+            }
+            Ok(Some(message)) => {
+                TerminalLoopState::Failed(InvokerError::BadPreflightResponse(format!(
+                    "expected a PreflightResponse or an ErrorMessage as first frame, got {:?}",
+                    message.ty()
+                )))
+            }
+            Ok(None) => TerminalLoopState::Failed(InvokerError::BadPreflightResponse(
+                "the response ended before the PreflightResponse".to_owned(),
+            )),
+            Err(err) => TerminalLoopState::Failed(err),
+        }
+    }
+
+    /// Pin the negotiated deployment and switch the codec to the negotiated protocol version.
+    fn apply_preflight_response(
+        &mut self,
+        negotiated: &NegotiatedPreflight,
+        first_pin: bool,
+        decoder: &mut Decoder,
+        attempt_span: &mut ServiceSpan,
+    ) -> Result<(), InvokerError> {
+        self.invocation_task
+            .send_invoker_tx(InvocationTaskOutputInner::PinnedDeployment(
+                PinnedDeployment::new(
+                    negotiated.deployment_id,
+                    negotiated.service_protocol_version,
+                ),
+                first_pin,
+            ));
+        if let Some(sdk_version) = &negotiated.sdk_version {
+            self.invocation_task
+                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
+                    sdk_version.clone(),
+                ));
+        }
+
+        if negotiated.service_protocol_version < ServiceProtocolVersion::V4 {
+            // Journal v1 is not supported by this runner.
+            return Err(InvokerError::DeploymentDeprecated(
+                self.invocation_task
+                    .invocation_target
+                    .service_name()
+                    .to_string(),
+                negotiated.deployment_id,
+            ));
+        }
+        self.service_protocol_version = negotiated.service_protocol_version;
+        self.encoder = Encoder::new(negotiated.service_protocol_version);
+        decoder.set_service_protocol_version(negotiated.service_protocol_version);
+
+        attempt_span.set_attribute(KeyValue::new(
+            restate_tracing_instrumentation::semconv::attribute::RESTATE_DEPLOYMENT_ID,
+            negotiated.deployment_id.to_string(),
+        ));
+        attempt_span.set_attribute(KeyValue::new(
+            restate_tracing_instrumentation::semconv::attribute::RESTATE_DEPLOYMENT_SERVICE_PROTOCOL_VERSION,
+            i64::from(negotiated.service_protocol_version.as_repr()),
+        ));
+        debug!(
+            restate.invocation.id = %self.invocation_task.invocation_id,
+            restate.deployment.id = %negotiated.deployment_id,
+            deployment.service_protocol_version = %negotiated.service_protocol_version.as_repr(),
+            deployment.protocol_type = ?negotiated.protocol_type,
+            "Preflight negotiated the deployment"
+        );
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -419,8 +625,9 @@ where
 
     fn prepare_request(
         path: PathAndQuery,
-        deployment_metadata: Deployment,
-        service_protocol_version: ServiceProtocolVersion,
+        endpoint: Endpoint,
+        additional_headers: HashMap<HeaderName, HeaderValue>,
+        content_type: HeaderValue,
         invocation_id: &InvocationId,
         parent_span_context: &SpanContext,
         service_key: Option<&ByteString>,
@@ -431,17 +638,11 @@ where
         let (http_stream_tx, http_stream_rx) = mpsc::unbounded_channel();
         let req_body = new_invoker_body(http_stream_rx);
 
-        let service_protocol_header_value =
-            service_protocol_version_to_header_value(service_protocol_version);
-
         let invocation_id_header_value = invocation_id_to_header_value(invocation_id);
 
         let mut headers = HeaderMap::from_iter([
-            (
-                http::header::CONTENT_TYPE,
-                service_protocol_header_value.clone(),
-            ),
-            (http::header::ACCEPT, service_protocol_header_value),
+            (http::header::CONTENT_TYPE, content_type.clone()),
+            (http::header::ACCEPT, content_type),
             (INVOCATION_ID_HEADER_NAME, invocation_id_header_value),
         ]);
         if let Some(service_key) = service_key
@@ -472,23 +673,9 @@ where
             }
         }
 
-        let address = match deployment_metadata.ty {
-            DeploymentType::Lambda {
-                arn,
-                assume_role_arn,
-                compression,
-            } => Endpoint::Lambda(arn, assume_role_arn, compression),
-            DeploymentType::Http {
-                address,
-                http_version,
-                auth,
-                ..
-            } => Endpoint::Http(address, Some(http_version), auth),
-        };
+        headers.extend(additional_headers);
 
-        headers.extend(deployment_metadata.additional_headers);
-
-        let mut request_parts = Parts::new(Method::Post, address, path, headers);
+        let mut request_parts = Parts::new(Method::Post, endpoint, path, headers);
         if let Some(service_key) = service_key {
             request_parts = request_parts.with_request_identity_sub_field(service_key.clone());
         }
@@ -512,7 +699,8 @@ where
         E: InvocationReaderError,
     {
         let mut journal_stream = journal_stream.fuse();
-        let mut got_headers = false;
+        // In preflight mode the response head was already read during the preflight exchange.
+        let mut got_headers = self.preflight;
         let mut sent_entries = 0;
 
         loop {
@@ -864,6 +1052,49 @@ where
         &mut self,
         mut parts: http::response::Parts,
     ) -> Result<(), InvokerError> {
+        self.check_response_status(&parts)?;
+        if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+            // Probably an incompatible protocol version
+            return Err(InvokerError::BadNegotiatedServiceProtocolVersion(
+                self.service_protocol_version,
+            ));
+        }
+
+        Self::check_content_type(
+            &mut parts,
+            service_protocol_version_to_header_value(self.service_protocol_version),
+        )?;
+
+        if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
+            self.invocation_task
+                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
+                    hv.to_str()
+                        .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
+                        .to_owned(),
+                ))
+        }
+
+        Ok(())
+    }
+
+    /// Response head of a preflight-mode request. A non-200 response means the relay refused the
+    /// request before reading the preflight, it's handled as any other non-2xx response.
+    fn handle_preflight_response_headers(
+        &mut self,
+        mut parts: http::response::Parts,
+    ) -> Result<(), InvokerError> {
+        self.check_response_status(&parts)?;
+        if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
+            return Err(InvokerError::BadPreflightResponse(
+                "the single endpoint doesn't support the preflight protocol (415)".to_owned(),
+            ));
+        }
+
+        Self::check_content_type(&mut parts, PREFLIGHT_CONTENT_TYPE)
+    }
+
+    /// Maps non-2xx responses to errors, except 415 which depends on the request content type.
+    fn check_response_status(&self, parts: &http::response::Parts) -> Result<(), InvokerError> {
         // if service is running behind a gateway, the service can be down
         // but we still get a response code from the gateway itself. In that
         // case we still need to return the proper error
@@ -878,29 +1109,28 @@ where
         if RATE_LIMITED_CODES.contains(&parts.status) {
             return Err(InvokerError::RateLimited {
                 code: parts.status,
-                retry_after: retry_after::parse_retry_after(&parts),
+                retry_after: retry_after::parse_retry_after(parts),
             });
         }
 
         // otherwise we return generic UnexpectedResponse
         if !parts.status.is_success() {
-            // Decorate the error in case of UNSUPPORTED_MEDIA_TYPE, as it probably is the incompatible protocol version
-            if parts.status == StatusCode::UNSUPPORTED_MEDIA_TYPE {
-                return Err(InvokerError::BadNegotiatedServiceProtocolVersion(
-                    self.service_protocol_version,
-                ));
-            }
             if parts.status == StatusCode::PAYLOAD_TOO_LARGE {
                 return Err(InvokerError::ContentTooLarge);
             }
-
-            return Err(InvokerError::UnexpectedResponse(parts.status));
+            if parts.status != StatusCode::UNSUPPORTED_MEDIA_TYPE {
+                return Err(InvokerError::UnexpectedResponse(parts.status));
+            }
         }
 
-        let content_type = parts.headers.remove(http::header::CONTENT_TYPE);
-        let expected_content_type =
-            service_protocol_version_to_header_value(self.service_protocol_version);
-        match content_type {
+        Ok(())
+    }
+
+    fn check_content_type(
+        parts: &mut http::response::Parts,
+        expected_content_type: HeaderValue,
+    ) -> Result<(), InvokerError> {
+        match parts.headers.remove(http::header::CONTENT_TYPE) {
             Some(ct) =>
             {
                 #[allow(clippy::borrow_interior_mutable_const)]
@@ -918,16 +1148,6 @@ where
                 ));
             }
         }
-
-        if let Some(hv) = parts.headers.remove(X_RESTATE_SERVER) {
-            self.invocation_task
-                .send_invoker_tx(InvocationTaskOutputInner::ServerHeaderReceived(
-                    hv.to_str()
-                        .map_err(|e| InvokerError::BadHeader(X_RESTATE_SERVER, e))?
-                        .to_owned(),
-                ))
-        }
-
         Ok(())
     }
 
@@ -989,6 +1209,14 @@ where
             )),
             Message::ProposeRunCompletionAck(_) => TerminalLoopState::Failed(
                 InvokerError::UnexpectedMessageV4(MessageType::ProposeRunCompletionAck),
+            ),
+            // Preflight frames are only legal as the first frames of a preflight-mode stream,
+            // which are consumed before the service protocol stream starts.
+            Message::PreflightRequest(_) => TerminalLoopState::Failed(
+                InvokerError::UnexpectedMessageV4(MessageType::PreflightRequest),
+            ),
+            Message::PreflightResponse(_) => TerminalLoopState::Failed(
+                InvokerError::UnexpectedMessageV4(MessageType::PreflightResponse),
             ),
             Message::Suspension(suspension) => self.handle_suspension_message(suspension),
             Message::AwaitingOn(awaiting_on) => self.handle_awaiting_on_message(awaiting_on),
@@ -1066,15 +1294,19 @@ where
                     proto_lite::GetInvocationOutputCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
-                if let Some(target) = parsed.target.as_ref() {
-                    shortcircuit!(Self::validate_target(target).map_err(|err| {
+                shortcircuit!(
+                    self.validate_target(
+                        parsed.target.as_ref(),
+                        parsed.relay_effective_scope.as_deref()
+                    )
+                    .map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::GetInvocationOutput),
                             err,
                         )
-                    }));
-                }
+                    })
+                );
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::GetInvocationOutput, cmd),
@@ -1089,15 +1321,19 @@ where
                     proto_lite::AttachInvocationCommandMessageLite::decode(cmd.as_ref())
                         .map_err(|err| InvokerError::Encoding(GenericError::from(err).into()))
                 );
-                if let Some(target) = parsed.target.as_ref() {
-                    shortcircuit!(Self::validate_target(target).map_err(|err| {
+                shortcircuit!(
+                    self.validate_target(
+                        parsed.target.as_ref(),
+                        parsed.relay_effective_scope.as_deref()
+                    )
+                    .map_err(|err| {
                         InvokerError::CommandPrecondition(
                             self.command_index,
                             EntryType::Command(CommandType::AttachInvocation),
                             err,
                         )
-                    }));
-                }
+                    })
+                );
                 self.handle_new_command(
                     mh,
                     RawCommand::new(CommandType::AttachInvocation, cmd),
@@ -1131,6 +1367,14 @@ where
                         EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
                     ))
                 );
+                let unregistered_callee = self.unregistered_callee(RelayCallSemantics {
+                    target_type: cmd.relay_target_type,
+                    effective_scope: cmd.relay_effective_scope,
+                    idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
+                    workflow_completion_retention_millis: cmd
+                        .relay_workflow_completion_retention_millis,
+                    journal_retention_millis: cmd.relay_journal_retention_millis,
+                });
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
@@ -1146,7 +1390,8 @@ where
                             span_relation: SpanRelation::Linked(
                                 attempt_span.span_context().clone().into()
                             )
-                        }
+                        },
+                        unregistered_callee,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1180,6 +1425,14 @@ where
                         EncodingError::MessageEncoding(MessageType::CallCommand, err)
                     ))
                 );
+                let unregistered_callee = self.unregistered_callee(RelayCallSemantics {
+                    target_type: cmd.relay_target_type,
+                    effective_scope: cmd.relay_effective_scope,
+                    idempotency_retention_millis: cmd.relay_idempotency_retention_millis,
+                    workflow_completion_retention_millis: cmd
+                        .relay_workflow_completion_retention_millis,
+                    journal_retention_millis: cmd.relay_journal_retention_millis,
+                });
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
@@ -1195,7 +1448,8 @@ where
                             span_relation: SpanRelation::Parent(
                                 attempt_span.span_context().clone().into()
                             )
-                        }
+                        },
+                        unregistered_callee,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1514,6 +1768,10 @@ where
     }
 
     fn handle_error_message(&mut self, error: proto::ErrorMessage) -> TerminalLoopState<()> {
+        TerminalLoopState::Failed(self.error_message_to_invoker_error(error))
+    }
+
+    fn error_message_to_invoker_error(&self, error: proto::ErrorMessage) -> InvokerError {
         let requested_error_behavior = match proto::ErrorBehavior::try_from(error.behavior)
             .unwrap_or(proto::ErrorBehavior::Retry)
         {
@@ -1523,7 +1781,7 @@ where
             proto::ErrorBehavior::Pause => RequestedErrorBehavior::Pause,
             proto::ErrorBehavior::Fail => RequestedErrorBehavior::Fail,
         };
-        TerminalLoopState::Failed(InvokerError::SdkV2(SdkInvocationErrorV2 {
+        InvokerError::SdkV2(SdkInvocationErrorV2 {
             related_command: Some(InvocationErrorRelatedCommandV2 {
                 related_command_index: error.related_command_index,
                 related_command_name: error.related_command_name.clone(),
@@ -1538,40 +1796,174 @@ where
             }),
             requested_error_behavior,
             error: InvocationError::from(error).into(),
-        }))
+        })
     }
 
-    /// Validates the target of a `GetInvocationOutput` command.
+    /// Validates the target of a `GetInvocationOutput` or `AttachInvocation` command.
     ///
     /// We only validate the syntactic shape of the target (invocation id parses, scope is a
     /// valid `RestrictedValue`). We do not check that the service/handler/workflow currently
     /// exists in the schema, because the user may legitimately query the output of an invocation
     /// whose service has since been removed from the registry.
-    fn validate_target(target: &proto_lite::TargetLite) -> Result<(), CommandPreconditionError> {
+    ///
+    /// `relay_effective_scope` replaces the scope of workflow and idempotent request targets when
+    /// the command is decoded (see the entry codec), so it's validated instead of the target's
+    /// scope. Only the relay writes it, on preflight-mode streams: elsewhere it's rejected.
+    fn validate_target(
+        &self,
+        target: Option<&proto_lite::TargetLite>,
+        relay_effective_scope: Option<&str>,
+    ) -> Result<(), CommandPreconditionError> {
+        if relay_effective_scope.is_some() && !self.preflight {
+            return Err(CommandPreconditionError::UnexpectedRelayField);
+        }
+        let validate_scope = |target_scope: Option<&String>| {
+            match relay_effective_scope.or_else(|| target_scope.map(String::as_str)) {
+                // "" is unscoped
+                Some(scope) if !(relay_effective_scope.is_some() && scope.is_empty()) => {
+                    RestrictedValue::new(scope)
+                        .map(|_| ())
+                        .map_err(|e| CommandPreconditionError::InvalidScope(scope.to_owned(), e))
+                }
+                _ => Ok(()),
+            }
+        };
+
         match target {
-            proto_lite::TargetLite::InvocationId(invocation_id) => {
+            None => {}
+            Some(proto_lite::TargetLite::InvocationId(invocation_id)) => {
                 invocation_id.parse::<InvocationId>().map_err(|err| {
                     CommandPreconditionError::InvalidInvocationId(invocation_id.clone(), err)
                 })?;
             }
-            proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target) => {
-                if let Some(scope) = idempotent_request_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
-                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
-                    })?;
-                }
+            Some(proto_lite::TargetLite::IdempotentRequestTarget(idempotent_request_target)) => {
+                validate_scope(idempotent_request_target.scope.as_ref())?
             }
-            proto_lite::TargetLite::WorkflowTarget(workflow_target) => {
-                if let Some(scope) = workflow_target.scope.as_ref() {
-                    let _ = RestrictedValue::new(scope.as_str()).map_err(|e| {
-                        CommandPreconditionError::InvalidScope(scope.to_string(), e)
-                    })?;
-                }
+            Some(proto_lite::TargetLite::WorkflowTarget(workflow_target)) => {
+                validate_scope(workflow_target.scope.as_ref())?
             }
         }
 
         Ok(())
     }
+
+    /// How to resolve a callee that is not in the local registry.
+    fn unregistered_callee(&self, relay: RelayCallSemantics) -> UnregisteredCallee {
+        if self.preflight {
+            UnregisteredCallee::Relay(relay)
+        } else if Configuration::pinned().worker.invoker.is_preflight() {
+            // A registered deployment calling an unregistered service: the relay didn't see the
+            // call, and nothing else can tell its semantics.
+            UnregisteredCallee::NotFound
+        } else {
+            UnregisteredCallee::Guess
+        }
+    }
+}
+
+/// The relay-only fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
+struct RelayCallSemantics {
+    target_type: i32,
+    effective_scope: Option<String>,
+    idempotency_retention_millis: Option<u64>,
+    workflow_completion_retention_millis: Option<u64>,
+    journal_retention_millis: Option<u64>,
+}
+
+impl RelayCallSemantics {
+    fn retentions(&self) -> RequestedRetentions {
+        // UINT64_MAX (or absent) means the server default.
+        let retention = |millis: Option<u64>| {
+            millis
+                .filter(|millis| *millis != u64::MAX)
+                .map(Duration::from_millis)
+        };
+        RequestedRetentions {
+            idempotency: retention(self.idempotency_retention_millis),
+            workflow_completion: retention(self.workflow_completion_retention_millis),
+            journal: retention(self.journal_retention_millis),
+        }
+    }
+}
+
+/// How a call resolves a callee that is not in the local registry.
+enum UnregisteredCallee {
+    /// Preflight-mode stream: the relay decided the callee semantics.
+    Relay(RelayCallSemantics),
+    /// Schemaless prototype modes: guess the target type from the key and the
+    /// `x-restate-handler-kind` header.
+    Guess,
+    /// The callee doesn't exist.
+    NotFound,
+}
+
+/// What the relay chose for this attempt, validated.
+#[derive(Debug, PartialEq, Eq)]
+struct NegotiatedPreflight {
+    deployment_id: DeploymentId,
+    service_protocol_version: ServiceProtocolVersion,
+    protocol_type: ProtocolType,
+    sdk_version: Option<String>,
+}
+
+/// Validates the relay's [`proto::PreflightResponseMessage`] against what the invoker sent: the
+/// version must be within the advertised range, and both the deployment and the version must
+/// match the pin, if any.
+fn validate_preflight_response(
+    response: proto::PreflightResponseMessage,
+    pin: Option<&PinnedDeployment>,
+) -> Result<NegotiatedPreflight, InvokerError> {
+    let bad = |reason: String| InvokerError::BadPreflightResponse(reason);
+
+    let deployment_id: DeploymentId = response.deployment_id.parse().map_err(|err| {
+        bad(format!(
+            "invalid deployment id '{}': {err}",
+            response.deployment_id
+        ))
+    })?;
+    let service_protocol_version = i32::try_from(response.protocol_version)
+        .ok()
+        .and_then(|v| ServiceProtocolVersion::try_from(v).ok())
+        .filter(|v| {
+            (MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION..=MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION)
+                .contains(v)
+        })
+        .ok_or_else(|| {
+            bad(format!(
+                "protocol version {} is outside the advertised range [{}, {}]",
+                response.protocol_version,
+                MIN_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr(),
+                MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr()
+            ))
+        })?;
+    let protocol_type = match preflight::ProtocolType::try_from(response.protocol_type) {
+        Ok(preflight::ProtocolType::BidiStream) => ProtocolType::BidiStream,
+        Ok(preflight::ProtocolType::RequestResponse) => ProtocolType::RequestResponse,
+        Ok(preflight::ProtocolType::Unspecified) | Err(_) => {
+            return Err(bad(format!(
+                "unsupported protocol type {}",
+                response.protocol_type
+            )));
+        }
+    };
+    if let Some(pin) = pin
+        && (pin.deployment_id != deployment_id
+            || pin.service_protocol_version != service_protocol_version)
+    {
+        return Err(bad(format!(
+            "the invocation is pinned to deployment {} with protocol version {}, the relay chose deployment {deployment_id} with protocol version {}",
+            pin.deployment_id,
+            pin.service_protocol_version.as_repr(),
+            service_protocol_version.as_repr()
+        )));
+    }
+
+    Ok(NegotiatedPreflight {
+        deployment_id,
+        service_protocol_version,
+        protocol_type,
+        sdk_version: response.sdk_version,
+    })
 }
 
 pub struct InvokeRequest {
@@ -1591,33 +1983,72 @@ pub struct InvokeRequest {
 
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
-    request: InvokeRequest,
+    mut request: InvokeRequest,
+    unregistered_callee: UnregisteredCallee,
 ) -> Result<CallRequest, CommandPreconditionError> {
-    // Resolve from the schema registry; for services that are not registered (schemaless demo
-    // mode) fall back to a synthesized single-endpoint target: key => VirtualObject, else Service.
-    let meta = match invocation_target_resolver
-        .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
+    let not_found = |request: &InvokeRequest| {
+        CommandPreconditionError::ServiceHandlerNotFound(
+            request.service_name.to_string(),
+            request.handler_name.to_string(),
+        )
+    };
+
+    // The local registry wins over the relay's decision.
+    let meta = if invocation_target_resolver
+        .resolve_latest_service_type(&request.service_name)
+        .is_some()
     {
-        Some(meta) => meta,
-        None => {
-            // The handler kind (shared vs exclusive) can't be derived without a schema, so honor
-            // the well-known handler-kind header if the caller set it (defaults to exclusive).
-            let handler_kind = request
-                .headers
-                .iter()
-                .find(|h| h.name.eq_ignore_ascii_case(X_RESTATE_HANDLER_KIND_HEADER))
-                .map(|h| h.value.as_ref());
-            let target_ty = InvocationTargetType::schemaless(!request.key.is_empty(), handler_kind);
-            let config = restate_types::config::Configuration::pinned();
-            InvocationTargetMetadata {
-                public: true,
-                completion_retention: config.invocation.default_idempotency_retention.into(),
-                journal_retention: config.invocation.default_journal_retention.into(),
-                target_ty,
-                input_rules: Default::default(),
-                output_rules: Default::default(),
-                deployment_status: DeploymentStatus::Enabled,
+        invocation_target_resolver
+            .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
+            .ok_or_else(|| not_found(&request))?
+    } else {
+        match unregistered_callee {
+            UnregisteredCallee::Relay(relay) => {
+                let target_ty = match proto::RelayTargetType::try_from(relay.target_type) {
+                    Ok(proto::RelayTargetType::RelayTargetService) => InvocationTargetType::Service,
+                    Ok(proto::RelayTargetType::RelayTargetVirtualObjectExclusive) => {
+                        InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
+                    }
+                    Ok(proto::RelayTargetType::RelayTargetVirtualObjectShared) => {
+                        InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
+                    }
+                    Ok(proto::RelayTargetType::RelayTargetWorkflow) => {
+                        InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+                    }
+                    Ok(proto::RelayTargetType::RelayTargetWorkflowShared) => {
+                        InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
+                    }
+                    Ok(proto::RelayTargetType::RelayTargetNotFound) => {
+                        return Err(not_found(&request));
+                    }
+                    Ok(proto::RelayTargetType::Unspecified) | Err(_) => {
+                        return Err(CommandPreconditionError::UnresolvedCallTarget(
+                            request.service_name.to_string(),
+                            request.handler_name.to_string(),
+                        ));
+                    }
+                };
+                let retentions = relay.retentions();
+                if let Some(effective_scope) = relay.effective_scope {
+                    request.scope = Some(effective_scope);
+                }
+                InvocationTargetMetadata::from_external_semantics(target_ty, retentions)
             }
+            UnregisteredCallee::Guess => {
+                // The handler kind (shared vs exclusive) can't be derived without a schema, so
+                // honor the well-known handler-kind header if the caller set it (defaults to
+                // exclusive).
+                let handler_kind = request
+                    .headers
+                    .iter()
+                    .find(|h| h.name.eq_ignore_ascii_case(X_RESTATE_HANDLER_KIND_HEADER))
+                    .map(|h| h.value.as_ref());
+                InvocationTargetMetadata::from_external_semantics(
+                    InvocationTargetType::schemaless(!request.key.is_empty(), handler_kind),
+                    RequestedRetentions::default(),
+                )
+            }
+            UnregisteredCallee::NotFound => return Err(not_found(&request)),
         }
     };
 
@@ -1820,5 +2251,398 @@ where
                 Err(e) => return Poll::Ready(Some(Err(e.into()))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use googletest::prelude::*;
+
+    use restate_types::invocation::ServiceType;
+    use restate_types::retries::RetryIter;
+    use restate_types::schema::invocation_target::{InvocationAttemptOptions, OnMaxAttempts};
+
+    const DAY: Duration = Duration::from_secs(60 * 60 * 24);
+
+    /// Local registry with a single virtual object `registered` with an exclusive handler `h`.
+    struct TestSchemas;
+
+    impl InvocationTargetResolver for TestSchemas {
+        fn resolve_latest_invocation_target(
+            &self,
+            service_name: impl AsRef<str>,
+            handler_name: impl AsRef<str>,
+        ) -> Option<InvocationTargetMetadata> {
+            (service_name.as_ref() == "registered" && handler_name.as_ref() == "h").then(|| {
+                InvocationTargetMetadata::from_external_semantics(
+                    InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive),
+                    RequestedRetentions::default(),
+                )
+            })
+        }
+
+        fn resolve_latest_service_type(
+            &self,
+            service_name: impl AsRef<str>,
+        ) -> Option<ServiceType> {
+            (service_name.as_ref() == "registered").then_some(ServiceType::VirtualObject)
+        }
+
+        fn resolve_invocation_attempt_options(
+            &self,
+            _: &DeploymentId,
+            _: impl AsRef<str>,
+            _: impl AsRef<str>,
+        ) -> Option<InvocationAttemptOptions> {
+            None
+        }
+
+        fn resolve_invocation_retry_policy(
+            &self,
+            _: Option<&DeploymentId>,
+            _: impl AsRef<str>,
+            _: impl AsRef<str>,
+        ) -> (RetryIter<'static>, OnMaxAttempts) {
+            unimplemented!()
+        }
+    }
+
+    fn request(service: &str, handler: &str, key: &str, scope: Option<&str>) -> InvokeRequest {
+        InvokeRequest {
+            service_name: service.into(),
+            handler_name: handler.into(),
+            headers: vec![],
+            key: key.into(),
+            idempotency_key: None,
+            scope: scope.map(ToOwned::to_owned),
+            limit_key: None,
+            span_relation: SpanRelation::None,
+            parameter: Bytes::new(),
+        }
+    }
+
+    fn relay(
+        target_type: proto::RelayTargetType,
+        effective_scope: Option<&str>,
+    ) -> UnregisteredCallee {
+        UnregisteredCallee::Relay(RelayCallSemantics {
+            target_type: target_type.into(),
+            effective_scope: effective_scope.map(ToOwned::to_owned),
+            idempotency_retention_millis: Some(u64::MAX),
+            workflow_completion_retention_millis: Some(u64::MAX),
+            journal_retention_millis: Some(u64::MAX),
+        })
+    }
+
+    fn resolve(
+        request: InvokeRequest,
+        unregistered_callee: UnregisteredCallee,
+    ) -> std::result::Result<CallRequest, CommandPreconditionError> {
+        resolve_call_request(&TestSchemas, request, unregistered_callee)
+    }
+
+    fn scope(scope: &str) -> Option<Scope> {
+        Some(Scope::try_new(scope).unwrap())
+    }
+
+    #[test]
+    fn relay_type_and_effective_scope_build_the_target() {
+        let call = resolve(
+            request("checkout", "run", "", Some("sdk-scope")),
+            relay(proto::RelayTargetType::RelayTargetService, Some("tenant")),
+        )
+        .unwrap();
+        assert_eq!(
+            call.invocation_target,
+            InvocationTarget::service("checkout", "run").with_scope(scope("tenant"))
+        );
+    }
+
+    #[test]
+    fn empty_effective_scope_is_unscoped() {
+        let call = resolve(
+            request("obj", "get", "k", Some("sdk-scope")),
+            relay(
+                proto::RelayTargetType::RelayTargetVirtualObjectShared,
+                Some(""),
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            call.invocation_target,
+            InvocationTarget::virtual_object("obj", "k", "get", VirtualObjectHandlerType::Shared)
+        );
+    }
+
+    #[test]
+    fn absent_effective_scope_keeps_the_command_scope() {
+        let call = resolve(
+            request("obj", "get", "k", Some("sdk-scope")),
+            relay(proto::RelayTargetType::RelayTargetVirtualObjectShared, None),
+        )
+        .unwrap();
+        assert_eq!(call.invocation_target.scope(), scope("sdk-scope").as_ref());
+    }
+
+    #[test]
+    fn relay_retentions_apply_with_server_defaults() {
+        let call = resolve(
+            InvokeRequest {
+                idempotency_key: Some("idem".into()),
+                ..request("checkout", "run", "", None)
+            },
+            UnregisteredCallee::Relay(RelayCallSemantics {
+                target_type: proto::RelayTargetType::RelayTargetService.into(),
+                effective_scope: None,
+                idempotency_retention_millis: Some(60_000),
+                workflow_completion_retention_millis: Some(u64::MAX),
+                journal_retention_millis: None,
+            }),
+        )
+        .unwrap();
+        // The journal retention (server default: 1 day) is capped by the completion retention.
+        assert_eq!(
+            (
+                call.completion_retention_duration,
+                call.journal_retention_duration
+            ),
+            (Duration::from_secs(60), Duration::from_secs(60))
+        );
+    }
+
+    #[test]
+    fn workflow_run_takes_the_workflow_completion_retention() {
+        let call = resolve(
+            request("wf", "run", "k", None),
+            relay(proto::RelayTargetType::RelayTargetWorkflow, None),
+        )
+        .unwrap();
+        assert_eq!(call.completion_retention_duration, DAY);
+    }
+
+    #[test]
+    fn relay_service_with_key_is_rejected() {
+        assert_that!(
+            resolve(
+                request("checkout", "run", "k", None),
+                relay(proto::RelayTargetType::RelayTargetService, None),
+            ),
+            err(pat!(CommandPreconditionError::UnexpectedKey(_)))
+        );
+    }
+
+    #[test]
+    fn relay_not_found_is_service_handler_not_found() {
+        assert_that!(
+            resolve(
+                request("unknown", "h", "", None),
+                relay(proto::RelayTargetType::RelayTargetNotFound, None),
+            ),
+            err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
+        );
+    }
+
+    #[test]
+    fn relay_unspecified_is_unresolved() {
+        assert_that!(
+            resolve(
+                request("unknown", "h", "", None),
+                relay(proto::RelayTargetType::Unspecified, None),
+            ),
+            err(pat!(CommandPreconditionError::UnresolvedCallTarget(_, _)))
+        );
+    }
+
+    #[test]
+    fn relay_unknown_target_type_is_unresolved() {
+        assert_that!(
+            resolve(
+                request("unknown", "h", "", None),
+                UnregisteredCallee::Relay(RelayCallSemantics {
+                    target_type: 42,
+                    effective_scope: None,
+                    idempotency_retention_millis: None,
+                    workflow_completion_retention_millis: None,
+                    journal_retention_millis: None,
+                }),
+            ),
+            err(pat!(CommandPreconditionError::UnresolvedCallTarget(_, _)))
+        );
+    }
+
+    #[test]
+    fn local_registry_wins_over_relay() {
+        let call = resolve(
+            request("registered", "h", "k", None),
+            relay(proto::RelayTargetType::RelayTargetService, None),
+        )
+        .unwrap();
+        assert_eq!(
+            call.invocation_target,
+            InvocationTarget::virtual_object(
+                "registered",
+                "k",
+                "h",
+                VirtualObjectHandlerType::Exclusive
+            )
+        );
+    }
+
+    #[test]
+    fn registered_service_unknown_handler_is_not_found_with_relay() {
+        assert_that!(
+            resolve(
+                request("registered", "other", "k", None),
+                relay(proto::RelayTargetType::RelayTargetService, None),
+            ),
+            err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
+        );
+    }
+
+    #[test]
+    fn registered_service_unknown_handler_is_not_found_without_relay() {
+        assert_that!(
+            resolve(
+                request("registered", "other", "k", None),
+                UnregisteredCallee::Guess
+            ),
+            err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
+        );
+    }
+
+    #[test]
+    fn unregistered_callee_from_non_preflight_stream_is_not_found() {
+        assert_that!(
+            resolve(
+                request("unknown", "h", "k", None),
+                UnregisteredCallee::NotFound
+            ),
+            err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
+        );
+    }
+
+    #[test]
+    fn unregistered_callee_is_guessed_in_other_modes() {
+        let call = resolve(
+            request("unknown", "h", "k", None),
+            UnregisteredCallee::Guess,
+        )
+        .unwrap();
+        assert_eq!(
+            call.invocation_target,
+            InvocationTarget::virtual_object(
+                "unknown",
+                "k",
+                "h",
+                VirtualObjectHandlerType::Exclusive
+            )
+        );
+    }
+
+    fn preflight_response(
+        deployment_id: impl ToString,
+        protocol_version: u32,
+        protocol_type: preflight::ProtocolType,
+    ) -> proto::PreflightResponseMessage {
+        proto::PreflightResponseMessage {
+            deployment_id: deployment_id.to_string(),
+            protocol_version,
+            protocol_type: protocol_type.into(),
+            sdk_version: Some("sdk/1.0".to_owned()),
+        }
+    }
+
+    #[test]
+    fn valid_preflight_response() {
+        let deployment_id = DeploymentId::new();
+        assert_eq!(
+            validate_preflight_response(
+                preflight_response(deployment_id, 6, preflight::ProtocolType::RequestResponse),
+                None
+            )
+            .unwrap(),
+            NegotiatedPreflight {
+                deployment_id,
+                service_protocol_version: ServiceProtocolVersion::V6,
+                protocol_type: ProtocolType::RequestResponse,
+                sdk_version: Some("sdk/1.0".to_owned()),
+            }
+        );
+    }
+
+    #[test]
+    fn preflight_response_honoring_the_pin() {
+        let deployment_id = DeploymentId::new();
+        let pin = PinnedDeployment::new(deployment_id, ServiceProtocolVersion::V6);
+        assert_that!(
+            validate_preflight_response(
+                preflight_response(deployment_id, 6, preflight::ProtocolType::BidiStream),
+                Some(&pin)
+            ),
+            ok(anything())
+        );
+    }
+
+    fn assert_bad_preflight_response(
+        response: proto::PreflightResponseMessage,
+        pin: Option<&PinnedDeployment>,
+    ) {
+        assert_that!(
+            validate_preflight_response(response, pin),
+            err(pat!(InvokerError::BadPreflightResponse(_)))
+        );
+    }
+
+    #[test]
+    fn preflight_version_below_the_advertised_range() {
+        assert_bad_preflight_response(
+            preflight_response(DeploymentId::new(), 4, preflight::ProtocolType::BidiStream),
+            None,
+        );
+    }
+
+    #[test]
+    fn preflight_version_above_the_advertised_range() {
+        assert_bad_preflight_response(
+            preflight_response(DeploymentId::new(), 8, preflight::ProtocolType::BidiStream),
+            None,
+        );
+    }
+
+    #[test]
+    fn preflight_without_protocol_type() {
+        assert_bad_preflight_response(
+            preflight_response(DeploymentId::new(), 6, preflight::ProtocolType::Unspecified),
+            None,
+        );
+    }
+
+    #[test]
+    fn preflight_with_bad_deployment_id() {
+        assert_bad_preflight_response(
+            preflight_response("dp", 6, preflight::ProtocolType::BidiStream),
+            None,
+        );
+    }
+
+    #[test]
+    fn preflight_with_another_deployment_than_the_pin() {
+        let pin = PinnedDeployment::new(DeploymentId::new(), ServiceProtocolVersion::V6);
+        assert_bad_preflight_response(
+            preflight_response(DeploymentId::new(), 6, preflight::ProtocolType::BidiStream),
+            Some(&pin),
+        );
+    }
+
+    #[test]
+    fn preflight_with_another_version_than_the_pin() {
+        let deployment_id = DeploymentId::new();
+        let pin = PinnedDeployment::new(deployment_id, ServiceProtocolVersion::V6);
+        assert_bad_preflight_response(
+            preflight_response(deployment_id, 7, preflight::ProtocolType::BidiStream),
+            Some(&pin),
+        );
     }
 }

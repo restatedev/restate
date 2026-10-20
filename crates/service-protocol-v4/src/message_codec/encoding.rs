@@ -212,6 +212,20 @@ impl Decoder {
         self.buf.has_remaining()
     }
 
+    /// Switch the protocol version used to decode the next messages, including the bytes already
+    /// buffered. Used after a preflight exchange negotiated the version.
+    pub fn set_service_protocol_version(
+        &mut self,
+        service_protocol_version: ServiceProtocolVersion,
+    ) {
+        assert_ne!(
+            service_protocol_version,
+            ServiceProtocolVersion::Unspecified,
+            "A protocol version should be specified"
+        );
+        self.service_protocol_version = service_protocol_version;
+    }
+
     /// Concatenate a new chunk in the internal buffer.
     pub fn push(&mut self, buf: Bytes) {
         self.buf.push(buf)
@@ -360,6 +374,61 @@ mod tests {
         assert_eq!(actual_msg_2, expected_msg_2);
 
         assert!(decoder.consume_next().unwrap().is_none());
+    }
+
+    fn decode_all(decoder: &mut Decoder) -> Vec<(u16, Message)> {
+        std::iter::from_fn(|| decoder.consume_next().unwrap())
+            .map(|(header, msg)| (header.message_type().into(), msg))
+            .collect()
+    }
+
+    #[test]
+    fn preflight_request_round_trip() {
+        let preflight_request = Message::PreflightRequest(proto::PreflightRequestMessage {
+            service_name: "svc".to_owned(),
+            handler_name: "handler".to_owned(),
+            scope: Some("tenant".to_owned()),
+            pinned_deployment_id: Some("dp_123".to_owned()),
+            pinned_protocol_version: Some(5),
+            retry_count_since_last_stored_entry: 3,
+            ..Default::default()
+        });
+        let mut decoder = Decoder::new(
+            ServiceProtocolVersion::V7,
+            NonZeroUsize::MAX,
+            NonZeroUsize::MAX,
+        );
+        decoder.push(Encoder::new(ServiceProtocolVersion::V7).encode(preflight_request.clone()));
+
+        assert_eq!(decode_all(&mut decoder), vec![(0x00F0, preflight_request)]);
+    }
+
+    #[test]
+    fn decoder_switches_version_after_preflight_response() {
+        // The relay writes the PreflightResponse and the first vN frame in the same chunk.
+        let preflight_response = Message::PreflightResponse(proto::PreflightResponseMessage {
+            deployment_id: "dp_123".to_owned(),
+            protocol_version: 5,
+            protocol_type: crate::preflight::ProtocolType::RequestResponse.into(),
+            sdk_version: Some("restate-sdk-typescript/1.0.0".to_owned()),
+        });
+        let end = Message::End(proto::EndMessage {});
+        let mut chunk = BytesMut::new();
+        chunk.put(Encoder::new(ServiceProtocolVersion::V7).encode(preflight_response.clone()));
+        chunk.put(Encoder::new(ServiceProtocolVersion::V5).encode(end.clone()));
+        let mut decoder = Decoder::new(
+            ServiceProtocolVersion::V7,
+            NonZeroUsize::MAX,
+            NonZeroUsize::MAX,
+        );
+        decoder.push(chunk.freeze());
+
+        let (header, msg) = decoder.consume_next().unwrap().unwrap();
+        let mut decoded = vec![(header.message_type().into(), msg)];
+        decoder.set_service_protocol_version(ServiceProtocolVersion::V5);
+        decoded.extend(decode_all(&mut decoder));
+
+        assert_eq!(decoded, vec![(0x00F1, preflight_response), (0x0003, end)]);
     }
 
     #[test]

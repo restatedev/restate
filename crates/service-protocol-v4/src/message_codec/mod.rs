@@ -340,6 +340,9 @@ gen_message!(
     ProposeRunCompletion Control allows_ack = 0x0005,
     AwaitingOn Control = 0x0006,
     ProposeRunCompletionAck Control = 0x0007,
+    // Only legal as the first frame of a preflight-mode stream.
+    PreflightRequest Control = 0x00F0,
+    PreflightResponse Control = 0x00F1,
 
     Input Command noparse allows_ack = 0x0400,
     Output Command noparse allows_ack = 0x0401,

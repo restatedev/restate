@@ -34,7 +34,7 @@ use restate_types::invocation::{
 use restate_types::limit_key::LimitKey;
 use restate_types::nodes_config::ClusterFeature;
 use restate_types::schema::invocation_target::{
-    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver,
+    DeploymentStatus, InvocationTargetMetadata, InvocationTargetResolver, RequestedRetentions,
 };
 use restate_types::time::MillisSinceEpoch;
 use restate_util_string::{ReString, RestateString};
@@ -57,16 +57,7 @@ use crate::metric_definitions::{
 pub(super) fn schemaless_target_metadata(
     target_ty: InvocationTargetType,
 ) -> InvocationTargetMetadata {
-    let config = Configuration::pinned();
-    InvocationTargetMetadata {
-        public: true,
-        completion_retention: config.invocation.default_idempotency_retention.into(),
-        journal_retention: config.invocation.default_journal_retention.into(),
-        target_ty,
-        input_rules: Default::default(),
-        output_rules: Default::default(),
-        deployment_status: DeploymentStatus::Enabled,
-    }
+    InvocationTargetMetadata::from_external_semantics(target_ty, RequestedRetentions::default())
 }
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
@@ -176,28 +167,41 @@ where
             scope,
         } = service_request;
 
-        let invocation_target_meta = if let Some(invocation_target) = self
-            .schemas
-            .pinned()
-            .resolve_latest_invocation_target(service_name.as_str(), &handler_name)
-        {
-            if !invocation_target.public {
-                return Err(HandlerError::PrivateService);
+        let invocation_target_meta = {
+            let schemas = self.schemas.pinned();
+            if let Some(invocation_target) =
+                schemas.resolve_latest_invocation_target(service_name.as_str(), &handler_name)
+            {
+                if !invocation_target.public {
+                    return Err(HandlerError::PrivateService);
+                }
+                invocation_target
+            } else if schemas
+                .resolve_latest_service_type(service_name.as_str())
+                .is_some()
+            {
+                return Err(HandlerError::ServiceHandlerNotFound(
+                    service_name.to_string(),
+                    handler_name,
+                ));
+            } else if Configuration::pinned().worker.invoker.is_preflight() {
+                // In preflight mode the semantics of unregistered services come only from the
+                // middleware, through the generic invoke endpoint.
+                return Err(HandlerError::ServiceNotFound(service_name.to_string()));
+            } else {
+                // Schemaless fallback: fake the target metadata for unregistered services. Key present
+                // => VirtualObject (handler kind from the well-known header, default exclusive), else
+                // Service.
+                let handler_kind = req
+                    .headers()
+                    .get(X_RESTATE_HANDLER_KIND_HEADER)
+                    .and_then(|v| v.to_str().ok());
+                let target_ty = InvocationTargetType::schemaless(
+                    matches!(target, TargetType::Keyed { .. }),
+                    handler_kind,
+                );
+                schemaless_target_metadata(target_ty)
             }
-            invocation_target
-        } else {
-            // Schemaless fallback: fake the target metadata for unregistered services. Key present
-            // => VirtualObject (handler kind from the well-known header, default exclusive), else
-            // Service.
-            let handler_kind = req
-                .headers()
-                .get(X_RESTATE_HANDLER_KIND_HEADER)
-                .and_then(|v| v.to_str().ok());
-            let target_ty = InvocationTargetType::schemaless(
-                matches!(target, TargetType::Keyed { .. }),
-                handler_kind,
-            );
-            schemaless_target_metadata(target_ty)
         };
         if let DeploymentStatus::Deprecated(dp_id) = invocation_target_meta.deployment_status {
             return Err(HandlerError::DeploymentDeprecated(

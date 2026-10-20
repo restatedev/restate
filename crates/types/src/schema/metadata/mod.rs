@@ -46,7 +46,7 @@ use crate::schema::deployment::{DeploymentResolver, DeploymentType, ProtocolType
 use crate::schema::info::SchemaInfo;
 use crate::schema::invocation_target::{
     DeploymentStatus, InputRules, InvocationAttemptOptions, InvocationTargetMetadata,
-    InvocationTargetResolver, OnMaxAttempts, OutputRules, StatePreloadPolicy,
+    InvocationTargetResolver, OnMaxAttempts, OutputRules, RequestedRetentions, StatePreloadPolicy,
 };
 use crate::schema::kafka::{
     DUPLICATED_KAFKA_CLUSTER_INFO_MESSAGE, KafkaCluster, KafkaClusterResolver,
@@ -1432,6 +1432,61 @@ fn is_sensitive_kafka_property(key: &str) -> bool {
     }
 
     false
+}
+
+impl InvocationTargetMetadata {
+    /// Metadata for a target whose semantics (target type, retentions) were decided outside the
+    /// schema registry: by the middleware through the generic invoke endpoint, or by the relay
+    /// for a call on a preflight-mode stream.
+    ///
+    /// The target is public, with default input/output rules. Retentions follow the same rules as
+    /// for a registered service: the completion retention is the workflow completion retention
+    /// for a workflow `run` handler, the idempotency retention otherwise; absent values take the
+    /// server defaults; every value is clamped by the server maximum.
+    pub fn from_external_semantics(
+        target_ty: InvocationTargetType,
+        retentions: RequestedRetentions,
+    ) -> Self {
+        let configuration = Configuration::pinned();
+        let invocation = &configuration.invocation;
+
+        let completion_retention =
+            if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
+                configuration.clamp_workflow_completion_retention(
+                    retentions.workflow_completion.or_else(|| {
+                        invocation
+                            .default_workflow_completion_retention
+                            .to_non_zero_std()
+                    }),
+                )
+            } else {
+                configuration.clamp_idempotency_retention(
+                    retentions
+                        .idempotency
+                        .or_else(|| invocation.default_idempotency_retention.to_non_zero_std()),
+                )
+            }
+            .0
+            .unwrap_or(Duration::ZERO);
+        let journal_retention = configuration
+            .clamp_journal_retention(
+                retentions
+                    .journal
+                    .or_else(|| invocation.default_journal_retention.to_non_zero_std()),
+            )
+            .0
+            .unwrap_or(Duration::ZERO);
+
+        Self {
+            public: true,
+            completion_retention,
+            journal_retention,
+            target_ty,
+            input_rules: Default::default(),
+            output_rules: Default::default(),
+            deployment_status: DeploymentStatus::Enabled,
+        }
+    }
 }
 
 impl Configuration {

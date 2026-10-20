@@ -126,6 +126,16 @@ impl InvocationTargetMetadata {
     }
 }
 
+/// Retentions of an invocation target decided outside the runtime's schema registry, e.g. by the
+/// middleware creating an invocation through the generic invoke endpoint, or by the relay for a
+/// call made from a preflight-mode stream. `None` means the server default.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RequestedRetentions {
+    pub idempotency: Option<Duration>,
+    pub workflow_completion: Option<Duration>,
+    pub journal: Option<Duration>,
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct InvocationAttemptOptions {
     pub abort_timeout: Option<Duration>,
