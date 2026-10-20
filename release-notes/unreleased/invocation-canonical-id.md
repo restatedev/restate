@@ -9,6 +9,12 @@ ID followed by that position, e.g. `inv_..._42`.
 
 ### Impact on Users
 - `canonical_id` is set for invocations created after upgrading to this version.
-- Invocations created before the upgrade get a `canonical_id` the next time they start
-  running, suspend, pause or resume. Until then, they show a NULL `canonical_id`.
+- Invocations that already exist when upgrading from v1.7 get a `canonical_id` during the
+  upgrade. Their original log position isn't known, so the ID ends with a placeholder
+  (usually `_0`) instead. It still matches the `canonical_id` of the invocation's entry in
+  `sys_vqueue_entry_status`.
+- Exception: if you already enabled `experimental_enable_vqueues` on v1.7, invocations
+  created on v1.7 show a NULL `canonical_id` after the upgrade. They get one the next time
+  they start running, suspend, pause or resume. Invocations that had already completed
+  keep a NULL `canonical_id`.
 - No action is needed.
