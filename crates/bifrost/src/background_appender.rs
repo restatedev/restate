@@ -317,9 +317,18 @@ impl<T> AppenderHandle<T> {
     }
 }
 
+/// The number of bytes and records written to the appender.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WrittenRecords {
+    /// The estimated encoded size, in bytes, of the records that were written.
+    pub bytes_written: usize,
+    /// The number of records that were written.
+    pub records_written: usize,
+}
+
 pub struct EnqueueWithNotificationResult {
     pub commit_token: CommitToken,
-    pub bytes_written: usize,
+    pub written: WrittenRecords,
 }
 
 pub struct LogSender<T> {
@@ -368,7 +377,7 @@ impl<T: StorageEncode> LogSender<T> {
     /// Otherwise, the record is admitted and may put the pool into deficit once its encoded size
     /// is known. Also returns an error if the record exceeds the size limit or if the appender is
     /// draining or drained.
-    pub fn enqueue<A>(&mut self, record: A) -> Result<usize, EnqueueError<Record>>
+    pub fn enqueue<A>(&mut self, record: A) -> Result<WrittenRecords, EnqueueError<Record>>
     where
         A: Into<InputRecord<T>>,
     {
@@ -382,11 +391,17 @@ impl<T: StorageEncode> LogSender<T> {
                 EnqueueError::Closed(record_from_append_operation(r.0).expect("has record"))
             })?;
 
-        Ok(record_size)
+        Ok(WrittenRecords {
+            bytes_written: record_size,
+            records_written: 1,
+        })
     }
 
     /// Enqueues a record bypassing all memory accounting (i.e. will never fail with `Full`).
-    pub fn enqueue_unaccounted<A>(&mut self, record: A) -> Result<usize, EnqueueError<Record>>
+    pub fn enqueue_unaccounted<A>(
+        &mut self,
+        record: A,
+    ) -> Result<WrittenRecords, EnqueueError<Record>>
     where
         A: Into<InputRecord<T>>,
     {
@@ -398,7 +413,10 @@ impl<T: StorageEncode> LogSender<T> {
                 EnqueueError::Closed(record_from_append_operation(r.0).expect("has record"))
             })?;
 
-        Ok(record_size)
+        Ok(WrittenRecords {
+            bytes_written: record_size,
+            records_written: 1,
+        })
     }
 
     /// Enqueues a record while charging its estimated size to the appender's memory
@@ -410,7 +428,10 @@ impl<T: StorageEncode> LogSender<T> {
     /// accepts a record of any size.
     ///
     /// Callers have to ensure that record is not larger than the network message size limit.
-    pub fn enqueue_unchecked<A>(&mut self, record: A) -> Result<usize, EnqueueError<Record>>
+    pub fn enqueue_unchecked<A>(
+        &mut self,
+        record: A,
+    ) -> Result<WrittenRecords, EnqueueError<Record>>
     where
         A: Into<InputRecord<T>>,
     {
@@ -424,7 +445,10 @@ impl<T: StorageEncode> LogSender<T> {
                 EnqueueError::Closed(record_from_append_operation(r.0).expect("has record"))
             })?;
 
-        Ok(record_size)
+        Ok(WrittenRecords {
+            bytes_written: record_size,
+            records_written: 1,
+        })
     }
 
     /// Enqueues all records in the iterator without blocking, charging their estimated sizes to
@@ -435,19 +459,21 @@ impl<T: StorageEncode> LogSender<T> {
     /// of the record sizes.
     ///
     /// Note that records are enqueued one at a time: if a record fails the size check or the
-    /// appender is draining, records enqueued before the failure remain in the queue. The function
-    /// returns the estimated encoded size of all records enqueued.
-    pub fn enqueue_many<I, A>(&mut self, records: I) -> Result<usize, EnqueueError<()>>
+    /// appender is draining, records enqueued before the failure remain in the queue. On success,
+    /// the returned [`WrittenRecords`] holds the estimated encoded size and the number of all
+    /// records enqueued.
+    pub fn enqueue_many<I, A>(&mut self, records: I) -> Result<WrittenRecords, EnqueueError<()>>
     where
         I: Iterator<Item = A> + ExactSizeIterator,
         A: Into<InputRecord<T>>,
     {
         if records.len() == 0 {
-            return Ok(0);
+            return Ok(WrittenRecords::default());
         }
         self.admit(())?;
 
         let mut written_bytes = 0;
+        let mut records_written = 0;
         for record in records {
             let record = record.into().into_record().ensure_encoded(&mut self.arena);
             let record_size = self.check_record_size(&record)?;
@@ -456,9 +482,13 @@ impl<T: StorageEncode> LogSender<T> {
                 .send(AppendOperation::Enqueue(record, lease))
                 .map_err(|_| EnqueueError::Closed(()))?;
             written_bytes += record_size;
+            records_written += 1;
         }
 
-        Ok(written_bytes)
+        Ok(WrittenRecords {
+            bytes_written: written_bytes,
+            records_written,
+        })
     }
 
     /// Enqueues all records in the iterator without blocking or checking their encoded sizes.
@@ -469,17 +499,21 @@ impl<T: StorageEncode> LogSender<T> {
     /// of the record sizes.
     ///
     /// Callers have to ensure that every record is not larger than the network message size limit.
-    pub fn enqueue_many_unchecked<I, A>(&mut self, records: I) -> Result<usize, EnqueueError<()>>
+    pub fn enqueue_many_unchecked<I, A>(
+        &mut self,
+        records: I,
+    ) -> Result<WrittenRecords, EnqueueError<()>>
     where
         I: Iterator<Item = A> + ExactSizeIterator,
         A: Into<InputRecord<T>>,
     {
         if records.len() == 0 {
-            return Ok(0);
+            return Ok(WrittenRecords::default());
         }
         self.admit(())?;
 
         let mut written_bytes = 0;
+        let mut records_written = 0;
         for record in records {
             let record = record.into().into_record().ensure_encoded(&mut self.arena);
             let record_size = record.estimated_encode_size();
@@ -488,12 +522,16 @@ impl<T: StorageEncode> LogSender<T> {
                 .send(AppendOperation::Enqueue(record, lease))
                 .map_err(|_| EnqueueError::Closed(()))?;
             written_bytes += record_size;
+            records_written += 1;
         }
 
-        Ok(written_bytes)
+        Ok(WrittenRecords {
+            bytes_written: written_bytes,
+            records_written,
+        })
     }
 
-    /// Enqueues a record and returns its estimated encoded size together with a [`CommitToken`]
+    /// Enqueues a record and returns the [`WrittenRecords`] together with a [`CommitToken`]
     /// future that's resolved when the record is committed.
     /// Returns [`EnqueueError::Full`] without encoding the record if the pool is exhausted.
     /// Otherwise, the record is admitted and may put the pool into deficit once its encoded size
@@ -518,7 +556,10 @@ impl<T: StorageEncode> LogSender<T> {
 
         Ok(EnqueueWithNotificationResult {
             commit_token: CommitToken { rx },
-            bytes_written: record_size,
+            written: WrittenRecords {
+                bytes_written: record_size,
+                records_written: 1,
+            },
         })
     }
 
