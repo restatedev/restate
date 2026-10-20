@@ -26,13 +26,12 @@ message PreflightRequest {
   optional string pinned_deployment_id = 8;
   optional uint32 pinned_protocol_version = 9;
 
-  // For the relay's retry policy. Same value the invoker puts in
-  // StartMessage.retry_count_since_last_stored_entry: failed attempts since the invocation last
-  // stored a command (0 on the first try after progress). Not exact across leader changes, but it
-  // survives the scheduler's retry path. The relay's policy counts this.
-  uint32 retry_count_since_last_stored_entry = 10;
-  // Total attempts since the invocation started, 1-based. 0 = not provided (v1 runtimes send 0:
-  // the durable count lives in the vqueue entry stats and isn't plumbed to the invoker yet).
+  reserved 10;
+  // For the relay's retry policy: the failed attempts it should count, 0 on a first try. How the
+  // runtime counts is its choice and may change: v1 runtimes send the same value as
+  // StartMessage.retry_count_since_last_stored_entry (failed attempts since the invocation last
+  // stored a command, reset on progress, not exact across leader changes); a later runtime may send
+  // a durable count. It can go backward: the relay just retries more.
   uint32 attempt = 11;
 }
 
