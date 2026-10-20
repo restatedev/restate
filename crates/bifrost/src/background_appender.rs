@@ -588,6 +588,13 @@ pub struct CommitToken {
     rx: oneshot::Receiver<Lsn>,
 }
 
+impl CommitToken {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(rx: oneshot::Receiver<Lsn>) -> Self {
+        Self { rx }
+    }
+}
+
 impl std::future::Future for CommitToken {
     type Output = Result<Lsn, oneshot::error::RecvError>;
 
