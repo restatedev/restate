@@ -402,11 +402,9 @@ where
             max_protocol_version: MAX_DISCOVERABLE_SERVICE_PROTOCOL_VERSION.as_repr() as u32,
             pinned_deployment_id: pin.map(|pin| pin.deployment_id.to_string()),
             pinned_protocol_version: pin.map(|pin| pin.service_protocol_version.as_repr() as u32),
-            retry_count_since_last_stored_entry: self
-                .invocation_task
-                .retry_count_since_last_stored_entry,
-            // The durable attempt count is not plumbed to the invoker.
-            attempt: 0,
+            // The durable attempt count is not plumbed to the invoker: the relay counts the failed
+            // attempts since the invocation last made progress.
+            attempt: self.invocation_task.retry_count_since_last_stored_entry,
         };
         shortcircuit!(self.write(http_stream_tx, Message::PreflightRequest(preflight_request)));
 

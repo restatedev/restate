@@ -390,7 +390,7 @@ mod tests {
             scope: Some("tenant".to_owned()),
             pinned_deployment_id: Some("dp_123".to_owned()),
             pinned_protocol_version: Some(5),
-            retry_count_since_last_stored_entry: 3,
+            attempt: 3,
             ..Default::default()
         });
         let mut decoder = Decoder::new(
