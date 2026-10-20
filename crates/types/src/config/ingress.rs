@@ -182,6 +182,17 @@ pub struct IngressOptions {
     ///
     /// Settings for the experimental gRPC ingestion API.
     pub ingestion_api: IngestionApiOptions,
+
+    /// # Experimental generic invoke endpoint
+    ///
+    /// Enables `POST /restate/generic/call` and `POST /restate/generic/send`. Their body is an
+    /// envelope (`application/vnd.restate.generic-invocation.v1+cbor` or `+json`) carrying the
+    /// target, its type, scope, retentions, headers and payload, applied without consulting the
+    /// schema registry. Whoever can reach the ingress decides the semantics of the invocations:
+    /// enable it only when a trusted middleware is the only client of the ingress.
+    ///
+    /// Since v1.8.1
+    pub experimental_generic_invoke: bool,
 }
 
 impl IngressOptions {
@@ -274,6 +285,7 @@ impl Default for IngressOptions {
             detailed_request_metrics: false,
             ingestion: IngestionOptions::default(),
             ingestion_api: IngestionApiOptions::default(),
+            experimental_generic_invoke: false,
         }
     }
 }

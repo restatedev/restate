@@ -88,6 +88,21 @@ pub(crate) struct SendResponse {
     status: SendStatus,
 }
 
+pub(super) fn record_request_metrics(
+    mut labels: Vec<Label>,
+    start_time: Instant,
+    result: &Result<Response<Full<Bytes>>, HandlerError>,
+) {
+    // TODO: Consider recording the duration after the target has been validated in
+    //  process_service_request, so that fast rejections of invalid requests do not skew the
+    //  latency distribution of actual invocations. This changes the metric's semantics and
+    //  should therefore be done in a minor release.
+    histogram!(INGRESS_REQUEST_DURATION, labels.clone()).record(start_time.elapsed());
+
+    labels.push(Label::new("status", request_metric_status(result)));
+    counter!(INGRESS_REQUESTS, labels).increment(1);
+}
+
 fn request_metric_status(result: &Result<Response<Full<Bytes>>, HandlerError>) -> &'static str {
     match result {
         Ok(response)
@@ -140,14 +155,7 @@ where
             labels.push(Label::new(RPC_METHOD, handler));
         }
 
-        // TODO: Consider recording the duration after the target has been validated in
-        //  process_service_request, so that fast rejections of invalid requests do not skew the
-        //  latency distribution of actual invocations. This changes the metric's semantics and
-        //  should therefore be done in a minor release.
-        histogram!(INGRESS_REQUEST_DURATION, labels.clone()).record(start_time.elapsed());
-
-        labels.push(Label::new("status", request_metric_status(&result)));
-        counter!(INGRESS_REQUESTS, labels).increment(1);
+        record_request_metrics(labels, start_time, &result);
         result
     }
 
@@ -362,7 +370,7 @@ where
         .await
     }
 
-    async fn handle_service_call(
+    pub(super) async fn handle_service_call(
         invocation_request: Arc<InvocationRequest>,
         invocation_target_metadata: InvocationTargetMetadata,
         dispatcher: Dispatcher,
@@ -376,7 +384,7 @@ where
         Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
     }
 
-    async fn handle_service_send(
+    pub(super) async fn handle_service_send(
         invocation_request: Arc<InvocationRequest>,
         dispatcher: Dispatcher,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
