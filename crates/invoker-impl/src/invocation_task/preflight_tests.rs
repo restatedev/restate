@@ -458,15 +458,15 @@ async fn relay_ignoring_the_pin_fails_the_attempt() {
 
 #[restate_core::test]
 async fn call_takes_the_relay_fields_appended_to_the_sdk_bytes() {
-    // The SDK's command, then the relay-only fields appended by the relay: the last occurrence
-    // of a field wins, the SDK's bytes are untouched.
+    // The SDK's command without a scope, then what the relay appends for a scoped invocation: the
+    // relay-only fields and the scope. The last occurrence of a field wins, the SDK's bytes are
+    // untouched.
     let mut call = BytesMut::new();
     call.put(
         proto::OneWayCallCommandMessage {
             service_name: "checkout".to_owned(),
             handler_name: "run".to_owned(),
             idempotency_key: Some("run-1".to_owned()),
-            scope: Some("sdk-scope".to_owned()),
             relay_target_type: proto::RelayTargetType::RelayTargetVirtualObjectShared.into(),
             ..Default::default()
         }
@@ -476,7 +476,7 @@ async fn call_takes_the_relay_fields_appended_to_the_sdk_bytes() {
     call.put(
         proto::OneWayCallCommandMessage {
             relay_target_type: proto::RelayTargetType::RelayTargetService.into(),
-            relay_effective_scope: Some("tenant".to_owned()),
+            scope: Some("tenant".to_owned()),
             relay_completion_retention_millis: Some(60_000),
             relay_journal_retention_millis: Some(0),
             ..Default::default()

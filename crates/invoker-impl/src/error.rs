@@ -381,8 +381,6 @@ pub(crate) enum CommandPreconditionError {
         "the relay did not resolve the callee {0}/{1}, probably because the schema registry is unavailable"
     )]
     UnresolvedCallTarget(String, String),
-    #[error("the command carries relay-only fields, but this stream is not in preflight mode")]
-    UnexpectedRelayField,
 }
 
 #[derive(Debug)]
