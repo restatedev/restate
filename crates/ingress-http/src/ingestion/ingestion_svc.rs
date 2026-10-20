@@ -85,7 +85,8 @@ use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, Recor
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, partitioner,
+    DeploymentId, InvocationId, PartitionProcessorRpcRequestId,
+    UNSCOPED_SERVICE_PARTITION_KEY_FANOUT, unscoped_service_partition_key,
 };
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
@@ -814,14 +815,15 @@ where
             return Err(Error::BadRequest(BadRequestError::HeadersMaxSizeReached));
         }
 
-        let seed = PartitionKeySeed {
-            producer: &state.dedup_mode,
-            offset: record.offset,
-        };
-
         let invocation_id =
             InvocationId::generate_or_else(&invocation_target, idempotency_key, || {
-                partitioner::HashPartitioner::compute_partition_key(seed)
+                // Deterministically generate a partition key for non-idempotent non-keyed
+                // services respecting key fanout.
+                unscoped_service_partition_key(
+                    invocation_target.service_name(),
+                    state.dedup_mode_hash.wrapping_add(record.offset)
+                        % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT,
+                )
             });
 
         let span_context = prepare_tracing_span(
@@ -928,17 +930,6 @@ impl<'a> Extractor for TraceContextExtractor<'a> {
     fn keys(&self) -> Vec<&str> {
         vec!["traceparent", "tracestate"]
     }
-}
-
-/// Seed hashed into a partition key for records that have no idempotency key.
-///
-/// Combining the `producer` id with the record `offset` keeps the derived
-/// [`Partitionkey`] deterministic and stable per producer, so retrying the same
-/// record yields the same key.
-#[derive(Hash)]
-struct PartitionKeySeed<'a> {
-    producer: &'a DedupMode,
-    offset: u64,
 }
 
 /// Outcome of one [`IngestionStream::process`] burst.
@@ -1115,6 +1106,8 @@ struct ProcessorState {
     /// Hash of the producer id used for deduplication, or `None` when the
     /// producer id was empty (deduplication disabled for the stream).
     dedup_mode: DedupMode,
+    /// Hash of the dedup_mode used to calculate the scatter bucket
+    dedup_mode_hash: u64,
     /// The raw producer id from the `Start` frame, used for metric labels and
     /// logging.
     producer: ReString,
@@ -1146,8 +1139,12 @@ impl ProcessorState {
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
+        let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+        producer.hash(&mut hasher);
+
         Self {
             dedup_mode,
+            dedup_mode_hash: hasher.digest(),
             producer,
             integration,
             defaults,
