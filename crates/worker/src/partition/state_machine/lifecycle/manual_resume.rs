@@ -85,6 +85,16 @@ pub(crate) fn resolve_pinned_deployment<R: DeploymentResolver>(
             };
 
             let Some(deployment) = resolved else {
+                // Schemaless: deployments of unregistered services are owned by the relay (or are
+                // the single endpoint fallback). Accept the id unvalidated and keep the pinned
+                // version: the relay validates both at the next preflight.
+                if let PatchDeploymentId::PinTo { id } = update_deployment_id
+                    && schema
+                        .get_deployment(&pinned_deployment.deployment_id)
+                        .is_none()
+                {
+                    return Ok(Some(*id));
+                }
                 return Err(ResumeInvocationResponse::DeploymentNotFound);
             };
 
@@ -326,6 +336,27 @@ mod tests {
     }
 
     #[test]
+    fn resolve_pin_to_unregistered_deployment_when_pinned_to_unregistered_one() {
+        let meta = mock_metadata(
+            Some(ServiceProtocolVersion::V5),
+            InvocationTarget::mock_service(),
+        );
+        let new_deployment_id = DeploymentId::new();
+
+        assert_eq!(
+            resolve_pinned_deployment(
+                Some(&PatchDeploymentId::PinTo {
+                    id: new_deployment_id
+                }),
+                None,
+                &meta,
+                Some(&MockDeploymentMetadataRegistry::default()),
+            ),
+            Ok(Some(new_deployment_id))
+        );
+    }
+
+    #[test]
     fn resolve_compatible_repins_via_pin_to_and_latest() {
         let invocation_target = InvocationTarget::mock_service();
         let mut dep = Deployment::mock();
@@ -385,14 +416,19 @@ mod tests {
             })
         );
 
-        // Unknown deployment id.
+        // Unknown deployment id, for an invocation pinned to a registered deployment (pinned to an
+        // unregistered one, it's accepted: see the schemaless case above).
+        let registered_pin = InFlightInvocationMetadata {
+            pinned_deployment: Some(PinnedDeployment::new(dep_id, pinned_version)),
+            ..meta
+        };
         assert_eq!(
             resolve_pinned_deployment(
                 Some(&PatchDeploymentId::PinTo {
                     id: DeploymentId::new()
                 }),
                 None,
-                &meta,
+                &registered_pin,
                 Some(&schemas),
             ),
             Err(ResumeInvocationResponse::DeploymentNotFound)
