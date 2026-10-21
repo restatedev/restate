@@ -185,7 +185,7 @@ pub struct IngressOptions {
 
     /// # Experimental generic invoke endpoint
     ///
-    /// Enables `POST /restate/generic/call` and `POST /restate/generic/send`. Their body is an
+    /// Enables `POST /restate/call` and `POST /restate/send` (nothing after the verb). Their body is an
     /// envelope (`application/vnd.restate.generic-invocation.v1+cbor` or `+json`) carrying the
     /// target, its type, scope, retentions, headers and payload, applied without consulting the
     /// schema registry. Whoever can reach the ingress decides the semantics of the invocations:
