@@ -26,13 +26,12 @@ message PreflightRequest {
   optional string pinned_deployment_id = 8;
   optional uint32 pinned_protocol_version = 9;
 
-  reserved 10;
   // For the relay's retry policy: the failed attempts it should count, 0 on a first try. How the
   // runtime counts is its choice and may change: v1 runtimes send the same value as
   // StartMessage.retry_count_since_last_stored_entry (failed attempts since the invocation last
   // stored a command, reset on progress, not exact across leader changes); a later runtime may send
   // a durable count. It can go backward: the relay just retries more.
-  uint32 attempt = 11;
+  uint32 attempt = 10;
 }
 
 enum ProtocolType {
