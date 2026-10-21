@@ -117,8 +117,8 @@ impl StatKeyPrefix {
 
     /// Returns the typed statistic identifier when it is known to this binary.
     pub fn stat_id(&self) -> Option<StatId> {
-        // StatId::from_repr(self.stat_id_raw())
-        None
+        let id = u8::try_from(self.stat_id_raw()).ok()?;
+        StatId::from_repr(id)
     }
 
     pub fn stat_kind(&self) -> StatKind {
@@ -299,6 +299,18 @@ mod tests {
         assert_eq!(decoded.stat_id_raw(), 12);
         assert_eq!(decoded.stat_kind(), StatKind::StageStatusBucketedGauge);
         assert_eq!(payload.remaining, b"payload");
+
+        for (id, expected) in [
+            (1_u16, Some(StatId::ServiceStats)),
+            (2, Some(StatId::DeploymentStats)),
+            (3, Some(StatId::VirtualObjectStats)),
+            (257, None), // Must not truncate to ServiceStats's tag.
+        ] {
+            key[6..8].copy_from_slice(&id.to_be_bytes());
+            let decoded = StatKeyPrefix::decode_prefix(&key).unwrap().0;
+            assert_eq!(decoded.stat_id_raw(), id);
+            assert_eq!(decoded.stat_id(), expected);
+        }
 
         key[6..8].copy_from_slice(&1023_u16.to_be_bytes());
         let decoded = StatKeyPrefix::decode_prefix(&key).unwrap().0;
