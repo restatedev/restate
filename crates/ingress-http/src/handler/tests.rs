@@ -1332,7 +1332,8 @@ where
         .insert(ConnectInfo::new(SocketAddress::Anonymous));
     req.extensions_mut().insert(opentelemetry::Context::new());
 
-    let handler_fut = Handler::new(Live::from_value(schemas), Arc::new(dispatcher)).oneshot(req);
+    let handler_fut =
+        Handler::new(Live::from_value(schemas), Arc::new(dispatcher), false).oneshot(req);
 
     handler_fut.await.unwrap()
 }
@@ -1369,6 +1370,7 @@ where
         .service(Handler::new(
             Live::from_value(mock_schemas()),
             Arc::new(dispatcher),
+            false,
         ));
 
     svc.oneshot(req).await.unwrap()

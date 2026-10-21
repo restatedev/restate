@@ -138,12 +138,18 @@ where
 
         // The tower stack below is built once, so these are snapshotted at startup and only
         // picked up again on restart. Per-connection settings are live-loaded in the accept loop.
-        let (concurrency_limit, request_size_limit, ingestion_api_options) = {
+        let (
+            concurrency_limit,
+            request_size_limit,
+            ingestion_api_options,
+            detailed_request_metrics,
+        ) = {
             let options = ingress_options.live_load();
             (
                 options.concurrent_api_requests_limit(),
                 options.request_size_limit().get(),
                 options.ingestion_api.clone(),
+                options.detailed_request_metrics,
             )
         };
 
@@ -151,7 +157,11 @@ where
         // doesn't have a request size limit since it's a continues stream.
         let ingress_service = ServiceBuilder::new()
             .layer(RequestBodyLimitLayer::new(request_size_limit))
-            .service(Handler::new(schemas.clone(), dispatcher));
+            .service(Handler::new(
+                schemas.clone(),
+                dispatcher,
+                detailed_request_metrics,
+            ));
 
         let grpc_service = ServiceBuilder::new()
             .layer(layers::load_shed::LoadShedLayer::new(
