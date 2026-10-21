@@ -538,6 +538,18 @@ enum ResolvedTargetType {
   RESOLVED_TARGET_WORKFLOW_SHARED = 6;
 }
 
+// The callee's semantics, resolved outside the runtime. When a call carries it, the runtime uses
+// it instead of its own resolution.
+message ResolvedCallMetadata {
+  // Optional so that UNSPECIFIED is encoded too (it overrides a forged value).
+  optional ResolvedTargetType target_type = 1;
+  // The callee's retentions. Completion: for a workflow (run) handler the registry's
+  // workflow_completion_retention, otherwise its idempotency_retention. UINT64_MAX (or absent) =
+  // server default.
+  optional uint64 completion_retention_millis = 2;
+  optional uint64 journal_retention_millis = 3;
+}
+
 // Completable: Yes (two notifications: one with invocation id, then one with the actual result)
 // Fallible: Yes
 // Type: 0x0400 + D
@@ -568,13 +580,8 @@ message CallCommandMessage {
   uint32 result_completion_id = 11;
   string name = 12;
 
-  // Resolved-callee extension, see ResolvedTargetType.
-  ResolvedTargetType resolved_target_type = 1000;
-  // The callee's retentions. Completion: for a workflow (run) handler the registry's
-  // workflow_completion_retention, otherwise its idempotency_retention. UINT64_MAX (or absent) =
-  // server default. The resolver always writes both.
-  optional uint64 resolved_completion_retention_millis = 1002;
-  optional uint64 resolved_journal_retention_millis = 1003;
+  // Resolved-callee extension, see ResolvedCallMetadata.
+  optional ResolvedCallMetadata resolved_call_metadata = 1000;
 }
 
 // Notification for CallCommandMessage and OneWayCallCommandMessage
@@ -636,10 +643,8 @@ message OneWayCallCommandMessage {
   uint32 invocation_id_notification_idx = 10;
   string name = 12;
 
-  // Resolved-callee extension, see CallCommandMessage.
-  ResolvedTargetType resolved_target_type = 1000;
-  optional uint64 resolved_completion_retention_millis = 1002;
-  optional uint64 resolved_journal_retention_millis = 1003;
+  // Resolved-callee extension, see ResolvedCallMetadata.
+  optional ResolvedCallMetadata resolved_call_metadata = 1000;
 }
 
 // Completable: No

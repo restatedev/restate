@@ -1356,12 +1356,6 @@ where
                         EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
                     ))
                 );
-                // Only honored on preflight-mode streams.
-                let resolved = self.preflight.then_some(ResolvedCallSemantics {
-                    target_type: cmd.resolved_target_type,
-                    completion_retention_millis: cmd.resolved_completion_retention_millis,
-                    journal_retention_millis: cmd.resolved_journal_retention_millis,
-                });
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
@@ -1378,7 +1372,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        resolved,
+                        cmd.resolved_call_metadata,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1412,12 +1406,6 @@ where
                         EncodingError::MessageEncoding(MessageType::CallCommand, err)
                     ))
                 );
-                // Only honored on preflight-mode streams.
-                let resolved = self.preflight.then_some(ResolvedCallSemantics {
-                    target_type: cmd.resolved_target_type,
-                    completion_retention_millis: cmd.resolved_completion_retention_millis,
-                    journal_retention_millis: cmd.resolved_journal_retention_millis,
-                });
                 let request = shortcircuit!(
                     resolve_call_request(
                         self.invocation_task.schemas.live_load(),
@@ -1434,7 +1422,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        resolved,
+                        cmd.resolved_call_metadata,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1817,31 +1805,26 @@ where
     }
 }
 
-/// The resolved fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
-struct ResolvedCallSemantics {
-    target_type: i32,
-    completion_retention_millis: Option<u64>,
-    journal_retention_millis: Option<u64>,
-}
-
-impl ResolvedCallSemantics {
-    fn retentions(&self, target_ty: InvocationTargetType) -> RequestedRetentions {
-        // UINT64_MAX (or absent) means the server default.
-        let retention = |millis: Option<u64>| {
-            millis
-                .filter(|millis| *millis != u64::MAX)
-                .map(Duration::from_millis)
-        };
-        // The completion retention is the workflow completion retention for a workflow run
-        // handler, the idempotency retention otherwise.
-        let completion = retention(self.completion_retention_millis);
-        let is_workflow_run =
-            target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
-        RequestedRetentions {
-            idempotency: completion.filter(|_| !is_workflow_run),
-            workflow_completion: completion.filter(|_| is_workflow_run),
-            journal: retention(self.journal_retention_millis),
-        }
+/// The retentions of a resolved callee of type `target_ty`.
+fn resolved_retentions(
+    resolved: &proto::ResolvedCallMetadata,
+    target_ty: InvocationTargetType,
+) -> RequestedRetentions {
+    // UINT64_MAX (or absent) means the server default.
+    let retention = |millis: Option<u64>| {
+        millis
+            .filter(|millis| *millis != u64::MAX)
+            .map(Duration::from_millis)
+    };
+    // The completion retention is the workflow completion retention for a workflow run handler,
+    // the idempotency retention otherwise.
+    let completion = retention(resolved.completion_retention_millis);
+    let is_workflow_run =
+        target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
+    RequestedRetentions {
+        idempotency: completion.filter(|_| !is_workflow_run),
+        workflow_completion: completion.filter(|_| is_workflow_run),
+        journal: retention(resolved.journal_retention_millis),
     }
 }
 
@@ -1932,7 +1915,7 @@ pub struct InvokeRequest {
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
     request: InvokeRequest,
-    resolved: Option<ResolvedCallSemantics>,
+    resolved: Option<proto::ResolvedCallMetadata>,
 ) -> Result<CallRequest, CommandPreconditionError> {
     let not_found = |request: &InvokeRequest| {
         CommandPreconditionError::ServiceHandlerNotFound(
@@ -1941,44 +1924,46 @@ fn resolve_call_request(
         )
     };
 
-    // The local registry wins over the resolved fields.
-    let meta = if invocation_target_resolver
-        .resolve_latest_service_type(&request.service_name)
-        .is_some()
-    {
-        invocation_target_resolver
-            .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
-            .ok_or_else(|| not_found(&request))?
-    } else {
-        // Unregistered callees are known only through the resolved fields.
-        let Some(resolved) = resolved else {
-            return Err(not_found(&request));
-        };
-        let target_ty = match proto::ResolvedTargetType::try_from(resolved.target_type) {
-            Ok(proto::ResolvedTargetType::ResolvedTargetService) => InvocationTargetType::Service,
-            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive) => {
+    let meta = if let Some(resolved) = resolved {
+        // The callee was resolved outside the runtime.
+        let target_ty = match resolved
+            .target_type
+            .map(proto::ResolvedTargetType::try_from)
+        {
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetService)) => {
+                InvocationTargetType::Service
+            }
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             }
-            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared) => {
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared)) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
-            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow) => {
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             }
-            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared) => {
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared)) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
             }
-            Ok(proto::ResolvedTargetType::ResolvedTargetNotFound) => {
+            Some(Ok(proto::ResolvedTargetType::ResolvedTargetNotFound)) => {
                 return Err(not_found(&request));
             }
-            Ok(proto::ResolvedTargetType::Unspecified) | Err(_) => {
+            Some(Ok(proto::ResolvedTargetType::Unspecified)) | Some(Err(_)) | None => {
                 return Err(CommandPreconditionError::UnresolvedCallTarget(
                     request.service_name.to_string(),
                     request.handler_name.to_string(),
                 ));
             }
         };
-        InvocationTargetMetadata::from_external_semantics(target_ty, resolved.retentions(target_ty))
+        InvocationTargetMetadata::from_external_semantics(
+            target_ty,
+            resolved_retentions(&resolved, target_ty),
+        )
+    } else {
+        // The usual resolution: the local registry.
+        invocation_target_resolver
+            .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
+            .ok_or_else(|| not_found(&request))?
     };
 
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
@@ -2252,9 +2237,9 @@ mod tests {
         }
     }
 
-    fn resolved(target_type: proto::ResolvedTargetType) -> Option<ResolvedCallSemantics> {
-        Some(ResolvedCallSemantics {
-            target_type: target_type.into(),
+    fn resolved(target_type: proto::ResolvedTargetType) -> Option<proto::ResolvedCallMetadata> {
+        Some(proto::ResolvedCallMetadata {
+            target_type: Some(target_type.into()),
             completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
         })
@@ -2262,7 +2247,7 @@ mod tests {
 
     fn resolve(
         request: InvokeRequest,
-        resolved: Option<ResolvedCallSemantics>,
+        resolved: Option<proto::ResolvedCallMetadata>,
     ) -> std::result::Result<CallRequest, CommandPreconditionError> {
         resolve_call_request(&TestSchemas, request, resolved)
     }
@@ -2291,8 +2276,8 @@ mod tests {
                 idempotency_key: Some("idem".into()),
                 ..request("checkout", "run", "", None)
             },
-            Some(ResolvedCallSemantics {
-                target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
+            Some(proto::ResolvedCallMetadata {
+                target_type: Some(proto::ResolvedTargetType::ResolvedTargetService.into()),
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
             }),
@@ -2312,8 +2297,8 @@ mod tests {
     fn workflow_run_takes_the_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
-            Some(ResolvedCallSemantics {
-                target_type: proto::ResolvedTargetType::ResolvedTargetWorkflow.into(),
+            Some(proto::ResolvedCallMetadata {
+                target_type: Some(proto::ResolvedTargetType::ResolvedTargetWorkflow.into()),
                 completion_retention_millis: Some(120_000),
                 journal_retention_millis: Some(u64::MAX),
             }),
@@ -2370,8 +2355,8 @@ mod tests {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                Some(ResolvedCallSemantics {
-                    target_type: 42,
+                Some(proto::ResolvedCallMetadata {
+                    target_type: Some(42),
                     completion_retention_millis: None,
                     journal_retention_millis: None,
                 }),
@@ -2381,12 +2366,32 @@ mod tests {
     }
 
     #[test]
-    fn local_registry_wins_over_resolved_fields() {
+    fn resolved_fields_win_over_local_registry() {
         let call = resolve(
-            request("registered", "h", "k", None),
+            request("registered", "h", "", None),
             resolved(proto::ResolvedTargetType::ResolvedTargetService),
         )
         .unwrap();
+        assert_eq!(
+            call.invocation_target,
+            InvocationTarget::service("registered", "h")
+        );
+    }
+
+    #[test]
+    fn resolved_fields_without_target_type_are_unresolved() {
+        assert_that!(
+            resolve(
+                request("unknown", "h", "", None),
+                Some(proto::ResolvedCallMetadata::default())
+            ),
+            err(pat!(CommandPreconditionError::UnresolvedCallTarget(_, _)))
+        );
+    }
+
+    #[test]
+    fn local_registry_without_resolved_fields() {
+        let call = resolve(request("registered", "h", "k", None), None).unwrap();
         assert_eq!(
             call.invocation_target,
             InvocationTarget::virtual_object(
@@ -2395,17 +2400,6 @@ mod tests {
                 "h",
                 VirtualObjectHandlerType::Exclusive
             )
-        );
-    }
-
-    #[test]
-    fn registered_service_unknown_handler_is_not_found_with_resolved_fields() {
-        assert_that!(
-            resolve(
-                request("registered", "other", "k", None),
-                resolved(proto::ResolvedTargetType::ResolvedTargetService),
-            ),
-            err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
