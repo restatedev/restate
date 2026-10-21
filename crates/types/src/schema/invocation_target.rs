@@ -127,7 +127,7 @@ impl InvocationTargetMetadata {
 }
 
 /// Retentions of an invocation target decided outside the runtime's schema registry, e.g. by the
-/// middleware creating an invocation through the generic invoke endpoint, or by the relay for a
+/// middleware creating an invocation through the generic invoke endpoint, or upstream of the invoker for a
 /// call made from a preflight-mode stream. `None` means the server default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequestedRetentions {

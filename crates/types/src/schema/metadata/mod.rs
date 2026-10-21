@@ -1426,7 +1426,7 @@ fn is_sensitive_kafka_property(key: &str) -> bool {
 
 impl InvocationTargetMetadata {
     /// Metadata for a target whose semantics (target type, retentions) were decided outside the
-    /// schema registry: by the middleware through the generic invoke endpoint, or by the relay
+    /// schema registry: by the middleware through the generic invoke endpoint, or upstream of the invoker
     /// for a call on a preflight-mode stream.
     ///
     /// The target is public, with default input/output rules. Retentions follow the same rules as

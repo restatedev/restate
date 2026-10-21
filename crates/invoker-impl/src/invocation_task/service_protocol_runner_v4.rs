@@ -117,7 +117,7 @@ pub struct ServiceProtocolRunner<'a, Schemas> {
 
     max_awaited_future_depth: usize,
 
-    /// Whether this stream was opened in preflight mode: only then the relay-only fields of the
+    /// Whether this stream was opened in preflight mode: only then the resolved fields of the
     /// commands are honored.
     preflight: bool,
 }
@@ -1357,10 +1357,10 @@ where
                         EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
                     ))
                 );
-                let call_resolution = self.call_resolution(RelayCallSemantics {
-                    target_type: cmd.relay_target_type,
-                    completion_retention_millis: cmd.relay_completion_retention_millis,
-                    journal_retention_millis: cmd.relay_journal_retention_millis,
+                let call_resolution = self.call_resolution(ResolvedCallSemantics {
+                    target_type: cmd.resolved_target_type,
+                    completion_retention_millis: cmd.resolved_completion_retention_millis,
+                    journal_retention_millis: cmd.resolved_journal_retention_millis,
                 });
                 let request = shortcircuit!(
                     resolve_call_request(
@@ -1412,10 +1412,10 @@ where
                         EncodingError::MessageEncoding(MessageType::CallCommand, err)
                     ))
                 );
-                let call_resolution = self.call_resolution(RelayCallSemantics {
-                    target_type: cmd.relay_target_type,
-                    completion_retention_millis: cmd.relay_completion_retention_millis,
-                    journal_retention_millis: cmd.relay_journal_retention_millis,
+                let call_resolution = self.call_resolution(ResolvedCallSemantics {
+                    target_type: cmd.resolved_target_type,
+                    completion_retention_millis: cmd.resolved_completion_retention_millis,
+                    journal_retention_millis: cmd.resolved_journal_retention_millis,
                 });
                 let request = shortcircuit!(
                     resolve_call_request(
@@ -1816,12 +1816,12 @@ where
     }
 
     /// How to resolve a callee that is not in the local registry.
-    fn call_resolution(&self, relay: RelayCallSemantics) -> CallResolution {
+    fn call_resolution(&self, resolved: ResolvedCallSemantics) -> CallResolution {
         if self.preflight {
-            CallResolution::Relay(relay)
+            CallResolution::Resolved(resolved)
         } else if Configuration::pinned().worker.invoker.is_preflight() {
-            // A registered deployment calling an unregistered service: the relay didn't see the
-            // call, and nothing else can tell its semantics.
+            // A registered deployment calling an unregistered service: nothing resolved the call,
+            // and nothing else can tell its semantics.
             CallResolution::NotFound
         } else {
             CallResolution::Guess
@@ -1829,14 +1829,14 @@ where
     }
 }
 
-/// The relay-only fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
-struct RelayCallSemantics {
+/// The resolved fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
+struct ResolvedCallSemantics {
     target_type: i32,
     completion_retention_millis: Option<u64>,
     journal_retention_millis: Option<u64>,
 }
 
-impl RelayCallSemantics {
+impl ResolvedCallSemantics {
     fn retentions(&self, target_ty: InvocationTargetType) -> RequestedRetentions {
         // UINT64_MAX (or absent) means the server default.
         let retention = |millis: Option<u64>| {
@@ -1859,8 +1859,9 @@ impl RelayCallSemantics {
 
 /// How a call resolves a callee that is not in the local registry.
 enum CallResolution {
-    /// Preflight-mode stream: the relay decided the semantics of unregistered callees.
-    Relay(RelayCallSemantics),
+    /// Preflight-mode stream: the semantics of unregistered callees were resolved upstream, in
+    /// the resolved fields.
+    Resolved(ResolvedCallSemantics),
     /// Schemaless prototype modes: guess the target type from the key and the
     /// `x-restate-handler-kind` header.
     Guess,
@@ -1964,7 +1965,7 @@ fn resolve_call_request(
         )
     };
 
-    // The local registry wins over the relay's decision.
+    // The local registry wins over the resolved fields.
     let meta = if invocation_target_resolver
         .resolve_latest_service_type(&request.service_name)
         .is_some()
@@ -1974,25 +1975,27 @@ fn resolve_call_request(
             .ok_or_else(|| not_found(&request))?
     } else {
         match call_resolution {
-            CallResolution::Relay(relay) => {
-                let target_ty = match proto::RelayTargetType::try_from(relay.target_type) {
-                    Ok(proto::RelayTargetType::RelayTargetService) => InvocationTargetType::Service,
-                    Ok(proto::RelayTargetType::RelayTargetVirtualObjectExclusive) => {
+            CallResolution::Resolved(resolved) => {
+                let target_ty = match proto::ResolvedTargetType::try_from(resolved.target_type) {
+                    Ok(proto::ResolvedTargetType::ResolvedTargetService) => {
+                        InvocationTargetType::Service
+                    }
+                    Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive) => {
                         InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
                     }
-                    Ok(proto::RelayTargetType::RelayTargetVirtualObjectShared) => {
+                    Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared) => {
                         InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
                     }
-                    Ok(proto::RelayTargetType::RelayTargetWorkflow) => {
+                    Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow) => {
                         InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
                     }
-                    Ok(proto::RelayTargetType::RelayTargetWorkflowShared) => {
+                    Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared) => {
                         InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
                     }
-                    Ok(proto::RelayTargetType::RelayTargetNotFound) => {
+                    Ok(proto::ResolvedTargetType::ResolvedTargetNotFound) => {
                         return Err(not_found(&request));
                     }
-                    Ok(proto::RelayTargetType::Unspecified) | Err(_) => {
+                    Ok(proto::ResolvedTargetType::Unspecified) | Err(_) => {
                         return Err(CommandPreconditionError::UnresolvedCallTarget(
                             request.service_name.to_string(),
                             request.handler_name.to_string(),
@@ -2001,7 +2004,7 @@ fn resolve_call_request(
                 };
                 InvocationTargetMetadata::from_external_semantics(
                     target_ty,
-                    relay.retentions(target_ty),
+                    resolved.retentions(target_ty),
                 )
             }
             CallResolution::Guess => {
@@ -2293,8 +2296,8 @@ mod tests {
         }
     }
 
-    fn relay(target_type: proto::RelayTargetType) -> CallResolution {
-        CallResolution::Relay(RelayCallSemantics {
+    fn resolved(target_type: proto::ResolvedTargetType) -> CallResolution {
+        CallResolution::Resolved(ResolvedCallSemantics {
             target_type: target_type.into(),
             completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
@@ -2313,10 +2316,10 @@ mod tests {
     }
 
     #[test]
-    fn relay_type_builds_the_target_in_the_command_scope() {
+    fn resolved_type_builds_the_target_in_the_command_scope() {
         let call = resolve(
             request("checkout", "run", "", Some("tenant")),
-            relay(proto::RelayTargetType::RelayTargetService),
+            resolved(proto::ResolvedTargetType::ResolvedTargetService),
         )
         .unwrap();
         assert_eq!(
@@ -2326,14 +2329,14 @@ mod tests {
     }
 
     #[test]
-    fn relay_retentions_apply_with_server_defaults() {
+    fn resolved_retentions_apply_with_server_defaults() {
         let call = resolve(
             InvokeRequest {
                 idempotency_key: Some("idem".into()),
                 ..request("checkout", "run", "", None)
             },
-            CallResolution::Relay(RelayCallSemantics {
-                target_type: proto::RelayTargetType::RelayTargetService.into(),
+            CallResolution::Resolved(ResolvedCallSemantics {
+                target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
             }),
@@ -2353,8 +2356,8 @@ mod tests {
     fn workflow_run_takes_the_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
-            CallResolution::Relay(RelayCallSemantics {
-                target_type: proto::RelayTargetType::RelayTargetWorkflow.into(),
+            CallResolution::Resolved(ResolvedCallSemantics {
+                target_type: proto::ResolvedTargetType::ResolvedTargetWorkflow.into(),
                 completion_retention_millis: Some(120_000),
                 journal_retention_millis: Some(u64::MAX),
             }),
@@ -2367,51 +2370,51 @@ mod tests {
     fn workflow_run_defaults_to_the_workflow_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
-            relay(proto::RelayTargetType::RelayTargetWorkflow),
+            resolved(proto::ResolvedTargetType::ResolvedTargetWorkflow),
         )
         .unwrap();
         assert_eq!(call.completion_retention_duration, DAY);
     }
 
     #[test]
-    fn relay_service_with_key_is_rejected() {
+    fn resolved_service_with_key_is_rejected() {
         assert_that!(
             resolve(
                 request("checkout", "run", "k", None),
-                relay(proto::RelayTargetType::RelayTargetService),
+                resolved(proto::ResolvedTargetType::ResolvedTargetService),
             ),
             err(pat!(CommandPreconditionError::UnexpectedKey(_)))
         );
     }
 
     #[test]
-    fn relay_not_found_is_service_handler_not_found() {
+    fn resolved_not_found_is_service_handler_not_found() {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                relay(proto::RelayTargetType::RelayTargetNotFound),
+                resolved(proto::ResolvedTargetType::ResolvedTargetNotFound),
             ),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
     #[test]
-    fn relay_unspecified_is_unresolved() {
+    fn resolved_unspecified_is_unresolved() {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                relay(proto::RelayTargetType::Unspecified),
+                resolved(proto::ResolvedTargetType::Unspecified),
             ),
             err(pat!(CommandPreconditionError::UnresolvedCallTarget(_, _)))
         );
     }
 
     #[test]
-    fn relay_unknown_target_type_is_unresolved() {
+    fn unknown_resolved_target_type_is_unresolved() {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                CallResolution::Relay(RelayCallSemantics {
+                CallResolution::Resolved(ResolvedCallSemantics {
                     target_type: 42,
                     completion_retention_millis: None,
                     journal_retention_millis: None,
@@ -2422,10 +2425,10 @@ mod tests {
     }
 
     #[test]
-    fn local_registry_wins_over_relay() {
+    fn local_registry_wins_over_resolved_fields() {
         let call = resolve(
             request("registered", "h", "k", None),
-            relay(proto::RelayTargetType::RelayTargetService),
+            resolved(proto::ResolvedTargetType::ResolvedTargetService),
         )
         .unwrap();
         assert_eq!(
@@ -2440,18 +2443,18 @@ mod tests {
     }
 
     #[test]
-    fn registered_service_unknown_handler_is_not_found_with_relay() {
+    fn registered_service_unknown_handler_is_not_found_with_resolved_fields() {
         assert_that!(
             resolve(
                 request("registered", "other", "k", None),
-                relay(proto::RelayTargetType::RelayTargetService),
+                resolved(proto::ResolvedTargetType::ResolvedTargetService),
             ),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
     #[test]
-    fn registered_service_unknown_handler_is_not_found_without_relay() {
+    fn registered_service_unknown_handler_is_not_found_without_resolved_fields() {
         assert_that!(
             resolve(
                 request("registered", "other", "k", None),
