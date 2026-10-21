@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Generic invoke endpoint: `POST /restate/generic/{call|send}`.
+//! Generic invoke endpoint: `POST /restate/{call|send}`, with nothing after the verb.
 //!
 //! The body is an envelope decided by a trusted middleware, carrying the target, its type,
 //! scope, retentions, headers and payload. The runtime applies it without consulting the schema

@@ -1664,7 +1664,7 @@ async fn scoped_virtual_object_allowed() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
-// -- /restate/generic -------------------------------------------------------
+// -- /restate/{call|send} with the generic invocation envelope --------------
 
 fn enable_generic_invoke() {
     let mut config = restate_types::config::Configuration::default();
@@ -1677,7 +1677,7 @@ fn generic_request(
     content_type: &str,
     body: impl Into<Bytes>,
 ) -> Request<Full<Bytes>> {
-    hyper::Request::post(format!("http://localhost/restate/generic/{invoke_ty}"))
+    hyper::Request::post(format!("http://localhost/restate/{invoke_ty}"))
         .header("content-type", content_type)
         .body(Full::new(body.into()))
         .unwrap()

@@ -77,7 +77,7 @@ enum RequestType {
     StatusByTarget,
     /// `POST /restate/lookup`
     Lookup,
-    /// `POST /restate/generic/{call|send}` with a generic invocation envelope
+    /// `POST /restate/{call|send}` with a generic invocation envelope
     Generic(path_parsing::InvokeType),
 }
 
