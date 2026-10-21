@@ -40,13 +40,12 @@ use restate_service_protocol_v4::message_codec::{
 use restate_service_protocol_v4::{preflight, proto_lite};
 use restate_tracing_instrumentation::ServiceSpan;
 use restate_types::Scope;
-use restate_types::config::Configuration;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::{DeploymentId, EntryIndex, InvocationId};
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocationSpanContext, ServiceType,
-    SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType, X_RESTATE_HANDLER_KIND_HEADER,
+    SpanRelation, VirtualObjectHandlerType, WorkflowHandlerType,
 };
 use restate_types::journal;
 use restate_types::journal_v2::command::{CallRequest, InputCommand};
@@ -1357,7 +1356,8 @@ where
                         EncodingError::MessageEncoding(MessageType::OneWayCallCommand, err)
                     ))
                 );
-                let call_resolution = self.call_resolution(ResolvedCallSemantics {
+                // Only honored on preflight-mode streams.
+                let resolved = self.preflight.then_some(ResolvedCallSemantics {
                     target_type: cmd.resolved_target_type,
                     completion_retention_millis: cmd.resolved_completion_retention_millis,
                     journal_retention_millis: cmd.resolved_journal_retention_millis,
@@ -1378,7 +1378,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        call_resolution,
+                        resolved,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1412,7 +1412,8 @@ where
                         EncodingError::MessageEncoding(MessageType::CallCommand, err)
                     ))
                 );
-                let call_resolution = self.call_resolution(ResolvedCallSemantics {
+                // Only honored on preflight-mode streams.
+                let resolved = self.preflight.then_some(ResolvedCallSemantics {
                     target_type: cmd.resolved_target_type,
                     completion_retention_millis: cmd.resolved_completion_retention_millis,
                     journal_retention_millis: cmd.resolved_journal_retention_millis,
@@ -1433,7 +1434,7 @@ where
                                 attempt_span.span_context().clone().into()
                             )
                         },
-                        call_resolution,
+                        resolved,
                     )
                     .map_err(|e| InvokerError::CommandPrecondition(
                         self.command_index,
@@ -1814,19 +1815,6 @@ where
 
         Ok(())
     }
-
-    /// How to resolve a callee that is not in the local registry.
-    fn call_resolution(&self, resolved: ResolvedCallSemantics) -> CallResolution {
-        if self.preflight {
-            CallResolution::Resolved(resolved)
-        } else if Configuration::pinned().worker.invoker.is_preflight() {
-            // A registered deployment calling an unregistered service: nothing resolved the call,
-            // and nothing else can tell its semantics.
-            CallResolution::NotFound
-        } else {
-            CallResolution::Guess
-        }
-    }
 }
 
 /// The resolved fields of a `CallCommandMessage`/`OneWayCallCommandMessage`.
@@ -1855,18 +1843,6 @@ impl ResolvedCallSemantics {
             journal: retention(self.journal_retention_millis),
         }
     }
-}
-
-/// How a call resolves a callee that is not in the local registry.
-enum CallResolution {
-    /// Preflight-mode stream: the semantics of unregistered callees were resolved upstream, in
-    /// the resolved fields.
-    Resolved(ResolvedCallSemantics),
-    /// Schemaless prototype modes: guess the target type from the key and the
-    /// `x-restate-handler-kind` header.
-    Guess,
-    /// The callee doesn't exist.
-    NotFound,
 }
 
 /// What the relay chose for this attempt, validated.
@@ -1956,7 +1932,7 @@ pub struct InvokeRequest {
 fn resolve_call_request(
     invocation_target_resolver: &impl InvocationTargetResolver,
     request: InvokeRequest,
-    call_resolution: CallResolution,
+    resolved: Option<ResolvedCallSemantics>,
 ) -> Result<CallRequest, CommandPreconditionError> {
     let not_found = |request: &InvokeRequest| {
         CommandPreconditionError::ServiceHandlerNotFound(
@@ -1974,55 +1950,35 @@ fn resolve_call_request(
             .resolve_latest_invocation_target(&request.service_name, &request.handler_name)
             .ok_or_else(|| not_found(&request))?
     } else {
-        match call_resolution {
-            CallResolution::Resolved(resolved) => {
-                let target_ty = match proto::ResolvedTargetType::try_from(resolved.target_type) {
-                    Ok(proto::ResolvedTargetType::ResolvedTargetService) => {
-                        InvocationTargetType::Service
-                    }
-                    Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive) => {
-                        InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
-                    }
-                    Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared) => {
-                        InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
-                    }
-                    Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow) => {
-                        InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
-                    }
-                    Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared) => {
-                        InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
-                    }
-                    Ok(proto::ResolvedTargetType::ResolvedTargetNotFound) => {
-                        return Err(not_found(&request));
-                    }
-                    Ok(proto::ResolvedTargetType::Unspecified) | Err(_) => {
-                        return Err(CommandPreconditionError::UnresolvedCallTarget(
-                            request.service_name.to_string(),
-                            request.handler_name.to_string(),
-                        ));
-                    }
-                };
-                InvocationTargetMetadata::from_external_semantics(
-                    target_ty,
-                    resolved.retentions(target_ty),
-                )
+        // Unregistered callees are known only through the resolved fields.
+        let Some(resolved) = resolved else {
+            return Err(not_found(&request));
+        };
+        let target_ty = match proto::ResolvedTargetType::try_from(resolved.target_type) {
+            Ok(proto::ResolvedTargetType::ResolvedTargetService) => InvocationTargetType::Service,
+            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             }
-            CallResolution::Guess => {
-                // The handler kind (shared vs exclusive) can't be derived without a schema, so
-                // honor the well-known handler-kind header if the caller set it (defaults to
-                // exclusive).
-                let handler_kind = request
-                    .headers
-                    .iter()
-                    .find(|h| h.name.eq_ignore_ascii_case(X_RESTATE_HANDLER_KIND_HEADER))
-                    .map(|h| h.value.as_ref());
-                InvocationTargetMetadata::from_external_semantics(
-                    InvocationTargetType::schemaless(!request.key.is_empty(), handler_kind),
-                    RequestedRetentions::default(),
-                )
+            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared) => {
+                InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
-            CallResolution::NotFound => return Err(not_found(&request)),
-        }
+            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow) => {
+                InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+            }
+            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared) => {
+                InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
+            }
+            Ok(proto::ResolvedTargetType::ResolvedTargetNotFound) => {
+                return Err(not_found(&request));
+            }
+            Ok(proto::ResolvedTargetType::Unspecified) | Err(_) => {
+                return Err(CommandPreconditionError::UnresolvedCallTarget(
+                    request.service_name.to_string(),
+                    request.handler_name.to_string(),
+                ));
+            }
+        };
+        InvocationTargetMetadata::from_external_semantics(target_ty, resolved.retentions(target_ty))
     };
 
     if let DeploymentStatus::Deprecated(dp_id) = meta.deployment_status {
@@ -2296,8 +2252,8 @@ mod tests {
         }
     }
 
-    fn resolved(target_type: proto::ResolvedTargetType) -> CallResolution {
-        CallResolution::Resolved(ResolvedCallSemantics {
+    fn resolved(target_type: proto::ResolvedTargetType) -> Option<ResolvedCallSemantics> {
+        Some(ResolvedCallSemantics {
             target_type: target_type.into(),
             completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
@@ -2306,9 +2262,9 @@ mod tests {
 
     fn resolve(
         request: InvokeRequest,
-        call_resolution: CallResolution,
+        resolved: Option<ResolvedCallSemantics>,
     ) -> std::result::Result<CallRequest, CommandPreconditionError> {
-        resolve_call_request(&TestSchemas, request, call_resolution)
+        resolve_call_request(&TestSchemas, request, resolved)
     }
 
     fn scope(scope: &str) -> Option<Scope> {
@@ -2335,7 +2291,7 @@ mod tests {
                 idempotency_key: Some("idem".into()),
                 ..request("checkout", "run", "", None)
             },
-            CallResolution::Resolved(ResolvedCallSemantics {
+            Some(ResolvedCallSemantics {
                 target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
@@ -2356,7 +2312,7 @@ mod tests {
     fn workflow_run_takes_the_completion_retention() {
         let call = resolve(
             request("wf", "run", "k", None),
-            CallResolution::Resolved(ResolvedCallSemantics {
+            Some(ResolvedCallSemantics {
                 target_type: proto::ResolvedTargetType::ResolvedTargetWorkflow.into(),
                 completion_retention_millis: Some(120_000),
                 journal_retention_millis: Some(u64::MAX),
@@ -2414,7 +2370,7 @@ mod tests {
         assert_that!(
             resolve(
                 request("unknown", "h", "", None),
-                CallResolution::Resolved(ResolvedCallSemantics {
+                Some(ResolvedCallSemantics {
                     target_type: 42,
                     completion_retention_millis: None,
                     journal_retention_millis: None,
@@ -2456,33 +2412,16 @@ mod tests {
     #[test]
     fn registered_service_unknown_handler_is_not_found_without_resolved_fields() {
         assert_that!(
-            resolve(
-                request("registered", "other", "k", None),
-                CallResolution::Guess
-            ),
+            resolve(request("registered", "other", "k", None), None),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
         );
     }
 
     #[test]
-    fn call_resolution_from_non_preflight_stream_is_not_found() {
+    fn unregistered_callee_without_resolved_fields_is_not_found() {
         assert_that!(
-            resolve(request("unknown", "h", "k", None), CallResolution::NotFound),
+            resolve(request("unknown", "h", "k", None), None),
             err(pat!(CommandPreconditionError::ServiceHandlerNotFound(_, _)))
-        );
-    }
-
-    #[test]
-    fn call_resolution_is_guessed_in_other_modes() {
-        let call = resolve(request("unknown", "h", "k", None), CallResolution::Guess).unwrap();
-        assert_eq!(
-            call.invocation_target,
-            InvocationTarget::virtual_object(
-                "unknown",
-                "k",
-                "h",
-                VirtualObjectHandlerType::Exclusive
-            )
         );
     }
 
