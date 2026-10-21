@@ -18,7 +18,7 @@ For example, use `stage = 'running'` to find groups with running entries, or
 It does not perform cross-partition aggregation, allowing limited queries to
 return results without first aggregating every matching virtual object.
 
-In v1.8, collection is enabled with:
+In v1.8.2, collection is enabled with:
 
 ```toml
 [common]
@@ -37,6 +37,6 @@ scanning every VQueue or individual entry.
 
 ### Migration Guidance
 
-On v1.8, enable the option and restart the affected nodes. Existing VQueue entries are included
+On v1.8.2, enable the option and restart the affected nodes. Existing VQueue entries are included
 automatically; entries that have already been purged and legacy invocations without VQueue entries
 are not counted. Secondary indexes do not need to be enabled.

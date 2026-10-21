@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use restate_types::config::Configuration;
-use restate_types::{RESTATE_VERSION_1_8_0, SemanticRestateVersion};
+use restate_types::{RESTATE_VERSION_1_8_2, SemanticRestateVersion};
 use restate_util_string::ReString;
 
 use crate::{MigrationError, PartitionStore};
@@ -29,7 +29,7 @@ impl StorageFeature for super::IndexesV1Feature {
     fn min_required_version() -> &'static SemanticRestateVersion {
         // todo(asoli): Needs to track the minimum version where this feature is shipped!
         // This value is temporary.
-        &RESTATE_VERSION_1_8_0
+        &RESTATE_VERSION_1_8_2
     }
 
     fn should_enable(

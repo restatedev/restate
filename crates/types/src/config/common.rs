@@ -915,7 +915,7 @@ experimental! {
     /// feature enabled. This initial scan can increase partition startup time.
     /// Also exposes the statistics SQL tables in newly created v1 and v2 query sessions.
     ///
-    /// Since v1.8.1
+    /// Since v1.8.2
     track_status_gauges,
 
     /// # Reset status gauges
@@ -928,14 +928,14 @@ experimental! {
     /// To rebuild the counts from retained VQueue entries, turn this option off,
     /// enable `experimental-enable-track-status-gauges`, and restart the nodes.
     ///
-    /// Since v1.8.1
+    /// Since v1.8.2
     status_gauges_reset,
 
     /// # [WIP] Secondary Indexes for vqueue entries
     ///
     /// Also exposes the secondary-index SQL tables in newly created v1 query sessions.
     ///
-    /// Since v1.8.1
+    /// Since v1.8.2
     indexes_v1,
 
     /// # Enables service protocol v8
@@ -944,9 +944,9 @@ experimental! {
     /// adding support for reading state without recording it in the journal.
     ///
     /// Once enabled, you **cannot** roll back to previous versions
-    /// where v8 is not supported (< v1.8), as in-flight invocations might be pinned to v8.
+    /// where v8 is not supported (< v1.8.2), as in-flight invocations might be pinned to v8.
     ///
-    /// Since v1.8.0
+    /// Since v1.8.2
     protocol_v8,
 }
 

@@ -93,16 +93,17 @@ storage_features! {
     pub VqueueMetadataCleanupV1,
 
     /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment
-    /// statistics during entries' lifecycle. This storage feature indicates only that we
+    /// statistics during entries' lifecycle. This storage feature indicates that the gauges
+    /// are maintained on this partition store.
     ///
-    /// Since v1.8.1
+    /// Since v1.8.2
     pub TrackStatusGauges,
 
     /// When VQueues are enabled, PartitionStore maintains per-service and per-deployment
     /// statistics during entries' lifecycle. Additionally, this enables a new set of
     /// secondary indexes for invocations and vqueues.
     ///
-    /// Since v1.8.1
+    /// Since v1.8.2
     pub IndexesV1,
 }
 

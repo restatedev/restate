@@ -13,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
-use restate_types::{RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_9_0, SemanticRestateVersion};
+use restate_types::{RESTATE_VERSION_1_8_2, RESTATE_VERSION_1_9_0, SemanticRestateVersion};
 use restate_util_string::ReString;
 
 use crate::stats::aggregated::backfill;
@@ -28,7 +28,7 @@ impl StorageFeature for super::TrackStatusGaugesFeature {
     }
 
     fn min_required_version() -> &'static SemanticRestateVersion {
-        &RESTATE_VERSION_1_8_1
+        &RESTATE_VERSION_1_8_2
     }
 
     fn should_enable(
