@@ -1,0 +1,393 @@
+// Copyright (c) 2023 - 2026 Restate Software, Inc., Restate GmbH.
+// All rights reserved.
+//
+// Use of this software is governed by the Business Source License
+// included in the LICENSE file.
+//
+// As of the Change Date specified in that file, in accordance with
+// the Business Source License, use of this software will be governed
+// by the Apache License, Version 2.0.
+
+//! Maintains current entry counts in the same transaction as the source write.
+//!
+//! Service and object dimensions are fixed by `EntryContext`; deployment can change
+//! independently of stage/status. Each projection removes the before-contribution
+//! and adds the after-contribution, skipping writes when its membership is unchanged.
+//! Finished entries remain counted until deletion. Timestamps and attempt counters
+//! do not affect these gauges.
+
+use restate_storage_api::vqueue_table::{EntryChange, EntryContext};
+
+use crate::PartitionStoreTransaction;
+use crate::stats::EncodeStatKey;
+use crate::stats::aggregated::{
+    AggregatedStat, AggregatedStatsMut, DeploymentStats, DeploymentStatsKey, ServiceStats,
+    ServiceStatsKey, StageStatus, StageStatusGauge, VirtualObjectStats, VirtualObjectStatsKey,
+};
+
+/// Updates each aggregate's contribution independently from the same source change.
+/// The caller must gate this on the persisted storage feature and supply a before-image
+/// that includes earlier writes in the transaction. Every before-contribution must
+/// already be counted; enabling on existing entries requires a complete baseline.
+pub(super) fn on_entry_change(
+    storage: &mut PartitionStoreTransaction<'_>,
+    context: &EntryContext<'_>,
+    change: &EntryChange<'_>,
+) {
+    let kind = match change {
+        EntryChange::Insert { after } | EntryChange::Update { after, .. } => after.entry_key.kind(),
+        EntryChange::Delete { before } => before.entry_key.kind(),
+    };
+    let target = context.target;
+    let before = change.before();
+    let after = change.after();
+    let mut stats = storage.aggregated_stats();
+
+    let old_bucket = before.map(|entry| StageStatus::new(entry.stage, entry.status));
+    let new_bucket = after.map(|entry| StageStatus::new(entry.stage, entry.status));
+    update_stage_status::<ServiceStats, _>(
+        &mut stats,
+        ServiceStatsKey::borrowed(target.service(), target.handler(), kind),
+        old_bucket,
+        new_bucket,
+    );
+
+    if let Some(key) = target.virtual_object_key() {
+        update_stage_status::<VirtualObjectStats, _>(
+            &mut stats,
+            VirtualObjectStatsKey::borrowed(
+                target.service(),
+                target.scope(),
+                key,
+                target.handler(),
+                kind,
+                context.qid.partition_key(),
+            ),
+            old_bucket,
+            new_bucket,
+        );
+    }
+
+    let old_deployment = before.and_then(|entry| {
+        entry
+            .metadata
+            .deployment
+            .as_deref()
+            .map(|id| (id, StageStatus::new(entry.stage, entry.status)))
+    });
+    let new_deployment = after.and_then(|entry| {
+        entry
+            .metadata
+            .deployment
+            .as_deref()
+            .map(|id| (id, StageStatus::new(entry.stage, entry.status)))
+    });
+    match (old_deployment, new_deployment) {
+        (Some((old, old_stage)), Some((new, new_stage))) if old == new => {
+            update_stage_status::<DeploymentStats, _>(
+                &mut stats,
+                DeploymentStatsKey::borrowed(old, target.service()),
+                Some(old_stage),
+                Some(new_stage),
+            );
+        }
+        (old, new) => {
+            if let Some((id, stage)) = old {
+                stats.decrement_stage_status::<DeploymentStats, _>(
+                    DeploymentStatsKey::borrowed(id, target.service()),
+                    stage,
+                );
+            }
+            if let Some((id, stage)) = new {
+                stats.increment_stage_status::<DeploymentStats, _>(
+                    DeploymentStatsKey::borrowed(id, target.service()),
+                    stage,
+                );
+            }
+        }
+    }
+}
+
+/// A stable aggregate key needs at most one merge, including bucket transitions.
+fn update_stage_status<S, K>(
+    stats: &mut AggregatedStatsMut<'_, '_>,
+    key: K,
+    before: Option<StageStatus>,
+    after: Option<StageStatus>,
+) where
+    S: AggregatedStat<Aggregation = StageStatusGauge>,
+    K: EncodeStatKey<S>,
+{
+    if before == after {
+        return;
+    }
+    match (before, after) {
+        (None, Some(new)) => stats.increment_stage_status::<S, _>(key, new),
+        (Some(old), None) => stats.decrement_stage_status::<S, _>(key, old),
+        (Some(old), Some(new)) => stats.transition_stage_status::<S, _>(key, old, new),
+        (None, None) => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_clock::{RoughTimestamp, UniqueTimestamp};
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_storage_api::vqueue_table::stats::EntryStatistics;
+    use restate_storage_api::vqueue_table::{
+        EntryKey, EntryMetadata, EntryStateRef, Stage, Status, WriteVQueueTable,
+    };
+    use restate_types::config::Configuration;
+    use restate_types::partition_table::Partition;
+    use restate_types::sharding::{KeyRange, PartitionId};
+    use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, HandlerRef, VQueueId};
+
+    use crate::stats::{Stat, StatValueCodec};
+    use crate::{PartitionStoreManager, StorageAccess, TableKind};
+
+    use super::*;
+
+    fn read<S: Stat>(tx: &PartitionStoreTransaction<'_>, key: impl EncodeStatKey<S>) -> S::Value
+    where
+        S::Value: Default,
+    {
+        let mut encoded = Vec::new();
+        S::encode_key(tx.partition_id(), key, &mut encoded);
+        tx.get(TableKind::Stats, encoded)
+            .unwrap()
+            .map(|value| S::Value::deserialize_from(&value).unwrap())
+            .unwrap_or_default()
+    }
+
+    #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lifecycle_changes_update_independent_contributions() {
+        RocksDbManager::init();
+        let manager = PartitionStoreManager::create(true).await.unwrap();
+        let mut store = manager
+            .open(&Partition::new(PartitionId::MIN, KeyRange::FULL), None)
+            .await
+            .unwrap();
+        let qid = VQueueId::custom(3337, "stats-lifecycle");
+        let target = EntryTargetRef::VirtualObject {
+            service: "counter",
+            key: "a",
+            scope: Some("tenant"),
+            handler: HandlerRef::UserHandler("increment"),
+        };
+        let context = EntryContext {
+            qid: &qid,
+            target: &target,
+        };
+        let key = EntryKey::new(
+            false,
+            RoughTimestamp::new(10),
+            1u64,
+            EntryId::new(EntryKind::Invocation, [1; 16]),
+        );
+        let stats = EntryStatistics::new(
+            UniqueTimestamp::try_from_parts(100, 1).unwrap(),
+            key.run_at(),
+        );
+        let metadata = EntryMetadata {
+            deployment: Some("dp_initial".into()),
+            ..EntryMetadata::default()
+        };
+        let initial = EntryStateRef {
+            stage: Stage::Inbox,
+            status: Status::New,
+            entry_key: &key,
+            metadata: &metadata,
+            stats: &stats,
+        };
+        let service_key =
+            ServiceStatsKey::borrowed("counter", Some("increment"), EntryKind::Invocation);
+        let object_key = VirtualObjectStatsKey::borrowed(
+            "counter",
+            Some("tenant"),
+            "a",
+            Some("increment"),
+            EntryKind::Invocation,
+            qid.partition_key(),
+        );
+        let deployment_a = DeploymentStatsKey::borrowed("dp_a", "counter");
+        let deployment_b = DeploymentStatsKey::borrowed("dp_b", "counter");
+
+        // Without the persisted feature, source writes must not maintain any gauge.
+        {
+            let mut tx = store.transaction();
+            tx.create_vqueue_entry_status(&context, initial);
+            assert!(read::<ServiceStats>(&tx, &service_key).is_empty());
+            assert!(read::<VirtualObjectStats>(&tx, &object_key).is_empty());
+            assert!(
+                read::<DeploymentStats>(&tx, DeploymentStatsKey::borrowed("dp_initial", "counter"))
+                    .is_empty()
+            );
+        }
+
+        let mut config = Configuration::default();
+        config.common.experimental.set_track_status_gauges(true);
+        store
+            .verify_and_run_migrations(Default::default(), &config)
+            .await
+            .unwrap();
+
+        // Aborting a source write also discards its aggregate contributions.
+        {
+            let mut tx = store.transaction();
+            tx.create_vqueue_entry_status(&context, initial);
+        }
+        let mut tx = store.transaction();
+        assert!(read::<ServiceStats>(&tx, &service_key).is_empty());
+        assert!(read::<VirtualObjectStats>(&tx, &object_key).is_empty());
+        assert!(
+            read::<DeploymentStats>(&tx, DeploymentStatsKey::borrowed("dp_initial", "counter"))
+                .is_empty()
+        );
+        tx.create_vqueue_entry_status(&context, initial);
+        assert_eq!(
+            read::<ServiceStats>(&tx, &service_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Inbox, Status::New), 1)]
+        );
+        assert_eq!(
+            read::<VirtualObjectStats>(&tx, &object_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Inbox, Status::New), 1)]
+        );
+
+        // Subsequent transitions must also work against a committed baseline.
+        tx.commit().await.unwrap();
+        drop(tx);
+        let mut tx = store.transaction();
+
+        // A status-only update must not be gated by stage or transition timestamp.
+        let started = EntryStateRef {
+            status: Status::Started,
+            ..initial
+        };
+        tx.update_vqueue_entry_status(&context, initial, started);
+        assert_eq!(
+            read::<DeploymentStats>(&tx, DeploymentStatsKey::borrowed("dp_initial", "counter"))
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Inbox, Status::Started), 1)]
+        );
+        assert_eq!(
+            read::<ServiceStats>(&tx, &service_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Inbox, Status::Started), 1)]
+        );
+        assert_eq!(
+            read::<VirtualObjectStats>(&tx, &object_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Inbox, Status::Started), 1)]
+        );
+
+        let mut current = started;
+        // Unpin, assign, repin, and remove a deployment without changing stage/status.
+        let unpinned = EntryMetadata::default();
+        let metadata_a = EntryMetadata {
+            deployment: Some("dp_a".into()),
+            ..metadata.clone()
+        };
+        let metadata_b = EntryMetadata {
+            deployment: Some("dp_b".into()),
+            ..metadata.clone()
+        };
+        for (next_metadata, expected_a, expected_b) in [
+            (&unpinned, 0, 0),
+            (&metadata_a, 1, 0),
+            (&metadata_b, 0, 1),
+            (&unpinned, 0, 0),
+        ] {
+            let next = EntryStateRef {
+                metadata: next_metadata,
+                ..current
+            };
+            tx.update_vqueue_entry_status(&context, current, next);
+            assert_eq!(
+                read::<DeploymentStats>(&tx, &deployment_a)
+                    .iter()
+                    .map(|(_, count)| count)
+                    .sum::<u64>(),
+                expected_a
+            );
+            assert_eq!(
+                read::<DeploymentStats>(&tx, &deployment_b)
+                    .iter()
+                    .map(|(_, count)| count)
+                    .sum::<u64>(),
+                expected_b
+            );
+            assert!(
+                read::<DeploymentStats>(&tx, DeploymentStatsKey::borrowed("dp_initial", "counter"))
+                    .is_empty()
+            );
+            for counts in [
+                read::<ServiceStats>(&tx, &service_key),
+                read::<VirtualObjectStats>(&tx, &object_key),
+            ] {
+                assert_eq!(
+                    counts.iter().collect::<Vec<_>>(),
+                    [(StageStatus::new(Stage::Inbox, Status::Started), 1)]
+                );
+            }
+            current = next;
+        }
+
+        // Changes irrelevant to all three projections must produce no stats writes.
+        let mut newer_stats = stats.clone();
+        newer_stats.transitioned_at = UniqueTimestamp::try_from_parts(200, 1).unwrap();
+        let newer = EntryStateRef {
+            stats: &newer_stats,
+            ..current
+        };
+        let size = tx.estimated_size_in_bytes();
+        on_entry_change(
+            &mut tx,
+            &context,
+            &EntryChange::Update {
+                before: current,
+                after: newer,
+            },
+        );
+        assert_eq!(tx.estimated_size_in_bytes(), size);
+
+        let finished = EntryStateRef {
+            stage: Stage::Finished,
+            status: Status::Succeeded,
+            metadata: &metadata_a,
+            stats: &newer_stats,
+            ..current
+        };
+        tx.update_vqueue_entry_status(&context, current, finished);
+        assert_eq!(
+            read::<ServiceStats>(&tx, &service_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Finished, Status::Succeeded), 1)]
+        );
+        assert_eq!(
+            read::<VirtualObjectStats>(&tx, &object_key)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Finished, Status::Succeeded), 1)]
+        );
+        assert_eq!(
+            read::<DeploymentStats>(&tx, &deployment_a)
+                .iter()
+                .collect::<Vec<_>>(),
+            [(StageStatus::new(Stage::Finished, Status::Succeeded), 1)]
+        );
+        tx.delete_vqueue_entry_status(&context, finished);
+        assert!(read::<ServiceStats>(&tx, &service_key).is_empty());
+        assert!(read::<VirtualObjectStats>(&tx, &object_key).is_empty());
+        assert!(read::<DeploymentStats>(&tx, &deployment_a).is_empty());
+        tx.commit().await.unwrap();
+    }
+}
