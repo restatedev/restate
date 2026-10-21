@@ -7918,6 +7918,7 @@ dependencies = [
  "ulid",
  "url",
  "vergen-gitcl",
+ "zerocopy",
 ]
 
 [[package]]
@@ -8558,6 +8559,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_with",
+ "smallvec",
  "static_assertions",
  "strum",
  "tempfile",
