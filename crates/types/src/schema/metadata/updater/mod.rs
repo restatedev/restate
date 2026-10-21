@@ -892,11 +892,12 @@ impl SchemaUpdater {
 
     pub(in crate::schema) fn add_subscription(
         &mut self,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
     ) -> Result<SubscriptionId, SchemaError> {
-        let id = SubscriptionId::default();
+        let id = id.unwrap_or_default();
 
         if self.schema.subscriptions.contains_key(&id) {
             return Err(SchemaError::Subscription(SubscriptionError::Override(id)));

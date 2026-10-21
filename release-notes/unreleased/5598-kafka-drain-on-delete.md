@@ -32,6 +32,35 @@ offset lags behind the ingested one.
 Restarts caused by configuration changes, consumer group rebalances, and server
 shutdown are unaffected.
 
+A drain that did not finish can be retried. The subscription creation request
+now accepts an optional `id`, and the CLI exposes it as
+`restate subscriptions create --id <subscription id> ...`. Creating a
+subscription with the id of the deleted one (and the same `group.id`, if it
+was set explicitly) resumes it from the committed consumer group offsets.
+Records that Restate ingested under that id, including the ones that were
+still in flight when the drain was given up, are deduplicated instead of being
+invoked again. To retry:
+
+1. Note the log-end offsets of the topic partitions, for example from
+   `kafka-consumer-groups.sh --describe --group <group>`. The group is the
+   subscription id unless `group.id` was set; both are shown by
+   `GET /subscriptions/<subscription id>`.
+2. Recreate the subscription under the same id.
+3. Wait until the committed offset of every partition is past the log-end
+   offset noted in step 1. Only records accepted by Restate are committed, so
+   this guarantees that nothing from the previous attempt is still pending.
+   Deleting earlier can end the drain below what Restate actually ingested.
+4. Delete the subscription again and follow the log lines as described above.
+
+Restate's `restate.kafka_ingress.consumer.lag` metric reports the same lag
+per partition, but only when `statistics.interval.ms` is set on the
+subscription or the Kafka cluster, since librdkafka emits no statistics by
+default.
+
+Restate never forgets the ingested offsets of a subscription id, so do not
+reuse an id after resetting its consumer group offsets in order to replay
+records: the replayed records would be dropped as duplicates.
+
 ### Why This Matters
 This makes it possible to delete a subscription and hand its topics over to
 another consumer, in particular when following the
@@ -60,8 +89,9 @@ ingress integration:
 
    Partitions that logged `no records were ingested` can keep the consumer
    group's current offset. Partitions without any `drained` or `failed` line
-   may have had records in flight when the drain was given up; starting from
-   an older offset re-delivers those records, starting from a newer one skips
+   may have had records in flight when the drain was given up; retry the
+   drain as described above, or accept that starting the integration from an
+   older offset re-delivers those records and starting from a newer one skips
    them.
 
 Starting the integration from an offset older than the one Restate ingested

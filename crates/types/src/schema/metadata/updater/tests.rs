@@ -2704,6 +2704,7 @@ mod kafka_cluster {
             // Add subscription referencing the cluster
             updater
                 .add_subscription(
+                    None,
                     "kafka://my-cluster/my-topic".parse().unwrap(),
                     format!("service://{}/greet", GREETER_SERVICE_NAME)
                         .parse()
@@ -2742,6 +2743,7 @@ mod kafka_cluster {
             // Add subscription referencing the cluster
             updater
                 .add_subscription(
+                    None,
                     "kafka://my-cluster/my-topic".parse().unwrap(),
                     format!("service://{}/greet", GREETER_SERVICE_NAME)
                         .parse()
@@ -2962,6 +2964,7 @@ mod kafka_cluster {
 
             // Add subscription referencing the cluster
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -2982,6 +2985,49 @@ mod kafka_cluster {
     }
 
     #[test]
+    fn subscription_with_explicit_id() {
+        let mut updater = SchemaUpdater::default();
+        updater
+            .add_deployment(add_deployment_request(vec![greeter_service()]))
+            .unwrap();
+        updater
+            .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+            .unwrap();
+
+        let id = SubscriptionId::new();
+        let add = |updater: &mut SchemaUpdater| {
+            updater.add_subscription(
+                Some(id),
+                "kafka://my-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(add(&mut updater).unwrap(), id);
+        assert_that!(
+            add(&mut updater),
+            err(pat!(SchemaError::Subscription(pat!(
+                SubscriptionError::Override(eq(id))
+            ))))
+        );
+
+        // the id can be reused once the subscription is gone, and defaults the consumer group
+        assert!(updater.remove_subscription(id));
+        assert_eq!(add(&mut updater).unwrap(), id);
+        let subscription = updater
+            .into_inner()
+            .get_subscription(id, Redaction::No)
+            .unwrap();
+        assert_eq!(
+            subscription.metadata().get("group.id"),
+            Some(&id.to_string())
+        );
+    }
+
+    #[test]
     fn subscription_with_nonexistent_kafka_cluster() {
         let mut updater = SchemaUpdater::default();
 
@@ -2992,6 +3038,7 @@ mod kafka_cluster {
 
         // Try to add subscription with nonexistent cluster
         let result = updater.add_subscription(
+            None,
             "kafka://nonexistent-cluster/my-topic".parse().unwrap(),
             format!("service://{}/greet", GREETER_SERVICE_NAME)
                 .parse()
@@ -3024,6 +3071,7 @@ mod kafka_cluster {
 
             // Add subscription
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -3068,6 +3116,7 @@ mod kafka_cluster {
             metadata.insert("custom.property".to_string(), "non-sensitive".to_string());
 
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -3195,6 +3244,7 @@ mod kafka_cluster {
 
             // Add subscription referencing the config cluster
             updater.add_subscription(
+                None,
                 "kafka://config-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()

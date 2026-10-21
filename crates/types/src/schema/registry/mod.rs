@@ -34,7 +34,7 @@ use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{
-    KafkaClusterError, SchemaError, SchemaUpdater, ServiceError,
+    KafkaClusterError, SchemaError, SchemaUpdater, ServiceError, SubscriptionError,
 };
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
@@ -64,6 +64,7 @@ impl SchemaRegistryError {
             SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Service(ServiceError::DifferentType { .. })
+                | SchemaError::Subscription(SubscriptionError::Override(_))
                 | SchemaError::KafkaCluster(KafkaClusterError::AlreadyExists { .. })
                 | SchemaError::KafkaCluster(
                     KafkaClusterError::RemovalLeadsToOrphanSubscription { .. },
@@ -811,6 +812,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
 
     pub async fn create_subscription(
         &self,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         options: Option<HashMap<String, String>>,
@@ -819,7 +821,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .metadata_service
             .update(|schema| {
                 SchemaUpdater::update_and_return(schema, |updater| {
-                    updater.add_subscription(source.clone(), sink.clone(), options.clone())
+                    updater.add_subscription(id, source.clone(), sink.clone(), options.clone())
                 })
                 .map_err(Into::into)
             })

@@ -48,7 +48,7 @@ where
 {
     let subscription = state
         .schema_registry
-        .create_subscription(payload.source, payload.sink, payload.options)
+        .create_subscription(payload.id, payload.source, payload.sink, payload.options)
         .await
         .inspect_err(|e| warn_it!(e))?;
 
