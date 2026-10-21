@@ -51,8 +51,4 @@ message PreflightResponse {
   ProtocolType protocol_type = 3;
   // The deployment's SDK version (what x-restate-server would have said). Introspection only.
   optional string sdk_version = 4;
-
-  // 10-19 reserved for per-attempt tunables (future, see 90-future.md): inactivity timeout,
-  // abort timeout, state preload policy.
-  reserved 10 to 19;
 }
