@@ -93,9 +93,70 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
     }
 }
 
+#[derive(Debug, Clone)]
 pub(crate) enum PhysicalScan<B> {
     Prefix(KeyKind, B),
     RangeExclusive(KeyKind, ScanMode, B, B),
+}
+
+impl<B: AsRef<[u8]>> PhysicalScan<B> {
+    /// Whether a potential seek target lies inside this scan's original bounds.
+    /// Prefix scans test the byte prefix; range scans use `start <= key < end`.
+    /// The target need not be a stored or decodable key. This checks byte bounds,
+    /// not field predicates or the key-kind encoding.
+    #[allow(dead_code)] // Used by the subsequent generic physical scan.
+    pub(crate) fn contains_key<K: AsRef<[u8]>>(&self, key: K) -> bool {
+        let key = key.as_ref();
+        match self {
+            Self::Prefix(_, prefix) => key.starts_with(prefix.as_ref()),
+            Self::RangeExclusive(_, _, start, end) => start.as_ref() <= key && key < end.as_ref(),
+        }
+    }
+}
+
+impl PhysicalScan<Bytes> {
+    /// Intersects exact byte bounds. Recompute the seek mode from the final
+    /// interval so local ownership and query restrictions share one boundary.
+    pub(crate) fn intersect(self, other: &Self) -> Option<Self> {
+        if let (Self::Prefix(kind, left), Self::Prefix(other_kind, right)) = (&self, other) {
+            if kind != other_kind {
+                return None;
+            }
+            return if left.starts_with(right) {
+                Some(self)
+            } else if right.starts_with(left) {
+                Some(other.clone())
+            } else {
+                None
+            };
+        }
+        let (kind, start, end) = self.byte_bounds();
+        let (other_kind, other_start, other_end) = other.byte_bounds();
+        if kind != other_kind {
+            return None;
+        }
+        let start = start.max(other_start);
+        let end = end.min(other_end);
+        (start < end)
+            .then(|| Self::RangeExclusive(kind, ScanMode::from_range(&start, &end), start, end))
+    }
+
+    fn byte_bounds(&self) -> (KeyKind, Bytes, Bytes) {
+        match self {
+            Self::RangeExclusive(kind, _, start, end) => (*kind, start.clone(), end.clone()),
+            Self::Prefix(kind, prefix) => {
+                let mut end = BytesMut::from(prefix.as_ref());
+                // Every physical prefix starts with an incrementable KeyKind.
+                let last = end
+                    .iter()
+                    .rposition(|byte| *byte != u8::MAX)
+                    .expect("physical prefix must contain an incrementable key kind");
+                end[last] += 1;
+                end.truncate(last + 1);
+                (*kind, prefix.clone(), end.freeze())
+            }
+        }
+    }
 }
 
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
@@ -300,5 +361,57 @@ mod tests {
         bytes.put_u64(u64::MAX);
 
         verify_binary_increment(&mut bytes);
+    }
+
+    #[test]
+    fn intersected_bounds_match_conjunction_including_prefix_carries() {
+        let kind = KeyKind::State;
+        let bytes = |suffix: &[u8]| {
+            let mut bytes = BytesMut::from(&kind.as_bytes()[..]);
+            bytes.extend_from_slice(suffix);
+            bytes.freeze()
+        };
+        let scans = [
+            PhysicalScan::Prefix(kind, bytes(&[])),
+            PhysicalScan::Prefix(kind, bytes(&[0])),
+            PhysicalScan::Prefix(kind, bytes(&[255])),
+            PhysicalScan::Prefix(kind, bytes(&[255, 255])),
+            PhysicalScan::RangeExclusive(kind, ScanMode::TotalOrder, bytes(&[0]), bytes(&[255])),
+            PhysicalScan::RangeExclusive(
+                kind,
+                ScanMode::TotalOrder,
+                bytes(&[0, 1]),
+                bytes(&[255, 255]),
+            ),
+            PhysicalScan::Prefix(
+                KeyKind::ScopedState,
+                Bytes::copy_from_slice(KeyKind::ScopedState.as_bytes()),
+            ),
+        ];
+        let mut keys = vec![
+            bytes(&[]),
+            Bytes::copy_from_slice(kind.exclusive_upper_bound().as_slice()),
+        ];
+        for first in [0, 1, 254, 255] {
+            keys.push(bytes(&[first]));
+            for second in [0, 1, 254, 255] {
+                keys.push(bytes(&[first, second]));
+                keys.push(bytes(&[first, second, 0]));
+            }
+        }
+        for left in &scans {
+            for right in &scans {
+                let intersection = left.clone().intersect(right);
+                for key in &keys {
+                    assert_eq!(
+                        intersection
+                            .as_ref()
+                            .is_some_and(|scan| scan.contains_key(key)),
+                        left.contains_key(key) && right.contains_key(key),
+                        "intersection_is_exact_byte_conjunction: left={left:?}, right={right:?}, key={key:?}",
+                    );
+                }
+            }
+        }
     }
 }

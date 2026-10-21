@@ -8527,6 +8527,7 @@ dependencies = [
  "futures",
  "futures-util",
  "googletest",
+ "itertools 0.15.0",
  "jiff",
  "metrics",
  "num-bigint 0.5.1",
@@ -8545,6 +8546,7 @@ dependencies = [
  "restate-rocksdb",
  "restate-service-protocol-v4",
  "restate-storage-api",
+ "restate-storage-query-api",
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
@@ -8567,6 +8569,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "zerocopy",
 ]
 
 [[package]]
