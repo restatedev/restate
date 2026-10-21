@@ -16,6 +16,10 @@
 //! supports range scans, but iteration does not imply lexicographic state-key order.
 //! See the [key encoding families](crate::keys#two-encoding-families).
 
+mod scan;
+
+pub use scan::{ScopedStateTable, StateTable};
+
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
