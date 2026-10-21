@@ -52,6 +52,7 @@ rocksdb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_with = { workspace = true, features = ["hex"] }
+smallvec = { workspace = true }
 static_assertions = { workspace = true }
 strum = { workspace = true }
 tempfile = { workspace = true }

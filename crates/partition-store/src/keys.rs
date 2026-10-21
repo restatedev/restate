@@ -206,6 +206,9 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
+
+    /// Stats and partition-level aggregates
+    Stats,
 }
 
 impl KeyKind {
@@ -269,8 +272,10 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
+
             // zS prefix for partition-level counters and statistics. Those statistics
             // will need to be reconstructed on partition split.
+            KeyKind::Stats => b"zS",
         }
     }
 
@@ -314,6 +319,7 @@ impl KeyKind {
             b"qS" => Some(KeyKind::VQueueSuspendedStage),
             b"qP" => Some(KeyKind::VQueuePausedStage),
             b"qF" => Some(KeyKind::VQueueFinishedStage),
+            b"zS" => Some(KeyKind::Stats),
             _ => None,
         }
     }
@@ -352,6 +358,7 @@ impl KeyKind {
 
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
+            KeyKind::Stats => crate::stats::full_merge(key, existing_val, operands),
             _ => None,
         }
     }
@@ -373,7 +380,10 @@ impl KeyKind {
         };
 
         trace!(?kind, "partial merge {} operands", operands.len());
-        None
+        match kind {
+            KeyKind::Stats => crate::stats::partial_merge(key, operands),
+            _ => None,
+        }
     }
 }
 
