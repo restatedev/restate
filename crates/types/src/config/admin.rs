@@ -12,7 +12,7 @@ use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use http::HeaderName;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::serde_as;
 use tokio::sync::Semaphore;
 
@@ -40,6 +40,32 @@ pub struct AdminOptions {
     /// [Deprecated] Use `advertised-address` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) advertised_admin_endpoint: Option<AdvertisedAddress<AdminPort>>,
+
+    /// # Advertised schema registry endpoint
+    ///
+    /// Absolute http(s) URL of the external schema registry, as reachable from the browser. Reported
+    /// by `GET /version` for the Web UI; Restate never calls it.
+    ///
+    /// Since v1.8.1
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_absolute_http_url"
+    )]
+    pub experimental_advertised_schema_registry_endpoint: Option<String>,
+
+    /// # Advertised ingress mux endpoint
+    ///
+    /// Absolute http(s) URL of the ingress mux, as reachable from the browser. Reported by
+    /// `GET /version` for the Web UI; Restate never calls it.
+    ///
+    /// Since v1.8.1
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_absolute_http_url"
+    )]
+    pub experimental_advertised_ingress_mux_endpoint: Option<String>,
 
     /// # Deployment routing headers
     ///
@@ -123,6 +149,8 @@ impl Default for AdminOptions {
     fn default() -> Self {
         Self {
             advertised_admin_endpoint: None,
+            experimental_advertised_schema_registry_endpoint: None,
+            experimental_advertised_ingress_mux_endpoint: None,
             admin_listener_options: Default::default(),
             // max is limited by Tower's LoadShedLayer.
             deployment_routing_headers: vec![],
@@ -134,5 +162,54 @@ impl Default for AdminOptions {
             disable_web_ui: false,
             storage_accounting_update_interval: None,
         }
+    }
+}
+
+fn deserialize_absolute_http_url<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    let Some(url) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    let uri: http::Uri = url.parse().map_err(serde::de::Error::custom)?;
+    if !matches!(uri.scheme_str(), Some("http" | "https")) || uri.authority().is_none() {
+        return Err(serde::de::Error::custom(format!(
+            "'{url}' is not an absolute http(s) URL"
+        )));
+    }
+    Ok(Some(url))
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn with_schema_registry_endpoint(url: &str) -> serde_json::Result<AdminOptions> {
+        let mut value = serde_json::to_value(AdminOptions::default()).unwrap();
+        value["experimental-advertised-schema-registry-endpoint"] = json!(url);
+        serde_json::from_value(value)
+    }
+
+    #[test]
+    fn advertised_endpoint_accepts_absolute_http_url() {
+        let options = with_schema_registry_endpoint("https://registry.example.com:8443").unwrap();
+        assert_eq!(
+            options
+                .experimental_advertised_schema_registry_endpoint
+                .as_deref(),
+            Some("https://registry.example.com:8443")
+        );
+    }
+
+    #[test]
+    fn advertised_endpoint_rejects_relative_url() {
+        assert!(with_schema_registry_endpoint("/registry").is_err());
+    }
+
+    #[test]
+    fn advertised_endpoint_rejects_non_http_scheme() {
+        assert!(with_schema_registry_endpoint("ftp://registry.example.com").is_err());
     }
 }

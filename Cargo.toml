@@ -97,6 +97,7 @@ restate-types = { path = "crates/types" }
 restate-utoipa = { path = "crates/utoipa" }
 restate-vqueues = { path = "crates/vqueues" }
 restate-wal-protocol = { path = "crates/wal-protocol" }
+restate-web-ui = { path = "crates/web-ui" }
 restate-worker = { path = "crates/worker" }
 restate-worker-api = { path = "crates/worker-api" }
 restate-ingestion-client = { path = "crates/ingestion-client" }
@@ -189,6 +190,7 @@ hyper-rustls = { version = "0.27.7", default-features = false, features = [
     "logging",
 ] }
 hyper-util = { version = "0.1" }
+include_dir = "0.7.4"
 indexmap = "2.12"
 itertools = "0.15.0"
 jiff = "0.2.17"
@@ -300,6 +302,7 @@ wildmatch = "2.6.1"
 x509-parser = "0.18.1"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 zerocopy = { version = "0.8", features = ["derive", "simd"] }
+zip = "9.0"
 zstd = { version = "0.14.0" }
 
 [patch.crates-io.restate-workspace-hack]

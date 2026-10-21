@@ -77,6 +77,16 @@ pub struct VersionInformation {
     ///
     /// Ingress endpoint that the Web UI should use to interact with.
     pub ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
+    /// # Schema registry endpoint
+    ///
+    /// External schema registry endpoint that the Web UI should use, if configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_registry_endpoint: Option<String>,
+    /// # Ingress mux endpoint
+    ///
+    /// Ingress mux endpoint that the Web UI should use, if configured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingress_mux_endpoint: Option<String>,
 
     /// # Restate experimental features
     ///
