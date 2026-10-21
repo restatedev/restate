@@ -32,13 +32,16 @@ use restate_types::partition_table::PartitionTable;
 use restate_types::{
     Version, Versioned,
     logs::metadata::Logs,
-    net::address::{AdvertisedAddress, FabricPort},
+    net::address::{AdvertisedAddress, ControlPort},
     nodes_config::{NodesConfiguration, Role},
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
 };
 
 use crate::util::grpc_channel;
+
+#[cfg(test)]
+mod tests;
 
 /// A wrapper around errors::SimplStatus but decorates
 /// the error message with possibly helpful hints for the
@@ -107,13 +110,13 @@ impl std::error::Error for SimpleStatusWrapper {
 #[derive(Clone, Parser, Collect, Debug)]
 pub struct TlsOpts {
     /// Path to PEM-encoded CA certificate(s) for verifying the server certificate of
-    /// TLS-secured fabric ports (`https://` addresses). Sufficient on its own for
+    /// TLS-secured control endpoints (`https://` addresses). Sufficient on its own for
     /// clusters that don't require client authentication; pair with --tls-cert and
     /// --tls-key for mTLS clusters.
     #[clap(long, global = true, env = "RESTATECTL_TLS_CA", hide = true)]
     pub tls_ca: Option<PathBuf>,
 
-    /// Path to a PEM-encoded client certificate presented to mTLS-secured fabric ports.
+    /// Path to a PEM-encoded client certificate presented to mTLS-secured control endpoints.
     #[clap(
         long,
         global = true,
@@ -136,7 +139,7 @@ pub struct TlsOpts {
 }
 
 impl TlsOpts {
-    /// The client certificate/key pair for mTLS-secured fabric ports, when provided.
+    /// The client certificate/key pair for mTLS-secured control endpoints, when provided.
     pub fn client_identity(&self) -> Option<ClientIdentityFiles<'_>> {
         Some(ClientIdentityFiles {
             cert_file: self.tls_cert.as_deref()?,
@@ -149,10 +152,11 @@ impl TlsOpts {
 pub struct ConnectionInfo {
     /// Specify one or more server addresses to connect to.
     ///
-    /// Needs access to the node-to-node address (aka node advertised address).
+    /// Accepts control or fabric addresses for initial cluster discovery.
     /// Specify multiple addresses as a comma-separated list, or pass multiple
     /// `--address=<host>` arguments. Additional addresses may be discovered
-    /// based on the configuration of reachable nodes.
+    /// based on the configuration of reachable nodes, preferring their advertised
+    /// control address and using the fabric address when no control address is published.
     #[clap(
         long,
         short('s'),
@@ -164,7 +168,7 @@ pub struct ConnectionInfo {
         global = true,
         value_delimiter = ',',
     )]
-    pub address: Vec<AdvertisedAddress<FabricPort>>,
+    pub address: Vec<AdvertisedAddress<ControlPort>>,
 
     /// Connect to a single address only, avoiding node enumeration.
     ///
@@ -178,7 +182,7 @@ pub struct ConnectionInfo {
         global = true,
         conflicts_with = "address",
     )]
-    pub single_address: Option<AdvertisedAddress<FabricPort>>,
+    pub single_address: Option<AdvertisedAddress<ControlPort>>,
 
     #[clap(flatten)]
     pub tls: TlsOpts,
@@ -193,10 +197,10 @@ pub struct ConnectionInfo {
     partition_table: Arc<Mutex<Option<PartitionTable>>>,
 
     #[clap(skip)]
-    open_connections: Arc<Mutex<HashMap<AdvertisedAddress<FabricPort>, Channel>>>,
+    open_connections: Arc<Mutex<HashMap<AdvertisedAddress<ControlPort>, Channel>>>,
 
     #[clap(skip)]
-    dead_nodes: Arc<RwLock<HashSet<AdvertisedAddress<FabricPort>>>>,
+    dead_nodes: Arc<RwLock<HashSet<AdvertisedAddress<ControlPort>>>>,
 }
 
 impl ConnectionInfo {
@@ -204,7 +208,7 @@ impl ConnectionInfo {
         self.single_address.is_some()
     }
 
-    fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress<FabricPort>> {
+    fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress<ControlPort>> {
         if let Some(addr) = &self.single_address {
             vec![addr]
         } else {
@@ -238,13 +242,13 @@ impl ConnectionInfo {
         .await
     }
 
-    async fn get_majority_consensus_addresses<'a>(
+    async fn get_majority_consensus_addresses(
         &self,
-        nodes_config: &'a NodesConfiguration,
-    ) -> Vec<&'a AdvertisedAddress<FabricPort>> {
+        nodes_config: &NodesConfiguration,
+    ) -> Vec<AdvertisedAddress<ControlPort>> {
         let mut nodes_addresses = nodes_config
             .iter()
-            .map(|(_, node)| &node.address)
+            .map(|(_, node)| node.ctrl_address().into_owned())
             .collect::<Vec<_>>();
 
         nodes_addresses.shuffle(&mut rng());
@@ -373,7 +377,7 @@ impl ConnectionInfo {
         let addresses = self.get_majority_consensus_addresses(&nodes_config).await;
 
         self.get_latest_metadata(
-            addresses.into_iter(),
+            addresses.iter(),
             (nodes_config.len() / 2) + 1,
             MetadataKind::Logs,
             guard,
@@ -400,7 +404,7 @@ impl ConnectionInfo {
         let addresses = self.get_majority_consensus_addresses(&nodes_config).await;
 
         self.get_latest_metadata(
-            addresses.into_iter(),
+            addresses.iter(),
             (nodes_config.len() / 2) + 1,
             MetadataKind::PartitionTable,
             guard,
@@ -413,7 +417,7 @@ impl ConnectionInfo {
     /// respond, otherwise keeps trying until all addresses are exhausted.
     async fn get_latest_metadata<T, M>(
         &self,
-        addresses: impl Iterator<Item = &AdvertisedAddress<FabricPort>>,
+        addresses: impl Iterator<Item = &AdvertisedAddress<ControlPort>>,
         mut stop_after_responses: usize,
         kind: MetadataKind,
         mut guard: MutexGuard<'_, Option<T>>,
@@ -555,8 +559,8 @@ impl ConnectionInfo {
         .sorted_by(|a, b| {
             // nodes for which we already have open channels get higher precedence.
             match (
-                open_connections.contains_key(&a.1.address),
-                open_connections.contains_key(&b.1.address),
+                open_connections.contains_key(a.1.ctrl_address().as_ref()),
+                open_connections.contains_key(b.1.ctrl_address().as_ref()),
             ) {
                 (true, false) => Ordering::Less,
                 (false, true) => Ordering::Greater,
@@ -567,12 +571,11 @@ impl ConnectionInfo {
         let mut errors = NodesErrors::default();
 
         for (_, node) in iterator {
-            let channel = self
-                .connect_internal(&node.address, &mut open_connections)
-                .await;
+            let address = node.ctrl_address();
+            let channel = self.connect_internal(&address, &mut open_connections).await;
 
             if let Some(channel) = channel {
-                debug!("Trying {}...", node.address);
+                debug!("Trying {address}...");
                 let result = node_operation(channel).await.map_err(Into::into);
                 match result {
                     Ok(response) => return Ok(response),
@@ -583,21 +586,21 @@ impl ConnectionInfo {
                             self.dead_nodes
                                 .write()
                                 .unwrap()
-                                .insert(node.address.clone());
+                                .insert(address.as_ref().clone());
                         }
-                        errors.error(node.address.clone(), simple_status);
+                        errors.error(address.into_owned(), simple_status);
                     }
                     Err(NodeOperationError::Terminal(status)) => {
-                        errors.error(node.address.clone(), status);
+                        errors.error(address.into_owned(), status);
                         break;
                     }
                 }
             } else {
                 errors.error(
-                    node.address.clone(),
+                    address.as_ref().clone(),
                     SimpleStatusWrapper::from(Status::unavailable(format!(
                         "Node {} was previously flagged as unreachable, not attempting to connect",
-                        node.address
+                        address
                     ))),
                 );
             }
@@ -612,7 +615,7 @@ impl ConnectionInfo {
 
     pub(crate) async fn connect(
         &self,
-        address: &AdvertisedAddress<FabricPort>,
+        address: &AdvertisedAddress<ControlPort>,
     ) -> Result<Channel, ConnectionInfoError> {
         self.connect_internal(address, &mut self.open_connections.lock().await)
             .await
@@ -624,8 +627,8 @@ impl ConnectionInfo {
     /// address was previously flagged as unreachable.
     async fn connect_internal(
         &self,
-        address: &AdvertisedAddress<FabricPort>,
-        open_connections: &mut MutexGuard<'_, HashMap<AdvertisedAddress<FabricPort>, Channel>>,
+        address: &AdvertisedAddress<ControlPort>,
+        open_connections: &mut MutexGuard<'_, HashMap<AdvertisedAddress<ControlPort>, Channel>>,
     ) -> Option<Channel> {
         if self.dead_nodes.read().unwrap().contains(address) {
             debug!(
@@ -697,14 +700,14 @@ pub enum ConnectionInfoError {
     /// The servers which did respond are included in the error.
     #[error("Could not retrieve cluster metadata. Has the cluster been provisioned yet?")]
     MetadataValueNotAvailable {
-        contacted_nodes: HashMap<AdvertisedAddress<FabricPort>, IdentResponse>,
+        contacted_nodes: HashMap<AdvertisedAddress<ControlPort>, IdentResponse>,
     },
 
     #[error("The cluster appears to not be provisioned. You can do so with `restatectl provision`")]
     ClusterNotProvisioned,
 
     #[error("Failed to decode metadata from node {0}: {1}")]
-    DecoderError(AdvertisedAddress<FabricPort>, StorageDecodeError),
+    DecoderError(AdvertisedAddress<ControlPort>, StorageDecodeError),
 
     #[error(transparent)]
     NodesErrors(NodesErrors),
@@ -718,7 +721,7 @@ pub enum ConnectionInfoError {
         "Single address mode: node {address} does not have the required role '{required_role}'. Node has roles: [{available_roles}]"
     )]
     NodeRoleMismatch {
-        address: AdvertisedAddress<FabricPort>,
+        address: AdvertisedAddress<ControlPort>,
         required_role: Role,
         available_roles: String,
     },
@@ -744,11 +747,11 @@ impl Display for NoRoleError {
 
 #[derive(Debug, Default)]
 pub struct NodesErrors {
-    node_status: Vec<(AdvertisedAddress<FabricPort>, SimpleStatusWrapper)>,
+    node_status: Vec<(AdvertisedAddress<ControlPort>, SimpleStatusWrapper)>,
 }
 
 impl NodesErrors {
-    fn error(&mut self, node: AdvertisedAddress<FabricPort>, simple_status: SimpleStatusWrapper) {
+    fn error(&mut self, node: AdvertisedAddress<ControlPort>, simple_status: SimpleStatusWrapper) {
         self.node_status.push((node, simple_status));
     }
 

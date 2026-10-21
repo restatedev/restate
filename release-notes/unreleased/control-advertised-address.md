@@ -30,6 +30,11 @@ options do not open another port.
 
 ### Impact on Users
 
-This prepares discovery for control-aware clients. Existing clients can continue
-using the fabric address; this change does not switch `restatectl` discovery to
-the separate control address.
+`restatectl` now uses each node's advertised control address for discovered-node
+requests, including node inspection, storage compaction, metadata-server
+administration, and log-server inspection. Nodes that do not publish a control
+address continue to use their fabric address.
+
+Initial discovery still uses the addresses supplied with `--address`. If you
+configure a separate control route, make sure it is reachable from `restatectl`
+and forwards the RPC services needed by your commands.
