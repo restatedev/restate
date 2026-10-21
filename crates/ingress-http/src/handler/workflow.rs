@@ -22,7 +22,6 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use super::Handler;
 use super::HandlerError;
 use super::path_parsing::WorkflowRequestType;
-use super::service_handler::schemaless_target_metadata;
 use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -96,18 +95,13 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            // Schemaless fallback: for unregistered services synthesize the metadata used only to
-            // infer the response content-type.
-            Ok(self
-                .schemas
+            self.schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .unwrap_or_else(|| {
-                    schemaless_target_metadata(invocation_target.invocation_target_ty())
-                }))
+                .ok_or(HandlerError::NotFound)
         })
     }
 
@@ -148,18 +142,13 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            // Schemaless fallback: for unregistered services synthesize the metadata used only to
-            // infer the response content-type.
-            Ok(self
-                .schemas
+            self.schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .unwrap_or_else(|| {
-                    schemaless_target_metadata(invocation_target.invocation_target_ty())
-                }))
+                .ok_or(HandlerError::NotFound)
         })
     }
 }

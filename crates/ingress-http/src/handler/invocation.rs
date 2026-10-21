@@ -16,7 +16,6 @@ use tracing::warn;
 
 use super::HandlerError;
 use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetType};
-use super::service_handler::schemaless_target_metadata;
 use super::{APPLICATION_JSON, Handler, InvocationTargetRequest};
 use crate::RequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
@@ -229,18 +228,13 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            // Schemaless fallback: for unregistered services synthesize the metadata used only to
-            // infer the response content-type.
-            Ok(self
-                .schemas
+            self.schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .unwrap_or_else(|| {
-                    schemaless_target_metadata(invocation_target.invocation_target_ty())
-                }))
+                .ok_or(HandlerError::NotFound)
         })
     }
 
@@ -272,18 +266,13 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            // Schemaless fallback: for unregistered services synthesize the metadata used only to
-            // infer the response content-type.
-            Ok(self
-                .schemas
+            self.schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .unwrap_or_else(|| {
-                    schemaless_target_metadata(invocation_target.invocation_target_ty())
-                }))
+                .ok_or(HandlerError::NotFound)
         })
     }
 

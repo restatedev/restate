@@ -1809,20 +1809,3 @@ async fn generic_endpoint_rejects_other_content_types() {
     .await;
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
-
-#[restate_core::test]
-async fn unregistered_service_is_404_in_preflight_mode() {
-    let mut config = restate_types::config::Configuration::default();
-    config.worker.invoker.single_endpoint_mode =
-        restate_types::config::SingleEndpointMode::Preflight;
-    restate_types::config::set_current_config(config);
-
-    let response = handle(
-        hyper::Request::post("http://localhost/restate/send/cron/project/create")
-            .body(Empty::<Bytes>::default())
-            .unwrap(),
-        MockRequestDispatcher::default(),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
