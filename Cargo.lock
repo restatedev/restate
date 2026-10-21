@@ -7930,7 +7930,7 @@ dependencies = [
 
 [[package]]
 name = "restate-distributed-datafusion"
-version = "1.8.1-dev"
+version = "1.8.2-dev"
 dependencies = [
  "ahash",
  "anyhow",
@@ -8972,7 +8972,7 @@ dependencies = [
 
 [[package]]
 name = "restate-storage-query-api"
-version = "1.8.1-dev"
+version = "1.8.2-dev"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9624,7 +9624,9 @@ dependencies = [
  "zerocopy",
  "zeroize",
  "zlib-rs",
+ "zstd 0.13.3",
  "zstd 0.14.0",
+ "zstd-safe 7.3.0",
  "zstd-safe 8.0.0",
  "zstd-sys",
 ]
