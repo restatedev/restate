@@ -378,7 +378,7 @@ pub(crate) enum CommandPreconditionError {
     #[error("invalid invocation id {0}: {1}")]
     InvalidInvocationId(String, IdDecodeError),
     #[error(
-        "the relay did not resolve the callee {0}/{1}, probably because the schema registry is unavailable"
+        "the callee {0}/{1} was not resolved, probably because the schema registry is unavailable"
     )]
     UnresolvedCallTarget(String, String),
 }
