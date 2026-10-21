@@ -28,7 +28,7 @@ pub enum BranchOutcome<B> {
 ///
 /// `filters` are conjoined. Each callback receives a conjunction of expressions
 /// and returns source-defined candidate information for that entire branch.
-/// Sources can build typed field domains, reject contradictions, and derive
+/// Sources can build typed column domains, reject contradictions, and derive
 /// routing consequences before the caller combines the returned alternatives.
 ///
 /// Returning [`BranchOutcome::Impossible`] proves a branch cannot be SQL TRUE.

@@ -8,7 +8,22 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Native conjunctions, column clauses, and literal conversions.
+//! Typed selections and shared predicate analysis against logical table schemas.
+//!
+//! [`Selection<T>`] is a conjunction of conditions on a [`SelectionSchema`]'s modeled columns.
+//! [`crate::define_schema!`] generates column bindings and typed clauses from the
+//! same declaration as the optional Arrow view. A selection describes matching
+//! semantics. Key preparation can conservatively retain only supported clauses;
+//! candidate reads therefore require residual filtering above materialization.
+//!
+//! [`compile`] constructs typed storage selections from supported static conjuncts.
+//! [`domain`] derives conservative candidate domains from Boolean expressions.
+//! [`SelectionSchema::analyze`] preserves alternatives for schema-defined analysis and
+//! derivation before their candidates are combined.
+//! A derived domain may include extra candidates. Physical scans enforce every
+//! constraint in their prepared key selection, not necessarily every logical
+//! clause. Callers retain the original predicate to evaluate residual expressions.
+//! Physical layouts, scan bounds, and routing belong to consumers of this analysis.
 
 mod branches;
 pub mod domain;
@@ -36,12 +51,12 @@ pub enum SelectionPrecision {
     Inexact,
 }
 
+pub use branches::{BranchOutcome, analyze_branches};
 pub use model::{
     ColumnPredicates, LiveSelection, Selection, ValuePredicate, ValuePredicateBuilder,
 };
-pub use value::{LiteralConversionError, SelectionLiteral, SelectionValue};
-
 pub use typed::{InList, comparison_domain, parse_clause};
+pub use value::{LiteralConversionError, SelectionLiteral, SelectionValue};
 
 /// Compiles supported static conjuncts against a logical table schema.
 ///
@@ -73,5 +88,3 @@ pub fn contains_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> bool {
     expr.exists(|e| Ok(e.downcast_ref::<DynamicFilterPhysicalExpr>().is_some()))
         .expect("traversal closure is infallible")
 }
-
-pub use branches::{BranchOutcome, analyze_branches};

@@ -25,7 +25,7 @@ use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
-use crate::selection::ValuePredicate;
+use super::ValuePredicate;
 
 use super::comparison_domain;
 
@@ -229,6 +229,28 @@ impl<T: Ord + Clone> Domain<T> {
                 _ => None,
             })
             .collect()
+    }
+
+    /// Derives candidate values from a finite domain without consuming it.
+    ///
+    /// Non-point intervals select everything in the output domain: mapping their
+    /// endpoints or excluded values would not describe all possible results.
+    /// Empty input maps to empty output; collisions are sorted and deduplicated.
+    /// The mapping need not preserve order or identity. For example, projecting
+    /// canonical IDs to base IDs loses incarnation information, so the caller
+    /// must retain the original constraint for residual evaluation.
+    pub fn map_values<U: Ord + Clone>(&self, mut map: impl FnMut(&T) -> U) -> Domain<U> {
+        if self.0.iter().any(|span| {
+            !matches!((&span.lower, &span.upper), (Bound::Included(a), Bound::Included(b)) if a == b)
+        }) {
+            return Domain::all();
+        }
+        Domain::values(self.0.iter().map(|span| {
+            let Bound::Included(value) = &span.lower else {
+                unreachable!("validated finite domain")
+            };
+            map(value)
+        }))
     }
 
     /// Intersects two candidate domains without introducing new values.

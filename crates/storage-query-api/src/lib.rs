@@ -8,9 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-//! Shared query interfaces and native selections.
+//! Shared query interfaces and selection analysis.
 
+pub mod scan;
 pub mod schema;
 pub mod selection;
 
-pub use schema::SelectionSchema;
+pub use scan::Table;
+pub use schema::{
+    LogicalSchema, PreparedRead, RowBuilder, SchemaBinding, SelectionSchema, ShardingScheme,
+};

@@ -11,7 +11,7 @@
 //! Compiles DataFusion physical predicates into typed storage clauses.
 //!
 //! [`parse_clause`] translates one condition using a [`SelectionSchema`]'s logical
-//! fields. The target selects each field's value type; this adapter converts
+//! columns. The target selects each column's value type; this adapter converts
 //! literals through [`SelectionValue`] and translates SQL NULL semantics. Physical
 //! key layouts, encodings, and scan bounds belong to the storage implementation.
 //! [`comparison_domain`] exposes the same literal rules to candidate-domain
@@ -20,9 +20,9 @@
 //! # Input and correctness contract
 //!
 //! Expressions must already be type-checked and coerced by DataFusion. Column
-//! names must identify unique fields of the scanned table and match the target's
-//! field tags. Column indices and the Arrow schema's nullability are not used:
-//! the target's value type determines whether a stored field can be NULL.
+//! names must identify unique columns of the scanned table and match the target's
+//! SQL bindings. Column indices and the Arrow schema's nullability are not used:
+//! the target's value type determines whether a stored column can be NULL.
 //!
 //! The caller splits top-level conjunctions and selects conditions that are safe
 //! to retain for the scan's lifetime. In particular, static scan planning must
@@ -40,12 +40,12 @@
 //!
 //! - Equality and positive literal IN lists, including reversed equality and
 //!   same-column ORs of equalities or positive IN lists.
-//! - `<`, `<=`, `>`, and `>=`, including reversed comparisons, when the field's
+//! - `<`, `<=`, `>`, and `>=`, including reversed comparisons, when the column's
 //!   value type supports order-preserving literal conversion.
-//! - `IS NULL`. An `IS NULL OR <comparison or IN>` condition on the same field
-//!   can discard the NULL arm only when the target field cannot be NULL.
+//! - `IS NULL`. An `IS NULL OR <comparison or IN>` condition on the same column
+//!   can discard the NULL arm only when the target column cannot be NULL.
 //! - Literal prefixes expressed as case-sensitive `LIKE 'prefix%'` or the
-//!   built-in `starts_with`, on fields declaring prefix support. LIKE escapes
+//!   built-in `starts_with`, on columns declaring prefix support. LIKE escapes
 //!   are decoded; other wildcard patterns remain residual.
 //!
 //! Scalar conversion preserves integer ranges and timestamp millisecond precision;
@@ -131,9 +131,9 @@ pub struct InList<'a> {
     pub negated: bool,
 }
 
-/// Compiles one supported condition against the target's logical field types.
+/// Compiles one supported condition against the target's logical column types.
 ///
-/// Returns `None` for unknown fields, unsupported expressions, or conversions that
+/// Returns `None` for unknown columns, unsupported expressions, or conversions that
 /// cannot preserve matching semantics. A condition proven to match nothing returns
 /// a clause containing an empty [`ValuePredicate::In`], rather than `None`.
 ///
@@ -175,7 +175,7 @@ pub fn parse_clause<T: SelectionSchema>(predicate: &Arc<dyn PhysicalExpr>) -> Op
     T::value_clause(T::column_from_sql(column.name())?, builder)
 }
 
-/// Borrows the input until the target selects a concrete field type.
+/// Borrows the input until the target selects a concrete column type.
 enum LiteralPredicate<'a> {
     IsNull,
     Equal(&'a ScalarValue),
@@ -252,7 +252,7 @@ fn extract_column_literal<'a>(
 }
 
 /// Parses `col IS NULL OR <comparison on col>`. TopK dynamic filters take this
-/// form for NULLS FIRST orderings, including on fields that cannot be NULL.
+/// form for NULLS FIRST orderings, including on columns that cannot be NULL.
 fn parse_null_or<T: SelectionSchema>(or: &BinaryExpr) -> Option<T::Clause> {
     let (is_null, other) = match (
         or.left().downcast_ref::<IsNullExpr>(),
@@ -270,7 +270,7 @@ fn parse_null_or<T: SelectionSchema>(or: &BinaryExpr) -> Option<T::Clause> {
     T::value_clause(T::column_from_sql(column.name())?, NonNullOr(builder))
 }
 
-/// A column compared with literals, not yet bound to the field's value type.
+/// A column compared with literals, not yet bound to its native value type.
 fn literal_predicate(predicate: &Arc<dyn PhysicalExpr>) -> Option<(&Column, LiteralPredicate<'_>)> {
     Some(
         if let Some(is_null) = predicate.downcast_ref::<IsNullExpr>() {
@@ -358,7 +358,7 @@ impl ValuePredicateBuilder for LiteralPredicate<'_> {
                     return Some(ValuePredicate::In(Vec::new()));
                 }
                 // An out-of-domain endpoint may lie on either side of the whole
-                // field domain. Keep it residual rather than treating it as empty.
+                // column domain. Keep it residual rather than treating it as empty.
                 let value = V::from_ordered_literal(selection_literal(value)?).ok()?;
                 let (lower, upper) = match op {
                     Operator::Gt => (Excluded(value), Unbounded),
@@ -442,7 +442,7 @@ fn selection_literal(value: &ScalarValue) -> Option<SelectionLiteral<'_>> {
     }
 }
 
-/// Drops SQL NULL alternatives and values proven impossible for this field.
+/// Drops SQL NULL alternatives and values proven impossible for this column.
 /// An empty IN represents no matches. Unsupported expressions or literal types
 /// reject the whole conjunct, rather than accidentally restricting its domain.
 fn collect_values<'a, V: SelectionValue>(
@@ -494,7 +494,14 @@ mod tests {
     use datafusion::physical_expr::planner::logical2physical;
     use datafusion::prelude::SessionContext;
 
-    use crate::selection::Selection;
+    use restate_types::vqueues::EntryKind;
+    use restate_util_string::ReString;
+
+    use crate::selection::{Selection, compile};
+
+    use super::*;
+
+    // The compiler's semantic fixture is independent of concrete production tables.
     crate::define_schema! {
         TestTable {
             #[starts_with]
@@ -506,12 +513,6 @@ mod tests {
     }
     use TestTableClause as Clause;
     use TestTableColumn as LogicalColumn;
-    use restate_types::vqueues::EntryKind;
-    use restate_util_string::ReString;
-
-    use crate::selection::{BranchOutcome, compile};
-
-    use super::*;
 
     #[test]
     fn timestamp_literals_preserve_millisecond_precision() {
@@ -557,7 +558,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_targets_translate_nullable_and_numeric_fields() {
+    fn generated_targets_translate_nullable_and_numeric_columns() {
         let schema = Schema::new(vec![
             ArrowField::new("label", DataType::LargeUtf8, true),
             ArrowField::new("count", DataType::UInt64, false),
@@ -726,6 +727,7 @@ mod tests {
 
     crate::define_schema! {
         ExclusionTarget {
+            #[values(["finished", "inbox", "paused", "running", "suspended"].map(ReString::from_static))]
             stage: ReString,
             handler: Option<ReString>,
         }
@@ -746,8 +748,8 @@ mod tests {
         const T: Option<bool> = Some(true);
         const F: Option<bool> = Some(false);
         const U: Option<bool> = None;
-        // This fixture declares a small, complete stage universe. Handlers remain
-        // an open nullable string domain; their sampled values are not a universe.
+        // Sample two stages from the schema's complete universe. Handlers remain
+        // an open nullable string domain; sampled values never define a universe.
         let fixture = SelectionFixture::cross_product(
             &["paused", "running"],
             &[None, Some("alpha"), Some("beta")],
@@ -761,6 +763,10 @@ mod tests {
               (stage = 'running' AND handler = 'beta')",                          [F, F, F,                   U, F, T],                  Exact,       1),
             ("(stage = 'not-a-stage' AND handler = 'alpha') OR \
               (stage = 'running' AND handler = 'beta')",                          [F, F, F,                   U, F, T],                  Exact,       1),
+            ("stage NOT IN ('finished', 'inbox', 'paused', 'running', 'suspended')", [F, F, F,                   F, F, F],                  Exact,       0),
+            ("stage NOT IN ('finished', 'inbox', 'paused', 'suspended')",           [F, F, F,                   T, T, T],                  Exact,       1),
+            ("stage NOT IN ('finished', 'inbox', 'paused', 'running', 'suspended') \
+              OR length(handler) = 5",                                           [U, T, F,                   U, T, F],                  Conservative,1),
             ("stage = 'running' OR length(handler) = 5",                          [U, T, F,                   T, T, T],                  Conservative,2),
             ("stage = 'running' AND (handler = 'alpha' OR length(handler) = 4)",  [F, F, F,                   U, T, T],                  Conservative,2),
             ("(stage = 'running' AND handler NOT IN ('alpha')) OR \
@@ -787,6 +793,23 @@ mod tests {
             1,
             "no filters leave one unconstrained branch"
         );
+        assert_eq!(
+            unconstrained[0].stage.clone().into_values(),
+            Some(
+                ["finished", "inbox", "paused", "running", "suspended"]
+                    .map(ReString::from_static)
+                    .to_vec()
+            ),
+            "normalization uses the declared universe, including unsampled values"
+        );
+        let exclusion =
+            fixture.physical("stage NOT IN ('finished', 'inbox', 'paused', 'suspended')");
+        let remaining = fixture.branch_domains(&[exclusion], 4);
+        assert_eq!(
+            remaining[0].stage.clone().into_values(),
+            Some(vec![ReString::from_static("running")]),
+            "finite normalization enumerates exactly the surviving value"
+        );
         fixture.assert_branch_candidates(
             &fixture.physical("TRUE"),
             &unconstrained,
@@ -794,14 +817,14 @@ mod tests {
             Exact,
         );
 
-        // Invariant: per-field guarantees can broaden paired alternatives, so
+        // Invariant: per-column guarantees can broaden paired alternatives, so
         // deriving from a whole branch must happen before that projection.
         let expr = fixture.physical(
             "(stage = 'paused' AND handler = 'alpha') OR \
              (stage = 'running' AND handler = 'beta')",
         );
         let branches = fixture.branch_domains(&[expr], 4);
-        let guarantees = FixtureBranch::guarantees(&branches);
+        let guarantees = ExclusionTarget::guarantees(&branches).unwrap();
         let crossed_pair = (ReString::from("paused"), Some(ReString::from("beta")));
         assert!(
             guarantees.contains(&crossed_pair),
@@ -809,7 +832,7 @@ mod tests {
         );
         assert!(
             !branches.iter().any(|branch| branch.contains(&crossed_pair)),
-            "branches preserve field relationships",
+            "branches preserve column relationships",
         );
     }
 
@@ -900,27 +923,9 @@ mod tests {
         );
     }
 
-    struct FixtureBranch {
-        stage: Domain<ReString>,
-        handler: Domain<Option<ReString>>,
-    }
-
-    impl FixtureBranch {
+    impl ExclusionTargetDomains {
         fn contains(&self, (stage, handler): &(ReString, Option<ReString>)) -> bool {
             self.stage.contains(stage) && self.handler.contains(handler)
-        }
-
-        fn guarantees(branches: &[Self]) -> Self {
-            branches.iter().fold(
-                Self {
-                    stage: Domain::empty(),
-                    handler: Domain::empty(),
-                },
-                |result, branch| Self {
-                    stage: result.stage.union(branch.stage.clone()),
-                    handler: result.handler.union(branch.handler.clone()),
-                },
-            )
         }
     }
 
@@ -1074,7 +1079,7 @@ mod tests {
             );
         }
 
-        // An impossible equality value removes nothing from a non-nullable field.
+        // An impossible equality value removes nothing from a non-nullable column.
         let negative = ScalarValue::Int64(Some(-1));
         assert!(
             comparison_domain::<u64>(Operator::NotEq, &negative)
@@ -1179,35 +1184,10 @@ mod tests {
             &self,
             filters: &[Arc<dyn PhysicalExpr>],
             limit: usize,
-        ) -> Vec<FixtureBranch> {
-            fn field_domain<V: SelectionValue + Ord + Clone>(
-                filters: &[Arc<dyn PhysicalExpr>],
-                field: ExclusionTargetColumn,
-            ) -> Domain<V> {
-                crate::selection::domain::column_domain(
-                    filters,
-                    ExclusionTarget::tag(field),
-                    |op, literal| Ok(comparison_domain(op, literal).unwrap_or_else(Domain::all)),
-                )
-                .unwrap()
-            }
-
-            let stages = Domain::values(self.rows.iter().map(|(stage, _)| stage.clone()));
-            let branches = crate::selection::analyze_branches(
-                filters,
-                std::num::NonZeroUsize::new(limit).unwrap(),
-                |conditions| {
-                    let stage = field_domain(conditions, ExclusionTargetColumn::Stage)
-                        .intersect(stages.clone());
-                    let handler = field_domain(conditions, ExclusionTargetColumn::Handler);
-                    Ok(if stage.is_empty() || handler.is_empty() {
-                        BranchOutcome::Impossible
-                    } else {
-                        BranchOutcome::Candidates(FixtureBranch { stage, handler })
-                    })
-                },
-            )
-            .unwrap();
+        ) -> Vec<ExclusionTargetDomains> {
+            let branches =
+                ExclusionTarget::analyze(filters, std::num::NonZeroUsize::new(limit).unwrap())
+                    .unwrap();
             assert!(branches.len() <= limit, "bounded branch count");
             branches
         }
@@ -1215,7 +1195,7 @@ mod tests {
         fn assert_branch_candidates(
             &self,
             expr: &Arc<dyn PhysicalExpr>,
-            branches: &[FixtureBranch],
+            branches: &[ExclusionTargetDomains],
             truth: &[Option<bool>],
             expectation: CandidateExpectation,
         ) {
@@ -1737,7 +1717,7 @@ mod tests {
         }
 
         // TopK filters for NULLS FIRST orderings keep an impossible NULL arm on
-        // non-nullable fields; the NULL arm of a nullable field stays residual.
+        // non-nullable columns; the NULL arm of a nullable column stays residual.
         let topk = col("service_name")
             .is_null()
             .or(col("service_name").gt(string(Some("beta"))));
