@@ -79,7 +79,7 @@ spec:
               value: {{ .Values.nodeName }}
             {{- end}}
             {{- if .Values.identityPrivateKey.enabled }}
-            - name: RESTATE_REQUEST_IDENTITY_PRIVATE_KEY_PEM_FILE
+            - name: RESTATE_WORKER__INVOKER__REQUEST_IDENTITY_PRIVATE_KEY_PEM_FILE
               value: /opt/private.pem
             {{- end }}
             - name: RESTATE_LOG_FILTER
