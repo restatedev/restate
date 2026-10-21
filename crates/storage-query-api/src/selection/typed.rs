@@ -509,7 +509,7 @@ mod tests {
     use restate_types::vqueues::EntryKind;
     use restate_util_string::ReString;
 
-    use crate::selection::compile;
+    use crate::selection::{BranchOutcome, compile};
 
     use super::*;
 
@@ -667,8 +667,6 @@ mod tests {
         expected: &[Option<bool>],
         matches_clause: impl Fn(&T::Clause, usize) -> bool,
     ) -> Vec<bool> {
-        assert_eq!(sql_truth(expr, batch), expected, "SQL truth: {expr}");
-
         let selection = compile::<T>(Some(expr));
         let candidates: Vec<_> = (0..batch.num_rows())
             .map(|row| match &selection {
@@ -680,6 +678,17 @@ mod tests {
                     .all(|clause| matches_clause(clause, row)),
             })
             .collect();
+        assert_candidates_preserve_sql_results(expr, batch, expected, &candidates);
+        candidates
+    }
+
+    fn assert_candidates_preserve_sql_results(
+        expr: &Arc<dyn PhysicalExpr>,
+        batch: &RecordBatch,
+        expected: &[Option<bool>],
+        candidates: &[bool],
+    ) {
+        assert_eq!(sql_truth(expr, batch), expected, "SQL truth: {expr}");
         for (row, truth) in expected.iter().enumerate() {
             assert!(
                 *truth != Some(true) || candidates[row],
@@ -687,7 +696,8 @@ mod tests {
             );
         }
 
-        let selected = filter_record_batch(batch, &BooleanArray::from(candidates.clone())).unwrap();
+        let selected =
+            filter_record_batch(batch, &BooleanArray::from(candidates.to_vec())).unwrap();
         let selected_rows = candidates
             .iter()
             .enumerate()
@@ -702,7 +712,6 @@ mod tests {
             .filter_map(|(row, truth)| (*truth == Some(true)).then_some(row))
             .collect();
         assert_eq!(actual, expected, "selection plus residual: {expr}");
-        candidates
     }
 
     fn matches_value<V: PartialOrd>(predicate: &ValuePredicate<V>, value: &V) -> bool {
@@ -728,6 +737,191 @@ mod tests {
         Exact,
         /// Extra candidates are allowed; the residual must remove them.
         Conservative,
+    }
+
+    #[test]
+    fn branches_preserve_correlations_and_discard_only_proven_impossibilities() {
+        use CandidateExpectation::{Conservative, Exact};
+
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+        // This fixture declares a small, complete stage universe. Handlers remain
+        // an open nullable string domain; their sampled values are not a universe.
+        let fixture = SelectionFixture::cross_product(
+            &["paused", "running"],
+            &[None, Some("alpha"), Some("beta")],
+        );
+        #[rustfmt::skip]
+        let cases = [
+            // SQL predicate                                                    paused: NULL alpha beta   running: NULL alpha beta   candidates   branches
+            ("(stage = 'paused' AND handler = 'alpha') OR \
+              (stage = 'running' AND handler = 'beta')",                          [U, T, F,                   U, F, T],                  Exact,       2),
+            ("(stage = 'paused' AND stage = 'running') OR \
+              (stage = 'running' AND handler = 'beta')",                          [F, F, F,                   U, F, T],                  Exact,       1),
+            ("(stage = 'not-a-stage' AND handler = 'alpha') OR \
+              (stage = 'running' AND handler = 'beta')",                          [F, F, F,                   U, F, T],                  Exact,       1),
+            ("stage = 'running' OR length(handler) = 5",                          [U, T, F,                   T, T, T],                  Conservative,2),
+            ("stage = 'running' AND (handler = 'alpha' OR length(handler) = 4)",  [F, F, F,                   U, T, T],                  Conservative,2),
+            ("(stage = 'running' AND handler NOT IN ('alpha')) OR \
+              (stage = 'paused' AND handler IN ('alpha'))",                       [U, T, F,                   U, F, T],                  Exact,       2),
+            ("(stage = 'paused' AND stage = 'running') OR \
+              handler NOT IN ('alpha', NULL)",                                   [U, F, U,                   U, F, U],                  Exact,       0),
+            ("stage = 'running' OR handler = 'alpha'",                            [U, T, F,                   T, T, T],                  Exact,       2),
+            ("(stage = 'running' OR handler = 'alpha') AND \
+              (stage = 'paused' OR handler = 'beta')",                            [U, T, F,                   U, F, T],                  Exact,       2),
+            ("FALSE OR (stage = 'running' AND handler = 'beta')",                 [F, F, F,                   U, F, T],                  Exact,       1),
+            ("TRUE",                                                              [T, T, T,                   T, T, T],                  Exact,       1),
+            ("FALSE",                                                             [F, F, F,                   F, F, F],                  Exact,       0),
+        ];
+        for (sql, truth, candidates, count) in cases {
+            let expr = fixture.physical(sql);
+            let branches = fixture.branch_domains(std::slice::from_ref(&expr), 4);
+            fixture.assert_branch_candidates(&expr, &branches, &truth, candidates);
+            assert_eq!(branches.len(), count, "surviving branches: {sql}");
+        }
+
+        let unconstrained = fixture.branch_domains(&[], 4);
+        assert_eq!(
+            unconstrained.len(),
+            1,
+            "no filters leave one unconstrained branch"
+        );
+        fixture.assert_branch_candidates(
+            &fixture.physical("TRUE"),
+            &unconstrained,
+            &[T, T, T, T, T, T],
+            Exact,
+        );
+
+        // Invariant: per-field guarantees can broaden paired alternatives, so
+        // deriving from a whole branch must happen before that projection.
+        let expr = fixture.physical(
+            "(stage = 'paused' AND handler = 'alpha') OR \
+             (stage = 'running' AND handler = 'beta')",
+        );
+        let branches = fixture.branch_domains(&[expr], 4);
+        let guarantees = FixtureBranch::guarantees(&branches);
+        let crossed_pair = (ReString::from("paused"), Some(ReString::from("beta")));
+        assert!(
+            guarantees.contains(&crossed_pair),
+            "guarantees admit crossed pairs"
+        );
+        assert!(
+            !branches.iter().any(|branch| branch.contains(&crossed_pair)),
+            "branches preserve field relationships",
+        );
+    }
+
+    #[test]
+    fn branch_budgets_broaden_safely_and_preserve_independent_conjuncts() {
+        use CandidateExpectation::Conservative;
+
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+        let fixture = SelectionFixture::cross_product(
+            &["paused", "running"],
+            &[None, Some("alpha"), Some("beta")],
+        );
+        #[rustfmt::skip]
+        let cases = [
+            // SQL predicate                                                    paused: NULL alpha beta   running: NULL alpha beta
+            ("(stage = 'paused' AND handler = 'alpha') OR \
+              (stage = 'running' AND handler = 'beta')",                          [U, T, F,                   U, F, T]),
+            ("(stage = 'running' OR handler = 'alpha') AND \
+              (stage = 'paused' OR handler = 'beta')",                            [U, T, F,                   U, F, T]),
+        ];
+        for (sql, truth) in cases {
+            let expr = fixture.physical(sql);
+            let branches = fixture.branch_domains(std::slice::from_ref(&expr), 1);
+            assert_eq!(branches.len(), 1, "branch limit: {sql}");
+            fixture.assert_branch_candidates(&expr, &branches, &truth, Conservative);
+
+            // Exercise both one expression and separately supplied conjuncts.
+            let restricted = fixture.physical(&format!("stage = 'running' AND ({sql})"));
+            for filters in [
+                vec![Arc::clone(&restricted)],
+                vec![fixture.physical("stage = 'running'"), Arc::clone(&expr)],
+            ] {
+                let branches = fixture.branch_domains(&filters, 1);
+                fixture.assert_branch_candidates(
+                    &restricted,
+                    &branches,
+                    &[F, F, F, U, F, T],
+                    Conservative,
+                );
+                assert!(
+                    branches
+                        .iter()
+                        .all(|branch| !branch.stage.contains(&ReString::from("paused"))),
+                    "independent conjunct survives branch limit: {sql}",
+                );
+            }
+        }
+
+        // Each supplied disjunction fits on its own, but their product exceeds
+        // the limit. Keeping the second filter intact must retain the first and
+        // the independent stage restriction.
+        let filters = [
+            fixture.physical("stage = 'running'"),
+            fixture.physical("stage = 'running' OR handler = 'alpha'"),
+            fixture.physical("stage = 'paused' OR handler = 'beta'"),
+        ];
+        let expr = fixture.physical(
+            "stage = 'running' AND (stage = 'running' OR handler = 'alpha') \
+             AND (stage = 'paused' OR handler = 'beta')",
+        );
+        let branches = fixture.branch_domains(&filters, 2);
+        fixture.assert_branch_candidates(&expr, &branches, &[F, F, F, U, F, T], Conservative);
+        assert_eq!(branches.len(), 2, "bounded product of separate filters");
+        assert!(
+            branches
+                .iter()
+                .all(|branch| !branch.stage.contains(&ReString::from("paused")))
+        );
+
+        // Exhaust the traversal depth without constructing exponentially many
+        // alternatives. The independently supplied stage restriction still holds.
+        let handler = fixture.physical("handler = 'alpha'");
+        let mut deep = Arc::clone(&handler);
+        for _ in 0..70 {
+            deep = Arc::new(BinaryExpr::new(deep, Operator::Or, Arc::clone(&handler)));
+        }
+        let stage = fixture.physical("stage = 'running'");
+        let filters = [Arc::clone(&stage), Arc::clone(&deep)];
+        let expr: Arc<dyn PhysicalExpr> = Arc::new(BinaryExpr::new(stage, Operator::And, deep));
+        let branches = fixture.branch_domains(&filters, 1);
+        fixture.assert_branch_candidates(&expr, &branches, &[F, F, F, U, T, F], Conservative);
+        assert!(
+            branches
+                .iter()
+                .all(|branch| !branch.stage.contains(&ReString::from("paused")))
+        );
+    }
+
+    struct FixtureBranch {
+        stage: Domain<ReString>,
+        handler: Domain<Option<ReString>>,
+    }
+
+    impl FixtureBranch {
+        fn contains(&self, (stage, handler): &(ReString, Option<ReString>)) -> bool {
+            self.stage.contains(stage) && self.handler.contains(handler)
+        }
+
+        fn guarantees(branches: &[Self]) -> Self {
+            branches.iter().fold(
+                Self {
+                    stage: Domain::empty(),
+                    handler: Domain::empty(),
+                },
+                |result, branch| Self {
+                    stage: result.stage.union(branch.stage.clone()),
+                    handler: result.handler.union(branch.handler.clone()),
+                },
+            )
+        }
     }
 
     #[test]
@@ -981,6 +1175,68 @@ mod tests {
     }
 
     impl SelectionFixture {
+        fn branch_domains(
+            &self,
+            filters: &[Arc<dyn PhysicalExpr>],
+            limit: usize,
+        ) -> Vec<FixtureBranch> {
+            fn field_domain<V: SelectionValue + Ord + Clone>(
+                filters: &[Arc<dyn PhysicalExpr>],
+                field: ExclusionTargetColumn,
+            ) -> Domain<V> {
+                crate::selection::domain::column_domain(
+                    filters,
+                    ExclusionTarget::tag(field),
+                    |op, literal| Ok(comparison_domain(op, literal).unwrap_or_else(Domain::all)),
+                )
+                .unwrap()
+            }
+
+            let stages = Domain::values(self.rows.iter().map(|(stage, _)| stage.clone()));
+            let branches = crate::selection::analyze_branches(
+                filters,
+                std::num::NonZeroUsize::new(limit).unwrap(),
+                |conditions| {
+                    let stage = field_domain(conditions, ExclusionTargetColumn::Stage)
+                        .intersect(stages.clone());
+                    let handler = field_domain(conditions, ExclusionTargetColumn::Handler);
+                    Ok(if stage.is_empty() || handler.is_empty() {
+                        BranchOutcome::Impossible
+                    } else {
+                        BranchOutcome::Candidates(FixtureBranch { stage, handler })
+                    })
+                },
+            )
+            .unwrap();
+            assert!(branches.len() <= limit, "bounded branch count");
+            branches
+        }
+
+        fn assert_branch_candidates(
+            &self,
+            expr: &Arc<dyn PhysicalExpr>,
+            branches: &[FixtureBranch],
+            truth: &[Option<bool>],
+            expectation: CandidateExpectation,
+        ) {
+            let candidates: Vec<_> = self
+                .rows
+                .iter()
+                .map(|row| branches.iter().any(|branch| branch.contains(row)))
+                .collect();
+            assert_candidates_preserve_sql_results(expr, &self.batch, truth, &candidates);
+            if matches!(expectation, CandidateExpectation::Exact) {
+                assert_eq!(
+                    candidates,
+                    truth
+                        .iter()
+                        .map(|value| *value == Some(true))
+                        .collect::<Vec<_>>(),
+                    "exact branch candidates: {expr}",
+                );
+            }
+        }
+
         // Cross every stage with every handler so NULL behavior cannot accidentally
         // depend on a correlation between columns in the fixture.
         fn cross_product(stages: &[&str], handlers: &[Option<&str>]) -> Self {

@@ -123,6 +123,11 @@ impl<T: Ord + Clone> Domain<T> {
         Self(vec![])
     }
 
+    /// Whether this domain contains no intervals and therefore no candidates.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Selects a finite set, sorting and deduplicating its values.
     pub fn values(values: impl IntoIterator<Item = T>) -> Self {
         Self(

@@ -10,6 +10,7 @@
 
 //! Native conjunctions, column clauses, and literal conversions.
 
+mod branches;
 pub mod domain;
 mod model;
 mod typed;
@@ -72,3 +73,5 @@ pub fn contains_dynamic_filter(expr: &Arc<dyn PhysicalExpr>) -> bool {
     expr.exists(|e| Ok(e.downcast_ref::<DynamicFilterPhysicalExpr>().is_some()))
         .expect("traversal closure is infallible")
 }
+
+pub use branches::{BranchOutcome, analyze_branches};
