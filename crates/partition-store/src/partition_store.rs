@@ -407,7 +407,7 @@ impl PartitionStore {
     #[allow(clippy::type_complexity)]
     fn iterator_step_for_each(
         tx: oneshot::Sender<StorageError>,
-        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send {
         let mut tx = Some(tx);
         move |item| {
@@ -419,13 +419,13 @@ impl PartitionStore {
             match item {
                 // apply the caller's function
                 Ok((key, value)) => match f((key, value)) {
-                    ControlFlow::Continue(()) => match &mut tx {
+                    ControlFlow::Continue(action) => match &mut tx {
                         Some(tx_inner) if tx_inner.is_closed() => {
                             tx = None;
                             IterAction::Stop
                         }
                         // the channel is not closed yet, keep iterating
-                        Some(_) => IterAction::Next,
+                        Some(_) => action,
                         None => panic!("Iterator continued after IterAction::Stop"),
                     },
                     ControlFlow::Break(Ok(())) => {
@@ -480,10 +480,37 @@ impl PartitionStore {
         priority: Priority,
         opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
+    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+        self.iterator_controlled_physical(name, priority, opts, scan, move |item| {
+            f(item).map_continue(|()| IterAction::Next)
+        })
+    }
+
+    /// Runs a physical scan with callback-directed navigation. Seeks must advance
+    /// and stay inside the original bounds; errors and cancellation use the same
+    /// path as ordinary for-each scans.
+    pub(crate) fn iterator_controlled_physical(
+        &self,
+        name: &'static str,
+        priority: Priority,
+        opts: ReadOptions,
+        scan: PhysicalScan<Bytes>,
+        mut f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>, IterAction> + Send + 'static,
     ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
         let (tx, rx) = oneshot::channel();
-        let on_iter = Self::iterator_step_for_each(tx, f);
+        let bounds = scan.clone();
+        let on_iter = Self::iterator_step_for_each(tx, move |(key, value)| {
+            let action = f((key, value));
+            if let ControlFlow::Continue(IterAction::Seek(target)) = &action
+                && (target.as_ref() <= key || !bounds.contains_key(target))
+            {
+                return ControlFlow::Break(Err(StorageError::Generic(anyhow::anyhow!(
+                    "scan seek must advance and remain within its bounds"
+                ))));
+            }
+            action
+        });
         self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
 
         Ok(async {
