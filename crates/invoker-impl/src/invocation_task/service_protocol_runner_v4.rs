@@ -1805,25 +1805,16 @@ where
     }
 }
 
-/// The retentions of a resolved callee of type `target_ty`.
-fn resolved_retentions(
-    resolved: &proto::ResolvedCallMetadata,
-    target_ty: InvocationTargetType,
-) -> RequestedRetentions {
+/// The retentions of a resolved callee.
+fn resolved_retentions(resolved: &proto::ResolvedCallMetadata) -> RequestedRetentions {
     // UINT64_MAX (or absent) means the server default.
     let retention = |millis: Option<u64>| {
         millis
             .filter(|millis| *millis != u64::MAX)
             .map(Duration::from_millis)
     };
-    // The completion retention is the workflow completion retention for a workflow run handler,
-    // the idempotency retention otherwise.
-    let completion = retention(resolved.completion_retention_millis);
-    let is_workflow_run =
-        target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow);
     RequestedRetentions {
-        idempotency: completion.filter(|_| !is_workflow_run),
-        workflow_completion: completion.filter(|_| is_workflow_run),
+        completion: retention(resolved.completion_retention_millis),
         journal: retention(resolved.journal_retention_millis),
     }
 }
@@ -1950,10 +1941,7 @@ fn resolve_call_request(
                 ));
             }
         };
-        InvocationTargetMetadata::from_external_semantics(
-            target_ty,
-            resolved_retentions(&resolved, target_ty),
-        )
+        InvocationTargetMetadata::from_external_semantics(target_ty, resolved_retentions(&resolved))
     } else {
         // The usual resolution: the local registry.
         invocation_target_resolver

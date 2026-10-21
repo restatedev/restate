@@ -78,9 +78,7 @@ struct Envelope<P> {
     #[serde(default)]
     delay_millis: Option<u64>,
     #[serde(default)]
-    idempotency_retention_millis: Option<u64>,
-    #[serde(default)]
-    workflow_completion_retention_millis: Option<u64>,
+    completion_retention_millis: Option<u64>,
     #[serde(default)]
     journal_retention_millis: Option<u64>,
 }
@@ -126,8 +124,7 @@ fn decode_envelope(content_type: &str, body: &[u8]) -> Result<Envelope<Bytes>, H
                 headers: envelope.headers,
                 payload: envelope.payload.map(Into::into),
                 delay_millis: envelope.delay_millis,
-                idempotency_retention_millis: envelope.idempotency_retention_millis,
-                workflow_completion_retention_millis: envelope.workflow_completion_retention_millis,
+                completion_retention_millis: envelope.completion_retention_millis,
                 journal_retention_millis: envelope.journal_retention_millis,
             })
         }
@@ -220,11 +217,8 @@ impl TryFrom<(Envelope<Bytes>, &InvokeType)> for GenericInvocation {
         let metadata = InvocationTargetMetadata::from_external_semantics(
             target_ty,
             RequestedRetentions {
-                idempotency: envelope
-                    .idempotency_retention_millis
-                    .map(Duration::from_millis),
-                workflow_completion: envelope
-                    .workflow_completion_retention_millis
+                completion: envelope
+                    .completion_retention_millis
                     .map(Duration::from_millis),
                 journal: envelope.journal_retention_millis.map(Duration::from_millis),
             },
@@ -557,11 +551,10 @@ mod tests {
     }
 
     #[test]
-    fn workflow_run_takes_the_workflow_completion_retention() {
+    fn requested_retentions_apply() {
         let envelope = json!({
             "service": "wf", "handler": "run", "targetType": "workflow", "key": "k",
-            "idempotencyRetentionMillis": 1000, "workflowCompletionRetentionMillis": 2000,
-            "journalRetentionMillis": 0,
+            "completionRetentionMillis": 2000, "journalRetentionMillis": 0,
         });
         let invocation = parse_json(envelope, InvokeType::Call).unwrap();
         assert_eq!(
@@ -574,7 +567,7 @@ mod tests {
     }
 
     #[test]
-    fn retentions_are_clamped_by_the_server_maximum() {
+    fn completion_retention_is_clamped_by_the_idempotency_maximum() {
         let mut config = Configuration::default();
         config.invocation.max_idempotency_retention = Some(FriendlyDuration::from_secs(60));
         set_current_config(config);
@@ -582,12 +575,29 @@ mod tests {
         let invocation = parse_json(
             with(
                 service_envelope(),
-                "idempotencyRetentionMillis",
+                "completionRetentionMillis",
                 json!(DAY.as_millis() as u64),
             ),
             InvokeType::Call,
         )
         .unwrap();
+        assert_eq!(
+            invocation.metadata.completion_retention,
+            Duration::from_secs(60)
+        );
+    }
+
+    #[test]
+    fn workflow_run_completion_retention_is_clamped_by_the_workflow_maximum() {
+        let mut config = Configuration::default();
+        config.invocation.max_workflow_completion_retention = Some(FriendlyDuration::from_secs(60));
+        set_current_config(config);
+
+        let envelope = json!({
+            "service": "wf", "handler": "run", "targetType": "workflow", "key": "k",
+            "completionRetentionMillis": DAY.as_millis() as u64,
+        });
+        let invocation = parse_json(envelope, InvokeType::Call).unwrap();
         assert_eq!(
             invocation.metadata.completion_retention,
             Duration::from_secs(60)
