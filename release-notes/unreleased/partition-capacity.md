@@ -4,10 +4,10 @@
 
 ### What Changed
 The new option `worker.storage.partition-capacity` sets how much storage each partition may use.
-Once a partition reaches 90% of it, requests that would start a new invocation on that partition,
-such as HTTP calls and sends or restarting an invocation as new, fail with
-HTTP 507 (Insufficient Storage). The error names the partition and how much of its capacity is
-used. Everything else keeps working: requests for existing invocations, cancellations, purges,
+Once a partition reaches 90% of it, HTTP calls and sends that would start a new invocation on that
+partition fail with HTTP 507 (Insufficient Storage), and restarting one of its invocations as new
+through the admin API fails with HTTP 503. Both errors name the partition and how much of its
+capacity is used. Everything else keeps working: requests for existing invocations, cancellations, purges,
 queries, and all other partitions.
 
 ### Why This Matters
