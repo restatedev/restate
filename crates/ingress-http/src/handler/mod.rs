@@ -83,16 +83,23 @@ pub(crate) struct Handler<Schemas, Dispatcher> {
     schemas: Live<Schemas>,
     dispatcher: Dispatcher,
     cluster_features: EnumSet<ClusterFeature>,
+    /// Adds the `rpc.method` (handler name) label to the per-request metrics.
+    detailed_request_metrics: bool,
 }
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
-    pub(crate) fn new(schemas: Live<Schemas>, dispatcher: Dispatcher) -> Self {
+    pub(crate) fn new(
+        schemas: Live<Schemas>,
+        dispatcher: Dispatcher,
+        detailed_request_metrics: bool,
+    ) -> Self {
         let cluster_features = Metadata::with_current(|m| m.nodes_config_ref().features());
 
         Self {
             schemas,
             dispatcher,
             cluster_features,
+            detailed_request_metrics,
         }
     }
 }

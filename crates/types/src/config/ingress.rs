@@ -159,6 +159,19 @@ pub struct IngressOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     request_size_limit: Option<NonZeroByteCount>,
 
+    /// # Detailed request metrics
+    ///
+    /// When enabled, the `restate.ingress.requests.total` and
+    /// `restate.ingress.request_duration.seconds` metrics additionally carry the `rpc.method`
+    /// label with the name of the invoked handler. Requests for handlers that do not exist are
+    /// reported with the value `<unknown>`. By default, these metrics are only broken down per
+    /// service to keep the number of exported time series small. Enable this only if the total
+    /// number of registered handlers is manageable. Changes take effect after a restart.
+    ///
+    /// Since v1.8.1
+    #[serde(skip_serializing_if = "std::ops::Not::not", default)]
+    pub detailed_request_metrics: bool,
+
     /// # Ingestion Options
     ///
     /// Settings for the ingestion client
@@ -258,6 +271,7 @@ impl Default for IngressOptions {
             kafka_clusters: Vec::default(),
             advertised_ingress_endpoint: None,
             request_size_limit: None,
+            detailed_request_metrics: false,
             ingestion: IngestionOptions::default(),
             ingestion_api: IngestionApiOptions::default(),
         }
