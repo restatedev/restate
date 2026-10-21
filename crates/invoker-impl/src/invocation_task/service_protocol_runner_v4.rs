@@ -1926,29 +1926,24 @@ fn resolve_call_request(
 
     let meta = if let Some(resolved) = resolved {
         // The callee was resolved outside the runtime.
-        let target_ty = match resolved
-            .target_type
-            .map(proto::ResolvedTargetType::try_from)
-        {
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetService)) => {
-                InvocationTargetType::Service
-            }
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive)) => {
+        let target_ty = match proto::ResolvedTargetType::try_from(resolved.target_type) {
+            Ok(proto::ResolvedTargetType::ResolvedTargetService) => InvocationTargetType::Service,
+            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectExclusive) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Exclusive)
             }
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared)) => {
+            Ok(proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared) => {
                 InvocationTargetType::VirtualObject(VirtualObjectHandlerType::Shared)
             }
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow)) => {
+            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflow) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
             }
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared)) => {
+            Ok(proto::ResolvedTargetType::ResolvedTargetWorkflowShared) => {
                 InvocationTargetType::Workflow(WorkflowHandlerType::Shared)
             }
-            Some(Ok(proto::ResolvedTargetType::ResolvedTargetNotFound)) => {
+            Ok(proto::ResolvedTargetType::ResolvedTargetNotFound) => {
                 return Err(not_found(&request));
             }
-            Some(Ok(proto::ResolvedTargetType::Unspecified)) | Some(Err(_)) | None => {
+            Ok(proto::ResolvedTargetType::Unspecified) | Err(_) => {
                 return Err(CommandPreconditionError::UnresolvedCallTarget(
                     request.service_name.to_string(),
                     request.handler_name.to_string(),
@@ -2239,7 +2234,7 @@ mod tests {
 
     fn resolved(target_type: proto::ResolvedTargetType) -> Option<proto::ResolvedCallMetadata> {
         Some(proto::ResolvedCallMetadata {
-            target_type: Some(target_type.into()),
+            target_type: target_type.into(),
             completion_retention_millis: Some(u64::MAX),
             journal_retention_millis: Some(u64::MAX),
         })
@@ -2277,7 +2272,7 @@ mod tests {
                 ..request("checkout", "run", "", None)
             },
             Some(proto::ResolvedCallMetadata {
-                target_type: Some(proto::ResolvedTargetType::ResolvedTargetService.into()),
+                target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: None,
             }),
@@ -2298,7 +2293,7 @@ mod tests {
         let call = resolve(
             request("wf", "run", "k", None),
             Some(proto::ResolvedCallMetadata {
-                target_type: Some(proto::ResolvedTargetType::ResolvedTargetWorkflow.into()),
+                target_type: proto::ResolvedTargetType::ResolvedTargetWorkflow.into(),
                 completion_retention_millis: Some(120_000),
                 journal_retention_millis: Some(u64::MAX),
             }),
@@ -2356,7 +2351,7 @@ mod tests {
             resolve(
                 request("unknown", "h", "", None),
                 Some(proto::ResolvedCallMetadata {
-                    target_type: Some(42),
+                    target_type: 42,
                     completion_retention_millis: None,
                     journal_retention_millis: None,
                 }),

@@ -469,9 +469,7 @@ async fn call_takes_the_resolved_fields_appended_to_the_sdk_bytes() {
             idempotency_key: Some("run-1".to_owned()),
             // A forged value: merged with, and overridden by, what the relay appends.
             resolved_call_metadata: Some(proto::ResolvedCallMetadata {
-                target_type: Some(
-                    proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared.into(),
-                ),
+                target_type: proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared.into(),
                 ..Default::default()
             }),
             ..Default::default()
@@ -483,7 +481,7 @@ async fn call_takes_the_resolved_fields_appended_to_the_sdk_bytes() {
         proto::OneWayCallCommandMessage {
             scope: Some("tenant".to_owned()),
             resolved_call_metadata: Some(proto::ResolvedCallMetadata {
-                target_type: Some(proto::ResolvedTargetType::ResolvedTargetService.into()),
+                target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
                 completion_retention_millis: Some(60_000),
                 journal_retention_millis: Some(0),
             }),
