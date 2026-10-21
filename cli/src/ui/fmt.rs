@@ -754,7 +754,6 @@ pub enum Outcome {
     /// absent: still a success (`ℹ️`/`[NOOP]:` on stdout).
     NothingToDo,
     /// The command could not do what was asked (`❌`/`[ERR]:` on stderr).
-    #[expect(dead_code, reason = "no command reports a failed outcome yet")]
     Failure,
 }
 

@@ -73,7 +73,7 @@ pub struct RestartAsNewInvocationResponse {
 
 // --- Batch operation types ---
 
-/// Maximum number of invocations in a single batch operation
+/// Maximum number of items (e.g. invocations or deployments) in a single batch operation
 pub const BATCH_OPERATION_MAX_SIZE: usize = 1000;
 
 /// Request body for batch invocation operations
