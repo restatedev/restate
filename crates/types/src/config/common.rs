@@ -885,6 +885,19 @@ experimental! {
     ///
     /// Since v1.8.1
     preflight_signal_recording,
+
+    /// # Status Gauges For VQueue Entries
+    ///
+    /// Enables current stage/status counts by service, deployment, and virtual object
+    /// when an empty local partition store starts. Counts include invocations and
+    /// state mutations, and retain completed entries until they are deleted.
+    /// Existing stores require a backfill before this feature can be enabled.
+    ///
+    /// Once enabled, tracking persists across restarts even if this flag is removed.
+    /// Eligible stores enable tracking automatically from v1.9.
+    ///
+    /// Since v1.8.1
+    track_status_gauges,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

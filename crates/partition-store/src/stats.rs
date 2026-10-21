@@ -48,9 +48,22 @@ use self::aggregated::Aggregate;
 const KEY_KIND: KeyKind = KeyKind::Stats;
 
 /// Globally unique identifiers for statistics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
+///
+/// The numeric tags are persisted as big-endian u16 values. Never renumber or reuse
+/// an existing tag; incompatible key layouts need a new identifier or a migration.
+/// Kept as u8 to save memory. The in-memory representation can be widened to u16
+/// when more identifiers are needed without changing the on-disk format or existing tags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display, strum::FromRepr)]
 #[allow(clippy::enum_variant_names)]
-pub enum StatId {}
+#[repr(u8)]
+pub enum StatId {
+    /// Current stage/status counts by service, handler, and entry kind.
+    ServiceStats = 1,
+    /// Current stage/status counts by pinned deployment and service.
+    DeploymentStats = 2,
+    /// Current stage/status counts by virtual-object and entry dimensions.
+    VirtualObjectStats = 3,
+}
 
 impl StatId {
     /// Returns the identifier's persisted representation.

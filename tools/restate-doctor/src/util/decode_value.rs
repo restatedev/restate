@@ -236,18 +236,7 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 format!("expected {} bytes for a gauge value", size_of::<u64>()),
             ),
         },
-        StatKind::StageBucketedGauge => match StageCounts::deserialize_from(value) {
-            Ok(value) => DecodedValue::decoded(
-                None,
-                value.serialized_len(),
-                format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
-            ),
-            Err(_) => DecodedValue::error(
-                None,
-                value.len(),
-                "invalid stage-bucketed gauge value".to_owned(),
-            ),
-        },
+        StatKind::StageBucketedGauge => decode_stage_counts(value),
         StatKind::StageStatusBucketedGauge => match StageStatusCounts::deserialize_from(value) {
             Ok(value) => DecodedValue::decoded(
                 None,
@@ -260,6 +249,21 @@ fn decode_aggregated_stat_value(key: &[u8], value: &[u8]) -> DecodedValue {
                 "invalid stage/status-bucketed gauge value".to_owned(),
             ),
         },
+    }
+}
+
+fn decode_stage_counts(value: &[u8]) -> DecodedValue {
+    match StageCounts::deserialize_from(value) {
+        Ok(value) => DecodedValue::decoded(
+            None,
+            value.serialized_len(),
+            format!("StageCounts({:?})", value.iter().collect::<Vec<_>>()),
+        ),
+        Err(_) => DecodedValue::error(
+            None,
+            value.len(),
+            "invalid stage-bucketed gauge value".to_owned(),
+        ),
     }
 }
 
@@ -661,8 +665,14 @@ mod tests {
     use restate_partition_store::PaddedPartitionId;
     use restate_partition_store::fsm_table::PartitionStateMachineKey;
     use restate_partition_store::keys::EncodeTableKeyPrefix;
+    use restate_partition_store::stats::Stat;
+    use restate_partition_store::stats::aggregated::{ServiceStats, ServiceStatsKey};
+    use restate_storage_api::vqueue_table::{Stage, Status};
+    use restate_types::ServiceName;
     use restate_types::logs::Lsn;
+    use restate_types::sharding::PartitionId;
     use restate_types::storage::StorageCodec;
+    use restate_types::vqueues::EntryKind;
 
     use super::*;
 
@@ -749,6 +759,48 @@ mod tests {
         assert!(
             matches!(&decoded.content, DecodedContent::Decoded(s) if s.contains("future-feature")),
             "storage features should preserve unknown names, got: {decoded}"
+        );
+    }
+
+    #[test]
+    fn decodes_bucketed_gauge_values() {
+        let mut key = Vec::new();
+        ServiceStats::encode_key(
+            PartitionId::from(7),
+            ServiceStatsKey {
+                service_name: ServiceName::new("greeter"),
+                kind: EntryKind::Invocation,
+                handler: None,
+            },
+            &mut key,
+        );
+
+        let mut value = vec![Stage::Inbox as u8, Status::New as u8];
+        value.extend_from_slice(&42_u64.to_be_bytes());
+        let decoded = decode_value(KeyKind::Stats, &key, &value);
+        assert_eq!(decoded.codec, None);
+        assert_eq!(decoded.payload_size, 2 + size_of::<u64>());
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value.contains("Inbox") && value.contains("New") && value.contains("42"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[0; 7]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Error(error) if error.contains("invalid stage/status-bucketed"))
+        );
+
+        let decoded = decode_value(KeyKind::Stats, &key, &[]);
+        assert!(
+            matches!(decoded.content, DecodedContent::Decoded(value) if value == "StageStatusCounts([])")
+        );
+
+        let decoded = decode_value(
+            KeyKind::Stats,
+            &key[..StatKeyPrefix::SERIALIZED_LENGTH - 1],
+            &value,
+        );
+        assert!(
+            matches!(decoded.content, DecodedContent::Error(error) if error.contains("failed to decode aggregated statistic key"))
         );
     }
 }
