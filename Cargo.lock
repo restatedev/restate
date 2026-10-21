@@ -8823,6 +8823,7 @@ dependencies = [
  "bytes",
  "bytestring",
  "derive_more",
+ "enum-map",
  "futures",
  "opentelemetry",
  "prost",
@@ -8839,6 +8840,22 @@ dependencies = [
  "serde_with",
  "strum",
  "thiserror 2.0.20",
+ "zerocopy",
+]
+
+[[package]]
+name = "restate-storage-query-api"
+version = "1.8.2-dev"
+dependencies = [
+ "anyhow",
+ "datafusion",
+ "enum-map",
+ "paste",
+ "restate-storage-api",
+ "restate-types",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "strum",
 ]
 
 [[package]]
@@ -9336,6 +9353,17 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "dashmap",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-datasource-arrow",
+ "datafusion-datasource-csv",
+ "datafusion-datasource-json",
+ "datafusion-expr",
+ "datafusion-functions-nested",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
+ "datafusion-physical-plan",
  "deranged",
  "derive_more",
  "derive_more-impl",
@@ -9457,7 +9485,9 @@ dependencies = [
  "zerocopy",
  "zeroize",
  "zlib-rs",
+ "zstd 0.13.3",
  "zstd 0.14.0",
+ "zstd-safe 7.3.0",
  "zstd-safe 8.0.0",
  "zstd-sys",
 ]
