@@ -541,8 +541,7 @@ enum ResolvedTargetType {
 // The callee's semantics, resolved outside the runtime. When a call carries it, the runtime uses
 // it instead of its own resolution.
 message ResolvedCallMetadata {
-  // Optional so that UNSPECIFIED is encoded too (it overrides a forged value).
-  optional ResolvedTargetType target_type = 1;
+  ResolvedTargetType target_type = 1;
   // The callee's retentions. Completion: for a workflow (run) handler the registry's
   // workflow_completion_retention, otherwise its idempotency_retention. UINT64_MAX (or absent) =
   // server default.
