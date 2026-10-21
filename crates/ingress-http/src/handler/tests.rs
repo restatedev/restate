@@ -1809,3 +1809,42 @@ async fn generic_endpoint_rejects_other_content_types() {
     .await;
     assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
 }
+
+#[restate_core::test]
+async fn attach_to_invocation_of_unregistered_service() {
+    let invocation_id = InvocationId::mock_random();
+    let mut mock_dispatcher = MockRequestDispatcher::default();
+    mock_dispatcher
+        .expect_attach_invocation()
+        .return_once(move |_| {
+            ready(Ok(AttachInvocationResponse::Ready(InvocationOutput {
+                request_id: Default::default(),
+                invocation_id: Some(invocation_id),
+                completion_expiry_time: None,
+                response: InvocationOutputResponse::Success(
+                    InvocationTarget::service("unregistered", "run"),
+                    Bytes::from_static(b"{}"),
+                ),
+            })))
+            .boxed()
+        });
+
+    let response = handle(
+        hyper::Request::get(format!("http://localhost/restate/attach/{invocation_id}"))
+            .body(Empty::<Bytes>::new())
+            .unwrap(),
+        mock_dispatcher,
+    )
+    .await;
+
+    assert_eq!(
+        (
+            response.status(),
+            response.headers().get(http::header::CONTENT_TYPE).cloned()
+        ),
+        (
+            StatusCode::OK,
+            Some(HeaderValue::from_static("application/json"))
+        )
+    );
+}

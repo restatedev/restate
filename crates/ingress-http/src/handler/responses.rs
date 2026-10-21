@@ -16,12 +16,23 @@ use http::{HeaderName, Response, header};
 use http_body_util::Full;
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
-use restate_types::schema::invocation_target::InvocationTargetMetadata;
+use restate_types::schema::invocation_target::{InvocationTargetMetadata, RequestedRetentions};
 use tracing::{info, trace};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
+
+/// Metadata to answer for an invocation of a service the local registry doesn't know (created
+/// through the generic invoke endpoint): the default output rules.
+pub(crate) fn unregistered_target_metadata(
+    invocation_target: &InvocationTarget,
+) -> InvocationTargetMetadata {
+    InvocationTargetMetadata::from_external_semantics(
+        invocation_target.invocation_target_ty(),
+        RequestedRetentions::default(),
+    )
+}
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn reply_with_invocation_response(

@@ -22,6 +22,7 @@ use restate_types::schema::invocation_target::InvocationTargetResolver;
 use super::Handler;
 use super::HandlerError;
 use super::path_parsing::WorkflowRequestType;
+use super::responses::unregistered_target_metadata;
 use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
@@ -95,13 +96,14 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
+            Ok(self
+                .schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .ok_or(HandlerError::NotFound)
+                .unwrap_or_else(|| unregistered_target_metadata(invocation_target)))
         })
     }
 
@@ -142,13 +144,14 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
+            Ok(self
+                .schemas
                 .pinned()
                 .resolve_latest_invocation_target(
                     invocation_target.service_name(),
                     invocation_target.handler_name(),
                 )
-                .ok_or(HandlerError::NotFound)
+                .unwrap_or_else(|| unregistered_target_metadata(invocation_target)))
         })
     }
 }
