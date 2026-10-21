@@ -14,6 +14,8 @@
 //! Partial merges operate only on deltas and must remain interchangeable with
 //! the original operands when RocksDB later performs a full merge.
 
+pub(crate) mod backfill;
+
 mod bucketed_gauge;
 mod deployment_stats;
 mod gauge;
