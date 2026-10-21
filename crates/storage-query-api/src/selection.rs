@@ -40,7 +40,7 @@ pub use model::{
 };
 pub use value::{LiteralConversionError, SelectionLiteral, SelectionValue};
 
-pub use typed::{InList, parse_clause};
+pub use typed::{InList, comparison_domain, parse_clause};
 
 /// Compiles supported static conjuncts against a logical table schema.
 ///

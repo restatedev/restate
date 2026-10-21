@@ -25,6 +25,10 @@ use datafusion::logical_expr::Operator;
 use datafusion::physical_plan::PhysicalExpr;
 use datafusion::physical_plan::expressions::{BinaryExpr, Column, InListExpr, Literal};
 
+use crate::selection::ValuePredicate;
+
+use super::comparison_domain;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Span<T> {
     lower: Bound<T>,
@@ -34,6 +38,24 @@ struct Span<T> {
 /// Sorted, disjoint intervals. An empty domain selects no candidates.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Domain<T>(Vec<Span<T>>);
+
+/// Preserves the matching values of an already typed storage predicate.
+impl<T: Ord + Clone> From<ValuePredicate<T>> for Domain<T> {
+    fn from(predicate: ValuePredicate<T>) -> Self {
+        match predicate {
+            ValuePredicate::Equal(value) => Self::comparison(Operator::Eq, value),
+            ValuePredicate::In(values) => Self::values(values),
+            ValuePredicate::Range { lower, upper } => {
+                let span = Span { lower, upper };
+                if span.valid() {
+                    Self(vec![span])
+                } else {
+                    Self::empty()
+                }
+            }
+        }
+    }
+}
 
 fn lower_cmp<T: Ord>(a: &Bound<T>, b: &Bound<T>) -> Ordering {
     match (a, b) {
@@ -113,6 +135,44 @@ impl<T: Ord + Clone> Domain<T> {
                 .collect(),
         )
         .normalize()
+    }
+
+    /// Selects everything except the listed values. Order and duplicates do not
+    /// matter; an empty list selects everything.
+    ///
+    /// For example:
+    /// - `excluding_values([2, 5])` selects every value other than `2` and `5`.
+    ///   Intersecting it with `Domain::values([1, 2, 3])` leaves just `1` and `3`.
+    /// - `excluding_values([Some("alpha")])` still selects `None`. To exclude NULL
+    ///   too, use `excluding_values([None, Some("alpha")])`.
+    ///
+    /// SQL adapters must account for SQL's NULL rules. For example,
+    /// `handler NOT IN ('alpha', NULL)` is never TRUE, so it needs [`Self::empty`],
+    /// rather than a domain excluding just those two values.
+    ///
+    /// Only exclude values proved to be forbidden. If analysis says a predicate
+    /// *might* match `1` or `2`, negating it cannot safely exclude both: the predicate
+    /// may actually match only `1`. Likewise, excluding one record ID does not
+    /// justify excluding its entire partition.
+    pub fn excluding_values(values: impl IntoIterator<Item = T>) -> Self {
+        let mut values: Vec<_> = values.into_iter().collect();
+        values.sort_unstable();
+        values.dedup();
+
+        let mut spans = Vec::with_capacity(values.len() + 1);
+        let mut lower = Bound::Unbounded;
+        for value in values {
+            spans.push(Span {
+                lower,
+                upper: Bound::Excluded(value.clone()),
+            });
+            lower = Bound::Excluded(value);
+        }
+        spans.push(Span {
+            lower,
+            upper: Bound::Unbounded,
+        });
+        Self(spans)
     }
 
     /// Constructs an equality or ordered comparison using `T`'s ordering.
@@ -236,10 +296,34 @@ impl<T: Ord + Clone> Domain<T> {
 /// Filters are conjoined. Unsupported expressions or exhausted traversal budgets
 /// select everything. A callback must return a superset of matching candidates;
 /// a condition on an unrelated column must not narrow the domain.
+///
+/// `IN` unions equality domains; `NOT IN` intersects inequality domains. The source
+/// must interpret `!=` directly, including its NULL semantics. An approximate
+/// equality domain cannot safely be complemented to obtain an inequality domain.
 pub fn analyze<T: Ord + Clone>(
     filters: &[Arc<dyn PhysicalExpr>],
     literal: impl Fn(&str, Operator, &ScalarValue) -> anyhow::Result<Domain<T>>,
 ) -> anyhow::Result<Domain<T>> {
+    fn not_in<T: Ord + Clone>(
+        values: &[Arc<dyn PhysicalExpr>],
+        column: &str,
+        literal: &impl Fn(&str, Operator, &ScalarValue) -> anyhow::Result<Domain<T>>,
+    ) -> anyhow::Result<Domain<T>> {
+        match values {
+            [] => Ok(Domain::all()),
+            [expr] => match expr.downcast_ref::<Literal>() {
+                Some(value) => literal(column, Operator::NotEq, value.value()),
+                None => Ok(Domain::all()),
+            },
+            _ => {
+                // Balance intersections so a long list does not repeatedly scan
+                // an ever-growing domain. Unsupported members stay unconstrained.
+                let (left, right) = values.split_at(values.len() / 2);
+                Ok(not_in(left, column, literal)?.intersect(not_in(right, column, literal)?))
+            }
+        }
+    }
+
     fn visit<T: Ord + Clone>(
         expr: &Arc<dyn PhysicalExpr>,
         literal: &impl Fn(&str, Operator, &ScalarValue) -> anyhow::Result<Domain<T>>,
@@ -291,9 +375,11 @@ pub fn analyze<T: Ord + Clone>(
             }
         }
         if let Some(list) = expr.downcast_ref::<InListExpr>()
-            && !list.negated()
             && let Some(col) = list.expr().downcast_ref::<Column>()
         {
+            if list.negated() {
+                return not_in(list.list(), col.name(), literal);
+            }
             let mut result = Domain::empty();
             for expr in list.list() {
                 let Some(value) = expr.downcast_ref::<Literal>() else {
@@ -329,39 +415,211 @@ pub fn column_domain<T: Ord + Clone>(
 
 /// Derives a conservative domain for a non-nullable unsigned column.
 ///
-/// Recognized nonnegative integer literals preserve order. Unsupported operators
-/// and conversions select everything; comparisons with SQL NULL select nothing.
+/// Uses typed literal conversion for equality, inequality, and ordered comparisons.
+/// Unsupported operators and conversions select everything; comparisons with SQL
+/// NULL select nothing.
 pub fn unsigned_domain(
     filters: &[Arc<dyn PhysicalExpr>],
     column: &str,
 ) -> anyhow::Result<Domain<u64>> {
     column_domain(filters, column, |op, value| {
-        if !matches!(
-            op,
-            Operator::Eq | Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq
-        ) {
-            return Ok(Domain::all());
-        }
-        let value = match value {
-            ScalarValue::UInt64(Some(v)) => *v,
-            ScalarValue::UInt32(Some(v)) => u64::from(*v),
-            ScalarValue::Int64(Some(v)) if *v >= 0 => *v as u64,
-            ScalarValue::Int32(Some(v)) if *v >= 0 => *v as u64,
-            value if value.is_null() => return Ok(Domain::empty()),
-            _ => return Ok(Domain::all()),
-        };
-        Ok(Domain::comparison(op, value))
+        Ok(comparison_domain(op, value).unwrap_or_else(Domain::all))
     })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Debug;
+
     use datafusion::arrow::array::{Array, BooleanArray, RecordBatch, UInt64Array};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::physical_expr::planner::logical2physical;
     use datafusion::prelude::{col, lit};
 
     use super::*;
+
+    #[test]
+    fn exclusions_remove_only_named_values_including_null() {
+        let samples = [None, Some(""), Some("alpha"), Some("beta"), Some("other")];
+        const T: bool = true;
+        const F: bool = false;
+        #[rustfmt::skip]
+        let cases: &[(&[Option<&str>], [bool; 5])] = &[
+            // Excluded values                               NULL  ''  alpha beta other
+            (&[],                                            [T,   T,  T,    T,   T]),
+            (&[Some("alpha")],                               [T,   T,  F,    T,   T]),
+            (&[None],                                        [F,   T,  T,    T,   T]),
+            (&[None, Some("alpha")],                         [F,   T,  F,    T,   T]),
+            // Input order and duplicates have no effect.
+            (&[Some("beta"), Some("alpha"), Some("beta")],   [T,   T,  F,    F,   T]),
+            // Excluding these samples does not close the string domain.
+            (&[None, Some(""), Some("alpha"), Some("beta")], [F,   F,  F,    F,   T]),
+        ];
+
+        for &(excluded, expected) in cases {
+            let domain = Domain::excluding_values(excluded.iter().copied());
+            assert_selects_each_value_once(&domain, &samples, expected);
+        }
+        assert!(Domain::<u64>::excluding_values([]).is_all());
+    }
+
+    #[test]
+    fn exclusions_compose_and_resolve_against_a_complete_source_domain() {
+        // Union admits a value allowed by either side; intersection requires both.
+        // The endpoints exercise exclusions at the unsigned domain's extremes.
+        let samples = [0, 1, 2, 3, u64::MAX - 1, u64::MAX];
+        let left = Domain::excluding_values([u64::MAX, 2, 0, 2]);
+        let right = Domain::excluding_values([1, 2]);
+        assert_selects_each_value_once(
+            &left.clone().union(right.clone()),
+            &samples,
+            [true, true, false, true, true, true],
+        );
+        assert_selects_each_value_once(
+            &left.intersect(right),
+            &samples,
+            [false, false, false, true, true, false],
+        );
+
+        // Once the source supplies its complete domain, an exclusion becomes an
+        // exact finite candidate set. Excluding an absent value removes nothing.
+        let stages = ["finished", "inbox", "paused", "running", "suspended"];
+        let candidates =
+            Domain::values(stages).intersect(Domain::excluding_values(["running", "not-a-stage"]));
+        assert_eq!(
+            candidates.into_values(),
+            Some(vec!["finished", "inbox", "paused", "suspended"])
+        );
+        assert_eq!(
+            Domain::values(stages)
+                .intersect(Domain::excluding_values(stages))
+                .into_values(),
+            Some(vec![])
+        );
+
+        // Invariant: normalization against a complete source domain never emits
+        // an unknown value, whether the literal is included or excluded.
+        #[rustfmt::skip]
+        let cases: &[(&[&str], &[&str], &[&str])] = &[
+            // Included                    Excluded                     Remaining candidates
+            (&["not-a-stage"],              &[],                         &[]),
+            (&["not-a-stage", "running"],   &[],                         &["running"]),
+            (&stages,                      &["not-a-stage"],            &stages),
+            (&["not-a-stage", "running"],   &["not-a-stage"],            &["running"]),
+            (&["not-a-stage", "running"],   &["running"],                &[]),
+            (&["not-a-stage", "running"],   &["not-a-stage", "running"], &[]),
+        ];
+        for &(included, excluded, expected) in cases {
+            let candidates = Domain::values(stages)
+                .intersect(Domain::values(included.iter().copied()))
+                .intersect(Domain::excluding_values(excluded.iter().copied()))
+                .into_values();
+            assert_eq!(
+                candidates.as_deref(),
+                Some(expected),
+                "including {included:?}, excluding {excluded:?}",
+            );
+        }
+
+        // Invariant: combining an inclusion with exclusions is set subtraction.
+        let included = ["running", "paused"];
+        #[rustfmt::skip]
+        let cases: &[(&[&str], &[&str])] = &[
+            // Excluded              Remaining candidates
+            (&["inbox"],             &["paused", "running"]),
+            (&["running"],           &["paused"]),
+            (&["running", "paused"], &[]),
+        ];
+        for &(excluded, expected) in cases {
+            let candidates = Domain::values(included)
+                .intersect(Domain::excluding_values(excluded.iter().copied()))
+                .into_values();
+            assert_eq!(
+                candidates.as_deref(),
+                Some(expected),
+                "excluding {excluded:?}"
+            );
+        }
+    }
+
+    /// Check both membership and the no-duplicate-candidates interval contract.
+    fn assert_selects_each_value_once<T: Ord + Clone + Debug, const N: usize>(
+        domain: &Domain<T>,
+        samples: &[T; N],
+        expected: [bool; N],
+    ) {
+        assert_eq!(
+            samples.each_ref().map(|value| domain.contains(value)),
+            expected,
+            "membership in {domain:?}"
+        );
+        for (value, selected) in samples.iter().zip(expected) {
+            let matching_intervals = domain.0.iter().filter(|span| span.contains(value)).count();
+            assert_eq!(
+                matching_intervals,
+                usize::from(selected),
+                "{value:?} in {domain:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn not_in_keeps_unknown_parts_conservative() {
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::UInt64, false),
+            Field::new("other", DataType::UInt64, false),
+        ]);
+        // Several IDs can share a partition. Knowing where an equality may match
+        // does not tell us which partitions an inequality can safely exclude.
+        let partition_for_equality = |op, _: &ScalarValue| {
+            Ok(if op == Operator::Eq {
+                Domain::values([42u64])
+            } else {
+                Domain::all()
+            })
+        };
+        let include = logical2physical(
+            &col("id").in_list(vec![lit(1u64), lit(2u64)], false),
+            &schema,
+        );
+        let exclude = logical2physical(
+            &col("id").in_list(vec![lit(1u64), lit(2u64)], true),
+            &schema,
+        );
+        assert_eq!(
+            column_domain(&[include], "id", partition_for_equality)
+                .unwrap()
+                .into_values(),
+            Some(vec![42]),
+        );
+        assert!(
+            column_domain(&[exclude], "id", partition_for_equality)
+                .unwrap()
+                .is_all()
+        );
+
+        // id NOT IN (1, other) still implies id != 1. The unknown member stays
+        // residual instead of cancelling the supported inequality or excluding more.
+        let filter = logical2physical(
+            &col("id").in_list(vec![lit(1u64), col("other")], true),
+            &schema,
+        );
+        assert_selects_each_value_once(
+            &unsigned_domain(&[filter], "id").unwrap(),
+            &[0, 1, 2],
+            [true, false, true],
+        );
+
+        // A NULL member, however, proves that the whole NOT IN cannot be TRUE.
+        let filter = logical2physical(
+            &col("id").in_list(vec![col("other"), lit(ScalarValue::UInt64(None))], true),
+            &schema,
+        );
+        assert_eq!(
+            unsigned_domain(&[filter], "id").unwrap().into_values(),
+            Some(vec![])
+        );
+    }
 
     #[test]
     fn domains_cover_sql_truth_without_duplicate_ranges() {
@@ -389,7 +647,13 @@ mod tests {
             key.clone()
                 .in_list(vec![lit(0u64), lit(3u64), lit(3u64), lit(u64::MAX)], false),
             key.clone().eq(lit(ScalarValue::UInt64(None))),
-            key.not_eq(lit(3u64)), // Unsupported comparisons must conservatively broaden.
+            key.clone().not_eq(lit(3u64)),
+            key.clone()
+                .in_list(vec![lit(0u64), lit(3u64), lit(3u64), lit(u64::MAX)], true),
+            key.clone()
+                .in_list(vec![lit(3u64), lit(ScalarValue::UInt64(None))], true),
+            key.clone().in_list(vec![], true),
+            key.clone().eq(key), // Unsupported comparisons must conservatively broaden.
         ];
         for left in &atoms {
             for right in &atoms {

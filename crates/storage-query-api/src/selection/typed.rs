@@ -14,6 +14,8 @@
 //! fields. The target selects each field's value type; this adapter converts
 //! literals through [`SelectionValue`] and translates SQL NULL semantics. Physical
 //! key layouts, encodings, and scan bounds belong to the storage implementation.
+//! [`comparison_domain`] exposes the same literal rules to candidate-domain
+//! analysis, including `!=` with SQL NULL semantics.
 //!
 //! # Input and correctness contract
 //!
@@ -67,6 +69,52 @@ use crate::SelectionSchema;
 use crate::selection::{
     LiteralConversionError, SelectionLiteral, SelectionValue, ValuePredicate, ValuePredicateBuilder,
 };
+
+use super::domain::Domain;
+
+/// Derives the values for which `column op literal` is SQL TRUE.
+///
+/// Supports `=`, `!=`, `<`, `<=`, `>`, and `>=` after the source selects the
+/// column's logical value type. Returns `None` for unsupported operators or
+/// conversions; callers retain those predicates for residual evaluation.
+/// Equality conversion alone is sufficient for `!=`; ordered comparisons still
+/// require order-preserving conversion.
+///
+/// For example, nullable `handler != 'alpha'` excludes both `Some("alpha")` and
+/// `None`. A comparison with a NULL literal selects nothing. A literal known to
+/// be impossible for the column, such as `-1` for `u64`, can be ignored by `!=`,
+/// but the column's NULL values are still excluded.
+pub fn comparison_domain<V: SelectionValue + Ord + Clone>(
+    op: Operator,
+    literal: &ScalarValue,
+) -> Option<Domain<V>> {
+    if op == Operator::NotEq {
+        if literal.is_null() {
+            return Some(Domain::empty());
+        }
+        let excluded = match V::from_literal(selection_literal(literal)?) {
+            Ok(value) => Some(value),
+            Err(LiteralConversionError::Unrepresentable) => None,
+            Err(LiteralConversionError::Unsupported) => return None,
+        };
+        let null = match V::from_literal(SelectionLiteral::Null) {
+            Ok(value) => Some(value),
+            Err(LiteralConversionError::Unrepresentable) => None,
+            Err(LiteralConversionError::Unsupported) => return None,
+        };
+        return Some(Domain::excluding_values(excluded.into_iter().chain(null)));
+    }
+
+    // Reuse the storage compiler's conversions and NULL-safe bounds.
+    let predicate = match op {
+        Operator::Eq => LiteralPredicate::Equal(literal),
+        Operator::Gt | Operator::GtEq | Operator::Lt | Operator::LtEq => {
+            LiteralPredicate::Comparison(op, literal)
+        }
+        _ => return None,
+    };
+    predicate.build::<V>().map(Domain::from)
+}
 
 /// Literal membership extracted from one column's equality, IN, or OR predicate.
 ///
@@ -435,12 +483,16 @@ mod tests {
     use std::ops::{Bound, RangeBounds};
 
     use datafusion::arrow::array::{Array, ArrayRef, BooleanArray, LargeStringArray};
+    use datafusion::arrow::compute::filter_record_batch;
     use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
     use datafusion::arrow::record_batch::RecordBatch;
+    use datafusion::common::DFSchema;
+    use datafusion::common::tree_node::{Transformed, TreeNode};
     use datafusion::functions::string::expr_fn::starts_with;
     use datafusion::logical_expr::{Expr, binary_expr, col, lit};
     use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
     use datafusion::physical_expr::planner::logical2physical;
+    use datafusion::prelude::SessionContext;
 
     use crate::selection::Selection;
     crate::define_schema! {
@@ -591,6 +643,530 @@ mod tests {
 
     fn translate(expr: Expr) -> Selection<TestTable> {
         compile(Some(&physical(expr)))
+    }
+
+    fn sql_truth(expr: &Arc<dyn PhysicalExpr>, batch: &RecordBatch) -> Vec<Option<bool>> {
+        let result = expr
+            .evaluate(batch)
+            .unwrap()
+            .into_array(batch.num_rows())
+            .unwrap();
+        result
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap()
+            .iter()
+            .collect()
+    }
+
+    /// Checks the SQL oracle, candidate soundness, and residual evaluation on the
+    /// selected batch. The returned mask lets callers also require useful pruning.
+    fn check_selection<T: SelectionSchema>(
+        expr: &Arc<dyn PhysicalExpr>,
+        batch: &RecordBatch,
+        expected: &[Option<bool>],
+        matches_clause: impl Fn(&T::Clause, usize) -> bool,
+    ) -> Vec<bool> {
+        assert_eq!(sql_truth(expr, batch), expected, "SQL truth: {expr}");
+
+        let selection = compile::<T>(Some(expr));
+        let candidates: Vec<_> = (0..batch.num_rows())
+            .map(|row| match &selection {
+                Selection::All => true,
+                Selection::Empty => false,
+                Selection::Predicates(fields) => fields
+                    .iter()
+                    .flat_map(|(_, clauses)| clauses)
+                    .all(|clause| matches_clause(clause, row)),
+            })
+            .collect();
+        for (row, truth) in expected.iter().enumerate() {
+            assert!(
+                *truth != Some(true) || candidates[row],
+                "selection lost matching row {row}: {expr}"
+            );
+        }
+
+        let selected = filter_record_batch(batch, &BooleanArray::from(candidates.clone())).unwrap();
+        let selected_rows = candidates
+            .iter()
+            .enumerate()
+            .filter_map(|(row, &keep)| keep.then_some(row));
+        let actual: Vec<_> = selected_rows
+            .zip(sql_truth(expr, &selected))
+            .filter_map(|(row, truth)| (truth == Some(true)).then_some(row))
+            .collect();
+        let expected: Vec<_> = expected
+            .iter()
+            .enumerate()
+            .filter_map(|(row, truth)| (*truth == Some(true)).then_some(row))
+            .collect();
+        assert_eq!(actual, expected, "selection plus residual: {expr}");
+        candidates
+    }
+
+    fn matches_value<V: PartialOrd>(predicate: &ValuePredicate<V>, value: &V) -> bool {
+        match predicate {
+            ValuePredicate::Equal(expected) => value == expected,
+            ValuePredicate::In(values) => values.contains(value),
+            ValuePredicate::Range { lower, upper } => {
+                (lower.as_ref(), upper.as_ref()).contains(&value)
+            }
+        }
+    }
+
+    crate::define_schema! {
+        ExclusionTarget {
+            stage: ReString,
+            handler: Option<ReString>,
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    enum CandidateExpectation {
+        /// Candidates must be exactly the rows where the predicate is SQL TRUE.
+        Exact,
+        /// Extra candidates are allowed; the residual must remove them.
+        Conservative,
+    }
+
+    #[test]
+    fn typed_comparison_domains_select_exactly_the_sql_true_rows() {
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+
+        let stages = ["finished", "inbox", "paused", "running", "suspended"];
+        #[rustfmt::skip]
+        let stage_cases = [
+            // SQL predicate                        finished inbox paused running suspended
+            ("stage = 'running'",                    [F,      F,    F,     T,      F]),
+            ("stage != 'running'",                   [T,      T,    T,     F,      T]),
+            ("'running' != stage",                   [T,      T,    T,     F,      T]),
+            ("stage != 'not-a-stage'",               [T,      T,    T,     T,      T]),
+            ("stage != NULL",                        [U,      U,    U,     U,      U]),
+        ];
+
+        let handlers = [None, Some(""), Some("alpha"), Some("beta")];
+        #[rustfmt::skip]
+        let handler_cases = [
+            // SQL predicate                                    NULL  ''  alpha beta
+            ("handler = 'alpha'",                                [U,   F,  T,    F]),
+            ("handler != 'alpha'",                               [U,   T,  F,    T]),
+            ("'alpha' != handler",                               [U,   T,  F,    T]),
+            ("handler != NULL",                                  [U,   U,  U,    U]),
+            ("handler < 'alpha'",                                [U,   T,  F,    F]),
+            ("handler <= 'alpha'",                               [U,   T,  T,    F]),
+            ("handler > 'alpha'",                                [U,   F,  F,    T]),
+            ("handler >= 'alpha'",                               [U,   F,  T,    T]),
+            ("handler IN ('alpha', NULL)",                       [U,   U,  T,    U]),
+            ("handler != 'alpha' OR handler = 'alpha'",           [U,   T,  T,    T]),
+            ("handler != 'alpha' AND handler = 'alpha'",          [U,   F,  F,    F]),
+        ];
+
+        let fixture = SelectionFixture::cross_product(&stages, &handlers);
+        // Invariant: the typed domain selects every SQL-TRUE row and no others,
+        // including when comparisons are combined by the Boolean analyzer.
+        for (sql, truth) in stage_cases {
+            fixture.assert_exact_comparison_domain(
+                sql,
+                ExclusionTargetColumn::Stage,
+                &fixture.truth_by_stage(&truth),
+            );
+        }
+        for (sql, truth) in handler_cases {
+            fixture.assert_exact_comparison_domain(
+                sql,
+                ExclusionTargetColumn::Handler,
+                &fixture.truth_by_handler(&truth),
+            );
+        }
+    }
+
+    #[test]
+    fn negated_membership_domains_match_sql_and_intersect_inclusions() {
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+
+        let stages = ["finished", "inbox", "paused", "running", "suspended"];
+        // Every case also requires: stage IN ('running', 'paused').
+        #[rustfmt::skip]
+        let stage_cases = [
+            // Additional exclusion                     finished inbox paused running suspended
+            ("stage NOT IN ('inbox')",                   [F,      F,    T,     T,      F]),
+            ("stage NOT IN ('running')",                 [F,      F,    T,     F,      F]),
+            ("stage NOT IN ('running', 'running')",      [F,      F,    T,     F,      F]),
+            ("stage NOT IN ('running', 'paused')",       [F,      F,    F,     F,      F]),
+            ("stage NOT IN ('inbox', NULL)",             [F,      F,    U,     U,      F]),
+            ("stage NOT IN ('not-a-stage')",             [F,      F,    T,     T,      F]),
+            ("stage NOT IN ('not-a-stage', 'running')",  [F,      F,    T,     F,      F]),
+        ];
+
+        // Unknown stage names are ordinary strings outside the complete stage
+        // domain. They are not NULL and do not make the comparison unsupported.
+        #[rustfmt::skip]
+        let unknown_stage_cases = [
+            // SQL predicate                                 finished inbox paused running suspended
+            ("stage IN ('not-a-stage')",                      [F,      F,    F,     F,      F]),
+            ("stage NOT IN ('not-a-stage')",                  [T,      T,    T,     T,      T]),
+            ("stage IN ('running', 'not-a-stage')",           [F,      F,    F,     T,      F]),
+            ("stage NOT IN ('running', 'not-a-stage')",       [T,      T,    T,     F,      T]),
+            ("stage IN ('not-a-stage', 'running')",           [F,      F,    F,     T,      F]),
+            ("stage NOT IN ('not-a-stage', 'running')",       [T,      T,    T,     F,      T]),
+            ("stage IN ('not-a-stage', NULL)",               [U,      U,    U,     U,      U]),
+            ("stage NOT IN ('not-a-stage', NULL)",           [U,      U,    U,     U,      U]),
+            ("stage IN ('running', 'not-a-stage', NULL)",    [U,      U,    U,     T,      U]),
+            ("stage NOT IN ('running', 'not-a-stage', NULL)",[U,      U,    U,     F,      U]),
+        ];
+
+        let handlers = [None, Some(""), Some("alpha"), Some("beta")];
+        #[rustfmt::skip]
+        let handler_cases = [
+            // SQL predicate                                                 NULL  ''  alpha beta
+            ("handler NOT IN ('alpha')",                                      [U,   T,  F,    T]),
+            ("handler NOT IN ('alpha', 'alpha', 'beta')",                      [U,   T,  F,    F]),
+            ("handler NOT IN ('alpha', NULL)",                                [U,   U,  F,    U]),
+            ("handler NOT IN (NULL, 'alpha')",                                [U,   U,  F,    U]),
+            ("handler NOT IN (NULL)",                                         [U,   U,  U,    U]),
+            ("handler NOT IN ('alpha') OR handler = 'alpha'",                  [U,   T,  T,    T]),
+            ("handler NOT IN ('alpha') AND handler IN ('alpha', 'beta')",      [U,   F,  F,    T]),
+            ("handler NOT IN ('alpha', NULL) OR handler = 'beta'",             [U,   U,  F,    T]),
+        ];
+
+        let fixture = SelectionFixture::cross_product(&stages, &handlers);
+        // Invariant: exclusions combine with inclusions by intersection, and the
+        // resulting domain selects exactly SQL TRUE, including NULL-containing lists.
+        for (exclusion, truth) in stage_cases {
+            let sql = format!("stage IN ('running', 'paused') AND ({exclusion})");
+            fixture.assert_exact_comparison_domain(
+                &sql,
+                ExclusionTargetColumn::Stage,
+                &fixture.truth_by_stage(&truth),
+            );
+        }
+        for (sql, truth) in unknown_stage_cases {
+            fixture.assert_exact_comparison_domain(
+                sql,
+                ExclusionTargetColumn::Stage,
+                &fixture.truth_by_stage(&truth),
+            );
+        }
+        for (sql, truth) in handler_cases {
+            fixture.assert_exact_comparison_domain(
+                sql,
+                ExclusionTargetColumn::Handler,
+                &fixture.truth_by_handler(&truth),
+            );
+        }
+    }
+
+    #[test]
+    fn comparison_domains_distinguish_impossible_literals_from_unsupported_conversions() {
+        let samples = [None, Some(0u64), Some(7), Some(u64::MAX)];
+        #[rustfmt::skip]
+        let cases = [
+            // Literal in `nullable_u64 != literal`   NULL   0      7      MAX
+            (ScalarValue::UInt64(Some(7)),             [false, true,  false, true]),
+            (ScalarValue::Int64(Some(-1)),             [false, true,  true,  true]),
+            (ScalarValue::UInt64(None),                [false, false, false, false]),
+        ];
+        for (literal, expected) in cases {
+            let domain = comparison_domain::<Option<u64>>(Operator::NotEq, &literal).unwrap();
+            assert_eq!(
+                samples.map(|value| domain.contains(&value)),
+                expected,
+                "!= {literal}"
+            );
+        }
+
+        // An impossible equality value removes nothing from a non-nullable field.
+        let negative = ScalarValue::Int64(Some(-1));
+        assert!(
+            comparison_domain::<u64>(Operator::NotEq, &negative)
+                .unwrap()
+                .is_all()
+        );
+        // An out-of-domain ordered endpoint does not imply an empty domain.
+        assert!(comparison_domain::<u64>(Operator::Lt, &negative).is_none());
+        // Unsupported conversions must stay residual, rather than exclude values.
+        let numeric_string = ScalarValue::Utf8(Some("7".into()));
+        assert!(comparison_domain::<u64>(Operator::NotEq, &numeric_string).is_none());
+
+        // Equality conversion is enough for !=, even without SQL-order conversion.
+        let invocation = ScalarValue::Utf8(Some("invocation".into()));
+        let domain = comparison_domain::<EntryKind>(Operator::NotEq, &invocation).unwrap();
+        assert!(!domain.contains(&EntryKind::Invocation));
+        assert!(domain.contains(&EntryKind::StateMutation));
+        assert!(comparison_domain::<EntryKind>(Operator::Gt, &invocation).is_none());
+    }
+
+    #[test]
+    fn exclusions_preserve_sql_truth_and_residual_results() {
+        use CandidateExpectation::{Conservative, Exact};
+
+        // SQL truth values: TRUE, FALSE, UNKNOWN. Only TRUE survives WHERE.
+        const T: Option<bool> = Some(true);
+        const F: Option<bool> = Some(false);
+        const U: Option<bool> = None;
+
+        // Promote Conservative cases to Exact as exclusion pushdown is implemented.
+        let stages = ["finished", "inbox", "paused", "running", "suspended"];
+        #[rustfmt::skip]
+        let stage_cases = [
+            // SQL predicate                        finished inbox paused running suspended   candidates
+            ("stage = 'running'",                    [F,      F,    F,     T,      F],        Exact),
+            ("stage != 'running'",                   [T,      T,    T,     F,      T],        Conservative),
+            ("stage != 'not-a-stage'",               [T,      T,    T,     T,      T],        Conservative),
+            ("stage NOT IN ('running', NULL)",       [U,      U,    U,     F,      U],        Conservative),
+        ];
+
+        // Every case also requires: stage IN ('running', 'paused').
+        #[rustfmt::skip]
+        let stage_membership_cases = [
+            // Additional exclusion                  finished inbox paused running suspended   candidates
+            ("stage NOT IN ('inbox')",                [F,      F,    T,     T,      F],        Exact),
+            ("stage NOT IN ('running')",              [F,      F,    T,     F,      F],        Conservative),
+            ("stage NOT IN ('running', 'paused')",    [F,      F,    F,     F,      F],        Conservative),
+            ("stage NOT IN ('inbox', NULL)",          [F,      F,    U,     U,      F],        Conservative),
+        ];
+
+        let handlers = [None, Some(""), Some("alpha"), Some("beta")];
+        #[rustfmt::skip]
+        let handler_cases = [
+            // SQL predicate                        NULL  ''  'alpha' 'beta'   candidates
+            ("handler = 'alpha'",                    [U,   F,  T,      F],      Exact),
+            ("handler = NULL",                       [U,   U,  U,      U],      Exact),
+            ("handler IS NULL",                      [T,   F,  F,      F],      Exact),
+            ("handler IS NOT NULL",                  [F,   T,  T,      T],      Conservative),
+            ("handler != 'alpha'",                   [U,   T,  F,      T],      Conservative),
+            ("handler != NULL",                      [U,   U,  U,      U],      Conservative),
+            ("handler IN ('alpha', NULL)",           [U,   U,  T,      U],      Exact),
+            ("handler NOT IN ('alpha')",             [U,   T,  F,      T],      Conservative),
+            ("handler NOT IN ('alpha', NULL)",       [U,   U,  F,      U],      Conservative),
+            ("handler NOT IN (NULL)",                [U,   U,  U,      U],      Conservative),
+            // NOT preserves UNKNOWN; it cannot simply complement the SQL-TRUE set.
+            ("NOT (handler IN ('alpha', NULL))",      [U,   U,  F,      U],      Conservative),
+        ];
+
+        let fixture = SelectionFixture::cross_product(&stages, &handlers);
+
+        // Invariant: selection never loses a SQL-TRUE row, and selection plus
+        // residual produces exactly the SQL result. Exact cases also forbid extras.
+        // Adding a supported conjunct must still enforce that conjunct.
+        for (sql, truth, candidates) in stage_cases {
+            let expected = fixture.truth_by_stage(&truth);
+            fixture.assert_preserves_sql_results(sql, &expected, candidates);
+            fixture.assert_running_conjunct_is_enforced(sql, &expected, candidates);
+        }
+        for (exclusion, truth, candidates) in stage_membership_cases {
+            let sql = format!("stage IN ('running', 'paused') AND ({exclusion})");
+            let expected = fixture.truth_by_stage(&truth);
+            fixture.assert_preserves_sql_results(&sql, &expected, candidates);
+            fixture.assert_running_conjunct_is_enforced(&sql, &expected, candidates);
+        }
+        for (sql, truth, candidates) in handler_cases {
+            let expected = fixture.truth_by_handler(&truth);
+            fixture.assert_preserves_sql_results(sql, &expected, candidates);
+            fixture.assert_running_conjunct_is_enforced(sql, &expected, candidates);
+        }
+    }
+
+    struct SelectionFixture {
+        rows: Vec<(ReString, Option<ReString>)>,
+        handlers_per_stage: usize,
+        batch: RecordBatch,
+        schema: DFSchema,
+        context: SessionContext,
+    }
+
+    impl SelectionFixture {
+        // Cross every stage with every handler so NULL behavior cannot accidentally
+        // depend on a correlation between columns in the fixture.
+        fn cross_product(stages: &[&str], handlers: &[Option<&str>]) -> Self {
+            let mut rows = Vec::new();
+            for &stage in stages {
+                for &handler in handlers {
+                    rows.push((ReString::from(stage), handler.map(ReString::from)));
+                }
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    ArrowField::new("stage", DataType::LargeUtf8, false),
+                    ArrowField::new("handler", DataType::LargeUtf8, true),
+                ])),
+                vec![
+                    Arc::new(LargeStringArray::from(
+                        rows.iter()
+                            .map(|(stage, _)| stage.as_str())
+                            .collect::<Vec<_>>(),
+                    )),
+                    Arc::new(LargeStringArray::from(
+                        rows.iter()
+                            .map(|(_, handler)| handler.as_ref().map(ReString::as_str))
+                            .collect::<Vec<_>>(),
+                    )),
+                ],
+            )
+            .unwrap();
+            let schema = DFSchema::try_from(batch.schema().as_ref().clone()).unwrap();
+            Self {
+                rows,
+                handlers_per_stage: handlers.len(),
+                batch,
+                schema,
+                context: SessionContext::new(),
+            }
+        }
+
+        fn truth_by_stage(&self, truth: &[Option<bool>]) -> Vec<Option<bool>> {
+            assert_eq!(truth.len() * self.handlers_per_stage, self.rows.len());
+            truth
+                .iter()
+                .flat_map(|&value| std::iter::repeat_n(value, self.handlers_per_stage))
+                .collect()
+        }
+
+        fn truth_by_handler(&self, truth: &[Option<bool>]) -> Vec<Option<bool>> {
+            assert_eq!(truth.len(), self.handlers_per_stage);
+            truth.repeat(self.rows.len() / self.handlers_per_stage)
+        }
+
+        fn assert_exact_comparison_domain(
+            &self,
+            sql: &str,
+            field: ExclusionTargetColumn,
+            expected: &[Option<bool>],
+        ) {
+            fn typed_domain<V: SelectionValue + Ord + Clone>(
+                expr: &Arc<dyn PhysicalExpr>,
+                column: &str,
+            ) -> Domain<V> {
+                crate::selection::domain::column_domain(
+                    std::slice::from_ref(expr),
+                    column,
+                    |op, literal| {
+                        Ok(comparison_domain(op, literal)
+                            .expect("test comparison must be supported"))
+                    },
+                )
+                .unwrap()
+            }
+
+            let expr = self.physical(sql);
+            assert_eq!(sql_truth(&expr, &self.batch), expected, "SQL truth: {sql}");
+            let column = ExclusionTarget::tag(field);
+            let selected: Vec<_> = match field {
+                ExclusionTargetColumn::Stage => {
+                    let domain = typed_domain::<ReString>(&expr, column);
+                    self.rows
+                        .iter()
+                        .map(|(stage, _)| domain.contains(stage))
+                        .collect()
+                }
+                ExclusionTargetColumn::Handler => {
+                    let domain = typed_domain::<Option<ReString>>(&expr, column);
+                    self.rows
+                        .iter()
+                        .map(|(_, handler)| domain.contains(handler))
+                        .collect()
+                }
+            };
+            assert_eq!(
+                selected,
+                expected
+                    .iter()
+                    .map(|truth| *truth == Some(true))
+                    .collect::<Vec<_>>(),
+                "exact comparison domain: {sql}",
+            );
+        }
+
+        fn assert_preserves_sql_results(
+            &self,
+            sql: &str,
+            expected: &[Option<bool>],
+            expectation: CandidateExpectation,
+        ) -> Vec<bool> {
+            let expr = self.physical(sql);
+            let candidates =
+                check_selection::<ExclusionTarget>(&expr, &self.batch, expected, |clause, row| {
+                    match clause {
+                        ExclusionTargetClause::Stage(predicate) => {
+                            matches_value(predicate, &self.rows[row].0)
+                        }
+                        ExclusionTargetClause::Handler(predicate) => {
+                            matches_value(predicate, &self.rows[row].1)
+                        }
+                    }
+                });
+            if matches!(expectation, CandidateExpectation::Exact) {
+                assert_eq!(
+                    candidates,
+                    expected
+                        .iter()
+                        .map(|truth| *truth == Some(true))
+                        .collect::<Vec<_>>(),
+                    "exact selection: {sql} ({expr})"
+                );
+            }
+            candidates
+        }
+
+        fn assert_running_conjunct_is_enforced(
+            &self,
+            sql: &str,
+            expected: &[Option<bool>],
+            expectation: CandidateExpectation,
+        ) {
+            let sql = format!("stage = 'running' AND ({sql})");
+            let expected: Vec<_> = expected
+                .iter()
+                .zip(&self.rows)
+                .map(|(&truth, (stage, _))| {
+                    if stage.as_str() == "running" {
+                        truth
+                    } else {
+                        Some(false)
+                    }
+                })
+                .collect();
+            let candidates = self.assert_preserves_sql_results(&sql, &expected, expectation);
+            for (row, selected) in candidates.into_iter().enumerate() {
+                if selected {
+                    assert_eq!(
+                        self.rows[row].0.as_str(),
+                        "running",
+                        "lost stage constraint: {sql}"
+                    );
+                }
+            }
+        }
+
+        fn physical(&self, sql: &str) -> Arc<dyn PhysicalExpr> {
+            // Type the fixture's SQL literals directly as LargeUtf8, matching its
+            // columns, so these cases exercise literal clauses rather than casts.
+            let expr = self
+                .context
+                .parse_sql_expr(sql, &self.schema)
+                .expect(sql)
+                .transform(|expr| match expr {
+                    Expr::Literal(value, metadata)
+                        if matches!(value, ScalarValue::Utf8(_) | ScalarValue::Null) =>
+                    {
+                        Ok(Transformed::yes(Expr::Literal(
+                            value.cast_to(&DataType::LargeUtf8)?,
+                            metadata,
+                        )))
+                    }
+                    expr => Ok(Transformed::no(expr)),
+                })
+                .expect(sql)
+                .data;
+            self.context
+                .create_physical_expr(expr, &self.schema)
+                .expect(sql)
+        }
     }
 
     #[test]
