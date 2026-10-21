@@ -23,13 +23,14 @@ ARG BASE_IMAGE
 FROM ${SOURCE_IMAGE} AS source
 
 FROM ${BASE_IMAGE} AS runtime
-RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
+# jq and curl are useful for health checks. ca-certificates is the OS trust store for rustls, librdkafka
+# and curl; install it here rather than copying /etc/ssl from another image, so every build gets current roots.
+RUN apt-get update && apt-get install --no-install-recommends -y jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Create symlink for debug symbols fallback path (for read-only /usr/local/bin scenarios)
 RUN mkdir -p /usr/local/bin/.debug && \
     ln -s /tmp/.debug/restate-server.debug /usr/local/bin/.debug/restate-server.debug
 COPY --from=source /NOTICE /NOTICE
 COPY --from=source /LICENSE /LICENSE
-COPY --from=source /etc/ssl /etc/ssl
 COPY --from=source /usr/local/bin/restate-server /usr/local/bin/
 COPY --from=source /usr/local/bin/restatectl /usr/local/bin/
 COPY --from=source /usr/local/bin/restate /usr/local/bin/
