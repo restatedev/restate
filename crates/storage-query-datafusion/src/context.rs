@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use datafusion::catalog::TableProvider;
-use datafusion::common::TableReference;
+use datafusion::common::{ParamValues, TableReference};
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
@@ -651,13 +651,36 @@ impl QueryContext {
     }
 
     pub async fn execute(&self, sql: &str) -> Result<QueryResult, QueryError> {
+        self.execute_with_params(sql, None).await
+    }
+
+    /// Executes `sql`, replacing its placeholders (`$1`, `$name`) with `params`.
+    pub async fn execute_with_params(
+        &self,
+        sql: &str,
+        params: Option<ParamValues>,
+    ) -> Result<QueryResult, QueryError> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
         }
 
         let state = self.datafusion_context.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
-        let plan = state.statement_to_plan(statement).await?;
+        let mut plan = state.statement_to_plan(statement).await?;
+        if let Some(params) = params {
+            plan = plan.with_param_values(params)?;
+        } else {
+            // fail at planning time instead of during execution
+            let mut names = Vec::from_iter(plan.get_parameter_names()?);
+            if !names.is_empty() {
+                names.sort_unstable();
+                return Err(DataFusionError::Plan(format!(
+                    "No values provided for placeholders {}",
+                    names.join(", ")
+                ))
+                .into());
+            }
+        }
         self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
 
