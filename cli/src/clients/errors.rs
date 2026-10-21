@@ -13,6 +13,8 @@ use serde::Deserialize;
 use thiserror::Error;
 use url::Url;
 
+use restate_types::SemanticRestateVersion;
+
 /// The error of the CLI's HTTP clients (admin API, SQL queries, Restate Cloud).
 #[derive(Error, Debug)]
 pub enum ClientError {
@@ -33,6 +35,14 @@ pub enum ClientError {
     Arrow(#[from] ArrowError),
     #[error(transparent)]
     UrlParse(#[from] url::ParseError),
+    #[error(
+        "{feature} requires Restate server >= {min_version} (connected server: {server_version})"
+    )]
+    UnsupportedServerVersion {
+        feature: &'static str,
+        min_version: &'static str,
+        server_version: SemanticRestateVersion,
+    },
 }
 
 impl From<serde_json::Error> for ClientError {
