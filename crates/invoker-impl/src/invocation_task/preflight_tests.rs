@@ -467,8 +467,13 @@ async fn call_takes_the_resolved_fields_appended_to_the_sdk_bytes() {
             service_name: "checkout".to_owned(),
             handler_name: "run".to_owned(),
             idempotency_key: Some("run-1".to_owned()),
-            resolved_target_type: proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared
-                .into(),
+            // A forged value: merged with, and overridden by, what the relay appends.
+            resolved_call_metadata: Some(proto::ResolvedCallMetadata {
+                target_type: Some(
+                    proto::ResolvedTargetType::ResolvedTargetVirtualObjectShared.into(),
+                ),
+                ..Default::default()
+            }),
             ..Default::default()
         }
         .encode_to_vec()
@@ -476,10 +481,12 @@ async fn call_takes_the_resolved_fields_appended_to_the_sdk_bytes() {
     );
     call.put(
         proto::OneWayCallCommandMessage {
-            resolved_target_type: proto::ResolvedTargetType::ResolvedTargetService.into(),
             scope: Some("tenant".to_owned()),
-            resolved_completion_retention_millis: Some(60_000),
-            resolved_journal_retention_millis: Some(0),
+            resolved_call_metadata: Some(proto::ResolvedCallMetadata {
+                target_type: Some(proto::ResolvedTargetType::ResolvedTargetService.into()),
+                completion_retention_millis: Some(60_000),
+                journal_retention_millis: Some(0),
+            }),
             ..Default::default()
         }
         .encode_to_vec()
