@@ -29,7 +29,7 @@ use restate_types::identifiers::DeploymentId;
 use restate_types::schema::service::ServiceMetadata;
 
 use crate::cli_env::CliEnv;
-use crate::clients::datafusion_helpers::count_deployment_active_inv_by_method;
+use crate::clients::datafusion_helpers::count_active_inv_by_deployment;
 use crate::clients::{AdminClient, AdminClientInterface, DataFusionHttpClient, Deployment};
 use crate::error::RestateCliError;
 use crate::ui::deployments::{
@@ -73,7 +73,7 @@ pub struct Remove {
     dry_run: DryRun,
 }
 
-/// How many deployments are inspected concurrently, each with a few requests to the server.
+/// How many deployments are inspected concurrently, each with a request to the server.
 const MAX_CONCURRENT_INSPECTIONS: usize = 16;
 
 /// A deployment to remove, with what removing it would break.
@@ -87,9 +87,9 @@ struct Inspected {
 
 async fn inspect(
     client: &AdminClient,
-    sql_client: &DataFusionHttpClient,
     latest_services: &HashMap<String, ServiceMetadata>,
     deployment_id: DeploymentId,
+    total_active_inv: i64,
 ) -> Result<Inspected> {
     let deployment = client
         .get_deployment(deployment_id.to_string())
@@ -98,9 +98,6 @@ async fn inspect(
         .await?;
     let (deployment_id, deployment, services) =
         Deployment::from_detailed_deployment_response(deployment);
-    let active_inv = count_deployment_active_inv_by_method(sql_client, &deployment_id).await?;
-    let total_active_inv = active_inv.iter().map(|x| x.inv_count).sum();
-
     let service_rev_pairs: Vec<_> = services
         .iter()
         .map(|s| ServiceNameRevPair {
@@ -191,12 +188,13 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
         latest_services.insert(service.name.clone(), service);
     }
 
-    let inspections = opts
-        .deployment_ids
-        .iter()
-        .copied()
-        .unique()
-        .map(|id| inspect(&client, &sql_client, &latest_services, id));
+    let deployment_ids: Vec<_> = opts.deployment_ids.iter().copied().unique().collect();
+    // One scan of the invocation status table for all deployments, rather than one each.
+    let active_inv = count_active_inv_by_deployment(&sql_client, &deployment_ids).await?;
+    let inspections = deployment_ids.iter().copied().map(|id| {
+        let total_active_inv = active_inv.get(&id).copied().unwrap_or_default();
+        inspect(&client, &latest_services, id, total_active_inv)
+    });
     let deployments: Vec<_> = stream::iter(inspections)
         .buffered(MAX_CONCURRENT_INSPECTIONS)
         .try_collect()
