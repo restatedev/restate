@@ -9201,11 +9201,11 @@ dependencies = [
 
 [[package]]
 name = "restate-web-ui"
-version = "1.0.37"
-source = "git+https://github.com/restatedev/restate-web-ui-crate?tag=v1.0.37#c6690ca50e9fffeb54519650fe20b4f47952e724"
+version = "1.8.2-dev"
 dependencies = [
  "anyhow",
  "include_dir",
+ "restate-workspace-hack",
  "zip",
 ]
 

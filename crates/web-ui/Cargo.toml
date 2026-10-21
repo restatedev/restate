@@ -1,0 +1,21 @@
+[package]
+name = "restate-web-ui"
+description = "Restate's Web UI, embedded from the zip in assets/"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+include_dir = { workspace = true }
+
+[build-dependencies]
+anyhow = { workspace = true }
+zip = { workspace = true }
+
+[lints]
+workspace = true

@@ -30,15 +30,22 @@ pub const MAX_ADMIN_API_VERSION: AdminApiVersion = AdminApiVersion::V5;
     )
 )]
 pub async fn version() -> Json<VersionInformation> {
+    let config = Configuration::pinned();
     Json(VersionInformation {
         version: env!("CARGO_PKG_VERSION").to_owned(),
         min_admin_api_version: MIN_ADMIN_API_VERSION.as_repr(),
         max_admin_api_version: MAX_ADMIN_API_VERSION.as_repr(),
         ingress_endpoint: Some(TaskCenter::with_current(|tc| {
-            Configuration::pinned()
-                .ingress
-                .advertised_address(tc.address_book())
+            config.ingress.advertised_address(tc.address_book())
         })),
-        features: Configuration::pinned().common.experimental.features(),
+        schema_registry_endpoint: config
+            .admin
+            .experimental_advertised_schema_registry_endpoint
+            .clone(),
+        ingress_mux_endpoint: config
+            .admin
+            .experimental_advertised_ingress_mux_endpoint
+            .clone(),
+        features: config.common.experimental.features(),
     })
 }
