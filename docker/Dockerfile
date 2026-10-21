@@ -123,15 +123,14 @@ COPY --from=upload-true /restate/target/restate-server.debug /
 # We do not need the Rust toolchain to run the server binary!
 # NOTE: When modifying this runtime stage, also update docker/Dockerfile.refresh to keep them in sync.
 FROM debian:trixie-slim AS runtime
-# useful for health checks
-RUN apt-get update && apt-get install --no-install-recommends -y jq curl && rm -rf /var/lib/apt/lists/*
+# jq and curl are useful for health checks. ca-certificates is the OS trust store for rustls, librdkafka
+# and curl; install it here rather than copying /etc/ssl from another image, so every build gets current roots.
+RUN apt-get update && apt-get install --no-install-recommends -y jq curl ca-certificates && rm -rf /var/lib/apt/lists/*
 # Create symlink for debug symbols fallback path (for read-only /usr/local/bin scenarios)
 RUN mkdir -p /usr/local/bin/.debug && \
     ln -s /tmp/.debug/restate-server.debug /usr/local/bin/.debug/restate-server.debug
 COPY --from=upload /restate/NOTICE /NOTICE
 COPY --from=upload /restate/LICENSE /LICENSE
-# copy OS roots
-COPY --from=upload /etc/ssl /etc/ssl
 COPY --from=upload /restate/target/restate-server /usr/local/bin
 COPY --from=upload /restate/target/download-restate-debug-symbols.sh /usr/local/bin
 COPY --from=upload /restate/target/restatectl /usr/local/bin
