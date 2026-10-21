@@ -131,8 +131,9 @@ impl InvocationTargetMetadata {
 /// call made from a preflight-mode stream. `None` means the server default.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RequestedRetentions {
-    pub idempotency: Option<Duration>,
-    pub workflow_completion: Option<Duration>,
+    /// The workflow completion retention for a workflow `run` handler, the idempotency retention
+    /// otherwise.
+    pub completion: Option<Duration>,
     pub journal: Option<Duration>,
 }
 

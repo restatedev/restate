@@ -1430,9 +1430,9 @@ impl InvocationTargetMetadata {
     /// for a call on a preflight-mode stream.
     ///
     /// The target is public, with default input/output rules. Retentions follow the same rules as
-    /// for a registered service: the completion retention is the workflow completion retention
-    /// for a workflow `run` handler, the idempotency retention otherwise; absent values take the
-    /// server defaults; every value is clamped by the server maximum.
+    /// for a registered service: absent values take the server defaults and every value is clamped
+    /// by the server maximum (for the completion retention, the workflow completion ones for a
+    /// workflow `run` handler, the idempotency ones otherwise).
     pub fn from_external_semantics(
         target_ty: InvocationTargetType,
         retentions: RequestedRetentions,
@@ -1440,24 +1440,23 @@ impl InvocationTargetMetadata {
         let configuration = Configuration::pinned();
         let invocation = &configuration.invocation;
 
-        let completion_retention =
-            if target_ty == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow) {
-                configuration.clamp_workflow_completion_retention(
-                    retentions.workflow_completion.or_else(|| {
-                        invocation
-                            .default_workflow_completion_retention
-                            .to_non_zero_std()
-                    }),
-                )
-            } else {
-                configuration.clamp_idempotency_retention(
-                    retentions
-                        .idempotency
-                        .or_else(|| invocation.default_idempotency_retention.to_non_zero_std()),
-                )
-            }
-            .0
-            .unwrap_or(Duration::ZERO);
+        let completion_retention = if target_ty
+            == InvocationTargetType::Workflow(WorkflowHandlerType::Workflow)
+        {
+            configuration.clamp_workflow_completion_retention(retentions.completion.or_else(|| {
+                invocation
+                    .default_workflow_completion_retention
+                    .to_non_zero_std()
+            }))
+        } else {
+            configuration.clamp_idempotency_retention(
+                retentions
+                    .completion
+                    .or_else(|| invocation.default_idempotency_retention.to_non_zero_std()),
+            )
+        }
+        .0
+        .unwrap_or(Duration::ZERO);
         let journal_retention = configuration
             .clamp_journal_retention(
                 retentions
