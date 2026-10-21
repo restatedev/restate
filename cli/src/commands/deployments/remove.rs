@@ -190,10 +190,7 @@ pub async fn run_remove(State(env): State<CliEnv>, opts: &Remove) -> Result<()> 
 
     let deployment_ids: Vec<_> = opts.deployment_ids.iter().copied().unique().collect();
     // One scan of the invocation status table for all deployments, rather than one each.
-    let mut active_inv = HashMap::new();
-    for chunk in deployment_ids.chunks(BATCH_OPERATION_MAX_SIZE) {
-        active_inv.extend(count_active_inv_by_deployment(&sql_client, chunk).await?);
-    }
+    let active_inv = count_active_inv_by_deployment(&sql_client, &deployment_ids).await?;
     let inspections = deployment_ids.iter().copied().map(|id| {
         let total_active_inv = active_inv.get(&id).copied().unwrap_or_default();
         inspect(&client, &latest_services, id, total_active_inv)
