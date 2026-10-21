@@ -55,6 +55,8 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
+use restate_util_bytecount::ByteCount;
+
 use crate::identifiers::{
     DeploymentId, EntryIndex, InvocationId, PartitionId, PartitionProcessorRpcRequestId,
 };
@@ -302,6 +304,16 @@ pub enum PartitionProcessorRpcError {
     //Busy,
     #[error("internal error: {0}")]
     Internal(String),
+    #[error(
+        "partition '{partition_id}' is out of storage: {} of {} used. New invocations are rejected until space is freed",
+        ByteCount::from(*used_bytes),
+        ByteCount::from(*capacity_bytes)
+    )]
+    PartitionFull {
+        partition_id: PartitionId,
+        used_bytes: u64,
+        capacity_bytes: u64,
+    },
 }
 
 /// The response envelope that wraps all the dedicated partition processor RPC messages.
@@ -328,6 +340,15 @@ pub enum PartitionProcessorResponseRpcEnvelope<T> {
         #[bilrost(1)]
         message: String,
     },
+    #[bilrost(tag(5), message)]
+    PartitionFull {
+        #[bilrost(1)]
+        partition_id: PartitionId,
+        #[bilrost(2)]
+        used_bytes: u64,
+        #[bilrost(3)]
+        capacity_bytes: u64,
+    },
 }
 
 impl<T> PartitionProcessorResponseRpcEnvelope<T> {
@@ -342,6 +363,16 @@ impl<T> PartitionProcessorResponseRpcEnvelope<T> {
                 Err(PartitionProcessorRpcError::LostLeadership(partition_id).into())
             }
             Self::Internal { message } => Err(PartitionProcessorRpcError::Internal(message).into()),
+            Self::PartitionFull {
+                partition_id,
+                used_bytes,
+                capacity_bytes,
+            } => Err(PartitionProcessorRpcError::PartitionFull {
+                partition_id,
+                used_bytes,
+                capacity_bytes,
+            }
+            .into()),
             Self::Unknown => Err(UnexpectedResponse.into()),
         }
     }
@@ -393,6 +424,15 @@ impl<T> From<PartitionProcessorRpcError> for PartitionProcessorResponseRpcEnvelo
                 Self::LostLeadership { partition_id }
             }
             PartitionProcessorRpcError::Internal(message) => Self::Internal { message },
+            PartitionProcessorRpcError::PartitionFull {
+                partition_id,
+                used_bytes,
+                capacity_bytes,
+            } => Self::PartitionFull {
+                partition_id,
+                used_bytes,
+                capacity_bytes,
+            },
         }
     }
 }
@@ -1219,4 +1259,43 @@ define_partition_processor_rpcs! {
     RestartAsNewInvocationRpcRequest => RestartAsNewInvocationRpcResponse,
     ResumeInvocationRpcRequest => ResumeInvocationRpcResponse,
     PauseInvocationRpcRequest => PauseInvocationRpcResponse,
+}
+
+#[cfg(test)]
+mod partition_full_tests {
+    use super::*;
+    use crate::net::CURRENT_PROTOCOL_VERSION;
+
+    #[test]
+    fn partition_full_round_trips_through_the_response_envelope() {
+        let err = PartitionProcessorRpcError::PartitionFull {
+            partition_id: PartitionId::MIN,
+            used_bytes: 9_000,
+            capacity_bytes: 10_000,
+        };
+        assert!(err.to_string().contains("is out of storage"));
+
+        let bytes = PartitionProcessorResponseRpcEnvelope::<CancelInvocationRpcResponse>::from(err)
+            .encode_to_bytes(CURRENT_PROTOCOL_VERSION)
+            .unwrap();
+        let decoded =
+            PartitionProcessorResponseRpcEnvelope::<CancelInvocationRpcResponse>::try_decode(
+                bytes,
+                CURRENT_PROTOCOL_VERSION,
+            )
+            .unwrap();
+
+        let Err(WireResponseError::Processor(PartitionProcessorRpcError::PartitionFull {
+            partition_id,
+            used_bytes,
+            capacity_bytes,
+        })) = decoded.into_result()
+        else {
+            panic!("expected a partition full error");
+        };
+        assert_eq!(
+            (partition_id, used_bytes, capacity_bytes),
+            (PartitionId::MIN, 9_000, 10_000)
+        );
+    }
 }

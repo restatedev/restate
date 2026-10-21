@@ -1064,6 +1064,12 @@ where
                     Err(PartitionProcessorRpcError::Internal(msg)) => {
                         ResponseStatus::Internal { msg }
                     }
+                    // Not produced for forwarded records.
+                    Err(err @ PartitionProcessorRpcError::PartitionFull { .. }) => {
+                        ResponseStatus::Internal {
+                            msg: err.to_string(),
+                        }
+                    }
                 };
                 reciprocal.send(status.into());
             });

@@ -16,6 +16,7 @@ use serde::Serialize;
 
 use restate_types::errors::{GenericError, IdDecodeError, InvocationError};
 use restate_types::identifiers::DeploymentId;
+use restate_types::net::partition_processor::PartitionProcessorRpcError;
 use restate_types::schema::invocation_target::InputValidationError;
 use restate_util_string::RestrictedValueError;
 
@@ -118,6 +119,8 @@ pub(crate) enum HandlerError {
         Submitting the request again may result in executing the operation twice."
     )]
     GenericWriteDispatcherError(RequestDispatcherError),
+    #[error("{0}")]
+    PartitionFull(PartitionProcessorRpcError),
     #[error("bad scope value: {0}")]
     BadScopeValue(RestrictedValueError),
 }
@@ -168,6 +171,19 @@ enum ErrorResponseBody {
 }
 
 impl HandlerError {
+    pub(crate) fn from_invocation_dispatcher(err: RequestDispatcherError) -> Self {
+        let RequestDispatcherError::Internal(inner) = &err;
+        match inner
+            .chain()
+            .find_map(|e| e.downcast_ref::<PartitionProcessorRpcError>())
+        {
+            Some(full @ PartitionProcessorRpcError::PartitionFull { .. }) => {
+                HandlerError::PartitionFull(full.clone())
+            }
+            _ => HandlerError::InvocationDispatcherError(err),
+        }
+    }
+
     pub(crate) fn status_code(&self) -> StatusCode {
         match self {
             // 4xx range
@@ -202,6 +218,7 @@ impl HandlerError {
                 StatusCode::PAYLOAD_TOO_LARGE
             }
             HandlerError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
+            HandlerError::PartitionFull(_) => StatusCode::INSUFFICIENT_STORAGE,
 
             // 5xx range
             HandlerError::InvocationDispatcherError(_)
@@ -263,5 +280,30 @@ impl HandlerError {
 
     pub(crate) fn into_response<B: http_body::Body + Default + From<Bytes>>(self) -> Response<B> {
         self.fill_builder(http::response::Builder::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_types::identifiers::PartitionId;
+
+    use super::*;
+
+    #[test]
+    fn partition_full_maps_to_insufficient_storage() {
+        let full = anyhow::Error::new(PartitionProcessorRpcError::PartitionFull {
+            partition_id: PartitionId::MIN,
+            used_bytes: 90,
+            capacity_bytes: 100,
+        })
+        .context("rpc failed");
+        let err = HandlerError::from_invocation_dispatcher(RequestDispatcherError::Internal(full));
+        assert_eq!(err.status_code(), StatusCode::INSUFFICIENT_STORAGE);
+        assert!(err.to_string().contains("is out of storage"));
+
+        let other = HandlerError::from_invocation_dispatcher(RequestDispatcherError::Internal(
+            anyhow::anyhow!("connection lost"),
+        ));
+        assert_eq!(other.status_code(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }
