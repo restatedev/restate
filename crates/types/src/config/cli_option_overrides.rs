@@ -24,13 +24,13 @@ use crate::net::address::FabricPort;
 use crate::net::address::{AdvertisedAddress, BindAddress};
 use crate::nodes_config::Role;
 
-use super::{ListenMode, LogFormat};
+use super::{ControlOptions, ListenMode, LogFormat};
 
 #[serde_as]
 #[skip_serializing_none]
 #[derive(Debug, Clone, clap::Parser, Serialize, Default)]
-/// A subset of CommonOptions that can be parsed via the CLI. This **must** remain
-/// parse-compatible with CommonOptions.
+/// Server configuration overrides that can be parsed via the CLI. This **must**
+/// remain parse-compatible with Configuration.
 #[serde(rename_all = "kebab-case")]
 pub struct CommonOptionCliOverride {
     /// Listen on unix-sockets, TCP sockets, or both.
@@ -133,6 +133,13 @@ pub struct CommonOptionCliOverride {
     /// unset. e.g. `http://127.0.0.1:5122/`
     #[clap(long, env = "RESTATE_ADVERTISED_ADDRESS", global = true)]
     pub advertised_address: Option<AdvertisedAddress<FabricPort>>,
+
+    #[clap(flatten)]
+    #[serde(
+        rename = "networking",
+        skip_serializing_if = "ControlOptions::is_empty"
+    )]
+    control: ControlOptions,
 
     /// Default Number Of Partitions
     ///
@@ -243,7 +250,85 @@ fn deprecated_tracing_option<P: TypedValueParser>(
 mod tests {
     use clap::Parser;
 
+    use crate::config_loader::ConfigLoaderBuilder;
+    use crate::net::listener::AddressBook;
+
     use super::CommonOptionCliOverride;
+
+    #[test]
+    fn control_overrides_merge_into_networking_options() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            r#"
+            node-name = "control-cli-test"
+            advertised-address = "http://fabric.example.com:5122"
+            [networking]
+            ctrl-advertised-host = "control.example.com"
+            ctrl-advertised-address = "https://file.example.com"
+            disable-compression = true
+            "#,
+        )
+        .unwrap();
+        let address_book = AddressBook::new(dir.path().to_owned());
+
+        for (args, expected_host, expected) in [
+            (
+                vec!["restate-server"],
+                "control.example.com",
+                "https://file.example.com",
+            ),
+            (
+                vec![
+                    "restate-server",
+                    "--ctrl-advertised-host",
+                    "cli.example.com",
+                ],
+                "cli.example.com",
+                "https://file.example.com",
+            ),
+            (
+                vec![
+                    "restate-server",
+                    "--advertised-host",
+                    "fabric-cli.example.com",
+                    "--ctrl-advertised-host",
+                    "cli.example.com",
+                    "--ctrl-advertised-address",
+                    "https://cli.example.com:8443/rpc",
+                ],
+                "cli.example.com",
+                "https://cli.example.com:8443/rpc",
+            ),
+        ] {
+            let options = CommonOptionCliOverride::try_parse_from(args).unwrap();
+            let config = ConfigLoaderBuilder::default()
+                .path(Some(path.clone()))
+                .cli_override(options)
+                .build()
+                .unwrap()
+                .load_once()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&config).unwrap()["networking"]["ctrl-advertised-host"],
+                expected_host
+            );
+            assert_eq!(
+                config.control_advertised_address(&address_book),
+                expected.parse().unwrap()
+            );
+            assert_eq!(
+                config.common.advertised_address(&address_book),
+                "http://fabric.example.com:5122".parse().unwrap()
+            );
+            assert!(config.networking.disable_compression);
+        }
+
+        let defaults = serde_json::to_value(CommonOptionCliOverride::default()).unwrap();
+        assert!(defaults.get("control").is_none());
+        assert!(defaults.get("networking").is_none());
+    }
 
     #[test]
     fn runtime_tracing_flags_are_accepted_but_not_forwarded_to_configuration() {

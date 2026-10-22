@@ -164,7 +164,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
         request: Request<ProvisionClusterRequest>,
     ) -> Result<Response<ProvisionClusterResponse>, Status> {
         let request = request.into_inner();
-        let config = Configuration::pinned();
+        let config = Configuration::pinned().into_arc();
 
         let dry_run = request.dry_run;
         let disabled = cluster_features_from_proto(&request.disabled_features)
@@ -182,7 +182,7 @@ impl NodeCtlSvc for NodeCtlSvcHandler {
 
         let newly_provisioned = provision_cluster_metadata(
             &self.metadata_writer,
-            &config.common,
+            &config,
             &cluster_configuration,
             features,
         )
