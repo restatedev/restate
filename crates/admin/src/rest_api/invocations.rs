@@ -10,7 +10,8 @@
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode, header};
+use bytes::Bytes;
 use futures::future;
 use serde::Deserialize;
 use tracing::warn;
@@ -19,17 +20,18 @@ use restate_admin_rest_model::invocations::{
     BATCH_OPERATION_MAX_SIZE, BatchInvocationRequest, BatchOperationResult,
     BatchRestartAsNewRequest, BatchRestartAsNewResult, BatchResumeRequest,
     FailedInvocationOperation, PatchDeploymentId, RestartAsNewInvocationResponse,
-    RestartedInvocation,
+    RestartedInvocation, SIGNAL_FAILURE_CONTENT_TYPE, SignalFailure,
 };
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::Ingestion;
+use restate_types::errors::{InvocationErrorCode, codes};
 use restate_types::identifiers::{InvocationId, PartitionProcessorRpcRequestId, WithPartitionKey};
 use restate_types::invocation::client::{
     self, CancelInvocationResponse, InvocationClient, KillInvocationResponse,
     PauseInvocationResponse, PurgeInvocationResponse, ResumeInvocationResponse,
 };
 use restate_types::invocation::{InvocationTermination, PurgeInvocationRequest, TerminationFlavor};
-use restate_types::journal_v2::EntryIndex;
+use restate_types::journal_v2::{EntryIndex, Failure, Signal, SignalId, SignalResult};
 use restate_types::logs::{BodyWithKeys, Keys};
 use restate_wal_protocol::v2;
 use restate_wal_protocol::v2::commands;
@@ -610,6 +612,97 @@ where
     Ok(StatusCode::ACCEPTED)
 }
 
+generate_meta_api_error!(SendInvocationSignalError: [InvocationClientError, InvalidFieldError]);
+
+/// Send a signal to an invocation
+///
+/// Resolves or rejects the named signal of an invocation. A request body with content type
+/// `application/vnd.restate.error+json` rejects the signal with the given failure, any other
+/// request body resolves the signal using the body as payload.
+///
+/// Signals sent to invocations that don't exist or are already completed are ignored.
+#[utoipa::path(
+    post,
+    path = "/invocations/{invocation_id}/signals/{signal_name}",
+    operation_id = "send_invocation_signal",
+    tag = "invocation",
+    params(
+        ("invocation_id" = String, Path, description = "Invocation identifier."),
+        ("signal_name" = String, Path, description = "Signal name."),
+    ),
+    request_body(
+        content(
+            ("application/octet-stream"),
+            (SignalFailure = "application/vnd.restate.error+json"),
+        ),
+        description = "Signal payload to resolve the signal, or a failure to reject it.",
+    ),
+    responses(
+        (status = 202, description = "Signal accepted"),
+        SendInvocationSignalError,
+    )
+)]
+pub async fn send_invocation_signal<Metadata, Discovery, Telemetry, Invocations, Transport>(
+    State(state): State<AdminServiceState<Metadata, Discovery, Telemetry, Invocations, Transport>>,
+    Path((invocation_id, signal_name)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, SendInvocationSignalError>
+where
+    Invocations: InvocationClient,
+{
+    let invocation_id = invocation_id
+        .parse::<InvocationId>()
+        .map_err(|e| InvalidFieldError("invocation_id", e.to_string()))?;
+    if signal_name.is_empty() {
+        Err(InvalidFieldError(
+            "signal_name",
+            "must not be empty".to_owned(),
+        ))?
+    }
+
+    let result = if is_signal_failure_content_type(&headers) {
+        let failure = serde_json::from_slice::<SignalFailure>(&body)
+            .map_err(|e| InvalidFieldError("body", e.to_string()))?;
+        if failure.message.is_empty() {
+            Err(InvalidFieldError("message", "must not be empty".to_owned()))?
+        }
+        SignalResult::Failure(Failure {
+            code: failure
+                .code
+                .map_or(codes::INTERNAL, InvocationErrorCode::new),
+            message: failure.message.into(),
+            metadata: failure.metadata.into_iter().map(Into::into).collect(),
+        })
+    } else {
+        SignalResult::Success(body)
+    };
+
+    state
+        .invocation_client
+        .append_signal(
+            PartitionProcessorRpcRequestId::new(),
+            invocation_id,
+            Signal::new(SignalId::for_name(signal_name.into()), result),
+        )
+        .await
+        .map_err(InvocationClientError)?;
+
+    Ok(StatusCode::ACCEPTED)
+}
+
+fn is_signal_failure_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split(';').next())
+        .is_some_and(|media_type| {
+            media_type
+                .trim()
+                .eq_ignore_ascii_case(SIGNAL_FAILURE_CONTENT_TYPE)
+        })
+}
+
 // --- Batch operation handlers (internal, not documented in OpenAPI) ---
 
 generate_meta_api_error!(BatchKillInvocationsError: [BatchTooLargeError, InvocationClientError]);
@@ -1175,4 +1268,27 @@ where
     }
 
     Ok(Json(BatchOperationResult { succeeded, failed }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn headers_with_content_type(content_type: &'static str) -> HeaderMap {
+        HeaderMap::from_iter([(header::CONTENT_TYPE, content_type.parse().unwrap())])
+    }
+
+    #[test]
+    fn signal_failure_content_type_ignores_parameters_and_case() {
+        assert!(is_signal_failure_content_type(&headers_with_content_type(
+            "Application/VND.restate.ERROR+json; charset=utf-8"
+        )));
+    }
+
+    #[test]
+    fn other_content_types_resolve_the_signal() {
+        assert!(!is_signal_failure_content_type(&headers_with_content_type(
+            "application/json"
+        )));
+    }
 }

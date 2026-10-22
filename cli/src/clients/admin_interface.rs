@@ -10,9 +10,11 @@
 
 use super::AdminClient;
 use super::admin_client::Envelope;
+use super::errors::ClientError;
+use bytes::Bytes;
 use futures::StreamExt;
 use futures::stream;
-use http::{Uri, Version};
+use http::{StatusCode, Uri, Version};
 use indicatif::ProgressBar;
 use restate_admin_rest_model::deployments::*;
 use restate_admin_rest_model::invocations::RestartAsNewInvocationResponse;
@@ -23,6 +25,7 @@ use restate_admin_rest_model::subscriptions::*;
 use restate_admin_rest_model::version::VersionInformation;
 use restate_futures_util::streams::StreamExt as RestateStreamExt;
 use restate_serde_util::SerdeableHeaderHashMap;
+use restate_types::SemanticRestateVersion;
 use restate_types::identifiers::{DeploymentId, LambdaARN};
 use restate_types::schema::deployment::ProtocolType;
 use restate_types::schema::service::ServiceMetadata;
@@ -77,6 +80,14 @@ pub trait AdminClientInterface {
         id: &str,
         deployment: Option<&str>,
     ) -> impl Future<Output = reqwest::Result<Envelope<()>>> + Send + 'static;
+
+    fn send_invocation_signal(
+        &self,
+        id: &str,
+        name: &str,
+        content_type: &'static str,
+        body: Bytes,
+    ) -> impl Future<Output = Result<Envelope<()>, ClientError>> + Send + 'static;
 
     fn kill_invocation(
         &self,
@@ -280,6 +291,47 @@ impl AdminClientInterface for AdminClient {
             url.set_query(Some(&format!("deployment={deployment}")));
         }
         self.run(reqwest::Method::PATCH, url)
+    }
+
+    fn send_invocation_signal(
+        &self,
+        id: &str,
+        name: &str,
+        content_type: &'static str,
+        body: Bytes,
+    ) -> impl Future<Output = Result<Envelope<()>, ClientError>> + Send + 'static {
+        let server_version = self.restate_server_version.clone();
+        let request = self.run_with_raw_body(
+            reqwest::Method::POST,
+            self.versioned_url(["invocations", id, "signals", name]),
+            content_type,
+            body,
+        );
+        async move {
+            let unsupported = |server_version| ClientError::UnsupportedServerVersion {
+                feature: "Sending signals",
+                min_version: "1.8.2",
+                server_version,
+            };
+            let min_version =
+                SemanticRestateVersion::parse("1.8.2-dev").expect("valid semantic version");
+            // An unknown version (no /version endpoint) falls back to the status check below.
+            if server_version != SemanticRestateVersion::unknown()
+                && !server_version.is_equal_or_newer_than(&min_version)
+            {
+                return Err(unsupported(server_version));
+            }
+
+            let envelope = request.await?;
+            // The endpoint never answers 404/405 itself: the server doesn't have it.
+            if matches!(
+                envelope.status_code(),
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ) {
+                return Err(unsupported(server_version));
+            }
+            Ok(envelope)
+        }
     }
 
     fn kill_invocation(

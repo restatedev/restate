@@ -112,6 +112,7 @@ where
             .routes(routes!(invocations::restart_as_new_invocation))
             .routes(routes!(invocations::resume_invocation))
             .routes(routes!(invocations::pause_invocation))
+            .routes(routes!(invocations::send_invocation_signal))
             // Subscription endpoints
             .routes(routes!(subscriptions::create_subscription))
             .routes(routes!(subscriptions::list_subscriptions))
