@@ -135,7 +135,7 @@ where
                     .map(|pd| pd.service_protocol_version);
 
                 let blob_id = match response_result {
-                    ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => blob_id,
+                    ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => Some(blob_id),
                     _ => None,
                 };
 

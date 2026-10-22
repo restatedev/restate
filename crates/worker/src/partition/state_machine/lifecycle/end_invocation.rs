@@ -247,7 +247,6 @@ where
             }
         };
 
-        let mut blob_id = None;
         // If there are any response sinks, or we need to store back the completed status,
         //  we need to find the latest output entry
         if !invocation_metadata.response_sinks.is_empty() || !completion_retention.is_zero() {
@@ -291,11 +290,21 @@ where
                 };
             }
 
-            if is_write_blob_table_enabled {
-                let initial_ref_count = if completion_retention.is_zero() { 0 } else { 1 };
+            let response_result_ref = if completion_retention.is_zero() {
+                // Nothing to store back
+                None
+            } else if is_write_blob_table_enabled {
+                let status = match reason {
+                    EndInvocationReason::Killed => CompletionStatus::Killed,
+                    EndInvocationReason::Failed(err) => CompletionStatus::Failure(err.code),
+                    EndInvocationReason::End | EndInvocationReason::Completed(_) => match &output {
+                        ResponseResult::Success(_) => CompletionStatus::Success,
+                        ResponseResult::Failure(err) => CompletionStatus::Failure(err.code),
+                    },
+                };
 
                 // todo(azmy): Once we use the blob for outbox we can
-                // uncomment this section
+                // add the partition processor response sinks to the initial ref count
 
                 // initial_ref_count += invocation_metadata
                 //     .response_sinks
@@ -303,27 +312,25 @@ where
                 //     .filter(|sink| sink.is_partition_processor())
                 //     .count();
 
-                // todo: maybe return an error if initial_ref_count can't fit in a u16
-                let output_ref_count = u16::try_from(initial_ref_count).unwrap_or(u16::MAX);
-                if let Some(ref_count) = NonZeroU16::new(output_ref_count) {
-                    // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
-                    // invocation journal. this change is not breaking because we store the BaseBlobId of the
-                    // output blob on the invocation status as long as it's coordinated with a partition feature.
-                    let id = BaseBlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
-                    ctx.storage.put_blob(
-                        id,
-                        BlobBuilder::default()
-                            .with_ref_count(ref_count)
-                            .with_kind(BlobKind::Output)
-                            .typed(&output),
-                    )?;
-                    blob_id = Some(id);
-                }
-            }
-
-            let response_result_ref = match is_write_blob_table_enabled {
+                // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
+                // invocation journal. this change is not breaking because we store the BaseBlobId of the
+                // output blob on the invocation status as long as it's coordinated with a partition feature.
+                let blob_id =
+                    BaseBlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
+                ctx.storage.put_blob(
+                    blob_id,
+                    BlobBuilder::default()
+                        .with_ref_count(NonZeroU16::MIN)
+                        .with_kind(BlobKind::Output)
+                        .typed(&output),
+                )?;
+                Some(ResponseResultRef::Completed(CompletedResult {
+                    blob_id,
+                    status,
+                }))
+            } else {
                 // always inline, we can't reference the output entry
-                false => match reason {
+                Some(match reason {
                     EndInvocationReason::Killed => {
                         ResponseResultRef::Failure(KILLED_INVOCATION_ERROR)
                     }
@@ -337,20 +344,7 @@ where
                             ResponseResult::Failure(err) => ResponseResultRef::Failure(err.clone()),
                         }
                     }
-                },
-                true => {
-                    let status = match reason {
-                        EndInvocationReason::Killed => CompletionStatus::Killed,
-                        EndInvocationReason::Failed(err) => CompletionStatus::Failure(err.code),
-                        EndInvocationReason::End | EndInvocationReason::Completed(_) => {
-                            match &output {
-                                ResponseResult::Success(_) => CompletionStatus::Success,
-                                ResponseResult::Failure(err) => CompletionStatus::Failure(err.code),
-                            }
-                        }
-                    };
-                    ResponseResultRef::Completed(CompletedResult { blob_id, status })
-                }
+                })
             };
 
             // Notify invocation result
@@ -374,7 +368,7 @@ where
             )?;
 
             // Store the completed status, if needed
-            if !completion_retention.is_zero() {
+            if let Some(response_result_ref) = response_result_ref {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
@@ -399,7 +393,7 @@ where
 
         // If no retention, immediately cleanup the invocation status
         if completion_retention.is_zero() {
-            ctx.do_free_invocation(&invocation_id, blob_id)?;
+            ctx.do_free_invocation(&invocation_id, None)?;
         }
 
         if journal_retention.is_zero() {

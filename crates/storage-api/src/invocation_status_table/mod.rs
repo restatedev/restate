@@ -799,7 +799,7 @@ pub enum CompletionStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedResult {
-    pub blob_id: Option<BaseBlobId>,
+    pub blob_id: BaseBlobId,
     pub status: CompletionStatus,
 }
 
