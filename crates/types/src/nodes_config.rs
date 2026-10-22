@@ -21,7 +21,7 @@ use serde_with::serde_as;
 use crate::base62_util::base62_max_length_for_type;
 use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
-use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort};
+use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort, ListenerPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::{
     GenerationalNodeId, NodeId, PlainNodeId, RestateVersion, base62_util,
@@ -258,6 +258,15 @@ enum MaybeNode {
     Node(Box<NodeConfig>),
 }
 
+/// An advertised address for callers whose own location starts with `location`. An entry without
+/// a location is for every caller.
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct QualifiedAddress<P: ListenerPort> {
+    pub address: AdvertisedAddress<P>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<NodeLocation>,
+}
+
 #[derive(
     Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize, typed_builder::TypedBuilder,
 )]
@@ -265,12 +274,25 @@ pub struct NodeConfig {
     pub name: String,
     pub current_generation: GenerationalNodeId,
     pub address: AdvertisedAddress<FabricPort>,
+    /// Fabric addresses for callers in specific locations, in this node's order of preference.
+    /// Empty means `address` is the only route. Versions that predate this field drop it when
+    /// they rewrite the configuration.
+    /// Introduced in v1.8.2 (not populated yet)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(default)]
+    pub addresses: Vec<QualifiedAddress<FabricPort>>,
     /// The address to use for control plane requests (NodeCtlSvc / ClusterCtrlSvc)
     /// Introduced in v1.6.0 (for forward compatibility, not populated by v1.6.0)
     /// Since v1.8.2, nodes populate this on startup, defaulting to the fabric address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(default)]
     pub ctrl_address: Option<AdvertisedAddress<ControlPort>>,
+    /// Control addresses for callers in specific locations, in this node's order of preference.
+    /// Empty means `ctrl_address()` is the only route.
+    /// Introduced in v1.8.2 (not populated yet)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[builder(default)]
+    pub ctrl_addresses: Vec<QualifiedAddress<ControlPort>>,
     pub roles: EnumSet<Role>,
     #[serde(default)]
     #[builder(default)]
@@ -758,7 +780,9 @@ flexbuffers_storage_encode_decode!(NodesConfiguration);
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
     use std::num::NonZeroU64;
+    use std::path::{Path, PathBuf};
 
     use bytes::BytesMut;
 
@@ -766,7 +790,160 @@ mod tests {
 
     use restate_test_util::assert_eq;
 
+    use crate::net::ProtocolVersion;
+    use crate::net::codec::{WireDecode, WireEncode};
+    use crate::net::metadata::MetadataUpdate;
     use crate::storage::StorageCodec;
+
+    /// Compatibility fixtures written by released versions. See `tests/fixtures/README.md`.
+    fn fixtures_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/nodes_config")
+    }
+
+    const FIXTURE_FINGERPRINT: u64 = 0x5245_5354_4154_4531;
+
+    /// The live nodes of every node configuration fixture. A third node is removed.
+    fn fixture_nodes(binary_version: &str) -> [NodeConfig; 2] {
+        let binary_version = RestateVersion::new(binary_version.to_owned());
+        [
+            NodeConfig::builder()
+                .name("node-1".to_owned())
+                .current_generation(GenerationalNodeId::new(1, 3))
+                .address("http://10.1.7.3:5122/".parse().unwrap())
+                .location("us-east1.az1".parse().unwrap())
+                .roles(Role::Admin | Role::Worker | Role::LogServer | Role::MetadataServer)
+                .log_server_config(LogServerConfig {
+                    storage_state: StorageState::ReadWrite,
+                })
+                .metadata_server_config(MetadataServerConfig {
+                    metadata_server_state: MetadataServerState::Member,
+                })
+                .worker_config(WorkerConfig {
+                    worker_state: WorkerState::Active,
+                })
+                .binary_version(binary_version.clone())
+                .build(),
+            NodeConfig::builder()
+                .name("node-2".to_owned())
+                .current_generation(GenerationalNodeId::new(2, 1))
+                .address("unix:/run/restate/node-2/fabric.sock".parse().unwrap())
+                .location("us-east1.az2".parse().unwrap())
+                .roles(EnumSet::only(Role::Worker))
+                .binary_version(binary_version)
+                .build(),
+        ]
+    }
+
+    /// Adds per-location fabric and control routes, as fixtures from versions with lists carry.
+    fn with_address_lists(mut node: NodeConfig) -> NodeConfig {
+        node.addresses = vec![
+            QualifiedAddress {
+                address: "http://10.1.7.3:5122/".parse().unwrap(),
+                location: Some("us-east1.az1".parse().unwrap()),
+            },
+            QualifiedAddress {
+                address: "https://node-1.example.com/".parse().unwrap(),
+                location: None,
+            },
+        ];
+        node.ctrl_addresses = vec![QualifiedAddress {
+            address: "http://localhost:15122/".parse().unwrap(),
+            location: Some("external".parse().unwrap()),
+        }];
+        node
+    }
+
+    /// Writes the node configuration fixture for the current version to `RESTATE_FIXTURE_PATH`,
+    /// refusing to overwrite an existing file. Run it on a release tag; see the fixtures README.
+    #[test]
+    #[ignore = "writes a compatibility fixture"]
+    fn write_nodes_config_fixture() {
+        let path = std::env::var("RESTATE_FIXTURE_PATH").expect("RESTATE_FIXTURE_PATH is set");
+        let mut config = NodesConfiguration::new(
+            Version::MIN,
+            "compat-fixture".to_owned(),
+            ClusterFingerprint::try_from(FIXTURE_FINGERPRINT).unwrap(),
+        );
+        config.set_features(ClusterFeature::default_features());
+        let [node_1, node_2] = fixture_nodes(RestateVersion::current().as_str());
+        config.upsert_node(with_address_lists(node_1));
+        config.upsert_node(node_2);
+        config.upsert_node(
+            NodeConfig::builder()
+                .name("node-3".to_owned())
+                .current_generation(GenerationalNodeId::new(3, 1))
+                .address("http://10.1.7.5:5122/".parse().unwrap())
+                .roles(EnumSet::only(Role::Worker))
+                .binary_version(RestateVersion::current())
+                .build(),
+        );
+        config.remove_node_unchecked(PlainNodeId::new(3));
+        config.increment_version();
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&config, &mut buf).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap()
+            .write_all(&buf)
+            .unwrap();
+    }
+
+    #[test]
+    fn decodes_nodes_config_fixtures() {
+        let mut decoded = HashMap::default();
+        for entry in std::fs::read_dir(fixtures_dir()).unwrap() {
+            let path = entry.unwrap().path();
+            let bytes = std::fs::read(&path).unwrap();
+            let config = StorageCodec::decode::<NodesConfiguration, _>(&mut bytes.as_slice())
+                .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            decoded.insert(name, config);
+        }
+
+        // Written by v1.8.1, before address lists existed.
+        let config = &decoded["v1.8.1.flexbuffers"];
+        assert_eq!(config.cluster_name(), "compat-fixture");
+        let fingerprint = ClusterFingerprint::try_from(FIXTURE_FINGERPRINT).unwrap();
+        assert_eq!(config.cluster_fingerprint(), Some(fingerprint));
+        for node in fixture_nodes("1.8.1") {
+            assert_eq!(config.find_node_by_name(&node.name), Some(&node));
+        }
+        let removed = config.find_node_by_id(NodeId::new_plain(3));
+        assert!(matches!(removed, Err(NodesConfigError::Deleted(_))));
+    }
+
+    #[test]
+    fn address_lists_round_trip_and_are_omitted_when_empty() {
+        let [node_1, node_2] = fixture_nodes(RestateVersion::current().as_str());
+        let node_1 = with_address_lists(node_1);
+        let mut config = NodesConfiguration::new_for_testing();
+        config.upsert_node(node_1.clone());
+        config.upsert_node(node_2.clone());
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&config, &mut buf).unwrap();
+        let stored = StorageCodec::decode::<NodesConfiguration, _>(&mut buf).unwrap();
+        let update = MetadataUpdate {
+            container: MetadataContainer::NodesConfiguration(Arc::new(config)),
+        };
+        let bytes = update.encode_to_bytes(ProtocolVersion::V6).unwrap();
+        let propagated = MetadataUpdate::try_decode(bytes, ProtocolVersion::V6).unwrap();
+        let MetadataContainer::NodesConfiguration(propagated) = propagated.container else {
+            panic!("expected a node configuration");
+        };
+        for decoded in [&stored, propagated.as_ref()] {
+            assert_eq!(decoded.find_node_by_name("node-1"), Some(&node_1));
+            assert_eq!(decoded.find_node_by_name("node-2"), Some(&node_2));
+        }
+
+        // Empty lists are left out, so such nodes serialize the way older versions wrote them.
+        let json = serde_json::to_value(&node_2).unwrap();
+        assert!(json.get("addresses").is_none(), "{json}");
+        assert!(json.get("ctrl_addresses").is_none(), "{json}");
+    }
 
     #[test]
     fn decodes_addresses_from_newer_versions() {
@@ -919,7 +1096,9 @@ mod tests {
             current_generation: GenerationalNodeId::new(1, 1),
             location: "region1.zone1".parse().unwrap(),
             address: address.clone(),
+            addresses: Vec::new(),
             ctrl_address: None,
+            ctrl_addresses: Vec::new(),
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),
             metadata_server_config: MetadataServerConfig::default(),
@@ -931,7 +1110,9 @@ mod tests {
             current_generation: GenerationalNodeId::new(2, 1),
             location: "region1.zone1".parse().unwrap(),
             address,
+            addresses: Vec::new(),
             ctrl_address: None,
+            ctrl_addresses: Vec::new(),
             roles: Role::Worker.into(),
             log_server_config: LogServerConfig::default(),
             metadata_server_config: MetadataServerConfig::default(),
