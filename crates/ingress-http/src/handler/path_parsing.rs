@@ -11,9 +11,9 @@
 use super::HandlerError;
 use super::{Handler, RequestType};
 use http::Uri;
-use restate_types::ServiceName;
 use restate_types::identifiers::InvocationId;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
+use restate_types::{ServiceName, Versioned};
 use restate_util_string::{ReString, ToReString};
 
 pub(crate) enum WorkflowRequestType {
@@ -350,7 +350,7 @@ where
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     /// This function takes care of parsing the path of the request, inferring the correct request type
     pub(super) fn parse_path(&mut self, uri: &Uri) -> Result<RequestType, HandlerError> {
@@ -366,30 +366,35 @@ where
         let first_segment = segments.next().ok_or(HandlerError::NotFound)?;
 
         let schema = self.schemas.live_load();
-        match first_segment {
-            "restate" => {
-                let verb = segments.next().ok_or(HandlerError::NotFound)?;
-                match verb {
-                    "health" => Ok(RequestType::Health),
-                    "awakeables" | "a" => Ok(RequestType::Awakeable(
-                        AwakeableRequestType::from_path_chunks(segments)?,
-                    )),
-                    "invocation" => Ok(RequestType::Invocation(
-                        InvocationRequestType::from_path_chunks(segments, schema)?,
-                    )),
-                    "workflow" => Ok(RequestType::Workflow(
-                        WorkflowRequestType::from_path_chunks(segments)?,
-                    )),
-                    _ => parse_restate_api_verb(verb, segments, schema),
+        let request_type =
+            match first_segment {
+                "restate" => {
+                    let verb = segments.next().ok_or(HandlerError::NotFound)?;
+                    match verb {
+                        "health" => Ok(RequestType::Health),
+                        "awakeables" | "a" => AwakeableRequestType::from_path_chunks(segments)
+                            .map(RequestType::Awakeable),
+                        "invocation" => InvocationRequestType::from_path_chunks(segments, schema)
+                            .map(RequestType::Invocation),
+                        "workflow" => WorkflowRequestType::from_path_chunks(segments)
+                            .map(RequestType::Workflow),
+                        _ => parse_restate_api_verb(verb, segments, schema),
+                    }
                 }
+                "openapi" => Ok(RequestType::OpenAPI),
+                segment => {
+                    // Old unversioned ingress API: /service/handler or /service/key/handler
+                    ServiceRequestType::from_path_chunks(segments, segment, schema)
+                        .map(RequestType::Service)
+                }
+            };
+
+        match request_type {
+            // A lookup miss is only conclusive once the schema has been loaded.
+            Err(HandlerError::ServiceNotFound(_)) if !schema.valid() => {
+                Err(HandlerError::SchemaNotReady)
             }
-            "openapi" => Ok(RequestType::OpenAPI),
-            segment => {
-                // Old unversioned ingress API: /service/handler or /service/key/handler
-                Ok(RequestType::Service(ServiceRequestType::from_path_chunks(
-                    segments, segment, schema,
-                )?))
-            }
+            request_type => request_type,
         }
     }
 }

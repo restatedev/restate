@@ -127,13 +127,7 @@ where
     }
 
     fn call(&mut self, req: Request<Body>) -> Self::Future {
-        let res = self.parse_path(req.uri()).map_err(|err| match err {
-            // A lookup miss is only conclusive once the schema has been loaded.
-            HandlerError::ServiceNotFound(_) if !self.schemas.live_load().valid() => {
-                HandlerError::SchemaNotReady
-            }
-            err => err,
-        });
+        let res = self.parse_path(req.uri());
 
         let mut this = self.clone();
         async move {
