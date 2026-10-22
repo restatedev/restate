@@ -267,6 +267,7 @@ pub struct NodeConfig {
     pub address: AdvertisedAddress<FabricPort>,
     /// The address to use for control plane requests (NodeCtlSvc / ClusterCtrlSvc)
     /// Introduced in v1.6.0 (for forward compatibility, not populated by v1.6.0)
+    /// Since v1.8.2, nodes populate this on startup, defaulting to the fabric address.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[builder(default)]
     pub ctrl_address: Option<AdvertisedAddress<ControlPort>>,
