@@ -34,6 +34,7 @@ use tracing::{Span, debug, info, info_span, instrument};
 use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
 use restate_ingestion_client::IngestionClient;
+use restate_types::Versioned;
 use restate_types::config::IngressOptions;
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -71,7 +72,13 @@ pub struct HyperServerIngress<T, Schemas, Dispatcher> {
 impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
     T: TransportConnect,
-    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Versioned
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
@@ -97,7 +104,13 @@ where
 impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
     T: TransportConnect,
-    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Versioned
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
