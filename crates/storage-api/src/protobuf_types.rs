@@ -3922,10 +3922,10 @@ pub mod v1 {
                                 (CompletionStatus::Failure, Some(code.into()))
                             }
                         };
-                        let output_ref = blob_id
-                            .map(|id| OutputRef::BlobId(Bytes::copy_from_slice(&id.to_bytes())));
+                        let output_ref =
+                            OutputRef::BlobId(Bytes::copy_from_slice(&blob_id.to_bytes()));
 
-                        (None, Some(status), code, output_ref)
+                        (None, Some(status), code, Some(output_ref))
                     }
                 }
             }
@@ -3970,12 +3970,10 @@ pub mod v1 {
                                 invocation_status_table::CompletionStatus::Killed
                             }
                         };
-                        let blob_id = output_ref
-                            .map(|OutputRef::BlobId(bytes)| BaseBlobId::from_slice(&bytes))
-                            .transpose()
-                            .map_err(|err| {
-                                ConversionError::InvalidData(anyhow!("blob_id: {err}"))
-                            })?;
+                        let OutputRef::BlobId(bytes) = expect_or_fail!(output_ref)?;
+                        let blob_id = BaseBlobId::from_slice(&bytes).map_err(|err| {
+                            ConversionError::InvalidData(anyhow!("blob_id: {err}"))
+                        })?;
 
                         Ok(Self::Completed(invocation_status_table::CompletedResult {
                             blob_id,

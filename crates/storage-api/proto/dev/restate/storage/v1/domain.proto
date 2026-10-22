@@ -276,8 +276,8 @@ message InvocationStatusV2 {
   // must hold the failure status code.
   optional CompletionStatus completion_status = 37;
   optional uint32 failure_status_code = 38;
-  // Reference to where the completed output is stored. Only set together
-  // with completion_status.
+  // Reference to where the completed output is stored. Required when
+  // completion_status is set; must be unset otherwise.
   oneof output_ref {
     // Binary-encoded BaseBlobId
     bytes blob_id = 39;
