@@ -191,6 +191,8 @@ impl<'a> NodeInit<'a> {
 
         let my_advertised_address =
             TaskCenter::with_current(|tc| common.advertised_address(tc.address_book()));
+        let my_ctrl_address =
+            TaskCenter::with_current(|tc| config.control_advertised_address(tc.address_book()));
 
         metadata_store_client
             .read_modify_write::<NodesConfiguration, _, _>(
@@ -273,6 +275,7 @@ impl<'a> NodeInit<'a> {
                         // update node_config
                         node_config.roles = common.roles;
                         node_config.address = my_advertised_address.clone();
+                        node_config.ctrl_address = Some(my_ctrl_address.clone());
                         node_config.current_generation.bump_generation();
                         node_config.binary_version = Some(RestateVersion::current());
 
@@ -303,6 +306,7 @@ impl<'a> NodeInit<'a> {
                             .current_generation(my_node_id)
                             .location(common.location().clone())
                             .address(my_advertised_address.clone())
+                            .ctrl_address(Some(my_ctrl_address.clone()))
                             .roles(common.roles)
                             .metadata_server_config(MetadataServerConfig {
                                 metadata_server_state,
@@ -330,12 +334,74 @@ mod tests {
     use googletest::matchers::{contains_substring, displays_as, err};
 
     use restate_core::{TaskCenter, TestCoreEnvBuilder};
+    use restate_metadata_store::MetadataStoreClient;
     use restate_types::config::{Configuration, set_current_config};
+    use restate_types::metadata::Precondition;
+    use restate_types::metadata_store::keys::NODES_CONFIG_KEY;
     use restate_types::net::listener::AddressBook;
     use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration};
     use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion, Version};
 
     use crate::init::NodeInit;
+
+    #[test_log::test(restate_core::test)]
+    async fn control_address_is_published_and_refreshed_on_join() {
+        let mut config = Configuration::new_unix_sockets();
+        config.common.set_node_name("control-publication");
+        set_current_config(config.clone());
+        let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
+        address_book.bind_from_config(&config).await.unwrap();
+        let fabric = config.common.advertised_address(&address_book);
+        let expected_control = config.control_advertised_address(&address_book);
+        assert!(TaskCenter::try_set_address_book(address_book));
+
+        let initial = crate::create_initial_nodes_configuration(&config, EnumSet::empty());
+        let provisioned = initial.find_node_by_name(config.node_name()).unwrap();
+        assert_eq!(provisioned.address, fabric);
+        assert_eq!(provisioned.ctrl_address.as_ref(), Some(&expected_control));
+
+        let store = MetadataStoreClient::new_in_memory();
+        let empty = NodesConfiguration::new(
+            Version::MIN,
+            config.common.cluster_name().to_owned(),
+            ClusterFingerprint::generate(),
+        );
+        store
+            .put(NODES_CONFIG_KEY.clone(), &empty, Precondition::None)
+            .await
+            .unwrap();
+        let joined = NodeInit::join_cluster_inner(&store, &config).await.unwrap();
+        let first = joined
+            .find_node_by_name(config.node_name())
+            .unwrap()
+            .clone();
+        assert_eq!(first.ctrl_address.as_ref(), Some(&expected_control));
+
+        let mut overridden = serde_json::to_value(&config).unwrap();
+        overridden["networking"]["ctrl-advertised-address"] =
+            serde_json::json!("https://control.example.com:8443");
+        let overridden: Configuration = serde_json::from_value(overridden).unwrap();
+        let restarted = NodeInit::join_cluster_inner(&store, &overridden)
+            .await
+            .unwrap();
+        let node = restarted.find_node_by_name(config.node_name()).unwrap();
+        assert_eq!(node.address, fabric);
+        assert_eq!(
+            node.ctrl_address,
+            Some("https://control.example.com:8443".parse().unwrap())
+        );
+        assert!(
+            node.current_generation
+                .is_newer_than(first.current_generation)
+        );
+        assert_eq!(node.log_server_config, first.log_server_config);
+
+        // Removing an override must replace the old advertisement on the next join.
+        let reset = NodeInit::join_cluster_inner(&store, &config).await.unwrap();
+        let node = reset.find_node_by_name(config.node_name()).unwrap();
+        assert_eq!(node.address, fabric);
+        assert_eq!(node.ctrl_address.as_ref(), Some(&expected_control));
+    }
 
     #[test_log::test(restate_core::test)]
     async fn node_id_mismatch() -> googletest::Result<()> {

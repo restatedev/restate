@@ -73,8 +73,10 @@ impl ListenerPort for AdminPort {
 pub struct ControlPort;
 impl ListenerPort for ControlPort {
     const NAME: &'static str = "control-server";
-    // todo: This potentially will be 5123, or the fabric port will be 5123. Still not sure.
     const DEFAULT_PORT: u16 = 5122;
+    // Control RPCs share the fabric listener and its TLS settings today. Keep this enabled so a
+    // future control-typed listener does not silently serve plaintext or advertise `http://`.
+    const SUPPORTS_TLS: bool = true;
     const UDS_NAME: &'static str = "control.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = true;
     fn default_port_str() -> &'static str {
@@ -89,6 +91,9 @@ impl GrpcPort for ControlPort {}
 pub struct FabricPort;
 impl ListenerPort for FabricPort {
     const NAME: &'static str = "message-fabric-server";
+    // todo: node-to-node fabric traffic is planned to move to its own port, 5123, in a future
+    // release. 5122 stays the control port, because tools, health probes and metrics scrapers
+    // are already configured against it.
     const DEFAULT_PORT: u16 = 5122;
     const SUPPORTS_TLS: bool = true;
     const UDS_NAME: &'static str = "fabric.sock";
