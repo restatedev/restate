@@ -179,6 +179,7 @@ pub enum TableKind {
     Promise,
     VQueue,
     Locks,
+    Blob,
 }
 
 impl TableKind {
@@ -213,6 +214,7 @@ impl TableKind {
                 KeyKind::VQueueInput,
             ],
             Self::Locks => &[KeyKind::Lock],
+            Self::Blob => &[KeyKind::Blob],
         }
     }
 

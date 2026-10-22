@@ -221,6 +221,10 @@ impl InvocationCompletion {
     ) -> Option<InvocationCompletion> {
         match (completion_result.as_deref(), completion_failure) {
             (Some("success"), None) => Some(InvocationCompletion::Success),
+            (Some("killed"), None) => Some(InvocationCompletion::Failure("killed".to_owned())),
+            (Some("killed"), Some(failure)) => {
+                Some(InvocationCompletion::Failure(format!("killed: {failure}")))
+            }
             (Some("failure"), None) => Some(InvocationCompletion::Failure("Unknown".to_owned())),
             (Some("failure"), Some(failure)) => Some(InvocationCompletion::Failure(failure)),
             _ => None,

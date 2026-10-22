@@ -42,12 +42,16 @@ use restate_ingestion_client::SessionOptions;
 use restate_ingress_kafka::Service as IngressKafkaService;
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::SnapshotRepository;
+use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::ReadBlobTable;
+use restate_storage_api::invocation_status_table::{CompletedResult, ResponseResultRef};
 use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFromMetadata};
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::Version;
 use restate_types::Versioned;
 use restate_types::config::Configuration;
 use restate_types::health::HealthStatus;
+use restate_types::invocation::ResponseResult;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::WorkerStatus;
@@ -267,5 +271,31 @@ where
         }
 
         Ok(())
+    }
+}
+
+pub(crate) trait ReadBlobTableExt {
+    fn resolve_response_result_ref(
+        &mut self,
+        result_ref: &ResponseResultRef,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, StorageError>>;
+}
+
+impl<T> ReadBlobTableExt for T
+where
+    T: ReadBlobTable,
+{
+    async fn resolve_response_result_ref(
+        &mut self,
+        result_ref: &ResponseResultRef,
+    ) -> Result<Option<ResponseResult>, StorageError> {
+        match result_ref {
+            ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
+            ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
+            ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => match blob_id {
+                Some(blob_id) => self.get_blob::<ResponseResult>(*blob_id).await,
+                None => Ok(None),
+            },
+        }
     }
 }
