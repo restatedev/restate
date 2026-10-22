@@ -255,7 +255,7 @@ jobs:
       serviceImage: "ghcr.io/restatedev/test-services-node:main"
 
   sdk-typescript-write-output-table:
-    name: Run SDK-Typescript integration tests with Write Output Table
+    name: Run SDK-Typescript integration tests with Write Blob Table
     permissions:
       contents: read
       issues: read
@@ -268,8 +268,8 @@ jobs:
     with:
       restateCommit: ${{ github.event.pull_request.head.sha || github.sha }}
       envVars: |
-        RESTATE_experimental_enable_write_output_table=true
-      testArtifactOutput: sdk-typescript-write-result-reference-test-report
+        RESTATE_experimental_enable_write_blob_table=true
+      testArtifactOutput: sdk-typescript-write-blob-table-test-report
 
   sdk-typescript-protocol-v7:
     name: Run SDK-Typescript integration tests with Protocol V7
@@ -464,7 +464,7 @@ jobs:
                 - "dev.restate.sdktesting.tests.BackwardCompatibilityTest.*"
 
   e2e-write-output-table:
-    name: Run E2E tests with Write Output Table feature
+    name: Run E2E tests with Write Blob Table feature
     runs-on: warp-ubuntu-latest-x64-4x
     # we don't expect all tests to pass, that's why we continue on error
     continue-on-error: true
@@ -503,10 +503,10 @@ jobs:
       - name: Run E2E tests
         uses: restatedev/e2e/e2e-tests@main
         with:
-          testArtifactOutput: e2e-test-vqueues-report
+          testArtifactOutput: e2e-test-write-blob-table-report
           restateContainerImage: localhost/restatedev/restate-commit-download:latest
           envVars: |
-            RESTATE_experimental_enable_write_output_table=true
+            RESTATE_experimental_enable_write_blob_table=true
           # disable ForwardCompatibility tests, and only keep BackwardCompatibility
           exclusions: |
             exclusions:
