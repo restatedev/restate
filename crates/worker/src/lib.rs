@@ -292,10 +292,9 @@ where
         match result_ref {
             ResponseResultRef::Success(bytes) => Ok(Some(ResponseResult::Success(bytes.clone()))),
             ResponseResultRef::Failure(err) => Ok(Some(ResponseResult::Failure(err.clone()))),
-            ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => match blob_id {
-                Some(blob_id) => self.get_blob::<ResponseResult>(*blob_id).await,
-                None => Ok(None),
-            },
+            ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => {
+                self.get_blob::<ResponseResult>(*blob_id).await
+            }
         }
     }
 }
