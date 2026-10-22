@@ -20,13 +20,16 @@ use restate_types::config::Configuration;
 use restate_types::health::{
     AdminStatus, LogServerStatus, MetadataServerStatus, NodeStatus, WorkerStatus,
 };
+use restate_types::locality::NodeLocation;
 use restate_types::net::address::{
     AdminPort, AdvertisedAddress, ControlPort, FabricPort, HttpIngressPort, ListenerPort,
     PeerNetAddress,
 };
 use restate_types::net::listener::{AddressBook, Addresses};
-use restate_types::nodes_config::Role;
-use restate_types::{NodeId, Version};
+use restate_types::nodes_config::{
+    ClusterFingerprint, MetadataServerState, Role, StorageState, WorkerState,
+};
+use restate_types::{NodeId, RestateVersion, Version};
 use restate_util_time::FriendlyDuration;
 
 use crate::task_center::TaskCenterMonitoring;
@@ -45,6 +48,9 @@ pub struct Identification {
     #[prost(name=age_s)]
     #[into_prost(map=Duration::as_secs, map_by_ref)]
     pub age: FriendlyDuration,
+    /// Same as `age` in milliseconds. JSON only, the protobuf message carries `age_s`.
+    #[prost(skip)]
+    pub age_ms: u64,
     pub admin_status: AdminStatus,
     pub worker_status: WorkerStatus,
     pub log_server_status: LogServerStatus,
@@ -55,6 +61,19 @@ pub struct Identification {
     pub partition_table_version: Version,
     pub bound_addresses: Vec<NetAddress>,
     pub advertised_addresses: Vec<NetAddress>,
+    #[into_prost(map = ClusterFingerprint::to_u64)]
+    pub cluster_fingerprint: Option<ClusterFingerprint>,
+    #[into_prost(map = ToString::to_string, map_by_ref)]
+    pub restate_version: RestateVersion,
+    // The fields below come from this node's entry in the nodes configuration
+    #[into_prost(map = ToString::to_string, map_by_ref)]
+    pub location: Option<NodeLocation>,
+    #[into_prost(map = ToString::to_string, map_by_ref)]
+    pub storage_state: Option<StorageState>,
+    #[into_prost(map = ToString::to_string, map_by_ref)]
+    pub worker_state: Option<WorkerState>,
+    #[into_prost(map = ToString::to_string, map_by_ref)]
+    pub metadata_server_state: Option<MetadataServerState>,
 }
 
 #[derive(serde::Serialize, prost_dto::IntoProst)]
@@ -101,6 +120,11 @@ impl Identification {
         });
         let age = TaskCenter::with_current(|tc| tc.age());
         let metadata = Metadata::current();
+        let nodes_config = metadata.nodes_config_ref();
+        // None until this node (generation) is registered in the nodes configuration
+        let my_node_config = metadata
+            .my_node_id_opt()
+            .and_then(|my_node_id| nodes_config.find_node_by_id(my_node_id).ok());
 
         Identification {
             status: node_status,
@@ -108,6 +132,7 @@ impl Identification {
             roles: *configuration.roles(),
             cluster_name: configuration.common.cluster_name().to_owned(),
             age: age.into(),
+            age_ms: age.as_millis() as u64,
             admin_status,
             worker_status,
             metadata_server_status,
@@ -118,6 +143,18 @@ impl Identification {
             partition_table_version: metadata.partition_table_version(),
             bound_addresses,
             advertised_addresses,
+            cluster_fingerprint: nodes_config.cluster_fingerprint(),
+            restate_version: RestateVersion::current(),
+            location: my_node_config.map(|config| config.location.clone()),
+            storage_state: my_node_config
+                .filter(|config| config.has_role(Role::LogServer))
+                .map(|config| config.log_server_config.storage_state),
+            worker_state: my_node_config
+                .filter(|config| config.has_role(Role::Worker))
+                .map(|config| config.worker_config.worker_state),
+            metadata_server_state: my_node_config
+                .filter(|config| config.has_role(Role::MetadataServer))
+                .map(|config| config.metadata_server_config.metadata_server_state),
         }
     }
 }
