@@ -223,7 +223,7 @@ async fn alive_node_status(
     row.with_logs(counter);
 
     if node_config.has_role(Role::MetadataServer) {
-        let metadata_channel = grpc_channel(node_config.address.clone());
+        let metadata_channel = grpc_channel(node_config.ctrl_address().into_owned());
         let metadata_store_status =
             new_metadata_server_client(metadata_channel, &CliContext::get().network)
                 .status(().into_request())
