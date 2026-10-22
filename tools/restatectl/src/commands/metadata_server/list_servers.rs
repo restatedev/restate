@@ -62,7 +62,7 @@ pub async fn list_metadata_servers(
         nodes_configuration
             .iter_role(Role::MetadataServer)
             .map(|(node_id, node_config)| {
-                let address = node_config.address.clone();
+                let address = node_config.ctrl_address().into_owned();
                 async move {
                     let channel = match connection.connect(&address).await {
                         Ok(channel) => channel,
