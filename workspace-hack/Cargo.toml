@@ -43,7 +43,6 @@ clap = { version = "4", default-features = false, features = ["color", "derive",
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
 compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
-constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
@@ -144,8 +143,6 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd = { version = "0.13" }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [build-dependencies]
@@ -177,7 +174,6 @@ clap = { version = "4", default-features = false, features = ["color", "derive",
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "std", "suggestions", "usage", "wrap_help"] }
 comfy-table = { version = "7" }
 compact_str = { version = "0.9", default-features = false, features = ["bytes", "serde", "std"] }
-constant_time_eq = { version = "0.4" }
 crc32fast = { version = "1" }
 criterion = { version = "0.5", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
@@ -284,8 +280,6 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd = { version = "0.13" }
-zstd-safe = { version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
@@ -331,6 +325,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
@@ -349,6 +344,7 @@ getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-f
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "webpki-tokio"] }
 jemalloc_pprof = { version = "0.9", default-features = false, features = ["flamegraph", "symbolize"] }
 libc = { version = "0.2", default-features = false, features = ["use_std"] }
+nix = { version = "0.31", default-features = false, features = ["fs", "signal"] }
 num = { version = "0.4" }
 pprof_util = { version = "0.8", default-features = false, features = ["flamegraph"] }
 prost = { version = "0.14", default-features = false, features = ["no-recursion-limit"] }
