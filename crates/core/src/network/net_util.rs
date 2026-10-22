@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 use tokio_util::either::Either;
 use tonic::transport::{Channel, Endpoint};
 use tower::Service;
-use tracing::{Instrument, Span, debug, error_span, info, instrument, trace};
+use tracing::{Instrument, Span, debug, error_span, info, instrument, trace, warn};
 
 use restate_types::config::{Configuration, TlsMode};
 use restate_types::errors::GenericError;
@@ -201,7 +201,26 @@ pub fn create_tonic_channel<
     options: &T,
     dns_resolution: DNSResolution,
 ) -> Channel {
-    let address = address.into_address().expect("valid address");
+    let address = match address.into_address() {
+        Ok(address) => address,
+        Err(err) => {
+            // Fail every call on this channel instead of panicking, for example when a peer from a
+            // newer version advertises a scheme this version cannot dial.
+            warn!("Cannot dial peer address: {err}");
+            let reason: Arc<str> = err.to_string().into();
+            return Endpoint::from_static("http://127.0.0.1").connect_with_connector_lazy(
+                tower::service_fn(move |_: Uri| {
+                    let reason = Arc::clone(&reason);
+                    async move {
+                        Err::<TokioIo<UnixStream>, _>(io::Error::new(
+                            io::ErrorKind::Unsupported,
+                            reason.to_string(),
+                        ))
+                    }
+                }),
+            );
+        }
+    };
     let endpoint = match &address {
         PeerNetAddress::Uds(_) => {
             // dummy endpoint required to specify an uds connector, it is not used anywhere

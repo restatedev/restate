@@ -22,6 +22,13 @@ pub trait ListenerPort: Clone + PartialEq + Eq {
     const NAME: &'static str;
     const DEFAULT_PORT: u16;
     const SUPPORTS_TLS: bool = false;
+    /// Address schemes that can be dialed on this port. Addresses with other schemes still
+    /// parse and round-trip unchanged, but [`AdvertisedAddress::into_address`] rejects them.
+    const SCHEMES: &'static [AddressScheme] = &[
+        AddressScheme::Http,
+        AddressScheme::Https,
+        AddressScheme::Unix,
+    ];
 
     const UDS_NAME: &'static str;
     /// Whether this port allows binding on an anonymous unix-socket or not.
@@ -32,6 +39,26 @@ pub trait ListenerPort: Clone + PartialEq + Eq {
 
 /// Implemented on ports that support gRPC protocol
 pub trait GrpcPort {}
+
+/// A dialable address scheme. See [`ListenerPort::SCHEMES`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AddressScheme {
+    /// `http://` and addresses written without a scheme
+    Http,
+    /// `https://`
+    Https,
+    /// `unix:/path`
+    Unix,
+    /// `grpc+unix:/path`, an explicit spelling of `unix:` for gRPC ports
+    GrpcUnix,
+}
+
+const GRPC_SCHEMES: &[AddressScheme] = &[
+    AddressScheme::Http,
+    AddressScheme::Https,
+    AddressScheme::Unix,
+    AddressScheme::GrpcUnix,
+];
 
 //
 // -- # Concrete Ports
@@ -77,6 +104,7 @@ impl ListenerPort for ControlPort {
     // Control RPCs share the fabric listener and its TLS settings today. Keep this enabled so a
     // future control-typed listener does not silently serve plaintext or advertise `http://`.
     const SUPPORTS_TLS: bool = true;
+    const SCHEMES: &'static [AddressScheme] = GRPC_SCHEMES;
     const UDS_NAME: &'static str = "control.sock";
     const IS_ANONYMOUS_UDS_ALLOWED: bool = true;
     fn default_port_str() -> &'static str {
@@ -96,6 +124,7 @@ impl ListenerPort for FabricPort {
     // are already configured against it.
     const DEFAULT_PORT: u16 = 5122;
     const SUPPORTS_TLS: bool = true;
+    const SCHEMES: &'static [AddressScheme] = GRPC_SCHEMES;
     const UDS_NAME: &'static str = "fabric.sock";
     // this is disallowed for the message fabric since we must be able to acquire a
     // non-anonymous socket address to allow server-to-server communication.
@@ -285,6 +314,56 @@ impl PeerNetAddress {
     }
 }
 
+/// An advertised address exactly as it was parsed, so that it serializes back unchanged even when
+/// this version cannot dial it.
+///
+/// Every scheme Restate defines takes one of two shapes: `scheme://authority[/path]`, stored as
+/// [`RawAddress::Uri`], or `scheme:/absolute/path`. Both shapes must keep parsing for any scheme,
+/// because a single unparseable address fails the decode of the whole `NodesConfiguration`.
+#[derive(Debug, Clone, Eq, PartialEq, Hash)]
+enum RawAddress {
+    /// Anything `http::Uri` accepts, including `scheme://authority` with an unknown scheme.
+    Uri(Uri),
+    /// `unix:path` or `grpc+unix:path`
+    Uds {
+        spelling: UdsSpelling,
+        path: PathBuf,
+    },
+    /// `scheme:/absolute/path` with a scheme this version does not know, such as
+    /// `restate+unix:/run/ds.sock`. Kept verbatim and never dialed.
+    UnknownPath(Box<str>),
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, derive_more::Display)]
+enum UdsSpelling {
+    #[display("unix")]
+    Unix,
+    #[display("grpc+unix")]
+    GrpcUnix,
+}
+
+impl std::fmt::Display for RawAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RawAddress::Uri(uri) => write!(f, "{uri}"),
+            RawAddress::Uds { spelling, path } => write!(f, "{spelling}:{}", path.display()),
+            RawAddress::UnknownPath(raw) => f.write_str(raw),
+        }
+    }
+}
+
+impl From<PeerNetAddress> for RawAddress {
+    fn from(address: PeerNetAddress) -> Self {
+        match address {
+            PeerNetAddress::Uds(path) => RawAddress::Uds {
+                spelling: UdsSpelling::Unix,
+                path,
+            },
+            PeerNetAddress::Http(uri) => RawAddress::Uri(uri),
+        }
+    }
+}
+
 #[derive(
     Hash,
     Clone,
@@ -298,7 +377,7 @@ impl PeerNetAddress {
 #[display("{inner}")]
 #[debug("{inner}")]
 pub struct AdvertisedAddress<P: ListenerPort> {
-    inner: PeerNetAddress,
+    inner: RawAddress,
     _phantom: std::marker::PhantomData<P>,
 }
 
@@ -368,7 +447,7 @@ mod utoipa_schema {
 impl<P: ListenerPort> Default for AdvertisedAddress<P> {
     fn default() -> Self {
         Self {
-            inner: PeerNetAddress::Http(
+            inner: RawAddress::Uri(
                 format!("http://127.0.0.1:{}", P::DEFAULT_PORT)
                     .parse()
                     .unwrap(),
@@ -422,29 +501,40 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
         };
 
         Self {
-            inner,
+            inner: inner.into(),
             _phantom: std::marker::PhantomData,
         }
     }
 
     pub fn new_uds(path: PathBuf) -> Self {
         Self {
-            inner: PeerNetAddress::Uds(path),
+            inner: PeerNetAddress::Uds(path).into(),
             _phantom: std::marker::PhantomData,
         }
     }
 
     pub fn with_node_base_dir(dir: &Path) -> Self {
-        Self {
-            inner: PeerNetAddress::Uds(dir.join(P::UDS_NAME)),
-            _phantom: std::marker::PhantomData,
+        Self::new_uds(dir.join(P::UDS_NAME))
+    }
+
+    /// The URI form of this address; `None` for Unix sockets and other path forms.
+    pub fn uri(&self) -> Option<&Uri> {
+        match &self.inner {
+            RawAddress::Uri(uri) => Some(uri),
+            RawAddress::Uds { .. } | RawAddress::UnknownPath(_) => None,
         }
     }
 
-    pub fn uri(&self) -> Option<&Uri> {
+    /// Whether Restate versions without `scheme:/path` support can decode this address.
+    ///
+    /// Those versions fail to decode a whole `NodesConfiguration` that contains such an address,
+    /// so it must stay out of the scalar addresses published there until the compatibility
+    /// floor includes this support.
+    pub fn decodes_in_older_versions(&self) -> bool {
         match &self.inner {
-            PeerNetAddress::Uds(_) => None,
-            PeerNetAddress::Http(uri) => Some(uri),
+            RawAddress::Uri(_) => true,
+            RawAddress::Uds { spelling, .. } => *spelling == UdsSpelling::Unix,
+            RawAddress::UnknownPath(_) => false,
         }
     }
 
@@ -467,15 +557,27 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
     ///    as close as possible to the original value regardless of validation/transformation rules.
     pub fn into_address(self) -> Result<PeerNetAddress, anyhow::Error> {
         match self.inner {
-            PeerNetAddress::Uds(path) => Ok(PeerNetAddress::Uds(path)),
-            PeerNetAddress::Http(uri) => Self::parse_uri(uri),
+            RawAddress::Uri(uri) => Self::parse_uri(uri),
+            RawAddress::Uds { spelling, path } => {
+                let scheme = match spelling {
+                    UdsSpelling::Unix => AddressScheme::Unix,
+                    UdsSpelling::GrpcUnix => AddressScheme::GrpcUnix,
+                };
+                if !P::SCHEMES.contains(&scheme) {
+                    anyhow::bail!("'{spelling}:' addresses are not supported for {}", P::NAME);
+                }
+                Ok(PeerNetAddress::Uds(path))
+            }
+            RawAddress::UnknownPath(raw) => {
+                anyhow::bail!("Unsupported address scheme in '{raw}'")
+            }
         }
     }
 
     /// Ensures that the address is well formed and performs any necessary transformation.
     pub fn into_well_formed(self) -> Result<Self, anyhow::Error> {
         Ok(Self {
-            inner: self.into_address()?,
+            inner: self.into_address()?.into(),
             _phantom: std::marker::PhantomData,
         })
     }
@@ -488,14 +590,14 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
     /// - If the URI has no scheme, it's assumed to be http and we set it to that.
     fn parse_uri(uri: Uri) -> Result<PeerNetAddress, anyhow::Error> {
         let mut parts = uri.into_parts();
-        // First, validate that the scheme is either empty or http/https.
-        if let Some(ref scheme) = parts.scheme
-            && !(scheme == &http::uri::Scheme::HTTP || scheme == &http::uri::Scheme::HTTPS)
-        {
-            return Err(anyhow::anyhow!(
-                "Unsupported URI scheme '{}'",
-                scheme.as_str()
-            ));
+        // First, validate that the scheme is empty or one this port accepts.
+        let scheme = match parts.scheme.as_ref().map(|scheme| scheme.as_str()) {
+            None | Some("http") => AddressScheme::Http,
+            Some("https") => AddressScheme::Https,
+            Some(other) => anyhow::bail!("Unsupported URI scheme '{other}'"),
+        };
+        if !P::SCHEMES.contains(&scheme) {
+            anyhow::bail!("{scheme:?} addresses are not supported for {}", P::NAME);
         }
 
         let Some(authority) = parts.authority else {
@@ -548,22 +650,45 @@ impl<P: ListenerPort> FromStr for AdvertisedAddress<P> {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let trimmed = s.trim();
-        if let Some(path) = trimmed.strip_prefix("unix:") {
-            return Ok(Self {
-                inner: parse_uds(path).map(PeerNetAddress::Uds)?,
-                _phantom: std::marker::PhantomData,
-            });
-        }
+        let uds = |spelling, path| -> Result<RawAddress, anyhow::Error> {
+            Ok(RawAddress::Uds {
+                spelling,
+                path: parse_uds(path)?,
+            })
+        };
 
-        if trimmed.is_empty() {
+        let inner = if let Some(path) = trimmed.strip_prefix("unix:") {
+            uds(UdsSpelling::Unix, path)?
+        } else if let Some(path) = trimmed.strip_prefix("grpc+unix:") {
+            uds(UdsSpelling::GrpcUnix, path)?
+        } else if trimmed.is_empty() {
             return Err(anyhow::anyhow!("address cannot be empty"));
-        }
+        } else {
+            match parse_uri(trimmed) {
+                Ok(uri) => RawAddress::Uri(uri),
+                Err(_) if is_absolute_path_form(trimmed) => RawAddress::UnknownPath(trimmed.into()),
+                Err(err) => return Err(err),
+            }
+        };
 
         Ok(Self {
-            inner: PeerNetAddress::Http(parse_uri(trimmed)?),
+            inner,
             _phantom: std::marker::PhantomData,
         })
     }
+}
+
+/// Whether `s` has the shape `scheme:/absolute/path`, with an RFC 3986 scheme and a path that
+/// starts with a single `/`. A `//` after the colon starts an authority, which is the URI shape.
+fn is_absolute_path_form(s: &str) -> bool {
+    let Some((scheme, rest)) = s.split_once(':') else {
+        return false;
+    };
+    let mut chars = scheme.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        && rest.starts_with('/')
+        && !rest.starts_with("//")
 }
 
 /// A helper function that attempts to derive the public routable IP address of
@@ -806,5 +931,40 @@ mod tests {
         let peer = addr.into_address().unwrap();
         assert!(peer.is_tls());
         assert!(peer.to_string().starts_with("https://"));
+    }
+
+    #[test]
+    fn address_shapes_round_trip_and_dial_per_port() {
+        // input, as dialed on a fabric port, dialable on the admin port, and whether versions
+        // without `scheme:/path` support can decode it
+        let cases = [
+            ("https://h:5122", Some("https://h:5122/"), true, true),
+            ("localhost:5122", Some("http://localhost:5122/"), true, true),
+            ("unix:/f", Some("unix:/f"), true, true),
+            ("grpc+unix:/f", Some("unix:/f"), false, false),
+            ("restate+tcp://h:5222", None, false, true),
+            ("restate+unix:/f", None, false, false),
+            ("x-future.v2:/a/b", None, false, false),
+        ];
+        for (input, dialed, admin_dials, legacy) in cases {
+            let fabric: AdvertisedAddress<FabricPort> = input.parse().unwrap();
+            // Serialization goes through `Display`, so this is the metadata round trip.
+            let reparsed = fabric.to_string().parse::<AdvertisedAddress<FabricPort>>();
+            assert_eq!(reparsed.unwrap(), fabric, "{input}");
+            if !input.contains("://") {
+                assert_eq!(fabric.to_string(), input);
+            }
+            assert_eq!(fabric.decodes_in_older_versions(), legacy, "{input}");
+            let fabric_dialed = fabric.into_address().map(|a| a.to_string());
+            assert_eq!(fabric_dialed.ok().as_deref(), dialed, "{input}");
+            let admin = input.parse::<AdvertisedAddress<AdminPort>>().unwrap();
+            assert_eq!(admin.into_address().is_ok(), admin_dials, "{input}");
+        }
+
+        // Malformed input keeps failing at parse time; there is no catch-all.
+        for input in ["", "  ", "vsock:3:5122", "https://bücher.example", "1x:/a"] {
+            let parsed = input.parse::<AdvertisedAddress<FabricPort>>();
+            assert!(parsed.is_err(), "{input}");
+        }
     }
 }
