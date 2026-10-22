@@ -76,7 +76,7 @@ pub struct RestartAsNewInvocationResponse {
 
 /// Content type of a signal request body carrying a [`SignalFailure`], rejecting the signal.
 /// Any other content type resolves the signal with the request body as payload.
-pub const SIGNAL_FAILURE_CONTENT_TYPE: &str = "application/vnd.restate.failure+json";
+pub const SIGNAL_FAILURE_CONTENT_TYPE: &str = "application/vnd.restate.error+json";
 
 /// Failure used to reject a signal.
 #[derive(Debug, Serialize, Deserialize)]

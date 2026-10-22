@@ -617,7 +617,7 @@ generate_meta_api_error!(SendInvocationSignalError: [InvocationClientError, Inva
 /// Send a signal to an invocation
 ///
 /// Resolves or rejects the named signal of an invocation. A request body with content type
-/// `application/vnd.restate.failure+json` rejects the signal with the given failure, any other
+/// `application/vnd.restate.error+json` rejects the signal with the given failure, any other
 /// request body resolves the signal using the body as payload.
 ///
 /// Signals sent to invocations that don't exist or are already completed are ignored.
@@ -633,7 +633,7 @@ generate_meta_api_error!(SendInvocationSignalError: [InvocationClientError, Inva
     request_body(
         content(
             ("application/octet-stream"),
-            (SignalFailure = "application/vnd.restate.failure+json"),
+            (SignalFailure = "application/vnd.restate.error+json"),
         ),
         description = "Signal payload to resolve the signal, or a failure to reject it.",
     ),
@@ -1281,7 +1281,7 @@ mod tests {
     #[test]
     fn signal_failure_content_type_ignores_parameters_and_case() {
         assert!(is_signal_failure_content_type(&headers_with_content_type(
-            "Application/VND.restate.failure+json; charset=utf-8"
+            "Application/VND.restate.ERROR+json; charset=utf-8"
         )));
     }
 
