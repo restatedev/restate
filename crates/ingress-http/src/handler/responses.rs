@@ -15,6 +15,7 @@ use chrono::DateTime;
 use http::{HeaderName, Response, header};
 use http_body_util::Full;
 use restate_types::Versioned;
+use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::schema::invocation_target::{
@@ -108,6 +109,10 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
             InvocationOutputResponse::Failure(error) => {
                 info!(rpc.response = ?error, "Complete external HTTP request with a failure");
                 Ok(HandlerError::Invocation(error).fill_builder(response_builder))
+            }
+            InvocationOutputResponse::Gone => {
+                info!("Complete external HTTP request with gone");
+                Ok(HandlerError::Invocation(GONE_INVOCATION_ERROR).fill_builder(response_builder))
             }
         }
     }

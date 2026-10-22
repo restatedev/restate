@@ -210,6 +210,12 @@ message InvocationStatusV2 {
     PAUSED = 7;
   }
 
+  enum CompletionStatus {
+    SUCCESS = 0;
+    FAILURE = 1;
+    KILLED = 2;
+  }
+
   Status status = 1;
 
   // Common
@@ -264,6 +270,18 @@ message InvocationStatusV2 {
 
   // Completed
   ResponseResult result = 18;
+
+  // If completion_status is set, then result(tag=18) must be null.
+  // If completion_status is set to Failure, the failure_status_code
+  // must hold the failure status code.
+  optional CompletionStatus completion_status = 37;
+  optional uint32 failure_status_code = 38;
+  // Reference to where the completed output is stored. Only set together
+  // with completion_status.
+  oneof output_ref {
+    // Binary-encoded BaseBlobId
+    bytes blob_id = 39;
+  }
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;
@@ -331,6 +349,9 @@ message InvocationStatusV2Lazy {
 
   // Completed
   // optional bytes result_lazy = 18;
+  optional InvocationStatusV2.CompletionStatus completion_status = 37;
+  optional uint32 failure_status_code = 38;
+  // bytes blob_id = 39; (decoded zero-copy)
 
   // Binary-encoded vqueue id. Empty if this invocation was not migrated to vqueues.
   optional bytes vqueue_id = 34;

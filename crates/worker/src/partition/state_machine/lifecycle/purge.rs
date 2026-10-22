@@ -13,8 +13,10 @@ use tracing::trace;
 
 use restate_clock::UniqueTimestamp;
 use restate_clock::time::MillisSinceEpoch;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InvocationStatus, ReadInvocationStatusTable, WriteInvocationStatusTable,
+    CompletedInvocation, CompletedResult, InvocationStatus, ReadInvocationStatusTable,
+    ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::journal_events::WriteJournalEventsTable;
 use restate_storage_api::journal_table;
@@ -62,7 +64,8 @@ where
         + journal_table::ReadJournalTable
         + journal_table::WriteJournalTable
         + WritePromiseTable
-        + WriteJournalEventsTable,
+        + WriteJournalEventsTable
+        + WriteBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -89,6 +92,7 @@ where
                     journal_metadata,
                     pinned_deployment,
                     idempotency_key,
+                    response_result,
                     ..
                 } = completed;
 
@@ -130,7 +134,12 @@ where
                     .as_ref()
                     .map(|pd| pd.service_protocol_version);
 
-                ctx.do_free_invocation(invocation_id)?;
+                let blob_id = match response_result {
+                    ResponseResultRef::Completed(CompletedResult { blob_id, .. }) => blob_id,
+                    _ => None,
+                };
+
+                ctx.do_free_invocation(invocation_id, blob_id)?;
 
                 // For workflow, we should also clean up the associated state and promises.
                 if invocation_target.invocation_target_ty()

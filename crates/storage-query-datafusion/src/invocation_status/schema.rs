@@ -34,11 +34,19 @@ define_table!(sys_invocation_status(
     /// Either `inboxed` or `scheduled` or `invoked` or `suspended` or `paused` or `completed`
     status: DataType::LargeUtf8,
 
-    /// If `status = 'completed'`, this contains either `success` or `failure`
+    /// If `status = 'completed'`, this contains either `success`, `failure`, or `killed``
     completion_result: DataType::LargeUtf8,
 
     /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error cause
     completion_failure: DataType::LargeUtf8,
+
+    /// If `status = 'completed' AND completion_result = 'failure'`, this contains the error code
+    completion_failure_code: DataType::UInt32,
+
+    /// If `status = 'completed'`, the id of the blob holding the invocation output,
+    /// formatted as `blob_1...`. NULL if the output is inlined or not stored.
+    /// Since v1.8.1.
+    completion_blob_id: DataType::LargeUtf8,
 
     /// Invocation Target. Format for plain services: `ServiceName/HandlerName`, e.g.
     /// `Greeter/greet`. Format for virtual objects/workflows: `VirtualObjectName/Key/HandlerName`,
