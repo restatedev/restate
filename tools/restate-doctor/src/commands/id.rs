@@ -18,11 +18,13 @@ use ulid::Ulid;
 use comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
+use restate_types::IdResourceType;
 use restate_types::identifiers::{
-    AwakeableIdentifier, DeploymentId, ExternalSignalIdentifier, InvocationId, SnapshotId,
-    SubscriptionId, TimestampAwareId, WithPartitionKey,
+    AwakeableIdentifier, CanonicalEntryId, DeploymentId, ExternalSignalIdentifier, InvocationId,
+    PartitionKey, SnapshotId, StateMutationId, SubscriptionId, TimestampAwareId, WithPartitionKey,
 };
 use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::VQueueId;
 
 use crate::util::colorize_id::{colorize_id, id_color_legend};
 use crate::util::hex_encode;
@@ -45,21 +47,31 @@ pub struct Decode {
 pub async fn run_decode(cmd: &Decode) -> anyhow::Result<()> {
     let input = cmd.id.trim();
 
-    // Try to detect the resource type from the prefix
-    if let Some(prefix) = input.split('_').next() {
-        match prefix {
-            "inv" => return decode_invocation_id(input),
-            "dp" => return decode_deployment_id(input),
-            "sub" => return decode_subscription_id(input),
-            "prom" => return decode_awakeable_id(input),
-            "sign" => return decode_signal_id(input),
-            "snap" => return decode_snapshot_id(input),
-            _ => {}
-        }
-    }
+    // Detect the resource type from the prefix, otherwise try as raw ULID
+    let Some(resource_type) = input
+        .split_once('_')
+        .and_then(|(prefix, _)| prefix.parse::<IdResourceType>().ok())
+    else {
+        return decode_raw_ulid(input);
+    };
 
-    // No recognized prefix - try as raw ULID
-    decode_raw_ulid(input)
+    match resource_type {
+        // Canonical entry IDs append `_<seq>` to the base62 resource ID, which
+        // never contains a separator itself.
+        IdResourceType::Invocation | IdResourceType::StateMutation
+            if input.matches('_').count() > 1 =>
+        {
+            decode_canonical_entry_id(input)
+        }
+        IdResourceType::Invocation => decode_invocation_id(input),
+        IdResourceType::StateMutation => decode_state_mutation_id(input),
+        IdResourceType::Deployment => decode_deployment_id(input),
+        IdResourceType::Subscription => decode_subscription_id(input),
+        IdResourceType::Awakeable => decode_awakeable_id(input),
+        IdResourceType::Signal => decode_signal_id(input),
+        IdResourceType::Snapshot => decode_snapshot_id(input),
+        IdResourceType::VQueue => decode_vqueue_id(input),
+    }
 }
 
 /// Print the common header table with resource type, colorized input, and legend
@@ -158,6 +170,87 @@ fn decode_invocation_id(input: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn decode_state_mutation_id(input: &str) -> anyhow::Result<()> {
+    let id = StateMutationId::from_str(input)?;
+
+    print_header("State Mutation", input);
+
+    c_title!("🔍", "Decoded Components");
+    let mut components = Table::new_styled();
+    components.add_kv_row("Partition Key:", id.partition_key());
+    components.add_kv_row("ULID:", Ulid::from_bytes(id.to_remainder_bytes()));
+    add_state_mutation_origin(&id, &mut components);
+    c_println!("{components}");
+
+    print_raw_bytes(&id.to_bytes());
+
+    Ok(())
+}
+
+/// State mutations without an admin-assigned ID get one derived from the LSN of their
+/// command, with a zero ULID timestamp. Report the LSN for those instead of a bogus
+/// creation time.
+fn add_state_mutation_origin(id: &StateMutationId, table: &mut Table) {
+    let ulid = Ulid::from_bytes(id.to_remainder_bytes());
+    if ulid.timestamp_ms() == 0 {
+        table.add_kv_row("Derived From LSN:", ulid.random());
+    } else {
+        table.add_kv_row("Created At:", format_timestamp(id.timestamp()));
+    }
+}
+
+fn decode_vqueue_id(input: &str) -> anyhow::Result<()> {
+    let id = VQueueId::from_str(input)?;
+    // Raw layout: partition key (8B, big-endian) | digest length (1B) | digest
+    let raw = id.as_raw_bytes();
+    let digest_len = raw[size_of::<PartitionKey>()];
+    let digest = &raw[size_of::<PartitionKey>() + 1..];
+
+    print_header("VQueue", input);
+
+    c_title!("🔍", "Decoded Components");
+    let mut components = Table::new_styled();
+    components.add_kv_row("Partition Key:", id.partition_key());
+    components.add_kv_row("Digest Length:", format!("{digest_len} bytes"));
+    components.add_kv_row("Digest:", hex_encode(digest));
+    c_println!("{components}");
+    c_println!(
+        "Note: the digest is a one-way hash of the vqueue's partition key, scope, limit key, \
+         handler kind (exclusive/shared), service and key"
+    );
+
+    print_raw_bytes(raw);
+
+    Ok(())
+}
+
+/// Decode a vqueue entry's canonical ID (`inv_1..._<seq>` or `mut_1..._<seq>`)
+fn decode_canonical_entry_id(input: &str) -> anyhow::Result<()> {
+    let id = CanonicalEntryId::from_str(input)?;
+    let base = id.to_base_entry_id();
+
+    print_header("Canonical Entry (vqueue entry incarnation)", input);
+
+    c_title!("🔍", "Decoded Components");
+    let mut components = Table::new_styled();
+    components.add_kv_row("Entry ID:", base);
+    components.add_kv_row("Entry Kind:", id.kind());
+    components.add_kv_row("Partition Key:", id.partition_key());
+    components.add_kv_row("Sequence Number:", id.seq());
+    if let Some(mutation_id) = base.to_state_mutation_id() {
+        add_state_mutation_origin(&mutation_id, &mut components);
+    }
+    c_println!("{components}");
+
+    if let Some(invocation_id) = base.to_invocation_id() {
+        print_ulid_timestamp_if_valid(invocation_id.invocation_uuid().into());
+    }
+
+    print_raw_bytes(id.as_bytes());
+
+    Ok(())
+}
+
 fn decode_deployment_id(input: &str) -> anyhow::Result<()> {
     decode_timestamp_id::<DeploymentId>(input, "Deployment")
 }
@@ -229,6 +322,9 @@ fn decode_raw_ulid(input: &str) -> anyhow::Result<()> {
             "Unrecognized ID format: '{input}'\n\n\
              Expected formats:\n  \
                - inv_1...  (Invocation ID)\n  \
+               - mut_1...  (State Mutation ID)\n  \
+               - inv_1..._<seq>, mut_1..._<seq> (Canonical vqueue entry ID)\n  \
+               - vq_1...   (VQueue ID)\n  \
                - dp_1...   (Deployment ID)\n  \
                - sub_1...  (Subscription ID)\n  \
                - prom_1... (Awakeable/Promise ID)\n  \
