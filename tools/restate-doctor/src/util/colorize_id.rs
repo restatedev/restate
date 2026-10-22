@@ -18,11 +18,12 @@ use std::fmt::Write;
 
 use crossterm::style::{Color, Stylize};
 use restate_cli_util::CliContext;
+use restate_types::IdResourceType;
 
 /// Color scheme for different ID segments.
 #[derive(Debug, Clone, Copy)]
 pub enum IdSegment {
-    /// Resource type prefix (inv, dp, sub, prom, sign, snap)
+    /// Resource type prefix (inv, mut, vq, dp, sub, prom, sign, snap)
     Prefix,
     /// Separator character (_)
     Separator,
@@ -30,10 +31,12 @@ pub enum IdSegment {
     Version,
     /// Partition key (base62 encoded, 11 chars for u64)
     PartitionKey,
-    /// UUID/ULID component (base62 encoded, 22 chars for u128)
+    /// UUID/ULID/digest component (base62 encoded, 22 chars for u128)
     Uuid,
     /// Base64 payload (for awakeable/signal IDs)
     Base64Payload,
+    /// Decimal sequence number suffix (for canonical entry IDs)
+    Sequence,
 }
 
 impl IdSegment {
@@ -45,6 +48,7 @@ impl IdSegment {
             IdSegment::PartitionKey => Color::Yellow,
             IdSegment::Uuid => Color::Green,
             IdSegment::Base64Payload => Color::Magenta,
+            IdSegment::Sequence => Color::Blue,
         }
     }
 }
@@ -59,8 +63,10 @@ struct Segment {
 /// ID format types
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdFormat {
-    /// inv_1<partition_key><uuid> - 11 chars partition key + 22 chars uuid
-    Invocation,
+    /// inv_1<partition_key><uuid>, mut_1<partition_key><ulid>, vq_1<partition_key><digest>:
+    /// 11 chars partition key + 22 chars uuid, optionally followed by `_<seq>` for
+    /// canonical entry IDs
+    Partitioned,
     /// dp_1<uuid>, sub_1<uuid>, snap_1<uuid> - 22 chars uuid
     UlidBased,
     /// prom_1<base64>, sign_1<base64> - base64 encoded payload
@@ -74,24 +80,22 @@ pub enum IdFormat {
 impl IdFormat {
     /// Detect the ID format from the prefix
     pub fn detect(id: &str) -> Self {
-        if let Some(prefix) = id.split('_').next() {
-            match prefix {
-                "inv" => IdFormat::Invocation,
-                "dp" | "sub" | "snap" => IdFormat::UlidBased,
-                "prom" | "sign" => IdFormat::Base64Based,
-                _ => {
-                    // Check if it's a raw ULID (26 chars, no underscore)
-                    if !id.contains('_') && id.len() == 26 {
-                        IdFormat::RawUlid
-                    } else {
-                        IdFormat::Unknown
-                    }
-                }
-            }
-        } else if !id.contains('_') && id.len() == 26 {
-            IdFormat::RawUlid
-        } else {
-            IdFormat::Unknown
+        match id
+            .split_once('_')
+            .map(|(prefix, _)| prefix.parse::<IdResourceType>())
+        {
+            Some(Ok(
+                IdResourceType::Invocation | IdResourceType::StateMutation | IdResourceType::VQueue,
+            )) => IdFormat::Partitioned,
+            Some(Ok(
+                IdResourceType::Deployment
+                | IdResourceType::Subscription
+                | IdResourceType::Snapshot,
+            )) => IdFormat::UlidBased,
+            Some(Ok(IdResourceType::Awakeable | IdResourceType::Signal)) => IdFormat::Base64Based,
+            // Raw ULID: 26 chars, no underscore
+            None if id.len() == 26 => IdFormat::RawUlid,
+            _ => IdFormat::Unknown,
         }
     }
 }
@@ -101,9 +105,9 @@ fn build_segments(id: &str, format: IdFormat) -> Vec<Segment> {
     let mut segments = Vec::new();
 
     match format {
-        IdFormat::Invocation => {
-            // Format: inv_1<partition_key:11><uuid:22>
-            // Total after prefix: 1 + 11 + 22 = 34 chars
+        IdFormat::Partitioned => {
+            // Format: <prefix>_1<partition_key:11><uuid:22>[_<seq>]
+            // Total after prefix: 1 + 11 + 22 = 34 chars, plus the optional sequence suffix
             if let Some(sep_pos) = id.find('_') {
                 // Prefix
                 segments.push(Segment {
@@ -141,7 +145,21 @@ fn build_segments(id: &str, format: IdFormat) -> Vec<Segment> {
                     segments.push(Segment {
                         kind: IdSegment::Uuid,
                         start: uuid_start,
-                        len: id.len() - uuid_start,
+                        len: 22.min(id.len() - uuid_start),
+                    });
+                }
+                // Optional `_<seq>` suffix of canonical entry IDs
+                let seq_sep = uuid_start + 22;
+                if id.get(seq_sep..).is_some_and(|rest| rest.starts_with('_')) {
+                    segments.push(Segment {
+                        kind: IdSegment::Separator,
+                        start: seq_sep,
+                        len: 1,
+                    });
+                    segments.push(Segment {
+                        kind: IdSegment::Sequence,
+                        start: seq_sep + 1,
+                        len: id.len() - seq_sep - 1,
                     });
                 }
             }
@@ -238,9 +256,10 @@ fn build_segments(id: &str, format: IdFormat) -> Vec<Segment> {
 /// the ID structure:
 /// - Cyan: Resource type prefix (inv, dp, sub, etc.)
 /// - Grey: Separator (_) and version (1)
-/// - Yellow: Partition key (for invocation IDs)
-/// - Green: UUID/ULID component
+/// - Yellow: Partition key (for invocation, state mutation and vqueue IDs)
+/// - Green: UUID/ULID/digest component
 /// - Magenta: Base64 payload (for awakeable/signal IDs)
+/// - Blue: Sequence number (for canonical entry IDs)
 pub fn colorize_id(id: &str) -> String {
     let colors_enabled = CliContext::get().colors_enabled();
     let format = IdFormat::detect(id);
@@ -286,23 +305,42 @@ pub fn id_color_legend() -> String {
     }
 
     format!(
-        "{} {} {} {}",
+        "{} {} {} {} {}",
         "prefix".with(IdSegment::Prefix.color()),
         "partition".with(IdSegment::PartitionKey.color()),
         "uuid".with(IdSegment::Uuid.color()),
         "payload".with(IdSegment::Base64Payload.color()),
+        "seq".with(IdSegment::Sequence.color()),
     )
 }
 
 #[cfg(test)]
 mod tests {
+    use restate_types::identifiers::{BaseEntryId, StateMutationId};
+    use restate_types::vqueues::{Seq, VQueueId};
+
     use super::*;
+
+    fn segment_lens(id: &str) -> Vec<usize> {
+        build_segments(id, IdFormat::detect(id))
+            .iter()
+            .map(|s| s.len)
+            .collect()
+    }
 
     #[test]
     fn detect_format() {
         assert_eq!(
             IdFormat::detect("inv_1fBuS9KMPNrt0zQBGdilypucn1EeT7AO5j"),
-            IdFormat::Invocation
+            IdFormat::Partitioned
+        );
+        assert_eq!(
+            IdFormat::detect(&StateMutationId::generate(1).to_string()),
+            IdFormat::Partitioned
+        );
+        assert_eq!(
+            IdFormat::detect(&VQueueId::custom(1, "q").to_string()),
+            IdFormat::Partitioned
         );
         assert_eq!(
             IdFormat::detect("dp_11nGQpCRmau6ypL82KH2TnP"),
@@ -326,16 +364,26 @@ mod tests {
     }
 
     #[test]
-    fn build_segments_invocation() {
-        let id = "inv_1fBuS9KMPNrt0zQBGdilypucn1EeT7AO5j";
-        let segments = build_segments(id, IdFormat::Invocation);
+    fn build_segments_partitioned() {
+        // prefix, "_", "1", partition key, uuid
+        assert_eq!(
+            segment_lens("inv_1fBuS9KMPNrt0zQBGdilypucn1EeT7AO5j"),
+            [3, 1, 1, 11, 22]
+        );
 
-        assert_eq!(segments.len(), 5);
-        assert_eq!(segments[0].len, 3); // "inv"
-        assert_eq!(segments[1].len, 1); // "_"
-        assert_eq!(segments[2].len, 1); // "1"
-        assert_eq!(segments[3].len, 11); // partition key
-        assert_eq!(segments[4].len, 22); // uuid
+        let mutation_id = StateMutationId::generate(42);
+        assert_eq!(segment_lens(&mutation_id.to_string()), [3, 1, 1, 11, 22]);
+        assert_eq!(
+            segment_lens(&VQueueId::custom(42, "q").to_string()),
+            [2, 1, 1, 11, 22]
+        );
+
+        // Canonical entry IDs append "_" and the sequence number
+        let canonical = BaseEntryId::from(mutation_id).canonicalize(Seq::new(1234));
+        assert_eq!(
+            segment_lens(&canonical.to_string()),
+            [3, 1, 1, 11, 22, 1, 4]
+        );
     }
 
     #[test]

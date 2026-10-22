@@ -17,6 +17,7 @@ mod pause;
 mod purge;
 mod restart_as_new;
 mod resume;
+mod signal;
 
 use anyhow::Result;
 use cling::prelude::*;
@@ -53,6 +54,9 @@ pub enum Invocations {
     RestartAsNew(restart_as_new::RestartAsNew),
     Resume(resume::Resume),
     Pause(pause::Pause),
+    /// Resolve or reject a named signal of an invocation
+    #[clap(subcommand)]
+    Signal(signal::Signal),
 }
 
 /// Validate an invocation id client-side, so a typo is bad input (exit 2) rather than

@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use anyhow::bail;
+use bytes::Bytes;
 use http::StatusCode;
 use serde::{Serialize, de::DeserializeOwned};
 use tracing::{debug, info};
@@ -315,6 +316,35 @@ impl AdminClient {
     {
         debug!("Sending request {} ({}): {:?}", method, path, body);
         let request = self.prepare_with_body(method, path.clone(), body);
+        async move {
+            let resp = request.send().await?;
+            debug!("Response from {} ({})", path, resp.status());
+            Ok(resp.into())
+        }
+    }
+
+    /// Like [`Self::run_with_body`], but sends `body` as is with the given content type.
+    pub(crate) fn run_with_raw_body<T>(
+        &self,
+        method: reqwest::Method,
+        path: Url,
+        content_type: &'static str,
+        body: Bytes,
+    ) -> impl Future<Output = reqwest::Result<Envelope<T>>> + 'static
+    where
+        T: DeserializeOwned + Send,
+    {
+        debug!(
+            "Sending request {} ({}): {} bytes of {}",
+            method,
+            path,
+            body.len(),
+            content_type
+        );
+        let request = self
+            .prepare(method, path.clone())
+            .header(http::header::CONTENT_TYPE, content_type)
+            .body(body);
         async move {
             let resp = request.send().await?;
             debug!("Response from {} ({})", path, resp.status());
