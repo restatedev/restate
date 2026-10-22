@@ -32,8 +32,8 @@ use crate::connection::ConnectionInfo;
 ///
 /// A command-line tool for managing Restate clusters. Designed to be be used by administrators,
 /// restatectl can be used to inspect cluster health and perform low-level maintenance operations
-/// on live nodes. It requires access to restate's node-to-node communication addresses (default on
-/// port 5122)
+/// on live nodes. It connects to their advertised control addresses, falling back to fabric
+/// addresses for nodes without a control address (default port 5122).
 ///
 /// https://docs.restate.dev
 #[derive(Run, Parser, Clone)]
@@ -94,8 +94,8 @@ fn init(common_opts: &CommonOpts, connection: &ConnectionInfo) -> anyhow::Result
     let ctx = CliContext::new(common_opts.clone());
 
     // When TLS materials are provided, register the process-wide fabric TLS
-    // client config so every channel dialing an `https://` fabric address (nodes in
-    // `prefer`/`require` mode) uses TLS, presenting the client certificate when
+    // client config so every channel dialing an `https://` control or fabric address
+    // uses TLS, presenting the client certificate when
     // one is configured. Stopgap until internal/external services are split onto
     // separate ports (#3583).
     if let Some(ca) = connection.tls.tls_ca.as_deref() {
