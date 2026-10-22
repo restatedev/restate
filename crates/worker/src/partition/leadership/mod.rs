@@ -604,6 +604,12 @@ where
                 feature_changes.push(PartitionFeatureChange::EnablePreflightSignalRecording);
             }
 
+            if config.common.experimental.is_write_blob_table_enabled()
+                && !processor.fsm().features().is_write_blob_table_enabled()
+            {
+                feature_changes.push(PartitionFeatureChange::EnableWriteBlobTable);
+            }
+
             if !feature_changes.is_empty() {
                 // Smallest version that supports every listed feature, but never below
                 // the partition's current min_restate_version.
@@ -1248,6 +1254,7 @@ mod tests {
                 preflight_invocation_termination_retention: true,
                 inconsistent_state_mutation_cleanup: true,
                 preflight_signal_recording: true,
+                write_blob_table: true,
             },
         );
         let (leader_query_tx, _leader_query_rx) = restate_worker_api::channel();

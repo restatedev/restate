@@ -8,8 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use tracing::warn;
+
+use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InvocationStatus, ReadInvocationStatusTable,
+    CompletedInvocation, CompletedResult, CompletionStatus, InvocationStatus,
+    ReadInvocationStatusTable, ResponseResultRef,
 };
 use restate_types::invocation::{ResponseResult, client};
 use restate_types::net::partition_processor::{
@@ -17,11 +21,12 @@ use restate_types::net::partition_processor::{
 };
 
 use super::*;
+use crate::ReadBlobTableExt;
 
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationStatusRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
 where
-    Storage: ReadInvocationStatusTable,
+    Storage: ReadInvocationStatusTable + ReadBlobTable,
 {
     async fn handle(
         self,
@@ -34,47 +39,87 @@ where
         }
 
         Decision::Reply(
-            self.storage
-                .get_invocation_status(&invocation_id)
+            handle(self.storage, &invocation_id)
                 .await
-                .map(|invocation_status| match invocation_status {
-                    InvocationStatus::Scheduled(_) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Scheduled.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Inboxed(_) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Inboxed.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Invoked(_) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Invoked.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Suspended { .. } => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Suspended.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Paused(_) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Paused.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Completed(CompletedInvocation {
-                        response_result: ResponseResult::Success(_),
-                        ..
-                    }) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Succeeded.into(),
-                        error: None,
-                    },
-                    InvocationStatus::Completed(CompletedInvocation {
-                        response_result: ResponseResult::Failure(error),
-                        ..
-                    }) => GetInvocationStatusRpcResponse::Status {
-                        state: client::InvocationState::Failed.into(),
-                        error: Some(error.into()),
-                    },
-                    InvocationStatus::Free => GetInvocationStatusRpcResponse::NotFound,
-                })
                 .map_err(|err| PartitionProcessorRpcError::Internal(err.to_string())),
         )
     }
+}
+
+async fn handle<S>(
+    storage: &mut S,
+    invocation_id: &InvocationId,
+) -> Result<GetInvocationStatusRpcResponse, StorageError>
+where
+    S: ReadInvocationStatusTable + ReadBlobTable,
+{
+    let invocation_status = storage.get_invocation_status(invocation_id).await?;
+
+    let response = match invocation_status {
+        InvocationStatus::Scheduled(_) => GetInvocationStatusRpcResponse::Status {
+            state: client::InvocationState::Scheduled.into(),
+            error: None,
+        },
+        InvocationStatus::Inboxed(_) => GetInvocationStatusRpcResponse::Status {
+            state: client::InvocationState::Inboxed.into(),
+            error: None,
+        },
+        InvocationStatus::Invoked(_) => GetInvocationStatusRpcResponse::Status {
+            state: client::InvocationState::Invoked.into(),
+            error: None,
+        },
+        InvocationStatus::Suspended { .. } => GetInvocationStatusRpcResponse::Status {
+            state: client::InvocationState::Suspended.into(),
+            error: None,
+        },
+        InvocationStatus::Paused(_) => GetInvocationStatusRpcResponse::Status {
+            state: client::InvocationState::Paused.into(),
+            error: None,
+        },
+        InvocationStatus::Completed(CompletedInvocation {
+            response_result, ..
+        }) => match response_result {
+            ResponseResultRef::Success(_)
+            | ResponseResultRef::Completed(CompletedResult {
+                status: CompletionStatus::Success,
+                ..
+            }) => GetInvocationStatusRpcResponse::Status {
+                state: client::InvocationState::Succeeded.into(),
+                error: None,
+            },
+            ResponseResultRef::Failure(error) => GetInvocationStatusRpcResponse::Status {
+                state: client::InvocationState::Failed.into(),
+                error: Some(error.into()),
+            },
+            ResponseResultRef::Completed(CompletedResult {
+                status: CompletionStatus::Killed | CompletionStatus::Failure(_),
+                ..
+            }) => {
+                // todo: Do we need the full error, or is the error code is enough.
+                // If the error code is enough then this should be way more efficient
+                // since we have this already.
+                // Currently we have to get the full failure output to extract the full
+                // error.
+                match storage
+                    .resolve_response_result_ref(&response_result)
+                    .await?
+                {
+                    None => GetInvocationStatusRpcResponse::NotFound,
+                    Some(ResponseResult::Failure(error)) => {
+                        GetInvocationStatusRpcResponse::Status {
+                            state: client::InvocationState::Failed.into(),
+                            error: Some(error.into()),
+                        }
+                    }
+                    Some(ResponseResult::Success(_)) => {
+                        warn!(%invocation_id, "invocation response result inconsistency");
+                        return Err(StorageError::DataIntegrityError);
+                    }
+                }
+            }
+        },
+        InvocationStatus::Free => GetInvocationStatusRpcResponse::NotFound,
+    };
+
+    Ok(response)
 }

@@ -25,6 +25,7 @@ use strum::EnumCount;
 
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
+use restate_types::blob::BaseBlobId;
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{
     BaseEntryId, CanonicalEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
@@ -208,6 +209,22 @@ impl FirstMatchingPartitionKeyExtractor {
             let invocation_id = InvocationId::from_str(value).context("non valid invocation id")?;
             Ok(invocation_id.partition_key())
         })
+    }
+
+    /// Adds a blob-id extractor whose matches are grouped into a single scan per Restate
+    /// partition. The blob table scanner re-fetches each id exactly via [`BlobIdFilter`].
+    pub fn with_grouped_blob_id(self, column_name: impl Into<String>) -> Self {
+        self.append_with_fanout(
+            MatchingColumnExtractor::new(column_name, |value: &ScalarValue| {
+                let value = value
+                    .try_as_str()
+                    .context("expected string blob id")?
+                    .context("unexpected null blob id")?;
+                let blob_id = BaseBlobId::from_str(value).context("non valid blob id")?;
+                Ok(blob_id.partition_key())
+            }),
+            PointReadFanout::PerPartition,
+        )
     }
 
     pub fn with_vqueue_entry_id(self, column_name: impl Into<String>) -> Self {
@@ -658,6 +675,36 @@ fn parse_vqueue_entry_id_selection(
                 .collect(),
         })
     })
+}
+
+#[derive(Debug, Clone)]
+pub struct BlobIdFilter {
+    pub partition_keys: KeyRange,
+    pub blob_ids: Option<IdSelection<BaseBlobId>>,
+}
+
+impl ScanLocalPartitionFilter for BlobIdFilter {
+    fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        if let Some(predicate) = predicate
+            && let Ok(predicate) = snapshot_physical_expr(predicate)
+        {
+            for conjunct in split_conjunction(&predicate) {
+                if let Some(blob_ids) =
+                    parse_id_selection("id", range, conjunct, |id: &BaseBlobId| id.partition_key())
+                {
+                    return Self {
+                        partition_keys: range,
+                        blob_ids: Some(blob_ids),
+                    };
+                }
+            }
+        }
+
+        Self {
+            partition_keys: range,
+            blob_ids: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

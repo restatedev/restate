@@ -30,7 +30,6 @@ use restate_clock::RoughTimestamp;
 use restate_memory::ByteCount;
 use restate_util_string::ReString;
 
-use crate::Scope;
 use crate::errors::InvocationError;
 use crate::identifiers::{
     DeploymentId, EntryIndex, IdempotencyId, InvocationId, PartitionKey,
@@ -41,6 +40,7 @@ use crate::journal_v2::{CompletionId, GetInvocationOutputResult, Signal};
 use crate::limit_key::LimitKey;
 use crate::time::MillisSinceEpoch;
 use crate::{GenerationalNodeId, LockName, RestateVersion, ServiceName};
+use crate::{Scope, flexbuffers_storage_encode_decode};
 
 #[derive(
     Eq,
@@ -772,6 +772,14 @@ pub enum ResponseResult {
     Failure(InvocationError),
 }
 
+flexbuffers_storage_encode_decode!(ResponseResult);
+
+impl ResponseResult {
+    pub fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+}
+
 impl From<Result<Bytes, InvocationError>> for ResponseResult {
     fn from(value: Result<Bytes, InvocationError>) -> Self {
         match value {
@@ -840,6 +848,10 @@ impl ServiceInvocationResponseSink {
 
     pub fn ingress(request_id: PartitionProcessorRpcRequestId) -> Self {
         Self::Ingress { request_id }
+    }
+
+    pub fn is_partition_processor(&self) -> bool {
+        matches!(self, Self::PartitionProcessor(_))
     }
 }
 
