@@ -398,6 +398,11 @@ where
             }
         };
 
+        // Cancellation can drop `run_inner` while it awaits a commit that has already been handed
+        // off to the storage thread pool. Wait for such writes before returning so that the next
+        // processor for this partition only starts once all of our writes have landed.
+        self.partition_store.wait_for_pending_writes().await;
+
         // clean up pending rpcs and stop child tasks
         self.leadership_state.step_down().await;
 
