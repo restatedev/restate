@@ -10,7 +10,7 @@
 
 use crate::partition::processor::ProcessorContext;
 use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext, entries};
-use restate_storage_api::blob_table::WriteBlobTable;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -42,6 +42,7 @@ where
         + WriteVirtualObjectStatusTable
         + WriteJournalEventsTable
         + WriteBlobTable
+        + ReadBlobTable
         + ReadInvocationStatusTable
         + WriteInvocationStatusTable
         + WriteTimerTable

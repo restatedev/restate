@@ -21,7 +21,6 @@ use restate_types::net::partition_processor::{
 };
 use restate_wal_protocol::v2::commands;
 
-use crate::ReadBlobTableExt;
 use crate::partition::state_machine;
 
 use super::*;
@@ -46,11 +45,7 @@ where
                 Ok(GetInvocationOutputRpcResponse::Output(
                     InvocationOutput {
                         request_id,
-                        response: match self
-                            .storage
-                            .resolve_response_result_ref(&completed.response_result)
-                            .await?
-                        {
+                        response: match completed.response_result.resolve(self.storage).await? {
                             None => InvocationOutputResponse::Gone,
                             Some(invocation::ResponseResult::Success(res)) => {
                                 InvocationOutputResponse::Success(completed.invocation_target, res)

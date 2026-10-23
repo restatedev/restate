@@ -10,6 +10,7 @@
 
 use tracing::warn;
 
+use restate_types::errors::GONE_INVOCATION_ERROR;
 use restate_storage_api::StorageError;
 use restate_storage_api::invocation_status_table::{
     CompletedInvocation, CompletedResult, CompletionStatus, InvocationStatus,
@@ -22,7 +23,6 @@ use restate_types::net::partition_processor::{
 };
 
 use super::*;
-use crate::ReadBlobTableExt;
 
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationStatusRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
@@ -101,10 +101,7 @@ where
                 // since we have this already.
                 // Currently we have to get the full failure output to extract the full
                 // error.
-                match storage
-                    .resolve_response_result_ref(&response_result)
-                    .await?
-                {
+                match response_result.resolve(storage).await? {
                     None => GetInvocationStatusRpcResponse::Status {
                         state: client::InvocationState::Failed.into(),
                         error: Some(GONE_INVOCATION_ERROR.into()),
