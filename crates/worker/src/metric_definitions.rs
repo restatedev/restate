@@ -70,6 +70,15 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
 
+/// Scheduler decisions the state machine refused to apply because the entry's stored status
+/// no longer matched the decision. Labelled by decision `type` (run, yield) and `reason`.
+pub const VQUEUE_DECISION_SKIPPED: &str = "restate.vqueue.decision_skipped.total";
+pub const DECISION_TYPE_RUN: &str = "run";
+pub const DECISION_TYPE_YIELD: &str = "yield";
+pub const SKIP_REASON_NO_ENTRY: &str = "no-entry";
+pub const SKIP_REASON_WRONG_STAGE: &str = "wrong-stage";
+pub const SKIP_REASON_KEY_MISMATCH: &str = "key-mismatch";
+
 pub(crate) fn describe_metrics() {
     describe_gauge!(
         PARTITION_BLOCKED_FLARE,
@@ -187,5 +196,11 @@ pub(crate) fn describe_metrics() {
         PARTITION_SHUFFLE_INFLIGHT_RECORDS,
         Unit::Count,
         "Number of inflight records by source partition"
+    );
+
+    describe_counter!(
+        VQUEUE_DECISION_SKIPPED,
+        Unit::Count,
+        "Number of vqueue scheduler decisions skipped because the entry's stored status no longer matched the decision, by decision type and reason"
     );
 }

@@ -443,6 +443,18 @@ impl VQueueMeta {
         &self.stats
     }
 
+    /// Number of entries the metadata counts in `stage`.
+    pub fn stage_count(&self, stage: Stage) -> u64 {
+        match stage {
+            Stage::Inbox => self.stats.num_inbox,
+            Stage::Running => self.stats.num_running,
+            Stage::Suspended => self.stats.num_suspended,
+            Stage::Paused => self.stats.num_paused,
+            Stage::Finished => self.stats.num_finished,
+            Stage::Unknown => 0,
+        }
+    }
+
     pub fn last_enqueued_ts(&self) -> Option<UniqueTimestamp> {
         self.stats.last_enqueued_at
     }
@@ -584,6 +596,15 @@ impl Update {
     #[inline]
     pub fn new(ts: UniqueTimestamp, action: Action) -> Self {
         Self { ts, action }
+    }
+
+    /// The stage whose counter this update decrements, if any.
+    pub fn decremented_stage(&self) -> Option<Stage> {
+        match self.action {
+            Action::RemoveEntry { stage } => Some(stage),
+            Action::Move { prev_stage, .. } => prev_stage,
+            _ => None,
+        }
     }
 }
 

@@ -22,6 +22,8 @@ pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
 pub(crate) const PARTITION_MEMTABLE_BUDGET: &str = "restate.partition_store.memtable_budget.bytes";
 pub(crate) const NUM_OPEN_PARTITIONS: &str = "restate.partition_store.num_open";
 pub(crate) const RECLAIM_FLUSH: &str = "restate.partition_store.reclaim_flush.total";
+pub(crate) const VQUEUE_COUNTER_UNDERFLOW: &str =
+    "restate.partition_store.vqueue.counter_underflow.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -70,5 +72,11 @@ pub(crate) fn describe_metrics() {
         RECLAIM_FLUSH,
         Unit::Count,
         "How many flushes were triggered by the partition store memory reclaimer"
+    );
+
+    describe_counter!(
+        VQUEUE_COUNTER_UNDERFLOW,
+        Unit::Count,
+        "Number of vqueue metadata updates that decremented a stage counter already at zero, a sign that the metadata and the stage rows disagree"
     );
 }
