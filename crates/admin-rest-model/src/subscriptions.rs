@@ -21,6 +21,17 @@ use restate_types::schema::subscriptions::Subscription;
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 #[derive(Debug, Serialize, Deserialize)]
 pub struct CreateSubscriptionRequest {
+    /// # Id
+    ///
+    /// Identifier of the subscription. Generated when omitted.
+    ///
+    /// Set it to the identifier of a deleted subscription to resume it: with the same
+    /// consumer group, records Restate already ingested under that identifier are
+    /// deduplicated instead of being invoked again. Restate never forgets the ingested
+    /// offsets of a subscription identifier, so do not reuse one after resetting the
+    /// consumer group offsets to replay records.
+    #[serde(default)]
+    pub id: Option<SubscriptionId>,
     /// # Source
     ///
     /// Source uri. Accepted forms:

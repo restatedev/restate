@@ -16,22 +16,23 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use anyhow::Context;
-use futures::StreamExt;
-use futures::future::OptionFuture;
+use futures::future::{OptionFuture, join_all};
+use futures::{FutureExt, StreamExt};
 use metrics::{counter, gauge};
 use rdkafka::consumer::stream_consumer::StreamPartitionQueue;
 use rdkafka::consumer::{
     BaseConsumer, CommitMode, Consumer, ConsumerContext, Rebalance, StreamConsumer,
 };
-use rdkafka::error::KafkaError;
+use rdkafka::error::{KafkaError, KafkaResult};
 use rdkafka::topic_partition_list::TopicPartitionListElem;
 use rdkafka::types::RDKafkaErrorCode;
-use rdkafka::{ClientConfig, ClientContext, Message, Statistics};
-use tokio::sync::{mpsc, oneshot};
-use tracing::{debug, instrument, trace, warn};
+use rdkafka::{ClientConfig, ClientContext, Message, Offset, Statistics, TopicPartitionList};
+use tokio::sync::{mpsc, oneshot, watch};
+use tracing::{Level, debug, info, instrument, trace, warn};
 
 use restate_core::network::{NetworkSender, Swimlane, TransportConnect};
 use restate_core::{Metadata, TaskCenter, TaskHandle, TaskKind, task_center};
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, RecordCommit};
 use restate_types::identifiers::SubscriptionId;
 use restate_types::identifiers::partitioner::HashPartitioner;
@@ -45,6 +46,10 @@ use restate_wal_protocol::v2::{Envelope, Raw};
 use crate::Error;
 use crate::builder::EnvelopeBuilder;
 use crate::metric_definitions::{KAFKA_INGRESS_CONSUMER_LAG, KAFKA_INGRESS_REQUESTS};
+
+/// How long a deleted subscription waits for its in-flight records to be ingested before the
+/// consumer is stopped regardless.
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// The concrete Kafka consumer type for a given transport `T` and OAUTHBEARER
 /// policy `O`. The policy is baked into the type because librdkafka reads
@@ -125,6 +130,7 @@ where
             consumer: OnceLock::new(),
             topic_partition_tasks: parking_lot::Mutex::new(HashMap::new()),
             failures_tx,
+            drain_tx: watch::Sender::new(false),
             ingestion: self.ingestion.clone(),
             builder: self.builder.clone(),
             consumer_group_id,
@@ -158,8 +164,65 @@ where
             Some(err) = failures_rx.recv() => {
                 Err(err)
             }
-            _ = &mut rx => {
-                 Ok(())
+            drain = &mut rx => {
+                if drain.is_ok() {
+                    let subscription_id = self.builder.subscription().id();
+                    let draining = drain_consumer(&consumer).log_slow_after(
+                        Duration::from_secs(30),
+                        Level::INFO,
+                        // logged as "[slow] ..." while overdue and "[completed] ..." once done
+                        format!("draining the in-flight records of Kafka subscription {subscription_id}"),
+                    );
+
+                    if tokio::time::timeout(DRAIN_TIMEOUT, draining).await.is_err() {
+                        warn!(
+                            restate.subscription.id = %subscription_id,
+                            "Kafka subscription {subscription_id} did not finish draining within {}s. \
+                            Partitions without a 'drained' log line may still have had records in flight, \
+                            and the consumer group offsets committed to Kafka can be behind what Restate ingested.",
+                            DRAIN_TIMEOUT.as_secs()
+                        );
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Stops the partitioned consumers from reading new messages and waits for their in-flight
+/// records to be committed to the partition processors. Every partition task logs its last
+/// ingested offset when it finishes, and the final Kafka offset commit on consumer close is
+/// logged by [`ConsumerContext::commit_callback`].
+async fn drain_consumer<T: TransportConnect, O: OAuthMode>(consumer: &MessageConsumer<T, O>) {
+    let context = consumer.context();
+    context.drain_tx.send_replace(true);
+    // take the tasks out so neither rebalance callbacks nor ConsumerDrop can abort them
+    let tasks = std::mem::take(&mut *context.topic_partition_tasks.lock());
+    // the AbortOnDrop guards stay alive until the drain completes or is given up
+    let mut drained = std::pin::pin!(join_all(
+        tasks
+            .into_values()
+            .map(|mut task| async move { _ = (&mut task.0).await })
+    ));
+
+    loop {
+        tokio::select! {
+            _ = &mut drained => {
+                info!(
+                    restate.subscription.id = %context.builder.subscription().id(),
+                    "Kafka subscription drained, the last ingested offsets were logged per partition"
+                );
+                return;
+            }
+            // keep polling the main consumer so rebalance and commit callbacks are still served
+            // while draining; nothing it returns should end the drain
+            res = consumer.recv() => match res {
+                Ok(msg) => warn!(
+                    "Received an unexpected message on the main consumer queue for topic {} partition {} while draining",
+                    msg.topic(), msg.partition()
+                ),
+                Err(err) => debug!("Main consumer error while draining: {err}"),
             }
         }
     }
@@ -235,6 +298,7 @@ struct RebalanceContext<T: TransportConnect, O: OAuthMode> {
     consumer: OnceLock<Weak<MessageConsumer<T, O>>>,
     topic_partition_tasks: parking_lot::Mutex<HashMap<TopicPartition, AbortOnDrop>>,
     failures_tx: mpsc::UnboundedSender<Error>,
+    drain_tx: watch::Sender<bool>,
     ingestion: IngestionClient<T, Envelope<Raw>>,
     builder: EnvelopeBuilder,
     consumer_group_id: String,
@@ -322,17 +386,27 @@ where
                         drop(task_id);
                     }
 
+                    if *self.drain_tx.borrow() {
+                        // Nobody consumes new partitions while draining. Still split the queue
+                        // (and drop it) so its messages are not forwarded to the main queue.
+                        debug!("Ignoring assigned partition {partition} while draining");
+                        drop(consumer.split_partition_queue(&partition.0, partition.1));
+                        continue;
+                    }
+
                     match consumer.split_partition_queue(&partition.0, partition.1) {
                         Some(queue) => {
-                            let task = TopicPartitionConsumptionTask::new(
-                                self.ingestion.clone(),
-                                self.builder.clone(),
-                                partition.clone(),
-                                queue,
-                                Arc::clone(&consumer),
-                                self.consumer_group_id.clone(),
-                                self.failures_tx.clone(),
-                            );
+                            let task = TopicPartitionConsumptionTask {
+                                ingestion: self.ingestion.clone(),
+                                builder: self.builder.clone(),
+                                topic_partition: partition.clone(),
+                                topic_partition_consumer: queue,
+                                consumer: Arc::clone(&consumer),
+                                consumer_group_id: self.consumer_group_id.clone(),
+                                failed: self.failures_tx.clone(),
+                                drain: self.drain_tx.subscribe(),
+                                last_ingested: None,
+                            };
 
                             if let Ok(task_handle) = self.task_center_handle.spawn_unmanaged(
                                 TaskKind::Ingress,
@@ -373,6 +447,9 @@ where
                             // It might be mid-poll right now, but if so its result will not be sent anywhere.
                             drop(task_id);
                         }
+                        None if *self.drain_tx.borrow() => {
+                            debug!("Revoked partition {partition} is draining or already drained");
+                        }
                         None => warn!(
                             "Kafka informed us of a revoked partition {partition} which we had no consumer task for"
                         ),
@@ -390,6 +467,48 @@ where
             // unclear why we are called with no partitions
             Rebalance::Assign(_) | Rebalance::Revoke(_) => {}
             Rebalance::Error(_) => {}
+        }
+    }
+
+    // While draining, this reports the offsets that librdkafka commits to the consumer group.
+    // Periodic auto commits and the final commit of the stored offsets when the consumer is
+    // closed both end up here, so the last line logged for a partition is the one that counts.
+    fn commit_callback(&self, result: KafkaResult<()>, offsets: &TopicPartitionList) {
+        if !*self.drain_tx.borrow() {
+            return;
+        }
+
+        // librdkafka reports commits without new offsets as an error, but it is not one
+        if let Err(KafkaError::ConsumerCommit(RDKafkaErrorCode::NoOffset)) = result {
+            debug!("No new Kafka consumer group offsets to commit while draining");
+            return;
+        }
+
+        let offsets: Vec<_> = offsets
+            .elements()
+            .iter()
+            .map(|elem| {
+                let partition = TopicPartition(elem.topic().into(), elem.partition());
+                match (elem.error(), elem.offset()) {
+                    (Ok(()), Offset::Offset(offset)) => format!("{partition}: {offset}"),
+                    (Ok(()), offset) => format!("{partition}: {offset:?}"),
+                    (Err(err), _) => format!("{partition}: {err}"),
+                }
+            })
+            .collect();
+
+        match result {
+            Ok(()) => info!(
+                restate.subscription.id = %self.builder.subscription().id(),
+                "Committed Kafka consumer group offsets of the draining subscription: [{}]",
+                offsets.join(", ")
+            ),
+            Err(err) => warn!(
+                restate.subscription.id = %self.builder.subscription().id(),
+                "Failed to commit Kafka consumer group offsets of the draining subscription: {err}. \
+                Affected partitions: [{}]",
+                offsets.join(", ")
+            ),
         }
     }
 }
@@ -414,6 +533,9 @@ where
     consumer: Arc<MessageConsumer<T, O>>,
     consumer_group_id: String,
     failed: mpsc::UnboundedSender<Error>,
+    drain: watch::Receiver<bool>,
+    /// Offset of the last record that Restate accepted, reported when draining.
+    last_ingested: Option<i64>,
 }
 
 impl<T, O> TopicPartitionConsumptionTask<T, O>
@@ -421,38 +543,32 @@ where
     T: TransportConnect,
     O: OAuthMode,
 {
-    fn new(
-        ingestion: IngestionClient<T, Envelope<Raw>>,
-        builder: EnvelopeBuilder,
-        topic_partition: TopicPartition,
-        topic_partition_consumer: StreamPartitionQueue<RebalanceContext<T, O>>,
-        consumer: Arc<MessageConsumer<T, O>>,
-        consumer_group_id: String,
-        failed: mpsc::UnboundedSender<Error>,
-    ) -> Self {
-        Self {
-            ingestion,
-            builder,
-            topic_partition,
-            topic_partition_consumer,
-            consumer,
-            consumer_group_id,
-            failed,
-        }
-    }
-
+    /// Runs until the partition is drained. This future is aborted when the partition is no
+    /// longer needed.
     async fn run(mut self) {
-        // this future will be aborted when the partition is no longer needed, so any exit is a failure
-        let err = match self.run_inner().await {
-            Err(err) => err,
-            Ok(_) => Error::UnexpectedConsumptionTaskExited {
-                subscription: self.builder.subscription().id().to_string(),
-                topic: self.topic_partition.0,
-                partition: self.topic_partition.1,
-            },
-        };
-
-        _ = self.failed.send(err);
+        if let Err(err) = self.run_inner().await {
+            if *self.drain.borrow() {
+                // nobody listens for failures while draining, and the consumer stops anyway
+                match self.last_ingested {
+                    Some(offset) => warn!(
+                        restate.subscription.id = %self.builder.subscription().id(),
+                        topic = %self.topic_partition.0,
+                        kafka_partition = %self.topic_partition.1,
+                        "Draining the Kafka partition failed, its remaining in-flight records were not ingested: {err}. \
+                        Last offset ingested into Restate: {offset}"
+                    ),
+                    None => warn!(
+                        restate.subscription.id = %self.builder.subscription().id(),
+                        topic = %self.topic_partition.0,
+                        kafka_partition = %self.topic_partition.1,
+                        "Draining the Kafka partition failed, its remaining in-flight records were not ingested: {err}. \
+                        No records were ingested since the partition was assigned"
+                    ),
+                }
+            } else {
+                _ = self.failed.send(err);
+            }
+        }
     }
 
     /// query the legacy dedup information for this consumption task.
@@ -496,6 +612,12 @@ where
         )
         .retry_with_inspect(
             || async {
+                // short circuit if we are draining we have
+                // no inflight messages anyway
+                if *self.drain.borrow() {
+                    return Ok(None);
+                }
+
                 let partition_id = Metadata::with_current(|m| {
                     m.partition_table_ref()
                         .find_partition_id(proxy_partition_key)
@@ -578,9 +700,22 @@ where
         );
 
         let mut inflight = VecDeque::new();
+        let mut draining = *self.drain.borrow();
 
         let mut consumer_stream = self.topic_partition_consumer.stream();
         loop {
+            if draining && inflight.is_empty() {
+                match self.last_ingested {
+                    Some(offset) => info!(
+                        "Kafka partition drained, last offset ingested into Restate: {offset}"
+                    ),
+                    None => info!(
+                        "Kafka partition drained, no records were ingested since the partition was assigned"
+                    ),
+                }
+                return Ok(());
+            }
+
             tokio::select! {
                 biased;
                 Some(committed) = Self::head_committed(&mut inflight) => {
@@ -593,9 +728,24 @@ where
                         "Store kafka offset",
                     );
 
-                    self.consumer.store_offset(&self.topic_partition.0, self.topic_partition.1, offset)?;
+                    let result = self.consumer.store_offset(&self.topic_partition.0, self.topic_partition.1, offset);
+                    if let Err(err) = result {
+                        if !draining {
+                            return Err(err.into());
+                        }
+                        // keep draining: the record is ingested and the offset must still be logged
+                        warn!(
+                            offset=%offset,
+                            "Failed to store the Kafka offset while draining, the committed consumer group offset will lag behind the ingested offset: {err}"
+                        );
+                    }
+                    self.last_ingested = Some(offset);
                 },
-                Some(received) = consumer_stream.next() => {
+                _ = self.drain.wait_for(|drain| *drain).map(|_| ()), if !draining => {
+                    debug!(inflight = inflight.len(), "Draining topic partition");
+                    draining = true;
+                },
+                Some(received) = consumer_stream.next(), if !draining => {
                     let msg = received?;
                     let offset = msg.offset();
                     if legacy_dedup_offset.is_some_and(|dedup_offset| offset as u64 <= dedup_offset) {

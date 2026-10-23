@@ -50,14 +50,6 @@ pub enum Error {
         "Received a message on the main partition queue for topic {0} partition {1} despite partitioned queues"
     )]
     UnexpectedMainQueueMessage(String, i32),
-    #[error(
-        "Consumption task exited unexpectedly for subscription '{subscription}', topic: {topic} and partition: {partition}"
-    )]
-    UnexpectedConsumptionTaskExited {
-        subscription: String,
-        topic: String,
-        partition: i32,
-    },
 }
 
 pub use subscription_controller::Service;

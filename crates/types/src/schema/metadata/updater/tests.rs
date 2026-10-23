@@ -815,7 +815,12 @@ fn register_two_deployments_then_remove_first() {
 
     let version_before_removal = schemas.version();
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_1));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_1])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();
@@ -857,7 +862,12 @@ fn register_two_deployments_then_remove_second() {
 
     let version_before_removal = schemas.version();
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_2));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_2])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();
@@ -1003,7 +1013,12 @@ fn update_deployment_same_uri() {
 
     // the failing invocations have drained so I can safely delete the original deployment
     let schemas = SchemaUpdater::update(schemas, |updater| {
-        assert!(updater.remove_deployment(deployment_id_1));
+        assert!(
+            updater
+                .remove_deployments([deployment_id_1])
+                .not_found
+                .is_empty()
+        );
         Ok::<(), Infallible>(())
     })
     .unwrap();
@@ -2689,6 +2704,7 @@ mod kafka_cluster {
             // Add subscription referencing the cluster
             updater
                 .add_subscription(
+                    None,
                     "kafka://my-cluster/my-topic".parse().unwrap(),
                     format!("service://{}/greet", GREETER_SERVICE_NAME)
                         .parse()
@@ -2727,6 +2743,7 @@ mod kafka_cluster {
             // Add subscription referencing the cluster
             updater
                 .add_subscription(
+                    None,
                     "kafka://my-cluster/my-topic".parse().unwrap(),
                     format!("service://{}/greet", GREETER_SERVICE_NAME)
                         .parse()
@@ -2947,6 +2964,7 @@ mod kafka_cluster {
 
             // Add subscription referencing the cluster
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -2967,6 +2985,49 @@ mod kafka_cluster {
     }
 
     #[test]
+    fn subscription_with_explicit_id() {
+        let mut updater = SchemaUpdater::default();
+        updater
+            .add_deployment(add_deployment_request(vec![greeter_service()]))
+            .unwrap();
+        updater
+            .add_kafka_cluster("my-cluster".parse().unwrap(), kafka_cluster_properties())
+            .unwrap();
+
+        let id = SubscriptionId::new();
+        let add = |updater: &mut SchemaUpdater| {
+            updater.add_subscription(
+                Some(id),
+                "kafka://my-cluster/my-topic".parse().unwrap(),
+                format!("service://{}/greet", GREETER_SERVICE_NAME)
+                    .parse()
+                    .unwrap(),
+                None,
+            )
+        };
+
+        assert_eq!(add(&mut updater).unwrap(), id);
+        assert_that!(
+            add(&mut updater),
+            err(pat!(SchemaError::Subscription(pat!(
+                SubscriptionError::Override(eq(id))
+            ))))
+        );
+
+        // the id can be reused once the subscription is gone, and defaults the consumer group
+        assert!(updater.remove_subscription(id));
+        assert_eq!(add(&mut updater).unwrap(), id);
+        let subscription = updater
+            .into_inner()
+            .get_subscription(id, Redaction::No)
+            .unwrap();
+        assert_eq!(
+            subscription.metadata().get("group.id"),
+            Some(&id.to_string())
+        );
+    }
+
+    #[test]
     fn subscription_with_nonexistent_kafka_cluster() {
         let mut updater = SchemaUpdater::default();
 
@@ -2977,6 +3038,7 @@ mod kafka_cluster {
 
         // Try to add subscription with nonexistent cluster
         let result = updater.add_subscription(
+            None,
             "kafka://nonexistent-cluster/my-topic".parse().unwrap(),
             format!("service://{}/greet", GREETER_SERVICE_NAME)
                 .parse()
@@ -3009,6 +3071,7 @@ mod kafka_cluster {
 
             // Add subscription
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -3053,6 +3116,7 @@ mod kafka_cluster {
             metadata.insert("custom.property".to_string(), "non-sensitive".to_string());
 
             updater.add_subscription(
+                None,
                 "kafka://my-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -3180,6 +3244,7 @@ mod kafka_cluster {
 
             // Add subscription referencing the config cluster
             updater.add_subscription(
+                None,
                 "kafka://config-cluster/my-topic".parse().unwrap(),
                 format!("service://{}/greet", GREETER_SERVICE_NAME)
                     .parse()
@@ -3313,5 +3378,80 @@ mod bilrost_encoded {
         let schema = SchemaUpdater::update(schema, |_| Ok::<(), Infallible>(())).unwrap();
         assert_eq!(schema.version(), version);
         assert!(schema.is_bilrost_encoded());
+    }
+}
+
+mod lite {
+    use super::*;
+
+    use bytes::BytesMut;
+    use serde_json::json;
+    use test_log::test;
+
+    use restate_platform::storage::StorageCodecKind;
+    use restate_test_util::{assert, assert_eq};
+
+    use crate::schema::SchemaUnindexedLite;
+    use crate::storage::StorageCodec;
+
+    fn json_schemas(schema: &Schema) -> (Option<serde_json::Value>, Option<serde_json::Value>) {
+        let handler = schema
+            .resolve_latest_service(GREETER_SERVICE_NAME)
+            .unwrap()
+            .handlers
+            .remove(GREET_HANDLER_NAME)
+            .unwrap();
+        (handler.input_json_schema, handler.output_json_schema)
+    }
+
+    #[test]
+    fn wire_compatible_with_full_schema_and_drops_json_schemas() {
+        let mut service = greeter_service();
+        service.handlers[0].input = Some(endpoint_manifest::InputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({"type": "object", "title": "Greeting"})),
+            required: Some(false),
+        });
+        service.handlers[0].output = Some(endpoint_manifest::OutputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({"type": "string"})),
+            set_content_type_if_empty: None,
+        });
+        let mut full = SchemaUpdater::update(Schema::default(), |updater| {
+            updater
+                .add_deployment(add_deployment_request(vec![service]))
+                .map(|_| ())
+        })
+        .unwrap();
+        assert!(json_schemas(&full).0.is_some());
+        assert!(json_schemas(&full).1.is_some());
+
+        let stripped = Schema::from(SchemaUnindexedLite::clone_from_schema(&full));
+        assert_eq!(json_schemas(&stripped), (None, None));
+        let expected = serde_json::to_value(&stripped).unwrap();
+
+        for codec in [
+            StorageCodecKind::FlexbuffersSerde,
+            StorageCodecKind::ZstdBilrostDefault,
+        ] {
+            full.set_bilrost_encoded(codec == StorageCodecKind::ZstdBilrostDefault);
+
+            // full payload decodes as lite, skipping the JSON schemas
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&full, &mut buf).unwrap();
+            let lite = StorageCodec::decode::<SchemaUnindexedLite, _>(&mut buf).unwrap();
+            assert_eq!(lite.version(), full.version());
+            assert_eq!(lite.is_bilrost_encoded(), full.is_bilrost_encoded());
+
+            // lite payload decodes as full schema (e.g. after a rollback)
+            let mut buf = BytesMut::new();
+            StorageCodec::encode(&lite, &mut buf).unwrap();
+            let decoded = StorageCodec::decode::<Schema, _>(&mut buf).unwrap();
+            assert_eq!(decoded.is_bilrost_encoded(), full.is_bilrost_encoded());
+
+            let lite = Schema::from(lite);
+            assert_eq!(serde_json::to_value(&lite).unwrap(), expected);
+            assert_eq!(serde_json::to_value(&decoded).unwrap(), expected);
+        }
     }
 }

@@ -40,7 +40,6 @@ use http::{HeaderValue, Uri};
 use itertools::Itertools;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::num::NonZeroUsize;
 use std::ops::{Deref, Not, RangeInclusive};
@@ -261,6 +260,15 @@ pub(in crate::schema) struct AddDeploymentRequest {
     pub(in crate::schema) discovery_response: DiscoveryResponse,
     pub(in crate::schema) allow_breaking_changes: AllowBreakingChanges,
     pub(in crate::schema) overwrite: Overwrite,
+}
+
+/// Outcome of removing deployments.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct DeleteDeploymentsResult {
+    /// The deployments that were deleted.
+    pub deleted: Vec<DeploymentId>,
+    /// The deployments that don't exist.
+    pub not_found: Vec<DeploymentId>,
 }
 
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -856,38 +864,40 @@ impl SchemaUpdater {
         }
     }
 
-    /// Returns true if it was removed
-    pub fn remove_deployment(&mut self, deployment_id: DeploymentId) -> bool {
-        if let Some(deployment) = self.schema.unindexed.deployments.remove(&deployment_id) {
-            for (_, service_metadata) in deployment.services {
-                match self
-                    .schema
-                    .active_service_revisions
-                    .entry(service_metadata.name.clone())
-                {
-                    // we need to check for the right revision in the service has been overwritten
-                    // by a different deployment.
-                    Entry::Occupied(entry)
-                        if entry.get().service_revision.revision == service_metadata.revision =>
-                    {
-                        entry.remove();
-                    }
-                    _ => {}
-                }
+    /// Removes the given deployments. The active service revisions are rebuilt once, as that
+    /// scans all the remaining deployments.
+    pub fn remove_deployments(
+        &mut self,
+        deployment_ids: impl IntoIterator<Item = DeploymentId>,
+    ) -> DeleteDeploymentsResult {
+        let mut result = DeleteDeploymentsResult::default();
+        for deployment_id in deployment_ids {
+            if self
+                .schema
+                .unindexed
+                .deployments
+                .remove(&deployment_id)
+                .is_some()
+            {
+                result.deleted.push(deployment_id);
+            } else {
+                result.not_found.push(deployment_id);
             }
-            self.mark_updated();
-            return true;
         }
-        false
+        if !result.deleted.is_empty() {
+            self.mark_updated();
+        }
+        result
     }
 
     pub(in crate::schema) fn add_subscription(
         &mut self,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         metadata: Option<HashMap<String, String>>,
     ) -> Result<SubscriptionId, SchemaError> {
-        let id = SubscriptionId::default();
+        let id = id.unwrap_or_default();
 
         if self.schema.subscriptions.contains_key(&id) {
             return Err(SchemaError::Subscription(SubscriptionError::Override(id)));

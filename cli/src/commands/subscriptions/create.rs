@@ -21,6 +21,7 @@ use restate_admin_rest_model::kafka_clusters::KafkaClusterResponse;
 use restate_admin_rest_model::subscriptions::CreateSubscriptionRequest;
 use restate_cli_util::ui::console::{StyledTable, confirm_or_exit};
 use restate_cli_util::{c_println, c_success};
+use restate_types::identifiers::SubscriptionId;
 
 use crate::cli_env::CliEnv;
 use crate::clients::{AdminClient, AdminClientInterface};
@@ -55,6 +56,11 @@ pub struct Create {
     /// `key=value` options (e.g. `group.id=my-group`).
     #[clap(value_name = "KEY=VALUE", value_parser = parse_kv_arg, trailing_var_arg = true, num_args = 0..)]
     options: Vec<(String, String)>,
+
+    /// Subscription id to use instead of a generated one. Reuse the id of a
+    /// deleted subscription to resume it without ingesting its records again.
+    #[clap(long, value_name = "SUBSCRIPTION_ID")]
+    id: Option<SubscriptionId>,
 }
 
 pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> {
@@ -110,6 +116,7 @@ pub async fn run_create(State(env): State<CliEnv>, opts: &Create) -> Result<()> 
 
     let response = client
         .create_subscription(CreateSubscriptionRequest {
+            id: opts.id,
             source: source_uri,
             sink: sink_uri,
             options: if options.is_empty() {

@@ -31,6 +31,10 @@ pub const REQUEST_RATE_LIMITED: &str = "rate-limited";
 
 pub const INGRESS_REQUEST_DURATION: &str = "restate.ingress.request_duration.seconds";
 
+/// Value of the `rpc.method` label for requests whose handler could not be resolved. Unresolved
+/// handler names come straight from the request path and must not become label values.
+pub const UNKNOWN_HANDLER: &str = "<unknown>";
+
 pub(crate) fn describe_metrics() {
     describe_counter!(
         INGRESS_REQUESTS,

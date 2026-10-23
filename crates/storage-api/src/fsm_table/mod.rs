@@ -19,7 +19,7 @@ use restate_types::message::MessageIndex;
 use restate_types::partitions::features::PersistedFeatures;
 use restate_types::partitions::state::ReplicaSetState;
 use restate_types::replication::ReplicationProperty;
-use restate_types::schema::Schema;
+use restate_types::schema::SchemaUnindexedLite;
 use restate_types::storage::{
     StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError, decode,
     encode,
@@ -45,7 +45,9 @@ pub trait ReadFsmTable {
         &mut self,
     ) -> impl Future<Output = Result<Option<PartitionDurability>>> + Send + '_;
 
-    fn get_schema(&mut self) -> impl Future<Output = Result<Option<Schema>>> + Send + '_;
+    fn get_schema(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<SchemaUnindexedLite>>> + Send + '_;
 
     fn get_partition_config_state(
         &mut self,
@@ -78,7 +80,7 @@ pub trait WriteFsmTable {
 
     fn put_partition_durability(&mut self, durability: &PartitionDurability) -> Result<()>;
 
-    fn put_schema(&mut self, schema: &Schema) -> Result<()>;
+    fn put_schema(&mut self, schema: &SchemaUnindexedLite) -> Result<()>;
 
     fn put_partition_config_state(&mut self, state: &CachedEpochMetadata) -> Result<()>;
 

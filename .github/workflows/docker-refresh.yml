@@ -14,6 +14,8 @@ name: Refresh Docker Image
 # This allows security patches in the base OS to be deployed without waiting for
 # a new Restate release. The workflow is idempotent - it skips if the base image
 # hasn't changed (tracked via OCI labels: org.opencontainers.image.base.digest).
+# Set the `force` input to rebuild anyway, e.g. to pick up updated packages
+# installed on top of an unchanged base image.
 
 on:
   schedule:
@@ -26,6 +28,11 @@ on:
         required: false
         default: ""
         type: string
+      force:
+        description: "rebuild even if the base image has not changed"
+        required: false
+        default: false
+        type: boolean
 
 env:
   GHCR_REGISTRY: ghcr.io
@@ -123,6 +130,7 @@ jobs:
         run: |
           SOURCE_IMAGE="${{ steps.source-check.outputs.image }}"
           BASE_IMAGE="${{ steps.base-image.outputs.name }}"
+          FORCE="${{ inputs.force }}"
 
           # Get current base image digest
           CURRENT_BASE_DIGEST=$(docker buildx imagetools inspect "${BASE_IMAGE}" --raw | \
@@ -136,13 +144,15 @@ jobs:
 
           echo "Existing base image digest: ${EXISTING_BASE_DIGEST}"
 
-          if [[ -n "$EXISTING_BASE_DIGEST" && "$CURRENT_BASE_DIGEST" == "$EXISTING_BASE_DIGEST" ]]; then
+          if [[ "$FORCE" != "true" && -n "$EXISTING_BASE_DIGEST" && "$CURRENT_BASE_DIGEST" == "$EXISTING_BASE_DIGEST" ]]; then
             echo "skip=true" >> $GITHUB_OUTPUT
             echo "Base image unchanged - skipping refresh"
           else
             echo "skip=false" >> $GITHUB_OUTPUT
             echo "current_digest=${CURRENT_BASE_DIGEST}" >> $GITHUB_OUTPUT
-            if [[ -z "$EXISTING_BASE_DIGEST" ]]; then
+            if [[ "$FORCE" == "true" ]]; then
+              echo "Forced refresh - will rebuild"
+            elif [[ -z "$EXISTING_BASE_DIGEST" ]]; then
               echo "No existing base digest label found - will rebuild"
             else
               echo "Base image changed - will rebuild"

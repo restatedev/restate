@@ -20,7 +20,7 @@ use restate_types::logs::Lsn;
 use restate_types::message::MessageIndex;
 use restate_types::partitions::StorageVersion;
 use restate_types::partitions::features::PersistedFeatures;
-use restate_types::schema::Schema;
+use restate_types::schema::SchemaUnindexedLite;
 use restate_types::storage::{StorageCodec, StorageDecode};
 
 use crate::TableKind::PartitionStateMachine;
@@ -436,7 +436,7 @@ impl ReadFsmTable for PartitionDb {
         get_proto_from_partition_db::<PartitionDurability>(self, fsm_variable::PARTITION_DURABILITY)
     }
 
-    async fn get_schema(&mut self) -> Result<Option<Schema>> {
+    async fn get_schema(&mut self) -> Result<Option<SchemaUnindexedLite>> {
         get_storage_codec_from_partition_db(self, fsm_variable::SERVICES_SCHEMA_METADATA)
     }
 
@@ -487,7 +487,7 @@ impl ReadFsmTable for PartitionStore {
         )
     }
 
-    async fn get_schema(&mut self) -> Result<Option<Schema>> {
+    async fn get_schema(&mut self) -> Result<Option<SchemaUnindexedLite>> {
         let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.get_value_storage_codec(key)
     }
@@ -555,7 +555,7 @@ impl WriteFsmTable for PartitionStoreTransaction<'_> {
         )
     }
 
-    fn put_schema(&mut self, schema: &Schema) -> Result<()> {
+    fn put_schema(&mut self, schema: &SchemaUnindexedLite) -> Result<()> {
         let key = create_key(self.partition_id(), fsm_variable::SERVICES_SCHEMA_METADATA);
         self.put_kv_storage_codec(key, schema)
     }

@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 use serde_with::serde_as;
 
+use super::lite::DeploymentLite;
+
 // TODO(v1.10): Remove schema serde support
 
 /// The schema information
@@ -63,20 +65,22 @@ impl From<SchemaUnindexed> for Schema {
     }
 }
 
-impl From<Schema> for SchemaUnindexed {
-    fn from(
+impl TryFrom<Schema> for SchemaUnindexed {
+    type Error = &'static str;
+
+    fn try_from(
         Schema {
             deployments_v2,
             version,
             subscriptions,
             kafka_clusters,
         }: Schema,
-    ) -> Self {
+    ) -> Result<Self, Self::Error> {
         let Some(deployments_v2) = deployments_v2 else {
-            panic!("Missing required field `deployment_v2`")
+            return Err("Missing required field `deployment_v2`");
         };
 
-        SchemaUnindexed {
+        let schema = SchemaUnindexed {
             version,
             deployments: deployments_v2
                 .into_iter()
@@ -85,6 +89,71 @@ impl From<Schema> for SchemaUnindexed {
             subscriptions,
             kafka_clusters,
             bilrost_encoded: false,
+        };
+
+        Ok(schema)
+    }
+}
+
+/// Mirror of [`Schema`] for [`SchemaUnindexedLite`].
+#[serde_as]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SchemaLite {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deployments_v2: Option<Vec<DeploymentLite>>,
+    version: Version,
+    #[serde_as(as = "serde_with::Seq<(_, _)>")]
+    subscriptions: HashMap<SubscriptionId, Subscription>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde_as(as = "restate_serde_util::MapAsVec")]
+    kafka_clusters: HashMap<String, KafkaCluster>,
+}
+
+impl From<SchemaUnindexedLite> for SchemaLite {
+    fn from(
+        SchemaUnindexedLite {
+            version,
+            deployments,
+            subscriptions,
+            kafka_clusters,
+            bilrost_encoded: _,
+        }: SchemaUnindexedLite,
+    ) -> Self {
+        Self {
+            deployments_v2: Some(deployments.into_values().collect()),
+            version,
+            subscriptions,
+            kafka_clusters,
         }
+    }
+}
+
+impl TryFrom<SchemaLite> for SchemaUnindexedLite {
+    type Error = &'static str;
+
+    fn try_from(
+        SchemaLite {
+            deployments_v2,
+            version,
+            subscriptions,
+            kafka_clusters,
+        }: SchemaLite,
+    ) -> Result<Self, Self::Error> {
+        let Some(deployments_v2) = deployments_v2 else {
+            return Err("Missing required field `deployment_v2`");
+        };
+
+        let schema = SchemaUnindexedLite {
+            version,
+            deployments: deployments_v2
+                .into_iter()
+                .map(|deployment| (deployment.id, deployment))
+                .collect(),
+            subscriptions,
+            kafka_clusters,
+            bilrost_encoded: false,
+        };
+
+        Ok(schema)
     }
 }
