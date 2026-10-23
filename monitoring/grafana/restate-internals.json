@@ -1739,7 +1739,8 @@
         }
       ],
       "title": "Invoker Capacity By Node",
-      "type": "timeseries"
+      "type": "timeseries",
+      "description": "Node-wide invoker concurrency permits (since v1.8 the limit applies per node, not per partition; see `worker.invoker.concurrent-invocations-limit`). Used = acquired - released, which also counts permits held for invocations that are about to start."
     },
     {
       "collapsed": false,
@@ -1748,6 +1749,282 @@
         "w": 24,
         "x": 0,
         "y": 29
+      },
+      "id": 217,
+      "panels": [],
+      "title": "VQueue Scheduler",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Rate at which entries are added to the vqueue inbox and confirmed run requests, per node, plus cluster-wide scheduler decisions (run vs. yield back to the queue).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "ops"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 8,
+        "x": 0,
+        "y": 30
+      },
+      "id": 218,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2+security-01",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (node_name) (rate(restate_vqueue_scheduler_enqueue_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "{{node_name}} enqueued",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (action) (rate(restate_vqueue_scheduler_decision_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "decision: {{action}}",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum by (node_name) (rate(restate_vqueue_scheduler_run_confirmed_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval]))",
+          "legendFormat": "{{node_name}} run confirmed",
+          "refId": "C"
+        }
+      ],
+      "title": "Scheduler Throughput",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Time vqueue entries spend blocked before they can run, by reason (seconds waited per second, i.e. average number of blocked entries). Lock = virtual object locks; concurrency/throttling rules = user-defined flow control limits; invoker concurrency/memory/throttling = node-wide invoker capacity; deployment concurrency = per-deployment limits.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 30,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "normal"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 16,
+        "x": 8,
+        "y": 30
+      },
+      "id": 219,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2+security-01",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_lock_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "lock",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_concurrency_rules_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "concurrency rules",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_throttling_rules_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "throttling rules",
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_invoker_concurrency_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "invoker concurrency",
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_invoker_memory_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "invoker memory",
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_invoker_throttling_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "invoker throttling",
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "sum(rate(restate_vqueue_scheduler_deployment_concurrency_wait_ms_total{cluster_name=\"$cluster\", node_name=~\"$node\"}[$__rate_interval])) / 1000",
+          "legendFormat": "deployment concurrency",
+          "refId": "G"
+        }
+      ],
+      "title": "Scheduler Wait Time by Reason",
+      "type": "timeseries"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 37
       },
       "id": 209,
       "panels": [],
@@ -1805,7 +2082,7 @@
         "h": 7,
         "w": 3,
         "x": 0,
-        "y": 30
+        "y": 38
       },
       "id": 214,
       "options": {
@@ -1931,7 +2208,7 @@
         "h": 7,
         "w": 5,
         "x": 3,
-        "y": 30
+        "y": 38
       },
       "id": 210,
       "options": {
@@ -2068,7 +2345,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 30
+        "y": 38
       },
       "id": 211,
       "options": {
@@ -2181,7 +2458,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 30
+        "y": 38
       },
       "id": 212,
       "options": {
@@ -2306,7 +2583,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 37
+        "y": 45
       },
       "id": 215,
       "options": {
@@ -2443,7 +2720,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 37
+        "y": 45
       },
       "id": 213,
       "options": {
@@ -2496,7 +2773,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 44
+        "y": 52
       },
       "id": 1,
       "panels": [],
@@ -2582,7 +2859,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 45
+        "y": 53
       },
       "id": 2,
       "options": {
@@ -2718,7 +2995,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 45
+        "y": 53
       },
       "id": 3,
       "options": {
@@ -2857,7 +3134,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 45
+        "y": 53
       },
       "id": 4,
       "options": {
@@ -2992,7 +3269,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 52
+        "y": 60
       },
       "id": 5,
       "options": {
@@ -3097,7 +3374,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 52
+        "y": 60
       },
       "id": 8,
       "options": {
@@ -3201,7 +3478,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 52
+        "y": 60
       },
       "id": 6,
       "options": {
@@ -3296,7 +3573,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 52
+        "y": 60
       },
       "id": 7,
       "options": {
@@ -3336,7 +3613,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 59
+        "y": 67
       },
       "id": 20,
       "panels": [],
@@ -3405,7 +3682,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 60
+        "y": 68
       },
       "id": 21,
       "options": {
@@ -3500,7 +3777,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 60
+        "y": 68
       },
       "id": 22,
       "options": {
@@ -3630,7 +3907,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 60
+        "y": 68
       },
       "id": 24,
       "options": {
@@ -3839,7 +4116,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 67
+        "y": 75
       },
       "id": 25,
       "options": {
@@ -3952,7 +4229,7 @@
         "h": 7,
         "w": 9,
         "x": 6,
-        "y": 67
+        "y": 75
       },
       "id": 28,
       "options": {
@@ -4047,7 +4324,7 @@
         "h": 7,
         "w": 9,
         "x": 15,
-        "y": 67
+        "y": 75
       },
       "id": 207,
       "options": {
@@ -4149,7 +4426,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 74
+        "y": 82
       },
       "id": 26,
       "options": {
@@ -4257,7 +4534,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 74
+        "y": 82
       },
       "id": 27,
       "options": {
@@ -4291,12 +4568,125 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Delay between a completed invocation's (or its journal's) retention expiry and its actual purge. In steady state the max should stay within about twice `worker.cleanup-interval`; a growing value means cleanup is falling behind (see `worker.cleanup-max-in-flight-purges`).",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green"
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 82
+      },
+      "id": 220,
+      "options": {
+        "legend": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "pluginVersion": "12.0.2+security-01",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by (node_name) (restate_partition_cleaner_purge_delay_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.5\"})",
+          "legendFormat": "{{node_name}} p50",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by (node_name) (restate_partition_cleaner_purge_delay_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=\"0.99\"})",
+          "legendFormat": "{{node_name}} p99",
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${DS_PROMETHEUS}"
+          },
+          "expr": "max by (node_name) (restate_partition_cleaner_purge_delay_seconds{cluster_name=\"$cluster\", node_name=~\"$node\", quantile=~\"1|1.0\"})",
+          "legendFormat": "{{node_name}} max",
+          "refId": "C"
+        }
+      ],
+      "title": "Cleaner Purge Delay",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 81
+        "y": 89
       },
       "id": 40,
       "panels": [],
@@ -4365,7 +4755,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 82
+        "y": 90
       },
       "id": 41,
       "options": {
@@ -4469,7 +4859,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 82
+        "y": 90
       },
       "id": 42,
       "options": {
@@ -4605,7 +4995,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 82
+        "y": 90
       },
       "id": 43,
       "options": {
@@ -4775,7 +5165,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 89
+        "y": 97
       },
       "id": 44,
       "options": {
@@ -4910,7 +5300,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 89
+        "y": 97
       },
       "id": 45,
       "options": {
@@ -5060,7 +5450,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 89
+        "y": 97
       },
       "id": 46,
       "options": {
@@ -5256,7 +5646,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 96
+        "y": 104
       },
       "id": 47,
       "options": {
@@ -5392,7 +5782,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 96
+        "y": 104
       },
       "id": 48,
       "options": {
@@ -5528,7 +5918,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 96
+        "y": 104
       },
       "id": 49,
       "options": {
@@ -5577,7 +5967,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 103
+        "y": 111
       },
       "id": 50,
       "panels": [],
@@ -5677,7 +6067,7 @@
         "h": 7,
         "w": 8,
         "x": 0,
-        "y": 104
+        "y": 112
       },
       "id": 51,
       "options": {
@@ -5781,7 +6171,7 @@
         "h": 7,
         "w": 8,
         "x": 8,
-        "y": 104
+        "y": 112
       },
       "id": 52,
       "options": {
@@ -5886,7 +6276,7 @@
         "h": 7,
         "w": 8,
         "x": 16,
-        "y": 104
+        "y": 112
       },
       "id": 53,
       "options": {
