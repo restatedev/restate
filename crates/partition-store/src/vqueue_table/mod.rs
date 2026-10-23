@@ -29,7 +29,7 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use futures::FutureExt;
-use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
+use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions, WriteBatch, WriteOptions};
 use strum::EnumCount;
 use tracing::error;
 
@@ -45,6 +45,7 @@ use restate_storage_api::vqueue_table::{
     RawStatusHeader, RawStatusHeaderRef, ScanVQueueEntries, ScanVQueueEntryStatusTable,
     ScanVQueueMetaTable,
 };
+use restate_types::config::Configuration;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{CanonicalEntryId, EntryId, EntryKind, Seq, VQueueId};
@@ -123,6 +124,15 @@ impl ScanVQueueTable for PartitionDb {
         let mut queue_ids: Vec<VQueueId> = Vec::with_capacity(BATCH_SIZE);
         let mut end = false;
 
+        // Escape hatch for orphaned active markers (meta is missing), e.g. caused by a
+        // duplicated put that survived a single delete. Orphans are collected and removed
+        // with a regular delete since more than one put might be present.
+        let remove_orphans = Configuration::pinned()
+            .common
+            .experimental
+            .is_vqueue_orphaned_active_marker_removal_enabled();
+        let mut orphans = WriteBatch::default();
+
         while !end {
             match it.key() {
                 Some(mut key) => {
@@ -154,6 +164,17 @@ impl ScanVQueueTable for PartitionDb {
                 for (queue_id, result) in queue_ids.drain(..).zip(results) {
                     let result = result.context("failed to get active vqueue in multi-get")?;
                     let Some(meta) = result else {
+                        if remove_orphans {
+                            error!(
+                                "Removing orphaned active vqueue {queue_id:?} which was not found in vqueue_meta index"
+                            );
+                            let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
+                            ActiveKeyRef::builder()
+                                .qid(&queue_id)
+                                .serialize_to(&mut key_buffer.as_mut());
+                            orphans.delete_cf(cf, key_buffer);
+                            continue;
+                        }
                         // data integrity error, active vqueues must be present in meta
                         error!(
                             "Active vqueues must be present in meta. Active vqueue {queue_id:?} was not found in vqueue_meta index during the batched read"
@@ -164,6 +185,18 @@ impl ScanVQueueTable for PartitionDb {
                     on_item(queue_id, meta);
                 }
             }
+        }
+
+        if !orphans.is_empty() {
+            // Like regular partition store commits, skip the WAL so that the removal only
+            // becomes durable together with all preceding writes.
+            let mut write_options = WriteOptions::default();
+            write_options.disable_wal(true);
+            self.rocksdb()
+                .inner()
+                .write_batch(&orphans, &write_options)
+                .context("failed to remove orphaned active vqueues")
+                .map_err(StorageError::Generic)?;
         }
         Ok(())
     }
