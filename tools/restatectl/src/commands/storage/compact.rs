@@ -24,7 +24,7 @@ use restate_core::protobuf::node_ctl_svc::{
     TriggerCompactionResponse, new_node_ctl_client,
 };
 use restate_types::PlainNodeId;
-use restate_types::net::address::{AdvertisedAddress, FabricPort};
+use restate_types::net::address::{AdvertisedAddress, ControlPort};
 use restate_types::protobuf::common::DatabaseKind;
 use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
 
@@ -103,10 +103,10 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
 
     // Resolve target node addresses from the cluster configuration.
     let nodes_config = connection.get_nodes_configuration().await?;
-    let addresses: Vec<AdvertisedAddress<FabricPort>> = if opts.node.is_empty() {
+    let addresses: Vec<AdvertisedAddress<ControlPort>> = if opts.node.is_empty() {
         nodes_config
             .iter()
-            .map(|(_, node)| node.address.clone())
+            .map(|(_, node)| node.ctrl_address().into_owned())
             .collect()
     } else {
         opts.node
@@ -114,7 +114,7 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
             .map(|node_id| {
                 nodes_config
                     .find_node_by_id(*node_id)
-                    .map(|n| n.address.clone())
+                    .map(|n| n.ctrl_address().into_owned())
                     .map_err(|_| {
                         anyhow::anyhow!("Node {} not found in cluster configuration", node_id)
                     })
@@ -202,7 +202,7 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
 }
 
 async fn trigger_compaction_on_node(
-    address: &AdvertisedAddress<FabricPort>,
+    address: &AdvertisedAddress<ControlPort>,
     databases: Vec<i32>,
     options: ProtoManualCompactionOptions,
     timeout: Duration,
