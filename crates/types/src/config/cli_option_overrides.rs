@@ -21,7 +21,7 @@ use restate_util_time::NonZeroFriendlyDuration;
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
 use crate::net::address::FabricPort;
-use crate::net::address::{AdvertisedAddress, BindAddress};
+use crate::net::address::{AdvertisedAddress, AdvertisedHost, BindAddress};
 use crate::nodes_config::Role;
 
 use super::{ControlOptions, ListenMode, LogFormat};
@@ -43,7 +43,7 @@ pub struct CommonOptionCliOverride {
 
     /// Hostname to advertise for this service.
     #[clap(long, env = "RESTATE_ADVERTISED_HOST", global = true)]
-    advertised_host: Option<String>,
+    advertised_host: Option<AdvertisedHost>,
 
     /// Local interface IP address to listen on.
     #[clap(long, env = "RESTATE_BIND_IP", global = true)]

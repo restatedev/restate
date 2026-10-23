@@ -460,7 +460,7 @@ impl<P: ListenerPort> Default for AdvertisedAddress<P> {
 impl<P: ListenerPort> AdvertisedAddress<P> {
     pub fn derive_from_bind_address(
         address: SocketAddress,
-        advertised_host: Option<&str>,
+        advertised_host: Option<&AdvertisedHost>,
         tls: bool,
     ) -> Self {
         let scheme = if tls { "https" } else { "http" };
@@ -482,12 +482,8 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                     }
                 };
                 // do we have an input hostname?
-                let hostname = advertised_host.unwrap_or_else(|| routable_ip());
-                PeerNetAddress::Http(
-                    format!("{scheme}://{hostname}:{}", address.port())
-                        .parse()
-                        .expect("valid uri"),
-                )
+                let hostname = advertised_host.map_or_else(routable_ip, AdvertisedHost::as_str);
+                PeerNetAddress::Http(host_uri(scheme, hostname, address.port()).expect("valid uri"))
             }
             // it's a UDS address, we'll use the path.
             SocketAddress::Uds(path) => PeerNetAddress::Uds(path),
@@ -689,6 +685,52 @@ fn is_absolute_path_form(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
         && rest.starts_with('/')
         && !rest.starts_with("//")
+}
+
+/// A host to advertise in place of the inferred one: a DNS name, an IPv4 address, or an IPv6
+/// address in brackets. It never carries a scheme, user info, port or path, which an advertised
+/// address sets instead. Parsing validates it, so the advertised address derived from it is
+/// always a valid URI.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    derive_more::Display,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct AdvertisedHost(String);
+
+impl AdvertisedHost {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for AdvertisedHost {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let host = s.trim();
+        // Check the longest URI that `derive_from_bind_address` can build from this host, so
+        // deriving an advertised address from it cannot fail. The composed URI also enforces the
+        // overall URI length limit, which parsing the host alone does not.
+        match host_uri("https", host, u16::MAX) {
+            Ok(uri) if !host.is_empty() && uri.host() == Some(host) => Ok(Self(host.to_owned())),
+            _ => anyhow::bail!(
+                "'{s}' is not a host name or IP address. Write IPv6 addresses in brackets, such \
+                 as [2001:db8::7], and use an advertised address to set a scheme, port or path"
+            ),
+        }
+    }
+}
+
+/// The URI an advertised host and a bound port turn into.
+fn host_uri(scheme: &str, host: &str, port: u16) -> Result<Uri, http::uri::InvalidUri> {
+    format!("{scheme}://{host}:{port}").parse()
 }
 
 /// A helper function that attempts to derive the public routable IP address of
@@ -966,5 +1008,59 @@ mod tests {
             let parsed = input.parse::<AdvertisedAddress<FabricPort>>();
             assert!(parsed.is_err(), "{input}");
         }
+    }
+
+    #[test]
+    fn advertised_host_accepts_only_bare_hosts() {
+        for input in ["node-7.example.com", "node_1", "10.1.7.3", "[2001:db8::7]"] {
+            let host: AdvertisedHost = input.parse().unwrap();
+            assert_eq!(host.as_str(), input);
+        }
+        assert_eq!(
+            " padded.example.com "
+                .parse::<AdvertisedHost>()
+                .unwrap()
+                .as_str(),
+            "padded.example.com"
+        );
+
+        // Each of these used to panic or silently advertise a wrong address.
+        for input in [
+            "",
+            "bad host",
+            "host:8443",
+            "2001:db8::7",
+            "user@host",
+            "host/rpc",
+            "http://h",
+        ] {
+            assert!(input.parse::<AdvertisedHost>().is_err(), "{input}");
+        }
+
+        let host = "[2001:db8::7]".parse().unwrap();
+        let socket = SocketAddress::Socket("[::]:5122".parse().unwrap());
+        let address =
+            AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket, Some(&host), false);
+        assert_eq!(address.to_string(), "http://[2001:db8::7]:5122/");
+
+        // Overlong hosts: a host that fits the URI length limit on its own used to parse, and
+        // then panicked once the scheme and port were added. Every accepted host must derive an
+        // address with the longest scheme and port; lengths around the limit cover both sides.
+        assert!("a".repeat(65_534).parse::<AdvertisedHost>().is_err());
+        let socket = SocketAddress::Socket(SocketAddr::from(([127, 0, 0, 1], u16::MAX)));
+        let mut accepted = 0;
+        for len in 65_510..=65_534 {
+            if let Ok(host) = "a".repeat(len).parse::<AdvertisedHost>() {
+                let address = AdvertisedAddress::<FabricPort>::derive_from_bind_address(
+                    socket.clone(),
+                    Some(&host),
+                    true,
+                );
+                assert!(address.to_string().ends_with(":65535/"), "{len}");
+                accepted += 1;
+            }
+        }
+        assert!(accepted > 0, "no tested length was accepted");
+        assert!(accepted < 25, "no tested length was rejected");
     }
 }
