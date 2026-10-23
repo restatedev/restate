@@ -53,6 +53,7 @@ pub enum BlobKind {
     Debug,
     Ord,
     PartialOrd,
+    bilrost::Message,
     zerocopy::Immutable,
     zerocopy::KnownLayout,
     zerocopy::IntoBytes,
@@ -60,7 +61,9 @@ pub enum BlobKind {
 )]
 #[repr(C)]
 pub struct BlobId {
+    #[bilrost(tag(1))]
     sequence: Seq,
+    #[bilrost(tag(2), encoding(plainbytes))]
     remainder: [u8; 16],
 }
 
@@ -96,9 +99,11 @@ impl BlobId {
 }
 
 /// Identifies a blob across partitions by combining the partition key with the [`BlobId`].
-#[derive(Eq, Hash, PartialEq, Clone, Copy, PartialOrd, Ord)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, PartialOrd, Ord, bilrost::Message)]
 pub struct BaseBlobId {
+    #[bilrost(tag(1))]
     partition_key: PartitionKey,
+    #[bilrost(tag(2))]
     inner: BlobId,
 }
 
