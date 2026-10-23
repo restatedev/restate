@@ -9,12 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use metrics::{Counter, Histogram, counter, histogram};
+use rocksdb::LogLevel;
 use rocksdb::event_listener::{
     CompactionJobInfo, DBBackgroundErrorReason, DBCompactionReason, DBFlushReason,
     DBWriteStallCondition, EventListener, FlushJobInfo, MemTableInfo, MutableStatus,
     WriteStallInfo,
 };
-use tracing::{debug, enabled, error, trace, warn};
+use tracing::{Level, debug, enabled, error, event, event_enabled, trace, warn};
 
 use restate_util_bytecount::ByteCount;
 use restate_util_string::ReString;
@@ -23,6 +24,63 @@ use restate_util_time::FriendlyDuration;
 use crate::metric_definitions::{
     COMPACTION_COMPLETED, COMPACTION_DURATION, FLUSH_COMPLETED, MEMTABLE_SEALED,
 };
+
+/// Tracing target for RocksDB's own info-log lines.
+///
+/// The default `log-filter` enables warnings and errors, including write stalls and stops.
+/// Use `rocksdb=info` for flushes, compactions and the options dump on open, or
+/// `rocksdb=debug` to include multiline stats dumps.
+/// The callback binding currently reports header lines as Info, so the options dump cannot
+/// be filtered separately from other Info messages.
+pub const INFO_LOG_TARGET: &str = "rocksdb";
+
+/// Routes RocksDB's info log for this database through tracing instead of a `LOG` file.
+///
+/// The lowest forwarded RocksDB level is derived from the active tracing subscriber when the
+/// options are built. This avoids formatting ordinary messages below that threshold;
+/// headers bypass the native threshold, and multiline Info messages are filtered after
+/// formatting. The native threshold remains fixed for the lifetime of the logger.
+pub(crate) fn set_tracing_info_logger(db_options: &mut rocksdb::Options, db_name: ReString) {
+    db_options.set_callback_logger(min_forwarded_level(), move |level, msg| {
+        let msg = msg.trim_end();
+        match tracing_level(level, msg) {
+            Level::TRACE => event!(target: INFO_LOG_TARGET, Level::TRACE, db = %db_name, "{msg}"),
+            Level::DEBUG => event!(target: INFO_LOG_TARGET, Level::DEBUG, db = %db_name, "{msg}"),
+            Level::INFO => event!(target: INFO_LOG_TARGET, Level::INFO, db = %db_name, "{msg}"),
+            Level::WARN => event!(target: INFO_LOG_TARGET, Level::WARN, db = %db_name, "{msg}"),
+            Level::ERROR => event!(target: INFO_LOG_TARGET, Level::ERROR, db = %db_name, "{msg}"),
+        }
+    });
+}
+
+fn tracing_level(level: LogLevel, msg: &str) -> Level {
+    match level {
+        LogLevel::Debug => Level::TRACE,
+        // Statistics and compaction-stats tables arrive as single multi-line messages; keep them
+        // at debug to reduce the volume at `rocksdb=info`.
+        LogLevel::Info if msg.contains('\n') => Level::DEBUG,
+        LogLevel::Info => Level::INFO,
+        LogLevel::Warn => Level::WARN,
+        LogLevel::Error | LogLevel::Fatal => Level::ERROR,
+        // Options dumps on open. The callback logger currently forwards `LogHeader` as Info, so
+        // this arm only takes effect once it forwards the header level.
+        LogLevel::Header => Level::DEBUG,
+    }
+}
+
+fn min_forwarded_level() -> LogLevel {
+    if event_enabled!(target: INFO_LOG_TARGET, Level::TRACE) {
+        LogLevel::Debug
+    } else if event_enabled!(target: INFO_LOG_TARGET, Level::INFO) {
+        LogLevel::Info
+    } else if event_enabled!(target: INFO_LOG_TARGET, Level::WARN) {
+        LogLevel::Warn
+    } else if event_enabled!(target: INFO_LOG_TARGET, Level::ERROR) {
+        LogLevel::Error
+    } else {
+        LogLevel::Header
+    }
+}
 
 /// Event listener for logging key RocksDB events and recording metrics.
 ///

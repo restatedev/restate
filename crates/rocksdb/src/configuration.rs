@@ -12,9 +12,9 @@ use std::num::NonZeroU32;
 
 use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
 
-use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
+use restate_types::config::{RocksDbOptions, StatisticsLevel};
 
-use crate::logging::LoggingEventListener;
+use crate::logging::{LoggingEventListener, set_tracing_info_logger};
 use crate::{DbName, OpenMode, RocksAccess};
 
 /// A trait for customizing database options when it's being opened and enables live reaction to
@@ -50,11 +50,6 @@ pub trait DbConfigurator {
         db_options.set_use_direct_io_for_flush_and_compaction(
             !config.rocksdb_disable_direct_io_for_flush_and_compaction(),
         );
-
-        // Configure info logs
-        db_options.set_keep_log_file_num(config.rocksdb_log_keep_file_num());
-        db_options.set_max_log_file_size(config.rocksdb_log_max_file_size().as_usize());
-        db_options.set_log_level(convert_log_level(config.rocksdb_log_level()));
     }
 
     /// Called when configuration is updated.
@@ -63,6 +58,7 @@ pub trait DbConfigurator {
 
 pub fn create_empty_db_options(db_name: DbName) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
+    set_tracing_info_logger(&mut db_options, db_name.clone().into());
     db_options.add_event_listener(LoggingEventListener::new(db_name));
     db_options
 }
@@ -97,6 +93,7 @@ pub fn create_default_db_options(
     db_options.set_wal_size_limit_mb(0);
     db_options.set_wal_ttl_seconds(0);
 
+    set_tracing_info_logger(&mut db_options, db_name.clone().into());
     db_options.add_event_listener(LoggingEventListener::new(db_name.clone()));
 
     db_options
@@ -181,18 +178,6 @@ pub fn convert_statistics_level(input: StatisticsLevel) -> rocksdb::statistics::
         StatisticsLevel::ExceptDetailedTimers => StatsLevel::ExceptDetailedTimers,
         StatisticsLevel::ExceptTimeForMutex => StatsLevel::ExceptTimeForMutex,
         StatisticsLevel::All => StatsLevel::All,
-    }
-}
-
-pub fn convert_log_level(input: RocksDbLogLevel) -> rocksdb::LogLevel {
-    use rocksdb::LogLevel;
-    match input {
-        RocksDbLogLevel::Debug => LogLevel::Debug,
-        RocksDbLogLevel::Error => LogLevel::Error,
-        RocksDbLogLevel::Fatal => LogLevel::Fatal,
-        RocksDbLogLevel::Header => LogLevel::Header,
-        RocksDbLogLevel::Info => LogLevel::Info,
-        RocksDbLogLevel::Warn => LogLevel::Warn,
     }
 }
 
