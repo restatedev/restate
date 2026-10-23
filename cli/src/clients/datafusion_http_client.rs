@@ -62,7 +62,10 @@ impl DataFusionHttpClient {
         let resp = self
             .prepare()?
             .header(http::header::ACCEPT, "application/json")
-            .json(&SqlQueryRequest { query })
+            .json(&SqlQueryRequest {
+                query,
+                params: Vec::new(),
+            })
             .send()
             .await?;
 
@@ -99,10 +102,19 @@ impl DataFusionHttpClient {
     }
 
     pub async fn run_arrow_query(&self, query: String) -> Result<SqlResponse, ClientError> {
+        self.run_arrow_query_with_params(query, Vec::new()).await
+    }
+
+    /// Runs `query`, binding `params` to its positional placeholders (`$1`, `$2`, ...).
+    pub async fn run_arrow_query_with_params(
+        &self,
+        query: String,
+        params: Vec<String>,
+    ) -> Result<SqlResponse, ClientError> {
         debug!("Sending request sql query with arrow output '{}'", query);
         let resp = self
             .prepare()?
-            .json(&SqlQueryRequest { query })
+            .json(&SqlQueryRequest { query, params })
             .send()
             .await?;
 
@@ -174,6 +186,8 @@ impl DataFusionHttpClient {
 #[derive(Serialize, Debug, Clone)]
 pub struct SqlQueryRequest {
     pub query: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub params: Vec<String>,
 }
 
 pub struct SqlResponse {
