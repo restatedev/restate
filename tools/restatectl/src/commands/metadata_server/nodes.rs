@@ -59,7 +59,7 @@ async fn add_node(
 
         // todo proxy request through an arbitrary Restate node to avoid requiring access to all metadata server nodes
         let channel = connection_info
-            .connect(&node_config.address)
+            .connect(&node_config.ctrl_address())
             .await
             .context(format!("failed connecting to node {node_to_add}"))?;
         let mut client = MetadataServerSvcClient::new(channel);
@@ -178,7 +178,7 @@ async fn try_remove_node(
     // todo try to figure out who's the current leader and directly reach out to the leader
     //  based on the metadata server status call
     for (server_id, node_config) in metadata_node_set.iter() {
-        let channel = match connection_info.connect(&node_config.address).await {
+        let channel = match connection_info.connect(&node_config.ctrl_address()).await {
             Ok(channel) => channel,
             Err(err) => {
                 errors.insert(*server_id, Status::unavailable(err.to_string()));
