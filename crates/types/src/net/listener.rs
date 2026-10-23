@@ -27,7 +27,7 @@ use restate_tracing::warn_ratelimited;
 use crate::config::{Configuration, ListenerOptions, TlsMode};
 use crate::nodes_config::Role;
 
-use super::address::{AdvertisedAddress, BindAddress, ListenerPort, SocketAddress};
+use super::address::{AdvertisedAddress, AdvertisedHost, BindAddress, ListenerPort, SocketAddress};
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
 pub enum ListenError {
@@ -279,7 +279,7 @@ impl AddressBook {
 
     pub fn guess_advertised_address<P: ListenerPort + 'static>(
         &self,
-        advertised_host: Option<&str>,
+        advertised_host: Option<&AdvertisedHost>,
     ) -> AdvertisedAddress<P> {
         // TLS is only supported for fabric port. Other listeners (admin, ingress, etc.) only support plaintext.
         // The server should only advertise its TLS address.

@@ -18,7 +18,7 @@ use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::NonZeroFriendlyDuration;
 
 use super::CommonOptions;
-use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort};
+use crate::net::address::{AdvertisedAddress, AdvertisedHost, ControlPort, FabricPort};
 use crate::net::listener::AddressBook;
 use crate::retries::RetryPolicy;
 
@@ -160,7 +160,7 @@ pub struct ControlOptions {
         feature = "clap",
         arg(long, env = "RESTATE_NETWORKING__CTRL_ADVERTISED_HOST", global = true)
     )]
-    pub(super) ctrl_advertised_host: Option<String>,
+    pub(super) ctrl_advertised_host: Option<AdvertisedHost>,
 
     /// Full address to advertise for control RPCs, including an external proxy.
     ///
