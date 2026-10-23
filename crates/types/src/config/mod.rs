@@ -475,6 +475,25 @@ impl Configuration {
             }
         }
 
+        self.worker
+            .invoker
+            .validate_forwarded_headers()
+            .map_err(InvalidConfigurationError::ForwardInvocationHeaders)?;
+
+        // Ingestion API record headers come from the request body, where no proxy can check them.
+        if !self.worker.invoker.forward_invocation_headers.is_empty()
+            && !self
+                .common
+                .experimental
+                .is_invocation_source_ingestion_enabled()
+        {
+            return Err(InvalidConfigurationError::ForwardInvocationHeaders(
+                "requires experimental-enable-invocation-source-ingestion, so that ingestion API \
+                 invocations don't forward headers"
+                    .to_owned(),
+            ));
+        }
+
         Ok(())
     }
 }
@@ -489,6 +508,8 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
+    #[error("invalid worker.invoker.forward-invocation-headers: {0}")]
+    ForwardInvocationHeaders(String),
 }
 
 /// Migrates a single field from a deprecated config location to its new one.
@@ -645,5 +666,22 @@ mod tests {
             InvalidConfigurationError::RequiredNodeName(_) => {}
             _ => panic!("Shoule be RequiredNodeName error"),
         }
+    }
+
+    #[test]
+    fn configuration_validate_forward_invocation_headers_requires_ingestion_source() {
+        let mut config = Configuration::default();
+        config.worker.invoker.forward_invocation_headers =
+            vec![::http::HeaderName::from_static("x-forwarded-user")];
+        assert!(matches!(
+            config.validate(),
+            Err(InvalidConfigurationError::ForwardInvocationHeaders(_))
+        ));
+
+        config
+            .common
+            .experimental
+            .set_invocation_source_ingestion(true);
+        assert_eq!(config.validate(), Ok(()));
     }
 }
