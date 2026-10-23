@@ -8,16 +8,18 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use crate::handler::Handler;
-use crate::handler::error::HandlerError;
 use bytes::Bytes;
 use chrono::DateTime;
 use http::{HeaderName, Response, header};
 use http_body_util::Full;
+use tracing::{info, trace};
+
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::schema::invocation_target::InvocationTargetMetadata;
-use tracing::{info, trace};
+
+use crate::handler::Handler;
+use crate::handler::error::HandlerError;
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
@@ -33,10 +35,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
         }: InvocationOutput,
         invocation_target_metadata_retriever: impl FnOnce(
             &InvocationTarget,
-        ) -> Result<
-            InvocationTargetMetadata,
-            HandlerError,
-        >,
+        ) -> Option<InvocationTargetMetadata>,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         // Prepare response metadata
         let mut response_builder = hyper::Response::builder();
@@ -60,16 +59,14 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
             InvocationOutputResponse::Success(invocation_target, response_payload) => {
                 trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
 
-                // Resolve invocation target metadata.
-                // We need it for the output content type.
-                let invocation_target_metadata =
-                    invocation_target_metadata_retriever(&invocation_target)?;
-
-                // Write out the content-type, if any
+                // Missing schema metadata must not prevent returning an available result.
                 // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) = invocation_target_metadata
-                    .output_rules
-                    .infer_content_type(response_payload.is_empty())
+                if let Some(ct) =
+                    invocation_target_metadata_retriever(&invocation_target).and_then(|metadata| {
+                        metadata
+                            .output_rules
+                            .infer_content_type(response_payload.is_empty())
+                    })
                 {
                     response_builder = response_builder.header(header::CONTENT_TYPE, ct)
                 }

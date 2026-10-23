@@ -38,6 +38,8 @@ pub(crate) enum HandlerError {
     DeploymentDeprecated(String, DeploymentId),
     #[error("invocation not found")]
     InvocationNotFound,
+    #[error("the schema has not been loaded yet. You may safely retry the request.")]
+    SchemaNotReady,
     #[error(
         "bad path, expected either /:service-name/:handler or /:object-name/:object-key/:handler"
     )]
@@ -206,7 +208,8 @@ impl HandlerError {
             // 5xx range
             HandlerError::InvocationDispatcherError(_)
             | HandlerError::GenericWriteDispatcherError(_)
-            | HandlerError::GenericReadDispatcherError(_) => StatusCode::SERVICE_UNAVAILABLE,
+            | HandlerError::GenericReadDispatcherError(_)
+            | HandlerError::SchemaNotReady => StatusCode::SERVICE_UNAVAILABLE,
             HandlerError::Body(_) => StatusCode::INTERNAL_SERVER_ERROR,
 
             // Invocation errors

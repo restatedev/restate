@@ -32,7 +32,7 @@ use super::mocks::*;
 use super::service_handler::*;
 use crate::MockRequestDispatcher;
 use crate::handler::error::X_RESTATE_ERROR_SOURCE;
-use crate::handler::responses::X_RESTATE_ID;
+use crate::handler::responses::{IDEMPOTENCY_EXPIRES, X_RESTATE_ID};
 use restate_core::TestCoreEnv;
 use restate_test_util::{assert, assert_eq};
 use restate_types::errors::InvocationError;
@@ -51,6 +51,7 @@ use restate_types::schema::invocation_target::{
     InputContentType, InputRules, InputValidationRule, InvocationTargetMetadata,
     OutputContentTypeRule, OutputRules,
 };
+use restate_types::time::MillisSinceEpoch;
 
 #[restate_core::test]
 #[traced_test]
@@ -718,6 +719,104 @@ async fn attach_with_invocation_id() {
     let response_bytes = response_body.collect().await.unwrap().to_bytes();
     let response_value: GreetingResponse = serde_json::from_slice(&response_bytes).unwrap();
     assert_eq!(response_value.greeting, "Igal");
+}
+
+#[restate_core::test]
+#[traced_test]
+async fn attach_and_output_with_optional_schema() {
+    let invocation_id = InvocationId::mock_random();
+    let workflow_id = ServiceId::new(None, "MyWorkflow", "my-key");
+    let metadata = InvocationTargetMetadata {
+        output_rules: Arc::new(OutputRules {
+            content_type_rule: OutputContentTypeRule::Set {
+                content_type: HeaderValue::from_static("application/cbor"),
+                set_content_type_if_empty: false,
+                has_json_schema: false,
+            },
+            json_schema: None,
+        }),
+        ..InvocationTargetMetadata::mock(InvocationTargetType::Workflow(
+            WorkflowHandlerType::Workflow,
+        ))
+    };
+
+    for (path, query) in [
+        (
+            format!("invocation/{invocation_id}"),
+            InvocationQuery::Invocation(invocation_id),
+        ),
+        (
+            "workflow/MyWorkflow/my-key".to_string(),
+            InvocationQuery::Workflow(workflow_id),
+        ),
+    ] {
+        for operation in ["attach", "output"] {
+            for registered in [false, true] {
+                let schemas = if registered {
+                    MockSchemas::default().with_service_and_target(
+                        "MyWorkflow",
+                        "run",
+                        metadata.clone(),
+                    )
+                } else {
+                    MockSchemas::default()
+                };
+                let output = InvocationOutput {
+                    request_id: Default::default(),
+                    invocation_id: Some(invocation_id),
+                    completion_expiry_time: Some(MillisSinceEpoch::UNIX_EPOCH),
+                    response: InvocationOutputResponse::Success(
+                        InvocationTarget::workflow(
+                            "MyWorkflow",
+                            "my-key",
+                            "run",
+                            WorkflowHandlerType::Workflow,
+                        ),
+                        Bytes::from_static(b"result"),
+                    ),
+                };
+                let expected_query = query.clone();
+                let mut dispatcher = MockRequestDispatcher::default();
+                if operation == "attach" {
+                    dispatcher
+                        .expect_attach_invocation()
+                        .withf(move |actual| actual == &expected_query)
+                        .return_once(move |_| {
+                            ready(Ok(AttachInvocationResponse::Ready(output))).boxed()
+                        });
+                } else {
+                    dispatcher
+                        .expect_get_invocation_output()
+                        .withf(move |actual| actual == &expected_query)
+                        .return_once(move |_| {
+                            ready(Ok(GetInvocationOutputResponse::Ready(output))).boxed()
+                        });
+                }
+
+                let req = Request::get(format!("http://localhost/restate/{path}/{operation}"))
+                    .body(Empty::<Bytes>::new())
+                    .unwrap();
+                let response = handle_with_schemas_and_dispatcher(req, schemas, dispatcher).await;
+
+                assert_eq!(response.status(), StatusCode::OK);
+                assert_eq!(response.headers()[X_RESTATE_ID], invocation_id.to_string());
+                assert_eq!(
+                    response.headers()[IDEMPOTENCY_EXPIRES],
+                    "1970-01-01T00:00:00+00:00"
+                );
+                assert_eq!(
+                    response.headers().get("content-type"),
+                    registered
+                        .then(|| HeaderValue::from_static("application/cbor"))
+                        .as_ref()
+                );
+                assert_eq!(
+                    response.into_body().collect().await.unwrap().to_bytes(),
+                    Bytes::from_static(b"result")
+                );
+            }
+        }
+    }
 }
 
 #[restate_core::test]
