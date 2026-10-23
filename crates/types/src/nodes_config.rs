@@ -760,9 +760,53 @@ flexbuffers_storage_encode_decode!(NodesConfiguration);
 mod tests {
     use std::num::NonZeroU64;
 
+    use bytes::BytesMut;
+
     use super::*;
 
     use restate_test_util::assert_eq;
+
+    use crate::storage::StorageCodec;
+
+    #[test]
+    fn decodes_addresses_from_newer_versions() {
+        // A newer version may publish schemes this version cannot dial. The configuration must
+        // still decode, keep those addresses exactly as written, and refuse to dial them.
+        let mut config = NodesConfiguration::new_for_testing();
+        let nodes: Vec<_> = [
+            (1, "restate+unix:/run/ds.sock"),
+            (2, "grpc+unix:/run/ctl.sock"),
+        ]
+        .into_iter()
+        .map(|(id, ctrl_address)| {
+            let node = NodeConfig::builder()
+                .name(format!("node{id}"))
+                .current_generation(GenerationalNodeId::new(id, 1))
+                .address("unix:/run/fabric.sock".parse().unwrap())
+                .ctrl_address(Some(ctrl_address.parse().unwrap()))
+                .roles(EnumSet::only(Role::Worker))
+                .binary_version(RestateVersion::current())
+                .build();
+            config.upsert_node(node.clone());
+            node
+        })
+        .collect();
+
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&config, &mut buf).unwrap();
+        let decoded = StorageCodec::decode::<NodesConfiguration, _>(&mut buf).unwrap();
+
+        for (node, (dialable, written)) in nodes.iter().zip([
+            (false, "restate+unix:/run/ds.sock"),
+            (true, "grpc+unix:/run/ctl.sock"),
+        ]) {
+            let decoded_node = decoded.find_node_by_name(&node.name).unwrap();
+            assert_eq!(decoded_node, node);
+            let ctrl_address = decoded_node.ctrl_address().into_owned();
+            assert_eq!(ctrl_address.to_string(), written);
+            assert_eq!(ctrl_address.into_address().is_ok(), dialable);
+        }
+    }
 
     #[test]
     fn cluster_fingerprint_str_roundtrip() {

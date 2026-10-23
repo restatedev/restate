@@ -39,7 +39,7 @@ pub struct AdminOptions {
     /// Optional advertised Admin API endpoint.
     /// [Deprecated] Use `advertised-address` instead.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    advertised_admin_endpoint: Option<AdvertisedAddress<AdminPort>>,
+    pub(super) advertised_admin_endpoint: Option<AdvertisedAddress<AdminPort>>,
 
     /// # Deployment routing headers
     ///
