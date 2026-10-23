@@ -1,0 +1,32 @@
+name: "Is latest release"
+description: "Checks whether the given tag is the highest stable (vX.Y.Z) release tag of the repository"
+inputs:
+  tag:
+    description: "release tag, e.g. v1.8.1"
+    required: true
+outputs:
+  is-latest:
+    description: "'true' if the given tag is the highest stable release tag, otherwise 'false'"
+    value: ${{ steps.check.outputs.is-latest }}
+  latest-tag:
+    description: "the highest stable release tag"
+    value: ${{ steps.check.outputs.latest-tag }}
+runs:
+  using: "composite"
+  steps:
+    - id: check
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        LATEST_TAG=$(git ls-remote --tags --refs "https://github.com/${REPOSITORY}" 'v*' \
+          | sed -n 's|.*refs/tags/||p' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+        if [[ -z "$LATEST_TAG" ]]; then
+          echo "Could not determine the latest release tag"
+          exit 1
+        fi
+        IS_LATEST=$([[ "$TAG" == "$LATEST_TAG" ]] && echo true || echo false)
+        echo "Tag: ${TAG}, latest release tag: ${LATEST_TAG}, is latest: ${IS_LATEST}"
+        echo "is-latest=${IS_LATEST}" >> "$GITHUB_OUTPUT"
+        echo "latest-tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"
