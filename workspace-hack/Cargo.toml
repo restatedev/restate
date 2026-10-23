@@ -47,6 +47,17 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
+datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-csv = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-json = { version = "55", default-features = false, features = ["proto"] }
+datafusion-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection", "sql"] }
+datafusion-functions-nested = { version = "55", default-features = false, features = ["sql"] }
+datafusion-physical-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection"] }
+datafusion-physical-expr-common = { version = "55", default-features = false, features = ["proto"] }
+datafusion-physical-plan = { version = "55", default-features = false, features = ["proto"] }
 deranged = { version = "0.5", features = ["serde"] }
 derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "std"] }
@@ -149,8 +160,10 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd = { version = "0.14" }
-zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd-582f2526e08bb6a0 = { package = "zstd", version = "0.14" }
+zstd-594e8ee84c453af0 = { package = "zstd", version = "0.13" }
+zstd-safe-15128469a54ed75a = { package = "zstd-safe", version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd-safe-181b0d20215bb231 = { package = "zstd-safe", version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [build-dependencies]
@@ -185,6 +198,17 @@ criterion = { version = "0.8", features = ["async_tokio"] }
 crossbeam-epoch = { version = "0.9" }
 crossbeam-utils = { version = "0.8" }
 dashmap = { version = "6", default-features = false, features = ["inline"] }
+datafusion = { version = "55", default-features = false, features = ["crypto_expressions", "encoding_expressions", "nested_expressions", "recursive_protection", "regex_expressions", "sql", "unicode_expressions"] }
+datafusion-common = { version = "55", default-features = false, features = ["object_store", "recursive_protection", "sql"] }
+datafusion-datasource = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-arrow = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-csv = { version = "55", default-features = false, features = ["proto"] }
+datafusion-datasource-json = { version = "55", default-features = false, features = ["proto"] }
+datafusion-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection", "sql"] }
+datafusion-functions-nested = { version = "55", default-features = false, features = ["sql"] }
+datafusion-physical-expr = { version = "55", default-features = false, features = ["proto", "recursive_protection"] }
+datafusion-physical-expr-common = { version = "55", default-features = false, features = ["proto"] }
+datafusion-physical-plan = { version = "55", default-features = false, features = ["proto"] }
 deranged = { version = "0.5", features = ["serde"] }
 derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
 derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "from_str", "index", "index_mut", "into", "into_iterator", "is_variant", "try_from", "try_unwrap"] }
@@ -293,8 +317,10 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["std", "x
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
 zlib-rs = { version = "0.6", default-features = false, features = ["std"] }
-zstd = { version = "0.14" }
-zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd-582f2526e08bb6a0 = { package = "zstd", version = "0.14" }
+zstd-594e8ee84c453af0 = { package = "zstd", version = "0.13" }
+zstd-safe-15128469a54ed75a = { package = "zstd-safe", version = "7", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
+zstd-safe-181b0d20215bb231 = { package = "zstd-safe", version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 zstd-sys = { version = "2", features = ["experimental", "std"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
