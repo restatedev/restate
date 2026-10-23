@@ -287,6 +287,9 @@ pub const CANCELED_INVOCATION_ERROR: InvocationError =
 
 pub const GONE_INVOCATION_ERROR: InvocationError = InvocationError::new_static(codes::GONE, "gone");
 
+pub const TOO_MANY_SINKS_INVOCATION_ERROR: InvocationError =
+    InvocationError::new_static(codes::BAD_REQUEST, "Too many attach requests");
+
 pub const NOT_FOUND_INVOCATION_ERROR: InvocationError =
     InvocationError::new_static(codes::NOT_FOUND, "not found");
 

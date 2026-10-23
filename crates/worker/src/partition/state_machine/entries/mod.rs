@@ -29,7 +29,7 @@ use std::collections::VecDeque;
 use tracing::debug;
 
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::blob_table::WriteBlobTable;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -116,6 +116,7 @@ where
         + WriteVirtualObjectStatusTable
         + WriteJournalEventsTable
         + WriteBlobTable
+        + ReadBlobTable
         + WriteJournalTable
         + ReadJournalTable
         + journal_table_v1::WriteJournalTable

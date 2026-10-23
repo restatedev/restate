@@ -18,7 +18,7 @@ use tracing::warn;
 use restate_clock::UniqueTimestamp;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
 use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
-use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
+use restate_storage_api::blob_table::{BlobBuilder, ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -54,7 +54,9 @@ use crate::metric_definitions::{
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
 };
 use crate::partition::processor::{FsmAccess, ProcessorContext};
-use crate::partition::state_machine::{CommandHandler, Error, StateMachineApplyContext};
+use crate::partition::state_machine::{
+    CommandHandler, Error, MAX_INVOCATION_SINK_LENGTH, StateMachineApplyContext,
+};
 
 /// Terminal step of the invocation lifecycle: publishes the result, applies the retention
 /// policies and releases whatever the invocation was holding (vqueue entry or inbox lock).
@@ -187,7 +189,8 @@ where
         + WriteTimerTable
         + ReadPromiseTable
         + WritePromiseTable
-        + WriteBlobTable,
+        + WriteBlobTable
+        + ReadBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {
@@ -326,14 +329,15 @@ where
                 if !completion_retention.is_zero() {
                     initial_ref_count += 1;
                 }
-                // todo(azmy): Once we use the blob for outbox we can
-                // add the partition processor response sinks to the initial ref count
 
-                // initial_ref_count += invocation_metadata
-                //     .response_sinks
-                //     .iter()
-                //     .filter(|sink| sink.is_partition_processor())
-                //     .count();
+                initial_ref_count += u16::try_from(
+                    invocation_metadata
+                        .response_sinks
+                        .iter()
+                        .filter(|sink| sink.is_partition_processor())
+                        .count(),
+                )
+                .unwrap_or(MAX_INVOCATION_SINK_LENGTH);
 
                 if let Some(initial_ref_count) = NonZeroU16::new(initial_ref_count) {
                     // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
@@ -389,14 +393,18 @@ where
             );
 
             // Send responses out
-            ctx.send_response_to_sinks(
-                invocation_metadata.response_sinks.clone(),
-                output,
-                Some(invocation_id),
-                None,
-                Some(&invocation_metadata.invocation_target),
-            )?;
-
+            if let Some(response_result_ref) = response_result_ref.clone()
+                && !invocation_metadata.response_sinks.is_empty()
+            {
+                ctx.send_response_to_sinks(
+                    invocation_metadata.response_sinks.clone(),
+                    response_result_ref,
+                    Some(invocation_id),
+                    None,
+                    Some(&invocation_metadata.invocation_target),
+                )
+                .await?;
+            }
             // Store the completed status, if needed
             if let Some(response_result_ref) = response_result_ref
                 && !completion_retention.is_zero()
