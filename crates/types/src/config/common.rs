@@ -176,6 +176,11 @@ impl<P: ListenerPort + 'static> ListenerOptions<P> {
             address_book.guess_advertised_address(self.advertised_host.as_deref())
         })
     }
+
+    /// The advertised address set in the configuration, if any.
+    pub(super) fn configured_advertised_address(&self) -> Option<&AdvertisedAddress<P>> {
+        self.advertised_address.as_ref()
+    }
 }
 
 impl<P: ListenerPort> Default for ListenerOptions<P> {
