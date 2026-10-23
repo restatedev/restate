@@ -885,6 +885,16 @@ experimental! {
     ///
     /// Since v1.8.1
     preflight_signal_recording,
+
+    /// # Remove orphaned active VQueue markers on startup
+    ///
+    /// Escape hatch for partitions that fail to start because an active vqueue has no
+    /// metadata. When enabled, such orphaned markers are removed (and logged) while the
+    /// partition starts instead of failing the start. Only enable this if a partition is
+    /// stuck on this error.
+    ///
+    /// Since v1.8.2
+    vqueue_orphaned_active_marker_removal,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
