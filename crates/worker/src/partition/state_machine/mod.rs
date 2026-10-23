@@ -40,8 +40,8 @@ use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
-    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
+    CompletedInvocation, CompletedResult, InFlightInvocationMetadata, InboxedInvocation,
+    JournalMetadata, JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
     PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
     ResponseResultRef, WriteInvocationStatusTable,
 };
@@ -2883,12 +2883,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         S: WriteOutboxTable + WriteFsmTable + ReadBlobTable,
     {
         let result_ref = res.into();
-        // let blob_id =
-        //     if let ResponseResultRef::Completed(CompletedResult { blob_id, .. }) = &result_ref {
-        //         Some(*blob_id)
-        //     } else {
-        //         None
-        //     };
+        let blob_id =
+            if let ResponseResultRef::Completed(CompletedResult { blob_id, .. }) = &result_ref {
+                Some(*blob_id)
+            } else {
+                None
+            };
 
         let mut cache = CachedResponseResultRef::from(result_ref);
 
@@ -2896,10 +2896,20 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             match response_sink {
                 ServiceInvocationResponseSink::PartitionProcessor(target) => {
                     // check if blob id is set and use that instead
-                    let result = cache.resolve(self.storage).await?;
-                    self.do_enqueue_into_outbox(commands::InvocationResponseCommand::from(
-                        InvocationResponse { target, result },
-                    ))?
+                    match &blob_id {
+                        Some(blob_id) => self.do_enqueue_into_outbox(
+                            v2::outbox::InvocationResponseBlobCommand {
+                                target,
+                                blob: *blob_id,
+                            },
+                        )?,
+                        None => {
+                            let result = cache.resolve(self.storage).await?;
+                            self.do_enqueue_into_outbox(commands::InvocationResponseCommand::from(
+                                InvocationResponse { target, result },
+                            ))?
+                        }
+                    }
                 }
                 ServiceInvocationResponseSink::Ingress { request_id } => {
                     let result = cache.resolve(self.storage).await?;
@@ -4662,7 +4672,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn do_enqueue_into_outbox<M>(&mut self, message: M) -> Result<(), Error>
     where
-        M: v2::OutboxMessage,
+        M: v2::outbox::OutboxMessage,
         S: WriteOutboxTable + WriteFsmTable,
     {
         let seq_number = self.processor.outbox().outbox_tail();

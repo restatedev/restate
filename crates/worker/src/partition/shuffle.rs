@@ -26,7 +26,7 @@ use restate_wal_protocol::v2::commands::{
     AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
     TerminateInvocationCommand,
 };
-use restate_wal_protocol::v2::{Dedup, Envelope, OutboxKind, Raw};
+use restate_wal_protocol::v2::{Dedup, Envelope, Raw, outbox::OutboxKind};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_RECORDS, PARTITION_SHUFFLE_MESSAGE_COUNT,
@@ -60,7 +60,7 @@ impl OutboxTruncation {
     }
 }
 
-pub(crate) fn wrap_outbox_message_in_envelope(
+pub(crate) async fn wrap_outbox_message_in_envelope(
     message: OutboxMessage,
     seq_number: MessageIndex,
     shuffle_metadata: &ShuffleMetadata,
@@ -105,7 +105,7 @@ pub(crate) fn wrap_outbox_message_in_envelope(
                             unreachable!("handled above");
                         }
                         OutboxKind::InvocationResponseFromBlob => {
-                            todo!()
+                            todo!("load blob")
                         }
                     }
                 }
@@ -393,7 +393,8 @@ mod state_machine {
                             Ordering::Equal => {
                                 let partition_key = message.partition_key();
                                 let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
+                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)
+                                        .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -445,7 +446,8 @@ mod state_machine {
                                 );
                                 let partition_key = message.partition_key();
                                 let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)?;
+                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)
+                                        .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
