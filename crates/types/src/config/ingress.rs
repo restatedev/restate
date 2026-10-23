@@ -144,7 +144,7 @@ pub struct IngressOptions {
     /// [Deprecated] Use `advertised-address` instead.
     /// Ingress endpoint that the Web UI should use to interact with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
+    pub(super) advertised_ingress_endpoint: Option<AdvertisedAddress<HttpIngressPort>>,
 
     /// # Request size limit
     ///
