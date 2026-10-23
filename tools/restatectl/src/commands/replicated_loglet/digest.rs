@@ -67,7 +67,8 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             });
             info!(
                 "Requesting digest from node {} at {}",
-                node_id, node.address
+                node_id,
+                node.ctrl_address()
             );
             if !node.has_role(Role::LogServer) {
                 warn!(
@@ -76,7 +77,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
                 );
                 return None;
             }
-            Some((node_id, grpc_channel(node.address.clone())))
+            Some((node_id, grpc_channel(node.ctrl_address().into_owned())))
         })
         .collect();
 
