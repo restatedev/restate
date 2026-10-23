@@ -23,6 +23,12 @@ jobs:
         with:
           submodules: recursive
 
+      - name: Check if this is the latest release
+        id: is-latest
+        uses: ./.github/actions/is-latest-release
+        with:
+          tag: ${{ github.ref_name }}
+
       - name: Amend GitHub Release
         shell: bash
         run: |
@@ -78,3 +84,9 @@ jobs:
 
           # Update the release notes
           gh release edit "${{ github.ref_name }}" --notes-file "$RUNNER_TEMP/notes.txt"
+
+      # `gh release create` marks every new stable release as "Latest". Restore the marker when releasing
+      # an older line (e.g. a 1.7.x patch after 1.8.x).
+      - name: Restore latest GitHub Release
+        if: steps.is-latest.outputs.is-latest != 'true'
+        run: gh release edit "${{ steps.is-latest.outputs.latest-tag }}" --latest

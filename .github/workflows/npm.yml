@@ -48,6 +48,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check if this is the latest release
+        id: is-latest
+        uses: ./.github/actions/is-latest-release
+        with:
+          tag: ${{ github.ref_name }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -66,7 +72,6 @@ jobs:
         shell: bash
         run: |
           bin="${{ matrix.package.binary }}"
-          tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
 
           cd npm || exit 1
           node_os="${{ matrix.build.node_os }}"
@@ -76,6 +81,14 @@ jobs:
           # set the version
           node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.package.app_name }}").app_version')"
           export node_version
+          # only the highest stable release may move the 'latest' dist-tag; older release lines get 'release-X.Y'
+          if [[ "${{ fromJson(inputs.plan).announcement_is_prerelease }}" == "true" ]]; then
+            tag="next"
+          elif [[ "${{ steps.is-latest.outputs.is-latest }}" == "true" ]]; then
+            tag="latest"
+          else
+            tag="release-${node_version%.*}"
+          fi
           # set the package name
           export node_pkg="${bin}-${node_os}-${node_arch}"
           if npm view "@restatedev/${node_pkg}@${node_version}"
@@ -119,6 +132,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check if this is the latest release
+        id: is-latest
+        uses: ./.github/actions/is-latest-release
+        with:
+          tag: ${{ github.ref_name }}
+
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -129,7 +148,14 @@ jobs:
         run: |
           node_version="$(echo "$PLAN" | jq -r '.releases[] | select(.app_name == "${{ matrix.package.app_name }}").app_version')"
           bin="${{ matrix.package.binary }}"
-          tag="${{ fromJson(inputs.plan).announcement_is_prerelease && 'next' || 'latest' }}"
+          # only the highest stable release may move the 'latest' dist-tag; older release lines get 'release-X.Y'
+          if [[ "${{ fromJson(inputs.plan).announcement_is_prerelease }}" == "true" ]]; then
+            tag="next"
+          elif [[ "${{ steps.is-latest.outputs.is-latest }}" == "true" ]]; then
+            tag="latest"
+          else
+            tag="release-${node_version%.*}"
+          fi
 
           cd npm || exit 1
           if npm view "@restatedev/${bin}@${node_version}"
