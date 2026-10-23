@@ -28,20 +28,27 @@
 use std::collections::BTreeSet;
 
 use restate_clock::time::MillisSinceEpoch;
+use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::metadata::{VQueueLink, VQueueMeta};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue, Options,
     ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor, VQueueStore,
     WriteVQueueTable, stats::EntryStatistics,
 };
-use restate_storage_api::vqueue_table::{ScanVQueueEntries, ScanVQueueEntryStatusTable};
+use restate_storage_api::vqueue_table::{
+    ScanVQueueEntries, ScanVQueueEntryStatusTable, ScanVQueueTable,
+};
 use restate_types::clock::UniqueTimestamp;
+use restate_types::config::{Configuration, set_current_config};
 use restate_types::identifiers::PartitionKey;
 use restate_types::sharding::KeyRange;
 use restate_types::vqueues::{EntryId, EntryKind, EntryTargetRef, VQueueId};
 
 use crate::PartitionStore;
+use crate::keys::{EncodeTableKeyPrefix, KeyKind};
+use crate::vqueue_table::{ActiveKey, ActiveKeyRef};
 
 fn test_qid() -> VQueueId {
     VQueueId::custom(PartitionKey::from(1000u64), "1")
@@ -781,4 +788,62 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     // sees current storage and that an existing reader holds a fixed view.
     fresh_reader_sees_current_state(&mut rocksdb).await;
     existing_reader_does_not_see_post_snapshot_writes(&mut rocksdb).await;
+}
+
+#[restate_core::test]
+async fn orphaned_active_vqueue_markers_are_removed_when_enabled() {
+    let with_orphan_removal = |enabled: bool| {
+        let mut config = Configuration::default();
+        config
+            .common
+            .experimental
+            .set_vqueue_orphaned_active_marker_removal(enabled);
+        set_current_config(config);
+    };
+    let mark_active = |txn: &mut crate::PartitionStoreTransaction<'_>, qid: &VQueueId| {
+        let mut key_buffer = [0u8; ActiveKey::serialized_length_fixed()];
+        ActiveKeyRef::builder()
+            .qid(qid)
+            .serialize_to(&mut key_buffer.as_mut());
+        txn.raw_put_cf(KeyKind::VQueueActive, key_buffer, []);
+    };
+    let scan = |store: &PartitionStore| {
+        let mut qids = Vec::new();
+        store
+            .partition_db()
+            .scan_active_vqueues(|qid, _| qids.push(qid))
+            .map(|_| qids)
+    };
+
+    let mut store = super::storage_test_environment().await;
+    let healthy_qid = VQueueId::custom(PartitionKey::from(1000u64), "healthy");
+    let orphan_qid = VQueueId::custom(PartitionKey::from(1000u64), "orphan");
+    let at = UniqueTimestamp::try_from(1_744_000_000_000u64).unwrap();
+
+    let mut txn = store.transaction();
+    txn.create_vqueue(
+        &healthy_qid,
+        &VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None),
+    );
+    mark_active(&mut txn, &healthy_qid);
+    // a duplicated put of the active marker without any metadata
+    mark_active(&mut txn, &orphan_qid);
+    mark_active(&mut txn, &orphan_qid);
+    txn.commit().await.expect("commit should succeed");
+    drop(txn);
+
+    // by default, an orphaned active marker fails the scan
+    with_orphan_removal(false);
+    assert!(matches!(
+        scan(&store),
+        Err(restate_storage_api::StorageError::DataIntegrityError)
+    ));
+
+    // with the escape hatch, the orphan is skipped and removed
+    with_orphan_removal(true);
+    assert_eq!(scan(&store).unwrap(), vec![healthy_qid.clone()]);
+
+    // the removal is persistent
+    with_orphan_removal(false);
+    assert_eq!(scan(&store).unwrap(), vec![healthy_qid]);
 }
