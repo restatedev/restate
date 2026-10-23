@@ -290,10 +290,7 @@ where
                 };
             }
 
-            let response_result_ref = if completion_retention.is_zero() {
-                // Nothing to store back
-                None
-            } else if is_write_blob_table_enabled {
+            let response_result_ref = if is_write_blob_table_enabled {
                 let status = match reason {
                     EndInvocationReason::Killed => CompletionStatus::Killed,
                     EndInvocationReason::Failed(err) => CompletionStatus::Failure(err.code),
@@ -303,6 +300,10 @@ where
                     },
                 };
 
+                let mut initial_ref_count = 0u16;
+                if !completion_retention.is_zero() {
+                    initial_ref_count += 1;
+                }
                 // todo(azmy): Once we use the blob for outbox we can
                 // add the partition processor response sinks to the initial ref count
 
@@ -312,22 +313,26 @@ where
                 //     .filter(|sink| sink.is_partition_processor())
                 //     .count();
 
-                // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
-                // invocation journal. this change is not breaking because we store the BaseBlobId of the
-                // output blob on the invocation status as long as it's coordinated with a partition feature.
-                let blob_id =
-                    BaseBlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
-                ctx.storage.put_blob(
-                    blob_id,
-                    BlobBuilder::default()
-                        .with_ref_count(NonZeroU16::MIN)
-                        .with_kind(BlobKind::Output)
-                        .typed(&output),
-                )?;
-                Some(ResponseResultRef::Completed(CompletedResult {
-                    blob_id,
-                    status,
-                }))
+                if let Some(initial_ref_count) = NonZeroU16::new(initial_ref_count) {
+                    // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
+                    // invocation journal. this change is not breaking because we store the BaseBlobId of the
+                    // output blob on the invocation status as long as it's coordinated with a partition feature.
+                    let blob_id =
+                        BaseBlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
+                    ctx.storage.put_blob(
+                        blob_id,
+                        BlobBuilder::default()
+                            .with_ref_count(initial_ref_count)
+                            .with_kind(BlobKind::Output)
+                            .typed(&output),
+                    )?;
+                    Some(ResponseResultRef::Completed(CompletedResult {
+                        blob_id,
+                        status,
+                    }))
+                } else {
+                    None
+                }
             } else {
                 // always inline, we can't reference the output entry
                 Some(match reason {
@@ -368,7 +373,9 @@ where
             )?;
 
             // Store the completed status, if needed
-            if let Some(response_result_ref) = response_result_ref {
+            if let Some(response_result_ref) = response_result_ref
+                && !completion_retention.is_zero()
+            {
                 let completed_invocation = CompletedInvocation::from_in_flight_invocation_metadata(
                     invocation_metadata,
                     if journal_retention.is_zero() {
