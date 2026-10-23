@@ -23,7 +23,10 @@ use restate_types::{
 use super::sealed::Sealed;
 use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
-use crate::{timer, v2::OutboxMessage};
+use crate::{
+    timer,
+    v2::{OutboxKind, OutboxMessage},
+};
 // Re-epxort vqueues commands
 pub use crate::invocation::PauseInvocationCommand;
 pub use crate::vqueues::{VQueuesPauseCommand, VQueuesResumeCommand};
@@ -80,6 +83,8 @@ impl WithPartitionKey for TerminateInvocationCommand {
 }
 
 impl OutboxMessage for TerminateInvocationCommand {
+    const KIND: OutboxKind = OutboxKind::TerminateInvocation;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::InvocationTermination(self.0)
     }
@@ -149,6 +154,8 @@ impl WithPartitionKey for InvokeCommand {
     }
 }
 impl OutboxMessage for InvokeCommand {
+    const KIND: OutboxKind = OutboxKind::Invoke;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::ServiceInvocation(Box::new(self.0))
     }
@@ -190,6 +197,8 @@ impl WithPartitionKey for AttachInvocationCommand {
 }
 
 impl OutboxMessage for AttachInvocationCommand {
+    const KIND: OutboxKind = OutboxKind::AttachInvocation;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::AttachInvocation(self.0)
     }
@@ -315,6 +324,8 @@ impl WithPartitionKey for InvocationResponseCommand {
 }
 
 impl OutboxMessage for InvocationResponseCommand {
+    const KIND: OutboxKind = OutboxKind::InvocationResponse;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::ServiceResponse(self.0)
     }
@@ -383,6 +394,8 @@ impl WithPartitionKey for NotifySignalCommand {
 }
 
 impl OutboxMessage for NotifySignalCommand {
+    const KIND: OutboxKind = OutboxKind::NotifySignal;
+
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
         restate_storage_api::outbox_table::OutboxMessage::NotifySignal(self.0)
     }
