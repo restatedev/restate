@@ -71,6 +71,9 @@ where
                 self.partition_id,
             )));
         }
+        if let Some(err) = self.partition_full {
+            return Decision::Reply(Err(err));
+        }
 
         // -- Resolve completed invocation status and input command
 

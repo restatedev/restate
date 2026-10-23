@@ -27,6 +27,7 @@ pub mod shuffle;
 pub mod state_machine;
 #[cfg(not(feature = "expose-internals"))]
 mod state_machine;
+mod storage_guard;
 pub mod types;
 
 pub use self::node::NodeContext;
@@ -102,6 +103,7 @@ use self::processor::commands::{
 };
 use self::processor::*;
 use self::state_machine::StateMachine;
+use self::storage_guard::StorageGuard;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS,
@@ -258,6 +260,7 @@ impl PartitionProcessorBuilder {
             status_watch_tx,
             leader_query_rx,
             encoding_arena: BytesMut::new(),
+            storage_guard: StorageGuard::default(),
         })
     }
 }
@@ -272,6 +275,7 @@ pub struct PartitionProcessor<T> {
     status_watch_tx: watch::Sender<PartitionProcessorStatus>,
     leader_query_rx: LeaderQueryReceiver,
     encoding_arena: BytesMut,
+    storage_guard: StorageGuard,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -789,12 +793,18 @@ where
                 sent_at.elapsed().friendly()
             );
         }
+        let partition_id = self.leadership_state.partition_id();
+        let partition_full = self
+            .storage_guard
+            .check(partition_id, self.partition_store.partition_db())
+            .err();
         let context = rpc::RpcContext::new(
             self.leadership_state.is_leader(),
-            self.leadership_state.partition_id(),
+            partition_id,
             schemas,
             &mut self.partition_store,
-        );
+        )
+        .with_partition_full(partition_full);
 
         let decision = rpc::RpcHandler::handle(context, body).await;
         // todo: we should reject the proposals outside the key range of this partition
@@ -1063,6 +1073,12 @@ where
                     ) => ResponseStatus::NotLeader { of },
                     Err(PartitionProcessorRpcError::Internal(msg)) => {
                         ResponseStatus::Internal { msg }
+                    }
+                    // Not produced for forwarded records.
+                    Err(err @ PartitionProcessorRpcError::PartitionFull { .. }) => {
+                        ResponseStatus::Internal {
+                            msg: err.to_string(),
+                        }
                     }
                 };
                 reciprocal.send(status.into());
