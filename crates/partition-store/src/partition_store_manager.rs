@@ -138,9 +138,16 @@ impl PartitionStoreManager {
         let state = Arc::new(SharedState::default());
         let memory_controller = MemoryController::start(state.clone())?;
 
+        let (snapshots_options, staging_dir) = {
+            let config = Configuration::pinned();
+            (
+                config.worker.snapshots.clone(),
+                config.worker.storage.snapshots_staging_dir(),
+            )
+        };
         let psm = Arc::new(Self {
             state: state.clone(),
-            snapshots: Snapshots::create(&Configuration::pinned())
+            snapshots: Snapshots::create(&snapshots_options, staging_dir)
                 .await
                 .map_err(BuildError::Snapshots)?,
             db_cache: Default::default(),

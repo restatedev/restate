@@ -592,7 +592,7 @@ impl RocksDb {
                 if metadata.get_files().is_empty() {
                     error!(
                         "Refusing to create an empty snapshot! RocksDB column family export \
-                        returned an empty set of files. The export is retained at: {}",
+                        returned an empty set of files: {}",
                         export_dir.display()
                     );
                     return Err(RocksError::SnapshotEmpty);
