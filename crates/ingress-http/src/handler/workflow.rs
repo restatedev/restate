@@ -95,13 +95,10 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+            self.schemas.pinned().resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
         })
     }
 
@@ -142,13 +139,10 @@ where
         };
 
         Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+            self.schemas.pinned().resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
         })
     }
 }
