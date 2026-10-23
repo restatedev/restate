@@ -8,7 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_types::{errors::ConversionError, sharding::WithPartitionKey, storage::StorageEncode};
+use bilrost::Message;
+use bytes::BytesMut;
+use restate_storage_api::outbox_table::OpaqueMessage;
+use restate_types::{
+    bilrost_storage_encode_decode, blob::BaseBlobId, errors::ConversionError,
+    invocation::JournalCompletionTarget, sharding::WithPartitionKey, storage::StorageEncode,
+};
 
 use crate::v2::CommandKind;
 
@@ -133,4 +139,38 @@ pub trait OutboxMessage: StorageEncode + WithPartitionKey {
     ///
     /// todo: Drop in v1.9.0
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage;
+}
+
+#[derive(Clone, Eq, PartialEq, bilrost::Message, derive_more::Into, derive_more::From)]
+pub struct InvocationResponseBlobCommand {
+    #[bilrost(tag(1))]
+    pub target: JournalCompletionTarget,
+    #[bilrost(tag(2))]
+    pub blob: BaseBlobId,
+}
+
+bilrost_storage_encode_decode!(InvocationResponseBlobCommand);
+
+impl WithPartitionKey for InvocationResponseBlobCommand {
+    fn partition_key(&self) -> restate_types::sharding::PartitionKey {
+        self.target.partition_key()
+    }
+}
+
+impl OutboxMessage for InvocationResponseBlobCommand {
+    const KIND: OutboxKind = OutboxKind::InvocationResponseFromBlob;
+
+    fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
+        // NOTE:
+        // This is a temporary solution and can be dropped in v1.9.0
+        // since the entire into_outbox_message() function will be dropped.
+        let mut buf = BytesMut::with_capacity(self.encoded_len());
+        StorageEncode::encode(&self, &mut buf).expect("to encode");
+        restate_storage_api::outbox_table::OutboxMessage::Opaque(OpaqueMessage {
+            partition_key: self.partition_key(),
+            codec: self.default_codec(),
+            kind: Self::KIND.into(),
+            message: buf.freeze(),
+        })
+    }
 }
