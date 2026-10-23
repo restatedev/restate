@@ -26,7 +26,7 @@ use restate_wal_protocol::v2::commands::{
     AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
     TerminateInvocationCommand,
 };
-use restate_wal_protocol::v2::{CommandKind, Dedup, Envelope, Raw};
+use restate_wal_protocol::v2::{Dedup, Envelope, OutboxKind, Raw};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_RECORDS, PARTITION_SHUFFLE_MESSAGE_COUNT,
@@ -84,11 +84,32 @@ pub(crate) fn wrap_outbox_message_in_envelope(
             Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
         }
         OutboxMessage::Opaque(opaque) => {
-            let kind: CommandKind = opaque
+            let kind: OutboxKind = opaque
                 .kind
                 .try_into()
-                .context("Opaque outbox message has unknown command kind")?;
-            Envelope::from_bytes_unchecked(kind, opaque.codec, dedup, opaque.message)
+                .context("Opaque outbox message has unknown outbox kind")?;
+
+            match kind.try_into_command_kind() {
+                Ok(cmd_kind) => {
+                    // forward directly to remote partition
+                    Envelope::from_bytes_unchecked(cmd_kind, opaque.codec, dedup, opaque.message)
+                }
+                Err(outbox_kind) => {
+                    // this is not an opaque command and need to be translated
+                    match outbox_kind {
+                        OutboxKind::TerminateInvocation
+                        | OutboxKind::Invoke
+                        | OutboxKind::AttachInvocation
+                        | OutboxKind::NotifySignal
+                        | OutboxKind::InvocationResponse => {
+                            unreachable!("handled above");
+                        }
+                        OutboxKind::InvocationResponseFromBlob => {
+                            todo!()
+                        }
+                    }
+                }
+            }
         }
     };
 

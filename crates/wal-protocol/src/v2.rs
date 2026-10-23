@@ -10,7 +10,7 @@
 
 pub mod commands;
 mod compatibility;
-mod markers;
+mod outbox;
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -30,7 +30,7 @@ use restate_types::storage::{
 use restate_util_string::ReString;
 
 use crate::v1;
-pub use markers::OutboxMessage;
+pub use outbox::{OutboxKind, OutboxMessage};
 
 mod sealed {
     pub trait Sealed {}
