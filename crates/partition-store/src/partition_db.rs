@@ -21,6 +21,7 @@ use rocksdb::{
 };
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
+use tokio_util::task::TaskTracker;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
@@ -46,6 +47,9 @@ pub struct PartitionDb {
     meta: Arc<Partition>,
     durable_lsn: watch::Sender<Option<Lsn>>,
     archived_lsn: watch::Sender<Option<Lsn>>,
+    /// Tracks writes that may still be running on the storage thread pool. Always closed so that
+    /// waiting on it returns as soon as no write is in flight.
+    pending_writes: TaskTracker,
     // Note: Rust will drop the fields in the order they are declared in the struct.
     // It's crucial to keep the column family and the database in this exact order.
     cf: PartitionBoundCfHandle,
@@ -59,10 +63,13 @@ impl PartitionDb {
         rocksdb: Arc<RocksDb>,
         cf: Arc<BoundColumnFamily<'_>>,
     ) -> Self {
+        let pending_writes = TaskTracker::new();
+        pending_writes.close();
         Self {
             meta,
             durable_lsn: watch::Sender::new(None),
             archived_lsn,
+            pending_writes,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
             // it's safe to use here as long as rocksdb is dropped last.
             cf: unsafe { PartitionBoundCfHandle::new(cf) },
@@ -76,6 +83,10 @@ impl PartitionDb {
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
         &self.rocksdb
+    }
+
+    pub(crate) fn pending_writes(&self) -> &TaskTracker {
+        &self.pending_writes
     }
 
     #[cfg(test)]

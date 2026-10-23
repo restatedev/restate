@@ -189,6 +189,10 @@ impl RocksDb {
     /// Write a [`rocksdb::WriteBatchWithIndex`] to the database.
     ///
     /// On success, returns the batch so callers can reuse it.
+    ///
+    /// `in_flight_guard` is dropped only once the write has completed or can no longer happen.
+    /// This holds even if the returned future is dropped while the write runs on the background
+    /// thread pool, which lets callers wait for abandoned writes.
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn write_batch_with_index(
         self: &Arc<Self>,
@@ -197,6 +201,7 @@ impl RocksDb {
         io_mode: IoMode,
         write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatchWithIndex,
+        in_flight_guard: impl Send + 'static,
     ) -> Result<rocksdb::WriteBatchWithIndex, RocksError> {
         self.write_batch_internal(
             name,
@@ -204,7 +209,11 @@ impl RocksDb {
             io_mode,
             write_options,
             write_batch,
-            |db, write_options, batch| db.write_batch_with_index(batch, write_options),
+            move |db, write_options, batch| {
+                // moves the guard into the op so that it is dropped together with it
+                let _guard = &in_flight_guard;
+                db.write_batch_with_index(batch, write_options)
+            },
         )
         .await
     }

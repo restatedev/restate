@@ -27,6 +27,7 @@ use tokio::sync::oneshot;
 use tokio::sync::watch;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 use tracing::{instrument, trace, warn};
 
 use restate_core::ShutdownError;
@@ -321,6 +322,15 @@ impl PartitionStore {
         self.db
     }
 
+    /// Waits until no transaction commit is running on the storage thread pool anymore.
+    ///
+    /// A commit continues in the background if its future is dropped after the write was handed
+    /// off to the storage thread pool. Owners must call this before releasing the partition so
+    /// that a successor cannot observe or race against an abandoned write.
+    pub async fn wait_for_pending_writes(&self) {
+        self.db.pending_writes().wait().await
+    }
+
     #[inline]
     pub fn partition_id(&self) -> PartitionId {
         self.db.partition().partition_id
@@ -588,6 +598,7 @@ impl PartitionStore {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
+            pending_writes: self.db.pending_writes(),
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
@@ -954,6 +965,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
+    pending_writes: &'a TaskTracker,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
@@ -1098,6 +1110,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
                     io_mode,
                     opts,
                     write_batch,
+                    self.pending_writes.token(),
                 )
                 .await
                 .map_err(|error| StorageError::Generic(error.into()))?,
@@ -1452,10 +1465,14 @@ pub(crate) trait StorageAccess {
 
 #[cfg(test)]
 mod tests {
-    use bytes::{Buf, BufMut};
+    use std::num::NonZeroUsize;
 
-    use restate_rocksdb::RocksDbManager;
+    use bytes::{Buf, BufMut};
+    use futures::FutureExt;
+
+    use restate_rocksdb::{Priority, RocksDbManager, StorageTaskKind};
     use restate_storage_api::{IsolationLevel, StorageError, Transaction};
+    use restate_types::config::{Configuration, set_current_config};
     use restate_types::identifiers::{PartitionId, PartitionKey};
     use restate_types::logs::Lsn;
     use restate_types::partitions::Partition;
@@ -1585,6 +1602,63 @@ mod tests {
         let (_, batch) = updates.next().transpose()?.expect("seal WAL entry");
         assert_eq!(batch.len(), 1);
         assert!(updates.next().is_none());
+
+        rocksdb.shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn wait_for_abandoned_background_commit() -> googletest::Result<()> {
+        let mut config = Configuration::default();
+        config.worker.storage.always_commit_in_background = true;
+        config.common.storage_high_priority_bg_threads = Some(NonZeroUsize::MIN);
+        set_current_config(config);
+
+        let rocksdb = RocksDbManager::init();
+        let partition_store_manager = PartitionStoreManager::create(true).await?;
+        let mut partition_store = partition_store_manager
+            .open(
+                &Partition::new(
+                    PartitionId::MIN,
+                    KeyRange::new(PartitionKey::MIN, PartitionKey::MAX),
+                ),
+                None,
+            )
+            .await?;
+        let key = "a".to_owned();
+
+        // occupy the only high priority storage thread so that the commit stays queued
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let blocker = partition_store
+            .partition_db()
+            .rocksdb()
+            .clone()
+            .run_background_read_op(
+                "block-high-pri-pool",
+                StorageTaskKind::BackgroundIterator,
+                Priority::High,
+                move |_| {
+                    let _ = release_rx.recv();
+                },
+            );
+        assert!(blocker.now_or_never().is_none());
+
+        {
+            let mut txn = partition_store.transaction();
+            txn.put_kv_raw(key.clone(), 42_u32.to_be_bytes())?;
+            assert!(txn.commit().now_or_never().is_none());
+        }
+
+        // the abandoned commit is tracked and the wait doesn't complete before it has landed
+        assert_eq!(partition_store.partition_db().pending_writes().len(), 1);
+        let waiter = partition_store.clone();
+        let mut wait = std::pin::pin!(waiter.wait_for_pending_writes());
+        assert!((&mut wait).now_or_never().is_none());
+        assert_eq!(partition_store.get_kv_raw(key.clone(), decode_u32)?, None);
+
+        release_tx.send(())?;
+        wait.await;
+        assert_eq!(partition_store.get_kv_raw(key, decode_u32)?, Some(42));
 
         rocksdb.shutdown().await;
         Ok(())
