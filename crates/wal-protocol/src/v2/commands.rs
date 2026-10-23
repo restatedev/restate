@@ -25,7 +25,7 @@ use super::{Command, CommandKind};
 pub use crate::control::UpsertRuleBookCommand;
 use crate::{
     timer,
-    v2::{OutboxKind, OutboxMessage},
+    v2::outbox::{OutboxKind, OutboxMessage},
 };
 // Re-epxort vqueues commands
 pub use crate::invocation::PauseInvocationCommand;
