@@ -11,12 +11,15 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use restate_util_bytecount::NonZeroByteCount;
-use restate_util_time::NonZeroFriendlyDuration;
-
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
+use restate_util_bytecount::NonZeroByteCount;
+use restate_util_time::NonZeroFriendlyDuration;
+
+use super::CommonOptions;
+use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort};
+use crate::net::listener::AddressBook;
 use crate::retries::RetryPolicy;
 
 /// The default maximum size for messages (32 MiB).
@@ -34,6 +37,12 @@ pub const DEFAULT_FABRIC_MEMORY_LIMIT: NonZeroUsize = NonZeroUsize::new(64 * 102
 #[builder(default)]
 #[serde(rename_all = "kebab-case")]
 pub struct NetworkingOptions {
+    /// Control RPC advertised address overrides. Defaults to the fabric address.
+    ///
+    /// Since v1.8.2
+    #[serde(flatten)]
+    pub(super) control: ControlOptions,
+
     /// # Connect timeout
     ///
     /// TCP connection timeout for Restate cluster node-to-node network connections.
@@ -133,6 +142,67 @@ pub struct NetworkingOptions {
     fabric_memory_limit: NonZeroByteCount,
 }
 
+/// Advertisement overrides for the control RPCs served on the fabric listener.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[cfg_attr(feature = "clap", derive(clap::Args))]
+#[serde(rename_all = "kebab-case")]
+pub struct ControlOptions {
+    /// Hostname to advertise for control RPCs.
+    ///
+    /// Uses the shared fabric listener's actual port and TLS mode. If neither
+    /// control override is set, uses the complete fabric advertised address.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, env = "RESTATE_NETWORKING__CTRL_ADVERTISED_HOST", global = true)
+    )]
+    pub(super) ctrl_advertised_host: Option<String>,
+
+    /// Full address to advertise for control RPCs, including an external proxy.
+    ///
+    /// Takes precedence over the control advertised hostname. This changes only
+    /// the advertisement; control RPCs continue to share the fabric listener.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(
+            long,
+            env = "RESTATE_NETWORKING__CTRL_ADVERTISED_ADDRESS",
+            global = true
+        )
+    )]
+    pub(super) ctrl_advertised_address: Option<AdvertisedAddress<ControlPort>>,
+}
+
+impl ControlOptions {
+    #[cfg(feature = "clap")]
+    pub(super) fn is_empty(&self) -> bool {
+        self.ctrl_advertised_host.is_none() && self.ctrl_advertised_address.is_none()
+    }
+
+    pub(super) fn advertised_address(
+        &self,
+        common: &CommonOptions,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        if let Some(address) = &self.ctrl_advertised_address {
+            address.clone()
+        } else if let Some(host) = &self.ctrl_advertised_host {
+            address_book
+                .guess_advertised_address::<FabricPort>(Some(host))
+                .coerce()
+        } else {
+            common.advertised_address(address_book).coerce()
+        }
+    }
+}
+
 const fn default_message_size_limit() -> NonZeroByteCount {
     NonZeroByteCount::new(DEFAULT_MESSAGE_SIZE_LIMIT)
 }
@@ -170,6 +240,7 @@ impl Default for NetworkingOptions {
     fn default() -> Self {
         #[allow(deprecated)]
         Self {
+            control: ControlOptions::default(),
             connect_timeout: NonZeroFriendlyDuration::from_secs_unchecked(3),
             connect_retry_policy: RetryPolicy::exponential(
                 Duration::from_millis(250),

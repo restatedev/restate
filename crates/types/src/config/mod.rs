@@ -69,6 +69,8 @@ use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::live::LiveLoadExt;
+use crate::net::address::{AdvertisedAddress, ControlPort};
+use crate::net::listener::AddressBook;
 use crate::nodes_config::Role;
 
 static CPU_COUNT: LazyLock<NonZeroU32> = LazyLock::new(|| {
@@ -428,6 +430,16 @@ impl Configuration {
 
     pub fn node_name(&self) -> &str {
         self.common.node_name()
+    }
+
+    /// Resolves the control advertisement while control shares the fabric listener.
+    pub fn control_advertised_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        self.networking
+            .control
+            .advertised_address(&self.common, address_book)
     }
 
     /// Dumps the configuration to a string
