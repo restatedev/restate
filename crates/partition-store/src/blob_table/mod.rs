@@ -19,8 +19,8 @@ use zerocopy::IntoBytes;
 
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::blob_table::{
-    Blob, BlobDecoder, BlobEntry, Header, ReadBlobTable, ScanBlobTable, ScanBlobTableRange,
-    WriteBlobTable,
+    Blob, BlobDecoder, BlobEncode, BlobEntry, Header, ReadBlobTable, ScanBlobTable,
+    ScanBlobTableRange, WriteBlobTable,
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::blob::{BaseBlobId, BlobId};
@@ -228,15 +228,14 @@ impl ReadBlobTable for PartitionStoreTransaction<'_> {
 }
 
 impl WriteBlobTable for PartitionStoreTransaction<'_> {
-    fn put_blob(&mut self, blob_id: BaseBlobId, blob: impl Blob) -> Result<()> {
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BaseBlobId, blob: Blob<B>) -> Result<()> {
         let key = create_blob_key(blob_id);
 
         let mut buf = BytesMut::new();
-        let header = blob.header();
 
-        buf.put_slice(BlobHeader::new(header.kind(), header.ref_count()).as_bytes());
+        buf.put_slice(BlobHeader::new(blob.kind(), blob.ref_count()).as_bytes());
 
-        blob.encode(&mut buf)?;
+        blob.inner().encode_blob(&mut buf)?;
 
         self.put_kv_raw(key, &buf)
     }

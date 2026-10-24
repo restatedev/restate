@@ -324,7 +324,7 @@ where
                         BlobBuilder::default()
                             .with_ref_count(initial_ref_count)
                             .with_kind(BlobKind::Output)
-                            .typed(&output),
+                            .build(&output),
                     )?;
                     Some(ResponseResultRef::Completed(CompletedResult {
                         blob_id,

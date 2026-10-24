@@ -63,19 +63,19 @@ async fn get_blobs() {
             success_id,
             output_blob()
                 .with_ref_count(NonZeroU16::new(2).unwrap())
-                .typed(&ResponseResult::Success(Bytes::from_static(output))),
+                .build(&ResponseResult::Success(Bytes::from_static(output))),
         )
         .unwrap();
         tx.put_blob(
             failure_id,
-            output_blob().typed(&ResponseResult::Failure(failure.clone())),
+            output_blob().build(&ResponseResult::Failure(failure.clone())),
         )
         .unwrap();
         tx.put_blob(
             state_id,
             BlobBuilder::default()
                 .with_kind(BlobKind::State)
-                .raw(b"state"),
+                .build(&b"state"[..]),
         )
         .unwrap();
         tx.commit().await.unwrap();
