@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use anyhow::Context;
@@ -17,7 +17,7 @@ use cling::{Collect, Run};
 use tonic::Status;
 use tracing::debug;
 
-use restate_cli_util::{c_print, c_println};
+use restate_cli_util::{c_print, c_println, c_warn};
 use restate_metadata_server_grpc::grpc::RemoveNodeRequest;
 use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::PlainNodeId;
@@ -100,6 +100,17 @@ async fn remove_node(
             config.metadata_server_config.metadata_server_state == MetadataServerState::Member
         })
         .collect::<HashMap<_, _>>();
+
+    let mut remaining_members = metadata_node_set.keys().copied().collect::<HashSet<_>>();
+    for node_to_remove in &remove_node_opts.nodes {
+        remaining_members.remove(node_to_remove);
+    }
+    if remaining_members.len() < 3 {
+        c_warn!(
+            "This operation will leave the metadata cluster with {} member(s). Fewer than three metadata members are not suitable for production high availability.",
+            remaining_members.len()
+        );
+    }
 
     let retry_policy = RetryPolicy::exponential(
         Duration::from_millis(200),
