@@ -35,7 +35,6 @@ use restate_storage_api::timer_table::Timer;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::{EntryValue, RawStatusHeader};
 use restate_types::SemanticRestateVersion;
-use restate_types::invocation::ResponseResult;
 use restate_types::partitions::features::PersistedFeatures;
 use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::{StorageCodec, StorageCodecKind, StorageDecode};
@@ -207,7 +206,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::ServiceStatus => decode_protobuf::<VirtualObjectStatus>(value),
         KeyKind::Timers => decode_protobuf::<Timer>(value),
         KeyKind::Promise | KeyKind::ScopedPromise => decode_protobuf::<Promise>(value),
-        KeyKind::Blob => decode_protobuf::<ResponseResult>(value),
+        KeyKind::Blob => decode_blob(value),
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),
@@ -332,6 +331,16 @@ fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+fn decode_blob(value: &[u8]) -> DecodedValue {
+    if value.is_empty() {
+        return DecodedValue::empty();
+    }
+
+    // todo(azmy): extend the DecodedValue to hold a Blob type
+    // that has information about Kind and RefCount
+    DecodedValue::raw_bytes(value.len())
 }
 
 /// Decode a protobuf value using PartitionStoreProtobufValue trait

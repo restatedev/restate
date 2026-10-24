@@ -13,66 +13,32 @@ use std::num::NonZeroU16;
 
 use bytes::{BufMut, BytesMut};
 use restate_types::blob::{BaseBlobId, BlobKind};
-use restate_types::invocation::ResponseResult;
 use restate_types::sharding::KeyRange;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
-use crate::protobuf_types::PartitionStoreProtobufValue;
 use crate::{Result, StorageError};
 
-#[derive(Debug, Default)]
+pub trait ReadBlobTable {
+    fn get_blob<D: BlobDecoder>(
+        &mut self,
+        blob_id: BaseBlobId,
+    ) -> impl Future<Output = Result<Option<D::Type>>> + Send;
+}
+
+pub trait WriteBlobTable {
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BaseBlobId, blob: Blob<B>) -> Result<()>;
+
+    fn increment_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
+    fn decrement_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
+}
+
+#[derive(Debug)]
 pub struct BlobBuilder {
-    header: InputHeader,
-}
-
-impl BlobBuilder {
-    pub fn with_ref_count(mut self, count: NonZeroU16) -> Self {
-        self.header.ref_count = count;
-        self
-    }
-
-    /// Sets the blob kind. Mainly used for debugging, defaults to [`BlobKind::Unknown`].
-    pub fn with_kind(mut self, kind: BlobKind) -> Self {
-        self.header.kind = kind;
-        self
-    }
-
-    pub fn typed<T: StorageEncode>(self, inner: &T) -> impl Blob {
-        TypedBlob {
-            header: self.header,
-            inner,
-        }
-    }
-
-    pub fn raw(self, inner: &[u8]) -> impl Blob {
-        RawBlob {
-            header: self.header,
-            inner,
-        }
-    }
-}
-
-// By sealing the train we make sure the BlobBuilder is the
-// only possible way to create a Blob and can verify the blob
-// params when creating a blob
-
-pub trait Blob: sealed::Sealed {
-    fn header(&self) -> impl Header;
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageError>;
-}
-
-pub trait Header {
-    fn kind(&self) -> BlobKind;
-    fn ref_count(&self) -> u16;
-}
-
-#[derive(Debug, Clone, Copy)]
-struct InputHeader {
     kind: BlobKind,
     ref_count: NonZeroU16,
 }
 
-impl Default for InputHeader {
+impl Default for BlobBuilder {
     fn default() -> Self {
         Self {
             kind: BlobKind::Unknown,
@@ -81,60 +47,43 @@ impl Default for InputHeader {
     }
 }
 
-impl Header for InputHeader {
-    fn kind(&self) -> BlobKind {
-        self.kind
+impl BlobBuilder {
+    pub fn with_ref_count(mut self, count: NonZeroU16) -> Self {
+        self.ref_count = count;
+        self
     }
 
-    fn ref_count(&self) -> u16 {
-        self.ref_count.get()
+    /// Sets the blob kind. Defaults to [`BlobKind::Unknown`].
+    pub fn with_kind(mut self, kind: BlobKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    pub fn build<B: BlobEncode>(self, inner: B) -> Blob<B> {
+        Blob {
+            kind: self.kind,
+            ref_count: self.ref_count,
+            inner,
+        }
     }
 }
 
-impl Header for &InputHeader {
-    fn kind(&self) -> BlobKind {
-        self.kind
-    }
-
-    fn ref_count(&self) -> u16 {
-        self.ref_count.get()
-    }
+pub trait BlobEncode {
+    fn encode_blob(&self, buf: &mut BytesMut) -> Result<(), StorageError>;
 }
 
-struct TypedBlob<'a, T> {
-    header: InputHeader,
-    inner: &'a T,
-}
-
-impl<'a, T> sealed::Sealed for TypedBlob<'a, T> {}
-
-impl<'a, T> Blob for TypedBlob<'a, T>
+impl<C> BlobEncode for &C
 where
-    T: StorageEncode,
+    C: StorageEncode,
 {
-    fn header(&self) -> impl Header {
-        &self.header
-    }
-
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageError> {
-        StorageCodec::encode(self.inner, buf).map_err(|err| StorageError::Generic(err.into()))
+    fn encode_blob(&self, buf: &mut BytesMut) -> Result<(), StorageError> {
+        StorageCodec::encode(*self, buf).map_err(|err| StorageError::Generic(err.into()))
     }
 }
 
-struct RawBlob<'a> {
-    header: InputHeader,
-    inner: &'a [u8],
-}
-
-impl<'a> sealed::Sealed for RawBlob<'a> {}
-
-impl<'a> Blob for RawBlob<'a> {
-    fn header(&self) -> impl Header {
-        &self.header
-    }
-
-    fn encode(&self, buf: &mut BytesMut) -> Result<(), StorageError> {
-        buf.put(self.inner.as_ref());
+impl BlobEncode for &[u8] {
+    fn encode_blob(&self, buf: &mut BytesMut) -> Result<(), StorageError> {
+        buf.put_slice(self);
         Ok(())
     }
 }
@@ -153,25 +102,49 @@ impl<T: StorageDecode> BlobDecoder for T {
     }
 }
 
-pub struct RawDecoder;
+// BlobBuilder is the only possible way to create a Blob
+// and can verify the blob params when creating a blob
 
-impl BlobDecoder for RawDecoder {
+pub struct Blob<B> {
+    kind: BlobKind,
+    ref_count: NonZeroU16,
+    inner: B,
+}
+
+impl<B> Blob<B> {
+    pub fn inner(&self) -> &B {
+        &self.inner
+    }
+
+    pub fn into_inner(self) -> B {
+        self.inner
+    }
+}
+
+impl<B> Header for Blob<B> {
+    fn kind(&self) -> BlobKind {
+        self.kind
+    }
+
+    fn ref_count(&self) -> u16 {
+        self.ref_count.get()
+    }
+}
+
+pub trait Header {
+    fn kind(&self) -> BlobKind;
+    fn ref_count(&self) -> u16;
+}
+
+// A decoder that return raw parts of the blob including kind, ref_count, and raw payload
+pub struct RawParts;
+
+impl BlobDecoder for RawParts {
     type Type = (BlobKind, u16, Vec<u8>);
 
     fn decode_blob(header: impl Header, raw: &[u8]) -> Result<Self::Type> {
         Ok((header.kind(), header.ref_count(), raw.to_vec()))
     }
-}
-
-pub trait ReadBlobTable {
-    fn get_blob<D: BlobDecoder>(
-        &mut self,
-        blob_id: BaseBlobId,
-    ) -> impl Future<Output = Result<Option<D::Type>>> + Send;
-}
-
-impl PartitionStoreProtobufValue for ResponseResult {
-    type ProtobufType = crate::protobuf_types::v1::ResponseResult;
 }
 
 /// A raw blob as stored, returned by [`ScanBlobTable`].
@@ -197,15 +170,4 @@ pub trait ScanBlobTable {
         range: ScanBlobTableRange,
         f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send>;
-}
-
-pub trait WriteBlobTable {
-    fn put_blob(&mut self, blob_id: BaseBlobId, blob: impl Blob) -> Result<()>;
-
-    fn increment_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
-    fn decrement_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
-}
-
-mod sealed {
-    pub trait Sealed {}
 }
