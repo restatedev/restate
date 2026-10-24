@@ -1029,6 +1029,66 @@ async fn invoker_failure_retained_vqueue_status() -> TestResult {
     Ok(())
 }
 
+/// With the output table, killed and failed invocations end their journal with an OutputMarker,
+/// like completed ones do.
+#[test(restate_core::test)]
+async fn output_marker_on_kill_and_failure() -> TestResult {
+    let mut test_env = TestEnv::create_with_features(PersistedFeatures::from_iter([
+        PartitionFeatureChange::EnableJournalV2,
+        PartitionFeatureChange::EnableWriteBlobTable,
+    ]))
+    .await;
+
+    for kill in [true, false] {
+        let invocation_id = InvocationId::mock_generate(&InvocationTarget::mock_service());
+        let end = if kill {
+            commands::TerminateInvocationCommand::test_envelope(InvocationTermination {
+                invocation_id,
+                flavor: TerminationFlavor::Kill,
+                response_sink: None,
+            })
+        } else {
+            commands::InvokerEffectCommand::test_envelope(Effect {
+                invocation_id,
+                kind: InvokerEffectKind::Failed(InvocationError::new(codes::INTERNAL, "boom")),
+            })
+        };
+        test_env
+            .apply_multiple([
+                commands::InvokeCommand::test_envelope(ServiceInvocation {
+                    invocation_id,
+                    invocation_target: InvocationTarget::mock_service(),
+                    completion_retention_duration: Duration::from_secs(120),
+                    journal_retention_duration: Duration::from_secs(120),
+                    ..ServiceInvocation::mock()
+                }),
+                fixtures::pinned_deployment(invocation_id, ServiceProtocolVersion::V5),
+                end,
+            ])
+            .await;
+
+        assert_that!(
+            test_env
+                .storage
+                .get_invocation_status(&invocation_id)
+                .await?,
+            pat!(InvocationStatus::Completed(_))
+        );
+        test_env
+            .verify_journal_components(
+                invocation_id,
+                [
+                    journal_v2::CommandType::Input.into(),
+                    journal_v2::CommandType::OutputMarker.into(),
+                ],
+            )
+            .await;
+    }
+
+    test_env.shutdown().await;
+    Ok(())
+}
+
 #[test(restate_core::test)]
 async fn clear_all_user_states() -> anyhow::Result<()> {
     let mut test_env = TestEnv::create().await;

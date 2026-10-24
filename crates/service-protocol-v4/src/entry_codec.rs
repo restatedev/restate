@@ -28,9 +28,9 @@ use restate_types::journal_v2::lite::{
     EntryLite, GetEagerStateCommandLite, GetEagerStateKeysCommandLite,
     GetInvocationOutputCommandLite, GetLazyStateCommandLite, GetLazyStateKeysCommandLite,
     GetPromiseCommandLite, GetStateResultLite, InputCommandLite, NotificationLite,
-    NotificationResultLite, OneWayCallCommandLite, OutputCommandLite, OutputResultLite,
-    PeekPromiseCommandLite, RunCommandLite, SendSignalCommandLite, SetStateCommandLite,
-    SignalResultLite, SleepCommandLite,
+    NotificationResultLite, OneWayCallCommandLite, OutputCommandLite, OutputMarkerCommandLite,
+    OutputResultLite, PeekPromiseCommandLite, RunCommandLite, SendSignalCommandLite,
+    SetStateCommandLite, SignalResultLite, SleepCommandLite,
 };
 use restate_types::journal_v2::raw::{
     CallOrSendMetadata, RawCommand, RawCommandSpecificMetadata, RawEntry, RawNotification,
@@ -387,6 +387,17 @@ impl Encoder for ServiceProtocolV4Codec {
                     name: name.to_string(),
                     result_completion_id: completion_id,
                     target: Some(target.into()),
+                }
+                .encode_to_vec(),
+            )
+            .into(),
+
+            // The marker reuses the Output message layout, without the result
+            Entry::Command(Command::OutputMarker(OutputMarkerCommand { name })) => RawCommand::new(
+                CommandType::OutputMarker,
+                proto::OutputCommandMessage {
+                    name: name.to_string(),
+                    result: None,
                 }
                 .encode_to_vec(),
             )
@@ -966,6 +977,11 @@ impl Decoder for ServiceProtocolV4Codec {
                     }
                     .into()
                 }
+                CommandType::OutputMarker => {
+                    let proto::OutputCommandMessage { name, .. } =
+                        decode_or_bail!(cmd.serialized_content(), OutputCommandMessage);
+                    OutputMarkerCommand { name: name.into() }.into()
+                }
             },
 
             RawEntry::Notification(notif) => match notif.ty() {
@@ -1371,6 +1387,7 @@ impl Decoder for ServiceProtocolV4Codec {
                     }
                     .into()
                 }
+                CommandType::OutputMarker => OutputMarkerCommandLite {}.into(),
             },
 
             RawEntry::Notification(notif) => {
