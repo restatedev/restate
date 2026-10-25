@@ -518,9 +518,7 @@ where
         }
 
         let mut durable_lsn_watch = self.partition_store.get_durable_lsn().await?;
-        let durable_lsn = durable_lsn_watch
-            .borrow_and_update()
-            .unwrap_or(Lsn::INVALID);
+        let durable_lsn = *durable_lsn_watch.borrow_and_update();
 
         self.node_ctx
             .replica_set_states
@@ -810,15 +808,13 @@ where
 
     fn refresh_status(
         &mut self,
-        durable_lsn_watch: &mut watch::Receiver<Option<Lsn>>,
+        durable_lsn_watch: &mut watch::Receiver<Lsn>,
     ) -> Result<(), ProcessorError> {
         let durable_lsn = if durable_lsn_watch
             .has_changed()
             .map_err(|e| ProcessorError::Other(e.into()))?
         {
-            let durable_lsn = durable_lsn_watch
-                .borrow_and_update()
-                .unwrap_or(Lsn::INVALID);
+            let durable_lsn = *durable_lsn_watch.borrow_and_update();
             self.node_ctx.replica_set_states.note_durable_lsn(
                 self.ctx.partition_id(),
                 self.node_ctx.my_node_id().as_plain(),
@@ -826,7 +822,7 @@ where
             );
             durable_lsn
         } else {
-            durable_lsn_watch.borrow().unwrap_or(Lsn::INVALID)
+            *durable_lsn_watch.borrow()
         };
         self.status_watch_tx.send_modify(|old| {
             self.ctx.merge_with_status(old);
