@@ -540,7 +540,7 @@ mod tests {
                 })))
             });
 
-        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_dir = restate_test_util::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
         bootstrap_test(
             Listeners::new_unix_listener(socket_path.clone()).unwrap(),
@@ -599,7 +599,7 @@ mod tests {
     /// have any effect at all.
     #[restate_core::test(start_paused = false)]
     async fn http2_keep_alive_closes_unresponsive_connection() {
-        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_dir = restate_test_util::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
 
         bootstrap_test(

@@ -8036,7 +8036,6 @@ dependencies = [
  "serde_json",
  "serde_with",
  "strum",
- "tempfile",
  "thiserror 2.0.20",
  "tokio",
  "tokio-stream",
@@ -8202,6 +8201,7 @@ dependencies = [
  "restate-metadata-providers",
  "restate-metadata-server-grpc",
  "restate-metadata-store",
+ "restate-test-util",
  "restate-types",
  "restate-workspace-hack",
  "rev_lines",
@@ -8645,6 +8645,7 @@ dependencies = [
  "restate-node",
  "restate-rocksdb",
  "restate-service-client",
+ "restate-test-util",
  "restate-tracing-instrumentation",
  "restate-types",
  "restate-util-time",
@@ -8876,11 +8877,13 @@ dependencies = [
  "bytes",
  "bytestring",
  "googletest",
+ "libc",
  "pretty_assertions",
  "prost",
  "prost-types",
  "rand 0.10.2",
  "restate-workspace-hack",
+ "tempfile",
 ]
 
 [[package]]
