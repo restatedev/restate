@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
 use restate_core::ShutdownError;
+use restate_rocksdb::admission::Admission;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -572,6 +573,7 @@ impl PartitionStore {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
+            admission: self.db.admission(),
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
@@ -938,6 +940,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
+    admission: &'a Arc<Admission>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
@@ -1055,12 +1058,21 @@ fn assert_partition_key_or_err(
 
 impl Transaction for PartitionStoreTransaction<'_> {
     async fn commit(&mut self) -> Result<()> {
-        let Some(write_batch) = self
+        if self
             .write_batch_with_index
-            .take_if(|batch| !batch.is_empty())
-        else {
+            .as_ref()
+            .is_none_or(|batch| batch.is_empty())
+        {
             return Ok(());
-        };
+        }
+
+        // Rejection must preserve buffered writes. Once admitted, the write owns
+        // this lease through inline execution or background completion.
+        let lease = self
+            .admission
+            .try_acquire()
+            .ok_or(StorageError::OperationalError)?;
+        let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
 
         let io_mode = if Configuration::pinned()
             .worker
@@ -1082,6 +1094,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
                     io_mode,
                     opts,
                     write_batch,
+                    lease,
                 )
                 .await
                 .map_err(|error| StorageError::Generic(error.into()))?,
