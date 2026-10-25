@@ -10,10 +10,9 @@
 
 use std::sync::Arc;
 
-use tempfile::tempdir;
-
 use restate_storage_api::Transaction;
 use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
+use restate_test_util::tempdir;
 use restate_types::identifiers::{PartitionKey, SnapshotId};
 use restate_types::logs::{LogId, Lsn};
 use restate_types::partitions::Partition;

@@ -15,7 +15,6 @@ use std::time::Duration;
 use enumset::EnumSet;
 use googletest::IntoTestResult;
 use rcgen::{CertificateParams, CertifiedIssuer, KeyPair};
-use tempfile::TempDir;
 use tracing::info;
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
@@ -259,7 +258,7 @@ async fn verify_tls_mode(
 #[test_log::test(restate_core::test)]
 async fn fabric_tls_modes() -> googletest::Result<()> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    let tls_dir = TempDir::new().unwrap();
+    let tls_dir = restate_test_util::tempdir().unwrap();
     let ca_cert = generate_ca();
     install_test_tls_client(tls_dir.path(), &ca_cert);
 
