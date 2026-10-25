@@ -319,7 +319,10 @@ impl MaybeTempDir {
             );
             Self::PathBuf(dir)
         } else {
-            Self::TempDir(Arc::new(tempfile::tempdir().expect("to create a tempdir")))
+            // removed on drop, or at process exit if a failing test skips the drop
+            Self::TempDir(Arc::new(
+                restate_test_util::tempdir().expect("to create a tempdir"),
+            ))
         }
     }
 
