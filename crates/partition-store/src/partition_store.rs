@@ -37,7 +37,7 @@ use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
 use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
@@ -535,31 +535,15 @@ impl PartitionStore {
         self.transaction_with_isolation(IsolationLevel::Committed)
     }
 
-    /// Returns the durably persisted applied LSN, if any.
-    pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Option<Lsn>>> {
-        {
-            let sender = self.db.durable_lsn_sender();
-            if sender.borrow().is_some() {
-                let mut rx = self.db.durable_lsn_sender().subscribe();
-                rx.mark_changed();
-                return Ok(rx);
-            }
+    /// Returns a watch of the durably persisted applied LSN, or [`Lsn::INVALID`]
+    /// when no durable position is known or the old column family has been removed.
+    pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Lsn>> {
+        let needs_recovery = *self.db.durable_lsn_sender().borrow() == Lsn::INVALID;
+        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self).await? {
+            self.db.note_durable_lsn(lsn);
         }
 
-        let local = get_locally_durable_lsn(self).await?;
-        let sender = self.db.durable_lsn_sender();
-        if let Some(lsn) = local {
-            sender.send_if_modified(|current_mut| {
-                if current_mut.is_none_or(|c| c < lsn) {
-                    *current_mut = Some(lsn);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
-
-        let mut rx = sender.subscribe();
+        let mut rx = self.db.durable_lsn_sender().subscribe();
         rx.mark_changed();
         Ok(rx)
     }

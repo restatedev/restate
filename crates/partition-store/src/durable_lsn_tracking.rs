@@ -10,21 +10,23 @@
 
 use std::borrow::Cow;
 use std::ffi::{CStr, CString};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use ahash::HashMap;
 use rocksdb::event_listener::{EventListener, FlushJobInfo};
 use rocksdb::table_properties::{
     CollectorError, EntryType, TablePropertiesCollector, TablePropertiesCollectorFactory,
 };
+use tokio::sync::watch;
 use tracing::warn;
 
+use restate_platform::sync::RwLock;
 use restate_storage_api::StorageError;
 use restate_storage_api::fsm_table::SequenceNumber;
 use restate_storage_api::protobuf_types::PartitionStoreProtobufValue;
+use restate_types::logs::SequenceNumber as _;
 use restate_types::{identifiers::PartitionId, logs::Lsn};
 
-use crate::SharedState;
 use crate::fsm_table::{PartitionStateMachineKey, fsm_variable};
 #[cfg(test)]
 use crate::keys::EncodeTableKey;
@@ -109,32 +111,118 @@ impl TablePropertiesCollectorFactory for AppliedLsnCollectorFactory {
     }
 }
 
-/// Event listener tracking durable LSNs across
+/// Notification state for one physical database open, shared by its partition
+/// handles and flush listener. A reopened database must get a fresh registry.
+///
+/// A native callback can become its last owner. This must never own partition
+/// cells, column-family handles, or databases: releasing it on a flush thread
+/// must not initiate database shutdown and wait for that same flush.
+#[derive(Default)]
+pub(crate) struct DurableLsnSenders {
+    senders: RwLock<HashMap<PartitionId, Registration>>,
+    #[cfg(test)]
+    before_note: restate_platform::sync::Mutex<Option<NotificationPause>>,
+}
+
+struct Registration {
+    cf_id: u32,
+    sender: watch::Sender<Lsn>,
+}
+
+impl DurableLsnSenders {
+    pub fn register(&self, partition_id: PartitionId, cf_id: u32, sender: watch::Sender<Lsn>) {
+        let mut senders = self.senders.write();
+        if let Some(previous) = senders.insert(partition_id, Registration { cf_id, sender }) {
+            previous.sender.send_replace(Lsn::INVALID);
+        }
+    }
+
+    pub fn unregister(&self, partition_id: PartitionId, cf_id: u32) {
+        let mut senders = self.senders.write();
+        if let std::collections::hash_map::Entry::Occupied(entry) = senders.entry(partition_id)
+            && entry.get().cf_id == cf_id
+        {
+            entry.remove().sender.send_replace(Lsn::INVALID);
+        }
+    }
+
+    pub fn note_durable_lsn(&self, partition_id: PartitionId, cf_id: u32, lsn: Lsn) {
+        #[cfg(test)]
+        let completed = {
+            let pause = self.before_note.lock().take();
+            pause.map(|pause| {
+                let _ = pause.reached.send(());
+                let _ = pause.resume.recv();
+                pause.completed
+            })
+        };
+        // Keep the read lock through notification so unregister cannot reset an
+        // old watch to INVALID and then have an in-flight callback or recovery revive it.
+        let senders = self.senders.read();
+        if let Some(registration) = senders.get(&partition_id)
+            && registration.cf_id == cf_id
+        {
+            registration.sender.send_if_modified(|current| {
+                if lsn > *current {
+                    *current = lsn;
+                    true
+                } else {
+                    false
+                }
+            });
+        }
+        #[cfg(test)]
+        if let Some(completed) = completed {
+            let _ = completed.send(());
+        }
+    }
+
+    /// Pause a native callback before it selects a registration. Dropping the
+    /// resume sender releases it, including if the test fails.
+    #[cfg(test)]
+    pub fn pause_next_notification(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) {
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+        *self.before_note.lock() = Some(NotificationPause {
+            reached: reached_tx,
+            resume: resume_rx,
+            completed: completed_tx,
+        });
+        (reached_rx, resume_tx, completed_rx)
+    }
+}
+
+#[cfg(test)]
+struct NotificationPause {
+    reached: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+    completed: tokio::sync::oneshot::Sender<()>,
+}
+
+/// Event listener tracking durable LSNs across partitions.
 ///
 /// This listener works in conjunction with the [`AppliedLsnCollector`] to track the high watermark
 /// applied LSNs per partition, once tables are flushed to disk. The event listener will only track
-/// partitions for which there are already entries in the [`shared_state`].
-#[derive(Default)]
+/// partitions with a registered sender in [`DurableLsnSenders`].
 pub(crate) struct DurableLsnEventListener {
-    shared_state: Weak<SharedState>,
+    notifications: Arc<DurableLsnSenders>,
 }
 
 impl DurableLsnEventListener {
-    pub fn new(shared_state: &Arc<SharedState>) -> Self {
-        Self {
-            shared_state: Arc::downgrade(shared_state),
-        }
+    pub fn new(notifications: Arc<DurableLsnSenders>) -> Self {
+        Self { notifications }
     }
 }
 
 impl EventListener for DurableLsnEventListener {
     fn on_flush_completed(&self, flush_job_info: &FlushJobInfo) {
-        let Some(shared_state) = self.shared_state.upgrade() else {
-            // we have dropped all references to the database, we are not interested in monitoring
-            // flushes anymore.
-            return;
-        };
-
         for key in flush_job_info.get_user_collected_property_keys(APPLIED_LSNS_PROPERTY_PREFIX) {
             let partition_id = key[APPLIED_LSNS_PROPERTY_PREFIX.to_bytes().len()..]
                 .to_string_lossy()
@@ -147,7 +235,8 @@ impl EventListener for DurableLsnEventListener {
                 .transpose();
 
             if let (Ok(ref partition_id), Ok(Some(ref lsn))) = (partition_id, lsn) {
-                shared_state.note_durable_lsn(*partition_id, *lsn);
+                self.notifications
+                    .note_durable_lsn(*partition_id, flush_job_info.cf_id(), *lsn);
             } else {
                 let cf_name = flush_job_info.cf_name();
                 let cf_name = cf_name
