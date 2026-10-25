@@ -1132,6 +1132,7 @@ mod tests {
     use restate_clock::time::MillisSinceEpoch;
     use restate_core::{Metadata, TestCoreEnv};
     use restate_object_store_util::create_object_store_client;
+    use restate_test_util::tempdir;
     use restate_types::config::{ObjectStoreOptions, SnapshotsOptions};
     use restate_types::identifiers::{PartitionId, SnapshotId};
     use restate_types::logs::{LogId, Lsn, SequenceNumber};
@@ -1147,7 +1148,7 @@ mod tests {
     async fn overwrite_unparsable_latest() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshot_source = TempDir::new()?;
+        let snapshot_source = tempdir()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
         let data = b"snapshot-data";
@@ -1161,7 +1162,7 @@ mod tests {
             data.len(),
         );
 
-        let snapshots_destination: TempDir = TempDir::new()?;
+        let snapshots_destination: TempDir = tempdir()?;
         let destination_dir = snapshots_destination.path().to_owned();
         let opts = SnapshotsOptions {
             destination: Some(
@@ -1171,7 +1172,7 @@ mod tests {
             ),
             ..SnapshotsOptions::default()
         };
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
@@ -1197,7 +1198,7 @@ mod tests {
 
     #[restate_core::test]
     async fn put_snapshot_local_filesystem() -> anyhow::Result<()> {
-        let snapshots_destination = TempDir::new()?;
+        let snapshots_destination = tempdir()?;
         test_put_snapshot(
             Url::from_file_path(snapshots_destination.path())
                 .unwrap()
@@ -1218,7 +1219,7 @@ mod tests {
     async fn test_put_snapshot(destination: String) -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshot_source = TempDir::new()?;
+        let snapshot_source = tempdir()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
         let destination_url = Url::parse(destination.as_str())?;
@@ -1256,7 +1257,7 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
@@ -1291,7 +1292,7 @@ mod tests {
         let (expected_latest, _) = repository.build_latest_v2(&snapshot1, None)?;
         assert_eq!(expected_latest, latest);
 
-        let snapshot_source = TempDir::new()?;
+        let snapshot_source = tempdir()?;
         let source_dir = snapshot_source.path().to_path_buf();
 
         let data = b"snapshot-data";
@@ -1336,7 +1337,7 @@ mod tests {
         data: &[u8],
         lsn: Lsn,
     ) -> anyhow::Result<(PartitionSnapshotMetadata, PathBuf)> {
-        let snapshot_dir = TempDir::new()?.keep();
+        let snapshot_dir = tempdir()?.keep();
 
         let mut data_file = tokio::fs::File::create(snapshot_dir.join("data.sst")).await?;
         data_file.write_all(data).await?;
@@ -1393,7 +1394,7 @@ mod tests {
     async fn snapshot_retention_v2() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshots_destination = TempDir::new()?;
+        let snapshots_destination = tempdir()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
             .to_string();
@@ -1404,12 +1405,12 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
         for i in 1..=4 {
-            let snapshot_source = TempDir::new()?;
+            let snapshot_source = tempdir()?;
             let source_dir = snapshot_source.path().to_path_buf();
 
             let data = format!("snapshot-data-{}", i);
@@ -1456,12 +1457,12 @@ mod tests {
     async fn v1_to_v2_migration() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshots_destination = TempDir::new()?;
+        let snapshots_destination = tempdir()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
             .to_string();
 
-        let snapshot_source = TempDir::new()?;
+        let snapshot_source = tempdir()?;
         let source_dir = snapshot_source.path().to_path_buf();
         let data = b"snapshot-data-v1";
         let mut data_file = tokio::fs::File::create(source_dir.join("data.sst")).await?;
@@ -1488,7 +1489,7 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
@@ -1522,7 +1523,7 @@ mod tests {
             )
             .await?;
 
-        let snapshot_source_2 = TempDir::new()?;
+        let snapshot_source_2 = tempdir()?;
         let source_dir_2 = snapshot_source_2.path().to_path_buf();
         let data2 = b"snapshot-data-v2";
         let mut data_file_2 = tokio::fs::File::create(source_dir_2.join("data.sst")).await?;
@@ -1552,7 +1553,7 @@ mod tests {
     async fn archived_lsn_v2() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshots_destination = TempDir::new()?;
+        let snapshots_destination = tempdir()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
             .to_string();
@@ -1563,12 +1564,12 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
         for i in 1..=3 {
-            let snapshot_source = TempDir::new()?;
+            let snapshot_source = tempdir()?;
             let source_dir = snapshot_source.path().to_path_buf();
 
             let data = format!("snapshot-data-{}", i);
@@ -1604,7 +1605,7 @@ mod tests {
     async fn cleanup() -> anyhow::Result<()> {
         let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-        let snapshots_destination = TempDir::new()?;
+        let snapshots_destination = tempdir()?;
         let destination = Url::from_file_path(snapshots_destination.path())
             .unwrap()
             .to_string();
@@ -1616,7 +1617,7 @@ mod tests {
             ..SnapshotsOptions::default()
         };
 
-        let repository = SnapshotRepository::new_from_config(&opts, TempDir::new().unwrap().keep())
+        let repository = SnapshotRepository::new_from_config(&opts, tempdir()?.keep())
             .await?
             .unwrap();
 
@@ -1750,7 +1751,7 @@ mod tests {
 
     #[restate_core::test]
     async fn sweep_staging_dir_removes_leftovers() -> anyhow::Result<()> {
-        let staging = TempDir::new()?;
+        let staging = tempdir()?;
 
         // A leftover snapshot directory with a file inside, plus a stray file.
         let leftover_dir = staging.path().join("snap-abc123");
@@ -1784,7 +1785,7 @@ mod tests {
 
     #[restate_core::test]
     async fn snapshot_dir_cleaned_on_drop_unless_disarmed() -> anyhow::Result<()> {
-        let staging = TempDir::new()?;
+        let staging = tempdir()?;
 
         // An owned SnapshotDir removes its directory when the snapshot is dropped -- this is
         // what protects the import failure paths in #4838.
