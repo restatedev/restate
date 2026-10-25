@@ -209,6 +209,28 @@ impl RocksDbManager {
         Ok(())
     }
 
+    /// Occupy every worker in a pool until the returned senders are dropped.
+    /// Used to deterministically test queued work and cancelled result waiters.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn pause_background(&self, priority: Priority) -> Vec<std::sync::mpsc::Sender<()>> {
+        let pool = match priority {
+            Priority::High => &self.high_pri_pool,
+            Priority::Low => &self.low_pri_pool,
+        };
+        let mut resumes = Vec::with_capacity(pool.max_count());
+        for _ in 0..pool.max_count() {
+            let (resume, paused) = std::sync::mpsc::channel();
+            let (started, reached) = tokio::sync::oneshot::channel();
+            resumes.push(resume);
+            pool.execute(move || {
+                let _ = started.send(());
+                let _ = paused.recv();
+            });
+            reached.await.expect("background worker started");
+        }
+        resumes
+    }
+
     pub fn get_total_write_buffer_capacity(&self) -> u64 {
         self.write_buffer_manager.get_buffer_size() as u64
     }

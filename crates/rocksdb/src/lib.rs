@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+pub mod admission;
 mod background;
 pub mod configuration;
 mod db_manager;
@@ -18,21 +19,20 @@ mod logging;
 mod metric_definitions;
 mod perf;
 mod rock_access;
-
-use metrics::counter;
-use tracing::debug;
-use tracing::error;
-use tracing::warn;
+#[cfg(test)]
+mod write_tests;
 
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use metrics::counter;
 use rocksdb::ExportImportFilesMetaData;
 use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
+use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
 use restate_types::protobuf::common::DatabaseKind;
@@ -48,6 +48,7 @@ use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
 
+use self::admission::{Lease, OwnedLease};
 use self::background::StorageTask;
 use self::metric_definitions::*;
 
@@ -82,6 +83,45 @@ pub enum IoMode {
     /// possible, it'll spawn work in the background thread pool.
     #[default]
     Default,
+}
+
+// Field order releases operation-owned resources before completing admission, even
+// when execution fails, unwinds, or an unsubmitted task is dropped. Keep the entire
+// operation together when capturing it in a background closure.
+struct WriteOperation<D, B, OP, L> {
+    batch: B,
+    options: rocksdb::WriteOptions,
+    write_op: OP,
+    db: D,
+    lease: L,
+}
+
+impl<D, B, OP, L> WriteOperation<D, B, OP, L>
+where
+    D: AsRef<RocksDb>,
+    OP: Fn(&RocksAccess, &B, &rocksdb::WriteOptions) -> Result<(), rocksdb::Error>,
+{
+    fn apply(&self) -> Result<(), rocksdb::Error> {
+        (self.write_op)(&self.db.as_ref().db, &self.batch, &self.options)
+    }
+
+    fn run(self, name: &'static str) -> Result<B, rocksdb::Error> {
+        let _perf = RocksDbWritePerfGuard::new(name);
+        self.apply()?;
+        Ok(self.batch)
+    }
+}
+
+impl<B, OP> WriteOperation<&Arc<RocksDb>, B, OP, Option<Lease<'_>>> {
+    fn into_background(self) -> WriteOperation<Arc<RocksDb>, B, OP, Option<OwnedLease>> {
+        WriteOperation {
+            batch: self.batch,
+            options: self.options,
+            write_op: self.write_op,
+            db: Arc::clone(self.db),
+            lease: self.lease.map(Lease::into_owned),
+        }
+    }
 }
 
 #[derive(derive_more::Display, derive_more::Debug)]
@@ -179,16 +219,21 @@ impl RocksDb {
             name,
             priority,
             io_mode,
-            write_options,
-            write_batch,
-            |db, write_options, batch| db.write_batch(batch, write_options),
+            WriteOperation {
+                batch: write_batch,
+                options: write_options,
+                write_op: RocksAccess::write_batch,
+                db: self,
+                lease: None,
+            },
         )
         .await
     }
 
     /// Write a [`rocksdb::WriteBatchWithIndex`] to the database.
     ///
-    /// On success, returns the batch so callers can reuse it.
+    /// On success, returns the batch so callers can reuse it. The lease follows the
+    /// actual write, including background retries, independently of the result waiter.
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn write_batch_with_index(
         self: &Arc<Self>,
@@ -197,14 +242,19 @@ impl RocksDb {
         io_mode: IoMode,
         write_options: rocksdb::WriteOptions,
         write_batch: rocksdb::WriteBatchWithIndex,
+        lease: Lease<'_>,
     ) -> Result<rocksdb::WriteBatchWithIndex, RocksError> {
         self.write_batch_internal(
             name,
             priority,
             io_mode,
-            write_options,
-            write_batch,
-            |db, write_options, batch| db.write_batch_with_index(batch, write_options),
+            WriteOperation {
+                batch: write_batch,
+                options: write_options,
+                write_op: RocksAccess::write_batch_with_index,
+                db: self,
+                lease: Some(lease),
+            },
         )
         .await
     }
@@ -214,13 +264,11 @@ impl RocksDb {
         name: &'static str,
         priority: Priority,
         io_mode: IoMode,
-        mut write_options: rocksdb::WriteOptions,
-        batch: B,
-        write_op: OP,
+        mut write: WriteOperation<&Arc<Self>, B, OP, Option<Lease<'_>>>,
     ) -> Result<B, RocksError>
     where
         B: Send + 'static,
-        OP: Fn(&RocksAccess, &rocksdb::WriteOptions, &B) -> Result<(), rocksdb::Error>
+        OP: Fn(&RocksAccess, &B, &rocksdb::WriteOptions) -> Result<(), rocksdb::Error>
             + Send
             + 'static,
     {
@@ -231,8 +279,8 @@ impl RocksDb {
                 debug!(
                     "Blocking IO is allowed for write_batch, stall detection will not be used in this operation!"
                 );
-                write_options.set_no_slowdown(false);
-                if let Err(e) = write_op(&self.db, &write_options, &batch) {
+                write.options.set_no_slowdown(false);
+                if let Err(e) = write.apply() {
                     return Err(e.into());
                 }
                 counter!(STORAGE_IO_OP,
@@ -241,21 +289,17 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
-                return Ok(batch);
+                return Ok(write.batch);
             }
             IoMode::AlwaysBackground => {
                 // Operation will block, dispatch to background.
-                let db = Arc::clone(self);
                 // In the background thread pool we can block on IO
-                write_options.set_no_slowdown(false);
+                write.options.set_no_slowdown(false);
+                let write = write.into_background();
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || -> Result<B, rocksdb::Error> {
-                        let _x = RocksDbWritePerfGuard::new(name);
-                        write_op(&db.db, &write_options, &batch)?;
-                        Ok(batch)
-                    })
+                    .op(move || write.run(name))
                     .build()
                     .unwrap();
 
@@ -270,8 +314,8 @@ impl RocksDb {
             }
             IoMode::OnlyIfNonBlocking => {
                 let _x = RocksDbWritePerfGuard::new(name);
-                write_options.set_no_slowdown(true);
-                if let Err(e) = write_op(&self.db, &write_options, &batch) {
+                write.options.set_no_slowdown(true);
+                if let Err(e) = write.apply() {
                     return Err(e.into());
                 }
                 counter!(STORAGE_IO_OP,
@@ -280,17 +324,17 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
-                return Ok(batch);
+                return Ok(write.batch);
             }
             _ => {}
         }
 
         // Auto...
         // First, attempt to write without blocking
-        write_options.set_no_slowdown(true);
+        write.options.set_no_slowdown(true);
 
         let perf_guard = RocksDbWritePerfGuard::new(name);
-        let result = write_op(&self.db, &write_options, &batch);
+        let result = write.apply();
         match result {
             Ok(_) => {
                 counter!(STORAGE_IO_OP,
@@ -299,7 +343,7 @@ impl RocksDb {
                     PRIORITY => priority.as_static_str(),
                 )
                 .increment(1);
-                Ok(batch)
+                Ok(write.batch)
             }
             Err(e) if is_retryable_error(e.kind()) => {
                 counter!(STORAGE_IO_OP,
@@ -313,17 +357,13 @@ impl RocksDb {
                 // StorageOpKind to differentiate the two.
                 perf_guard.forget();
                 // Operation will block, dispatch to background.
-                let db = Arc::clone(self);
                 // In the background thread pool we can block on IO
-                write_options.set_no_slowdown(false);
+                write.options.set_no_slowdown(false);
+                let write = write.into_background();
                 let task = StorageTask::default()
                     .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
-                    .op(move || -> Result<B, rocksdb::Error> {
-                        let _x = RocksDbWritePerfGuard::new(name);
-                        write_op(&db.db, &write_options, &batch)?;
-                        Ok(batch)
-                    })
+                    .op(move || write.run(name))
                     .build()
                     .unwrap();
 
