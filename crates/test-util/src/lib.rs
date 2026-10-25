@@ -33,3 +33,6 @@ pub use pretty_assertions::{assert_eq, assert_ne};
 
 pub mod matchers;
 pub mod rand;
+mod tempdir;
+
+pub use tempdir::tempdir;
