@@ -93,6 +93,41 @@ pub struct HttpOptions {
     /// Default: 5 minutes
     pub http2_idle_connection_timeout: FriendlyDuration,
 
+    /// # HTTP/2 Max Connection Age
+    ///
+    /// Maximum age of a connection to an HTTP deployment before it is retired
+    /// from the connection pool. Once a connection reaches this age no new
+    /// streams are opened on it; in-flight invocations complete on it and the
+    /// connection then closes gracefully. The next request opens a fresh
+    /// connection.
+    ///
+    /// Useful behind an L4 load balancer (for example a Kubernetes `ClusterIP`
+    /// service), where long-lived connections stay pinned to the backends that
+    /// existed when they were opened and newly added backends receive no
+    /// traffic until a new connection is made.
+    ///
+    /// Set to `0` to disable: connections then live until idle or closed by
+    /// the peer.
+    ///
+    /// Since: v1.8.2
+    ///
+    /// Default: 0 (unlimited)
+    pub http2_max_connection_age: FriendlyDuration,
+
+    /// # HTTP/2 Max Connection Age Jitter
+    ///
+    /// Fractional jitter added to `http2-max-connection-age`, expressed as a
+    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is fixed per
+    /// connection, so connections opened at the same time do not all retire
+    /// at once.
+    ///
+    /// Only meaningful when `http2-max-connection-age` is not zero.
+    ///
+    /// Since: v1.8.2
+    ///
+    /// Default 0.1 (10% of http2-max-connection-age)
+    pub http2_max_connection_age_jitter: f32,
+
     /// # HTTP/2 initial stream window size
     ///
     /// Initial flow-control window (in bytes) for received data on each HTTP/2
@@ -151,6 +186,8 @@ impl Default for HttpOptions {
             http2_initial_max_send_streams: None,
             http2_streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             http2_idle_connection_timeout: FriendlyDuration::from_secs(300),
+            http2_max_connection_age: FriendlyDuration::from_secs(0),
+            http2_max_connection_age_jitter: 0.1,
             http2_initial_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).unwrap(),
             ),
