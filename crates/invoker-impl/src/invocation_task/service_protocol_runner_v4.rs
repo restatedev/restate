@@ -17,7 +17,6 @@ use std::time::Duration;
 use bytes::Bytes;
 use bytestring::ByteString;
 use futures::{Stream, StreamExt};
-use gardal::futures::StreamExt as GardalStreamExt;
 use http::uri::PathAndQuery;
 use http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use metrics::{Counter, counter};
@@ -71,6 +70,7 @@ use crate::error::{
     CommandPreconditionError, InvocationErrorRelatedCommandV2, InvokerError,
     RequestedErrorBehavior, SdkInvocationErrorV2,
 };
+use crate::invocation_task::action_throttle::ActionThrottledStream;
 use crate::invocation_task::{
     InvocationTask, InvocationTaskOutputInner, InvokerBodySender, InvokerBodyType, ResponseChunk,
     ResponseStream, TerminalLoopState, X_RESTATE_SERVER, collect_eager_state,
@@ -204,16 +204,16 @@ where
         // Initialize the response stream state
         let http_stream_rx = ResponseStream::new(self.invocation_task.client.call(request));
 
-        let mut decoder_stream = std::pin::pin!(
+        let mut decoder_stream = std::pin::pin!(ActionThrottledStream::new(
             DecoderStream::new(
                 http_stream_rx,
                 self.service_protocol_version,
                 self.invocation_task.message_size_warning,
                 self.invocation_task.message_size_limit,
                 deployment_type_str,
-            )
-            .throttle(self.invocation_task.action_token_bucket.take())
-        );
+            ),
+            self.invocation_task.action_token_bucket.take(),
+        ));
 
         let result = self
             .run_inner(
