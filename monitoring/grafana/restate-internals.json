@@ -1873,7 +1873,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Time vqueue entries spend blocked before they can run, by reason (seconds waited per second, i.e. average number of blocked entries). Lock = virtual object locks; concurrency/throttling rules = user-defined flow control limits; invoker concurrency/memory/throttling = node-wide invoker capacity; deployment concurrency = per-deployment limits.",
+      "description": "Time vqueue heads spend blocked before they can run, by reason (seconds waited per second, i.e. average number of blocked vqueues; entries queued behind a blocked head are not counted). Wait time is recorded when the blocking ends, so long waits show up as spikes. Lock = virtual object locks; concurrency/throttling rules = user-defined flow control limits; invoker concurrency/memory/throttling = node-wide invoker capacity; deployment concurrency = per-deployment limits.",
       "fieldConfig": {
         "defaults": {
           "color": {
