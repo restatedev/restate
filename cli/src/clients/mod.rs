@@ -15,6 +15,7 @@ pub mod cloud;
 pub mod datafusion_helpers;
 mod datafusion_http_client;
 mod errors;
+pub mod github;
 
 pub use self::admin_client::AdminClient;
 pub use self::admin_client::{MAX_ADMIN_API_VERSION, MIN_ADMIN_API_VERSION};

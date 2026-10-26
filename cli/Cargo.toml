@@ -71,7 +71,6 @@ indoc = { version = "2.0.7" }
 itertools = { workspace = true }
 json-patch = "4.1.0"
 mnemonic = "1.1.1"
-octocrab = { workspace = true, features = ["stream"] }
 open = "5.3.3"
 rand = { workspace = true }
 reqwest = { workspace = true, default-features = false, features = ["form", "http2"] }
@@ -89,7 +88,7 @@ toml = {workspace = true }
 toml_edit = "0.25.15"
 tower = { workspace = true }
 tracing = { workspace = true }
-url = { workspace = true }
+url = { workspace = true, features = ["serde"] }
 zip = { version = "9.0" }
 
 
