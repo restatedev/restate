@@ -11,6 +11,7 @@ This document describes Restate's build infrastructure, CI pipelines, and releas
 - [CI Workflows](#ci-workflows)
   - [Main CI Pipeline](#main-ci-pipeline-ciyml)
   - [Docker Image Artifact Flow](#docker-image-artifact-flow)
+  - [Jepsen Tests](#jepsen-tests)
   - [Docker Build Workflow](#docker-build-workflow-dockeryml)
   - [Release Workflow](#release-workflow-releaseyml)
   - [Release Build Setup](#release-build-setup-stepsrelease-build-setupyml)
