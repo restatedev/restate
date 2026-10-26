@@ -24,7 +24,7 @@ use crate::net::address::FabricPort;
 use crate::net::address::{AdvertisedAddress, AdvertisedHost, BindAddress};
 use crate::nodes_config::Role;
 
-use super::{ControlOptions, ListenMode, LogFormat};
+use super::{AdvertisedAddressEntry, ControlOptions, ListenMode, LogFormat};
 
 #[serde_as]
 #[skip_serializing_none]
@@ -44,6 +44,17 @@ pub struct CommonOptionCliOverride {
     /// Hostname to advertise for this service.
     #[clap(long, env = "RESTATE_ADVERTISED_HOST", global = true)]
     advertised_host: Option<AdvertisedHost>,
+
+    /// Fabric addresses for callers in specific locations, as `location@address` entries.
+    /// Repeat the flag or separate the entries with commas.
+    #[clap(
+        long,
+        env = "RESTATE_ADVERTISED_ADDRESSES",
+        value_delimiter = ',',
+        global = true
+    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    advertised_addresses: Vec<AdvertisedAddressEntry<FabricPort>>,
 
     /// Local interface IP address to listen on.
     #[clap(long, env = "RESTATE_BIND_IP", global = true)]
@@ -261,6 +272,7 @@ mod tests {
             r#"
             node-name = "control-cli-test"
             advertised-address = "http://fabric.example.com:5122"
+            advertised-addresses = ["us-east1@http://file.example.com:5122"]
             ctrl-advertised-host = "control.example.com"
             ctrl-advertised-address = "https://file.example.com"
             [networking]
@@ -320,9 +332,38 @@ mod tests {
                 "http://fabric.example.com:5122".parse().unwrap()
             );
             assert!(config.networking.disable_compression);
+            // Flags that do not set a list leave the file's list alone.
+            assert_eq!(config.advertised_addresses().len(), 1);
         }
 
+        // The list flags take comma-separated entries, can be repeated, and replace the file's
+        // list.
+        let options = CommonOptionCliOverride::try_parse_from([
+            "restate-server",
+            "--advertised-addresses",
+            "us-east1@http://10.1.7.3:5122,external@http://localhost:15122",
+            "--ctrl-advertised-addresses",
+            "external@http://localhost:15122",
+            "--ctrl-advertised-addresses",
+            "us-east1@http://10.1.7.3:5122",
+        ])
+        .unwrap();
+        let config = ConfigLoaderBuilder::default()
+            .path(Some(path))
+            .cli_override(options)
+            .build()
+            .unwrap()
+            .load_once()
+            .unwrap();
+        let fabric = config.advertised_addresses();
+        assert_eq!(fabric.len(), 2);
+        assert_eq!(fabric[1].address.to_string(), "http://localhost:15122/");
+        let control = config.control_advertised_addresses();
+        assert_eq!(control.len(), 2);
+        assert_eq!(control[0].address.to_string(), "http://localhost:15122/");
+
         let defaults = serde_json::to_value(CommonOptionCliOverride::default()).unwrap();
+        assert!(defaults.get("advertised-addresses").is_none());
         assert!(defaults.get("control").is_none());
         assert!(defaults.get("ctrl-advertised-host").is_none());
         assert!(defaults.get("networking").is_none());
