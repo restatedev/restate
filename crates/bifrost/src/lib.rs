@@ -29,7 +29,7 @@ mod watchdog;
 pub use appender::Appender;
 pub use background_appender::{
     AppenderHandle, BackgroundAppender, CommitToken, Committed, EnqueueWithNotificationResult,
-    LogSender,
+    LogSender, WrittenRecords,
 };
 pub use bifrost::{Bifrost, ErrorRecoveryStrategy};
 pub use bifrost_admin::{BifrostAdmin, MaybeSealedSegment};
