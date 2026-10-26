@@ -10,72 +10,76 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::task::{Context, Wake, Waker};
 
-use enum_map::{Enum, EnumMap};
+use enum_map::{Array, Enum, EnumMap};
+use futures::task::AtomicWaker;
 use tracing::warn;
-
-use restate_platform::sync::Mutex;
 
 const QUANTUM: i64 = 64 * 1024; // 64KiB
 
+// Every flow gets one bit in `Shared::woken`.
+const _: () = assert!(
+    <<SelfProposerSchedulerFlow as Enum>::Array<()> as Array>::LENGTH <= u16::BITS as usize
+);
+
+/// The state that's shared with the per-flow wakers. Wakers can be invoked from any thread,
+/// so they only record the wake notification here. The notifications are then drained by the
+/// scheduler on its next poll.
+struct Shared {
+    /// Bit `i` is set if flow `i` was woken up since the last time it was drained.
+    woken: AtomicU16,
+    parent_waker: AtomicWaker,
+}
+
+impl Shared {
+    /// Sets the wake notification of the flow, returning whether it was already set.
+    fn set_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
+        let previous = self.woken.fetch_or(flow.bit(), Ordering::AcqRel);
+        previous & flow.bit() != 0
+    }
+
+    /// Clears the wake notification of the flow, returning whether it was set.
+    fn take_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
+        let previous = self.woken.fetch_and(!flow.bit(), Ordering::AcqRel);
+        previous & flow.bit() != 0
+    }
+}
+
 /// The per-flow waker that's passed to the flow's poll method. When woken up,
-/// it puts the flow back in the ready queue.
+/// it marks the flow as woken and wakes up the scheduler, which will put the
+/// flow back in the ready queue.
 struct FlowWaker {
     flow: SelfProposerSchedulerFlow,
-    inner: Arc<Mutex<Inner>>,
+    shared: Arc<Shared>,
 }
 
 impl Wake for FlowWaker {
     fn wake(self: Arc<Self>) {
-        let mut guard = self.inner.lock();
-        let Inner {
-            state, ready_ring, ..
-        } = &mut *guard;
-        let state = &mut state[self.flow];
+        self.wake_by_ref()
+    }
 
-        let waker = match state.state {
-            State::Pending => {
-                state.state = State::Queued;
-                ready_ring.push_back(self.flow);
-                guard.parent_waker.clone()
-            }
-            State::Queued => {
-                // nothing to do
-                None
-            }
-            State::Polling { notified } => {
-                if notified {
-                    // we're already notified, nothing to do
-                    return;
-                }
-                state.state = State::Polling { notified: true };
-                guard.parent_waker.clone()
-            }
-        };
-        drop(guard);
-        if let Some(w) = waker {
-            w.wake_by_ref()
+    fn wake_by_ref(self: &Arc<Self>) {
+        let already_woken = self.shared.set_woken(self.flow);
+        // Only wake the parent on the first notification, otherwise a wake up is already pending.
+        if !already_woken {
+            self.shared.parent_waker.wake();
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 enum State {
     /// The flow reported Poll::Pending, the last time it was polled.
     Pending,
     /// The flow is currently in the ready queue.
     Queued,
     /// This flow is currently being polled, and we haven't heard back a feedback
-    /// from the scheduler decision.
-    Polling {
-        /// This is there to capture inline wake notifications while the flow is being
-        /// polled (and after it returned `Poll::Pending`). The flow is initially scheduled
-        /// with `notified` set to `false`, and when the waker is woken up, it'll set it to
-        /// `true`. When the scheduler hears back from the feedback on decision, it can put
-        /// it in the ready queue even if the flow returned Poll::Pending.
-        notified: bool,
-    },
+    /// from the scheduler decision. Wake notifications that arrive while the flow is
+    /// being polled are captured in [`Shared::woken`] and are checked when the flow
+    /// reports back `Poll::Pending`.
+    Polling,
 }
 
 #[derive(Debug, Clone)]
@@ -88,12 +92,6 @@ struct FlowState {
     /// won't get polled again until its deficit goes positive again over the rounds.
     deficit: i64,
     state: State,
-}
-
-struct Inner {
-    parent_waker: Option<Waker>,
-    state: EnumMap<SelfProposerSchedulerFlow, FlowState>,
-    ready_ring: VecDeque<SelfProposerSchedulerFlow>,
 }
 
 #[derive(Debug, Clone, Enum, Copy, PartialEq)]
@@ -127,6 +125,11 @@ impl SelfProposerSchedulerFlow {
             SelfProposerSchedulerFlow::Scheduler => 1,
         }
     }
+
+    /// The flow's bit in [`Shared::woken`].
+    fn bit(self) -> u16 {
+        1 << self.into_usize()
+    }
 }
 
 /// The scheduler's decision of which flow to poll next. The caller must then poll the returned flow and
@@ -137,21 +140,24 @@ pub(crate) struct SchedulerDecision<'a> {
     /// The flow specific waker to be passed to the flow's poll method.
     /// Once it's woken up, this flow moves to the ready queue.
     pub(crate) waker: &'a Waker,
-    inner: &'a mut Arc<Mutex<Inner>>,
+    state: &'a mut EnumMap<SelfProposerSchedulerFlow, FlowState>,
+    ready_ring: &'a mut VecDeque<SelfProposerSchedulerFlow>,
+    shared: &'a Shared,
     received_feedback: bool,
 }
 
 impl<'a> SchedulerDecision<'a> {
-    fn requeue(
-        flow: SelfProposerSchedulerFlow,
-        state: &mut FlowState,
-        ready_ring: &mut VecDeque<SelfProposerSchedulerFlow>,
-        force_back: bool,
-    ) {
+    fn flow_state(&mut self) -> &mut FlowState {
+        &mut self.state[self.flow]
+    }
+
+    fn requeue(&mut self, force_back: bool) {
+        let flow = self.flow;
+        let state = &mut self.state[flow];
         if state.deficit > 0 && !force_back {
-            ready_ring.push_front(flow);
+            self.ready_ring.push_front(flow);
         } else {
-            ready_ring.push_back(flow);
+            self.ready_ring.push_back(flow);
         }
         state.state = State::Queued;
     }
@@ -165,16 +171,11 @@ impl<'a> SchedulerDecision<'a> {
     /// ready queue to avoid starvation.
     pub(crate) fn on_proposal_enqueued(mut self, bytes_written: usize) {
         self.received_feedback = true;
-        let mut inner = self.inner.lock();
-        let Inner {
-            state, ready_ring, ..
-        } = &mut *inner;
-        let state = &mut state[self.flow];
-        state.deficit = state.deficit.saturating_sub(
-            bytes_written.saturating_mul(self.flow.cost_multiplier() as usize) as i64,
-        );
-        std::debug_assert_matches!(state.state, State::Polling { .. });
-        Self::requeue(self.flow, state, ready_ring, bytes_written == 0);
+        let cost = bytes_written.saturating_mul(self.flow.cost_multiplier() as usize) as i64;
+        let state = self.flow_state();
+        state.deficit = state.deficit.saturating_sub(cost);
+        std::debug_assert_matches!(state.state, State::Polling);
+        self.requeue(bytes_written == 0);
     }
 
     /// Reports back that the flow was ready, but reported an error without proposing any bytes.
@@ -188,24 +189,22 @@ impl<'a> SchedulerDecision<'a> {
     /// to its poll method.
     pub(crate) fn on_pending(mut self) {
         self.received_feedback = true;
-        let mut inner = self.inner.lock();
-        let Inner {
-            state, ready_ring, ..
-        } = &mut *inner;
-        let state = &mut state[self.flow];
-        let State::Polling { notified } = &mut state.state else {
-            panic!("state is not polling, this is a bug");
-        };
-        if *notified {
-            // To avoid starvation, we're going to move the flow back to the back of the ready queue.
-            Self::requeue(self.flow, state, ready_ring, /* force back */ true);
-        } else if state.deficit >= 0 {
+        assert!(
+            matches!(self.flow_state().state, State::Polling),
+            "state is not polling, this is a bug"
+        );
+        if self.shared.take_woken(self.flow) {
+            // The flow was woken up while being polled. To avoid starvation, we're going
+            // to move the flow back to the back of the ready queue.
+            self.requeue(/* force back */ true);
+        } else if self.flow_state().deficit >= 0 {
             // We're truly pending, reset the deficit and move on.
+            let state = self.flow_state();
             state.state = State::Pending;
             state.deficit = 0;
         } else {
             // The stream is in debit, it should stay in the ready queue until the debit is paid.
-            Self::requeue(self.flow, state, ready_ring, /* force back */ true);
+            self.requeue(/* force back */ true);
         }
     }
 }
@@ -223,14 +222,10 @@ impl Drop for SchedulerDecision<'_> {
             "Scheduler decision for flow {:?} dropped without receiving feedback",
             self.flow
         );
-        let mut guard = self.inner.lock();
-        let Inner {
-            state, ready_ring, ..
-        } = &mut *guard;
-        let state = &mut state[self.flow];
         // Steal its deficit if it's positive so that it can get added at the back of the ready ring.
+        let state = self.flow_state();
         state.deficit = state.deficit.min(0);
-        Self::requeue(self.flow, state, ready_ring, /* force back */ true);
+        self.requeue(/* force back */ true);
     }
 }
 
@@ -243,7 +238,9 @@ impl Drop for SchedulerDecision<'_> {
 /// until its deficit goes positive again over the rounds. Compared to typical DRR schedulers, flows with negative deficits
 /// will get their deficit refilled even if they're no longer ready.
 pub(crate) struct SelfProposerScheduler {
-    inner: Arc<Mutex<Inner>>,
+    shared: Arc<Shared>,
+    state: EnumMap<SelfProposerSchedulerFlow, FlowState>,
+    ready_ring: VecDeque<SelfProposerSchedulerFlow>,
     /// A cache for the per-flow wakers
     wakers: EnumMap<SelfProposerSchedulerFlow, Waker>,
 }
@@ -260,21 +257,49 @@ impl SelfProposerScheduler {
             deficit: 0,
             state: State::Queued,
         });
-        let inner = Arc::new(Mutex::new(Inner {
-            // The current waker will be set on the first poll and keep getting updated there.
-            parent_waker: None,
+        let shared = Arc::new(Shared {
+            woken: AtomicU16::new(0),
+            // The parent waker will be registered on the first poll and keep getting updated there.
+            parent_waker: AtomicWaker::new(),
+        });
+        let wakers = EnumMap::from_fn(|flow| {
+            Waker::from(Arc::new(FlowWaker {
+                flow,
+                shared: Arc::clone(&shared),
+            }))
+        });
+        Self {
+            shared,
             // All flows must be ready once on creation so that we can poll them immediately
             // and register their wakers.
             ready_ring: VecDeque::from_iter(state.iter().map(|(flow, _)| flow)),
             state,
-        }));
-        let wakers = EnumMap::from_fn(|flow| {
-            Waker::from(Arc::new(FlowWaker {
-                flow,
-                inner: Arc::clone(&inner),
-            }))
-        });
-        Self { inner, wakers }
+            wakers,
+        }
+    }
+
+    /// Moves the flows that got woken up since the last poll to the ready queue.
+    fn drain_woken(&mut self) {
+        let woken = self.shared.woken.swap(0, Ordering::AcqRel);
+        if woken == 0 {
+            return;
+        }
+        for (flow, state) in self.state.iter_mut() {
+            if woken & flow.bit() == 0 {
+                continue;
+            }
+            match state.state {
+                State::Pending => {
+                    state.state = State::Queued;
+                    self.ready_ring.push_back(flow);
+                }
+                // Already in the ready queue, nothing to do.
+                State::Queued => {}
+                State::Polling => {
+                    unreachable!("no flow can be polling while the scheduler is being polled")
+                }
+            }
+        }
     }
 
     /// Polls the scheduler for the next decision. The returned [`SchedulerDecision`] is a handle to the flow that's
@@ -284,30 +309,23 @@ impl SelfProposerScheduler {
     /// This function returns None if there are currently no flows that are ready to be polled.
     #[must_use]
     pub fn poll_next_ready(&mut self, cx: &mut Context<'_>) -> Option<SchedulerDecision<'_>> {
-        let mut guard = self.inner.lock();
-        let Inner {
-            state,
-            ready_ring,
-            parent_waker,
-        } = &mut *guard;
-
-        match parent_waker {
-            Some(w) => w.clone_from(cx.waker()),
-            None => *parent_waker = Some(cx.waker().clone()),
-        }
+        // Register the waker before draining the notifications to not miss any wake ups in between.
+        self.shared.parent_waker.register(cx.waker());
+        self.drain_woken();
 
         loop {
-            let round_length = ready_ring.len();
+            let round_length = self.ready_ring.len();
             if round_length == 0 {
                 return None;
             }
 
             let mut closest_deficit = i64::MIN;
             for _ in 0..round_length {
-                let flow = ready_ring
+                let flow = self
+                    .ready_ring
                     .pop_front()
                     .expect("guarded by the round_length check earlier");
-                let state = &mut state[flow];
+                let state = &mut self.state[flow];
                 std::debug_assert_matches!(state.state, State::Queued);
 
                 if state.deficit <= 0 {
@@ -315,16 +333,17 @@ impl SelfProposerScheduler {
                 }
 
                 if state.deficit > 0 {
-                    state.state = State::Polling { notified: false };
-                    drop(guard);
+                    state.state = State::Polling;
                     return Some(SchedulerDecision {
                         flow,
                         waker: &self.wakers[flow],
-                        inner: &mut self.inner,
+                        state: &mut self.state,
+                        ready_ring: &mut self.ready_ring,
+                        shared: &self.shared,
                         received_feedback: false,
                     });
                 } else {
-                    ready_ring.push_back(flow);
+                    self.ready_ring.push_back(flow);
                     closest_deficit = closest_deficit.max(state.deficit);
                 }
             }
@@ -337,8 +356,8 @@ impl SelfProposerScheduler {
             //   - Fast forward every flow by the estimated number of rounds.
             assert!(closest_deficit <= 0);
             let rounds_to_skip = closest_deficit.saturating_abs() / QUANTUM;
-            ready_ring.iter_mut().for_each(|flow| {
-                state[*flow].deficit += rounds_to_skip * QUANTUM;
+            self.ready_ring.iter().for_each(|flow| {
+                self.state[*flow].deficit += rounds_to_skip * QUANTUM;
             });
         }
     }

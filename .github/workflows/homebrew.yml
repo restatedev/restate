@@ -25,6 +25,15 @@ jobs:
         with:
           repository: "restatedev/homebrew-tap"
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          path: restate
+          sparse-checkout: .github/actions
+      - name: Check if this is the latest release
+        id: is-latest
+        uses: ./restate/.github/actions/is-latest-release
+        with:
+          tag: ${{ github.ref_name }}
       # So we have access to the formula
       - name: Fetch homebrew formulae
         uses: actions/download-artifact@v8
@@ -58,6 +67,6 @@ jobs:
           done
 
       - name: Push formula files
-        # homebrew only really has a single 'latest' version, so we must skip prereleases
-        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease }}
+        # homebrew only really has a single 'latest' version, so we must skip prereleases and older release lines
+        if: ${{ !fromJson(inputs.plan).announcement_is_prerelease && steps.is-latest.outputs.is-latest == 'true' }}
         run: git push

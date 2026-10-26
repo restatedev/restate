@@ -14,14 +14,43 @@ use bytes::Bytes;
 use chrono::DateTime;
 use http::{HeaderName, Response, header};
 use http_body_util::Full;
+use restate_types::Versioned;
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
-use restate_types::schema::invocation_target::InvocationTargetMetadata;
+use restate_types::schema::invocation_target::{
+    InvocationTargetMetadata, InvocationTargetResolver,
+};
 use tracing::{info, trace};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
+
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+where
+    Schemas: InvocationTargetResolver + Versioned,
+{
+    /// Resolves the metadata used to set the content type of an invocation output.
+    pub(crate) fn resolve_output_metadata(
+        &self,
+        invocation_target: &InvocationTarget,
+    ) -> Result<InvocationTargetMetadata, HandlerError> {
+        let schemas = self.schemas.pinned();
+        schemas
+            .resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
+            .ok_or_else(|| {
+                // A lookup miss is only conclusive once the schema has been loaded.
+                if schemas.valid() {
+                    HandlerError::NotFound
+                } else {
+                    HandlerError::SchemaNotReady
+                }
+            })
+    }
+}
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn reply_with_invocation_response(

@@ -68,7 +68,6 @@ restate-types = { workspace = true, features = ["test-util"] }
 hyper = { workspace = true, features = ["full"] }
 hyper-util = { workspace = true, features = ["full"] }
 mockall = { workspace = true }
-tempfile = { workspace = true }
 tokio-stream = { workspace = true }
 tracing-test = { workspace = true }
 

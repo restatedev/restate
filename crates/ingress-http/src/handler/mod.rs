@@ -36,7 +36,6 @@ use hyper::{Request, Response};
 use serde::Deserialize;
 
 use restate_core::Metadata;
-use restate_types::Scope;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{IdempotencyId, ServiceId};
 use restate_types::invocation::InvocationQuery;
@@ -44,6 +43,7 @@ use restate_types::live::Live;
 use restate_types::nodes_config::ClusterFeature;
 use restate_types::schema::invocation_target::InvocationTargetResolver;
 use restate_types::schema::service::ServiceMetadataResolver;
+use restate_types::{Scope, Versioned};
 use restate_util_string::{ReString, RestrictedValue};
 
 use super::*;
@@ -106,7 +106,13 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
 
 impl<Schemas, Dispatcher, Body> tower::Service<Request<Body>> for Handler<Schemas, Dispatcher>
 where
-    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Versioned
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
     <Body as http_body::Body>::Data: Send + 'static,

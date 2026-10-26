@@ -1,0 +1,37 @@
+name: "Is latest release"
+description: "Checks whether the given tag is the highest published stable (vX.Y.Z) GitHub release of the repository"
+inputs:
+  tag:
+    description: "release tag, e.g. v1.8.1"
+    required: true
+outputs:
+  is-latest:
+    description: "'true' if the given tag is the highest published stable release, otherwise 'false'"
+    value: ${{ steps.check.outputs.is-latest }}
+  latest-tag:
+    description: "the tag of the highest published stable release"
+    value: ${{ steps.check.outputs.latest-tag }}
+runs:
+  using: "composite"
+  steps:
+    - id: check
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        REPOSITORY: ${{ github.repository }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        # Use published releases rather than git tags: a tag whose release build is still running or
+        # failed has no GitHub release yet. The release being published is already in this list, since
+        # the publish jobs run after cargo-dist created it.
+        LATEST_TAG=$(gh api --paginate "repos/${REPOSITORY}/releases?per_page=100" \
+          --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name' \
+          | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+        if [[ -z "$LATEST_TAG" ]]; then
+          echo "Could not determine the latest published release"
+          exit 1
+        fi
+        IS_LATEST=$([[ "$TAG" == "$LATEST_TAG" ]] && echo true || echo false)
+        echo "Tag: ${TAG}, latest published release: ${LATEST_TAG}, is latest: ${IS_LATEST}"
+        echo "is-latest=${IS_LATEST}" >> "$GITHUB_OUTPUT"
+        echo "latest-tag=${LATEST_TAG}" >> "$GITHUB_OUTPUT"

@@ -54,7 +54,7 @@ tikv-jemallocator = { workspace = true, features = ["unprefixed_malloc_on_suppor
 tikv-jemalloc-ctl = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [lints]
 workspace = true

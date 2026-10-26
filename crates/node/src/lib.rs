@@ -50,7 +50,7 @@ use restate_partition_store::PartitionStoreManager;
 use restate_service_client::initialize_gcp_federation_config;
 use restate_tracing_instrumentation::prometheus_metrics::Prometheus;
 use restate_types::cluster_marker::{ClusterMarker, ClusterValidationError};
-use restate_types::config::{CommonOptions, Configuration};
+use restate_types::config::Configuration;
 use restate_types::errors::IntoMaybeRetryable;
 use restate_types::health::NodeStatus;
 use restate_types::live::Live;
@@ -67,6 +67,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, WorkerStatus,
 };
+use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, RestateVersion, Version, Versioned};
 
 use self::failure_detector::FailureDetector;
@@ -508,7 +509,7 @@ impl Node {
 
     pub async fn start(self) -> Result<(), anyhow::Error> {
         assert!(TaskCenter::try_set_address_book(self.address_book));
-        let config = self.updateable_config.pinned();
+        let config = self.updateable_config.snapshot();
 
         let metadata_writer = self.metadata_manager.writer();
         let metadata = Metadata::current();
@@ -554,12 +555,12 @@ impl Node {
                 TaskCenter::spawn(TaskKind::SystemBoot, "auto-provision-cluster", {
                     let cluster_configuration = ClusterConfiguration::from_configuration(&config);
                     let metadata_writer = metadata_writer.clone();
-                    let common_opts = config.common.clone();
+                    let config = Arc::clone(&config);
 
                     async move {
                         let response = provision_cluster_metadata(
                             &metadata_writer,
-                            &common_opts,
+                            &config,
                             &cluster_configuration,
                             ClusterFeature::default_features(),
                         )
@@ -570,7 +571,7 @@ impl Node {
                                 if provisioned {
                                     info!(
                                         "Cluster '{}' has been automatically provisioned",
-                                        common_opts.cluster_name()
+                                        config.common.cluster_name()
                                     );
                                 } else {
                                     debug!("The cluster is already provisioned");
@@ -794,12 +795,13 @@ impl ClusterConfiguration {
 /// up. Instead, the caller can retry to complete the provisioning.
 async fn provision_cluster_metadata(
     metadata_writer: &MetadataWriter,
-    common_opts: &CommonOptions,
+    config: &Configuration,
     cluster_configuration: &ClusterConfiguration,
     features: EnumSet<ClusterFeature>,
 ) -> anyhow::Result<bool> {
     let (initial_nodes_configuration, initial_partition_table, initial_logs) =
-        generate_initial_metadata(common_opts, cluster_configuration, features);
+        generate_initial_metadata(config, cluster_configuration, features);
+    let common_opts = &config.common;
 
     let result = retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
         metadata_writer
@@ -828,13 +830,23 @@ async fn provision_cluster_metadata(
     .await
     .context("failed provisioning the initial partition table")?;
 
+    // An explicit empty schema lets nodes tell "no services registered" apart from
+    // "schema not loaded yet".
+    let initial_schema = Arc::new(Schema::initial());
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
+        write_initial_value_dont_fail_if_it_exists(metadata_writer, Arc::clone(&initial_schema))
+    })
+    .await
+    .context("failed provisioning the initial schema")?;
+
     Ok(result)
 }
 
 fn create_initial_nodes_configuration(
-    common_opts: &CommonOptions,
+    config: &Configuration,
     features: EnumSet<ClusterFeature>,
 ) -> NodesConfiguration {
+    let common_opts = &config.common;
     let mut initial_nodes_configuration = NodesConfiguration::new(
         Version::MIN,
         common_opts.cluster_name().to_owned(),
@@ -843,6 +855,8 @@ fn create_initial_nodes_configuration(
     initial_nodes_configuration.set_features(features);
     let my_advertised_address =
         TaskCenter::with_current(|tc| common_opts.advertised_address(tc.address_book()));
+    let my_ctrl_address =
+        TaskCenter::with_current(|tc| config.control_advertised_address(tc.address_book()));
 
     let node_config = NodeConfig::builder()
         .name(common_opts.node_name().to_owned())
@@ -854,6 +868,7 @@ fn create_initial_nodes_configuration(
         )
         .location(common_opts.location().clone())
         .address(my_advertised_address)
+        .ctrl_address(Some(my_ctrl_address))
         .roles(common_opts.roles)
         .binary_version(RestateVersion::current())
         .build();
@@ -862,7 +877,7 @@ fn create_initial_nodes_configuration(
 }
 
 fn generate_initial_metadata(
-    common_opts: &CommonOptions,
+    config: &Configuration,
     cluster_configuration: &ClusterConfiguration,
     features: EnumSet<ClusterFeature>,
 ) -> (NodesConfiguration, PartitionTable, Logs) {
@@ -878,7 +893,7 @@ fn generate_initial_metadata(
         cluster_configuration.bifrost_provider.clone(),
     ));
 
-    let initial_nodes_configuration = create_initial_nodes_configuration(common_opts, features);
+    let initial_nodes_configuration = create_initial_nodes_configuration(config, features);
 
     (
         initial_nodes_configuration,

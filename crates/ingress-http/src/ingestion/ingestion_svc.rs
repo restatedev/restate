@@ -98,7 +98,7 @@ use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::sharding::{PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{Scope, limit_key};
+use restate_types::{Scope, Versioned, limit_key};
 use restate_util_string::{ReString, RestrictedValue, RestrictedValueError};
 use restate_wal_protocol::v2::commands::InvokeCommand;
 use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
@@ -134,7 +134,7 @@ pub(crate) fn ingestion_server<T, Schemas>(
     max_message_size: usize,
 ) -> IngestionSvcServer<IngestionService<T, Schemas>>
 where
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     IngestionSvcServer::new(IngestionService::new(
         ingestion_client,
@@ -206,7 +206,7 @@ impl<T, Schemas> IngestionService<T, Schemas> {
 impl<T, Schemas> IngestionSvc for IngestionService<T, Schemas>
 where
     T: TransportConnect,
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     type IngestStream = BoxStream<'static, Result<IngestionResponse, Status>>;
 
@@ -261,7 +261,7 @@ impl<I, S, Schemas> IngestionStream<I, S, Schemas>
 where
     I: Ingestion<Envelope<Raw>>,
     S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     pub(super) fn new(
         inbound: S,
@@ -388,7 +388,14 @@ where
                     handler: handler.to_owned(),
                 }),
         }
-        .map_err(Error::NotFound)?;
+        .map_err(|err| {
+            // A lookup miss is only conclusive once the schema has been loaded.
+            if schemas.valid() {
+                Error::NotFound(err)
+            } else {
+                Error::SchemaNotReady
+            }
+        })?;
 
         // filter out headers reserved by the ingress
         settings.headers.retain(|k, _| !is_reserved_header_name(k));
@@ -641,7 +648,7 @@ where
         record: IngestionInvocation,
     ) -> Result<(PartitionKey, Envelope<InvokeCommand>), Error>
     where
-        Schemas: InvocationTargetResolver,
+        Schemas: InvocationTargetResolver + Versioned,
     {
         let execution_time = record.invoke_time_ts_ms.map(MillisSinceEpoch::from);
 
@@ -666,7 +673,9 @@ where
         let target_meta = schemas
             .resolve_latest_invocation_target(service, handler)
             .ok_or_else(|| {
-                if schemas.resolve_latest_service_type(service).is_none() {
+                if !schemas.valid() {
+                    Error::SchemaNotReadyWithOffset(record.offset)
+                } else if schemas.resolve_latest_service_type(service).is_none() {
                     Error::NotFoundWithOffset(
                         record.offset,
                         NotFoundError::UnknownService {
@@ -960,6 +969,10 @@ enum Error {
     NotFound(#[from] NotFoundError),
     #[error("Invocation target not found for invocation at offset {0}: {1}")]
     NotFoundWithOffset(u64, NotFoundError),
+    #[error("The schema has not been loaded yet, retry later")]
+    SchemaNotReady,
+    #[error("The schema has not been loaded yet, retry the invocation at offset {0} later")]
+    SchemaNotReadyWithOffset(u64),
     #[error("Bad request: {0}")]
     BadRequest(#[from] BadRequestError),
     #[error("Bad request for invocation at offset {0}: {1}")]
@@ -984,6 +997,10 @@ impl From<Error> for proto::Error {
             }
             Error::NotFound(_) => (None, proto::ErrorKind::NotFound),
             Error::NotFoundWithOffset(offset, _) => (Some(offset), proto::ErrorKind::NotFound),
+            Error::SchemaNotReady => (None, proto::ErrorKind::Unavailable),
+            Error::SchemaNotReadyWithOffset(offset) => {
+                (Some(offset), proto::ErrorKind::Unavailable)
+            }
             Error::BadRequest(_) => (None, proto::ErrorKind::BadRequest),
             Error::BadRequestWithOffset(offset, _) => (Some(offset), proto::ErrorKind::BadRequest),
         };

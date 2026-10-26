@@ -69,6 +69,8 @@ use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::live::LiveLoadExt;
+use crate::net::address::{AdvertisedAddress, ControlPort};
+use crate::net::listener::AddressBook;
 use crate::nodes_config::Role;
 
 static CPU_COUNT: LazyLock<NonZeroU32> = LazyLock::new(|| {
@@ -201,13 +203,25 @@ enum TempOrPath {
     Path(PathBuf),
 }
 
+#[cfg(any(test, feature = "test-util"))]
+impl TempOrPath {
+    fn path(&self) -> &std::path::Path {
+        match self {
+            Self::Temp(temp) => temp.path(),
+            Self::Path(path) => path,
+        }
+    }
+}
+
 static CONFIGURATION: LazyLock<Arc<ArcSwap<Configuration>>> = LazyLock::new(Arc::default);
 #[cfg(not(any(test, feature = "test-util")))]
 static NODE_BASE_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
+// Statics are never dropped, so the temp dir comes from `restate_test_util::tempdir()`, which
+// removes it at process exit. It is only created on first use: processes that set an explicit
+// base dir (e.g. restate-server nodes in integration tests) never need it.
 #[cfg(any(test, feature = "test-util"))]
-static NODE_BASE_DIR: LazyLock<parking_lot::RwLock<TempOrPath>> =
-    LazyLock::new(|| parking_lot::RwLock::new(TempOrPath::Temp(tempfile::TempDir::new().unwrap())));
+static NODE_BASE_DIR: parking_lot::RwLock<Option<TempOrPath>> = parking_lot::RwLock::new(None);
 
 #[cfg(not(any(test, feature = "test-util")))]
 pub fn node_dir() -> PathBuf {
@@ -224,11 +238,14 @@ pub fn data_dir(dir: &str) -> PathBuf {
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn node_dir() -> PathBuf {
-    let guard = NODE_BASE_DIR.read();
-    match &*guard {
-        TempOrPath::Temp(temp) => temp.path().to_path_buf(),
-        TempOrPath::Path(path) => path.clone(),
+    if let Some(dir) = &*NODE_BASE_DIR.read() {
+        return dir.path().to_path_buf();
     }
+    NODE_BASE_DIR
+        .write()
+        .get_or_insert_with(|| TempOrPath::Temp(restate_test_util::tempdir().unwrap()))
+        .path()
+        .to_path_buf()
 }
 
 #[cfg(any(test, feature = "test-util"))]
@@ -243,15 +260,15 @@ pub fn node_filepath(filename: &str) -> PathBuf {
 #[cfg(any(test, feature = "test-util"))]
 pub fn set_base_temp_dir(path: PathBuf) {
     let mut guard = NODE_BASE_DIR.write();
-    *guard = TempOrPath::Path(path);
+    *guard = Some(TempOrPath::Path(path));
 }
 
 #[cfg(any(test, feature = "test-util"))]
 pub fn reset_base_temp_dir() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write();
-    let new = tempfile::TempDir::new().unwrap();
+    let new = restate_test_util::tempdir().unwrap();
     let path = PathBuf::from(new.path());
-    *guard = TempOrPath::Temp(new);
+    *guard = Some(TempOrPath::Temp(new));
     path
 }
 
@@ -261,7 +278,7 @@ pub fn reset_base_temp_dir() -> PathBuf {
 pub fn reset_base_temp_dir_and_retain() -> PathBuf {
     let mut guard = NODE_BASE_DIR.write();
     let path = tempfile::TempDir::new().unwrap().keep();
-    *guard = TempOrPath::Path(path.clone());
+    *guard = Some(TempOrPath::Path(path.clone()));
     path
 }
 
@@ -428,6 +445,16 @@ impl Configuration {
 
     pub fn node_name(&self) -> &str {
         self.common.node_name()
+    }
+
+    /// Resolves the control advertisement while control shares the fabric listener.
+    pub fn control_advertised_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        self.networking
+            .control
+            .advertised_address(&self.common, address_book)
     }
 
     /// Dumps the configuration to a string

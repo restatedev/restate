@@ -34,6 +34,7 @@ use tracing::{Span, debug, info, info_span, instrument};
 use restate_core::network::{TransportConnect, hyper_error_status};
 use restate_core::{TaskCenter, TaskCenterFutureExt, cancellation_token, task_center};
 use restate_ingestion_client::IngestionClient;
+use restate_types::Versioned;
 use restate_types::config::IngressOptions;
 use restate_types::errors::GenericError;
 use restate_types::health::HealthStatus;
@@ -71,7 +72,13 @@ pub struct HyperServerIngress<T, Schemas, Dispatcher> {
 impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
     T: TransportConnect,
-    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Versioned
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub fn from_options(
@@ -97,7 +104,13 @@ where
 impl<T, Schemas, Dispatcher> HyperServerIngress<T, Schemas, Dispatcher>
 where
     T: TransportConnect,
-    Schemas: ServiceMetadataResolver + InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: ServiceMetadataResolver
+        + InvocationTargetResolver
+        + Versioned
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(
@@ -540,7 +553,7 @@ mod tests {
                 })))
             });
 
-        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_dir = restate_test_util::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
         bootstrap_test(
             Listeners::new_unix_listener(socket_path.clone()).unwrap(),
@@ -599,7 +612,7 @@ mod tests {
     /// have any effect at all.
     #[restate_core::test(start_paused = false)]
     async fn http2_keep_alive_closes_unresponsive_connection() {
-        let socket_dir = tempfile::tempdir().unwrap();
+        let socket_dir = restate_test_util::tempdir().unwrap();
         let socket_path = socket_dir.path().join("ingress.sock");
 
         bootstrap_test(
