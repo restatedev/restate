@@ -86,7 +86,9 @@ jobs:
           gh release edit "${{ github.ref_name }}" --notes-file "$RUNNER_TEMP/notes.txt"
 
       # `gh release create` marks every new stable release as "Latest". Restore the marker when releasing
-      # an older line (e.g. a 1.7.x patch after 1.8.x).
+      # an older line (e.g. a 1.7.x patch after 1.8.x). The marker is cosmetic, so a failure here must not
+      # block the downstream announce and helm jobs.
       - name: Restore latest GitHub Release
         if: steps.is-latest.outputs.is-latest != 'true'
+        continue-on-error: true
         run: gh release edit "${{ steps.is-latest.outputs.latest-tag }}" --latest
