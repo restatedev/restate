@@ -17,9 +17,10 @@ use serde_with::serde_as;
 use restate_util_bytecount::NonZeroByteCount;
 use restate_util_time::NonZeroFriendlyDuration;
 
-use super::CommonOptions;
+use super::{AdvertisedAddressEntry, CommonOptions};
 use crate::net::address::{AdvertisedAddress, AdvertisedHost, ControlPort, FabricPort};
 use crate::net::listener::AddressBook;
+use crate::nodes_config::QualifiedAddress;
 use crate::retries::RetryPolicy;
 
 /// The default maximum size for messages (32 MiB).
@@ -178,12 +179,40 @@ pub struct ControlOptions {
         )
     )]
     pub(super) ctrl_advertised_address: Option<AdvertisedAddress<ControlPort>>,
+
+    /// Control addresses for callers in specific locations, as `location@address` entries.
+    ///
+    /// Same shape and rules as the root `advertised-addresses`, in this node's order of
+    /// preference. This is what tools such as `restatectl` use to reach a node from another
+    /// network, for example `external@http://localhost:15122` for a node behind a published
+    /// Docker Compose port. If unset, the entries of `advertised-addresses` are advertised for
+    /// control as well, because control RPCs share the fabric listener. The environment variable
+    /// and the flag take the entries comma-separated; the flag can also be repeated.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::deserialize_address_entries"
+    )]
+    #[cfg_attr(
+        feature = "clap",
+        arg(
+            long,
+            env = "RESTATE_NETWORKING__CTRL_ADVERTISED_ADDRESSES",
+            value_delimiter = ',',
+            global = true
+        )
+    )]
+    pub(super) ctrl_advertised_addresses: Vec<AdvertisedAddressEntry<ControlPort>>,
 }
 
 impl ControlOptions {
     #[cfg(feature = "clap")]
     pub(super) fn is_empty(&self) -> bool {
-        self.ctrl_advertised_host.is_none() && self.ctrl_advertised_address.is_none()
+        self.ctrl_advertised_host.is_none()
+            && self.ctrl_advertised_address.is_none()
+            && self.ctrl_advertised_addresses.is_empty()
     }
 
     pub(super) fn advertised_address(
@@ -200,6 +229,31 @@ impl ControlOptions {
         } else {
             common.advertised_address(address_book).coerce()
         }
+    }
+
+    /// The control addresses this node publishes for callers in specific locations. Without a
+    /// configured control list, the fabric entries that the control port can serve are published
+    /// for control too, because control RPCs share the fabric listener.
+    pub(super) fn advertised_addresses(
+        &self,
+        common: &CommonOptions,
+    ) -> Vec<QualifiedAddress<ControlPort>> {
+        if !self.ctrl_advertised_addresses.is_empty() {
+            return self
+                .ctrl_advertised_addresses
+                .iter()
+                .map(Into::into)
+                .collect();
+        }
+        common
+            .advertised_addresses
+            .iter()
+            .map(|entry| QualifiedAddress {
+                address: entry.address.clone().coerce::<ControlPort>(),
+                location: Some(entry.location.clone()),
+            })
+            .filter(|entry| entry.address.clone().into_address().is_ok())
+            .collect()
     }
 }
 
