@@ -296,7 +296,8 @@ pub struct NodeConfig {
     /// Fabric addresses for callers in specific locations, in this node's order of preference.
     /// Empty means `address` is the only route. Versions that predate this field drop it when
     /// they rewrite the configuration, and entries this version cannot read are skipped.
-    /// Introduced in v1.8.2 (not populated yet)
+    /// Introduced in v1.8.2; a node publishes its configured `advertised-addresses` here when
+    /// it joins.
     #[serde_as(as = "serde_with::VecSkipError<_, SkippedAddressEntry>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[builder(default)]
@@ -313,7 +314,9 @@ pub struct NodeConfig {
     /// Control addresses for callers in specific locations, in this node's order of preference.
     /// Empty means `ctrl_address()` is the only route. Entries this version cannot read are
     /// skipped.
-    /// Introduced in v1.8.2 (not populated yet)
+    /// Introduced in v1.8.2; a node publishes its configured
+    /// `ctrl-advertised-addresses` here when it joins, or its fabric list when it has
+    /// no control list.
     #[serde_as(as = "serde_with::VecSkipError<_, SkippedAddressEntry>")]
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[builder(default)]
