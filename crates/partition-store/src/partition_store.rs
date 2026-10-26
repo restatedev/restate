@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
 use restate_core::ShutdownError;
+use restate_rocksdb::admission::Admission;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -37,7 +38,7 @@ use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
 use restate_types::SemanticRestateVersion;
 use restate_types::config::{Configuration, StorageOptions};
 use restate_types::identifiers::{PartitionId, PartitionKey, SnapshotId, WithPartitionKey};
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::Partition;
 use restate_types::partitions::StorageVersion;
 use restate_types::sharding::KeyRange;
@@ -535,31 +536,15 @@ impl PartitionStore {
         self.transaction_with_isolation(IsolationLevel::Committed)
     }
 
-    /// Returns the durably persisted applied LSN, if any.
-    pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Option<Lsn>>> {
-        {
-            let sender = self.db.durable_lsn_sender();
-            if sender.borrow().is_some() {
-                let mut rx = self.db.durable_lsn_sender().subscribe();
-                rx.mark_changed();
-                return Ok(rx);
-            }
+    /// Returns a watch of the durably persisted applied LSN, or [`Lsn::INVALID`]
+    /// when no durable position is known or the old column family has been removed.
+    pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Lsn>> {
+        let needs_recovery = *self.db.durable_lsn_sender().borrow() == Lsn::INVALID;
+        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self).await? {
+            self.db.note_durable_lsn(lsn);
         }
 
-        let local = get_locally_durable_lsn(self).await?;
-        let sender = self.db.durable_lsn_sender();
-        if let Some(lsn) = local {
-            sender.send_if_modified(|current_mut| {
-                if current_mut.is_none_or(|c| c < lsn) {
-                    *current_mut = Some(lsn);
-                    true
-                } else {
-                    false
-                }
-            });
-        }
-
-        let mut rx = sender.subscribe();
+        let mut rx = self.db.durable_lsn_sender().subscribe();
         rx.mark_changed();
         Ok(rx)
     }
@@ -588,6 +573,7 @@ impl PartitionStore {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
+            admission: self.db.admission(),
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),
@@ -954,6 +940,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
+    admission: &'a Arc<Admission>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
@@ -1071,12 +1058,21 @@ fn assert_partition_key_or_err(
 
 impl Transaction for PartitionStoreTransaction<'_> {
     async fn commit(&mut self) -> Result<()> {
-        let Some(write_batch) = self
+        if self
             .write_batch_with_index
-            .take_if(|batch| !batch.is_empty())
-        else {
+            .as_ref()
+            .is_none_or(|batch| batch.is_empty())
+        {
             return Ok(());
-        };
+        }
+
+        // Rejection must preserve buffered writes. Once admitted, the write owns
+        // this lease through inline execution or background completion.
+        let lease = self
+            .admission
+            .try_acquire()
+            .ok_or(StorageError::OperationalError)?;
+        let write_batch = self.write_batch_with_index.take().expect("nonempty batch");
 
         let io_mode = if Configuration::pinned()
             .worker
@@ -1098,6 +1094,7 @@ impl Transaction for PartitionStoreTransaction<'_> {
                     io_mode,
                     opts,
                     write_batch,
+                    lease,
                 )
                 .await
                 .map_err(|error| StorageError::Generic(error.into()))?,

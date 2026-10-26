@@ -265,7 +265,7 @@ async fn collect_memory_usage(
         assert!(db_state.maybe_open());
         let db = db_state.db().unwrap().clone();
         let usage = MemoryUsage::create(db_state).await?;
-        // a partition will be considered open if it's Open or Closed for less than 30 seconds.
+        // Count open/closing partitions and those closed for less than 30 seconds.
         if db_state
             .closed_since()
             .is_none_or(|elapsed| elapsed < Duration::from_secs(30))

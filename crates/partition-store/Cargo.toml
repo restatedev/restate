@@ -20,6 +20,7 @@ restate-errors = { workspace = true }
 restate-limiter = { workspace = true, features = ["rule-book"] }
 restate-memory = { workspace = true }
 restate-object-store-util = { workspace = true }
+restate-platform = { workspace = true }
 restate-rocksdb = { workspace = true }
 restate-storage-api = { workspace = true }
 restate-types = { workspace = true }

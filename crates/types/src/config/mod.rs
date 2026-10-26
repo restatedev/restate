@@ -69,7 +69,7 @@ use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::live::LiveLoadExt;
-use crate::net::address::{AdvertisedAddress, ControlPort};
+use crate::net::address::{AdvertisedAddress, ControlPort, ListenerPort};
 use crate::net::listener::AddressBook;
 use crate::nodes_config::Role;
 
@@ -502,8 +502,80 @@ impl Configuration {
             }
         }
 
+        self.validate_advertised_addresses()
+    }
+
+    /// Checks the advertised addresses set in the configuration. Inferred addresses are always
+    /// dialable, so only explicit values can fail.
+    fn validate_advertised_addresses(&self) -> Result<(), InvalidConfigurationError> {
+        // These two are published as scalars in `NodesConfiguration`.
+        check_advertised_address(
+            "advertised-address",
+            self.common
+                .fabric_listener_options
+                .configured_advertised_address(),
+            true,
+        )?;
+        check_advertised_address(
+            "networking.ctrl-advertised-address",
+            self.networking.control.ctrl_advertised_address.as_ref(),
+            true,
+        )?;
+        check_advertised_address(
+            "admin.advertised-address",
+            self.admin
+                .admin_listener_options()
+                .configured_advertised_address(),
+            false,
+        )?;
+        check_advertised_address(
+            "admin.advertised-admin-endpoint",
+            self.admin.advertised_admin_endpoint.as_ref(),
+            false,
+        )?;
+        check_advertised_address(
+            "ingress.advertised-address",
+            self.ingress
+                .ingress_listener_options()
+                .configured_advertised_address(),
+            false,
+        )?;
+        check_advertised_address(
+            "ingress.advertised-ingress-endpoint",
+            self.ingress.advertised_ingress_endpoint.as_ref(),
+            false,
+        )?;
+        if let MetadataClientKind::Replicated { addresses } = &self.common.metadata_client.kind {
+            for address in addresses {
+                check_advertised_address("metadata-client.addresses", Some(address), false)?;
+            }
+        }
         Ok(())
     }
+}
+
+/// Rejects an address this binary cannot dial. When `published` is set, also rejects spellings
+/// that older Restate versions cannot decode, because the address ends up in cluster metadata.
+fn check_advertised_address<P: ListenerPort>(
+    key: &'static str,
+    address: Option<&AdvertisedAddress<P>>,
+    published: bool,
+) -> Result<(), InvalidConfigurationError> {
+    let Some(address) = address else {
+        return Ok(());
+    };
+    let reason = match address.clone().into_address() {
+        Err(err) => err.to_string(),
+        Ok(_) if published && !address.decodes_in_older_versions() => {
+            "older Restate versions cannot read this address in cluster metadata".to_owned()
+        }
+        Ok(_) => return Ok(()),
+    };
+    Err(InvalidConfigurationError::AdvertisedAddress {
+        key,
+        address: address.to_string(),
+        reason,
+    })
 }
 
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
@@ -516,6 +588,12 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
+    #[error("invalid {key} '{address}': {reason}")]
+    AdvertisedAddress {
+        key: &'static str,
+        address: String,
+        reason: String,
+    },
 }
 
 /// Migrates a single field from a deprecated config location to its new one.
@@ -590,7 +668,68 @@ fn read_subdirs(dir: &PathBuf) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
+
+    #[test]
+    fn validate_checks_configured_advertised_addresses() {
+        // `key` is a dotted path into the configuration, e.g. `admin.advertised-address`.
+        let validate = |key: &str, value: serde_json::Value| {
+            let mut config = Configuration::default();
+            config.common.set_node_name("validate-addresses");
+            let mut json = serde_json::to_value(&config).unwrap();
+            let target = key
+                .split('.')
+                .fold(&mut json, |target, part| &mut target[part]);
+            *target = value;
+            serde_json::from_value::<Configuration>(json)
+                .unwrap()
+                .validate()
+        };
+
+        let grpc_unix = json!("grpc+unix:/run/f.sock");
+        for (key, value, valid) in [
+            ("advertised-address", json!("unix:/run/f.sock"), true),
+            ("advertised-address", grpc_unix.clone(), false),
+            (
+                "advertised-address",
+                json!("restate+unix:/run/f.sock"),
+                false,
+            ),
+            // Used to pass startup and then panic the peers that dialed it.
+            ("advertised-address", json!("ftp://h:21"), false),
+            (
+                "networking.ctrl-advertised-address",
+                grpc_unix.clone(),
+                false,
+            ),
+            ("admin.advertised-address", grpc_unix.clone(), false),
+            (
+                "ingress.advertised-address",
+                json!("restate+tcp://h:8080"),
+                false,
+            ),
+            // Seeds are never published, so the explicit gRPC spelling is fine there.
+            ("metadata-client.addresses", json!([grpc_unix]), true),
+        ] {
+            assert_eq!(
+                validate(key, value.clone()).is_ok(),
+                valid,
+                "{key} = {value}"
+            );
+        }
+
+        let err = validate("advertised-address", grpc_unix).unwrap_err();
+        assert!(matches!(
+            err,
+            InvalidConfigurationError::AdvertisedAddress {
+                key: "advertised-address",
+                ..
+            }
+        ));
+        assert!(err.to_string().contains("older Restate versions"), "{err}");
+    }
 
     #[test]
     fn read_subdirs_did_not_exist() {

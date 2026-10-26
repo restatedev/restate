@@ -135,6 +135,7 @@ jobs:
             type=semver,pattern={{version}},value=${{ steps.version.outputs.VERSION }}
             type=semver,pattern={{major}}.{{minor}},value=${{ steps.version.outputs.VERSION }}
 
+      # docker/Dockerfile.refresh mirrors this image; keep both in sync
       - name: Create Dockerfile
         run: |
           cat > Dockerfile << 'EOF'

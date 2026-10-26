@@ -18,7 +18,7 @@ use restate_storage_api::{
 };
 use restate_types::{
     identifiers::{PartitionId, PartitionKey},
-    logs::Lsn,
+    logs::{Lsn, SequenceNumber},
     partitions::Partition,
     sharding::KeyRange,
     time::MillisSinceEpoch,
@@ -55,14 +55,17 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     txn.commit().await.expect("commit succeeds");
     drop(txn);
 
-    assert_eq!(None, *partition_store.get_durable_lsn().await?.borrow());
-    assert_eq!(None, *watch_durable_lsn.borrow());
+    assert_eq!(
+        Lsn::INVALID,
+        *partition_store.get_durable_lsn().await?.borrow()
+    );
+    assert_eq!(Lsn::INVALID, *watch_durable_lsn.borrow());
 
     partition_store.partition_db().flush_memtables(true).await?;
 
-    assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
+    assert_eq!(Lsn::new(100), *watch_durable_lsn.borrow());
     assert_eq!(
-        Some(Lsn::new(100)),
+        Lsn::new(100),
         *partition_store.get_durable_lsn().await?.borrow()
     );
 
@@ -70,19 +73,19 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     partition_store_manager
         .close_partition_store(PARTITION.partition_id)
         .await;
-    assert_eq!(None, *watch_durable_lsn.borrow());
+    assert_eq!(Lsn::INVALID, *watch_durable_lsn.borrow());
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
     assert_eq!(
-        Some(Lsn::new(100)),
+        Lsn::new(100),
         *partition_store.get_durable_lsn().await?.borrow(),
         "partition store should announce the durable LSN on open"
     );
-    // old watch should be _still_ None
-    assert_eq!(None, *watch_durable_lsn.borrow());
-    // new watch should have Some(100)
+    // The old watch stays reset after the database reopens.
+    assert_eq!(Lsn::INVALID, *watch_durable_lsn.borrow());
+    // The new watch recovers the durable position from storage.
     let watch_durable_lsn = partition_store.get_durable_lsn().await?;
-    assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
+    assert_eq!(Lsn::new(100), *watch_durable_lsn.borrow());
 
     partition_store.partition_db().flush_memtables(true).await?;
 
@@ -95,15 +98,15 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
         drop(txn);
 
         assert_eq!(
-            Some(Lsn::new(100)),
+            Lsn::new(100),
             *partition_store.get_durable_lsn().await?.borrow(),
             "durable LSN remains unchanged"
         );
-        assert_eq!(Some(Lsn::new(100)), *watch_durable_lsn.borrow());
+        assert_eq!(Lsn::new(100), *watch_durable_lsn.borrow());
     }
 
     partition_store.partition_db().flush_memtables(true).await?;
-    assert_eq!(Some(Lsn::new(200)), *watch_durable_lsn.borrow());
+    assert_eq!(Lsn::new(200), *watch_durable_lsn.borrow());
 
     rocksdb.shutdown().await;
     Ok(())

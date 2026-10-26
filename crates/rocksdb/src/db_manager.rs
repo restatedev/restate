@@ -209,6 +209,28 @@ impl RocksDbManager {
         Ok(())
     }
 
+    /// Occupy every worker in a pool until the returned senders are dropped.
+    /// Used to deterministically test queued work and cancelled result waiters.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn pause_background(&self, priority: Priority) -> Vec<std::sync::mpsc::Sender<()>> {
+        let pool = match priority {
+            Priority::High => &self.high_pri_pool,
+            Priority::Low => &self.low_pri_pool,
+        };
+        let mut resumes = Vec::with_capacity(pool.max_count());
+        for _ in 0..pool.max_count() {
+            let (resume, paused) = std::sync::mpsc::channel();
+            let (started, reached) = tokio::sync::oneshot::channel();
+            resumes.push(resume);
+            pool.execute(move || {
+                let _ = started.send(());
+                let _ = paused.recv();
+            });
+            reached.await.expect("background worker started");
+        }
+        resumes
+    }
+
     pub fn get_total_write_buffer_capacity(&self) -> u64 {
         self.write_buffer_manager.get_buffer_size() as u64
     }
@@ -503,7 +525,10 @@ impl DbWatchdog {
 
         // Databases choose to react to config updates as they see fit.
         // e.g. set write_buffer_size
-        for db in self.manager.dbs.read().values() {
+        // A final Arc drop re-enters background_close_db, which takes the write
+        // lock. Snapshot weak references and upgrade them outside the registry lock.
+        let dbs: Vec<_> = self.manager.dbs.read().values().cloned().collect();
+        for db in dbs {
             let Some(db) = db.upgrade() else {
                 continue;
             };
@@ -535,3 +560,93 @@ fn check_memory_limit(opts: &CommonOptions) {
 }
 
 static_assertions::assert_impl_all!(RocksDbManager: Send, Sync);
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use restate_core::TaskCenterBuilder;
+    use restate_platform::sync::Mutex;
+    use restate_types::config::{Configuration, node_dir};
+    use restate_types::protobuf::common::DatabaseKind;
+
+    use super::{DbWatchdog, RocksDbManager};
+    use crate::configuration::{DbConfigurator, create_default_db_options};
+    use crate::{DbName, DbSpecBuilder, RocksAccess, RocksDb};
+
+    #[derive(Clone, Default)]
+    struct ReleaseOnConfigUpdate {
+        owner: Arc<Mutex<Option<Arc<RocksDb>>>>,
+    }
+
+    impl DbConfigurator for ReleaseOnConfigUpdate {
+        fn get_db_options(
+            &self,
+            db_name: &DbName,
+            env: &rocksdb::Env,
+            write_buffer_manager: &rocksdb::WriteBufferManager,
+            limiter: &rocksdb::RateLimiter,
+        ) -> rocksdb::Options {
+            create_default_db_options(env, db_name, write_buffer_manager, limiter)
+        }
+
+        fn note_config_update(&self, _db: &RocksAccess) {
+            // On regression, retain the external owner so the test can report the
+            // failure instead of deadlocking when the watchdog drops its Arc.
+            if RocksDbManager::get().dbs.try_write().is_some() {
+                // Leave the watchdog holding the last strong reference.
+                self.owner.lock().take();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn config_update_can_release_last_database_reference() -> anyhow::Result<()> {
+        let task_center = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let manager = task_center.run_sync(RocksDbManager::init);
+        let mut owners = Vec::new();
+        for name in ["config-update-first", "config-update-second"] {
+            let configurator = ReleaseOnConfigUpdate::default();
+            let spec = DbSpecBuilder::new(
+                DbName::new(name),
+                DatabaseKind::PartitionStore,
+                node_dir().join(name),
+                configurator.clone(),
+            )
+            .cf_patterns(Vec::new())
+            .build()?;
+            let db = manager.open_db(spec).await?;
+            *configurator.owner.lock() = Some(db);
+            owners.push(configurator.owner);
+        }
+
+        let mut watchdog = DbWatchdog {
+            manager,
+            cache: manager.cache.clone(),
+            current_common_opts: Configuration::pinned().common.clone(),
+        };
+        watchdog.on_config_update();
+
+        let released_in_callback = owners.iter().all(|owner| owner.lock().is_none());
+        let databases_unregistered = manager.dbs.read().is_empty();
+        // Also release retained owners on regression, after the registry lock is gone.
+        for owner in owners {
+            owner.lock().take();
+        }
+        task_center.shutdown_node("test completed", 0).await;
+        manager.shutdown().await;
+
+        assert!(
+            released_in_callback,
+            "config callbacks must run without the database registry lock"
+        );
+        assert!(
+            databases_unregistered,
+            "the watchdog must release its final database references before returning"
+        );
+        Ok(())
+    }
+}

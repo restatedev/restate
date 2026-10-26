@@ -14,59 +14,72 @@ use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
-use parking_lot::RwLock;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
-    BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData, ReadOptions,
+    AsColumnFamilyRef, BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData,
+    ReadOptions,
 };
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
+use restate_rocksdb::admission::Admission;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{DbName, RocksDb, RocksError};
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
-use restate_types::logs::Lsn;
+use restate_types::logs::{Lsn, SequenceNumber};
 use restate_types::partitions::{CfName, Partition};
 use restate_util_bytecount::ByteCount;
+use restate_util_string::{ReString, ToReString};
+use restate_util_time::DurationExt;
 
-use crate::durable_lsn_tracking::{AppliedLsnCollectorFactory, DurableLsnEventListener};
+use crate::durable_lsn_tracking::{
+    AppliedLsnCollectorFactory, DurableLsnEventListener, DurableLsnSenders,
+};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
 use crate::snapshots::LocalPartitionSnapshot;
 use crate::{TableKind, configure_prefix_iterator_opts, configure_range_iterator_opts};
 
-use restate_util_string::{ReString, ToReString};
+/// A physical database and the notification registry installed in its listener.
+/// Keep these together when reusing a database from the manager's weak cache.
+#[derive(Clone)]
+pub(crate) struct PartitionStoreDb {
+    pub rocksdb: Arc<RocksDb>,
+    pub notifications: Arc<DurableLsnSenders>,
+}
 
 #[derive(Clone)]
 pub struct PartitionDb {
     meta: Arc<Partition>,
-    durable_lsn: watch::Sender<Option<Lsn>>,
+    admission: Arc<Admission>,
+    durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
     // It's crucial to keep the column family and the database in this exact order.
     cf: PartitionBoundCfHandle,
-    rocksdb: Arc<RocksDb>,
+    database: PartitionStoreDb,
 }
 
 impl PartitionDb {
     pub(crate) fn new(
         meta: Arc<Partition>,
         archived_lsn: watch::Sender<Option<Lsn>>,
-        rocksdb: Arc<RocksDb>,
+        database: PartitionStoreDb,
         cf: Arc<BoundColumnFamily<'_>>,
     ) -> Self {
         Self {
             meta,
-            durable_lsn: watch::Sender::new(None),
+            admission: Arc::new(Admission::default()),
+            durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
-            // it's safe to use here as long as rocksdb is dropped last.
+            // it's safe to use here as long as database is dropped last.
             cf: unsafe { PartitionBoundCfHandle::new(cf) },
-            rocksdb,
+            database,
         }
     }
 
@@ -75,12 +88,16 @@ impl PartitionDb {
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
-        &self.rocksdb
+        &self.database.rocksdb
+    }
+
+    pub(crate) fn admission(&self) -> &Arc<Admission> {
+        &self.admission
     }
 
     #[cfg(test)]
     pub fn into_rocksdb(self) -> Arc<RocksDb> {
-        self.rocksdb
+        self.database.rocksdb
     }
 
     pub fn cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
@@ -100,7 +117,7 @@ impl PartitionDb {
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
-        self.rocksdb
+        self.rocksdb()
             .clone()
             .flush_memtables(
                 std::slice::from_ref(&restate_rocksdb::CfName::from(self.partition().cf_name())),
@@ -129,14 +146,29 @@ impl PartitionDb {
         self.archived_lsn.subscribe()
     }
 
-    pub(crate) fn durable_lsn_sender(&self) -> &watch::Sender<Option<Lsn>> {
+    pub(crate) fn durable_lsn_sender(&self) -> &watch::Sender<Lsn> {
         &self.durable_lsn
+    }
+
+    pub(crate) fn note_durable_lsn(&self, lsn: Lsn) {
+        self.database.notifications.note_durable_lsn(
+            self.meta.partition_id,
+            self.cf_handle_for_key_kind(KeyKind::Fsm).id(),
+            lsn,
+        );
+    }
+
+    fn unregister_durable_lsn(&self) {
+        self.database.notifications.unregister(
+            self.meta.partition_id,
+            self.cf_handle_for_key_kind(KeyKind::Fsm).id(),
+        );
     }
 
     pub(crate) async fn update_memory_budget(&self, memory_budget: usize) {
         // impacts only this partition's column-families
         let cf_names = self.cf_names();
-        let rocksdb = self.rocksdb.clone();
+        let rocksdb = self.rocksdb().clone();
 
         // NOTE: Updating rocksdb's options is a blocking operations and may take a few
         // tens of milliseconds on each column family. We need to perform this operation
@@ -201,7 +233,7 @@ impl PartitionDb {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 let table = self.cf_handle_for_key_kind(key_kind);
                 let mut it = self
-                    .rocksdb
+                    .rocksdb()
                     .inner()
                     .as_raw_db()
                     .raw_iterator_cf_opt(table, opts);
@@ -212,7 +244,7 @@ impl PartitionDb {
                 configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end.as_ref());
                 let table = self.cf_handle_for_key_kind(key_kind);
                 let mut it = self
-                    .rocksdb
+                    .rocksdb()
                     .inner()
                     .as_raw_db()
                     .raw_iterator_cf_opt(table, opts);
@@ -242,7 +274,6 @@ impl PartitionBoundCfHandle {
 pub(crate) struct PartitionCell {
     meta: Arc<Partition>,
     archived_lsn: watch::Sender<Option<Lsn>>,
-    durable_lsn: RwLock<Option<watch::Sender<Option<Lsn>>>>,
     pub(crate) inner: AsyncRwLock<State>,
 }
 
@@ -251,7 +282,6 @@ impl PartitionCell {
         Self {
             meta: Arc::new(partition),
             archived_lsn: Default::default(),
-            durable_lsn: Default::default(),
             inner: AsyncRwLock::new(State::Unknown),
         }
     }
@@ -261,37 +291,46 @@ impl PartitionCell {
     }
 
     fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {
-        let mut durable_lsn_guard = self.durable_lsn.write();
-        *durable_lsn_guard = Some(db.durable_lsn_sender().clone());
+        debug_assert!(
+            guard.db().is_none(),
+            "retire the previous admission lifetime first"
+        );
+        db.database.notifications.register(
+            self.meta.partition_id,
+            db.cf_handle_for_key_kind(KeyKind::Fsm).id(),
+            db.durable_lsn_sender().clone(),
+        );
         **guard = State::Open { db };
     }
 
-    pub fn set_cf_missing(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
-        let mut durable_lsn_guard = self.durable_lsn.write();
-        **guard = State::CfMissing;
-        if let Some(durable_lsn) = durable_lsn_guard.take() {
-            durable_lsn.send_replace(None);
+    async fn set_cf_missing(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+        guard.close().await;
+        if let Some(db) = guard.db() {
+            db.unregister_durable_lsn();
         }
+        // Release the notification lock before dropping any storage resources.
+        **guard = State::CfMissing;
     }
 
-    pub fn open_cf(
+    pub async fn open_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
-        rocksdb: &Arc<RocksDb>,
+        database: &PartitionStoreDb,
     ) {
+        debug_assert!(guard.is_unknown());
         let cf_name = self.cf_name();
-        match rocksdb.inner().cf_handle(cf_name.as_ref()) {
+        match database.rocksdb.inner().cf_handle(cf_name.as_ref()) {
             Some(handle) => {
                 let db = PartitionDb::new(
                     self.meta.clone(),
                     self.archived_lsn.clone(),
-                    rocksdb.clone(),
+                    database.clone(),
                     handle,
                 );
                 self.open_local_cf(guard, db);
             }
             None => {
-                self.set_cf_missing(guard);
+                self.set_cf_missing(guard).await;
             }
         }
     }
@@ -301,14 +340,16 @@ impl PartitionCell {
     pub async fn provision(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
-        rocksdb: Arc<RocksDb>,
+        database: PartitionStoreDb,
     ) -> Result<PartitionDb, RocksError> {
+        self.drop_cf(guard).await?;
+        let rocksdb = &database.rocksdb;
         // Defensive: drop any stale CF that might exist in RocksDB despite the
         // PartitionCell state being CfMissing. The exact sequence of events that leads
         // to this inconsistency hasn't been fully established yet, but we suspect that it
         // might happen if a previous provision/import created the CF and then failed
         // before the cell state was updated. See https://github.com/restatedev/restate/issues/4534
-        Self::drop_cf_from_rocksdb(&self.meta, &rocksdb).await?;
+        Self::drop_cf_from_rocksdb(&self.meta, rocksdb).await?;
         let cf_name = self.meta.cf_name();
         debug!("Creating new column family {}", cf_name);
         rocksdb.clone().open_cf(self.meta.cf_name().into()).await?;
@@ -319,7 +360,7 @@ impl PartitionCell {
         let db = PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
-            rocksdb.clone(),
+            database.clone(),
             handle,
         );
         self.open_local_cf(guard, db.clone());
@@ -332,7 +373,7 @@ impl PartitionCell {
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         snapshot: LocalPartitionSnapshot,
-        rocksdb: Arc<RocksDb>,
+        database: PartitionStoreDb,
     ) -> Result<PartitionDb, RocksError> {
         // Sanity check
         if snapshot.key_range.start() > self.meta.key_range.start()
@@ -350,6 +391,11 @@ impl PartitionCell {
         import_metadata.set_db_comparator_name(snapshot.db_comparator_name.as_str());
         import_metadata.set_files(&snapshot.files)?;
 
+        // Validation failures leave the current store intact. Once replacement
+        // starts, reset its watch even if dropping or importing the CF fails.
+        self.drop_cf(guard).await?;
+        let rocksdb = &database.rocksdb;
+
         info!(
             snapshot_applied_lsn = %snapshot.min_applied_lsn,
             path = ?snapshot.base_dir.path(),
@@ -358,7 +404,7 @@ impl PartitionCell {
 
         // Defensive: see the comment in provision() and
         // https://github.com/restatedev/restate/issues/4534
-        Self::drop_cf_from_rocksdb(&self.meta, &rocksdb).await?;
+        Self::drop_cf_from_rocksdb(&self.meta, rocksdb).await?;
 
         rocksdb
             .clone()
@@ -371,7 +417,7 @@ impl PartitionCell {
         let db = PartitionDb::new(
             self.meta.clone(),
             self.archived_lsn.clone(),
-            rocksdb.clone(),
+            database.clone(),
             rocksdb
                 .inner()
                 .cf_handle(self.meta.cf_name().as_ref())
@@ -405,15 +451,21 @@ impl PartitionCell {
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
     ) -> Result<(), RocksError> {
+        // Keep the sealed lifetime in the cell while draining. Cancelling this
+        // waiter must not allow a reopen/replacement to bypass admitted writes.
+        guard.close().await;
         // We set the state to Unknown in case we returned an error during the drop process.
         let state = std::mem::replace(guard.deref_mut(), State::Unknown);
         match state {
             State::Unknown | State::CfMissing => { /* nothing to do */ }
-            State::Open { db } | State::Closed { db, .. } => {
-                Self::drop_cf_from_rocksdb(&self.meta, &db.rocksdb).await?;
+            State::Open { db } | State::Closing { db, .. } | State::Closed { db, .. } => {
+                // Do not hold a notification lock across native drop or storage
+                // destruction; either can wait for an outstanding flush callback.
+                db.unregister_durable_lsn();
+                Self::drop_cf_from_rocksdb(&self.meta, db.rocksdb()).await?;
             }
         }
-        self.set_cf_missing(guard);
+        self.set_cf_missing(guard).await;
         Ok(())
     }
 
@@ -421,7 +473,9 @@ impl PartitionCell {
     pub async fn clone_db(&self) -> Option<PartitionDb> {
         let guard = self.inner.read().await;
         match &*guard {
-            State::Unknown | State::CfMissing | State::Closed { .. } => None,
+            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {
+                None
+            }
             State::Open { db } => Some(db.clone()),
         }
     }
@@ -430,26 +484,17 @@ impl PartitionCell {
     pub async fn get_partition_if_open(&self) -> Option<Arc<Partition>> {
         let guard = self.inner.read().await;
         match &*guard {
-            State::Unknown | State::CfMissing | State::Closed { .. } => None,
+            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {
+                None
+            }
             State::Open { db } => Some(Arc::clone(db.partition())),
-        }
-    }
-
-    /// Updates the durable Lsn of the local partition store.
-    pub fn note_durable_lsn(&self, lsn: Lsn) {
-        let durable_lsn_guard = self.durable_lsn.read();
-        if let Some(durable_lsn) = durable_lsn_guard.as_ref() {
-            durable_lsn.send_replace(Some(lsn));
         }
     }
 
     #[cfg(test)]
     pub async fn reset_to_unknown(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
-        let mut durable_lsn_guard = self.durable_lsn.write();
+        self.set_cf_missing(guard).await;
         **guard = State::Unknown;
-        if let Some(durable_lsn) = durable_lsn_guard.take() {
-            durable_lsn.send_replace(None);
-        }
     }
 }
 
@@ -466,9 +511,14 @@ pub(crate) enum State {
     Open {
         db: PartitionDb,
     },
-    /// The partition exists locally but it's closed and not being actively used by a partition
-    /// processor. In this state, the partition can be re-opened, or it can be dropped but it'll
-    /// not be accounted against the total partition memory budget.
+    /// Transaction-commit admission is sealed; drainage has not yet been confirmed.
+    /// Retain the sealed lifetime here even if the close waiter is cancelled.
+    Closing {
+        db: PartitionDb,
+        closing_at: Instant,
+    },
+    /// Transaction-commit admission is sealed and admitted commits have drained.
+    /// Physical resources remain available for maintenance, reopening, or deletion.
     Closed {
         db: PartitionDb,
         closed_at: Instant,
@@ -487,45 +537,71 @@ impl State {
     pub fn closed_since(&self) -> Option<Duration> {
         match self {
             State::Unknown | State::CfMissing => None,
-            State::Open { .. } => None,
+            State::Open { .. } | State::Closing { .. } => None,
             State::Closed { closed_at, .. } => Some(closed_at.elapsed()),
         }
     }
 
     pub fn maybe_open(&self) -> bool {
-        matches!(self, State::Closed { .. } | State::Open { .. })
+        matches!(
+            self,
+            State::Open { .. } | State::Closing { .. } | State::Closed { .. }
+        )
     }
 
-    pub fn get_or_reopen(&mut self) -> Option<PartitionDb> {
-        match &mut *self {
-            State::Unknown | State::CfMissing => None,
-            State::Open { db } => Some(db.clone()),
-            State::Closed { db, .. } => {
-                let db = db.clone();
-                *self = State::Open { db: db.clone() };
-                Some(db)
+    pub async fn get_or_reopen(&mut self) -> Option<PartitionDb> {
+        let db = match &*self {
+            State::Unknown | State::CfMissing => return None,
+            State::Open { db } => return Some(db.clone()),
+            State::Closing { db, closing_at } => {
+                // A cancelled close may have left admitted writes in flight.
+                Self::drain_for_close(db, *closing_at).await;
+                db
             }
-        }
+            State::Closed { db, .. } => db,
+        };
+        let mut db = db.clone();
+        db.admission = Arc::new(Admission::default());
+        *self = State::Open { db: db.clone() };
+        Some(db)
     }
 
     pub fn db(&self) -> Option<&PartitionDb> {
         match self {
             State::Unknown | State::CfMissing => None,
-            State::Open { db } => Some(db),
-            State::Closed { db, .. } => Some(db),
+            State::Open { db } | State::Closing { db, .. } | State::Closed { db, .. } => Some(db),
         }
     }
 
-    pub fn close(&mut self) {
+    pub async fn close(&mut self) {
         match &mut *self {
-            State::Unknown | State::CfMissing | State::Closed { .. } => {}
+            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {}
             State::Open { db } => {
-                *self = State::Closed {
+                db.admission.seal();
+                *self = State::Closing {
                     db: db.clone(),
-                    closed_at: Instant::now(),
+                    closing_at: Instant::now(),
                 };
             }
         }
+        if let State::Closing { db, closing_at } = self {
+            let closed_at = Self::drain_for_close(db, *closing_at).await;
+            *self = State::Closed {
+                db: db.clone(),
+                closed_at,
+            };
+        }
+    }
+
+    async fn drain_for_close(db: &PartitionDb, closing_at: Instant) -> Instant {
+        db.admission.drain().await;
+        let closed_at = Instant::now();
+        debug!(
+            partition_id = %db.partition().partition_id,
+            elapsed = %(closed_at - closing_at).friendly(),
+            "Closed partition db"
+        );
+        closed_at
     }
 }
 
@@ -533,7 +609,7 @@ impl State {
 
 pub struct RocksConfigurator<T> {
     memory_budget: Arc<MemoryBudget>,
-    shared_state: Arc<crate::SharedState>,
+    durable_lsn_notifications: Arc<DurableLsnSenders>,
     use_multi_db_layout: bool,
     _marker: PhantomData<T>,
 }
@@ -542,7 +618,7 @@ impl<T> Clone for RocksConfigurator<T> {
     fn clone(&self) -> Self {
         Self {
             memory_budget: self.memory_budget.clone(),
-            shared_state: self.shared_state.clone(),
+            durable_lsn_notifications: self.durable_lsn_notifications.clone(),
             use_multi_db_layout: self.use_multi_db_layout,
             _marker: PhantomData,
         }
@@ -552,12 +628,12 @@ impl<T> Clone for RocksConfigurator<T> {
 impl<T> RocksConfigurator<T> {
     pub fn new(
         memory_budget: Arc<MemoryBudget>,
-        psm_state: Arc<crate::SharedState>,
+        notifications: &Arc<DurableLsnSenders>,
         use_multi_db_layout: bool,
     ) -> Self {
         Self {
             memory_budget,
-            shared_state: psm_state,
+            durable_lsn_notifications: notifications.clone(),
             use_multi_db_layout,
             _marker: PhantomData,
         }
@@ -621,7 +697,7 @@ impl DbConfigurator for RocksConfigurator<AllDataCf> {
             );
         }
 
-        let event_listener = DurableLsnEventListener::new(&self.shared_state);
+        let event_listener = DurableLsnEventListener::new(self.durable_lsn_notifications.clone());
         db_options.add_event_listener(event_listener);
 
         db_options

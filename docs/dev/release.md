@@ -31,6 +31,8 @@ https://github.com/issues?q=is%3Aopen+org%3Arestatedev+label%3Arelease-blocker
 
 Confirm if any SDK releases are needed to keep up with the runtime and/or service protocol releases.
 
+Run the [release tests](release-testing.md), including the Restate Cloud checks.
+
 Check that the e2e tests are passing:
 
 * [Jepsen tests](https://github.com/restatedev/jepsen/actions)
@@ -54,6 +56,7 @@ Prepare the release first, optionally cut release candidates for testing, then c
 
 1. Update [COMPATIBILITY_INFORMATION](/crates/types/src/cluster_marker.rs) if `X.Y.Z` changes the backward/forward compatible Restate versions.
 1. [Publish the unreleased release notes](/release-notes/README.md#release-process) as `release-notes/vX.Y.Z.md`.
+1. Share breaking and configuration changes from the release notes with the cloud squad so they can update the Cloud configuration before rolling out release candidates and the final release.
 
 ### Creating release candidates (optional)
 
