@@ -1179,6 +1179,12 @@ impl Member {
             }
         }
 
+        // Every member computes this write itself instead of storing replicated bytes, so all
+        // members must produce the same value, including members on older versions.
+        if !new_nodes_configuration.all_metadata_servers_keep_address_lists() {
+            new_nodes_configuration.clear_address_lists();
+        }
+
         new_nodes_configuration.increment_version();
 
         debug!(
