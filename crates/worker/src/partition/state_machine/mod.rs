@@ -1170,26 +1170,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .resolve_response_result_ref(&completed.response_result)
                     .await?;
 
-                match response_result {
-                    Some(result) => {
-                        self.send_response_to_sinks(
-                            service_invocation.response_sink.take(),
-                            result,
-                            Some(invocation_id),
-                            completion_expiry_time,
-                            Some(&completed.invocation_target),
-                        )?;
-                    }
-                    None => {
-                        self.send_response_to_sinks(
-                            service_invocation.response_sink.take(),
-                            GONE_INVOCATION_ERROR,
-                            Some(invocation_id),
-                            completion_expiry_time,
-                            Some(&completed.invocation_target),
-                        )?;
-                    }
-                }
+                self.send_response_to_sinks(
+                    service_invocation.response_sink.take(),
+                    response_result.unwrap_or_else(|| GONE_INVOCATION_ERROR.into()),
+                    Some(invocation_id),
+                    completion_expiry_time,
+                    Some(&completed.invocation_target),
+                )?;
             }
             InvocationStatus::Free => {
                 unreachable!("This was checked before!")
@@ -4248,26 +4235,13 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     .resolve_response_result_ref(&completed.response_result)
                     .await?;
 
-                match response_result {
-                    Some(result) => {
-                        self.send_response_to_sinks(
-                            vec![attach_invocation_request.response_sink],
-                            result,
-                            Some(invocation_id),
-                            completion_expiry_time,
-                            Some(&completed.invocation_target),
-                        )?;
-                    }
-                    None => {
-                        self.send_response_to_sinks(
-                            vec![attach_invocation_request.response_sink],
-                            GONE_INVOCATION_ERROR,
-                            Some(invocation_id),
-                            completion_expiry_time,
-                            Some(&completed.invocation_target),
-                        )?;
-                    }
-                }
+                self.send_response_to_sinks(
+                    vec![attach_invocation_request.response_sink],
+                    response_result.unwrap_or_else(|| GONE_INVOCATION_ERROR.into()),
+                    Some(invocation_id),
+                    completion_expiry_time,
+                    Some(&completed.invocation_target),
+                )?;
             }
         }
 

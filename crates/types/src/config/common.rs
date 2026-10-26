@@ -1135,7 +1135,7 @@ experimental! {
     /// in the invocation status, we instead keep a reference to the
     /// output that is written to the blob table
     ///
-    /// Since v1.9.0
+    /// Since v1.8.2
     write_blob_table,
 }
 

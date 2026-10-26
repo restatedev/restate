@@ -70,7 +70,7 @@ pub trait PartitionFeatures {
     /// table and only reference this value from
     /// the invocation status.
     ///
-    /// *Since v1.8.0*
+    /// *Since v1.8.2*
     fn is_write_blob_table_enabled(&self) -> bool;
 }
 

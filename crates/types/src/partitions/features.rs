@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_8_2, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -85,7 +85,7 @@ pub enum PartitionFeatureChange {
     /// table and only reference this value from
     /// the invocation status.
     ///
-    /// *Since v1.8.0*
+    /// *Since v1.8.2*
     EnableWriteBlobTable = 8,
 }
 
@@ -107,7 +107,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
-            Self::EnableWriteBlobTable => &RESTATE_VERSION_1_8_0,
+            Self::EnableWriteBlobTable => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -213,7 +213,7 @@ pub struct PersistedFeatures {
     /// table and only reference this value from
     /// the invocation status.
     ///
-    /// *Since v1.8.0*
+    /// *Since v1.8.2*
     #[bilrost(tag(8))]
     pub write_blob_table: bool,
 }
