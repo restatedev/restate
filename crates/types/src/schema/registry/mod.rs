@@ -17,9 +17,11 @@ pub use metadata_service::*;
 pub use telemetry_client::*;
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use codederror::{BoxedCodedError, CodedError};
 use http::{StatusCode, Uri};
+use itertools::Itertools;
 use tracing::subscriber::NoSubscriber;
 
 use crate::deployment;
@@ -32,15 +34,15 @@ use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
 use crate::schema::metadata::updater;
 use crate::schema::metadata::updater::{
-    KafkaClusterError, SchemaError, SchemaUpdater, ServiceError,
+    KafkaClusterError, SchemaError, SchemaUpdater, ServiceError, SubscriptionError,
 };
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 
 use crate::schema::Redaction;
 pub use crate::schema::metadata::updater::{
-    AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, ModifyServiceRequest,
-    Overwrite,
+    AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, DeleteDeploymentsResult,
+    ModifyServiceRequest, Overwrite,
 };
 // -- Schema registry error and other types
 
@@ -62,6 +64,7 @@ impl SchemaRegistryError {
             SchemaRegistryErrorInner::Schema(schema_error) => match schema_error {
                 SchemaError::NotFound(_) => StatusCode::NOT_FOUND,
                 SchemaError::Service(ServiceError::DifferentType { .. })
+                | SchemaError::Subscription(SubscriptionError::Override(_))
                 | SchemaError::KafkaCluster(KafkaClusterError::AlreadyExists { .. })
                 | SchemaError::KafkaCluster(
                     KafkaClusterError::RemovalLeadsToOrphanSubscription { .. },
@@ -606,24 +609,53 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         &self,
         deployment_id: DeploymentId,
     ) -> Result<(), SchemaRegistryError> {
-        self.metadata_service
-            .update(|schema| {
-                Ok((
-                    (),
-                    SchemaUpdater::update(schema, |updater| {
-                        if updater.remove_deployment(deployment_id) {
-                            Ok(())
-                        } else {
-                            Err(SchemaError::NotFound(format!(
-                                "deployment with id '{deployment_id}'"
-                            )))
-                        }
-                    })?,
-                ))
-            })
-            .await?;
+        let result = self.delete_deployments([deployment_id]).await?;
+        if result.not_found.is_empty() {
+            Ok(())
+        } else {
+            Err(SchemaError::NotFound(format!("deployment with id '{deployment_id}'")).into())
+        }
+    }
 
-        Ok(())
+    /// Deletes the given deployments with a single schema update (one schema version bump).
+    /// Either all the existing deployments are deleted, or none of them (on error). Duplicate ids
+    /// are ignored. The schema is not written when none of the deployments exist.
+    pub async fn delete_deployments(
+        &self,
+        deployment_ids: impl IntoIterator<Item = DeploymentId>,
+    ) -> Result<DeleteDeploymentsResult, SchemaRegistryError> {
+        // Collected as the update closure can run again on conflicts.
+        let deployment_ids: Vec<_> = deployment_ids.into_iter().unique().collect();
+        if deployment_ids.is_empty() {
+            return Ok(DeleteDeploymentsResult::default());
+        }
+
+        // Set when none of the deployments exist, to tell that case apart from a failed update.
+        let nothing_to_delete = AtomicBool::new(false);
+        let result = self
+            .metadata_service
+            .update(|schema| {
+                SchemaUpdater::update_and_return(schema, |updater| {
+                    let result = updater.remove_deployments(deployment_ids.iter().copied());
+                    if result.deleted.is_empty() {
+                        nothing_to_delete.store(true, Ordering::Relaxed);
+                        // Abort the update, so that the unchanged schema isn't written.
+                        return Err(SchemaError::NotFound("deployments".to_owned()));
+                    }
+                    Ok(result)
+                })
+                .map_err(Into::into)
+            })
+            .await;
+
+        match result {
+            Ok((result, _)) => Ok(result),
+            Err(_) if nothing_to_delete.load(Ordering::Relaxed) => Ok(DeleteDeploymentsResult {
+                deleted: vec![],
+                not_found: deployment_ids,
+            }),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn modify_service(
@@ -780,6 +812,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
 
     pub async fn create_subscription(
         &self,
+        id: Option<SubscriptionId>,
         source: Uri,
         sink: Uri,
         options: Option<HashMap<String, String>>,
@@ -788,7 +821,7 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             .metadata_service
             .update(|schema| {
                 SchemaUpdater::update_and_return(schema, |updater| {
-                    updater.add_subscription(source.clone(), sink.clone(), options.clone())
+                    updater.add_subscription(id, source.clone(), sink.clone(), options.clone())
                 })
                 .map_err(Into::into)
             })

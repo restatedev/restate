@@ -12,12 +12,10 @@ use restate_sharding::KeyRange;
 use restate_types::identifiers::BaseEntryId;
 use restate_types::vqueues::{CanonicalEntryId, Seq, VQueueId};
 
+use super::RawStatusHeaderRef;
 use super::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use super::metadata::{VQueueMeta, VQueueMetaRef};
-use super::{
-    EntryId, EntryKey, EntryMetadata, EntryStatusHeader, EntryValue, stats::EntryStatistics,
-};
-use super::{RawStatusHeaderRef, Status};
+use super::{EntryContext, EntryId, EntryKey, EntryStateRef, EntryStatusHeader, EntryValue};
 use crate::Result;
 
 /// Stages in the inbox/vqueue
@@ -117,14 +115,11 @@ pub trait WriteVQueueTable {
     /// The `meta` **must** match the vqueue metadata on disk prior to the update,
     /// then it gets updated in place. Obsolete metadata is deleted atomically
     /// with the update and reported through the returned disposition.
-    ///
-    /// Pass `entry_metadata` if the update impacts a single entry.
     fn update_vqueue(
         &mut self,
         qid: &VQueueId,
         meta: &mut VQueueMeta,
         update: &super::metadata::Update,
-        entry_metadata: Option<&EntryMetadata>,
     ) -> VQueueDisposition;
 
     /// Deletes a vqueue's metadata record.
@@ -168,19 +163,27 @@ pub trait WriteVQueueTable {
     //     E: EntryState + bilrost::Message + bilrost::encoding::RawMessage,
     //     (): bilrost::encoding::EmptyState<(), E>;
 
-    /// Updates a vqueue's entry's status
-    fn put_vqueue_entry_status(
+    /// Creates a previously absent entry status. The caller must establish absence,
+    /// including earlier writes in this transaction; this operation does not read storage.
+    fn create_vqueue_entry_status(&mut self, context: &EntryContext<'_>, after: EntryStateRef<'_>);
+
+    /// Updates an existing entry, keeping its queue, target, and base identity fixed.
+    /// `before` must describe the actual previous state, including earlier writes in
+    /// this transaction. This operation does not read or compare against storage.
+    ///
+    /// # Panics
+    /// Panics if the before and after entry IDs differ.
+    fn update_vqueue_entry_status(
         &mut self,
-        qid: &VQueueId,
-        stage: Stage,
-        entry_key: &EntryKey,
-        meta: &EntryMetadata,
-        stats: EntryStatistics,
-        status: Status,
+        context: &EntryContext<'_>,
+        before: EntryStateRef<'_>,
+        after: EntryStateRef<'_>,
     );
 
-    /// Deletes the status by base identity, without checking a sequence number.
-    fn delete_vqueue_entry_status(&mut self, id: &BaseEntryId);
+    /// Deletes an existing status by base identity, without checking its sequence.
+    /// `before` must describe the actual previous state, including earlier writes in
+    /// this transaction. This operation does not read or compare against storage.
+    fn delete_vqueue_entry_status(&mut self, context: &EntryContext<'_>, before: EntryStateRef<'_>);
 
     /// Stores a vqueue entry input payload
     fn put_vqueue_input_payload<E>(

@@ -41,7 +41,7 @@ use restate_types::journal_v2::UnresolvedFuture;
 use restate_types::sharding::{PartitionId, WithPartitionKey};
 use restate_types::state_mut::StateMutationInput;
 use restate_types::storage::StorageCodec;
-use restate_types::vqueues::{EntryId, EntryKind};
+use restate_types::vqueues::{EntryId, EntryKind, EntryTargetExt, Seq};
 use restate_types::{LimitKey, LockName, ServiceName};
 use restate_util_string::{ReString, ToReString};
 use restate_util_time::DurationExt;
@@ -161,18 +161,30 @@ pub async fn remove_pending_state_mutations(
 
         if id.kind() == EntryKind::StateMutation {
             let base_id = id.to_base_id(qid.partition_key());
-            if let Ok(input) = StateMutationInput::decode(value) {
+            let Ok(input) = StateMutationInput::decode(value) else {
+                // Don't touch the state mutation if we cannot decode it. But log a warning.
                 warn!(
-                    "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
-                    input.service_id,
+                    "Could not remove a pending state mutation with id {base_id} because it could not be decoded.",
                 );
-            }
+                iterator.next();
+                continue;
+            };
+            warn!(
+                "Removing pending state mutation for {}. Please re-submit it if it should still be applied.",
+                input.service_id,
+            );
 
             if let Some(header) = txn.get_vqueue_entry_status(&base_id).await? {
                 VQueue::<VQueueEvent, _>::get(&qid, &mut txn, cache, None)
                     .await?
                     .expect("vqueue of a pending state mutation must exist")
-                    .end(at, &header, Status::Killed, Duration::ZERO);
+                    .end(
+                        at,
+                        &header,
+                        &input.entry_target_ref(),
+                        Status::Killed,
+                        Duration::ZERO,
+                    );
             } else {
                 // Only the input payload is left
                 txn.delete_vqueue_input_payload(&qid, &base_id.canonicalize(seq));
@@ -301,6 +313,7 @@ async fn migrate_inboxes(
                     UniqueTimestamp::from_unix_millis_unchecked(
                         inboxed.metadata.timestamps.creation_time(),
                     ),
+                    &inboxed.metadata.invocation_target.entry_target_ref(),
                     // We use the original inbox sequence number to preserve ordering as best we
                     // can. One can formulate scenarios where this might diverge from the original
                     // inbox ordering in particular if the leader clock went backwards after restart
@@ -312,6 +325,8 @@ async fn migrate_inboxes(
                 );
                 // Now, let's update the invocation status to make it vqueue-powered
                 inboxed.metadata.vqueue_id = Some(qid.clone());
+                inboxed.metadata.creation_seq = Some(Seq::new(seq));
+
                 txn.put_invocation_status(&invocation_id, &InvocationStatus::Inboxed(inboxed))?;
             }
 
@@ -548,6 +563,7 @@ async fn migrate_scheduled_invocation(
     let seq = 0;
     vqueue.enqueue_new(
         entry_created_at,
+        &scheduled.metadata.invocation_target.entry_target_ref(),
         seq,
         scheduled.metadata.execution_time,
         EntryId::from(invocation_id),
@@ -562,6 +578,11 @@ async fn migrate_scheduled_invocation(
 
     // Now, let's update the invocation status to make it vqueue-powered
     scheduled.metadata.vqueue_id = Some(qid);
+    // creation_seq must match the vqueue entry's seq. We set it now, although it is the
+    // placeholder 0 and not a real LSN, so that later readers don't need to look up the
+    // entry to find it.
+    scheduled.metadata.creation_seq = Some(Seq::new(seq));
+
     // Store the updated invoked invocation status
     txn.put_invocation_status(invocation_id, &InvocationStatus::Scheduled(scheduled))?;
     Ok(())
@@ -597,10 +618,12 @@ async fn migrate_invoked_invocation(
     .await?;
 
     trace!("Migrating invocation={invocation_id} into qid={qid}");
-    vqueue.migrate_invoked_invocation(invocation_id, &invoked);
+    let seq = vqueue.migrate_invoked_invocation(invocation_id, &invoked);
 
     // Now, let's update the invocation status to make it vqueue-powered
     invoked.vqueue_id = Some(qid);
+    invoked.creation_seq = Some(seq);
+
     // Store the updated invoked invocation status
     txn.put_invocation_status(invocation_id, &InvocationStatus::Invoked(invoked))?;
     Ok(())
@@ -634,10 +657,12 @@ async fn migrate_completed_invocation(
     .await?;
 
     trace!("Migrating invocation={invocation_id} into qid={qid}");
-    vqueue.migrate_completed_invocation(invocation_id, &completed);
+    let seq = vqueue.migrate_completed_invocation(invocation_id, &completed);
 
     // Now, let's update the invocation status to make it vqueue-powered
     completed.vqueue_id = Some(qid);
+    completed.creation_seq = Some(seq);
+
     // Store the updated invoked invocation status
     txn.put_invocation_status(invocation_id, &InvocationStatus::Completed(completed))?;
     Ok(())
@@ -671,9 +696,11 @@ async fn migrate_paused_invocation(
     .await?;
 
     trace!("Migrating invocation={invocation_id} into qid={qid}");
-    vqueue.migrate_parked_invocation(invocation_id, &paused, Stage::Paused);
+    let seq = vqueue.migrate_parked_invocation(invocation_id, &paused, Stage::Paused);
     // Now, let's update the invocation status to make it vqueue-powered
     paused.vqueue_id = Some(qid);
+    paused.creation_seq = Some(seq);
+
     // Store the updated invoked invocation status
     txn.put_invocation_status(invocation_id, &InvocationStatus::Paused(paused))?;
     Ok(())
@@ -708,9 +735,11 @@ async fn migrate_suspended_invocation(
     .await?;
 
     trace!("Migrating invocation={invocation_id} into qid={qid}");
-    vqueue.migrate_parked_invocation(invocation_id, &suspended, Stage::Suspended);
+    let seq = vqueue.migrate_parked_invocation(invocation_id, &suspended, Stage::Suspended);
     // Now, let's update the invocation status to make it vqueue-powered
     suspended.vqueue_id = Some(qid);
+    suspended.creation_seq = Some(seq);
+
     // Store the updated invoked invocation status
     txn.put_invocation_status(
         invocation_id,

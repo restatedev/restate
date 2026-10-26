@@ -85,7 +85,8 @@ use restate_ingestion_client::{Ingestion, IngestionClient, IngestionError, Recor
 use restate_types::config::Configuration;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{
-    DeploymentId, InvocationId, PartitionProcessorRpcRequestId, partitioner,
+    DeploymentId, InvocationId, PartitionProcessorRpcRequestId,
+    UNSCOPED_SERVICE_PARTITION_KEY_FANOUT, unscoped_service_partition_key,
 };
 use restate_types::invocation::{
     Header, InvocationTarget, InvocationTargetType, ServiceInvocation, Source, SpanRelation,
@@ -97,7 +98,7 @@ use restate_types::logs::{BodyWithKeys, Keys};
 use restate_types::schema::invocation_target::{DeploymentStatus, InvocationTargetResolver};
 use restate_types::sharding::{PartitionKey, WithPartitionKey};
 use restate_types::time::MillisSinceEpoch;
-use restate_types::{Scope, limit_key};
+use restate_types::{Scope, Versioned, limit_key};
 use restate_util_string::{ReString, RestrictedValue, RestrictedValueError};
 use restate_wal_protocol::v2::commands::InvokeCommand;
 use restate_wal_protocol::v2::{Dedup, Envelope, Raw};
@@ -133,7 +134,7 @@ pub(crate) fn ingestion_server<T, Schemas>(
     max_message_size: usize,
 ) -> IngestionSvcServer<IngestionService<T, Schemas>>
 where
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     IngestionSvcServer::new(IngestionService::new(
         ingestion_client,
@@ -205,7 +206,7 @@ impl<T, Schemas> IngestionService<T, Schemas> {
 impl<T, Schemas> IngestionSvc for IngestionService<T, Schemas>
 where
     T: TransportConnect,
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     type IngestStream = BoxStream<'static, Result<IngestionResponse, Status>>;
 
@@ -260,7 +261,7 @@ impl<I, S, Schemas> IngestionStream<I, S, Schemas>
 where
     I: Ingestion<Envelope<Raw>>,
     S: Stream<Item = Result<IngestionRequest, Status>> + Unpin,
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
 {
     pub(super) fn new(
         inbound: S,
@@ -387,7 +388,14 @@ where
                     handler: handler.to_owned(),
                 }),
         }
-        .map_err(Error::NotFound)?;
+        .map_err(|err| {
+            // A lookup miss is only conclusive once the schema has been loaded.
+            if schemas.valid() {
+                Error::NotFound(err)
+            } else {
+                Error::SchemaNotReady
+            }
+        })?;
 
         // filter out headers reserved by the ingress
         settings.headers.retain(|k, _| !is_reserved_header_name(k));
@@ -640,7 +648,7 @@ where
         record: IngestionInvocation,
     ) -> Result<(PartitionKey, Envelope<InvokeCommand>), Error>
     where
-        Schemas: InvocationTargetResolver,
+        Schemas: InvocationTargetResolver + Versioned,
     {
         let execution_time = record.invoke_time_ts_ms.map(MillisSinceEpoch::from);
 
@@ -665,7 +673,9 @@ where
         let target_meta = schemas
             .resolve_latest_invocation_target(service, handler)
             .ok_or_else(|| {
-                if schemas.resolve_latest_service_type(service).is_none() {
+                if !schemas.valid() {
+                    Error::SchemaNotReadyWithOffset(record.offset)
+                } else if schemas.resolve_latest_service_type(service).is_none() {
                     Error::NotFoundWithOffset(
                         record.offset,
                         NotFoundError::UnknownService {
@@ -814,14 +824,15 @@ where
             return Err(Error::BadRequest(BadRequestError::HeadersMaxSizeReached));
         }
 
-        let seed = PartitionKeySeed {
-            producer: &state.dedup_mode,
-            offset: record.offset,
-        };
-
         let invocation_id =
             InvocationId::generate_or_else(&invocation_target, idempotency_key, || {
-                partitioner::HashPartitioner::compute_partition_key(seed)
+                // Deterministically generate a partition key for non-idempotent non-keyed
+                // services respecting key fanout.
+                unscoped_service_partition_key(
+                    invocation_target.service_name(),
+                    state.producer_hash.wrapping_add(record.offset)
+                        % UNSCOPED_SERVICE_PARTITION_KEY_FANOUT,
+                )
             });
 
         let span_context = prepare_tracing_span(
@@ -930,17 +941,6 @@ impl<'a> Extractor for TraceContextExtractor<'a> {
     }
 }
 
-/// Seed hashed into a partition key for records that have no idempotency key.
-///
-/// Combining the `producer` id with the record `offset` keeps the derived
-/// [`Partitionkey`] deterministic and stable per producer, so retrying the same
-/// record yields the same key.
-#[derive(Hash)]
-struct PartitionKeySeed<'a> {
-    producer: &'a DedupMode,
-    offset: u64,
-}
-
 /// Outcome of one [`IngestionStream::process`] burst.
 enum ProcessorResult {
     /// Keep processing; the payload is the number of bytes to add back to the
@@ -969,6 +969,10 @@ enum Error {
     NotFound(#[from] NotFoundError),
     #[error("Invocation target not found for invocation at offset {0}: {1}")]
     NotFoundWithOffset(u64, NotFoundError),
+    #[error("The schema has not been loaded yet, retry later")]
+    SchemaNotReady,
+    #[error("The schema has not been loaded yet, retry the invocation at offset {0} later")]
+    SchemaNotReadyWithOffset(u64),
     #[error("Bad request: {0}")]
     BadRequest(#[from] BadRequestError),
     #[error("Bad request for invocation at offset {0}: {1}")]
@@ -993,6 +997,10 @@ impl From<Error> for proto::Error {
             }
             Error::NotFound(_) => (None, proto::ErrorKind::NotFound),
             Error::NotFoundWithOffset(offset, _) => (Some(offset), proto::ErrorKind::NotFound),
+            Error::SchemaNotReady => (None, proto::ErrorKind::Unavailable),
+            Error::SchemaNotReadyWithOffset(offset) => {
+                (Some(offset), proto::ErrorKind::Unavailable)
+            }
             Error::BadRequest(_) => (None, proto::ErrorKind::BadRequest),
             Error::BadRequestWithOffset(offset, _) => (Some(offset), proto::ErrorKind::BadRequest),
         };
@@ -1115,6 +1123,8 @@ struct ProcessorState {
     /// Hash of the producer id used for deduplication, or `None` when the
     /// producer id was empty (deduplication disabled for the stream).
     dedup_mode: DedupMode,
+    /// Hash of the producer used to calculate the scatter bucket
+    producer_hash: u64,
     /// The raw producer id from the `Start` frame, used for metric labels and
     /// logging.
     producer: ReString,
@@ -1146,8 +1156,14 @@ impl ProcessorState {
     ) -> Self {
         let producer = producer_id.into();
         let integration = integration.into();
+        // NOTE: We cannot change this hasher because this would
+        // produce a different bucket.
+        let mut hasher = xxhash_rust::xxh3::Xxh3::default();
+        producer.hash(&mut hasher);
+
         Self {
             dedup_mode,
+            producer_hash: hasher.digest(),
             producer,
             integration,
             defaults,

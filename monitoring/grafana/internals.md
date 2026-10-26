@@ -9,8 +9,9 @@ This dashboard provides detailed visibility into Restate Server internals for tr
 - **Errors & Diagnostics** - Error rates, errors by node and partition, task status comparison
 - **Ingress (HTTP & Kafka)** - Request rates by service, latency percentiles, status breakdown, Kafka consumer lag
 - **Invoker (Detailed)** - Task rates by status, task duration percentiles, invoker capacity per node
+- **VQueue Scheduler** - Enqueue rate, run/yield decisions, time invocations spend blocked by reason (locks, flow control rules, invoker capacity)
 - **Bifrost - Log System** - Sequencer append rates and latency, store latency by target node, record cache hit rate
-- **Partition Processor** - Command processing rate by type, command latency (P99), applied LSN lag
+- **Partition Processor** - Command processing rate by type, command latency (P99), applied LSN lag, cleaner purge delay
 - **RocksDB** - Read/write ops, get/write latencies, block cache hit/miss, compaction activity, LSM tree structure, write stalls
 - **Metadata Server** - Get/put operations, latencies, Raft replication status
 

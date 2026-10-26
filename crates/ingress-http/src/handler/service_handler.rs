@@ -15,13 +15,14 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use http::{HeaderMap, HeaderName, Method, Request, Response, StatusCode, header};
 use http_body_util::{BodyExt, Full};
-use metrics::{counter, histogram};
+use metrics::{Label, SharedString, counter, histogram};
 use serde::de::IntoDeserializer;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 use tracing::{Instrument, debug, trace, trace_span};
 use ulid::Ulid;
 
+use restate_tracing_instrumentation::semconv::attribute::{RPC_METHOD, RPC_SERVICE};
 use restate_types::Scope;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::{InvocationId, WithInvocationId};
@@ -46,7 +47,7 @@ use crate::handler::is_reserved_header_name;
 use crate::handler::responses::X_RESTATE_ID;
 use crate::metric_definitions::{
     INGRESS_REQUEST_DURATION, INGRESS_REQUESTS, REQUEST_COMPLETED, REQUEST_ERROR,
-    REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR,
+    REQUEST_INGRESS_ERROR, REQUEST_INVOCATION_ERROR, UNKNOWN_HANDLER,
 };
 
 pub(crate) const IDEMPOTENCY_KEY: HeaderName = HeaderName::from_static("idempotency-key");
@@ -105,25 +106,38 @@ where
         <B as http_body::Body>::Error: Into<GenericError>,
     {
         let start_time = Instant::now();
-        let service_name_label = service_request.name.to_string();
-        let invoke_ty_label = service_request.invoke_ty.as_static_str();
+        let mut labels = Vec::with_capacity(4);
+        labels.push(Label::new(RPC_SERVICE, service_request.name.to_string()));
+        labels.push(Label::new(
+            "rpc.type",
+            service_request.invoke_ty.as_static_str(),
+        ));
+        let handler_label = self
+            .detailed_request_metrics
+            .then(|| service_request.handler.clone());
 
         let result = self.process_service_request(req, service_request).await;
 
-        histogram!(
-            INGRESS_REQUEST_DURATION,
-            "rpc.service" => service_name_label.clone(),
-            "rpc.type" => invoke_ty_label,
-        )
-        .record(start_time.elapsed());
+        if let Some(handler) = handler_label {
+            // The handler name is only validated by process_service_request. Collapse unresolved
+            // names into one value so that callers cannot grow the label cardinality unboundedly.
+            let handler: SharedString =
+                if matches!(result, Err(HandlerError::ServiceHandlerNotFound(..))) {
+                    UNKNOWN_HANDLER.into()
+                } else {
+                    handler.into()
+                };
+            labels.push(Label::new(RPC_METHOD, handler));
+        }
 
-        counter!(
-            INGRESS_REQUESTS,
-            "status" => request_metric_status(&result),
-            "rpc.service" => service_name_label,
-            "rpc.type" => invoke_ty_label,
-        )
-        .increment(1);
+        // TODO: Consider recording the duration after the target has been validated in
+        //  process_service_request, so that fast rejections of invalid requests do not skew the
+        //  latency distribution of actual invocations. This changes the metric's semantics and
+        //  should therefore be done in a minor release.
+        histogram!(INGRESS_REQUEST_DURATION, labels.clone()).record(start_time.elapsed());
+
+        labels.push(Label::new("status", request_metric_status(&result)));
+        counter!(INGRESS_REQUESTS, labels).increment(1);
         result
     }
 

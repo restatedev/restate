@@ -13,6 +13,7 @@ use http::{Method, Request, Response};
 use http_body_util::Full;
 use tracing::{trace, warn};
 
+use restate_types::Versioned;
 use restate_types::errors::GenericError;
 use restate_types::identifiers::ServiceId;
 use restate_types::invocation::InvocationQuery;
@@ -26,7 +27,7 @@ use crate::RequestDispatcher;
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_workflow<B: http_body::Body>(
@@ -94,14 +95,8 @@ where
             AttachInvocationResponse::Ready(response) => response,
         };
 
-        Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+        Self::reply_with_invocation_response(response, |invocation_target| {
+            self.resolve_output_metadata(invocation_target)
         })
     }
 
@@ -141,14 +136,8 @@ where
             }
         };
 
-        Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+        Self::reply_with_invocation_response(response, |invocation_target| {
+            self.resolve_output_metadata(invocation_target)
         })
     }
 }

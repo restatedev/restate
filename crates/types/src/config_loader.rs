@@ -216,17 +216,20 @@ impl ConfigLoader {
                     should_update = true;
                 }
                 EventKind::Remove(_) => {
-                    // some editors (looking at you vim) replaces the entire file
-                    // on save. This triggers the `remove`` event, and then the watch
-                    // stops (since the inode has changed) so we need to re-watch
-                    // the file.
+                    // some editors (looking at you vim) replace the entire file on save, and
+                    // Kubernetes updates a mounted ConfigMap by swapping a symlinked directory.
+                    // Both remove the watched inode, so the watch stops and we need to re-watch
+                    // the configured path. The event carries the resolved path, which may no
+                    // longer exist, so the configured path (and not the event's) is re-watched.
                     should_update = true;
                     for path in &event.event.paths {
                         warn!("Detected configuration file changes: {:?}", path.display());
                         _ = debouncer.unwatch(path);
-                        if let Err(err) = debouncer.watch(path, RecursiveMode::NonRecursive) {
-                            warn!(error = %err, "Failed to unwatch {}", path.display());
-                        }
+                    }
+                    if let Some(path) = &self.path
+                        && let Err(err) = debouncer.watch(path, RecursiveMode::NonRecursive)
+                    {
+                        warn!(error = %err, "Failed to re-watch {}", path.display());
                     }
                 }
                 _ => continue,
@@ -246,5 +249,68 @@ impl ConfigLoader {
                 }
             }
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::*;
+
+    // Kubernetes updates a mounted ConfigMap by writing a new timestamped directory, swapping
+    // the `..data` symlink to it, and removing the old directory; `config.toml` itself is a
+    // symlink through `..data`. Install one version that way.
+    fn install(dir: &Path, version: &str) {
+        let versioned = dir.join(format!("..{version}"));
+        fs::create_dir(&versioned).unwrap();
+        fs::write(
+            versioned.join("config.toml"),
+            format!("cluster-name = \"{version}\"\n"),
+        )
+        .unwrap();
+        let tmp = dir.join("..data_tmp");
+        std::os::unix::fs::symlink(&versioned, &tmp).unwrap();
+        let data = dir.join("..data");
+        let previous = fs::read_link(&data).ok();
+        fs::rename(tmp, &data).unwrap();
+        if let Some(previous) = previous {
+            fs::remove_dir_all(previous).unwrap();
+        }
+    }
+
+    fn wait_for_cluster_name(expected: &str) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while Configuration::pinned().common.cluster_name() != expected {
+            assert!(
+                Instant::now() < deadline,
+                "configuration was not reloaded to cluster-name {expected}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    #[test_log::test]
+    fn reloads_across_symlink_swaps() {
+        let dir = tempfile::tempdir().unwrap();
+        install(dir.path(), "v1");
+        let path = dir.path().join("config.toml");
+        std::os::unix::fs::symlink("..data/config.toml", &path).unwrap();
+
+        let loader = ConfigLoaderBuilder::default()
+            .path(Some(path))
+            .build()
+            .unwrap();
+        crate::config::set_current_config(loader.load_once().unwrap());
+        assert_eq!(Configuration::pinned().common.cluster_name(), "v1");
+        loader.start();
+
+        // the watched inode disappears with every swap; the loader has to keep up twice
+        install(dir.path(), "v2");
+        wait_for_cluster_name("v2");
+        install(dir.path(), "v3");
+        wait_for_cluster_name("v3");
     }
 }

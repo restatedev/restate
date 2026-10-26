@@ -871,6 +871,20 @@ experimental! {
     ///
     /// Since v1.8.0
     inconsistent_state_mutation_cleanup,
+
+    /// # Record signals sent to invocations that haven't started yet
+    ///
+    /// When enabled, signals (e.g. awakeable completions) sent to scheduled or inboxed
+    /// invocations are recorded in their journal and delivered once the invocation starts,
+    /// instead of being discarded.
+    ///
+    /// Only enable once all nodes run v1.8.1 or newer. Once a partition has enabled it, it stays
+    /// enabled even if this option is removed.
+    ///
+    /// Once enabled, you **cannot** roll back to a Restate-server version older than v1.8.1.
+    ///
+    /// Since v1.8.1
+    preflight_signal_recording,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");
@@ -1535,7 +1549,7 @@ mod tests {
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are, pat};
 
-    use crate::config::MetadataClientKind;
+    use crate::config::{Configuration, ControlOptions, MetadataClientKind};
     use crate::config_loader::ConfigLoaderBuilder;
     use crate::net::address::AdvertisedAddress;
 
@@ -1550,6 +1564,112 @@ mod tests {
         "#,
         )
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn control_advertisement_uses_shared_listener_and_explicit_overrides() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Configuration::default();
+        config.common.roles.clear();
+        config.common.fabric_listener_options = ListenerOptions {
+            listen_mode: Some(ListenMode::Tcp),
+            bind_address: Some("127.0.0.1:0".parse().unwrap()),
+            advertised_host: Some("fabric.example.com".to_owned()),
+            ..Default::default()
+        };
+        let mut tls = minimal_tls_config();
+        tls.mode = TlsMode::Prefer;
+        config.common.tls = Some(tls);
+
+        let mut address_book = AddressBook::new(dir.path().to_owned());
+        address_book.bind_from_config(&config).await.unwrap();
+        let port = address_book
+            .get_bound_addresses::<FabricPort>()
+            .unwrap()
+            .tcp_bind_address()
+            .unwrap()
+            .port();
+        assert_ne!(port, 0);
+        let fabric = config.common.advertised_address(&address_book);
+        assert_eq!(
+            config.control_advertised_address(&address_book),
+            fabric.clone().coerce()
+        );
+        assert!(!config.dump().unwrap().contains("[control]"));
+        assert!(!config.dump().unwrap().contains("ctrl-"));
+
+        for host in ["control.example.com", "[2001:db8::7]"] {
+            config.networking.control.ctrl_advertised_host = Some(host.to_owned());
+            assert_eq!(
+                config.control_advertised_address(&address_book),
+                format!("https://{host}:{port}").parse().unwrap()
+            );
+            assert_eq!(config.common.advertised_address(&address_book), fabric);
+        }
+
+        let proxy = "https://control.example.com:8443/rpc".parse().unwrap();
+        config.networking.control.ctrl_advertised_address = Some(proxy);
+        assert_eq!(
+            config.control_advertised_address(&address_book),
+            config
+                .networking
+                .control
+                .ctrl_advertised_address
+                .clone()
+                .unwrap()
+        );
+        let dump = config.dump().unwrap();
+        assert!(!dump.contains("[control]"));
+        let dumped: toml::Value = toml::from_str(&dump).unwrap();
+        assert!(dumped["networking"].get("control").is_none());
+        assert!(dumped["networking"].get("ctrl-advertised-host").is_some());
+        assert!(
+            dumped["networking"]
+                .get("ctrl-advertised-address")
+                .is_some()
+        );
+        let round_trip: Configuration = toml::from_str(&dump).unwrap();
+        assert_eq!(
+            round_trip.control_advertised_address(&address_book),
+            config.control_advertised_address(&address_book)
+        );
+
+        #[cfg(feature = "schemars")]
+        {
+            let schema = schemars::schema_for!(NetworkingOptions);
+            let properties = schema.get("properties").unwrap();
+            assert!(properties.get("control").is_none());
+            for name in ["ctrl-advertised-host", "ctrl-advertised-address"] {
+                assert!(properties.get(name).is_some(), "missing schema for {name}");
+            }
+        }
+
+        config.networking.control = ControlOptions::default();
+        for address in [
+            "http://fabric.example.com:8122/prefix",
+            "https://fabric.example.com:8443/prefix",
+            "unix:/run/restate/fabric.sock",
+        ] {
+            config.common.fabric_listener_options.advertised_address =
+                Some(address.parse().unwrap());
+            assert_eq!(
+                config.control_advertised_address(&address_book),
+                address.parse().unwrap()
+            );
+        }
+
+        // With Unix-only listening, infer the actual fabric socket, not control.sock.
+        config.common.tls = None;
+        config.common.fabric_listener_options = ListenerOptions {
+            listen_mode: Some(ListenMode::Unix),
+            ..Default::default()
+        };
+        let mut unix_book = AddressBook::new(dir.path().to_owned());
+        unix_book.bind_from_config(&config).await.unwrap();
+        assert_eq!(
+            config.control_advertised_address(&unix_book),
+            AdvertisedAddress::new_uds(dir.path().join("fabric.sock").canonicalize().unwrap())
+        );
     }
 
     #[test]

@@ -199,9 +199,9 @@ where
             }
         }
 
-        // Stop any subscriptions that are no longer in the configuration
+        // Drain any subscriptions that are no longer in the configuration
         for subscription_id in running_subscriptions {
-            self.handle_stop_subscription(subscription_id, task_orchestrator);
+            task_orchestrator.drain(subscription_id);
         }
 
         Ok(())
@@ -237,7 +237,8 @@ mod task_orchestrator {
     enum TaskStateInner {
         Running {
             task_id: task::Id,
-            _close_ch: oneshot::Sender<()>,
+            // Sending on this channel drains the consumer, dropping it stops the consumer immediately
+            close_ch: oneshot::Sender<()>,
         },
         WaitingRetryTimer,
     }
@@ -416,7 +417,7 @@ mod task_orchestrator {
                     consumer_task_clone,
                     task_state_inner: TaskStateInner::Running {
                         task_id,
-                        _close_ch: tx,
+                        close_ch: tx,
                     },
                     retry_iter: self.retry_policy.clone().into_iter(),
                     kafka_cluster,
@@ -432,6 +433,18 @@ mod task_orchestrator {
             }) = self.subscription_id_to_task_state.remove(&subscription_id)
             {
                 self.running_tasks_to_subscriptions.remove(&task_id);
+            }
+        }
+
+        /// Like [`Self::stop`], but lets the consumer finish its in-flight records before exiting.
+        pub(super) fn drain(&mut self, subscription_id: SubscriptionId) {
+            if let Some(TaskState {
+                task_state_inner: TaskStateInner::Running { task_id, close_ch },
+                ..
+            }) = self.subscription_id_to_task_state.remove(&subscription_id)
+            {
+                self.running_tasks_to_subscriptions.remove(&task_id);
+                _ = close_ch.send(());
             }
         }
 

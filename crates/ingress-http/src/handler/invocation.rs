@@ -19,6 +19,7 @@ use super::path_parsing::{InvocationRequestType, InvocationTargetType, TargetTyp
 use super::{APPLICATION_JSON, Handler, InvocationTargetRequest};
 use crate::RequestDispatcher;
 use crate::handler::responses::X_RESTATE_ID;
+use restate_types::Versioned;
 use restate_types::errors::{GenericError, InvocationError};
 use restate_types::identifiers::{IdempotencyId, InvocationId};
 use restate_types::invocation::client::{
@@ -48,7 +49,7 @@ pub struct InvocationStatusResponse {
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
-    Schemas: InvocationTargetResolver + Clone + Send + Sync + 'static,
+    Schemas: InvocationTargetResolver + Versioned + Clone + Send + Sync + 'static,
     Dispatcher: RequestDispatcher + Clone + Send + Sync + 'static,
 {
     pub(crate) async fn handle_invocation<B: http_body::Body>(
@@ -227,14 +228,8 @@ where
             AttachInvocationResponse::Ready(response) => response,
         };
 
-        Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+        Self::reply_with_invocation_response(response, |invocation_target| {
+            self.resolve_output_metadata(invocation_target)
         })
     }
 
@@ -265,14 +260,8 @@ where
             }
         };
 
-        Self::reply_with_invocation_response(response, move |invocation_target| {
-            self.schemas
-                .pinned()
-                .resolve_latest_invocation_target(
-                    invocation_target.service_name(),
-                    invocation_target.handler_name(),
-                )
-                .ok_or(HandlerError::NotFound)
+        Self::reply_with_invocation_response(response, |invocation_target| {
+            self.resolve_output_metadata(invocation_target)
         })
     }
 

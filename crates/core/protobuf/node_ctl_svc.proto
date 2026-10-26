@@ -100,6 +100,22 @@ message IdentResponse {
   uint32 partition_table_version = 13;
   repeated NetAddress bound_addresses = 14;
   repeated NetAddress advertised_addresses = 15;
+  // Unique fingerprint of the cluster. Unset if the nodes configuration hasn't
+  // been loaded yet.
+  optional uint64 cluster_fingerprint = 16;
+  // Version of the running binary
+  string restate_version = 17;
+  // The following fields reflect this node's entry in the nodes configuration
+  // and are unset until the node has joined the cluster.
+  //
+  // Location of this node, empty if no location is configured
+  optional string location = 18;
+  // Only set if this node runs the log-server role
+  optional string storage_state = 19;
+  // Only set if this node runs the worker role
+  optional string worker_state = 20;
+  // Only set if this node runs the metadata-server role
+  optional string metadata_server_state = 21;
 }
 
 message GetMetadataRequest {

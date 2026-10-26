@@ -92,6 +92,7 @@ where
             .routes(routes!(deployments::create_deployment))
             .routes(routes!(deployments::get_deployment))
             .routes(routes!(deployments::delete_deployment))
+            .routes(routes!(deployments::bulk_delete_deployments))
             .routes(routes!(deployments::update_deployment))
             // Service endpoints
             .routes(routes!(services::list_services))
@@ -111,6 +112,7 @@ where
             .routes(routes!(invocations::restart_as_new_invocation))
             .routes(routes!(invocations::resume_invocation))
             .routes(routes!(invocations::pause_invocation))
+            .routes(routes!(invocations::send_invocation_signal))
             // Subscription endpoints
             .routes(routes!(subscriptions::create_subscription))
             .routes(routes!(subscriptions::list_subscriptions))

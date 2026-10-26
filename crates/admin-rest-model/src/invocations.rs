@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
 use restate_types::identifiers::{DeploymentId, InvocationId};
 use restate_types::invocation::client as invocation_client;
-use serde::{Deserialize, Serialize};
 
 /// Specifies which deployment to use when resuming or restarting an invocation.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -71,9 +74,27 @@ pub struct RestartAsNewInvocationResponse {
     pub new_invocation_id: InvocationId,
 }
 
+/// Content type of a signal request body carrying a [`SignalFailure`], rejecting the signal.
+/// Any other content type resolves the signal with the request body as payload.
+pub const SIGNAL_FAILURE_CONTENT_TYPE: &str = "application/vnd.restate.error+json";
+
+/// Failure used to reject a signal.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+pub struct SignalFailure {
+    /// Failure message.
+    pub message: String,
+    /// Failure code. Defaults to 500.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<u16>,
+    /// Failure metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
 // --- Batch operation types ---
 
-/// Maximum number of invocations in a single batch operation
+/// Maximum number of items (e.g. invocations or deployments) in a single batch operation
 pub const BATCH_OPERATION_MAX_SIZE: usize = 1000;
 
 /// Request body for batch invocation operations

@@ -32,4 +32,9 @@ pub use assert2::{assert, check};
 pub use pretty_assertions::{assert_eq, assert_ne};
 
 pub mod matchers;
+mod on_exit;
 pub mod rand;
+
+pub use on_exit::tempdir;
+#[cfg(unix)]
+pub use on_exit::{KillOnExit, kill_on_exit};

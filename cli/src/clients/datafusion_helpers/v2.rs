@@ -90,6 +90,35 @@ pub async fn count_deployment_active_inv(
         .await?)
 }
 
+/// Active invocations pinned to each of `deployment_ids`, in one query. Deployments with
+/// none are absent.
+pub async fn count_active_inv_by_deployment(
+    client: &DataFusionHttpClient,
+    deployment_ids: &[DeploymentId],
+) -> Result<HashMap<DeploymentId, i64>> {
+    if deployment_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    #[derive(Deserialize)]
+    struct Row {
+        pinned_deployment_id: DeploymentId,
+        inv_count: i64,
+    }
+    let query = format!(
+        "SELECT pinned_deployment_id, COUNT(1) AS inv_count
+        FROM sys_invocation_status
+        WHERE pinned_deployment_id IN ({}) AND status != 'completed'
+        GROUP BY pinned_deployment_id",
+        sql_id_list(deployment_ids)
+    );
+    Ok(client
+        .run_json_query::<Row>(query)
+        .await?
+        .into_iter()
+        .map(|row| (row.pinned_deployment_id, row.inv_count))
+        .collect())
+}
+
 pub async fn count_deployment_active_inv_by_method(
     client: &DataFusionHttpClient,
     deployment_id: &DeploymentId,
@@ -296,7 +325,7 @@ pub async fn find_active_invocations(
 }
 
 /// Quoted, comma-separated SQL list of `ids`, for `IN (...)`.
-fn sql_id_list<'a>(ids: impl IntoIterator<Item = &'a str>) -> String {
+fn sql_id_list(ids: impl IntoIterator<Item = impl Display>) -> String {
     ids.into_iter()
         .map(|id| format!("'{id}'"))
         .collect::<Vec<_>>()

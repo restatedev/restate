@@ -311,6 +311,66 @@ pub struct ListDeploymentsResponse {
     pub deployments: Vec<DeploymentResponse>,
 }
 
+const _: () = assert!(
+    crate::invocations::BATCH_OPERATION_MAX_SIZE == 1000,
+    "update the documented limit of BulkDeleteDeploymentsRequest::deployment_ids"
+);
+
+/// Request body of `POST /deployments/bulk-delete`.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkDeleteDeploymentsRequest {
+    /// # Deployment IDs
+    ///
+    /// Deployments to delete: at most 1000. Duplicates are ignored.
+    // utoipa only takes a literal here.
+    #[cfg_attr(feature = "schema", schema(max_items = 1000))]
+    pub deployment_ids: Vec<DeploymentId>,
+
+    /// # Force
+    ///
+    /// If true, the deployments will be forcefully deleted. This might break in-flight
+    /// invocations, use with caution. Currently, only forced deletions are supported.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Why a deployment of a bulk deletion was not deleted. More reasons might be added in the
+/// future: clients should handle values they don't know.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeploymentDeletionFailureReason {
+    /// The deployment doesn't exist.
+    NotFound,
+    /// A reason added after this version, only produced when deserializing. Servers never send it,
+    /// so it is left out of the OpenAPI document.
+    #[serde(other, skip_serializing)]
+    Unknown,
+}
+
+/// A deployment of a bulk deletion that was not deleted.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FailedDeploymentDeletion {
+    /// The deployment that was not deleted
+    pub deployment_id: DeploymentId,
+    /// Machine-readable reason of the failure
+    pub reason: DeploymentDeletionFailureReason,
+    /// Error message describing the failure
+    pub error: String,
+}
+
+/// Result of `POST /deployments/bulk-delete`.
+#[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkDeleteDeploymentsResponse {
+    /// Deployments that were deleted
+    pub succeeded: Vec<DeploymentId>,
+    /// Deployments that were not deleted, with the reason
+    pub failed: Vec<FailedDeploymentDeletion>,
+}
+
 // Why the deployment responses carry explicit `type` discriminators:
 //
 // `DeploymentResponse` and `DetailedDeploymentResponse` are `#[serde(untagged)]`, which utoipa
@@ -967,5 +1027,18 @@ mod tests {
             .into_persisted(&uri)
             .expect_err("provider without impersonation must be rejected");
         assert_eq!(err.field(), "auth.workload_identity_provider");
+    }
+
+    #[test]
+    fn deletion_failure_reason_tolerates_unknown_values() {
+        use DeploymentDeletionFailureReason::*;
+
+        let parse = |value| serde_json::from_value::<DeploymentDeletionFailureReason>(value);
+        assert_eq!(parse(serde_json::json!("not_found")).unwrap(), NotFound);
+        assert_eq!(
+            parse(serde_json::json!("some_future_reason")).unwrap(),
+            Unknown
+        );
+        assert_eq!(serde_json::to_value(NotFound).unwrap(), "not_found");
     }
 }

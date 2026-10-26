@@ -305,6 +305,9 @@ impl NodeSpec {
 
         let mut child = cmd.spawn().map_err(NodeStartError::SpawnError)?;
         let pid = child.id().expect("child to have a pid");
+        // `kill_on_drop` and our `Drop` don't run if the process exits without unwinding, e.g.
+        // when a `#[restate_core::test]` fails.
+        let kill_on_exit = restate_test_util::kill_on_exit(pid);
 
         info!(
             %fabric_advertised_address,
@@ -373,7 +376,13 @@ impl NodeSpec {
         };
 
         let child_handle = tokio::spawn(async move {
-            let (status, _) = tokio::join!(child.wait(), lines_fut);
+            let wait = async {
+                let status = child.wait().await;
+                // the pid may be reused once the child is reaped
+                drop(kill_on_exit);
+                status
+            };
+            let (status, _) = tokio::join!(wait, lines_fut);
 
             match status {
                 Ok(status) => {

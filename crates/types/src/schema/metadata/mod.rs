@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod lite;
 mod openapi;
 mod serde_hacks;
 pub mod updater;
+
+pub use lite::SchemaUnindexedLite;
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -64,7 +67,7 @@ use crate::{Version, Versioned, identifiers};
 ///
 /// This is what gets stored in the metadata store. Use `Schema` for lookups.
 #[derive(derive_more::Debug, Clone, serde::Serialize, serde::Deserialize, bilrost::Message)]
-#[serde(from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
+#[serde(try_from = "serde_hacks::Schema", into = "serde_hacks::Schema")]
 #[debug("SchemaUnindexed(version: {version})")]
 pub struct SchemaUnindexed {
     /// This gets bumped on each update.
@@ -154,6 +157,13 @@ impl From<Schema> for SchemaUnindexed {
 }
 
 impl Schema {
+    /// Empty schema at [`Version::MIN`], written when provisioning the cluster.
+    pub fn initial() -> Self {
+        let mut schema = Self::default();
+        schema.unindexed.version = Version::MIN;
+        schema
+    }
+
     /// Force the schema version to the next version
     ///
     /// Note: this is currently only used by metadata migration
