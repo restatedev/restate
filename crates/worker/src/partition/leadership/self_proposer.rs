@@ -12,6 +12,7 @@ use futures::never::Never;
 
 use restate_bifrost::{
     Bifrost, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy, InputRecord,
+    WrittenRecords,
 };
 use restate_memory::PollMemoryPool;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -72,8 +73,8 @@ impl SelfProposer {
     }
 
     /// Self-propose many commands to Bifrost, attaching ESN-based dedup information.
-    /// Returns the number of bytes proposed (the serialized size of all the commands).
-    pub fn self_propose_many<I, T, C>(&mut self, cmds: I) -> Result<usize, Error>
+    /// Returns the number of bytes and records proposed.
+    pub fn self_propose_many<I, T, C>(&mut self, cmds: I) -> Result<WrittenRecords, Error>
     where
         I: ExactSizeIterator<Item = T>,
         T: CommandWithKeys<C>,
@@ -82,8 +83,9 @@ impl SelfProposer {
         // allocate a sequence number range for the batch
         let leader_epoch = self.epoch_sequence_number.leader_epoch;
 
+        let records_written = cmds.len();
         let start_seq = self.epoch_sequence_number.sequence_number;
-        let end_seq = start_seq + cmds.len() as u64;
+        let end_seq = start_seq + records_written as u64;
 
         let envelopes = cmds.enumerate().map(|(idx, command)| {
             let keys = command.keys();
@@ -98,7 +100,7 @@ impl SelfProposer {
             BodyWithKeys::new(envelope, keys)
         });
 
-        let bytes_written = self
+        let written = self
             .bifrost_appender
             .sender()
             .enqueue_many(envelopes)
@@ -110,15 +112,15 @@ impl SelfProposer {
             sequence_number: end_seq,
         };
 
-        Ok(bytes_written)
+        Ok(written)
     }
 
     /// Self-propose a single command to Bifrost, attaching ESN-based dedup information.
-    /// Returns the number of bytes proposed (the serialized size of the command).
+    /// Returns the number of bytes and records proposed.
     pub fn self_propose<C: Command>(
         &mut self,
         command: impl CommandWithKeys<C>,
-    ) -> Result<usize, Error> {
+    ) -> Result<WrittenRecords, Error> {
         let esn = self.next_esn();
         let dedup = Dedup::SelfProposal {
             leader_epoch: esn.leader_epoch,
@@ -135,12 +137,12 @@ impl SelfProposer {
     }
 
     /// Self-propose a single erased-command to Bifrost, attaching ESN-based dedup information.
-    /// Returns the number of bytes proposed (the serialized size of the command).
+    /// Returns the number of bytes and records proposed.
     pub fn self_propose_erased(
         &mut self,
         keys: Keys,
         command: ErasedCommand,
-    ) -> Result<usize, Error> {
+    ) -> Result<WrittenRecords, Error> {
         let esn = self.next_esn();
         let dedup = Dedup::SelfProposal {
             leader_epoch: esn.leader_epoch,
@@ -159,11 +161,11 @@ impl SelfProposer {
     /// Compared to [`SelfProposer::self_propose`], this method bypasses all memory accounting
     /// on the appender.
     /// This should only be used for commands that can't afford a backpressue.
-    /// Returns the number of bytes proposed (the serialized size of the command).
+    /// Returns the number of bytes and records proposed.
     pub fn self_propose_unaccounted<C: Command>(
         &mut self,
         command: impl CommandWithKeys<C>,
-    ) -> Result<usize, Error> {
+    ) -> Result<WrittenRecords, Error> {
         let esn = self.next_esn();
         let dedup = Dedup::SelfProposal {
             leader_epoch: esn.leader_epoch,
@@ -179,8 +181,8 @@ impl SelfProposer {
             .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    /// Append a command to Bifrost **without** dedup information, returning the number of bytes
-    /// written and a [`CommitToken`](restate_bifrost::CommitToken).
+    /// Append a command to Bifrost **without** dedup information, returning the
+    /// [`WrittenRecords`] and a [`CommitToken`](restate_bifrost::CommitToken).
     ///
     /// Unlike [`Self::self_propose`], this does not attach an epoch sequence number. Records
     /// appended this way are never filtered by the dedup mechanism during leadership transitions,
@@ -198,7 +200,7 @@ impl SelfProposer {
             .map_err(|e| Error::SelfProposer(e.to_string()))
     }
 
-    /// Forward externally-created records to Bifrost, returning the number of bytes written and a
+    /// Forward externally-created records to Bifrost, returning the [`WrittenRecords`] and a
     /// [`CommitToken`](restate_bifrost::CommitToken).
     ///
     /// The records already carry their own dedup information in their headers; no ESN is attached.
@@ -222,11 +224,11 @@ impl SelfProposer {
             }
         });
 
-        let bytes_written = sender.enqueue_many_unchecked(inputs)?;
+        let written = sender.enqueue_many_unchecked(inputs)?;
 
         Ok(EnqueueWithNotificationResult {
             commit_token: sender.notify_committed()?,
-            bytes_written,
+            written,
         })
     }
 

@@ -25,7 +25,7 @@ use tokio::time::Instant;
 use tokio_stream::wrappers::{UnboundedReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
-use restate_bifrost::CommitToken;
+use restate_bifrost::{CommitToken, WrittenRecords};
 use restate_core::{Metadata, MetadataKind, TaskCenter, TaskHandle, TaskId};
 use restate_invoker_impl::InvokerHandle as InvokerChannelServiceHandle;
 use restate_limiter::RuleBook;
@@ -77,8 +77,15 @@ use super::self_proposer_scheduler::{
     SchedulerDecision, SelfProposerScheduler, SelfProposerSchedulerFlow,
 };
 
-// An arbitrary small number to be used when there is nothing to propose.
+// An arbitrary small number of bytes to be used when there is nothing to propose.
 const NOOP_BYTES_WRITTEN: usize = 1024; // 1KiB
+
+/// A no-op proposal that writes no records but is charged a small number of bytes to the
+/// scheduler so that a flow which is ready but has nothing to do doesn't lose its position.
+const NOOP_PROPOSAL: WrittenRecords = WrittenRecords {
+    bytes_written: NOOP_BYTES_WRITTEN,
+    records_written: 0,
+};
 
 pub struct LeaderState {
     pub(crate) partition_id: PartitionId,
@@ -360,9 +367,9 @@ impl LeaderState {
                 &mut state,
                 &mut input_streams,
             ) {
-                Poll::Ready(Ok(bytes)) => {
+                Poll::Ready(Ok(result)) => {
                     coop.made_progress();
-                    bytes_admitted += bytes;
+                    bytes_admitted += result.bytes_written;
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => {
@@ -386,7 +393,7 @@ impl LeaderState {
         self_proposer_capacity: &mut PollMemoryPool,
         state: &mut LeaderEventHandlerState<'_>,
         input_streams: &mut InputStreams<'_>,
-    ) -> Poll<Result<usize, Error>> {
+    ) -> Poll<Result<WrittenRecords, Error>> {
         let InputStreams {
             invoker_stream,
             timer_service,
@@ -576,7 +583,7 @@ impl LeaderEventHandlerState<'_> {
         keys: Keys,
         cmd: ErasedCommand,
         reply: PendingReply,
-    ) -> usize {
+    ) -> WrittenRecords {
         match reply {
             PendingReply::OnApply {
                 request_id,
@@ -600,7 +607,7 @@ impl LeaderEventHandlerState<'_> {
         reciprocal: RpcReciprocal,
         keys: Keys,
         cmd: ErasedCommand,
-    ) -> usize {
+    ) -> WrittenRecords {
         match self.awaiting_rpc_actions.entry(request_id) {
             Entry::Occupied(mut o) => {
                 // In this case, someone already proposed this command,
@@ -608,18 +615,18 @@ impl LeaderEventHandlerState<'_> {
                 let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
                 old_reciprocal.fail(PartitionProcessorRpcError::Internal("retried".to_string()));
-                0
+                WrittenRecords::default()
             }
             Entry::Vacant(v) => {
                 // In this case, no one proposed this command yet, let's try to propose it
                 match self.self_proposer.self_propose_erased(keys, cmd) {
                     Err(e) => {
                         reciprocal.fail(PartitionProcessorRpcError::Internal(e.to_string()));
-                        0
+                        WrittenRecords::default()
                     }
-                    Ok(bytes_written) => {
+                    Ok(result) => {
                         v.insert(reciprocal);
-                        bytes_written
+                        result
                     }
                 }
             }
@@ -644,7 +651,7 @@ impl LeaderEventHandlerState<'_> {
         invocation_id: InvocationId,
         keys: Keys,
         cmd: impl Into<ErasedCommand>,
-    ) -> usize {
+    ) -> WrittenRecords {
         let cmd = cmd.into();
         debug_assert!(keys == Keys::Single(invocation_id.partition_key()));
         debug_assert!(cmd.kind() == CommandKind::PauseInvocation);
@@ -656,19 +663,19 @@ impl LeaderEventHandlerState<'_> {
                 let old_reciprocal = o.insert(reciprocal);
                 trace!(%request_id, "Replacing rpc with newer request");
                 old_reciprocal.fail(PartitionProcessorRpcError::Internal("retried".to_string()));
-                0
+                WrittenRecords::default()
             }
             Entry::Vacant(v) => {
                 match self.self_proposer.self_propose_erased(keys, cmd) {
                     Err(e) => {
                         reciprocal.fail(PartitionProcessorRpcError::Internal(e.to_string()));
-                        0
+                        WrittenRecords::default()
                     }
-                    Ok(bytes_written) => {
+                    Ok(result) => {
                         v.insert(reciprocal);
                         // Clear ONLY here -- after the append succeeded. See the method doc.
                         self.fencing_tokens.clear(&invocation_id);
-                        bytes_written
+                        result
                     }
                 }
             }
@@ -685,16 +692,16 @@ impl LeaderEventHandlerState<'_> {
         keys: Keys,
         cmd: ErasedCommand,
         response: CommitCallback,
-    ) -> usize {
+    ) -> WrittenRecords {
         match self.self_proposer.append_with_notification(keys, cmd) {
             Ok(res) => {
                 self.awaiting_rpc_self_propose
                     .push(SelfAppendFuture::new(res.commit_token, response));
-                res.bytes_written
+                res.written
             }
             Err(e) => {
                 response.call(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                0
+                WrittenRecords::default()
             }
         }
     }
@@ -703,16 +710,16 @@ impl LeaderEventHandlerState<'_> {
         &mut self,
         records: impl ExactSizeIterator<Item = IngestRecord>,
         response: CommitCallback,
-    ) -> usize {
+    ) -> WrittenRecords {
         match self.self_proposer.forward_many_with_notification(records) {
             Ok(res) => {
                 self.awaiting_rpc_self_propose
                     .push(SelfAppendFuture::new(res.commit_token, response));
-                res.bytes_written
+                res.written
             }
             Err(e) => {
                 response.call(Err(PartitionProcessorRpcError::Internal(e.to_string())));
-                0
+                WrittenRecords::default()
             }
         }
     }
@@ -765,12 +772,12 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
         self,
         state: &mut LeaderEventHandlerState<'_>,
         decision: SchedulerDecision<'_>,
-    ) -> Result<usize, Error> {
+    ) -> Result<WrittenRecords, Error> {
         match self {
             FlowPoll::Ready(handler) => match handler.handle(state) {
-                Ok(bytes_written) => {
-                    decision.on_proposal_enqueued(bytes_written);
-                    Ok(bytes_written)
+                Ok(result) => {
+                    decision.on_proposal_enqueued(result);
+                    Ok(result)
                 }
                 Err(e) => {
                     decision.on_error();
@@ -779,15 +786,15 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
             },
             FlowPoll::Pending => {
                 decision.on_pending();
-                Ok(NOOP_BYTES_WRITTEN)
+                Ok(NOOP_PROPOSAL)
             }
             FlowPoll::Ended => {
                 decision.on_pending();
-                Ok(NOOP_BYTES_WRITTEN)
+                Ok(NOOP_PROPOSAL)
             }
             FlowPoll::Noop => {
-                decision.on_proposal_enqueued(NOOP_BYTES_WRITTEN);
-                Ok(NOOP_BYTES_WRITTEN)
+                decision.on_proposal_enqueued(NOOP_PROPOSAL);
+                Ok(NOOP_PROPOSAL)
             }
             FlowPoll::Err(e) => {
                 decision.on_error();
@@ -798,11 +805,11 @@ impl<T: LeaderEventHandler> FlowPoll<T> {
 }
 
 trait LeaderEventHandler {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error>;
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error>;
 }
 
 impl LeaderEventHandler for Decisions {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         let Decisions {
             qids,
             num_run,
@@ -830,15 +837,15 @@ impl LeaderEventHandler for Decisions {
             // Unfortunately chunk_by cannot generate an ExactSizeIterator.
             // I'm hoping that this is a temporary measure until SelfProposer is redesigned.
             .collect();
-        let bytes_written = state
+        let result = state
             .self_proposer
             .self_propose_many(commands.into_iter())?;
-        Ok(bytes_written)
+        Ok(result)
     }
 }
 
 impl LeaderEventHandler for UpdatePartitionDurabilityCommand {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         // based on configuration, whether to consider partition-local durability in
         // the replica-set as a sufficient source of durability, or only snapshots.
         state.self_proposer.self_propose(BodyWithKeys::new(
@@ -849,7 +856,7 @@ impl LeaderEventHandler for UpdatePartitionDurabilityCommand {
 }
 
 impl LeaderEventHandler for InvokerEffect {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         let invocation_id = self.effect.invocation_id;
         // Fence stale effects at write time: only self-propose if the effect carries
         // the token of the invocation's *current* attempt. A mismatch (or a missing
@@ -873,13 +880,13 @@ impl LeaderEventHandler for InvokerEffect {
                 restate.invocation.id = %invocation_id,
                 "Dropping stale invoker effect at write time (fencing token mismatch)"
             );
-            Ok(NOOP_BYTES_WRITTEN)
+            Ok(NOOP_PROPOSAL)
         }
     }
 }
 
 impl LeaderEventHandler for shuffle::OutboxTruncation {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         // todo: Until we support partition splits we need to get rid of outboxes or introduce partition
         //  specific destination messages that are identified by a partition_id
         state.self_proposer.self_propose(BodyWithKeys::new(
@@ -892,7 +899,7 @@ impl LeaderEventHandler for shuffle::OutboxTruncation {
 }
 
 impl LeaderEventHandler for TimerKeyValue {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         state
             .self_proposer
             .self_propose(commands::TimerCommand::from(self))
@@ -900,7 +907,7 @@ impl LeaderEventHandler for TimerKeyValue {
 }
 
 impl LeaderEventHandler for CleanerEffect {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         match self {
             CleanerEffect::PurgeJournal(invocation_id) => {
                 state
@@ -927,7 +934,7 @@ impl LeaderEventHandler for CleanerEffect {
 }
 
 impl LeaderEventHandler for SchemaUnindexedLite {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         if SemanticRestateVersion::current().is_equal_or_newer_than(&RESTATE_VERSION_1_7_0) {
             state
                 .self_proposer
@@ -936,13 +943,13 @@ impl LeaderEventHandler for SchemaUnindexedLite {
                     schema: self,
                 })
         } else {
-            Ok(NOOP_BYTES_WRITTEN)
+            Ok(NOOP_PROPOSAL)
         }
     }
 }
 
 impl LeaderEventHandler for Arc<RuleBook> {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         let cmd = restate_wal_protocol::control::UpsertRuleBookCommand { rule_book: self };
         state.self_proposer.self_propose(BodyWithKeys::new(
             cmd,
@@ -952,7 +959,7 @@ impl LeaderEventHandler for Arc<RuleBook> {
 }
 
 impl LeaderEventHandler for NetworkServiceEvent {
-    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<usize, Error> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
         Ok(match self {
             NetworkServiceEvent::RpcProposal {
                 keys,
