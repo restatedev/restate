@@ -31,6 +31,10 @@ impl SerdeableHeaderHashMap {
     pub fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
+
+    pub fn contains_key(&self, name: &HeaderName) -> bool {
+        self.0.contains_key(name)
+    }
 }
 
 impl From<SerdeableHeaderHashMap> for HashMap<HeaderName, HeaderValue> {
