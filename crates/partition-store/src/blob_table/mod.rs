@@ -23,8 +23,8 @@ use restate_storage_api::blob_table::{
     ScanBlobTableRange, WriteBlobTable,
 };
 use restate_storage_api::{Result, StorageError};
-use restate_types::blob::{BaseBlobId, BlobId};
-use restate_types::sharding::{PartitionKey, WithPartitionKey};
+use restate_types::blob::BlobId;
+use restate_types::identifiers::ResourceId;
 
 use crate::TableKind;
 use crate::error::break_on_err;
@@ -38,15 +38,12 @@ pub use header::*;
 define_table_key!(
     TableKind::Blob,
     KeyKind::Blob,
-    BlobKey(
-        partition_key: PartitionKey,
-        blob_id: BlobId,
-    )
+    BlobKey(blob_id: BlobId)
 );
 
 impl BlobKey {
     pub const fn serialized_length_fixed() -> usize {
-        KeyKind::SERIALIZED_LENGTH + std::mem::size_of::<PartitionKey>() + BlobId::RAW_BYTES_LEN
+        KeyKind::SERIALIZED_LENGTH + BlobId::RAW_BYTES_LEN
     }
 
     #[inline]
@@ -59,20 +56,12 @@ impl BlobKey {
 
 const BLOB_MULTI_GET_BATCH_SIZE: usize = 25;
 
-#[inline]
-fn create_blob_key(blob_id: BaseBlobId) -> BlobKey {
-    BlobKey {
-        partition_key: blob_id.partition_key(),
-        blob_id: blob_id.into_blob_id(),
-    }
-}
-
 fn get_blob<S: StorageAccess, D: BlobDecoder>(
     storage: &mut S,
-    blob_id: BaseBlobId,
+    blob_id: BlobId,
 ) -> Result<Option<D::Type>> {
     let _x = RocksDbReadPerfGuard::new("get-blob");
-    let key = create_blob_key(blob_id);
+    let key = BlobKey { blob_id };
 
     storage.get_kv_raw(key, |_, value| {
         let Some(value) = value else {
@@ -89,7 +78,7 @@ fn get_blob<S: StorageAccess, D: BlobDecoder>(
     })
 }
 
-fn decode_blob_entry(id: BaseBlobId, value: &[u8]) -> Result<BlobEntry<'_>> {
+fn decode_blob_entry(id: BlobId, value: &[u8]) -> Result<BlobEntry<'_>> {
     let (header, payload) = BlobHeader::decode(value)?;
     Ok(BlobEntry {
         id,
@@ -101,7 +90,7 @@ fn decode_blob_entry(id: BaseBlobId, value: &[u8]) -> Result<BlobEntry<'_>> {
 
 fn multi_get_blob<F>(
     store: &PartitionStore,
-    ids: BTreeSet<BaseBlobId>,
+    ids: BTreeSet<BlobId>,
     mut f: F,
 ) -> impl Future<Output = Result<()>> + Send
 where
@@ -139,7 +128,7 @@ where
                         batch_ids.clear();
 
                         for id in ids.by_ref().take(BLOB_MULTI_GET_BATCH_SIZE) {
-                            key_buf.put_slice(&create_blob_key(id).to_bytes());
+                            key_buf.put_slice(&BlobKey { blob_id: id }.to_bytes());
                             batch_ids.push(id);
                         }
 
@@ -199,12 +188,8 @@ impl ScanBlobTable for PartitionStore {
                 Priority::Low,
                 TableScan::ScanPartitionKeyRange::<BlobKeyBuilder>(partition_keys),
                 move |(mut key, value)| {
-                    let (partition_key, blob_id) =
-                        break_on_err(BlobKey::deserialize_from(&mut key))?.split();
-                    let entry = break_on_err(decode_blob_entry(
-                        BaseBlobId::new(partition_key, blob_id),
-                        value,
-                    ))?;
+                    let blob_id = break_on_err(BlobKey::deserialize_from(&mut key))?.blob_id;
+                    let entry = break_on_err(decode_blob_entry(blob_id, value))?;
 
                     f(entry).map_break(Ok)
                 },
@@ -216,20 +201,20 @@ impl ScanBlobTable for PartitionStore {
 }
 
 impl ReadBlobTable for PartitionStore {
-    async fn get_blob<D: BlobDecoder>(&mut self, blob_id: BaseBlobId) -> Result<Option<D::Type>> {
+    async fn get_blob<D: BlobDecoder>(&mut self, blob_id: BlobId) -> Result<Option<D::Type>> {
         get_blob::<_, D>(self, blob_id)
     }
 }
 
 impl ReadBlobTable for PartitionStoreTransaction<'_> {
-    async fn get_blob<D: BlobDecoder>(&mut self, blob_id: BaseBlobId) -> Result<Option<D::Type>> {
+    async fn get_blob<D: BlobDecoder>(&mut self, blob_id: BlobId) -> Result<Option<D::Type>> {
         get_blob::<_, D>(self, blob_id)
     }
 }
 
 impl WriteBlobTable for PartitionStoreTransaction<'_> {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BaseBlobId, blob: Blob<B>) -> Result<()> {
-        let key = create_blob_key(blob_id);
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()> {
+        let key = BlobKey { blob_id };
 
         let mut buf = BytesMut::new();
 
@@ -240,22 +225,22 @@ impl WriteBlobTable for PartitionStoreTransaction<'_> {
         self.put_kv_raw(key, &buf)
     }
 
-    fn decrement_ref_count(&mut self, blob_id: BaseBlobId, count: u16) {
+    fn decrement_ref_count(&mut self, blob_id: BlobId, count: u16) {
         if count == 0 {
             return;
         }
 
-        let key_buf = create_blob_key(blob_id).to_bytes();
+        let key_buf = BlobKey { blob_id }.to_bytes();
         let value = HeaderUpdate::decrement(count);
         self.raw_merge_cf(KeyKind::Blob, key_buf, value.encode_to_bytes());
     }
 
-    fn increment_ref_count(&mut self, blob_id: BaseBlobId, count: u16) {
+    fn increment_ref_count(&mut self, blob_id: BlobId, count: u16) {
         if count == 0 {
             return;
         }
 
-        let key_buf = create_blob_key(blob_id).to_bytes();
+        let key_buf = BlobKey { blob_id }.to_bytes();
         let value = HeaderUpdate::increment(count);
         self.raw_merge_cf(KeyKind::Blob, key_buf, value.encode_to_bytes());
     }

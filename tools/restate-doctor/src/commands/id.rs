@@ -19,7 +19,7 @@ use comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_types::IdResourceType;
-use restate_types::blob::BaseBlobId;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::{
     AwakeableIdentifier, CanonicalEntryId, DeploymentId, ExternalSignalIdentifier, InvocationId,
     PartitionKey, SnapshotId, StateMutationId, SubscriptionId, TimestampAwareId, WithPartitionKey,
@@ -173,15 +173,15 @@ fn decode_invocation_id(input: &str) -> anyhow::Result<()> {
 }
 
 fn decode_blob_id(input: &str) -> anyhow::Result<()> {
-    let id = BaseBlobId::from_str(input)?;
+    let id = BlobId::from_str(input)?;
 
     print_header("Blob", input);
 
     c_title!("🔍", "Decoded Components");
     let mut components = Table::new_styled();
     components.add_kv_row("Partition Key:", id.partition_key());
-    components.add_kv_row("Seq:", id.blob_id().sequence());
-    components.add_kv_row("ID:", u128::from_be_bytes(id.blob_id().remainder()));
+    components.add_kv_row("Seq:", id.sequence());
+    components.add_kv_row("ID:", u128::from_be_bytes(id.remainder()));
     c_println!("{components}");
 
     print_raw_bytes(&id.to_bytes());

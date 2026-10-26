@@ -94,7 +94,7 @@ pub mod v1 {
         use bytes::{Buf, Bytes};
         use bytestring::ByteString;
 
-        use restate_types::blob::BaseBlobId;
+        use restate_types::blob::BlobId;
         use restate_types::deployment::PinnedDeployment;
         use restate_types::errors::InvocationError;
         use restate_types::identifiers::{
@@ -3971,7 +3971,7 @@ pub mod v1 {
                             }
                         };
                         let OutputRef::BlobId(bytes) = expect_or_fail!(output_ref)?;
-                        let blob_id = BaseBlobId::from_slice(&bytes).map_err(|err| {
+                        let blob_id = BlobId::from_slice(&bytes).map_err(|err| {
                             ConversionError::InvalidData(anyhow!("blob_id: {err}"))
                         })?;
 
@@ -4402,7 +4402,7 @@ pub mod v1 {
 
         use bytes::Bytes;
         use prost::Message;
-        use restate_types::blob::BaseBlobId;
+        use restate_types::blob::BlobId;
         use restate_types::journal_v2::UnresolvedFuture;
         use restate_types::vqueues::VQueueId;
         use restate_types::{
@@ -4600,9 +4600,9 @@ pub mod v1 {
                     .map(|buf| VQueueId::from_raw_bytes(&mut &buf[..]))
             }
 
-            pub fn blob_id(&self) -> Result<Option<BaseBlobId>, ConversionError> {
+            pub fn blob_id(&self) -> Result<Option<BlobId>, ConversionError> {
                 self.blob_id
-                    .map(BaseBlobId::from_slice)
+                    .map(BlobId::from_slice)
                     .transpose()
                     .map_err(Into::into)
             }
