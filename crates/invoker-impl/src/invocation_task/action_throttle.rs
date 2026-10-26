@@ -33,6 +33,14 @@ struct ThrottlingMetrics {
     wait_ms: Counter,
 }
 
+fn finish_wait(metrics: &Option<ThrottlingMetrics>, wait_started: &mut Option<Instant>) {
+    if let (Some(metrics), Some(started)) = (metrics, wait_started.take()) {
+        metrics
+            .wait_ms
+            .increment(started.elapsed().as_millis() as u64);
+    }
+}
+
 pin_project_lite::pin_project! {
     /// Throttles every item of the inner stream by one action token, and records how often and
     /// how long items waited for a token.
@@ -46,9 +54,7 @@ pin_project_lite::pin_project! {
     impl<S: Stream> PinnedDrop for ActionThrottledStream<S> {
         fn drop(this: Pin<&mut Self>) {
             let this = this.project();
-            if let (Some(metrics), Some(started)) = (this.metrics, this.wait_started.take()) {
-                metrics.wait_ms.increment(started.elapsed().as_millis() as u64);
-            }
+            finish_wait(this.metrics, this.wait_started);
         }
     }
 }
@@ -79,8 +85,11 @@ impl<S: Stream> ActionThrottledStream<S> {
         self.inner.inner()
     }
 
+    /// Bypasses throttling, so it also ends any wait for a token in progress.
     pub(super) fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
-        self.project().inner.inner_pin_mut()
+        let this = self.project();
+        finish_wait(this.metrics, this.wait_started);
+        this.inner.inner_pin_mut()
     }
 }
 
@@ -101,13 +110,7 @@ impl<S: Stream> Stream for ActionThrottledStream<S> {
                     metrics.throttled.increment(1);
                 }
             }
-            Poll::Ready(_) => {
-                if let Some(started) = this.wait_started.take() {
-                    metrics
-                        .wait_ms
-                        .increment(started.elapsed().as_millis() as u64);
-                }
-            }
+            Poll::Ready(_) => finish_wait(this.metrics, this.wait_started),
         }
         poll
     }
