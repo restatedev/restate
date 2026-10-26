@@ -71,6 +71,7 @@ use crate::partition::state_machine::{Action, LeaderContext};
 use crate::partition::types::InvokerEffect;
 use crate::partition_processor_manager::LeaderQueryGuard;
 
+use super::congestion_control::CongestionControl;
 use super::durability_tracker::DurabilityTracker;
 use super::rpc::{CommitCallback, PendingReply};
 use super::self_proposer_scheduler::{
@@ -182,7 +183,15 @@ impl LeaderState {
             network_events_tx,
             network_events_stream: UnboundedReceiverStream::new(network_events_rx),
             _leader_query_guard: leader_query_guard,
-            self_proposer_scheduler: SelfProposerScheduler::new(partition_id),
+            self_proposer_scheduler: SelfProposerScheduler::new(
+                partition_id,
+                CongestionControl::new(
+                    &Configuration::pinned()
+                        .worker
+                        .self_proposer_congestion_control,
+                    partition_id,
+                ),
+            ),
         }
     }
 
