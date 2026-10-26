@@ -10,11 +10,11 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BlockBasedOptions, BoundColumnFamily, Cache, DB, SliceTransform};
+use rocksdb::{BlockBasedOptions, BoundColumnFamily, DB, SliceTransform};
 use static_assertions::const_assert;
 
 use restate_rocksdb::{
-    CfExactPattern, CfName, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
+    CfExactPattern, CfName, DbEnv, DbName, DbSpecBuilder, RocksDb, RocksDbManager, RocksError,
 };
 use restate_types::config::{Configuration, LocalLogletOptions};
 use restate_types::errors::MaybeRetryableError;
@@ -131,19 +131,9 @@ impl RocksDbLogStore {
 struct RocksConfigurator;
 
 impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
-    fn get_db_options(
-        &self,
-        db_name: &DbName,
-        env: &rocksdb::Env,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-        limiter: &rocksdb::RateLimiter,
-    ) -> rocksdb::Options {
-        let mut db_options = restate_rocksdb::configuration::create_default_db_options(
-            env,
-            db_name,
-            write_buffer_manager,
-            limiter,
-        );
+    fn get_db_options(&self, db_name: &DbName, env: &DbEnv) -> rocksdb::Options {
+        let mut db_options =
+            restate_rocksdb::configuration::create_default_db_options(env, db_name);
 
         let local_loglet_config = &Configuration::pinned().bifrost.local;
         // amend default options from rocksdb_manager
@@ -188,19 +178,14 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksConfigurator {
 }
 
 impl restate_rocksdb::configuration::CfConfigurator for RocksConfigurator {
-    fn get_cf_options(
-        &self,
-        _db_name: &DbName,
-        cf_name: &str,
-        global_cache: &Cache,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-    ) -> rocksdb::Options {
+    fn get_cf_options(&self, _db_name: &DbName, cf_name: &str, env: &DbEnv) -> rocksdb::Options {
         let config = &Configuration::pinned().bifrost.local;
-        let mut cf_options =
-            restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
+        let mut cf_options = restate_rocksdb::configuration::create_default_cf_options(
+            env.write_buffer_manager.as_ref(),
+        );
         let block_options = restate_rocksdb::configuration::create_default_block_options(
             &config.rocksdb,
-            Some(global_cache),
+            env.cache.as_ref(),
         );
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());

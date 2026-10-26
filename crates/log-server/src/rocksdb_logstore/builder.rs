@@ -18,7 +18,7 @@ use restate_core::ShutdownError;
 use restate_platform::prelude::ToReString;
 use restate_rocksdb::configuration::create_empty_db_options;
 use restate_rocksdb::{
-    CfExactPattern, CfName, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
+    CfExactPattern, CfName, DbEnv, DbName, DbSpecBuilder, OpenMode, RocksDb, RocksDbManager,
 };
 use restate_types::config::{Configuration, LogServerOptions};
 use restate_types::health::HealthStatus;
@@ -49,23 +49,27 @@ impl RocksDbLogStoreBuilder {
         let db_manager = RocksDbManager::get();
         let cfs = vec![CfName::new(DATA_CF), CfName::new(METADATA_CF)];
 
-        let opts = &Configuration::pinned().log_server;
-        let db_spec = DbSpecBuilder::new(
-            db_name,
-            kind,
-            opts.data_dir(),
-            RocksDbConfigurator::new(opts)?,
-        )
-        .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksCfConfigurator)
-        .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksCfConfigurator)
-        // not very important but it's to reduce the number of merges by flushing.
-        // it's also a small cf so it should be quick.
-        .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
-        .add_to_flush_on_shutdown(CfExactPattern::new(DATA_CF))
-        .ensure_column_families(cfs)
-        .build()
-        .expect("valid spec");
-        let rocksdb = db_manager.open_db(db_spec).await?;
+        let (in_memory, path) = {
+            let opts = &Configuration::pinned().log_server;
+            (opts.in_memory, opts.data_dir())
+        };
+        let env = db_manager.db_env().clone();
+        let env = if in_memory {
+            env.with_native_env(Some(rocksdb::Env::mem_env()?))
+        } else {
+            env
+        };
+        let db_spec = DbSpecBuilder::new(db_name, kind, path, RocksDbConfigurator)
+            .add_cf_pattern(CfExactPattern::new(DATA_CF), RocksCfConfigurator)
+            .add_cf_pattern(CfExactPattern::new(METADATA_CF), RocksCfConfigurator)
+            // not very important but it's to reduce the number of merges by flushing.
+            // it's also a small cf so it should be quick.
+            .add_to_flush_on_shutdown(CfExactPattern::new(METADATA_CF))
+            .add_to_flush_on_shutdown(CfExactPattern::new(DATA_CF))
+            .ensure_column_families(cfs)
+            .build()
+            .expect("valid spec");
+        let rocksdb = db_manager.open_db_with_env(db_spec, env).await?;
 
         Ok(Self { rocksdb })
     }
@@ -89,24 +93,7 @@ impl RocksDbLogStoreBuilder {
 
 struct RocksCfConfigurator;
 
-struct RocksDbConfigurator {
-    env: rocksdb::Env,
-}
-
-impl RocksDbConfigurator {
-    fn new(opts: &LogServerOptions) -> Result<Self, RocksDbLogStoreError> {
-        // dedicated env for log-server
-        let env = if opts.in_memory {
-            rocksdb::Env::mem_env()?
-        } else {
-            let mut env = rocksdb::Env::new()?;
-            env.set_high_priority_background_threads(1);
-            env.set_low_priority_background_threads(1);
-            env
-        };
-        Ok(Self { env })
-    }
-}
+struct RocksDbConfigurator;
 
 impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
     fn get_db_open_mode(&self) -> OpenMode {
@@ -117,13 +104,7 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
         }
     }
 
-    fn get_db_options(
-        &self,
-        db_name: &DbName,
-        _env: &rocksdb::Env,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-        limiter: &rocksdb::RateLimiter,
-    ) -> rocksdb::Options {
+    fn get_db_options(&self, db_name: &DbName, env: &DbEnv) -> rocksdb::Options {
         // load config from the input configuration
         let log_server_config = &Configuration::pinned().log_server;
 
@@ -132,10 +113,12 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
         self.apply_db_opts_from_config(&mut db_options, &log_server_config.rocksdb);
 
         db_options.set_wal_dir(log_server_config.wal_dir());
-        // dedicated environment for log-server to avoid queueing behind flush/compactions
-        // of partition store.
-        db_options.set_env(&self.env);
-        db_options.set_shared_ratelimiter(limiter);
+        if let Some(native_env) = &env.native_env {
+            db_options.set_env(native_env);
+        }
+        if let Some(limiter) = &env.rate_limiter {
+            db_options.set_shared_ratelimiter(limiter);
+        }
         db_options.create_if_missing(true);
         db_options.create_missing_column_families(true);
         // Avoid pushing back on compaction delays, sacrifice storage and do not hinder
@@ -149,7 +132,9 @@ impl restate_rocksdb::configuration::DbConfigurator for RocksDbConfigurator {
         // makes it easy to observe total rocksdb memory usage in metrics.
         //
         // write buffer is controlled by write buffer manager
-        db_options.set_write_buffer_manager(write_buffer_manager);
+        if let Some(write_buffer_manager) = &env.write_buffer_manager {
+            db_options.set_write_buffer_manager(write_buffer_manager);
+        }
         db_options.set_avoid_unnecessary_blocking_io(true);
         // Let rocksdb decide for level sizes.
         db_options.set_level_compaction_dynamic_level_bytes(true);
@@ -334,16 +319,11 @@ fn update_metadata_cf_write_buffer_size(
 }
 
 impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
-    fn get_cf_options(
-        &self,
-        _db_name: &DbName,
-        cf_name: &str,
-        global_cache: &Cache,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-    ) -> rocksdb::Options {
+    fn get_cf_options(&self, _db_name: &DbName, cf_name: &str, env: &DbEnv) -> rocksdb::Options {
         let config = &Configuration::pinned().log_server;
-        let mut cf_options =
-            restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
+        let mut cf_options = restate_rocksdb::configuration::create_default_cf_options(
+            env.write_buffer_manager.as_ref(),
+        );
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
         if let Some(compaction_period) = config.rocksdb.rocksdb_periodic_compaction_seconds() {
@@ -353,11 +333,11 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
         if cf_name == DATA_CF {
             let block_options = restate_rocksdb::configuration::create_default_block_options(
                 &config.rocksdb,
-                Some(global_cache),
+                env.cache.as_ref(),
             );
             cf_data_options(&mut cf_options, block_options, config);
         } else if cf_name == METADATA_CF {
-            let block_options = metadata_block_options(&config.rocksdb, global_cache);
+            let block_options = metadata_block_options(&config.rocksdb, env.cache.as_ref());
             cf_metadata_options(&mut cf_options, block_options, config);
         }
 
@@ -377,10 +357,10 @@ impl restate_rocksdb::configuration::CfConfigurator for RocksCfConfigurator {
 /// read bandwidth.
 fn metadata_block_options(
     opts: &restate_types::config::RocksDbOptions,
-    global_cache: &Cache,
+    cache: Option<&Cache>,
 ) -> BlockBasedOptions {
     let mut block_options =
-        restate_rocksdb::configuration::create_default_block_options(opts, Some(global_cache));
+        restate_rocksdb::configuration::create_default_block_options(opts, cache);
     block_options.set_block_size(4 * 1024);
     block_options
 }

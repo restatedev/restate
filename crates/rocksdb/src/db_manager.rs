@@ -14,18 +14,17 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
-#[cfg(target_os = "linux")]
-use rocksdb::MemoryAllocator;
-use rocksdb::{Cache, HyperClockCacheOptions, RateLimiter, RateLimiterMode, WriteBufferManager};
 use tokio_util::task::TaskTracker;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_types::config::{CommonOptions, Configuration, RocksDbWriteRateLimiterMode};
-use restate_util_bytecount::ByteCount;
+use restate_types::config::{CommonOptions, Configuration};
 
 use crate::background::ReadyStorageTask;
-use crate::{DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions};
+use crate::db_env::check_memory_limit;
+use crate::{
+    DbEnv, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions,
+};
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
@@ -36,19 +35,13 @@ static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 #[derive(derive_more::Debug)]
 #[debug("RocksDbManager")]
 pub struct RocksDbManager {
-    /// A shared IO write rate limiter
-    pub(crate) rate_limiter: RateLimiter,
-    /// a shared rocksdb block cache
-    pub(crate) cache: Cache,
-    // auto updates to changes in common.rocksdb_memory_limit and common.rocksdb_memtable_total_size_limit
-    pub(crate) write_buffer_manager: WriteBufferManager,
     dbs: RwLock<HashMap<DbName, Weak<RocksDb>>>,
     shutting_down: AtomicBool,
     close_db_tasks: TaskTracker,
     high_pri_pool: threadpool::ThreadPool,
     low_pri_pool: threadpool::ThreadPool,
     // Keep at the end of the struct to ensure it's dropped last
-    pub(crate) env: rocksdb::Env,
+    db_env: DbEnv,
 }
 
 impl RocksDbManager {
@@ -73,50 +66,7 @@ impl RocksDbManager {
         metric_definitions::describe_metrics();
         let opts = &Configuration::pinned().common;
 
-        check_memory_limit(opts);
-
-        // HCC is the newly recommended default for RocksDB.
-        let cache_opts =
-            HyperClockCacheOptions::new(opts.rocksdb_total_memory_size().as_usize(), 0);
-
-        // On Apple platforms jemalloc uses prefixed symbols, so RocksDB cannot use its
-        // jemalloc no-dump allocator.
-        #[cfg(target_os = "linux")]
-        let mut cache_opts = cache_opts;
-        #[cfg(target_os = "linux")]
-        {
-            match MemoryAllocator::new_jemalloc_nodump() {
-                Ok(allocator) => cache_opts.set_memory_allocator(&allocator),
-                Err(e) => {
-                    warn!(
-                        "RocksDB is not built with jemalloc no-dump support. Coredumps will include the full block cache: {e}",
-                    );
-                }
-            }
-        }
-
-        let cache = Cache::new_hyper_clock_cache_opts(&cache_opts);
-
-        let write_buffer_manager = WriteBufferManager::new_write_buffer_manager_with_cache(
-            opts.rocksdb_total_memtables_size().as_usize(),
-            false,
-            cache.clone(),
-        );
-        // Setup the default shared rocksdb environment. These are just the initial pool sizes;
-        // rocksdb grows them on demand at db-open to fit each database's max_background_flushes
-        // (high-priority) and max_background_compactions (low-priority), never shrinking below.
-        let mut env = rocksdb::Env::new().expect("rocksdb env is created");
-        env.set_high_priority_background_threads(2);
-        env.set_low_priority_background_threads(1);
-
-        // Setup the global write rate limiter
-        let rate_limiter = RateLimiter::new(
-            opts.rocksdb_max_write_rate_per_second.as_u64() as i64,
-            100 * 1000,
-            10,
-            RateLimiterMode::KWritesOnly,
-            opts.rocksdb_write_rate_limiter_mode == RocksDbWriteRateLimiterMode::AutoTuned,
-        );
+        let db_env = DbEnv::from_common_options(opts).expect("rocksdb env is created");
 
         // Create our own storage thread pools
         let high_pri_pool = threadpool::Builder::new()
@@ -132,10 +82,7 @@ impl RocksDbManager {
         let dbs = RwLock::default();
 
         let manager = Self {
-            env,
-            rate_limiter,
-            cache,
-            write_buffer_manager,
+            db_env,
             dbs,
             shutting_down: AtomicBool::new(false),
             close_db_tasks: TaskTracker::default(),
@@ -174,7 +121,24 @@ impl RocksDbManager {
         }
     }
 
+    /// Default shared resources, controlled by this manager's configuration watcher.
+    /// Clone and customize the bundle to override or opt out of selected resources.
+    pub fn db_env(&self) -> &DbEnv {
+        &self.db_env
+    }
+
     pub async fn open_db(&'static self, db_spec: DbSpec) -> Result<Arc<RocksDb>, RocksError> {
+        self.open_db_with_env(db_spec, self.db_env.clone()).await
+    }
+
+    /// Opens with exactly the supplied resources, without filling absent fields
+    /// from the default environment. Shared default resources still observe updates
+    /// from this manager; custom resources are not enrolled in its resource tuning.
+    pub async fn open_db_with_env(
+        &'static self,
+        db_spec: DbSpec,
+        env: DbEnv,
+    ) -> Result<Arc<RocksDb>, RocksError> {
         if self
             .shutting_down
             .load(std::sync::atomic::Ordering::Acquire)
@@ -185,7 +149,7 @@ impl RocksDbManager {
         // get latest options
         let name = db_spec.name.clone();
         let path = db_spec.path.clone();
-        let wrapper = RocksDb::open(self, db_spec).await?;
+        let wrapper = RocksDb::open(self, db_spec, env).await?;
         self.dbs
             .write()
             .insert(name.clone(), Arc::downgrade(&wrapper));
@@ -231,15 +195,26 @@ impl RocksDbManager {
         resumes
     }
 
+    /// Capacity of the default shared WBM, excluding independently supplied WBMs.
     pub fn get_total_write_buffer_capacity(&self) -> u64 {
-        self.write_buffer_manager.get_buffer_size() as u64
+        self.db_env
+            .write_buffer_manager
+            .as_ref()
+            .map_or(0, |manager| manager.get_buffer_size() as u64)
     }
 
+    /// Usage of the default shared WBM, excluding independently supplied WBMs.
     pub fn get_total_write_buffer_usage(&self) -> u64 {
-        self.write_buffer_manager.get_usage() as u64
+        self.db_env
+            .write_buffer_manager
+            .as_ref()
+            .map_or(0, |manager| manager.get_usage() as u64)
     }
 
-    /// Returns aggregated memory usage for all databases if filter is empty
+    /// Returns aggregated memory usage for the selected databases and their supplied
+    /// caches. Shared caches are counted once, using their full usage rather than
+    /// attributing entries to individual databases. An empty filter also includes
+    /// the manager's default cache, even when no database currently uses it.
     pub fn get_memory_usage_stats(
         &self,
         filter: &[DbName],
@@ -248,9 +223,10 @@ impl RocksDbManager {
         // keep databases alive while we are aggregating memory usage
         let mut pinned = vec![];
         let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
-        builder.add_cache(&self.cache);
-
         if filter.is_empty() {
+            if let Some(cache) = &self.db_env.cache {
+                builder.add_cache(cache);
+            }
             for db in self.dbs.read().values() {
                 let Some(db) = db.upgrade() else {
                     continue;
@@ -270,6 +246,10 @@ impl RocksDbManager {
 
         for db in &pinned {
             builder.add_db(db.inner().as_raw_db());
+            if let Some(cache) = &db.inner().db_env().cache {
+                // The native builder deduplicates shared caches.
+                builder.add_cache(cache);
+            }
         }
 
         Ok(builder.build()?)
@@ -334,7 +314,9 @@ impl RocksDbManager {
         }
         // wait for all tasks to complete
         self.close_db_tasks.wait().await;
-        self.env.clone().join_all_threads();
+        if let Some(env) = &self.db_env.native_env {
+            env.clone().join_all_threads();
+        }
         info!("Rocksdb manager shutdown completed");
     }
 
@@ -440,7 +422,6 @@ struct ConfigSubscription {
 
 struct DbWatchdog {
     manager: &'static RocksDbManager,
-    cache: Cache,
     current_common_opts: CommonOptions,
 }
 
@@ -449,7 +430,6 @@ impl DbWatchdog {
         let prev_opts = Configuration::pinned().common.clone();
         let mut watchdog = Self {
             manager,
-            cache: manager.cache.clone(),
             current_common_opts: prev_opts,
         };
 
@@ -501,11 +481,14 @@ impl DbWatchdog {
                 new_common_opts.rocksdb_total_memory_size()
             );
             check_memory_limit(new_common_opts);
-            self.cache
-                .set_capacity(new_common_opts.rocksdb_total_memory_size().as_usize());
-            self.manager
-                .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
+            if let Some(cache) = &self.manager.db_env.cache {
+                cache
+                    .clone()
+                    .set_capacity(new_common_opts.rocksdb_total_memory_size().as_usize());
+            }
+            if let Some(manager) = &self.manager.db_env.write_buffer_manager {
+                manager.set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
+            }
         }
 
         // update memtable total memory
@@ -518,9 +501,9 @@ impl DbWatchdog {
                 "[config update] Setting rocksdb total memtables size limit to {}",
                 new_common_opts.rocksdb_total_memtables_size()
             );
-            self.manager
-                .write_buffer_manager
-                .set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
+            if let Some(manager) = &self.manager.db_env.write_buffer_manager {
+                manager.set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
+            }
         }
 
         // Databases choose to react to config updates as they see fit.
@@ -539,26 +522,6 @@ impl DbWatchdog {
     }
 }
 
-fn check_memory_limit(opts: &CommonOptions) {
-    if let Some(process_memory_size) = opts.process_total_memory_size() {
-        let memory_ratio =
-            opts.rocksdb_total_memory_size().as_u64() as f64 / process_memory_size.get() as f64;
-        if memory_ratio > 1.0 {
-            error!(
-                "'rocksdb-total-memory-size' parameter is set to {}, more than the process memory limit of {}. This guarantees an OOM under load; keep it under 50% of process memory",
-                opts.rocksdb_total_memory_size(),
-                ByteCount::from(process_memory_size),
-            )
-        } else if memory_ratio > 0.9 {
-            error!(
-                "'rocksdb-total-memory-size' parameter is set to {}, more than 90% of the process memory limit of {}. This risks an OOM under load; keep it under 50% of process memory",
-                opts.rocksdb_total_memory_size(),
-                ByteCount::from(process_memory_size),
-            )
-        }
-    }
-}
-
 static_assertions::assert_impl_all!(RocksDbManager: Send, Sync);
 
 #[cfg(test)]
@@ -572,7 +535,7 @@ mod tests {
 
     use super::{DbWatchdog, RocksDbManager};
     use crate::configuration::{DbConfigurator, create_default_db_options};
-    use crate::{DbName, DbSpecBuilder, RocksAccess, RocksDb};
+    use crate::{DbEnv, DbName, DbSpecBuilder, RocksAccess, RocksDb};
 
     #[derive(Clone, Default)]
     struct ReleaseOnConfigUpdate {
@@ -580,14 +543,8 @@ mod tests {
     }
 
     impl DbConfigurator for ReleaseOnConfigUpdate {
-        fn get_db_options(
-            &self,
-            db_name: &DbName,
-            env: &rocksdb::Env,
-            write_buffer_manager: &rocksdb::WriteBufferManager,
-            limiter: &rocksdb::RateLimiter,
-        ) -> rocksdb::Options {
-            create_default_db_options(env, db_name, write_buffer_manager, limiter)
+        fn get_db_options(&self, db_name: &DbName, env: &DbEnv) -> rocksdb::Options {
+            create_default_db_options(env, db_name)
         }
 
         fn note_config_update(&self, _db: &RocksAccess) {
@@ -598,6 +555,98 @@ mod tests {
                 self.owner.lock().take();
             }
         }
+    }
+
+    struct MemoryStatsConfigurator;
+
+    impl DbConfigurator for MemoryStatsConfigurator {
+        fn get_db_options(&self, db_name: &DbName, env: &DbEnv) -> rocksdb::Options {
+            create_default_db_options(env, db_name)
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_stats_filter_and_deduplicate_supplied_caches() -> anyhow::Result<()> {
+        let task_center = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let manager = task_center.run_sync(RocksDbManager::init);
+        let tempdir = restate_test_util::tempdir()?;
+        let custom_cache = rocksdb::Cache::new_lru_cache(1024 * 1024);
+        // Avoid WBM cache reservations changing while measuring block-cache usage.
+        let default_env = manager.db_env().clone().with_write_buffer_manager(None);
+        let custom_env = default_env.clone().with_cache(Some(custom_cache.clone()));
+        let mut databases = Vec::new();
+        let mut names = Vec::new();
+        for (index, env) in [
+            default_env.clone(),
+            default_env,
+            custom_env.clone(),
+            custom_env,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let name = DbName::new(&format!("memory-stats-{index}"));
+            let spec = DbSpecBuilder::new(
+                name.clone(),
+                DatabaseKind::PartitionStore,
+                tempdir.path().join(name.as_str()),
+                MemoryStatsConfigurator,
+            )
+            .cf_patterns(Vec::new())
+            .build()?;
+            let db = manager.open_db_with_env(spec, env).await?;
+            let raw = db.inner().as_raw_db();
+            raw.put(b"key", [42; 4096])?;
+            raw.flush()?;
+            assert!(raw.get(b"key")?.is_some());
+            names.push(name);
+            databases.push(db);
+        }
+
+        let default_usage = manager.db_env().cache.as_ref().unwrap().get_usage() as u64;
+        let custom_usage = custom_cache.get_usage() as u64;
+        assert!(default_usage > 0);
+        assert!(custom_usage > 0);
+        assert_eq!(
+            manager
+                .get_memory_usage_stats(&[])?
+                .approximate_cache_total(),
+            default_usage + custom_usage,
+        );
+        assert_eq!(
+            manager
+                .get_memory_usage_stats(&names[..2])?
+                .approximate_cache_total(),
+            default_usage,
+        );
+        assert_eq!(
+            manager
+                .get_memory_usage_stats(&names[2..])?
+                .approximate_cache_total(),
+            custom_usage,
+        );
+        assert_eq!(
+            manager
+                .get_memory_usage_stats(&names[2..3])?
+                .approximate_cache_total(),
+            custom_usage,
+        );
+        assert_eq!(
+            manager
+                .get_memory_usage_stats(&[DbName::new("missing")])?
+                .approximate_cache_total(),
+            0,
+        );
+
+        for db in databases {
+            db.close().await.expect("all database users released");
+        }
+        task_center.shutdown_node("test completed", 0).await;
+        manager.shutdown().await;
+        Ok(())
     }
 
     #[tokio::test]
@@ -625,7 +674,6 @@ mod tests {
 
         let mut watchdog = DbWatchdog {
             manager,
-            cache: manager.cache.clone(),
             current_common_opts: Configuration::pinned().common.clone(),
         };
         watchdog.on_config_update();

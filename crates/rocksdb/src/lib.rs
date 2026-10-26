@@ -11,6 +11,7 @@
 pub mod admission;
 mod background;
 pub mod configuration;
+mod db_env;
 mod db_manager;
 mod db_spec;
 mod error;
@@ -40,6 +41,7 @@ pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOpti
 
 // re-exports
 pub use self::background::StorageTaskKind;
+pub use self::db_env::DbEnv;
 pub use self::db_manager::RocksDbManager;
 pub use self::db_spec::*;
 pub use self::error::*;
@@ -161,18 +163,13 @@ impl RocksDb {
     pub(crate) async fn open(
         manager: &'static RocksDbManager,
         spec: DbSpec,
+        env: DbEnv,
     ) -> Result<Arc<Self>, RocksError> {
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenDb)
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new("open-db");
-                RocksAccess::open_db(
-                    spec,
-                    &manager.env,
-                    &manager.write_buffer_manager,
-                    &manager.cache,
-                    &manager.rate_limiter,
-                )
+                RocksAccess::open_db(spec, env)
             })
             .build()
             .unwrap();
@@ -570,10 +567,7 @@ impl RocksDb {
         let manager = self.manager;
         let task = StorageTask::default()
             .kind(StorageTaskKind::OpenColumnFamily)
-            .op(move || {
-                self.db
-                    .open_cf(name, &manager.write_buffer_manager, &manager.cache)
-            })
+            .op(move || self.db.open_cf(name))
             .build()
             .unwrap();
 
@@ -592,12 +586,7 @@ impl RocksDb {
             .priority(Priority::Low)
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new("import-column-family");
-                self.db.import_cf(
-                    name,
-                    &manager.write_buffer_manager,
-                    &manager.cache,
-                    metadata,
-                )
+                self.db.import_cf(name, metadata)
             })
             .build()
             .unwrap();
