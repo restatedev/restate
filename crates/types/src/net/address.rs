@@ -460,7 +460,7 @@ impl<P: ListenerPort> Default for AdvertisedAddress<P> {
 impl<P: ListenerPort> AdvertisedAddress<P> {
     pub fn derive_from_bind_address(
         address: SocketAddress,
-        advertised_host: Option<&str>,
+        advertised_host: Option<&AdvertisedHost>,
         tls: bool,
     ) -> Self {
         let scheme = if tls { "https" } else { "http" };
@@ -482,12 +482,8 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
                     }
                 };
                 // do we have an input hostname?
-                let hostname = advertised_host.unwrap_or_else(|| routable_ip());
-                PeerNetAddress::Http(
-                    format!("{scheme}://{hostname}:{}", address.port())
-                        .parse()
-                        .expect("valid uri"),
-                )
+                let hostname = advertised_host.map_or_else(routable_ip, AdvertisedHost::as_str);
+                PeerNetAddress::Http(host_uri(scheme, hostname, address.port()).expect("valid uri"))
             }
             // it's a UDS address, we'll use the path.
             SocketAddress::Uds(path) => PeerNetAddress::Uds(path),
@@ -689,6 +685,143 @@ fn is_absolute_path_form(s: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
         && rest.starts_with('/')
         && !rest.starts_with("//")
+}
+
+/// A host to advertise in place of the inferred one: a DNS name, an IPv4 address, or an IPv6
+/// address in brackets. It never carries a scheme, user info, port or path, which an advertised
+/// address sets instead. Parsing validates it, so the advertised address derived from it is
+/// always a valid URI, and DNS names follow the rule rustls applies to TLS server names, so TLS
+/// peers can dial it.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    derive_more::Display,
+    serde_with::SerializeDisplay,
+    serde_with::DeserializeFromStr,
+)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(transparent, inline))]
+pub struct AdvertisedHost(String);
+
+impl AdvertisedHost {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl FromStr for AdvertisedHost {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let host = s.trim();
+        // `http::Uri` checks only the syntax of an authority, so `[gggg::1]` and `bad$name` pass
+        // it. Require an IP address or a DNS name as rustls defines it, so TLS peers can dial the
+        // derived address, and also check the longest URI that `derive_from_bind_address` can
+        // build from this host, through the same helper, so that derivation cannot fail.
+        let is_host = match host.strip_prefix('[').and_then(|h| h.strip_suffix(']')) {
+            Some(ipv6) => ipv6.parse::<Ipv6Addr>().is_ok(),
+            None => host.parse::<Ipv4Addr>().is_ok() || validate_dns_name(host.as_bytes()).is_ok(),
+        };
+        match host_uri("https", host, u16::MAX) {
+            Ok(uri) if is_host && uri.host() == Some(host) => Ok(Self(host.to_owned())),
+            _ => anyhow::bail!(
+                "'{s}' is not a host name or IP address. Write IPv6 addresses in brackets, such \
+                 as [2001:db8::7], and use an advertised address to set a scheme, port or path"
+            ),
+        }
+    }
+}
+
+/// The URI an advertised host and a bound port turn into.
+fn host_uri(scheme: &str, host: &str, port: u16) -> Result<Uri, http::uri::InvalidUri> {
+    format!("{scheme}://{host}:{port}").parse()
+}
+
+/// Mirrors the rustls error type so that [`validate_dns_name`] needs no edits.
+struct InvalidDnsNameError;
+
+/// Whether `input` is a DNS name as rustls defines it, so that every host [`AdvertisedHost`]
+/// accepts is also a TLS server name.
+///
+/// Copied verbatim from `validate` in rustls-pki-types 1.15.1, `src/server_name.rs`
+/// (<https://github.com/rustls/pki-types>, MIT OR Apache-2.0). Keep it identical to that
+/// function rather than editing it, so the two cannot disagree; the parity test in
+/// `restate_core::network::net_util` checks the agreement.
+const fn validate_dns_name(input: &[u8]) -> Result<(), InvalidDnsNameError> {
+    enum LabelState {
+        /// The current label is still empty
+        Start,
+        /// The current label contains at least one non-digit
+        HasLetter,
+        /// The current label is non-empty and all-numeric so far
+        AllNumeric,
+        /// The last character was a hyphen
+        EndsInHyphen,
+    }
+
+    /// "Labels must be 63 characters or less."
+    const MAX_LABEL_LENGTH: usize = 63;
+
+    /// https://devblogs.microsoft.com/oldnewthing/20120412-00/?p=7873
+    const MAX_NAME_LENGTH: usize = 253;
+
+    if input.is_empty() || input.len() > MAX_NAME_LENGTH {
+        return Err(InvalidDnsNameError);
+    }
+
+    let mut start = 0;
+    let mut state = LabelState::Start;
+    let mut idx = 0;
+    loop {
+        let ch = match idx < input.len() {
+            true => Some(input[idx]),
+            false => None,
+        };
+
+        match ch {
+            Some(b'a'..=b'z' | b'A'..=b'Z' | b'_') => state = LabelState::HasLetter,
+            Some(b'0'..=b'9') => {
+                state = match state {
+                    LabelState::Start | LabelState::AllNumeric => LabelState::AllNumeric,
+                    LabelState::HasLetter | LabelState::EndsInHyphen => LabelState::HasLetter,
+                }
+            }
+            Some(b'.') | None => {
+                let len = idx - start;
+                if len == 0 || len > MAX_LABEL_LENGTH || matches!(state, LabelState::EndsInHyphen) {
+                    return Err(InvalidDnsNameError);
+                }
+
+                // Break on a trailing dot as well as on the end of input, keeping
+                // `state` intact for the final all-numeric check below.
+                if idx + 1 >= input.len() {
+                    break;
+                }
+
+                idx += 1;
+                start = idx;
+                state = LabelState::Start;
+                continue;
+            }
+            Some(b'-') => match idx == start {
+                true => return Err(InvalidDnsNameError),
+                false => state = LabelState::EndsInHyphen,
+            },
+            _ => return Err(InvalidDnsNameError),
+        }
+
+        idx += 1;
+    }
+
+    // The final label (whether or not the name has a trailing dot) must
+    // not be all-numeric, to avoid confusion with an IPv4 address.
+    match state {
+        LabelState::AllNumeric => Err(InvalidDnsNameError),
+        _ => Ok(()),
+    }
 }
 
 /// A helper function that attempts to derive the public routable IP address of
@@ -966,5 +1099,63 @@ mod tests {
             let parsed = input.parse::<AdvertisedAddress<FabricPort>>();
             assert!(parsed.is_err(), "{input}");
         }
+    }
+
+    #[test]
+    fn advertised_host_accepts_only_bare_hosts() {
+        let label_63 = "a".repeat(63);
+        let name_253 = format!("{label_63}.{label_63}.{label_63}.{}", "a".repeat(61));
+        assert_eq!(name_253.len(), 253);
+        for input in [
+            "node-7.example.com",
+            "node_1",
+            "host.",
+            "10.1.7.3",
+            "[2001:db8::7]",
+            label_63.as_str(),
+            name_253.as_str(),
+        ] {
+            let host: AdvertisedHost = input.parse().unwrap();
+            assert_eq!(host.as_str(), input);
+        }
+        assert_eq!(
+            " padded.example.com "
+                .parse::<AdvertisedHost>()
+                .unwrap()
+                .as_str(),
+            "padded.example.com"
+        );
+
+        // The first group used to panic or silently advertise a wrong address. The second group
+        // parses as a URI host but is neither a DNS name nor an IP address, so TLS peers could
+        // not dial it.
+        let label_64 = "a".repeat(64);
+        let name_254 = format!("{name_253}a");
+        for input in [
+            "",
+            "bad host",
+            "host:8443",
+            "2001:db8::7",
+            "user@host",
+            "host/rpc",
+            "http://h",
+            "[gggg::1]",
+            "[10.0.0.1]",
+            "bad$name",
+            "a-.b",
+            "-a.b",
+            "a..b",
+            "host.123",
+            label_64.as_str(),
+            name_254.as_str(),
+        ] {
+            assert!(input.parse::<AdvertisedHost>().is_err(), "{input}");
+        }
+
+        let host = "[2001:db8::7]".parse().unwrap();
+        let socket = SocketAddress::Socket("[::]:5122".parse().unwrap());
+        let address =
+            AdvertisedAddress::<FabricPort>::derive_from_bind_address(socket, Some(&host), false);
+        assert_eq!(address.to_string(), "http://[2001:db8::7]:5122/");
     }
 }
