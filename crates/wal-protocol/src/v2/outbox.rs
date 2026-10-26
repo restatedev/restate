@@ -12,7 +12,7 @@ use bilrost::Message;
 use bytes::BytesMut;
 use restate_storage_api::outbox_table::OpaqueMessage;
 use restate_types::{
-    bilrost_storage_encode_decode, blob::BaseBlobId, errors::ConversionError,
+    bilrost_storage_encode_decode, blob::BlobId, errors::ConversionError,
     invocation::JournalCompletionTarget, sharding::WithPartitionKey, storage::StorageEncode,
 };
 
@@ -146,7 +146,7 @@ pub struct InvocationResponseFromBlobCommand {
     #[bilrost(tag(1))]
     pub target: JournalCompletionTarget,
     #[bilrost(tag(2))]
-    pub blob: BaseBlobId,
+    pub blob: BlobId,
 }
 
 bilrost_storage_encode_decode!(InvocationResponseFromBlobCommand);

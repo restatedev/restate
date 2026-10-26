@@ -17,12 +17,12 @@ use std::sync::Arc;
 use std::task::{Context, Poll, ready};
 
 use futures::future::OptionFuture;
-use futures::stream::FuturesUnordered;
+use futures::stream::{FuturesUnordered, ReadyChunks};
 use futures::{FutureExt, StreamExt};
 use itertools::Itertools;
 use metrics::counter;
 use tokio::time::Instant;
-use tokio_stream::wrappers::{UnboundedReceiverStream, WatchStream};
+use tokio_stream::wrappers::{ReceiverStream, UnboundedReceiverStream, WatchStream};
 use tracing::{debug, trace};
 
 use restate_bifrost::{CommitToken, WrittenRecords};
@@ -50,6 +50,7 @@ use restate_vqueues::scheduler::Decisions;
 use restate_vqueues::{SchedulerService, VQueueHandle, VQueuesMeta};
 use restate_wal_protocol::control::UpdatePartitionDurabilityCommand;
 use restate_wal_protocol::timer::TimerKeyValue;
+use restate_wal_protocol::v2::commands::OutboxBlobRelease;
 #[cfg(test)]
 use restate_wal_protocol::v2::{Command, CommandWithKeys};
 use restate_wal_protocol::v2::{CommandKind, ErasedCommand, commands};
@@ -80,6 +81,9 @@ use super::self_proposer_scheduler::{
 
 // An arbitrary small number of bytes to be used when there is nothing to propose.
 const NOOP_BYTES_WRITTEN: usize = 1024; // 1KiB
+const MAX_BLOB_RELEASES_PER_PROPOSAL: usize = 128;
+
+type BlobReleaseStream = ReadyChunks<ReceiverStream<OutboxBlobRelease>>;
 
 /// A no-op proposal that writes no records. The scheduler doesn't charge it, but the flow loses
 /// its position in the ready queue. The bytes only count towards the leader's per-round
@@ -118,6 +122,7 @@ pub struct LeaderState {
 
     invoker_stream: InvokerStream,
     shuffle_stream: WatchStream<Option<shuffle::OutboxTruncation>>,
+    blob_release_stream: BlobReleaseStream,
     schema_stream: WatchStream<Version>,
     rule_book_stream: WatchStream<Arc<RuleBook>>,
     cleaner_handle: CleanerHandle,
@@ -149,6 +154,7 @@ impl LeaderState {
         self_proposer: SelfProposer,
         invoker_rx: InvokerStream,
         shuffle_rx: tokio::sync::watch::Receiver<Option<shuffle::OutboxTruncation>>,
+        blob_release_rx: tokio::sync::mpsc::Receiver<OutboxBlobRelease>,
         durability_tracker: DurabilityTracker,
         leader_query_guard: LeaderQueryGuard,
         rule_book_rx: tokio::sync::watch::Receiver<Arc<RuleBook>>,
@@ -180,6 +186,8 @@ impl LeaderState {
             fencing_tokens: FencingTokens::default(),
             invoker_stream: invoker_rx,
             shuffle_stream: WatchStream::new(shuffle_rx),
+            blob_release_stream: ReceiverStream::new(blob_release_rx)
+                .ready_chunks(MAX_BLOB_RELEASES_PER_PROPOSAL),
             durability_tracker,
             network_events_tx,
             network_events_stream: UnboundedReceiverStream::new(network_events_rx),
@@ -300,6 +308,7 @@ impl LeaderState {
             fencing_tokens,
             invoker_stream,
             shuffle_stream,
+            blob_release_stream,
             schema_stream,
             rule_book_stream,
             cleaner_handle,
@@ -353,6 +362,7 @@ impl LeaderState {
             invoker_stream,
             timer_service,
             shuffle_stream,
+            blob_release_stream,
             schema_stream,
             rule_book_stream,
             network_events_stream,
@@ -423,6 +433,7 @@ impl LeaderState {
             invoker_stream,
             timer_service,
             shuffle_stream,
+            blob_release_stream,
             schema_stream,
             rule_book_stream,
             network_events_stream,
@@ -459,6 +470,9 @@ impl LeaderState {
                         |e| e.map(FlowPoll::Ready).unwrap_or(FlowPoll::Noop),
                     )
                     .dispatch(state, decision)
+            }
+            SelfProposerSchedulerFlow::ShuffleBlobRelease => {
+                FlowPoll::poll_stream(cx, blob_release_stream).dispatch(state, decision)
             }
             SelfProposerSchedulerFlow::Cleaner => {
                 FlowPoll::poll_stream(cx, &mut cleaner_handle.effects()).dispatch(state, decision)
@@ -586,6 +600,7 @@ struct InputStreams<'a> {
     invoker_stream: &'a mut InvokerStream,
     timer_service: &'a mut Pin<Box<TimerService>>,
     shuffle_stream: &'a mut WatchStream<Option<shuffle::OutboxTruncation>>,
+    blob_release_stream: &'a mut BlobReleaseStream,
     schema_stream: &'a mut WatchStream<Version>,
     rule_book_stream: &'a mut WatchStream<Arc<RuleBook>>,
     network_events_stream: &'a mut UnboundedReceiverStream<NetworkServiceEvent>,
@@ -918,6 +933,15 @@ impl LeaderEventHandler for shuffle::OutboxTruncation {
             commands::TruncateOutboxCommand {
                 index: self.index(),
             },
+            Keys::RangeInclusive(state.partition_key_range.into()),
+        ))
+    }
+}
+
+impl LeaderEventHandler for Vec<OutboxBlobRelease> {
+    fn handle(self, state: &mut LeaderEventHandlerState<'_>) -> Result<WrittenRecords, Error> {
+        state.self_proposer.self_propose(BodyWithKeys::new(
+            commands::ReleaseOutboxBlobsCommand { releases: self },
             Keys::RangeInclusive(state.partition_key_range.into()),
         ))
     }

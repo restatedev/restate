@@ -35,6 +35,12 @@ pub trait ReadFsmTable {
 
     fn get_outbox_seq_number(&mut self) -> impl Future<Output = Result<MessageIndex>> + Send + '_;
 
+    /// The highest outbox message index whose blob reference has been released.
+    /// *Since v1.8.0*
+    fn get_released_outbox_blob_index(
+        &mut self,
+    ) -> impl Future<Output = Result<Option<MessageIndex>>> + Send + '_;
+
     fn get_applied_lsn(&mut self) -> impl Future<Output = Result<Option<Lsn>>> + Send + '_;
 
     fn get_min_restate_version(
@@ -75,6 +81,10 @@ pub trait WriteFsmTable {
     fn put_inbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()>;
 
     fn put_outbox_seq_number(&mut self, seq_number: MessageIndex) -> Result<()>;
+
+    /// Persist the highest outbox message index whose blob reference has been released.
+    /// *Since v1.8.0*
+    fn put_released_outbox_blob_index(&mut self, index: MessageIndex) -> Result<()>;
 
     fn put_min_restate_version(&mut self, version: &SemanticRestateVersion) -> Result<()>;
 

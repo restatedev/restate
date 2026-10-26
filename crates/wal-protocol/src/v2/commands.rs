@@ -12,7 +12,9 @@ use serde::{Deserialize, Serialize};
 
 pub use restate_storage_api::vqueue_table::scheduler::SchedulerDecisionsCommand;
 use restate_types::{
-    bilrost_storage_encode_decode, flexbuffers_storage_encode_decode,
+    bilrost_storage_encode_decode,
+    blob::BlobId,
+    flexbuffers_storage_encode_decode,
     identifiers::{EntryIndex, InvocationId, WithInvocationId, WithPartitionKey},
     invocation::{self, JournalCompletionTarget, ResponseResult},
     logs::{HasRecordKeys, Keys},
@@ -169,6 +171,26 @@ pub struct TruncateOutboxCommand {
 }
 
 bilrost_storage_encode_decode!(TruncateOutboxCommand);
+
+/// A blob reference held by the outbox message at `index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, bilrost::Message)]
+pub struct OutboxBlobRelease {
+    #[bilrost(1)]
+    pub index: MessageIndex,
+    #[bilrost(2)]
+    pub blob: BlobId,
+}
+
+/// Releases the blob references of shuffled outbox messages. Releases are in ascending
+/// outbox index order; indexes at or below the last released index are ignored, which
+/// makes re-proposals by a new leader idempotent.
+#[derive(Debug, Clone, bilrost::Message)]
+pub struct ReleaseOutboxBlobsCommand {
+    #[bilrost(1)]
+    pub releases: Vec<OutboxBlobRelease>,
+}
+
+bilrost_storage_encode_decode!(ReleaseOutboxBlobsCommand);
 
 #[derive(
     Clone,
@@ -472,6 +494,11 @@ command! {
 command! {
     @kind=CommandKind::TruncateOutbox,
     @command=TruncateOutboxCommand
+}
+
+command! {
+    @kind=CommandKind::ReleaseOutboxBlobs,
+    @command=ReleaseOutboxBlobsCommand
 }
 
 command! {
