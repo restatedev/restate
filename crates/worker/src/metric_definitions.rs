@@ -70,7 +70,15 @@ pub const PARTITION_RECORD_COMMITTED_TO_READ_LATENCY_SECONDS: &str =
 pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.message.total";
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
 
+pub const SELF_PROPOSER_INFLIGHT: &str = "restate.partition.self_proposer.inflight";
+
 pub(crate) fn describe_metrics() {
+    describe_gauge!(
+        SELF_PROPOSER_INFLIGHT,
+        Unit::Count,
+        "Records admitted by each self-proposer flow awaiting local application acknowledgement"
+    );
+
     describe_gauge!(
         PARTITION_BLOCKED_FLARE,
         Unit::Count,
