@@ -22,6 +22,10 @@ pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
 pub(crate) const PARTITION_MEMTABLE_BUDGET: &str = "restate.partition_store.memtable_budget.bytes";
 pub(crate) const NUM_OPEN_PARTITIONS: &str = "restate.partition_store.num_open";
 pub(crate) const RECLAIM_FLUSH: &str = "restate.partition_store.reclaim_flush.total";
+pub(crate) const SNAPSHOT_DOWNLOAD_FALLBACK: &str =
+    "restate.partition_store.snapshots.download.fallback.total";
+pub(crate) const SNAPSHOT_FAST_FORWARD_FAILED: &str =
+    "restate.partition_store.snapshots.fast_forward.failed.total";
 
 pub(crate) fn describe_metrics() {
     describe_counter!(
@@ -70,5 +74,17 @@ pub(crate) fn describe_metrics() {
         RECLAIM_FLUSH,
         Unit::Count,
         "How many flushes were triggered by the partition store memory reclaimer"
+    );
+
+    describe_counter!(
+        SNAPSHOT_DOWNLOAD_FALLBACK,
+        Unit::Count,
+        "Number of snapshot downloads that succeeded using a fallback (non-latest) snapshot"
+    );
+
+    describe_counter!(
+        SNAPSHOT_FAST_FORWARD_FAILED,
+        Unit::Count,
+        "Number of failed fast-forwards from trim gap (no suitable snapshot available)"
     );
 }
