@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
+use std::time::Instant;
 
 use bytes::BytesMut;
 use futures::FutureExt;
@@ -19,7 +20,7 @@ use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
 use restate_memory::{MemoryLease, MemoryPool, NonZeroByteCount, PollMemoryPool};
-use restate_types::logs::Record;
+use restate_types::logs::{Lsn, Record, SequenceNumber};
 use restate_types::storage::StorageEncode;
 
 use crate::bifrost::PreferenceControl;
@@ -40,7 +41,9 @@ pub struct BackgroundAppender<T> {
     /// Reusable vector for buffering recv() operations
     current_batch: Batch,
     /// Reusable vector for callbacks of enqueue_with_notification calls
-    notif_buffer: Vec<oneshot::Sender<()>>,
+    /// The tuple is (prefix_len, tx) where prefix_len is the position of the notification request
+    /// in the batch.
+    notif_buffer: Vec<(usize, oneshot::Sender<Committed>)>,
 }
 
 impl<T: StorageEncode> BackgroundAppender<T> {
@@ -103,6 +106,11 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         let cancel_token = cancellation_token();
         // to avoid a busy loop while draining.
         let mut draining = false;
+        // The last committed record, and when its append completed.
+        let mut last_committed = Committed {
+            lsn: Lsn::INVALID,
+            at: Instant::now(),
+        };
 
         let batch_limit_bytes = appender.record_size_limit().get();
 
@@ -126,7 +134,13 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                 current_batch.push(op);
             } else {
                 // Current batch is full, flush it first
-                Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer).await?;
+                Self::process_appends(
+                    &mut appender,
+                    &mut current_batch,
+                    &mut notif_buffer,
+                    &mut last_committed,
+                )
+                .await?;
                 // Then add the operation to the new (empty) batch
                 current_batch.push(op);
             }
@@ -145,15 +159,25 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                     }
                     Ok(op) => {
                         // Batch is full, flush it
-                        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer)
-                            .await?;
+                        Self::process_appends(
+                            &mut appender,
+                            &mut current_batch,
+                            &mut notif_buffer,
+                            &mut last_committed,
+                        )
+                        .await?;
                         // Add op to the next batch
                         current_batch.push(op);
                     }
                     Err(TryRecvError::Empty) => {
                         // No more messages available, flush current batch and wait for more
-                        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer)
-                            .await?;
+                        Self::process_appends(
+                            &mut appender,
+                            &mut current_batch,
+                            &mut notif_buffer,
+                            &mut last_committed,
+                        )
+                        .await?;
                         break 'opportunistic;
                     }
                     Err(TryRecvError::Disconnected) => {
@@ -165,7 +189,13 @@ impl<T: StorageEncode> BackgroundAppender<T> {
         }
 
         // Make sure to flush any remaining items before exiting.
-        Self::process_appends(&mut appender, &mut current_batch, &mut notif_buffer).await?;
+        Self::process_appends(
+            &mut appender,
+            &mut current_batch,
+            &mut notif_buffer,
+            &mut last_committed,
+        )
+        .await?;
 
         Ok(())
     }
@@ -173,7 +203,8 @@ impl<T: StorageEncode> BackgroundAppender<T> {
     async fn process_appends(
         appender: &mut Appender<T>,
         buffered_records: &mut Batch,
-        notif_buffer: &mut Vec<oneshot::Sender<()>>,
+        notif_buffer: &mut Vec<(usize, oneshot::Sender<Committed>)>,
+        last_committed: &mut Committed,
     ) -> Result<()> {
         let mut batch = Vec::with_capacity(buffered_records.inner.len());
         // Holds the batch's memory leases until the append completes.
@@ -187,25 +218,42 @@ impl<T: StorageEncode> BackgroundAppender<T> {
                 AppendOperation::EnqueueWithNotification(record, tx, lease) => {
                     batch.push(record);
                     leases.push(lease);
-                    notif_buffer.push(tx);
+                    notif_buffer.push((batch.len(), tx));
+                }
+                AppendOperation::Canary(tx) if batch.is_empty() => {
+                    // This is a canary infront of records that all has been durably stored.
+                    // We can notify the canary sender immediately without waiting for this batch.
+                    let _ = tx.send(*last_committed);
                 }
                 AppendOperation::Canary(tx) => {
-                    notif_buffer.push(tx);
+                    notif_buffer.push((batch.len(), tx));
                 }
             }
         }
 
         // Failure to append will stop the whole task
+        let batch_len = batch.len();
         if !batch.is_empty() {
-            appender.append_batch_erased(batch.into()).await?;
+            let lsn = appender.append_batch_erased(batch.into()).await?;
+            *last_committed = Committed {
+                lsn,
+                at: Instant::now(),
+            };
         }
 
         // Records are durably appended, we can now drop the leases.
         drop(leases);
 
         // Notify those who asked for a commit notification
-        notif_buffer.drain(..).for_each(|tx| {
-            let _ = tx.send(());
+        notif_buffer.drain(..).for_each(|(prefix_len, tx)| {
+            // Last_committed contains the LSN of the last record in the batch. Appends
+            // preserve the record order. So we can map the notification's LSN back to the record
+            // it's pointing to using the batch's length and its position in the batch.
+            let committed = Committed {
+                lsn: Lsn::new(last_committed.lsn.as_u64() - (batch_len - prefix_len) as u64),
+                ..*last_committed
+            };
+            let _ = tx.send(committed);
         });
         // Clear buffers
         notif_buffer.clear();
@@ -517,13 +565,22 @@ impl<T: StorageEncode> LogSender<T> {
     }
 }
 
+/// What a [`CommitToken`] resolves to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Committed {
+    /// The LSN of the last record preceding the token, including its own record if any.
+    pub lsn: Lsn,
+    /// When that append completed.
+    pub at: Instant,
+}
+
 /// A future that resolves when a record is committed by the background appender.
 pub struct CommitToken {
-    rx: oneshot::Receiver<()>,
+    rx: oneshot::Receiver<Committed>,
 }
 
 impl std::future::Future for CommitToken {
-    type Output = Result<(), oneshot::error::RecvError>;
+    type Output = Result<Committed, oneshot::error::RecvError>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
@@ -535,10 +592,10 @@ impl std::future::Future for CommitToken {
 
 enum AppendOperation {
     Enqueue(Record, MemoryLease),
-    EnqueueWithNotification(Record, oneshot::Sender<()>, MemoryLease),
+    EnqueueWithNotification(Record, oneshot::Sender<Committed>, MemoryLease),
     // A message denoting a request to be notified when it's processed by the appender.
     // It's used to check if previously enqueued appends have been committed or not
-    Canary(oneshot::Sender<()>),
+    Canary(oneshot::Sender<Committed>),
 }
 
 impl AppendOperation {
