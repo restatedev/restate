@@ -1450,20 +1450,29 @@ mod tests {
         let mut handle = background_appender.start("test-appender")?;
         let sender = handle.sender();
 
-        // Rapidly enqueue many records using enqueue
-        let mut enqueued = 0;
-        for i in 0..100 {
-            match sender.enqueue(format!("rapid-record-{i}")) {
-                Ok(_) => enqueued += 1,
-                Err(e) => return Err(e.into()),
+        // A canary ahead of any append resolves to an invalid LSN
+        let token = sender.notify_committed()?;
+        assert_that!(token.await?.lsn, eq(Lsn::INVALID));
+
+        // Rapidly enqueue many records, asking for a notification on every 10th one
+        let mut tokens = Vec::new();
+        for i in 0..100u64 {
+            let record = format!("rapid-record-{i}");
+            if i % 10 == 0 {
+                tokens.push((i, sender.enqueue_with_notification(record)?.commit_token));
+            } else {
+                sender.enqueue(record)?;
             }
         }
 
-        assert_that!(enqueued, eq(100));
+        // Each token resolves to the LSN of its own record
+        for (i, token) in tokens {
+            assert_that!(token.await?.lsn, eq(Lsn::from(i + 1)));
+        }
 
-        // Wait for all to be committed
+        // Wait for all to be committed, the canary resolves to the last record's LSN
         let token = sender.notify_committed()?;
-        token.await?;
+        assert_that!(token.await?.lsn, eq(Lsn::from(100u64)));
 
         handle.drain().await?;
 
