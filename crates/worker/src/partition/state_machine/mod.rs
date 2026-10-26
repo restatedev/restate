@@ -2898,7 +2898,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                     // check if blob id is set and use that instead
                     match &blob_id {
                         Some(blob_id) => self.do_enqueue_into_outbox(
-                            v2::outbox::InvocationResponseBlobCommand {
+                            v2::outbox::InvocationResponseFromBlobCommand {
                                 target,
                                 blob: *blob_id,
                             },

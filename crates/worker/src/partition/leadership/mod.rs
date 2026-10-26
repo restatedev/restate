@@ -24,6 +24,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
+use restate_storage_api::blob_table::ReadBlobTable;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
@@ -982,6 +983,16 @@ impl shuffle::OutboxReader for OutboxReader {
         };
 
         Ok(result)
+    }
+
+    async fn get_response_result(
+        &mut self,
+        blob: restate_types::blob::BaseBlobId,
+    ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+        self.0
+            .get_blob::<restate_types::invocation::ResponseResult>(blob)
+            .await
+            .map_err(OutboxReaderError::Storage)
     }
 }
 

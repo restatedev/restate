@@ -142,22 +142,22 @@ pub trait OutboxMessage: StorageEncode + WithPartitionKey {
 }
 
 #[derive(Clone, Eq, PartialEq, bilrost::Message, derive_more::Into, derive_more::From)]
-pub struct InvocationResponseBlobCommand {
+pub struct InvocationResponseFromBlobCommand {
     #[bilrost(tag(1))]
     pub target: JournalCompletionTarget,
     #[bilrost(tag(2))]
     pub blob: BaseBlobId,
 }
 
-bilrost_storage_encode_decode!(InvocationResponseBlobCommand);
+bilrost_storage_encode_decode!(InvocationResponseFromBlobCommand);
 
-impl WithPartitionKey for InvocationResponseBlobCommand {
+impl WithPartitionKey for InvocationResponseFromBlobCommand {
     fn partition_key(&self) -> restate_types::sharding::PartitionKey {
         self.target.partition_key()
     }
 }
 
-impl OutboxMessage for InvocationResponseBlobCommand {
+impl OutboxMessage for InvocationResponseFromBlobCommand {
     const KIND: OutboxKind = OutboxKind::InvocationResponseFromBlob;
 
     fn into_outbox_message(self) -> restate_storage_api::outbox_table::OutboxMessage {
