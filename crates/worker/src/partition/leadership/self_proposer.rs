@@ -11,8 +11,8 @@
 use futures::never::Never;
 
 use restate_bifrost::{
-    Bifrost, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy, InputRecord,
-    WrittenRecords,
+    Bifrost, CommitToken, EnqueueError, EnqueueWithNotificationResult, ErrorRecoveryStrategy,
+    InputRecord, WrittenRecords,
 };
 use restate_memory::PollMemoryPool;
 use restate_storage_api::deduplication_table::EpochSequenceNumber;
@@ -230,6 +230,10 @@ impl SelfProposer {
             commit_token: sender.notify_committed()?,
             written,
         })
+    }
+
+    pub fn notify_committed(&mut self) -> Result<CommitToken, EnqueueError<()>> {
+        self.bifrost_appender.sender().notify_committed()
     }
 
     /// Waits for self proposer to fail. This method will only complete with an error if the self
