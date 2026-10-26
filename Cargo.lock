@@ -8580,6 +8580,7 @@ dependencies = [
  "parking_lot",
  "restate-core",
  "restate-errors",
+ "restate-platform",
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
