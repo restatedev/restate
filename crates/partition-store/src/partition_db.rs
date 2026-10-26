@@ -24,6 +24,7 @@ use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
+use restate_rocksdb::admission::Admission;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{DbName, RocksDb, RocksError};
 use restate_storage_api::StorageError;
@@ -53,6 +54,7 @@ pub(crate) struct PartitionStoreDb {
 #[derive(Clone)]
 pub struct PartitionDb {
     meta: Arc<Partition>,
+    admission: Arc<Admission>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
@@ -70,6 +72,7 @@ impl PartitionDb {
     ) -> Self {
         Self {
             meta,
+            admission: Arc::new(Admission::default()),
             durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
@@ -85,6 +88,10 @@ impl PartitionDb {
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
         &self.database.rocksdb
+    }
+
+    pub(crate) fn admission(&self) -> &Arc<Admission> {
+        &self.admission
     }
 
     #[cfg(test)]
@@ -283,6 +290,10 @@ impl PartitionCell {
     }
 
     fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {
+        debug_assert!(
+            guard.db().is_none(),
+            "retire the previous admission lifetime first"
+        );
         db.database.notifications.register(
             self.meta.partition_id,
             db.cf_handle_for_key_kind(KeyKind::Fsm).id(),
@@ -291,7 +302,8 @@ impl PartitionCell {
         **guard = State::Open { db };
     }
 
-    pub fn set_cf_missing(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+    async fn set_cf_missing(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+        guard.close().await;
         if let Some(db) = guard.db() {
             db.unregister_durable_lsn();
         }
@@ -299,11 +311,12 @@ impl PartitionCell {
         **guard = State::CfMissing;
     }
 
-    pub fn open_cf(
+    pub async fn open_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         database: &PartitionStoreDb,
     ) {
+        debug_assert!(guard.is_unknown());
         let cf_name = self.cf_name();
         match database.rocksdb.inner().cf_handle(cf_name.as_ref()) {
             Some(handle) => {
@@ -316,7 +329,7 @@ impl PartitionCell {
                 self.open_local_cf(guard, db);
             }
             None => {
-                self.set_cf_missing(guard);
+                self.set_cf_missing(guard).await;
             }
         }
     }
@@ -437,6 +450,9 @@ impl PartitionCell {
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
     ) -> Result<(), RocksError> {
+        // Keep the sealed lifetime in the cell while draining. Cancelling this
+        // waiter must not allow a reopen/replacement to bypass admitted writes.
+        guard.close().await;
         // We set the state to Unknown in case we returned an error during the drop process.
         let state = std::mem::replace(guard.deref_mut(), State::Unknown);
         match state {
@@ -448,7 +464,7 @@ impl PartitionCell {
                 Self::drop_cf_from_rocksdb(&self.meta, db.rocksdb()).await?;
             }
         }
-        self.set_cf_missing(guard);
+        self.set_cf_missing(guard).await;
         Ok(())
     }
 
@@ -472,7 +488,7 @@ impl PartitionCell {
 
     #[cfg(test)]
     pub async fn reset_to_unknown(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
-        self.set_cf_missing(guard);
+        self.set_cf_missing(guard).await;
         **guard = State::Unknown;
     }
 }
@@ -520,12 +536,15 @@ impl State {
         matches!(self, State::Closed { .. } | State::Open { .. })
     }
 
-    pub fn get_or_reopen(&mut self) -> Option<PartitionDb> {
+    pub async fn get_or_reopen(&mut self) -> Option<PartitionDb> {
         match &mut *self {
             State::Unknown | State::CfMissing => None,
             State::Open { db } => Some(db.clone()),
             State::Closed { db, .. } => {
-                let db = db.clone();
+                // A cancelled close may have left admitted writes in flight.
+                db.admission.drain().await;
+                let mut db = db.clone();
+                db.admission = Arc::new(Admission::default());
                 *self = State::Open { db: db.clone() };
                 Some(db)
             }
@@ -540,15 +559,19 @@ impl State {
         }
     }
 
-    pub fn close(&mut self) {
+    pub async fn close(&mut self) {
         match &mut *self {
             State::Unknown | State::CfMissing | State::Closed { .. } => {}
             State::Open { db } => {
+                db.admission.seal();
                 *self = State::Closed {
                     db: db.clone(),
                     closed_at: Instant::now(),
                 };
             }
+        }
+        if let State::Closed { db, .. } = self {
+            db.admission.drain().await;
         }
     }
 }
