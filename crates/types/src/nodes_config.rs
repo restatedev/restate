@@ -24,7 +24,7 @@ use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort, ListenerPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
 use crate::{
-    GenerationalNodeId, NodeId, PlainNodeId, RestateVersion, base62_util,
+    GenerationalNodeId, NodeId, PlainNodeId, RestateVersion, SemanticRestateVersion, base62_util,
     flexbuffers_storage_encode_decode,
 };
 use crate::{Version, Versioned};
@@ -257,6 +257,13 @@ enum MaybeNode {
     Tombstone,
     Node(Box<NodeConfig>),
 }
+
+/// First release whose metadata servers keep address lists in membership writes. Every release
+/// from 1.9.0 on carries the logic in [`NodesConfiguration::all_metadata_servers_keep_address_lists`],
+/// so this must not be lowered to a release that might not, such as a 1.8.x patch built from a
+/// hotfix branch. If that logic first ships later than 1.9.0, raise this to that release.
+pub const ADDRESS_LISTS_IN_MEMBERSHIP_WRITES: SemanticRestateVersion =
+    SemanticRestateVersion::new(1, 9, 0);
 
 /// An advertised address for callers whose own location starts with `location`. An entry without
 /// a location is for every caller.
@@ -576,6 +583,34 @@ impl NodesConfiguration {
                 None
             }
         })
+    }
+
+    /// Whether every metadata server keeps the address lists when it rewrites this configuration
+    /// for a membership change, judged by the binary versions the metadata servers recorded here.
+    ///
+    /// Each metadata server applies a membership change by re-encoding its own decoded copy, so
+    /// all of them must agree on whether the lists survive. Versions before
+    /// [`ADDRESS_LISTS_IN_MEMBERSHIP_WRITES`] drop them, either because they do not know the
+    /// lists or because they clear them for this reason. The decision therefore depends only on
+    /// this replicated configuration, which every metadata server sees identically, and never on
+    /// the version of the binary evaluating it.
+    pub fn all_metadata_servers_keep_address_lists(&self) -> bool {
+        self.iter_role(Role::MetadataServer).all(|(_, node)| {
+            node.binary_version
+                .as_ref()
+                .and_then(|version| SemanticRestateVersion::try_from(version).ok())
+                .is_some_and(|version| {
+                    version.is_equal_or_newer_than(&ADDRESS_LISTS_IN_MEMBERSHIP_WRITES)
+                })
+        })
+    }
+
+    /// Removes the fabric and control address lists from every node.
+    pub fn clear_address_lists(&mut self) {
+        for (_, node) in self.iter_mut() {
+            node.addresses.clear();
+            node.ctrl_addresses.clear();
+        }
     }
 
     /// Returns the maximum known plain node id.
@@ -931,6 +966,58 @@ mod tests {
         }
         let removed = config.find_node_by_id(NodeId::new_plain(3));
         assert!(matches!(removed, Err(NodesConfigError::Deleted(_))));
+    }
+
+    #[test]
+    fn membership_writes_keep_address_lists_only_when_all_metadata_servers_do() {
+        use Role::{MetadataServer as Meta, Worker};
+
+        let config_with = |nodes: &[(Role, Option<&str>)]| {
+            let mut config = NodesConfiguration::new_for_testing();
+            for (id, (role, version)) in (1u32..).zip(nodes) {
+                let mut node = NodeConfig::builder()
+                    .name(format!("node-{id}"))
+                    .current_generation(GenerationalNodeId::new(id, 1))
+                    .address("unix:/run/f.sock".parse().unwrap())
+                    .roles(EnumSet::only(*role))
+                    .binary_version(RestateVersion::current())
+                    .build();
+                node.binary_version = version.map(|version| RestateVersion::new(version.into()));
+                config.upsert_node(with_address_lists(node));
+            }
+            config
+        };
+
+        for (nodes, keep) in [
+            (vec![(Meta, Some("1.9.0")), (Meta, Some("1.10.2"))], true),
+            // Only metadata servers apply membership changes.
+            (vec![(Meta, Some("1.9.0")), (Worker, Some("1.8.1"))], true),
+            (vec![(Meta, Some("1.9.0")), (Meta, Some("1.8.1"))], false),
+            (vec![(Meta, Some("1.9.0-dev"))], false),
+            (vec![(Meta, None)], false),
+        ] {
+            let config = config_with(&nodes);
+            assert_eq!(
+                config.all_metadata_servers_keep_address_lists(),
+                keep,
+                "{nodes:?}"
+            );
+        }
+
+        // A removed metadata server no longer counts.
+        let mut config = config_with(&[(Meta, Some("1.9.0")), (Meta, Some("1.8.1"))]);
+        config.remove_node_unchecked(PlainNodeId::new(2));
+        assert!(config.all_metadata_servers_keep_address_lists());
+
+        // Clearing touches nothing but the lists.
+        let before = config.find_node_by_name("node-1").unwrap().clone();
+        config.clear_address_lists();
+        let expected = NodeConfig {
+            addresses: Vec::new(),
+            ctrl_addresses: Vec::new(),
+            ..before
+        };
+        assert_eq!(config.find_node_by_name("node-1"), Some(&expected));
     }
 
     #[test]
