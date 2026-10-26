@@ -868,7 +868,9 @@ fn create_initial_nodes_configuration(
         )
         .location(common_opts.location().clone())
         .address(my_advertised_address)
+        .addresses(config.advertised_addresses())
         .ctrl_address(Some(my_ctrl_address))
+        .ctrl_addresses(config.control_advertised_addresses())
         .roles(common_opts.roles)
         .binary_version(RestateVersion::current())
         .build();
