@@ -17,8 +17,6 @@ use anyhow::{Context, Result, bail};
 use cling::prelude::*;
 use convert_case::{Case, Casing};
 use futures::StreamExt;
-use octocrab::models::repos::Asset;
-use octocrab::repos::RepoHandler;
 use serde_json::{Value, json};
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
@@ -27,6 +25,7 @@ use restate_cli_util::ui::console::input;
 use restate_cli_util::ui::stylesheet::Style;
 use restate_cli_util::{CliContext, c_eprintln, c_tip};
 
+use crate::clients::github::{Asset, GithubClient};
 use crate::console::{Styled, c_println, c_title, choose};
 use crate::error::RestateCliError;
 use crate::ui::fmt::{Field, Formatter, IncludeFormatting, OutputFormatter};
@@ -56,16 +55,12 @@ pub struct Examples {
 }
 
 pub async fn run_examples(example_opts: &Examples) -> Result<()> {
-    let octocrab = octocrab::instance();
-    let examples_repo = octocrab.repos("restatedev", "examples");
-    let ai_examples_repo = octocrab.repos("restatedev", "ai-examples");
+    let client = GithubClient::new().context("Failed to build HTTP client")?;
 
     // Fetch latest releases from both repos in parallel
-    let examples_releases = examples_repo.releases();
-    let ai_examples_releases = ai_examples_repo.releases();
     let (examples_release, ai_examples_release) = tokio::join!(
-        examples_releases.get_latest(),
-        ai_examples_releases.get_latest()
+        client.latest_release("restatedev", "examples"),
+        client.latest_release("restatedev", "ai-examples")
     );
 
     let examples_assets = examples_release
@@ -133,12 +128,7 @@ pub async fn run_examples(example_opts: &Examples) -> Result<()> {
         .into());
     }
 
-    let repo_handler = match selected_repo {
-        ExampleRepo::Examples => examples_repo,
-        ExampleRepo::AiExamples => ai_examples_repo,
-    };
-
-    download_example(output_dir, repo_handler, selected_example, selected_repo).await
+    download_example(&client, output_dir, selected_example, selected_repo).await
 }
 
 struct Language {
@@ -318,8 +308,8 @@ fn capitalize(s: &str) -> String {
 }
 
 async fn download_example(
+    client: &GithubClient,
     out_dir_name: PathBuf,
-    repo_handler: RepoHandler<'_>,
     asset: Asset,
     repo: ExampleRepo,
 ) -> Result<()> {
@@ -338,7 +328,7 @@ async fn download_example(
     zip_out_file_path.push("temp.zip");
 
     // Download zip in the out_dir
-    match download_asset_to_file(&zip_out_file_path, repo_handler, asset).await {
+    match download_asset_to_file(client, &zip_out_file_path, &asset).await {
         Ok(f) => f,
         Err(e) => {
             // Try to remove the directory, to avoid leaving a dirty user directory in case of a retry.
@@ -396,12 +386,12 @@ async fn download_example(
 }
 
 async fn download_asset_to_file(
+    client: &GithubClient,
     zip_out_file_path: impl AsRef<Path>,
-    repo_handler: RepoHandler<'_>,
-    asset: Asset,
+    asset: &Asset,
 ) -> Result<()> {
     let mut out_file = File::create(zip_out_file_path).await?;
-    let mut zip_stream = repo_handler.release_assets().stream(*asset.id).await?;
+    let mut zip_stream = client.download_asset(asset).await?.bytes_stream();
     while let Some(res) = zip_stream.next().await {
         let mut buf = res?;
         out_file.write_buf(&mut buf).await?;
