@@ -33,7 +33,7 @@ use crate::PlainNodeId;
 use crate::config::dynamodb_store::DynamoDbOptions;
 use crate::config::{DeprecatedServiceClientOptions, NetworkingOptions};
 use crate::locality::NodeLocation;
-use crate::net::address::{AdvertisedAddress, ListenerPort};
+use crate::net::address::{AdvertisedAddress, AdvertisedHost, ListenerPort};
 use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
 use crate::net::listener::AddressBook;
 use crate::nodes_config::Role;
@@ -105,7 +105,7 @@ pub struct ListenerOptions<P: ListenerPort + 'static> {
 
     /// Hostname to advertise for this service
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(super) advertised_host: Option<String>,
+    pub(super) advertised_host: Option<AdvertisedHost>,
 
     /// Local interface IP address to listen on
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -172,9 +172,9 @@ impl<P: ListenerPort + 'static> ListenerOptions<P> {
     }
 
     pub fn advertised_address(&self, address_book: &AddressBook) -> AdvertisedAddress<P> {
-        self.advertised_address.clone().unwrap_or_else(|| {
-            address_book.guess_advertised_address(self.advertised_host.as_deref())
-        })
+        self.advertised_address
+            .clone()
+            .unwrap_or_else(|| address_book.guess_advertised_address(self.advertised_host.as_ref()))
     }
 
     /// The advertised address set in the configuration, if any.
@@ -1579,7 +1579,7 @@ mod tests {
         config.common.fabric_listener_options = ListenerOptions {
             listen_mode: Some(ListenMode::Tcp),
             bind_address: Some("127.0.0.1:0".parse().unwrap()),
-            advertised_host: Some("fabric.example.com".to_owned()),
+            advertised_host: Some("fabric.example.com".parse().unwrap()),
             ..Default::default()
         };
         let mut tls = minimal_tls_config();
@@ -1604,7 +1604,7 @@ mod tests {
         assert!(!config.dump().unwrap().contains("ctrl-"));
 
         for host in ["control.example.com", "[2001:db8::7]"] {
-            config.networking.control.ctrl_advertised_host = Some(host.to_owned());
+            config.networking.control.ctrl_advertised_host = Some(host.parse().unwrap());
             assert_eq!(
                 config.control_advertised_address(&address_book),
                 format!("https://{host}:{port}").parse().unwrap()
@@ -1675,6 +1675,42 @@ mod tests {
             config.control_advertised_address(&unix_book),
             AdvertisedAddress::new_uds(dir.path().join("fabric.sock").canonicalize().unwrap())
         );
+    }
+
+    #[test]
+    fn advertised_hosts_are_validated_at_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let load = |toml: &str| {
+            std::fs::write(&path, toml).unwrap();
+            ConfigLoaderBuilder::default()
+                .path(Some(path.clone()))
+                .build()
+                .unwrap()
+                .load_once()
+        };
+
+        // These used to panic during provisioning or join, or advertise a wrong address. Errors
+        // in flattened configuration sections carry no key path, so the message quotes the value.
+        for (section, key, value) in [
+            ("", "advertised-host", "bad host"),
+            ("[admin]", "advertised-host", "user@host"),
+            ("[networking]", "ctrl-advertised-host", "host:8443"),
+        ] {
+            let err = load(&format!("{section}\n{key} = \"{value}\"")).unwrap_err();
+            let message = err.to_string();
+            assert!(
+                message.contains(&format!("'{value}' is not a host name")),
+                "{message}"
+            );
+        }
+        let config = load("node-name = \"n1\"\nadvertised-host = \"[2001:db8::7]\"").unwrap();
+        let host = config
+            .common
+            .fabric_listener_options
+            .advertised_host
+            .unwrap();
+        assert_eq!(host.as_str(), "[2001:db8::7]");
     }
 
     #[test]
