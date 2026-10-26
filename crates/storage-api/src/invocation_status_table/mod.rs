@@ -18,7 +18,7 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures::Stream;
 
-use restate_types::blob::BaseBlobId;
+use restate_types::blob::BlobId;
 use restate_types::deployment::PinnedDeployment;
 use restate_types::errors::{InvocationError, InvocationErrorCode};
 use restate_types::identifiers::InvocationId;
@@ -799,7 +799,7 @@ pub enum CompletionStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletedResult {
-    pub blob_id: BaseBlobId,
+    pub blob_id: BlobId,
     pub status: CompletionStatus,
 }
 

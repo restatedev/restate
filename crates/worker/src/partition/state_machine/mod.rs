@@ -66,7 +66,7 @@ use restate_storage_api::vqueue_table::{EntryStatusHeader, ReadVQueueTable, Writ
 use restate_storage_api::{Result as StorageResult, journal_table};
 use restate_storage_api::{StorageError, journal_table_v2};
 use restate_tracing_instrumentation as instrumentation;
-use restate_types::blob::BaseBlobId;
+use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::errors::{
     ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
@@ -4615,7 +4615,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     fn do_free_invocation(
         &mut self,
         invocation_id: &InvocationId,
-        blob_id: Option<BaseBlobId>,
+        blob_id: Option<BlobId>,
     ) -> Result<(), Error>
     where
         S: WriteInvocationStatusTable + WriteBlobTable,

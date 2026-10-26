@@ -12,7 +12,7 @@ use std::collections::BTreeSet;
 use std::num::NonZeroU16;
 
 use bytes::{BufMut, BytesMut};
-use restate_types::blob::{BaseBlobId, BlobKind};
+use restate_types::blob::{BlobId, BlobKind};
 use restate_types::sharding::KeyRange;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
 
@@ -21,15 +21,15 @@ use crate::{Result, StorageError};
 pub trait ReadBlobTable {
     fn get_blob<D: BlobDecoder>(
         &mut self,
-        blob_id: BaseBlobId,
+        blob_id: BlobId,
     ) -> impl Future<Output = Result<Option<D::Type>>> + Send;
 }
 
 pub trait WriteBlobTable {
-    fn put_blob<B: BlobEncode>(&mut self, blob_id: BaseBlobId, blob: Blob<B>) -> Result<()>;
+    fn put_blob<B: BlobEncode>(&mut self, blob_id: BlobId, blob: Blob<B>) -> Result<()>;
 
-    fn increment_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
-    fn decrement_ref_count(&mut self, blob_id: BaseBlobId, count: u16);
+    fn increment_ref_count(&mut self, blob_id: BlobId, count: u16);
+    fn decrement_ref_count(&mut self, blob_id: BlobId, count: u16);
 }
 
 #[derive(Debug)]
@@ -150,7 +150,7 @@ impl BlobDecoder for RawParts {
 /// A raw blob as stored, returned by [`ScanBlobTable`].
 #[derive(Debug, Clone, Copy)]
 pub struct BlobEntry<'a> {
-    pub id: BaseBlobId,
+    pub id: BlobId,
     pub kind: BlobKind,
     pub ref_count: u16,
     pub payload: &'a [u8],
@@ -159,7 +159,7 @@ pub struct BlobEntry<'a> {
 #[derive(Debug, Clone)]
 pub enum ScanBlobTableRange {
     PartitionKey(KeyRange),
-    BlobIdSet(BTreeSet<BaseBlobId>),
+    BlobIdSet(BTreeSet<BlobId>),
 }
 
 pub trait ScanBlobTable {

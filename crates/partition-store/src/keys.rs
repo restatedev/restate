@@ -660,7 +660,7 @@ pub(crate) use define_table_key;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::timer_table::TimerKeyKind;
-use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{InvocationUuid, ResourceId};
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
 pub(crate) trait KeyEncode {
@@ -1172,7 +1172,7 @@ impl KeyDecode for BlobId {
             .split_first_chunk::<{ BlobId::RAW_BYTES_LEN }>()
             .ok_or(StorageError::DataIntegrityError)?;
         *source = rest;
-        Ok(BlobId::from_bytes(*bytes))
+        BlobId::from_slice(bytes).map_err(|_| StorageError::DataIntegrityError)
     }
 }
 

@@ -21,7 +21,7 @@ use googletest::prelude::{assert_that, eq};
 
 use restate_storage_api::Transaction;
 use restate_storage_api::blob_table::{BlobBuilder, WriteBlobTable};
-use restate_types::blob::{BaseBlobId, BlobId, BlobKind};
+use restate_types::blob::{BlobId, BlobKind};
 use restate_types::errors::{InvocationError, codes};
 use restate_types::identifiers::{InvocationId, WithPartitionKey};
 use restate_types::invocation::ResponseResult;
@@ -47,12 +47,9 @@ async fn get_blobs() {
     let mut engine = MockQueryEngine::create().await;
 
     let invocation_id = InvocationId::mock_random();
-    let success_id = BaseBlobId::generate_output_blob_id(&invocation_id, Seq::new(1));
-    let failure_id = BaseBlobId::generate_output_blob_id(&invocation_id, Seq::new(2));
-    let state_id = BaseBlobId::new(
-        invocation_id.partition_key(),
-        BlobId::new(Seq::new(3), [7; 16]),
-    );
+    let success_id = BlobId::generate_output_blob_id(&invocation_id, Seq::new(1));
+    let failure_id = BlobId::generate_output_blob_id(&invocation_id, Seq::new(2));
+    let state_id = BlobId::new(invocation_id.partition_key(), Seq::new(3), [7; 16]);
     let failure = InvocationError::new(codes::INTERNAL, "my-error");
     let output = b"{\"greeting\":\"hi\"}";
 
@@ -139,7 +136,7 @@ async fn get_blobs() {
 
     // Exercises the blob id pushdown, which multi-gets the requested ids instead of
     // scanning the whole partition. Ids without a stored blob are skipped.
-    let missing_id = BaseBlobId::generate_output_blob_id(&invocation_id, Seq::new(4));
+    let missing_id = BlobId::generate_output_blob_id(&invocation_id, Seq::new(4));
     let records = query(
         &engine,
         &format!("SELECT id, result FROM sys_blob WHERE id IN ('{success_id}', '{missing_id}')"),

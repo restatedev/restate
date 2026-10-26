@@ -36,7 +36,7 @@ use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{
     self, EntryStatusHeader, ReadVQueueTable, WriteVQueueTable,
 };
-use restate_types::blob::{BaseBlobId, BlobKind};
+use restate_types::blob::{BlobId, BlobKind};
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
 use restate_types::invocation::ResponseResult;
@@ -315,10 +315,10 @@ where
 
                 if let Some(initial_ref_count) = NonZeroU16::new(initial_ref_count) {
                     // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
-                    // invocation journal. this change is not breaking because we store the BaseBlobId of the
+                    // invocation journal. this change is not breaking because we store the BlobId of the
                     // output blob on the invocation status as long as it's coordinated with a partition feature.
                     let blob_id =
-                        BaseBlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
+                        BlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
                     ctx.storage.put_blob(
                         blob_id,
                         BlobBuilder::default()

@@ -25,7 +25,7 @@ use strum::EnumCount;
 
 use restate_storage_api::vqueue_table::Stage;
 use restate_types::PartitionedResourceId;
-use restate_types::blob::BaseBlobId;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::partitioner::HashPartitioner;
 use restate_types::identifiers::{
     BaseEntryId, CanonicalEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
@@ -220,7 +220,7 @@ impl FirstMatchingPartitionKeyExtractor {
                     .try_as_str()
                     .context("expected string blob id")?
                     .context("unexpected null blob id")?;
-                let blob_id = BaseBlobId::from_str(value).context("non valid blob id")?;
+                let blob_id = BlobId::from_str(value).context("non valid blob id")?;
                 Ok(blob_id.partition_key())
             }),
             PointReadFanout::PerPartition,
@@ -680,7 +680,7 @@ fn parse_vqueue_entry_id_selection(
 #[derive(Debug, Clone)]
 pub struct BlobIdFilter {
     pub partition_keys: KeyRange,
-    pub blob_ids: Option<IdSelection<BaseBlobId>>,
+    pub blob_ids: Option<IdSelection<BlobId>>,
 }
 
 impl ScanLocalPartitionFilter for BlobIdFilter {
@@ -690,7 +690,7 @@ impl ScanLocalPartitionFilter for BlobIdFilter {
         {
             for conjunct in split_conjunction(&predicate) {
                 if let Some(blob_ids) =
-                    parse_id_selection("id", range, conjunct, |id: &BaseBlobId| id.partition_key())
+                    parse_id_selection("id", range, conjunct, |id: &BlobId| id.partition_key())
                 {
                     return Self {
                         partition_keys: range,
