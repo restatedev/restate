@@ -193,6 +193,8 @@ impl<'a> NodeInit<'a> {
             TaskCenter::with_current(|tc| common.advertised_address(tc.address_book()));
         let my_ctrl_address =
             TaskCenter::with_current(|tc| config.control_advertised_address(tc.address_book()));
+        let my_addresses = config.advertised_addresses();
+        let my_ctrl_addresses = config.control_advertised_addresses();
 
         metadata_store_client
             .read_modify_write::<NodesConfiguration, _, _>(
@@ -275,7 +277,9 @@ impl<'a> NodeInit<'a> {
                         // update node_config
                         node_config.roles = common.roles;
                         node_config.address = my_advertised_address.clone();
+                        node_config.addresses.clone_from(&my_addresses);
                         node_config.ctrl_address = Some(my_ctrl_address.clone());
+                        node_config.ctrl_addresses.clone_from(&my_ctrl_addresses);
                         node_config.current_generation.bump_generation();
                         node_config.binary_version = Some(RestateVersion::current());
 
@@ -306,7 +310,9 @@ impl<'a> NodeInit<'a> {
                             .current_generation(my_node_id)
                             .location(common.location().clone())
                             .address(my_advertised_address.clone())
+                            .addresses(my_addresses.clone())
                             .ctrl_address(Some(my_ctrl_address.clone()))
+                            .ctrl_addresses(my_ctrl_addresses.clone())
                             .roles(common.roles)
                             .metadata_server_config(MetadataServerConfig {
                                 metadata_server_state,
@@ -345,7 +351,7 @@ mod tests {
     use crate::init::NodeInit;
 
     #[test_log::test(restate_core::test)]
-    async fn control_address_is_published_and_refreshed_on_join() {
+    async fn advertisements_are_published_and_refreshed_on_join() {
         let mut config = Configuration::new_unix_sockets();
         config.common.set_node_name("control-publication");
         set_current_config(config.clone());
@@ -355,10 +361,38 @@ mod tests {
         let expected_control = config.control_advertised_address(&address_book);
         assert!(TaskCenter::try_set_address_book(address_book));
 
+        // The same node with a control override and addresses for callers in two locations.
+        let mut overridden = serde_json::to_value(&config).unwrap();
+        overridden["ctrl-advertised-address"] =
+            serde_json::json!("https://control.example.com:8443");
+        overridden["advertised-addresses"] = serde_json::json!([
+            "us-east1.az1@http://10.1.7.3:5122",
+            "us-east1@https://node-7.us-east1.internal",
+        ]);
+        let overridden: Configuration = serde_json::from_value(overridden).unwrap();
+        let lists = (
+            overridden.advertised_addresses(),
+            overridden.control_advertised_addresses(),
+        );
+        assert_eq!(lists.0.len(), 2);
+        // Without a control list, control inherits the fabric list.
+        assert_eq!(lists.1.len(), 2);
+
+        // Provisioning publishes what is configured, lists included.
         let initial = crate::create_initial_nodes_configuration(&config, EnumSet::empty());
         let provisioned = initial.find_node_by_name(config.node_name()).unwrap();
         assert_eq!(provisioned.address, fabric);
         assert_eq!(provisioned.ctrl_address.as_ref(), Some(&expected_control));
+        assert!(provisioned.addresses.is_empty() && provisioned.ctrl_addresses.is_empty());
+        let initial = crate::create_initial_nodes_configuration(&overridden, EnumSet::empty());
+        let provisioned = initial.find_node_by_name(config.node_name()).unwrap();
+        assert_eq!(
+            (
+                provisioned.addresses.clone(),
+                provisioned.ctrl_addresses.clone()
+            ),
+            lists
+        );
 
         let store = MetadataStoreClient::new_in_memory();
         let empty = NodesConfiguration::new(
@@ -376,11 +410,9 @@ mod tests {
             .unwrap()
             .clone();
         assert_eq!(first.ctrl_address.as_ref(), Some(&expected_control));
+        assert!(first.addresses.is_empty() && first.ctrl_addresses.is_empty());
 
-        let mut overridden = serde_json::to_value(&config).unwrap();
-        overridden["ctrl-advertised-address"] =
-            serde_json::json!("https://control.example.com:8443");
-        let overridden: Configuration = serde_json::from_value(overridden).unwrap();
+        // A restart with new settings replaces every advertisement in the generation bump.
         let restarted = NodeInit::join_cluster_inner(&store, &overridden)
             .await
             .unwrap();
@@ -390,17 +422,19 @@ mod tests {
             node.ctrl_address,
             Some("https://control.example.com:8443".parse().unwrap())
         );
+        assert_eq!((node.addresses.clone(), node.ctrl_addresses.clone()), lists);
         assert!(
             node.current_generation
                 .is_newer_than(first.current_generation)
         );
         assert_eq!(node.log_server_config, first.log_server_config);
 
-        // Removing an override must replace the old advertisement on the next join.
+        // Removing the settings must replace the old advertisements on the next join.
         let reset = NodeInit::join_cluster_inner(&store, &config).await.unwrap();
         let node = reset.find_node_by_name(config.node_name()).unwrap();
         assert_eq!(node.address, fabric);
         assert_eq!(node.ctrl_address.as_ref(), Some(&expected_control));
+        assert!(node.addresses.is_empty() && node.ctrl_addresses.is_empty());
     }
 
     #[test_log::test(restate_core::test)]
