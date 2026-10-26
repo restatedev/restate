@@ -96,7 +96,7 @@ impl SharedState {
             return cell;
         }
 
-        cell.open_cf(&mut state_guard, database);
+        cell.open_cf(&mut state_guard, database).await;
 
         drop(state_guard);
         cell
@@ -260,7 +260,7 @@ impl PartitionStoreManager {
 
         let mut state_guard = cell.inner.write().await;
 
-        if let Some(db) = state_guard.get_or_reopen() {
+        if let Some(db) = state_guard.get_or_reopen().await {
             // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
             let mut partition_store = PartitionStore::from(db);
             match target_lsn {
@@ -347,14 +347,14 @@ impl PartitionStoreManager {
         }
     }
 
-    /// Closes a partition store for the given partition
+    /// Seals transaction-commit admission and waits for admitted commits to finish.
+    /// Retained handles stay sealed even after a later reopen.
     pub async fn close(&self, partition_id: PartitionId) {
         let Some(cell) = self.state.get(partition_id) else {
             return;
         };
 
-        cell.inner.write().await.close();
-        debug!("Closed partition db for partition {}", partition_id);
+        cell.inner.write().await.close().await;
     }
 
     pub async fn export_partition(
@@ -453,9 +453,10 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
-    use restate_rocksdb::RocksDbManager;
-    use restate_storage_api::Transaction;
+    use restate_rocksdb::{Priority, RocksDbManager};
     use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
+    use restate_storage_api::{StorageError, Transaction};
+    use restate_types::config::Configuration;
     use restate_types::identifiers::{PartitionId, SnapshotId};
     use restate_types::logs::{Lsn, SequenceNumber};
     use restate_types::partitions::Partition;
@@ -464,11 +465,184 @@ mod tests {
     use super::PartitionStoreManager;
     use crate::PartitionStore;
     use crate::keys::KeyKind;
+    use crate::partition_db::State;
 
     async fn write_applied_lsn(store: &mut PartitionStore, lsn: u64) -> anyhow::Result<()> {
         let mut tx = store.transaction();
         tx.put_applied_lsn(Lsn::new(lsn))?;
         tx.commit().await?;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn cancelled_commits_close_and_reopen_keep_the_old_lifetime_sealed() -> anyhow::Result<()>
+    {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let mut config = Configuration::pinned().clone();
+        config.worker.storage.always_commit_in_background = true;
+        Configuration::set(config);
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut old = manager.open(&partition, None).await?;
+            let sibling_store = manager.open(&sibling, None).await?;
+            let cell = manager.state.get(partition.partition_id).unwrap();
+            let admission = old.partition_db().admission().clone();
+            let original_cf = old.cf_for_key_kind(KeyKind::Fsm).id();
+            let pause = rocksdb.pause_background(Priority::High).await;
+            let mut tx = old.transaction();
+            tx.put_applied_lsn(Lsn::new(100))?;
+            let mut commit = Box::pin(tx.commit());
+            assert!(
+                commit
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(commit);
+            drop(tx);
+
+            let mut close = Box::pin(manager.close(partition.partition_id));
+            assert!(
+                close
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(close);
+            let closing_at = {
+                let state = cell.inner.read().await;
+                let State::Closing { closing_at, .. } = &*state else {
+                    panic!("cancelled close must retain Closing state");
+                };
+                assert!(state.closed_since().is_none());
+                assert!(state.maybe_open());
+                assert!(Arc::ptr_eq(state.db().unwrap().admission(), &admission));
+                *closing_at
+            };
+            assert!(admission.try_acquire().is_none());
+            assert!(
+                manager
+                    .get_partition_store(partition.partition_id)
+                    .await
+                    .is_none()
+            );
+            assert!(
+                sibling_store
+                    .partition_db()
+                    .admission()
+                    .try_acquire()
+                    .is_some()
+            );
+
+            let mut rejected = old.transaction();
+            rejected.put_applied_lsn(Lsn::new(200))?;
+            let buffered_size = rejected.estimated_size_in_bytes();
+            assert!(matches!(
+                rejected.commit().await,
+                Err(StorageError::OperationalError)
+            ));
+            assert_eq!(rejected.estimated_size_in_bytes(), buffered_size);
+
+            let mut reopen = Box::pin(manager.open(&partition, None));
+            assert!(
+                reopen
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(reopen);
+            // A cancelled replacement must also leave the old accounting reachable.
+            let mut replace = Box::pin(manager.drop_partition(partition.partition_id));
+            assert!(
+                replace
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(replace);
+            assert!(matches!(
+                *cell.inner.read().await,
+                State::Closing { closing_at: started_at, .. } if started_at == closing_at
+            ));
+            assert!(
+                pin!(admission.drain())
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+
+            drop(pause);
+            let mut reopened = timeout(DEADLINE, manager.open(&partition, None)).await??;
+            assert_eq!(reopened.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
+            assert_eq!(reopened.get_applied_lsn().await?, Some(Lsn::new(100)));
+            assert!(!Arc::ptr_eq(
+                &admission,
+                reopened.partition_db().admission()
+            ));
+            assert!(matches!(
+                rejected.commit().await,
+                Err(StorageError::OperationalError)
+            ));
+            assert_eq!(rejected.estimated_size_in_bytes(), buffered_size);
+            rejected.clear();
+            rejected.commit().await?; // Empty commits remain a no-op on a sealed handle.
+            drop(rejected);
+            write_applied_lsn(&mut reopened, 300).await?;
+
+            timeout(DEADLINE, manager.close(partition.partition_id)).await?;
+            {
+                let state = cell.inner.read().await;
+                assert!(matches!(*state, State::Closed { .. }));
+                assert!(state.closed_since().is_some());
+            }
+            manager.close(partition.partition_id).await;
+            reopened = manager.open(&partition, None).await?;
+
+            // Complete an actual replacement behind a cancelled commit waiter.
+            let pause = rocksdb.pause_background(Priority::High).await;
+            let mut tx = reopened.transaction();
+            tx.put_applied_lsn(Lsn::new(400))?;
+            let mut commit = Box::pin(tx.commit());
+            assert!(
+                commit
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(commit);
+            drop(tx);
+            let mut replace = Box::pin(manager.drop_partition(partition.partition_id));
+            assert!(
+                replace
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(pause);
+            timeout(DEADLINE, replace).await??;
+            let mut fresh = manager.open(&partition, None).await?;
+            assert_ne!(fresh.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
+            assert_eq!(fresh.get_applied_lsn().await?, None);
+            let mut rejected = reopened.transaction();
+            rejected.put_applied_lsn(Lsn::new(500))?;
+            assert!(matches!(
+                rejected.commit().await,
+                Err(StorageError::OperationalError)
+            ));
+            drop(rejected);
+            write_applied_lsn(&mut fresh, 600).await?;
+
+            drop(old);
+            drop(reopened);
+            drop(fresh);
+            drop(sibling_store);
+            drop(cell);
+            drop(manager);
+            rocksdb.reset().await?;
+        }
         Ok(())
     }
 
