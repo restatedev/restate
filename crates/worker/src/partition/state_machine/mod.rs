@@ -450,6 +450,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             | CommandKind::UpsertRuleBook
             | CommandKind::UpsertSchema
             | CommandKind::TruncateOutbox
+            | CommandKind::ReleaseOutboxBlobs
             | CommandKind::VersionBarrier => {
                 panic!(
                     "Partition-wide commands must be processed by the processor's apply_partition_command path"

@@ -10,19 +10,21 @@
 
 use std::future::Future;
 
+use anyhow::Context;
 use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, gauge};
-use restate_types::blob::BaseBlobId;
-use restate_types::invocation::ResponseResult;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tracing::debug;
 
 use restate_core::cancellation_token;
 use restate_core::network::TransportConnect;
 use restate_ingestion_client::IngestionClient;
 use restate_storage_api::outbox_table::OutboxMessage;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::PartitionId;
+use restate_types::invocation::ResponseResult;
 use restate_types::message::MessageIndex;
+use restate_wal_protocol::v2::commands::OutboxBlobRelease;
 use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::metric_definitions::{
@@ -71,7 +73,7 @@ pub(crate) trait OutboxReader {
 
     fn get_response_result(
         &mut self,
-        blob: BaseBlobId,
+        blob: BlobId,
     ) -> impl Future<Output = Result<Option<ResponseResult>, OutboxReaderError>> + Send;
 }
 
@@ -139,6 +141,8 @@ pub(crate) struct Shuffle<T, OR> {
     ingestion_client: IngestionClient<T, Envelope<Raw>>,
     // used to tell partition processor about outbox truncations
     truncation_tx: watch::Sender<Option<OutboxTruncation>>,
+    // used to tell partition processor about blob references of shuffled outbox messages
+    release_tx: mpsc::Sender<OutboxBlobRelease>,
     hint_rx: async_channel::Receiver<NewOutboxMessage>,
     // used to create the senders into the shuffle
     hint_tx: async_channel::Sender<NewOutboxMessage>,
@@ -153,6 +157,7 @@ where
         metadata: ShuffleMetadata,
         outbox_reader: OR,
         truncation_tx: watch::Sender<Option<OutboxTruncation>>,
+        release_tx: mpsc::Sender<OutboxBlobRelease>,
         channel_size: usize,
         ingestion_client: IngestionClient<T, Envelope<Raw>>,
     ) -> Self {
@@ -162,6 +167,7 @@ where
             metadata,
             outbox_reader,
             truncation_tx,
+            release_tx,
             hint_rx,
             hint_tx,
             ingestion_client,
@@ -192,6 +198,7 @@ where
             hint_rx,
             outbox_reader,
             truncation_tx,
+            release_tx,
             ingestion_client,
             ..
         } = self;
@@ -225,6 +232,15 @@ where
                     let (new_message_index, blob_id) = committed?;
                     _ = inflight.pop_front();
                     ingested_counter.increment(1);
+
+                    // The remote partition has the response now, release our blob reference
+                    if let Some(blob) = blob_id {
+                        release_tx
+                            .send(OutboxBlobRelease { index: new_message_index, blob })
+                            .await
+                            .context("blob release receiver dropped")?;
+                    }
+
                     let _ = truncation_tx.send_if_modified(|current| {
                         if current.as_ref().is_none_or(|idx| new_message_index > idx.0) {
                             *current = Some(OutboxTruncation::new(new_message_index));
@@ -249,7 +265,7 @@ mod state_machine {
     use restate_ingestion_client::{IngestFuture, Ingestion, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::{
-        blob::BaseBlobId,
+        blob::BlobId,
         errors::GONE_INVOCATION_ERROR,
         identifiers::WithPartitionKey,
         invocation,
@@ -299,7 +315,7 @@ mod state_machine {
             // associated blob id with the ingested message
             // that need to be deleted after the message
             // has been ingested by remote partition
-            blob_id: Option<BaseBlobId>,
+            blob_id: Option<BlobId>,
         },
     }
 
@@ -337,7 +353,7 @@ mod state_machine {
 
         pub async fn shuffle_next_message(
             &mut self,
-        ) -> anyhow::Result<RecordCommit<(u64, Option<BaseBlobId>)>> {
+        ) -> anyhow::Result<RecordCommit<(u64, Option<BlobId>)>> {
             loop {
                 match &mut self.state {
                     State::Idle => {
@@ -389,7 +405,7 @@ mod state_machine {
                         blob_id,
                     } => {
                         let sn = *sn;
-                        let commit_token = ingest.await?.map(|_| (sn, blob_id.clone()));
+                        let commit_token = ingest.await?.map(|_| (sn, *blob_id));
 
                         // read next message
                         self.next_sequence_number = sn + 1;
@@ -444,7 +460,7 @@ mod state_machine {
         message: OutboxMessage,
         seq_number: MessageIndex,
         shuffle_metadata: &ShuffleMetadata,
-    ) -> anyhow::Result<(Envelope<Raw>, Option<BaseBlobId>)> {
+    ) -> anyhow::Result<(Envelope<Raw>, Option<BlobId>)> {
         let dedup = create_dedup(seq_number, shuffle_metadata);
 
         let envelope = match message {
@@ -547,6 +563,7 @@ mod ingestion_client_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use anyhow::{Context, anyhow};
+    use bytes::Bytes;
     use futures::StreamExt;
     use restate_core::partitions::PartitionRouting;
     use restate_ingestion_client::{IngestionClient, SessionOptions};
@@ -555,10 +572,13 @@ mod ingestion_client_tests {
     use restate_types::net::partition_processor::PartitionLeaderService;
     use restate_types::partitions::state::{LeadershipState, PartitionReplicaSetStates};
     use restate_types::storage::StorageCodec;
-    use restate_wal_protocol::v2::commands::InvokeCommand;
+    use restate_wal_protocol::v2::commands::{
+        InvocationResponseCommand, InvokeCommand, OutboxBlobRelease,
+    };
+    use restate_wal_protocol::v2::outbox::{InvocationResponseFromBlobCommand, OutboxMessage as _};
     use restate_wal_protocol::v2::{CommandKind, Envelope, Raw};
     use test_log::test;
-    use tokio::sync::watch;
+    use tokio::sync::{mpsc, watch};
 
     use restate_core::network::{
         BackPressureMode, FailingConnector, ServiceMessage, ServiceStream,
@@ -568,8 +588,9 @@ mod ingestion_client_tests {
     use restate_storage_api::StorageError;
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::Version;
+    use restate_types::blob::BlobId;
     use restate_types::identifiers::{InvocationId, LeaderEpoch, PartitionId};
-    use restate_types::invocation::ServiceInvocation;
+    use restate_types::invocation::{JournalCompletionTarget, ResponseResult, ServiceInvocation};
     use restate_types::message::MessageIndex;
     use restate_types::partition_table::PartitionTable;
 
@@ -628,7 +649,7 @@ mod ingestion_client_tests {
         }
         async fn get_response_result(
             &mut self,
-            _blob: restate_types::blob::BaseBlobId,
+            _blob: restate_types::blob::BlobId,
         ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
             unimplemented!()
         }
@@ -687,9 +708,33 @@ mod ingestion_client_tests {
 
         async fn get_response_result(
             &mut self,
-            _blob: restate_types::blob::BaseBlobId,
+            _blob: restate_types::blob::BlobId,
         ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
             unimplemented!();
+        }
+    }
+
+    /// Outbox reader serving a single [`InvocationResponseFromBlobCommand`] at `index`.
+    struct BlobOutboxReader {
+        index: MessageIndex,
+        command: InvocationResponseFromBlobCommand,
+    }
+
+    impl OutboxReader for BlobOutboxReader {
+        async fn get_next_message(
+            &mut self,
+            next_sequence_number: MessageIndex,
+        ) -> Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError> {
+            Ok((next_sequence_number <= self.index)
+                .then(|| (self.index, self.command.clone().into_outbox_message())))
+        }
+
+        async fn get_response_result(
+            &mut self,
+            blob: BlobId,
+        ) -> Result<Option<ResponseResult>, OutboxReaderError> {
+            assert_eq!(blob, self.command.blob);
+            Ok(Some(ResponseResult::Success(Bytes::from_static(b"result"))))
         }
     }
 
@@ -756,6 +801,7 @@ mod ingestion_client_tests {
         env: TestCoreEnv<FailingConnector>,
         stream: ServiceStream<PartitionLeaderService>,
         ingestion: IngestionClient<FailingConnector, Envelope<Raw>>,
+        release_rx: mpsc::Receiver<OutboxBlobRelease>,
         shuffle: Shuffle<FailingConnector, OR>,
     }
 
@@ -796,13 +842,22 @@ mod ingestion_client_tests {
         );
 
         let (truncation_tx, _truncation_rx) = watch::channel(None);
+        let (release_tx, release_rx) = mpsc::channel(16);
 
-        let shuffle = Shuffle::new(metadata, outbox_reader, truncation_tx, 1, ingestion.clone());
+        let shuffle = Shuffle::new(
+            metadata,
+            outbox_reader,
+            truncation_tx,
+            release_tx,
+            1,
+            ingestion.clone(),
+        );
 
         ShuffleEnv {
             env,
             stream,
             ingestion,
+            release_rx,
             shuffle,
         }
     }
@@ -889,6 +944,7 @@ mod ingestion_client_tests {
                 let mut shuffle = shuffle_env.shuffle;
                 let metadata = shuffle.metadata;
                 let truncation_tx = shuffle.truncation_tx.clone();
+                let release_tx = shuffle.release_tx.clone();
                 let mut processed_range = 0;
                 let mut num_restarts = 0;
 
@@ -914,6 +970,7 @@ mod ingestion_client_tests {
                         metadata,
                         Arc::clone(&outbox_reader),
                         truncation_tx.clone(),
+                        release_tx.clone(),
                         1,
                         shuffle_env.ingestion.clone(),
                     );
@@ -939,6 +996,46 @@ mod ingestion_client_tests {
         assert!(
             total_restarts.load(Ordering::Relaxed) > 0,
             "expecting the shuffle to be restarted a couple of times"
+        );
+
+        Ok(())
+    }
+    #[test(restate_core::test)]
+    async fn shuffle_releases_blob_after_ingestion() -> anyhow::Result<()> {
+        let caller_id = InvocationId::mock_random();
+        let command = InvocationResponseFromBlobCommand {
+            target: JournalCompletionTarget::for_v3_completions(caller_id, 1),
+            blob: BlobId::generate_output_blob_id(
+                &InvocationId::mock_random(),
+                restate_types::vqueues::Seq::new(1),
+            ),
+        };
+        let blob = command.blob;
+        let mut shuffle_env = create_shuffle_env(BlobOutboxReader { index: 7, command }).await;
+
+        TaskCenter::spawn_child(TaskKind::Shuffle, "shuffle", shuffle_env.shuffle.run())?;
+
+        let Some(ServiceMessage::Rpc(incoming)) = shuffle_env.stream.next().await else {
+            panic!("expected ingest request");
+        };
+        let (reciprocal, mut body) = incoming.into_typed::<ReceivedIngestRequest>().split();
+        let envelope = StorageCodec::decode::<Envelope<Raw>, _>(&mut body.records[0].record)?;
+        assert_eq!(envelope.kind(), CommandKind::InvocationResponse);
+        let response: Envelope<InvocationResponseCommand> = envelope.into_typed();
+        let response = response.into_inner()?;
+        assert_eq!(response.target.caller_id, caller_id);
+        assert_eq!(
+            response.result,
+            ResponseResult::Success(Bytes::from_static(b"result"))
+        );
+
+        // The blob must not be released before the remote partition acknowledged the response
+        assert!(shuffle_env.release_rx.try_recv().is_err());
+        reciprocal.send(ResponseStatus::Ack.into());
+
+        assert_eq!(
+            shuffle_env.release_rx.recv().await,
+            Some(OutboxBlobRelease { index: 7, blob })
         );
 
         Ok(())
