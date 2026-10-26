@@ -23,6 +23,7 @@ use crate::locality::NodeLocation;
 use crate::metadata::GlobalMetadata;
 use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort, ListenerPort};
 use crate::net::metadata::{MetadataContainer, MetadataKind};
+use crate::net::selection::{select, select_entry};
 use crate::{
     GenerationalNodeId, NodeId, PlainNodeId, RestateVersion, SemanticRestateVersion, base62_util,
     flexbuffers_storage_encode_decode,
@@ -352,6 +353,30 @@ impl NodeConfig {
             Some(addr) => Cow::Borrowed(addr),
             None => Cow::Owned(self.address.clone().coerce()),
         }
+    }
+
+    /// The fabric address a caller at `caller` dials: the first entry of `addresses` that is
+    /// `usable` at the closest scope of the caller's location, else `address`. See
+    /// [`crate::net::selection`].
+    pub fn address_for(
+        &self,
+        caller: &NodeLocation,
+        usable: impl Fn(&AdvertisedAddress<FabricPort>) -> bool,
+    ) -> &AdvertisedAddress<FabricPort> {
+        select(caller, &self.address, &self.addresses, usable)
+    }
+
+    /// The control address a caller at `caller` dials: the first entry of `ctrl_addresses` that is
+    /// `usable` at the closest scope of the caller's location, else [`Self::ctrl_address`]. See
+    /// [`crate::net::selection`].
+    pub fn ctrl_address_for(
+        &self,
+        caller: &NodeLocation,
+        usable: impl Fn(&AdvertisedAddress<ControlPort>) -> bool,
+    ) -> Cow<'_, AdvertisedAddress<ControlPort>> {
+        select_entry(caller, &self.ctrl_addresses, usable)
+            .map(Cow::Borrowed)
+            .unwrap_or_else(|| self.ctrl_address())
     }
 }
 

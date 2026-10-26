@@ -20,6 +20,7 @@ pub mod partition_processor;
 pub mod partition_processor_manager;
 pub mod remote_query_scanner;
 pub mod replicated_loglet;
+pub mod selection;
 
 pub use crate::protobuf::common::ProtocolVersion;
 pub use crate::protobuf::common::ServiceTag;
