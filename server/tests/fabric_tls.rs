@@ -262,21 +262,22 @@ async fn fabric_tls_modes() -> googletest::Result<()> {
     let ca_cert = generate_ca();
     install_test_tls_client(tls_dir.path(), &ca_cert);
 
-    verify_tls_mode(
+    // Boxed: each future holds a `Configuration` and exceeds clippy's large-future threshold.
+    Box::pin(verify_tls_mode(
         tls_dir.path(),
         &ca_cert,
         TlsMode::Require,
         "fabric_tls_require",
         false,
-    )
+    ))
     .await?;
-    verify_tls_mode(
+    Box::pin(verify_tls_mode(
         tls_dir.path(),
         &ca_cert,
         TlsMode::Prefer,
         "fabric_tls_prefer",
         true,
-    )
+    ))
     .await?;
     Ok(())
 }
