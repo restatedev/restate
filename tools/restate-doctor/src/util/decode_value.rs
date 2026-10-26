@@ -17,9 +17,11 @@ use bilrost::OwnedMessage;
 
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionSeal;
+use restate_partition_store::blob_table::BlobHeader;
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
+use restate_storage_api::blob_table::Header;
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
 use restate_storage_api::inbox_table::InboxEntry;
@@ -338,9 +340,18 @@ fn decode_blob(value: &[u8]) -> DecodedValue {
         return DecodedValue::empty();
     }
 
-    // todo(azmy): extend the DecodedValue to hold a Blob type
-    // that has information about Kind and RefCount
-    DecodedValue::raw_bytes(value.len())
+    match BlobHeader::decode(value) {
+        Ok((header, value)) => DecodedValue::decoded(
+            None,
+            value.len(),
+            format!(
+                "Blob(Kind: {}, RefCount: {})",
+                header.kind(),
+                header.ref_count()
+            ),
+        ),
+        Err(err) => DecodedValue::error(None, value.len(), format!("Blob error: {err}")),
+    }
 }
 
 /// Decode a protobuf value using PartitionStoreProtobufValue trait
