@@ -591,3 +591,34 @@ impl<R> Future for RandomAddressResolverFuture<R> {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use restate_types::net::address::AdvertisedHost;
+
+    use super::*;
+
+    /// `AdvertisedHost` copies the DNS name rule from rustls so that every host it accepts is a
+    /// TLS server name. Check that agreement in both directions.
+    #[test]
+    fn advertised_hosts_are_tls_server_names() {
+        let server_name =
+            |host: &str| tls_server_name(&format!("https://{host}:5122").parse::<Uri>().unwrap());
+        for host in [
+            "node-7.example.com",
+            "node_1",
+            "host.",
+            "10.1.7.3",
+            "[2001:db8::7]",
+        ] {
+            host.parse::<AdvertisedHost>()
+                .unwrap_or_else(|err| panic!("{host}: {err}"));
+            server_name(host).unwrap_or_else(|err| panic!("{host}: {err}"));
+        }
+        // Valid URI hosts that are neither DNS names nor IP addresses.
+        for host in ["[gggg::1]", "bad$name", "a-.b", "host.123", &"a".repeat(64)] {
+            assert!(host.parse::<AdvertisedHost>().is_err(), "{host}");
+            assert!(server_name(host).is_err(), "{host}");
+        }
+    }
+}
