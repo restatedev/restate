@@ -88,7 +88,9 @@ fn create_channel<P: ListenerPort + GrpcPort>(
     _swimlane: Swimlane,
     options: &NetworkingOptions,
 ) -> Result<Channel, ConnectError> {
-    let address = address.into_address().expect("valid address");
+    let address = address
+        .into_address()
+        .map_err(|err| ConnectError::Transport(format!("cannot dial peer address: {err}")))?;
 
     let endpoint = match &address {
         PeerNetAddress::Uds(_) => {
