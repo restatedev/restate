@@ -27,6 +27,7 @@ use crate::vqueues::Seq;
     PartialEq,
     PartialOrd,
     Ord,
+    strum::Display,
     zerocopy::Immutable,
     zerocopy::KnownLayout,
     zerocopy::IntoBytes,
