@@ -9,13 +9,13 @@
 // by the Apache License, Version 2.0.
 
 use std::num::NonZeroUsize;
-use std::time::Instant;
 
 use bytes::BytesMut;
 use futures::FutureExt;
 use pin_project::pin_project;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 use tracing::{trace, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskHandle, cancellation_token};
@@ -568,7 +568,8 @@ impl<T: StorageEncode> LogSender<T> {
 /// What a [`CommitToken`] resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Committed {
-    /// The LSN of the last record preceding the token, including its own record if any.
+    /// The LSN of the last record this appender committed before the token, including the
+    /// token's own record if any. [`Lsn::INVALID`] if this appender hasn't committed anything yet.
     pub lsn: Lsn,
     /// When that append completed.
     pub at: Instant,
