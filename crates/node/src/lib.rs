@@ -67,6 +67,7 @@ use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::common::{
     AdminStatus, IngressStatus, LogServerStatus, NodeRpcStatus, WorkerStatus,
 };
+use restate_types::schema::Schema;
 use restate_types::{GenerationalNodeId, RestateVersion, Version, Versioned};
 
 use self::failure_detector::FailureDetector;
@@ -828,6 +829,15 @@ async fn provision_cluster_metadata(
     })
     .await
     .context("failed provisioning the initial partition table")?;
+
+    // An explicit empty schema lets nodes tell "no services registered" apart from
+    // "schema not loaded yet".
+    let initial_schema = Arc::new(Schema::initial());
+    retry_on_retryable_error(common_opts.network_error_retry_policy.clone(), || {
+        write_initial_value_dont_fail_if_it_exists(metadata_writer, Arc::clone(&initial_schema))
+    })
+    .await
+    .context("failed provisioning the initial schema")?;
 
     Ok(result)
 }

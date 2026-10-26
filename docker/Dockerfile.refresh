@@ -16,12 +16,22 @@
 #     --build-arg SOURCE_IMAGE=ghcr.io/restatedev/restate:1.6.0 \
 #     --build-arg BASE_IMAGE=debian:trixie-slim \
 #     -f docker/Dockerfile.refresh .
+#
+# For the restate-cli image, add `--target restate-cli` and use
+# SOURCE_IMAGE=ghcr.io/restatedev/restate-cli:<version> and BASE_IMAGE=alpine.
 
 ARG SOURCE_IMAGE
 ARG BASE_IMAGE
 
 FROM ${SOURCE_IMAGE} AS source
 
+# Mirrors the image built in .github/workflows/docker-push-release.yml
+FROM ${BASE_IMAGE} AS restate-cli
+COPY --from=source /usr/local/bin/restate /usr/local/bin/restate
+COPY --from=source /usr/local/bin/restatectl /usr/local/bin/restatectl
+ENTRYPOINT [ "restate" ]
+
+# Last stage, so it remains the default target
 FROM ${BASE_IMAGE} AS runtime
 # jq and curl are useful for health checks. ca-certificates is the OS trust store for rustls, librdkafka
 # and curl; install it here rather than copying /etc/ssl from another image, so every build gets current roots.

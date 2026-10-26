@@ -242,6 +242,12 @@ enum ErrorKind {
     // and similar errors. The `Error.message` should
     // carry more details.
     ERROR_KIND_BAD_REQUEST = 4;
+    // The server can't process the request yet, for
+    // example because it has not loaded the schema.
+    // The caller should retry later (possibly on a
+    // different ingress node) without changing the
+    // request.
+    ERROR_KIND_UNAVAILABLE = 5;
 }
 
 // An error frame. It is always the last frame of the stream: whether the

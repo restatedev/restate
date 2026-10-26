@@ -157,6 +157,13 @@ impl From<Schema> for SchemaUnindexed {
 }
 
 impl Schema {
+    /// Empty schema at [`Version::MIN`], written when provisioning the cluster.
+    pub fn initial() -> Self {
+        let mut schema = Self::default();
+        schema.unindexed.version = Version::MIN;
+        schema
+    }
+
     /// Force the schema version to the next version
     ///
     /// Note: this is currently only used by metadata migration
