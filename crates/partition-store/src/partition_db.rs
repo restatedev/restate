@@ -644,19 +644,9 @@ impl<T> RocksConfigurator<T> {
 pub struct AllDataCf;
 
 impl DbConfigurator for RocksConfigurator<AllDataCf> {
-    fn get_db_options(
-        &self,
-        db_name: &DbName,
-        env: &rocksdb::Env,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-        limiter: &rocksdb::RateLimiter,
-    ) -> rocksdb::Options {
-        let mut db_options = restate_rocksdb::configuration::create_default_db_options(
-            env,
-            db_name,
-            write_buffer_manager,
-            limiter,
-        );
+    fn get_db_options(&self, db_name: &DbName, env: &restate_rocksdb::DbEnv) -> rocksdb::Options {
+        let mut db_options =
+            restate_rocksdb::configuration::create_default_db_options(env, db_name);
 
         let storage_config = &Configuration::pinned().worker.storage;
         self.apply_db_opts_from_config(&mut db_options, &storage_config.rocksdb);
@@ -709,17 +699,16 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         &self,
         db_name: &DbName,
         cf_name: &str,
-        global_cache: &rocksdb::Cache,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
+        env: &restate_rocksdb::DbEnv,
     ) -> rocksdb::Options {
-        let mut cf_options =
-            restate_rocksdb::configuration::create_default_cf_options(Some(write_buffer_manager));
+        let mut cf_options = restate_rocksdb::configuration::create_default_cf_options(
+            env.write_buffer_manager.as_ref(),
+        );
 
         let config = &Configuration::pinned().worker.storage;
         let mut block_options = restate_rocksdb::configuration::create_default_block_options(
             &config.rocksdb,
-            // use global block cache
-            Some(global_cache),
+            env.cache.as_ref(),
         );
         if config.rocksdb_enable_l6_filters {
             // By default, optimize_filters_for_hits skips L6 filters to save memory. Enable

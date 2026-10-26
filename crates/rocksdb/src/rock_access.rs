@@ -12,19 +12,16 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamilyDescriptor, ImportColumnFamilyOptions, RateLimiter,
-    WriteBufferManager,
-};
+use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, ImportColumnFamilyOptions};
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
 use tracing::{debug, info, trace, warn};
 
-use crate::DbSpec;
 use crate::RawRocksDb;
 use crate::RocksError;
 use crate::configuration::create_default_cf_options;
 use crate::{BottommostLevelCompaction, CfName, ManualCompactionOptions, RocksDbReadPerfGuard};
+use crate::{DbEnv, DbSpec};
 use crate::{DbName, OpenMode};
 
 /// Operations in this wrapper can be IO blocking, prefer using [`crate::RocksDb`]
@@ -36,13 +33,15 @@ pub struct RocksAccess {
     db_spec: DbSpec,
     db_options: rocksdb::Options,
     db: RawRocksDb,
+    // Retain the selected resources through native database destruction, including
+    // when the entire RocksAccess is moved to detached cleanup.
+    db_env: DbEnv,
 }
 
 fn prepare_cf_options(
     cf: &CfName,
     db_spec: &DbSpec,
-    write_buffer_manager: &WriteBufferManager,
-    global_cache: &Cache,
+    env: &DbEnv,
 ) -> Result<rocksdb::Options, RocksError> {
     let cf_patterns = &db_spec.cf_patterns;
     let db_name = &db_spec.name;
@@ -50,25 +49,21 @@ fn prepare_cf_options(
     for (pattern, options_updater) in cf_patterns {
         if pattern.cf_matches(cf) {
             // Stop at first pattern match
-            return Ok(options_updater.get_cf_options(
-                db_name,
-                cf,
-                global_cache,
-                write_buffer_manager,
-            ));
+            return Ok(options_updater.get_cf_options(db_name, cf, env));
         }
     }
     // default is special case
     if cf.as_str() == "default" {
-        // the goal here is to use the global cache for the default column family, otherwise
-        // rocksdb will create a new cache, wasting ~32MB RSS per db.
-        let mut cf_options = create_default_cf_options(Some(write_buffer_manager));
-        cf_options.set_write_buffer_manager(write_buffer_manager);
+        // Use the supplied cache for the default CF too; otherwise RocksDB creates
+        // a private cache (~32MB RSS per db). Without one, leave native caching defaults.
+        let mut cf_options = create_default_cf_options(env.write_buffer_manager.as_ref());
         cf_options.set_level_zero_slowdown_writes_trigger(1 << 30);
         cf_options.set_level_zero_stop_writes_trigger(1 << 30);
 
         let mut block_opts = BlockBasedOptions::default();
-        block_opts.set_block_cache(global_cache);
+        if let Some(cache) = &env.cache {
+            block_opts.set_block_cache(cache);
+        }
         cf_options.set_block_based_table_factory(&block_opts);
 
         return Ok(cf_options);
@@ -79,19 +74,18 @@ fn prepare_cf_options(
 
 fn prepare_descriptors(
     db_spec: &DbSpec,
-    write_buffer_manager: &WriteBufferManager,
-    global_cache: &Cache,
+    env: &DbEnv,
     all_cfs: &mut HashSet<CfName>,
 ) -> Result<Vec<ColumnFamilyDescriptor>, RocksError> {
-    // Make sure default column family uses the global cache so that it doesn't create
-    // its own cache (wastes ~32MB RSS per db)
+    // Include the default CF so it can share the supplied cache instead of
+    // creating a private cache (~32MB RSS per db).
     all_cfs.insert(CfName::new("default"));
     // Make sure we have all column families we were asked to open/create.
     all_cfs.extend(db_spec.ensure_column_families.iter().cloned());
 
     let mut descriptors = Vec::with_capacity(all_cfs.len());
     for cf in all_cfs.iter() {
-        let cf_options = prepare_cf_options(cf, db_spec, write_buffer_manager, global_cache)?;
+        let cf_options = prepare_cf_options(cf, db_spec, env)?;
         descriptors.push(ColumnFamilyDescriptor::new(cf.as_str(), cf_options));
     }
 
@@ -111,19 +105,10 @@ impl RocksAccess {
         &self.db_spec.name
     }
 
-    pub fn open_db(
-        db_spec: DbSpec,
-        env: &rocksdb::Env,
-        write_buffer_manager: &WriteBufferManager,
-        global_cache: &Cache,
-        limiter: &RateLimiter,
-    ) -> Result<Self, RocksError> {
-        let db_options = db_spec.db_configurator.get_db_options(
-            db_spec.name(),
-            env,
-            write_buffer_manager,
-            limiter,
-        );
+    /// Opens a database and retains its selected resources through native destruction.
+    /// Absent resources are left to database-specific configuration and native defaults.
+    pub fn open_db(db_spec: DbSpec, env: DbEnv) -> Result<Self, RocksError> {
+        let db_options = db_spec.db_configurator.get_db_options(db_spec.name(), &env);
 
         let mut all_cfs: HashSet<CfName> = match rocksdb::DB::list_cf(&db_options, &db_spec.path) {
             Ok(existing) => existing.into_iter().map(Into::into).collect(),
@@ -143,8 +128,7 @@ impl RocksAccess {
             }
         };
 
-        let descriptors =
-            prepare_descriptors(&db_spec, write_buffer_manager, global_cache, &mut all_cfs)?;
+        let descriptors = prepare_descriptors(&db_spec, &env, &mut all_cfs)?;
         trace!(path = %db_spec.path.display(), "Opening rocksdb database '{}'", db_spec.name());
 
         match db_spec.open_mode() {
@@ -155,6 +139,7 @@ impl RocksAccess {
                         db,
                         db_options,
                         db_spec,
+                        db_env: env,
                     })
                     .map_err(RocksError::from_rocksdb_error)
             }
@@ -170,6 +155,7 @@ impl RocksAccess {
                     db,
                     db_options,
                     db_spec,
+                    db_env: env,
                 })
                 .map_err(RocksError::from_rocksdb_error)
             }
@@ -180,6 +166,11 @@ impl RocksAccess {
         &self.db_spec
     }
 
+    /// Resources selected at open, also used for later CF creation and import.
+    pub fn db_env(&self) -> &DbEnv {
+        &self.db_env
+    }
+
     pub fn cf_handle(&self, cf: &str) -> Option<Arc<rocksdb::BoundColumnFamily<'_>>> {
         self.db.cf_handle(cf)
     }
@@ -188,13 +179,8 @@ impl RocksAccess {
         &self.db
     }
 
-    pub fn open_cf(
-        &self,
-        name: CfName,
-        write_buffer_manager: &WriteBufferManager,
-        global_cache: &Cache,
-    ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&name, &self.db_spec, write_buffer_manager, global_cache)?;
+    pub fn open_cf(&self, name: CfName) -> Result<(), RocksError> {
+        let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
         debug!("Creating column family {}/{name}", self.name());
         Ok(RawRocksDb::create_cf(&self.db, name.as_str(), &options)?)
     }
@@ -254,11 +240,9 @@ impl RocksAccess {
     pub(crate) fn import_cf(
         &self,
         name: CfName,
-        write_buffer_manager: &WriteBufferManager,
-        global_cache: &Cache,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let options = prepare_cf_options(&name, &self.db_spec, write_buffer_manager, global_cache)?;
+        let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();
         import_opts.set_move_files(true);

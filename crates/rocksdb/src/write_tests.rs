@@ -29,33 +29,21 @@ use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
 use crate::{
-    CfPrefixPattern, DbName, DbSpecBuilder, IoMode, Priority, RocksAccess, RocksDb, RocksDbManager,
-    WriteOperation,
+    CfPrefixPattern, DbEnv, DbName, DbSpecBuilder, IoMode, Priority, RocksAccess, RocksDb,
+    RocksDbManager, WriteOperation,
 };
 
 struct Configurator;
 
 impl DbConfigurator for Configurator {
-    fn get_db_options(
-        &self,
-        name: &DbName,
-        env: &rocksdb::Env,
-        buffers: &rocksdb::WriteBufferManager,
-        limiter: &rocksdb::RateLimiter,
-    ) -> rocksdb::Options {
-        create_default_db_options(env, name, buffers, limiter)
+    fn get_db_options(&self, name: &DbName, env: &DbEnv) -> rocksdb::Options {
+        create_default_db_options(env, name)
     }
 }
 
 impl CfConfigurator for Configurator {
-    fn get_cf_options(
-        &self,
-        _: &DbName,
-        _: &str,
-        _: &rocksdb::Cache,
-        buffers: &rocksdb::WriteBufferManager,
-    ) -> rocksdb::Options {
-        let mut opts = create_default_cf_options(Some(buffers));
+    fn get_cf_options(&self, _: &DbName, _: &str, env: &DbEnv) -> rocksdb::Options {
+        let mut opts = create_default_cf_options(env.write_buffer_manager.as_ref());
         let mut blocks = rocksdb::BlockBasedOptions::default();
         blocks.disable_cache();
         opts.set_block_based_table_factory(&blocks);
