@@ -8,21 +8,19 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use crate::handler::Handler;
+use crate::handler::error::HandlerError;
 use bytes::Bytes;
 use chrono::DateTime;
 use http::{HeaderName, Response, header};
 use http_body_util::Full;
-use tracing::{info, trace};
-
 use restate_types::Versioned;
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
 use restate_types::schema::invocation_target::{
     InvocationTargetMetadata, InvocationTargetResolver,
 };
-
-use crate::handler::Handler;
-use crate::handler::error::HandlerError;
+use tracing::{info, trace};
 
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
@@ -32,21 +30,25 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
 where
     Schemas: InvocationTargetResolver + Versioned,
 {
-    /// Resolves the metadata used to set the content type of an invocation output. The target
-    /// may have been removed since the invocation completed, so a miss is only an error while the
-    /// schema has not been loaded.
+    /// Resolves the metadata used to set the content type of an invocation output.
     pub(crate) fn resolve_output_metadata(
         &self,
         invocation_target: &InvocationTarget,
-    ) -> Result<Option<InvocationTargetMetadata>, HandlerError> {
+    ) -> Result<InvocationTargetMetadata, HandlerError> {
         let schemas = self.schemas.pinned();
-        match schemas.resolve_latest_invocation_target(
-            invocation_target.service_name(),
-            invocation_target.handler_name(),
-        ) {
-            None if !schemas.valid() => Err(HandlerError::SchemaNotReady),
-            metadata => Ok(metadata),
-        }
+        schemas
+            .resolve_latest_invocation_target(
+                invocation_target.service_name(),
+                invocation_target.handler_name(),
+            )
+            .ok_or_else(|| {
+                // A lookup miss is only conclusive once the schema has been loaded.
+                if schemas.valid() {
+                    HandlerError::NotFound
+                } else {
+                    HandlerError::SchemaNotReady
+                }
+            })
     }
 }
 
@@ -61,7 +63,7 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
         invocation_target_metadata_retriever: impl FnOnce(
             &InvocationTarget,
         ) -> Result<
-            Option<InvocationTargetMetadata>,
+            InvocationTargetMetadata,
             HandlerError,
         >,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
@@ -87,14 +89,16 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
             InvocationOutputResponse::Success(invocation_target, response_payload) => {
                 trace!(rpc.response = ?response_payload, "Complete external HTTP request successfully");
 
-                // Missing schema metadata must not prevent returning an available result.
+                // Resolve invocation target metadata.
+                // We need it for the output content type.
+                let invocation_target_metadata =
+                    invocation_target_metadata_retriever(&invocation_target)?;
+
+                // Write out the content-type, if any
                 // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) = invocation_target_metadata_retriever(&invocation_target)?
-                    .and_then(|metadata| {
-                        metadata
-                            .output_rules
-                            .infer_content_type(response_payload.is_empty())
-                    })
+                if let Some(ct) = invocation_target_metadata
+                    .output_rules
+                    .infer_content_type(response_payload.is_empty())
                 {
                     response_builder = response_builder.header(header::CONTENT_TYPE, ct)
                 }
