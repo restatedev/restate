@@ -25,8 +25,11 @@ use restate_types::partitions::Partition;
 use restate_types::protobuf::common::DatabaseKind;
 
 use crate::SnapshotError;
+use crate::durable_lsn_tracking::DurableLsnSenders;
 use crate::memory::MemoryController;
-use crate::partition_db::{AllDataCf, PartitionCell, PartitionDb, RocksConfigurator};
+use crate::partition_db::{
+    AllDataCf, PartitionCell, PartitionDb, PartitionStoreDb, RocksConfigurator,
+};
 use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshots};
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
@@ -84,7 +87,7 @@ impl SharedState {
     pub async fn get_or_open(
         &self,
         partition: &Partition,
-        rocksdb: &Arc<RocksDb>,
+        database: &PartitionStoreDb,
     ) -> Arc<PartitionCell> {
         let cell = self.get_or_default(partition);
         let mut state_guard = cell.inner.write().await;
@@ -93,20 +96,10 @@ impl SharedState {
             return cell;
         }
 
-        cell.open_cf(&mut state_guard, rocksdb);
+        cell.open_cf(&mut state_guard, database);
 
         drop(state_guard);
         cell
-    }
-
-    /// Note: we only modify entries, never insert, from the event listener. If we don't find
-    /// an existing entry for the partition, that means that the PartitionStoreManager doesn't
-    /// know about it.
-    pub fn note_durable_lsn(&self, partition_id: PartitionId, durable_lsn: Lsn) {
-        let guard = self.partitions.read();
-        if let Some(cell) = guard.get(&partition_id) {
-            cell.note_durable_lsn(durable_lsn);
-        };
     }
 
     #[cfg(test)]
@@ -122,10 +115,15 @@ impl SharedState {
     }
 }
 
+struct CachedDb {
+    rocksdb: Weak<RocksDb>,
+    notifications: Arc<DurableLsnSenders>,
+}
+
 pub struct PartitionStoreManager {
     state: Arc<SharedState>,
     snapshots: Snapshots,
-    db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, Weak<RocksDb>>>,
+    db_cache: AsyncMutex<HashMap<restate_rocksdb::DbName, CachedDb>>,
     memory_controller: MemoryController,
     use_multi_db_layout: bool,
 }
@@ -151,18 +149,24 @@ impl PartitionStoreManager {
         Ok(psm)
     }
 
-    async fn open_rocksdb(&self, partition: &Partition) -> Result<Arc<RocksDb>, RocksError> {
+    async fn open_rocksdb(&self, partition: &Partition) -> Result<PartitionStoreDb, RocksError> {
         let mut db_cache_guard = self.db_cache.lock().await;
         let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
 
-        if let Some(db) = db_cache_guard.get(&db_name).and_then(|db| db.upgrade()) {
-            return Ok(db);
+        if let Some(cached) = db_cache_guard.get(&db_name)
+            && let Some(rocksdb) = cached.rocksdb.upgrade()
+        {
+            return Ok(PartitionStoreDb {
+                rocksdb,
+                notifications: cached.notifications.clone(),
+            });
         }
 
         // We need to create/open this database.
+        let notifications = Arc::new(DurableLsnSenders::default());
         let configurator = RocksConfigurator::<AllDataCf>::new(
             self.memory_controller.memory_budget.clone(),
-            Arc::clone(&self.state),
+            &notifications,
             self.use_multi_db_layout,
         );
 
@@ -179,11 +183,20 @@ impl PartitionStoreManager {
         .build()
         .expect("valid spec");
 
-        let db = RocksDbManager::get().open_db(db_spec).await?;
+        let rocksdb = RocksDbManager::get().open_db(db_spec).await?;
 
-        db_cache_guard.insert(db_name, Arc::downgrade(&db));
+        db_cache_guard.insert(
+            db_name,
+            CachedDb {
+                rocksdb: Arc::downgrade(&rocksdb),
+                notifications: notifications.clone(),
+            },
+        );
 
-        Ok(db)
+        Ok(PartitionStoreDb {
+            rocksdb,
+            notifications,
+        })
     }
 
     pub fn is_repository_configured(&self) -> bool {
@@ -239,11 +252,11 @@ impl PartitionStoreManager {
         partition: &Partition,
         target_lsn: Option<Lsn>,
     ) -> Result<PartitionStore, OpenError> {
-        let rocksdb = self.open_rocksdb(partition).await?;
+        let database = self.open_rocksdb(partition).await?;
 
         // If we already have the partition locally and we don't have a fast-forward target, or the
         // store already meets the target LSN requirement, then we simply return it.
-        let cell = self.state.get_or_open(partition, &rocksdb).await;
+        let cell = self.state.get_or_open(partition, &database).await;
 
         let mut state_guard = cell.inner.write().await;
 
@@ -277,15 +290,13 @@ impl PartitionStoreManager {
         match (snapshot, target_lsn) {
             (None, None) => {
                 debug!("No snapshot found for partition, creating new partition store");
-                let db = cell.provision(&mut state_guard, rocksdb.clone()).await?;
+                let db = cell.provision(&mut state_guard, database).await?;
                 Ok(PartitionStore::from(db))
             }
 
             (Some(snapshot), None) => {
                 info!("Found partition snapshot, restoring it");
-                let db = cell
-                    .import_cf(&mut state_guard, snapshot, rocksdb.clone())
-                    .await?;
+                let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
 
                 Ok(PartitionStore::from(db))
             }
@@ -299,10 +310,7 @@ impl PartitionStoreManager {
                     %fast_forward_lsn,
                     "Found snapshot with LSN >= target LSN, dropping local partition store state",
                 );
-                cell.drop_cf(&mut state_guard).await?;
-                let db = cell
-                    .import_cf(&mut state_guard, snapshot, rocksdb.clone())
-                    .await?;
+                let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
                 Ok(PartitionStore::from(db))
             }
             (maybe_snapshot, Some(fast_forward_lsn)) => {
@@ -407,10 +415,10 @@ impl PartitionStoreManager {
         partition: &Partition,
         snapshot: LocalPartitionSnapshot,
     ) -> Result<PartitionStore, restate_rocksdb::RocksError> {
-        let rocksdb = self.open_rocksdb(partition).await?;
+        let database = self.open_rocksdb(partition).await?;
         let cell = self.state.get_or_default(partition);
         let mut state_guard = cell.inner.write().await;
-        let db = cell.import_cf(&mut state_guard, snapshot, rocksdb).await?;
+        let db = cell.import_cf(&mut state_guard, snapshot, database).await?;
         Ok(PartitionStore::from(db))
     }
 
@@ -433,5 +441,485 @@ impl PartitionStoreManager {
                 .await
                 .expect("rocksdb cannot be closed if others are still holding references to it");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::Future;
+    use std::pin::pin;
+    use std::sync::{Arc, mpsc};
+    use std::task::{Context, Wake, Waker};
+    use std::time::Duration;
+
+    use parking_lot::Mutex;
+    use rocksdb::AsColumnFamilyRef;
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
+
+    use restate_rocksdb::RocksDbManager;
+    use restate_storage_api::Transaction;
+    use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
+    use restate_types::identifiers::{PartitionId, SnapshotId};
+    use restate_types::logs::{Lsn, SequenceNumber};
+    use restate_types::partitions::Partition;
+    use restate_types::sharding::KeyRange;
+
+    use super::PartitionStoreManager;
+    use crate::PartitionStore;
+    use crate::keys::KeyKind;
+
+    async fn write_applied_lsn(store: &mut PartitionStore, lsn: u64) -> anyhow::Result<()> {
+        let mut tx = store.transaction();
+        tx.put_applied_lsn(Lsn::new(lsn))?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn delayed_flush_is_fenced_across_partition_replacement() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let database = manager.open_rocksdb(&partition).await?;
+            let original_cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
+            let original_watch = store.get_durable_lsn().await?;
+            write_applied_lsn(&mut store, 100).await?;
+
+            let (reached, resume, completed) = database.notifications.pause_next_notification();
+            store.partition_db().flush_memtables(false).await?;
+            timeout(DEADLINE, reached).await??;
+            manager.close(partition.partition_id).await;
+            drop(store);
+            drop(resume);
+            timeout(DEADLINE, completed).await??;
+            assert_eq!(
+                *original_watch.borrow(),
+                Lsn::new(100),
+                "logically_closed_partition_receives_pending_flush"
+            );
+
+            let mut store = manager.open(&partition, None).await?;
+            assert!(original_watch.same_channel(&store.get_durable_lsn().await?));
+            write_applied_lsn(&mut store, 200).await?;
+            let (reached, resume, completed) = database.notifications.pause_next_notification();
+            store.partition_db().flush_memtables(false).await?;
+            timeout(DEADLINE, reached).await??;
+            manager.close(partition.partition_id).await;
+            drop(store);
+            timeout(DEADLINE, manager.drop_partition(partition.partition_id)).await??;
+            assert_eq!(*original_watch.borrow(), Lsn::INVALID);
+
+            let mut store = timeout(DEADLINE, manager.open(&partition, None)).await??;
+            assert_ne!(store.cf_for_key_kind(KeyKind::Fsm).id(), original_cf_id);
+            let fresh_watch = store.get_durable_lsn().await?;
+            assert_eq!(*fresh_watch.borrow(), Lsn::INVALID);
+            drop(resume);
+            timeout(DEADLINE, completed).await??;
+            assert_eq!(
+                *fresh_watch.borrow(),
+                Lsn::INVALID,
+                "old_flush_cannot_initialize_new_cf"
+            );
+            assert_eq!(*original_watch.borrow(), Lsn::INVALID);
+            assert_eq!(store.get_applied_lsn().await?, None);
+            assert_eq!(*store.get_durable_lsn().await?.borrow(), Lsn::INVALID);
+
+            write_applied_lsn(&mut store, 300).await?;
+            let snapshots = tempfile::tempdir()?;
+            let snapshot = store
+                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .await?;
+            write_applied_lsn(&mut store, 400).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(*fresh_watch.borrow(), Lsn::new(400));
+            write_applied_lsn(&mut store, 500).await?;
+            let replaced_cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
+            // Resume the callback before dropping its retired CF on unwind.
+            let mut retired_store = store;
+            let (reached, resume, completed) = database.notifications.pause_next_notification();
+            retired_store.partition_db().flush_memtables(false).await?;
+            timeout(DEADLINE, reached).await??;
+            manager.close(partition.partition_id).await;
+
+            // Direct import must reset the old watch itself, without an
+            // explicit drop_partition call, even while its callback is delayed.
+            let mut store =
+                timeout(DEADLINE, manager.open_from_snapshot(&partition, snapshot)).await??;
+            assert_ne!(store.cf_for_key_kind(KeyKind::Fsm).id(), replaced_cf_id);
+            let imported_watch = store.get_durable_lsn().await?;
+            assert_eq!(
+                *fresh_watch.borrow(),
+                Lsn::INVALID,
+                "direct_import_resets_old_watch"
+            );
+            assert_eq!(*imported_watch.borrow(), Lsn::new(300));
+            let recovered_watch = retired_store.get_durable_lsn().await;
+            drop(resume);
+            timeout(DEADLINE, completed).await??;
+            let recovered_watch = recovered_watch?;
+            assert!(fresh_watch.same_channel(&recovered_watch));
+            assert_eq!(
+                *recovered_watch.borrow(),
+                Lsn::INVALID,
+                "recovery_cannot_revive_retired_watch"
+            );
+            assert_eq!(*imported_watch.borrow(), Lsn::new(300));
+            assert_eq!(store.get_applied_lsn().await?, Some(Lsn::new(300)));
+            assert_eq!(*store.get_durable_lsn().await?.borrow(), Lsn::new(300));
+
+            write_applied_lsn(&mut store, 600).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(*imported_watch.borrow(), Lsn::new(600));
+            assert_eq!(*fresh_watch.borrow(), Lsn::INVALID);
+            assert_eq!(*original_watch.borrow(), Lsn::INVALID);
+            drop(retired_store);
+            drop(store);
+            drop(manager);
+            database
+                .rocksdb
+                .close()
+                .await
+                .expect("all_storage_users_released");
+        }
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn delayed_flush_does_not_regress_durable_lsn() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let manager = PartitionStoreManager::create(false).await?;
+        let mut store = manager.open(&partition, None).await?;
+        let database = manager.open_rocksdb(&partition).await?;
+        // Allow the second flush to complete while the first callback is paused.
+        database
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .set_db_options(&[("max_background_flushes", "2")])?;
+        let mut durable_lsn = store.get_durable_lsn().await?;
+        write_applied_lsn(&mut store, 100).await?;
+        let (reached, resume, completed) = database.notifications.pause_next_notification();
+        store.partition_db().flush_memtables(false).await?;
+        timeout(DEADLINE, reached).await??;
+
+        write_applied_lsn(&mut store, 200).await?;
+        store.partition_db().flush_memtables(false).await?;
+        let newer_lsn = timeout(DEADLINE, durable_lsn.wait_for(|lsn| *lsn == Lsn::new(200)))
+            .await
+            .map(|result| result.map(|value| *value));
+        // Release the callback even if waiting for the newer flush failed.
+        drop(resume);
+        timeout(DEADLINE, completed).await??;
+        store.partition_db().flush_memtables(true).await?;
+
+        assert_eq!(newer_lsn??, Lsn::new(200));
+        assert_eq!(
+            *durable_lsn.borrow(),
+            Lsn::new(200),
+            "older_callback_cannot_regress_durable_progress"
+        );
+        drop(store);
+        drop(manager);
+        database
+            .rocksdb
+            .close()
+            .await
+            .expect("all_storage_users_released");
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn durable_notifications_follow_physical_database_opens() -> anyhow::Result<()> {
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let other_partition = Partition::new(PartitionId::from(1), KeyRange::FULL);
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let database = manager.open_rocksdb(&partition).await?;
+            let other_database = manager.open_rocksdb(&other_partition).await?;
+            assert_eq!(
+                Arc::ptr_eq(&database.rocksdb, &other_database.rocksdb),
+                !use_multi_db_layout
+            );
+            assert_eq!(
+                Arc::ptr_eq(&database.notifications, &other_database.notifications),
+                !use_multi_db_layout,
+                "registry_is_shared_exactly_when_database_is_shared"
+            );
+            if use_multi_db_layout {
+                other_database
+                    .rocksdb
+                    .close()
+                    .await
+                    .expect("unused_database");
+            } else {
+                drop(other_database);
+            }
+
+            let old_watch = store.get_durable_lsn().await?;
+            let old_cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
+            write_applied_lsn(&mut store, 100).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(*old_watch.borrow(), Lsn::new(100));
+            let old_notifications = database.notifications;
+            drop(database.rocksdb);
+            drop(store);
+            manager.close_partition_store(partition.partition_id).await;
+            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+
+            let mut store = manager.open(&partition, None).await?;
+            let database = manager.open_rocksdb(&partition).await?;
+            assert!(!Arc::ptr_eq(&old_notifications, &database.notifications));
+            assert_eq!(store.cf_for_key_kind(KeyKind::Fsm).id(), old_cf_id);
+            let new_watch = store.get_durable_lsn().await?;
+            assert_eq!(*new_watch.borrow(), Lsn::new(100));
+            write_applied_lsn(&mut store, 200).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(*new_watch.borrow(), Lsn::new(200));
+            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+            drop(store);
+            drop(manager);
+            database
+                .rocksdb
+                .close()
+                .await
+                .expect("all_storage_users_released");
+        }
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn snapshot_import_failure_invalidates_only_after_validation() -> anyhow::Result<()> {
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let snapshots = tempfile::tempdir()?;
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let database = store.partition_db().rocksdb().clone();
+            let old_watch = store.get_durable_lsn().await?;
+            write_applied_lsn(&mut store, 100).await?;
+            let mut snapshot = store
+                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .await?;
+            snapshot.key_range = KeyRange::new(1, u64::MAX);
+            assert!(matches!(
+                manager.open_from_snapshot(&partition, snapshot).await,
+                Err(restate_rocksdb::RocksError::SnapshotKeyRangeMismatch)
+            ));
+            assert!(old_watch.same_channel(&store.get_durable_lsn().await?));
+            write_applied_lsn(&mut store, 200).await?;
+            let mut snapshot = store
+                .create_local_snapshot(snapshots.path(), None, SnapshotId::new())
+                .await?;
+            assert_eq!(*old_watch.borrow(), Lsn::new(200));
+
+            // RocksDB rejects this after the old CF has been dropped. Retrying
+            // must create a fresh store rather than return the deleted handle.
+            snapshot.db_comparator_name = "invalid comparator".into();
+            drop(store);
+            assert!(
+                manager
+                    .open_from_snapshot(&partition, snapshot)
+                    .await
+                    .is_err()
+            );
+            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+            assert!(
+                manager
+                    .get_partition_store(partition.partition_id)
+                    .await
+                    .is_none()
+            );
+            let mut store = manager.open(&partition, None).await?;
+            let new_watch = store.get_durable_lsn().await?;
+            assert_eq!(*new_watch.borrow(), Lsn::INVALID);
+            assert_eq!(store.get_applied_lsn().await?, None);
+            write_applied_lsn(&mut store, 300).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(*new_watch.borrow(), Lsn::new(300));
+            assert_eq!(*old_watch.borrow(), Lsn::INVALID);
+            drop(store);
+            drop(manager);
+            database.close().await.expect("all_storage_users_released");
+        }
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    // Watch publication wakes receivers synchronously inside the native flush callback.
+    // Dropping the resume sender releases it, including when the test fails.
+    struct PauseOnWake {
+        reached: Mutex<Option<oneshot::Sender<bool>>>,
+        resume: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl Wake for PauseOnWake {
+        fn wake(self: Arc<Self>) {
+            if let Some(reached) = self.reached.lock().take() {
+                let _ = reached.send(tokio::runtime::Handle::try_current().is_err());
+                let _ = self.resume.lock().recv();
+            }
+        }
+    }
+
+    #[restate_core::test]
+    async fn partition_database_does_not_retain_manager_state() -> anyhow::Result<()> {
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let state = Arc::downgrade(&manager.state);
+            let mut store = manager.open(&partition, None).await?;
+            let durable_lsn = store.get_durable_lsn().await?;
+
+            write_applied_lsn(&mut store, 100).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(
+                *durable_lsn.borrow(),
+                Lsn::new(100),
+                "live_manager_receives_flush_notifications"
+            );
+
+            drop(manager);
+            assert!(
+                state.upgrade().is_none(),
+                "retained_database_does_not_keep_partition_map_alive"
+            );
+
+            // Notifications follow the physical database lifetime, even after
+            // the manager and its partition cells have been released.
+            write_applied_lsn(&mut store, 200).await?;
+            store.partition_db().flush_memtables(true).await?;
+            assert_eq!(
+                *durable_lsn.borrow(),
+                Lsn::new(200),
+                "retained_store_receives_flush_notifications_after_manager_release"
+            );
+
+            let database = store.partition_db().rocksdb().clone();
+            drop(store);
+            database.close().await.expect("all_storage_users_released");
+
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            assert_eq!(
+                *store.get_durable_lsn().await?.borrow(),
+                Lsn::new(200),
+                "flush_after_manager_release_remains_durable_on_reopen"
+            );
+            let database = store.partition_db().rocksdb().clone();
+            drop(store);
+            drop(manager);
+            database.close().await.expect("all_storage_users_released");
+        }
+        RocksDbManager::get().shutdown().await;
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn flush_callback_does_not_own_partition_storage() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+
+        RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+
+        for use_multi_db_layout in [false, true] {
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let state = Arc::downgrade(&manager.state);
+            let mut store = manager.open(&partition, None).await?;
+            let database = Arc::downgrade(store.partition_db().rocksdb());
+            let mut durable_lsn = store.get_durable_lsn().await?;
+            durable_lsn.borrow_and_update();
+
+            write_applied_lsn(&mut store, 100).await?;
+
+            let (reached_tx, reached_rx) = oneshot::channel();
+            let (resume_tx, resume_rx) = mpsc::channel();
+            let mut resume_tx = Some(resume_tx);
+            let waker = Waker::from(Arc::new(PauseOnWake {
+                reached: Mutex::new(Some(reached_tx)),
+                resume: Mutex::new(resume_rx),
+            }));
+            let mut changed = pin!(durable_lsn.changed());
+            assert!(
+                changed
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+
+            store.partition_db().flush_memtables(false).await?;
+            let callback_is_native = timeout(DEADLINE, reached_rx).await??;
+
+            // If this regresses, finish the callback while the store is retained
+            // so the test reports the ownership failure instead of self-deadlocking.
+            let callback_retains_storage = Arc::strong_count(&manager.state) != 1;
+            if callback_retains_storage {
+                drop(resume_tx.take());
+                store.partition_db().flush_memtables(true).await?;
+            }
+
+            let (closed_tx, mut closed_rx) = oneshot::channel();
+            let closer = std::thread::spawn(move || {
+                drop(manager);
+                drop(store);
+                let _ = closed_tx.send(());
+            });
+
+            if !callback_retains_storage {
+                // Zero strong references marks entry into the final Arc drop,
+                // not completion of the native database destructor.
+                timeout(DEADLINE, async {
+                    while database.strong_count() != 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await?;
+                assert!(state.upgrade().is_none(), "callback_does_not_pin_manager");
+                assert!(matches!(
+                    closed_rx.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                drop(resume_tx.take());
+            }
+
+            timeout(DEADLINE, closed_rx).await??;
+            closer.join().expect("database_drop_thread_succeeded");
+            changed.await?;
+            assert!(callback_is_native, "callback_runs_outside_tokio");
+            assert!(
+                !callback_retains_storage,
+                "flush_callback_must_not_retain_storage_owning_manager_state"
+            );
+
+            let manager = PartitionStoreManager::create(use_multi_db_layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            assert_eq!(
+                *store.get_durable_lsn().await?.borrow(),
+                Lsn::new(100),
+                "native_drop_completes_and_database_reopens_durably"
+            );
+            let database = store.partition_db().rocksdb().clone();
+            drop(store);
+            drop(manager);
+            database.close().await.expect("all_storage_users_released");
+        }
+        RocksDbManager::get().shutdown().await;
+        Ok(())
     }
 }
