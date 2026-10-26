@@ -71,12 +71,26 @@ pub const PARTITION_SHUFFLE_MESSAGE_COUNT: &str = "restate.partition.shuffle.mes
 pub const PARTITION_SHUFFLE_INFLIGHT_RECORDS: &str = "restate.partition.shuffle.inflight";
 
 pub const SELF_PROPOSER_INFLIGHT: &str = "restate.partition.self_proposer.inflight";
+pub const SELF_PROPOSER_CONGESTION_CONTROL_LIMIT: &str =
+    "restate.partition.self_proposer.congestion_control_limit";
+pub const SELF_PROPOSER_CONGESTION_CONTROL_GATED: &str =
+    "restate.partition.self_proposer.congestion_control_gated_micros.total";
 
 pub(crate) fn describe_metrics() {
     describe_gauge!(
         SELF_PROPOSER_INFLIGHT,
         Unit::Count,
         "Records admitted by each self-proposer flow awaiting local application acknowledgement"
+    );
+    describe_gauge!(
+        SELF_PROPOSER_CONGESTION_CONTROL_LIMIT,
+        Unit::Count,
+        "Maximum number of records the self-proposer may have in flight, as set by congestion control"
+    );
+    describe_counter!(
+        SELF_PROPOSER_CONGESTION_CONTROL_GATED,
+        Unit::Microseconds,
+        "Time a self-proposer flow was ready to propose but held back by congestion control"
     );
 
     describe_gauge!(
