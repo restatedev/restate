@@ -10,9 +10,10 @@
 
 use std::future::Future;
 
-use anyhow::Context;
 use async_channel::{TryRecvError, TrySendError};
 use metrics::{counter, gauge};
+use restate_types::blob::BaseBlobId;
+use restate_types::invocation::ResponseResult;
 use tokio::sync::watch;
 use tracing::debug;
 
@@ -22,11 +23,7 @@ use restate_ingestion_client::IngestionClient;
 use restate_storage_api::outbox_table::OutboxMessage;
 use restate_types::identifiers::PartitionId;
 use restate_types::message::MessageIndex;
-use restate_wal_protocol::v2::commands::{
-    AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
-    TerminateInvocationCommand,
-};
-use restate_wal_protocol::v2::{Dedup, Envelope, Raw, outbox::OutboxKind};
+use restate_wal_protocol::v2::{Envelope, Raw};
 
 use crate::metric_definitions::{
     PARTITION_LABEL, PARTITION_SHUFFLE_INFLIGHT_RECORDS, PARTITION_SHUFFLE_MESSAGE_COUNT,
@@ -60,69 +57,6 @@ impl OutboxTruncation {
     }
 }
 
-pub(crate) async fn wrap_outbox_message_in_envelope(
-    message: OutboxMessage,
-    seq_number: MessageIndex,
-    shuffle_metadata: &ShuffleMetadata,
-) -> anyhow::Result<Envelope<Raw>> {
-    let dedup = create_dedup(seq_number, shuffle_metadata);
-
-    let envelope = match message {
-        OutboxMessage::AttachInvocation(payload) => {
-            Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::InvocationTermination(payload) => {
-            Envelope::new(dedup, TerminateInvocationCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::ServiceInvocation(payload) => {
-            Envelope::new(dedup, InvokeCommand::from(*payload)).into_raw()
-        }
-        OutboxMessage::NotifySignal(payload) => {
-            Envelope::new(dedup, NotifySignalCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::ServiceResponse(payload) => {
-            Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw()
-        }
-        OutboxMessage::Opaque(opaque) => {
-            let kind: OutboxKind = opaque
-                .kind
-                .try_into()
-                .context("Opaque outbox message has unknown outbox kind")?;
-
-            match kind.try_into_command_kind() {
-                Ok(cmd_kind) => {
-                    // forward directly to remote partition
-                    Envelope::from_bytes_unchecked(cmd_kind, opaque.codec, dedup, opaque.message)
-                }
-                Err(outbox_kind) => {
-                    // this is not an opaque command and need to be translated
-                    match outbox_kind {
-                        OutboxKind::TerminateInvocation
-                        | OutboxKind::Invoke
-                        | OutboxKind::AttachInvocation
-                        | OutboxKind::NotifySignal
-                        | OutboxKind::InvocationResponse => {
-                            unreachable!("handled above");
-                        }
-                        OutboxKind::InvocationResponseFromBlob => {
-                            todo!("load blob")
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    Ok(envelope)
-}
-
-fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
-    Dedup::ForeignPartition {
-        partition: shuffle_metadata.partition_id,
-        seq: seq_number,
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum OutboxReaderError {
     #[error(transparent)]
@@ -134,6 +68,11 @@ pub(crate) trait OutboxReader {
         &mut self,
         next_sequence_number: MessageIndex,
     ) -> impl Future<Output = Result<Option<(MessageIndex, OutboxMessage)>, OutboxReaderError>> + Send;
+
+    fn get_response_result(
+        &mut self,
+        blob: BaseBlobId,
+    ) -> impl Future<Output = Result<Option<ResponseResult>, OutboxReaderError>> + Send;
 }
 
 /// The hint sender allows to send hints to the shuffle service. If more hints are sent than the
@@ -283,7 +222,7 @@ where
                     inflight.push_back(commit_token);
                 }
                 Some(committed) = head => {
-                    let new_message_index = committed?;
+                    let (new_message_index, blob_id) = committed?;
                     _ = inflight.pop_front();
                     ingested_counter.increment(1);
                     let _ = truncation_tx.send_if_modified(|current| {
@@ -303,20 +242,32 @@ where
 mod state_machine {
     use std::cmp::Ordering;
 
+    use anyhow::Context;
     use tokio_util::sync::ReusableBoxFuture;
 
     use restate_core::network::TransportConnect;
     use restate_ingestion_client::{IngestFuture, Ingestion, IngestionClient, RecordCommit};
     use restate_storage_api::outbox_table::OutboxMessage;
     use restate_types::{
+        blob::BaseBlobId,
+        errors::GONE_INVOCATION_ERROR,
         identifiers::WithPartitionKey,
+        invocation,
         logs::{BodyWithKeys, Keys},
         message::MessageIndex,
+        storage::StorageDecode,
     };
-    use restate_wal_protocol::v2::{Envelope, Raw};
+    use restate_wal_protocol::v2::{
+        Dedup, Envelope, Raw,
+        commands::{
+            AttachInvocationCommand, InvocationResponseCommand, InvokeCommand, NotifySignalCommand,
+            TerminateInvocationCommand,
+        },
+        outbox::{InvocationResponseFromBlobCommand, OutboxKind},
+    };
 
     use crate::partition::shuffle::{
-        NewOutboxMessage, OutboxReaderError, ShuffleMetadata, wrap_outbox_message_in_envelope,
+        NewOutboxMessage, OutboxReader, OutboxReaderError, ShuffleMetadata,
     };
 
     type ReadFuture<OutboxReader> = ReusableBoxFuture<
@@ -341,7 +292,15 @@ mod state_machine {
     enum State {
         Idle,
         ReadingOutbox,
-        Ingesting { ingest: IngestFuture, sn: u64 },
+        Ingesting {
+            ingest: IngestFuture,
+            // ingested serial number
+            sn: u64,
+            // associated blob id with the ingested message
+            // that need to be deleted after the message
+            // has been ingested by remote partition
+            blob_id: Option<BaseBlobId>,
+        },
     }
 
     pub struct StateMachine<T, R> {
@@ -376,7 +335,9 @@ mod state_machine {
             }
         }
 
-        pub async fn shuffle_next_message(&mut self) -> anyhow::Result<RecordCommit<u64>> {
+        pub async fn shuffle_next_message(
+            &mut self,
+        ) -> anyhow::Result<RecordCommit<(u64, Option<BaseBlobId>)>> {
             loop {
                 match &mut self.state {
                     State::Idle => {
@@ -392,9 +353,13 @@ mod state_machine {
                         match sn.cmp(&self.next_sequence_number) {
                             Ordering::Equal => {
                                 let partition_key = message.partition_key();
-                                let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)
-                                        .await?;
+                                let (envelope, blob_id) = create_envelope(
+                                    self.reader.as_mut().unwrap(),
+                                    message,
+                                    sn,
+                                    &self.metadata,
+                                )
+                                .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -402,6 +367,7 @@ mod state_machine {
                                         BodyWithKeys::new(envelope, Keys::Single(partition_key)),
                                     ),
                                     sn,
+                                    blob_id,
                                 };
                             }
                             Ordering::Greater => {
@@ -417,9 +383,13 @@ mod state_machine {
                             }
                         }
                     }
-                    State::Ingesting { ingest, sn } => {
+                    State::Ingesting {
+                        ingest,
+                        sn,
+                        blob_id,
+                    } => {
                         let sn = *sn;
-                        let commit_token = ingest.await?.map(|_| sn);
+                        let commit_token = ingest.await?.map(|_| (sn, blob_id.clone()));
 
                         // read next message
                         self.next_sequence_number = sn + 1;
@@ -445,9 +415,13 @@ mod state_machine {
                                     "message sequence numbers must not decrease"
                                 );
                                 let partition_key = message.partition_key();
-                                let envelope =
-                                    wrap_outbox_message_in_envelope(message, sn, &self.metadata)
-                                        .await?;
+                                let (envelope, blob_id) = create_envelope(
+                                    self.reader.as_mut().unwrap(),
+                                    message,
+                                    sn,
+                                    &self.metadata,
+                                )
+                                .await?;
 
                                 self.state = State::Ingesting {
                                     ingest: self.ingestion.ingest(
@@ -455,12 +429,112 @@ mod state_machine {
                                         BodyWithKeys::new(envelope, Keys::Single(partition_key)),
                                     ),
                                     sn,
+                                    blob_id,
                                 };
                             }
                         }
                     }
                 }
             }
+        }
+    }
+
+    pub async fn create_envelope<R: OutboxReader>(
+        reader: &mut R,
+        message: OutboxMessage,
+        seq_number: MessageIndex,
+        shuffle_metadata: &ShuffleMetadata,
+    ) -> anyhow::Result<(Envelope<Raw>, Option<BaseBlobId>)> {
+        let dedup = create_dedup(seq_number, shuffle_metadata);
+
+        let envelope = match message {
+            OutboxMessage::AttachInvocation(payload) => (
+                Envelope::new(dedup, AttachInvocationCommand::from(payload)).into_raw(),
+                None,
+            ),
+            OutboxMessage::InvocationTermination(payload) => (
+                Envelope::new(dedup, TerminateInvocationCommand::from(payload)).into_raw(),
+                None,
+            ),
+            OutboxMessage::ServiceInvocation(payload) => (
+                Envelope::new(dedup, InvokeCommand::from(*payload)).into_raw(),
+                None,
+            ),
+            OutboxMessage::NotifySignal(payload) => (
+                Envelope::new(dedup, NotifySignalCommand::from(payload)).into_raw(),
+                None,
+            ),
+            OutboxMessage::ServiceResponse(payload) => (
+                Envelope::new(dedup, InvocationResponseCommand::from(payload)).into_raw(),
+                None,
+            ),
+            OutboxMessage::Opaque(opaque) => {
+                let kind: OutboxKind = opaque
+                    .kind
+                    .try_into()
+                    .context("Opaque outbox message has unknown outbox kind")?;
+
+                match kind.try_into_command_kind() {
+                    Ok(cmd_kind) => {
+                        // forward directly to remote partition
+                        (
+                            Envelope::from_bytes_unchecked(
+                                cmd_kind,
+                                opaque.codec,
+                                dedup,
+                                opaque.message,
+                            ),
+                            None,
+                        )
+                    }
+                    Err(outbox_kind) => {
+                        // this is not an opaque command and need to be translated
+                        match outbox_kind {
+                            OutboxKind::TerminateInvocation
+                            | OutboxKind::Invoke
+                            | OutboxKind::AttachInvocation
+                            | OutboxKind::NotifySignal
+                            | OutboxKind::InvocationResponse => {
+                                unreachable!("handled above");
+                            }
+                            OutboxKind::InvocationResponseFromBlob => {
+                                let msg = InvocationResponseFromBlobCommand::decode(
+                                    opaque.message,
+                                    opaque.codec,
+                                )?;
+
+                                let result = reader
+                                    .get_response_result(msg.blob)
+                                    .await?
+                                    .unwrap_or_else(|| GONE_INVOCATION_ERROR.into());
+
+                                (
+                                    Envelope::new(
+                                        dedup,
+                                        InvocationResponseCommand::from(
+                                            invocation::InvocationResponse {
+                                                result,
+                                                target: msg.target,
+                                            },
+                                        ),
+                                    )
+                                    .into_raw(),
+                                    Some(msg.blob),
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        };
+
+        Ok(envelope)
+    }
+
+    fn create_dedup(seq_number: MessageIndex, shuffle_metadata: &ShuffleMetadata) -> Dedup {
+        Dedup::ForeignPartition {
+            partition: shuffle_metadata.partition_id,
+            seq: seq_number,
         }
     }
 }
@@ -552,6 +626,12 @@ mod ingestion_client_tests {
                 )
             }))
         }
+        async fn get_response_result(
+            &mut self,
+            _blob: restate_types::blob::BaseBlobId,
+        ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+            unimplemented!()
+        }
     }
 
     /// Outbox reader which is used to let the shuffler fail in a controlled manner so that we
@@ -603,6 +683,13 @@ mod ingestion_client_tests {
                     ),
                 )
             }))
+        }
+
+        async fn get_response_result(
+            &mut self,
+            _blob: restate_types::blob::BaseBlobId,
+        ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+            unimplemented!();
         }
     }
 
