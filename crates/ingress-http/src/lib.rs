@@ -134,6 +134,7 @@ mod mocks {
     use restate_types::schema::service::{
         HandlerMetadata, ServiceMetadata, ServiceMetadataResolver,
     };
+    use restate_types::{Version, Versioned};
     use serde::{Deserialize, Serialize};
     use serde_json::Value;
     use std::collections::HashMap;
@@ -240,6 +241,12 @@ mod mocks {
 
         fn list_service_names(&self) -> Vec<String> {
             self.0.list_service_names()
+        }
+    }
+
+    impl Versioned for MockSchemas {
+        fn version(&self) -> Version {
+            Version::MIN
         }
     }
 
