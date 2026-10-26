@@ -6,7 +6,7 @@
 
 Restate now checks the advertised addresses in your configuration when a node starts. A node
 refuses to start if one of them uses a scheme it cannot connect to, such as `ftp://`. This applies
-to `advertised-address`, `networking.ctrl-advertised-address`, the admin and ingress advertised
+to `advertised-address`, `ctrl-advertised-address`, the admin and ingress advertised
 addresses, and `metadata-client.addresses`.
 
 Restate nodes also accept addresses written as `scheme:/path` in cluster metadata, including
@@ -28,7 +28,7 @@ Restate versions that advertise new kinds of addresses during a rolling upgrade 
   that names the setting and the address.
 - `grpc+unix:/path` is accepted as an alternative spelling of `unix:/path` for
   `metadata-client.addresses` and for `restatectl --address`. It is not accepted for
-  `advertised-address` or `networking.ctrl-advertised-address`, because older Restate versions
+  `advertised-address` or `ctrl-advertised-address`, because older Restate versions
   cannot read it.
 
 ### Migration Guidance

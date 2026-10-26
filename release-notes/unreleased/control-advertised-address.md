@@ -14,17 +14,16 @@ To advertise a different route for control RPCs, such as a node-specific HTTPS
 proxy, configure:
 
 ```toml
-[networking]
 ctrl-advertised-address = "https://node-7.example.com"
 ```
 
-Alternatively, set `networking.ctrl-advertised-host` to change only the hostname while
+Alternatively, set `ctrl-advertised-host` to change only the hostname while
 using the shared listener's actual port and TLS mode. A full control advertised
 address takes precedence over the hostname override.
 
 The same overrides are available as `--ctrl-advertised-host` and
-`--ctrl-advertised-address`, or through `RESTATE_NETWORKING__CTRL_ADVERTISED_HOST` and
-`RESTATE_NETWORKING__CTRL_ADVERTISED_ADDRESS`. Restart the node to publish a changed
+`--ctrl-advertised-address`, or through `RESTATE_CTRL_ADVERTISED_HOST` and
+`RESTATE_CTRL_ADVERTISED_ADDRESS`. Restart the node to publish a changed
 advertisement. Control RPCs still share the existing fabric listener; these
 options do not open another port.
 
