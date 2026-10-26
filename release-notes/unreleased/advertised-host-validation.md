@@ -6,7 +6,7 @@
 
 Restate now checks `advertised-host` values when it loads the configuration. This applies to the
 root `advertised-host`, `--advertised-host` and `RESTATE_ADVERTISED_HOST`, the `advertised-host`
-settings of the `[admin]` and `[ingress]` sections, and `networking.ctrl-advertised-host`. Each
+settings of the `[admin]` and `[ingress]` sections, and `ctrl-advertised-host`. Each
 value must be a host name, an IPv4 address, or an IPv6 address in brackets, such as
 `[2001:db8::7]`.
 

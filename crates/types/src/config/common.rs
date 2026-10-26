@@ -11,13 +11,14 @@
 use std::net::IpAddr;
 use std::num::{NonZeroU32, NonZeroUsize};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use enumset::EnumSet;
 use paste::paste;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_with::serde_as;
 
 use restate_serde_util::SerdeableHeaderHashMap;
@@ -34,9 +35,9 @@ use crate::config::dynamodb_store::DynamoDbOptions;
 use crate::config::{DeprecatedServiceClientOptions, NetworkingOptions};
 use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, AdvertisedHost, ListenerPort};
-use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
+use crate::net::address::{BindAddress, ControlPort, FabricPort, TokioConsolePort};
 use crate::net::listener::AddressBook;
-use crate::nodes_config::Role;
+use crate::nodes_config::{QualifiedAddress, Role};
 use crate::replication::ReplicationProperty;
 use crate::retries::RetryPolicy;
 
@@ -197,6 +198,178 @@ impl<P: ListenerPort> Default for ListenerOptions<P> {
     }
 }
 
+/// An advertised address for callers in one location, written `location@address`.
+///
+/// `location` is written like the node `location`, as `region` or `region.zone`, and names where
+/// the callers are: those whose own location starts with it may use `address`. The plain
+/// advertised address stays the route for every other caller, so every entry has a location.
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde_with::SerializeDisplay, serde_with::DeserializeFromStr,
+)]
+pub struct AdvertisedAddressEntry<P: ListenerPort> {
+    pub address: AdvertisedAddress<P>,
+    pub location: NodeLocation,
+}
+
+impl<P: ListenerPort> std::fmt::Display for AdvertisedAddressEntry<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.location, self.address)
+    }
+}
+
+impl<P: ListenerPort> FromStr for AdvertisedAddressEntry<P> {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // The first `@` ends the location; locations never contain one, addresses may.
+        let Some((location, address)) = s.trim().split_once('@') else {
+            bail!(
+                "'{s}' is not a `location@address` entry, such as `us-east1@http://10.1.7.3:5122`"
+            );
+        };
+        let location: NodeLocation = location
+            .parse()
+            .with_context(|| format!("'{s}' has an invalid location"))?;
+        if location.is_empty() {
+            bail!(
+                "'{s}' has no location; `advertised-address` is the address for all other callers"
+            );
+        }
+        let address = address
+            .parse()
+            .with_context(|| format!("'{s}' has an invalid address"))?;
+        Ok(Self { address, location })
+    }
+}
+
+#[cfg(feature = "schemars")]
+impl<P: ListenerPort> schemars::JsonSchema for AdvertisedAddressEntry<P> {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        format!("AdvertisedAddressEntry-{}", P::NAME).into()
+    }
+
+    fn schema_id() -> std::borrow::Cow<'static, str> {
+        format!(
+            "{}::AdvertisedAddressEntry[{}]",
+            std::module_path!(),
+            P::NAME
+        )
+        .into()
+    }
+
+    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        schemars::json_schema!({
+            "type": "string",
+            "title": "advertised address for callers in a location",
+            "description": "An entry `location@address`: the address that callers whose own location \
+                starts with `location`, written as `region` or `region.zone`, use for this node. \
+                Callers in no listed location use the plain advertised address.",
+            "examples": [
+                "us-east1.az1@http://10.1.7.3:5122",
+                "us-east1@https://node-7.us-east1.internal",
+                "external@http://localhost:15122"
+            ]
+        })
+    }
+}
+
+/// Deserializes an advertised address list from a list of `location@address` strings, or from one
+/// string of comma-separated entries, which is the shape an environment variable takes.
+pub(super) fn deserialize_address_entries<'de, D, P>(
+    deserializer: D,
+) -> Result<Vec<AdvertisedAddressEntry<P>>, D::Error>
+where
+    D: Deserializer<'de>,
+    P: ListenerPort,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    #[serde(expecting = "a list of `location@address` strings, or one comma-separated string")]
+    enum Repr {
+        List(Vec<String>),
+        Text(String),
+    }
+    let entries = match Repr::deserialize(deserializer)? {
+        Repr::List(entries) => entries,
+        Repr::Text(text) => text.split(',').map(str::to_owned).collect(),
+    };
+    entries
+        .iter()
+        .filter(|entry| !entry.trim().is_empty())
+        .map(|entry| entry.parse().map_err(serde::de::Error::custom))
+        .collect()
+}
+
+impl<P: ListenerPort> From<&AdvertisedAddressEntry<P>> for QualifiedAddress<P> {
+    fn from(entry: &AdvertisedAddressEntry<P>) -> Self {
+        QualifiedAddress {
+            address: entry.address.clone(),
+            location: Some(entry.location.clone()),
+        }
+    }
+}
+
+/// Advertisement overrides for the control RPCs served on the fabric listener. Flattened into the
+/// root options next to the fabric advertisement keys, and into the CLI overrides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[cfg_attr(feature = "clap", derive(clap::Args))]
+#[serde(rename_all = "kebab-case")]
+pub struct ControlOptions {
+    /// Hostname to advertise for control RPCs.
+    ///
+    /// Uses the shared fabric listener's actual port and TLS mode. If neither
+    /// control override is set, uses the complete fabric advertised address.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, env = "RESTATE_CTRL_ADVERTISED_HOST", global = true)
+    )]
+    pub(super) ctrl_advertised_host: Option<AdvertisedHost>,
+
+    /// Full address to advertise for control RPCs, including an external proxy.
+    ///
+    /// Takes precedence over the control advertised hostname. This changes only
+    /// the advertisement; control RPCs continue to share the fabric listener.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, env = "RESTATE_CTRL_ADVERTISED_ADDRESS", global = true)
+    )]
+    pub(super) ctrl_advertised_address: Option<AdvertisedAddress<ControlPort>>,
+
+    /// Control addresses for callers in specific locations, as `location@address` entries.
+    ///
+    /// Same shape and rules as the root `advertised-addresses`, in this node's order of
+    /// preference. This is what tools such as `restatectl` use to reach a node from another
+    /// network, for example `external@http://localhost:15122` for a node behind a published
+    /// Docker Compose port. If unset, the entries of `advertised-addresses` are advertised for
+    /// control as well, because control RPCs share the fabric listener. The environment variable
+    /// and the flag take the entries comma-separated; the flag can also be repeated.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_address_entries"
+    )]
+    #[cfg_attr(
+        feature = "clap",
+        arg(
+            long,
+            env = "RESTATE_CTRL_ADVERTISED_ADDRESSES",
+            value_delimiter = ',',
+            global = true
+        )
+    )]
+    pub(super) ctrl_advertised_addresses: Vec<AdvertisedAddressEntry<ControlPort>>,
+}
+
 /// TLS mode for fabric inter-node communication.
 ///
 /// The modes are ordered for safe rolling enablement (and rollback): certificate
@@ -294,9 +467,9 @@ impl FabricTlsOptions {
         Ok(())
     }
 
-    pub fn validate_advertised_address(
+    pub fn validate_advertised_address<P: ListenerPort>(
         &self,
-        address: &AdvertisedAddress<FabricPort>,
+        address: &AdvertisedAddress<P>,
     ) -> anyhow::Result<()> {
         match self.mode {
             TlsMode::Off | TlsMode::Allow => Ok(()),
@@ -362,6 +535,37 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub(super) fabric_listener_options: ListenerOptions<FabricPort>,
+
+    /// Control RPC advertised address overrides. Default to the fabric advertised address.
+    ///
+    /// Since v1.8.2
+    #[serde(flatten)]
+    pub(super) control: ControlOptions,
+
+    /// # Advertised addresses for callers in specific locations
+    ///
+    /// Fabric addresses that callers in particular locations use instead of `advertised-address`,
+    /// in this node's order of preference, as `location@address` entries. The location is written
+    /// like `location`, as `region` or `region.zone`, and names the callers the entry is for:
+    /// those whose own location starts with it. Callers in no listed location keep using
+    /// `advertised-address`, which must stay reachable from every node. Use this for nodes that
+    /// reach each other through different networks, such as a private address within a zone;
+    /// tools reach nodes through `ctrl-advertised-addresses`.
+    ///
+    /// Entries use a scheme this node serves on the fabric port: `http`, `https` or `unix:`. An
+    /// address may be just `host` or `host:port`; it then defaults to `http` and the default
+    /// port of this listener, so `us-east1.az1@10.1.7.3` is enough for a private zone address.
+    /// A list holds at most 8 entries and no duplicates, and its entries follow the `[tls]` mode
+    /// rules that apply to `advertised-address`. The environment variable takes the entries
+    /// comma-separated.
+    ///
+    /// Since v1.8.2
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "deserialize_address_entries"
+    )]
+    pub(super) advertised_addresses: Vec<AdvertisedAddressEntry<FabricPort>>,
 
     /// # TLS Configuration
     ///
@@ -953,6 +1157,51 @@ impl CommonOptions {
             .advertised_address(address_book)
     }
 
+    /// The control advertisement while control shares the fabric listener: the configured control
+    /// address, else the configured control host with the fabric port and TLS mode, else the
+    /// fabric advertised address.
+    pub fn control_advertised_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        if let Some(address) = &self.control.ctrl_advertised_address {
+            address.clone()
+        } else if let Some(host) = &self.control.ctrl_advertised_host {
+            address_book
+                .guess_advertised_address::<FabricPort>(Some(host))
+                .coerce()
+        } else {
+            self.advertised_address(address_book).coerce()
+        }
+    }
+
+    /// The fabric addresses this node publishes for callers in specific locations.
+    pub fn advertised_addresses(&self) -> Vec<QualifiedAddress<FabricPort>> {
+        self.advertised_addresses.iter().map(Into::into).collect()
+    }
+
+    /// The control addresses this node publishes for callers in specific locations. Without a
+    /// configured control list, the fabric entries that the control port can serve are published
+    /// for control too, because control RPCs share the fabric listener.
+    pub fn control_advertised_addresses(&self) -> Vec<QualifiedAddress<ControlPort>> {
+        if !self.control.ctrl_advertised_addresses.is_empty() {
+            return self
+                .control
+                .ctrl_advertised_addresses
+                .iter()
+                .map(Into::into)
+                .collect();
+        }
+        self.advertised_addresses
+            .iter()
+            .map(|entry| QualifiedAddress {
+                address: entry.address.clone().coerce::<ControlPort>(),
+                location: Some(entry.location.clone()),
+            })
+            .filter(|entry| entry.address.clone().into_address().is_ok())
+            .collect()
+    }
+
     #[cfg(feature = "unsafe-mutable-config")]
     pub fn set_node_name(&mut self, node_name: impl Into<String>) {
         self.node_name = Some(node_name.into())
@@ -1093,6 +1342,8 @@ impl Default for CommonOptions {
             base_dir: None,
             metadata_client: MetadataClientOptions::default(),
             fabric_listener_options: Default::default(),
+            control: Default::default(),
+            advertised_addresses: Vec::new(),
             tls: None,
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
@@ -1553,10 +1804,11 @@ mod tests {
 
     use googletest::prelude::eq;
     use googletest::{assert_that, elements_are, pat};
+    use serde_json::json;
 
     use crate::config::{Configuration, ControlOptions, MetadataClientKind};
     use crate::config_loader::ConfigLoaderBuilder;
-    use crate::net::address::AdvertisedAddress;
+    use crate::net::address::{AdvertisedAddress, ControlPort};
 
     use super::*;
 
@@ -1569,6 +1821,163 @@ mod tests {
         "#,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn advertised_address_lists_parse_inherit_for_control_and_follow_tls_mode() {
+        let with_lists = |fabric: serde_json::Value, control: serde_json::Value| {
+            let mut json = serde_json::to_value(Configuration::default()).unwrap();
+            json["advertised-addresses"] = fabric;
+            json["ctrl-advertised-addresses"] = control;
+            serde_json::from_value::<Configuration>(json)
+        };
+        let shown = |list: &[QualifiedAddress<ControlPort>]| {
+            list.iter()
+                .map(|entry| (entry.address.to_string(), entry.location.clone()))
+                .collect::<Vec<_>>()
+        };
+
+        // An entry is `location@address`; the display form parses back to the same entry, and
+        // a bare host defaults to `http` and the default port when dialed.
+        let bare: AdvertisedAddressEntry<FabricPort> = "us-east1@10.1.7.3".parse().unwrap();
+        assert_eq!(
+            bare.address.into_address().unwrap().to_string(),
+            "http://10.1.7.3:5122/"
+        );
+        let entry: AdvertisedAddressEntry<FabricPort> =
+            " us-east1.az1@http://10.1.7.3:5122 ".parse().unwrap();
+        assert_eq!(entry.to_string(), "us-east1.az1@http://10.1.7.3:5122/");
+        assert_eq!(
+            entry
+                .to_string()
+                .parse::<AdvertisedAddressEntry<FabricPort>>()
+                .unwrap(),
+            entry
+        );
+        for input in [
+            "http://10.1.7.3:5122",
+            "@http://10.1.7.3:5122",
+            "us east1@http://10.1.7.3:5122",
+            "us-east1@",
+            "us-east1@not a url",
+        ] {
+            assert!(
+                input.parse::<AdvertisedAddressEntry<FabricPort>>().is_err(),
+                "{input}"
+            );
+        }
+
+        // A list takes strings, or one comma-separated string as an environment variable does.
+        let config = with_lists(
+            json!([
+                "us-east1.az1@http://10.1.7.3:5122",
+                "us-east1@https://node-7.us-east1.internal"
+            ]),
+            json!("external@http://localhost:15122, us-east1@http://10.1.7.3:5122"),
+        )
+        .unwrap();
+        assert_eq!(config.common.advertised_addresses.len(), 2);
+        assert_eq!(config.common.control.ctrl_advertised_addresses.len(), 2);
+        assert_eq!(
+            config.common.control.ctrl_advertised_addresses[0].to_string(),
+            "external@http://localhost:15122/"
+        );
+        for (fabric, control) in [
+            (json!(["@http://h:5122"]), json!([])),
+            (
+                json!([{ "address": "http://h:5122", "location": "x" }]),
+                json!([]),
+            ),
+            (json!([]), json!("us-east1@http://h:5122,oops")),
+        ] {
+            assert!(
+                with_lists(fabric.clone(), control.clone()).is_err(),
+                "{fabric} {control}"
+            );
+        }
+
+        // Without lists nothing is published and the dump stays as it was.
+        let mut config = Configuration::default();
+        config.common.set_node_name("address-lists");
+        assert!(config.advertised_addresses().is_empty());
+        assert!(config.control_advertised_addresses().is_empty());
+        assert!(!config.dump().unwrap().contains("advertised-addresses"));
+
+        config.common.advertised_addresses = vec![
+            "us-east1.az1@http://10.1.7.3:5122".parse().unwrap(),
+            "us-east1@https://node-7.us-east1.internal".parse().unwrap(),
+        ];
+        config.validate().unwrap();
+        let fabric = config.advertised_addresses();
+        assert_eq!(fabric.len(), 2);
+        assert_eq!(
+            fabric[0]
+                .location
+                .as_ref()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("us-east1.az1")
+        );
+        // Control inherits the fabric list, retyped for the control port.
+        let expected: Vec<_> = fabric
+            .iter()
+            .map(|entry| (entry.address.to_string(), entry.location.clone()))
+            .collect();
+        assert_eq!(shown(&config.control_advertised_addresses()), expected);
+
+        // A configured control list replaces the inherited one.
+        config.common.control.ctrl_advertised_addresses =
+            vec!["external@http://localhost:15122".parse().unwrap()];
+        config.validate().unwrap();
+        let control = config.control_advertised_addresses();
+        assert_eq!(control.len(), 1);
+        assert_eq!(control[0].address.to_string(), "http://localhost:15122/");
+
+        // Both lists round-trip through the TOML dump as strings.
+        let dump = config.dump().unwrap();
+        assert!(
+            dump.contains("\"us-east1.az1@http://10.1.7.3:5122/\""),
+            "{dump}"
+        );
+        let round_trip: Configuration = toml::from_str(&dump).unwrap();
+        assert_eq!(
+            round_trip.common.advertised_addresses,
+            config.common.advertised_addresses
+        );
+        assert_eq!(
+            round_trip.common.control.ctrl_advertised_addresses,
+            config.common.control.ctrl_advertised_addresses
+        );
+
+        // With TLS required, plaintext entries fail like the scalar does at startup.
+        let mut tls = minimal_tls_config();
+        tls.mode = TlsMode::Require;
+        config.common.tls = Some(tls);
+        let err = config.validate().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InvalidConfigurationError::AdvertisedAddress {
+                    key: "advertised-addresses",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        config.common.advertised_addresses.remove(0);
+        let err = config.validate().unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InvalidConfigurationError::AdvertisedAddress {
+                    key: "ctrl-advertised-addresses",
+                    ..
+                }
+            ),
+            "{err}"
+        );
+        config.common.control.ctrl_advertised_addresses.clear();
+        config.validate().unwrap();
     }
 
     #[tokio::test]
@@ -1604,7 +2013,7 @@ mod tests {
         assert!(!config.dump().unwrap().contains("ctrl-"));
 
         for host in ["control.example.com", "[2001:db8::7]"] {
-            config.networking.control.ctrl_advertised_host = Some(host.parse().unwrap());
+            config.common.control.ctrl_advertised_host = Some(host.parse().unwrap());
             assert_eq!(
                 config.control_advertised_address(&address_book),
                 format!("https://{host}:{port}").parse().unwrap()
@@ -1613,11 +2022,11 @@ mod tests {
         }
 
         let proxy = "https://control.example.com:8443/rpc".parse().unwrap();
-        config.networking.control.ctrl_advertised_address = Some(proxy);
+        config.common.control.ctrl_advertised_address = Some(proxy);
         assert_eq!(
             config.control_advertised_address(&address_book),
             config
-                .networking
+                .common
                 .control
                 .ctrl_advertised_address
                 .clone()
@@ -1626,13 +2035,9 @@ mod tests {
         let dump = config.dump().unwrap();
         assert!(!dump.contains("[control]"));
         let dumped: toml::Value = toml::from_str(&dump).unwrap();
-        assert!(dumped["networking"].get("control").is_none());
-        assert!(dumped["networking"].get("ctrl-advertised-host").is_some());
-        assert!(
-            dumped["networking"]
-                .get("ctrl-advertised-address")
-                .is_some()
-        );
+        assert!(dumped.get("control").is_none());
+        assert!(dumped.get("ctrl-advertised-host").is_some());
+        assert!(dumped.get("ctrl-advertised-address").is_some());
         let round_trip: Configuration = toml::from_str(&dump).unwrap();
         assert_eq!(
             round_trip.control_advertised_address(&address_book),
@@ -1641,7 +2046,7 @@ mod tests {
 
         #[cfg(feature = "schemars")]
         {
-            let schema = schemars::schema_for!(NetworkingOptions);
+            let schema = schemars::schema_for!(CommonOptions);
             let properties = schema.get("properties").unwrap();
             assert!(properties.get("control").is_none());
             for name in ["ctrl-advertised-host", "ctrl-advertised-address"] {
@@ -1649,7 +2054,7 @@ mod tests {
             }
         }
 
-        config.networking.control = ControlOptions::default();
+        config.common.control = ControlOptions::default();
         for address in [
             "http://fabric.example.com:8122/prefix",
             "https://fabric.example.com:8443/prefix",
@@ -1695,7 +2100,7 @@ mod tests {
         for (section, key, value) in [
             ("", "advertised-host", "bad host"),
             ("[admin]", "advertised-host", "user@host"),
-            ("[networking]", "ctrl-advertised-host", "host:8443"),
+            ("", "ctrl-advertised-host", "host:8443"),
         ] {
             let err = load(&format!("{section}\n{key} = \"{value}\"")).unwrap_err();
             let message = err.to_string();

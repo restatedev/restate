@@ -69,9 +69,9 @@ use crate::PlainNodeId;
 use crate::errors::GenericError;
 use crate::live::Live;
 use crate::live::LiveLoadExt;
-use crate::net::address::{AdvertisedAddress, ControlPort, ListenerPort};
+use crate::net::address::{AdvertisedAddress, ControlPort, FabricPort, ListenerPort};
 use crate::net::listener::AddressBook;
-use crate::nodes_config::Role;
+use crate::nodes_config::{QualifiedAddress, Role};
 
 static CPU_COUNT: LazyLock<NonZeroU32> = LazyLock::new(|| {
     let cpu_count: u32 = num_cpus::get().try_into().unwrap_or(10);
@@ -452,9 +452,19 @@ impl Configuration {
         &self,
         address_book: &AddressBook,
     ) -> AdvertisedAddress<ControlPort> {
-        self.networking
-            .control
-            .advertised_address(&self.common, address_book)
+        self.common.control_advertised_address(address_book)
+    }
+
+    /// The fabric addresses this node publishes for callers in specific locations.
+    pub fn advertised_addresses(&self) -> Vec<QualifiedAddress<FabricPort>> {
+        self.common.advertised_addresses()
+    }
+
+    /// The control addresses this node publishes for callers in specific locations. Without a
+    /// configured control list, these are the fabric entries, because control RPCs share the
+    /// fabric listener.
+    pub fn control_advertised_addresses(&self) -> Vec<QualifiedAddress<ControlPort>> {
+        self.common.control_advertised_addresses()
     }
 
     /// Dumps the configuration to a string
@@ -517,8 +527,8 @@ impl Configuration {
             true,
         )?;
         check_advertised_address(
-            "networking.ctrl-advertised-address",
-            self.networking.control.ctrl_advertised_address.as_ref(),
+            "ctrl-advertised-address",
+            self.common.control.ctrl_advertised_address.as_ref(),
             true,
         )?;
         check_advertised_address(
@@ -544,6 +554,16 @@ impl Configuration {
             "ingress.advertised-ingress-endpoint",
             self.ingress.advertised_ingress_endpoint.as_ref(),
             false,
+        )?;
+        check_advertised_address_list(
+            "advertised-addresses",
+            &self.common.advertised_addresses,
+            self.common.fabric_tls(),
+        )?;
+        check_advertised_address_list(
+            "ctrl-advertised-addresses",
+            &self.common.control.ctrl_advertised_addresses,
+            self.common.fabric_tls(),
         )?;
         if let MetadataClientKind::Replicated { addresses } = &self.common.metadata_client.kind {
             for address in addresses {
@@ -578,6 +598,48 @@ fn check_advertised_address<P: ListenerPort>(
     })
 }
 
+/// The most entries an advertised address list may hold.
+const MAX_ADVERTISED_ADDRESSES: usize = 8;
+
+/// Rejects a list this node cannot publish: more than [`MAX_ADVERTISED_ADDRESSES`] entries, an
+/// entry this binary cannot dial, a duplicate, or an entry the fabric TLS mode forbids. Lists are
+/// read only by versions that decode every address shape, so their entries need not be readable
+/// by older versions.
+fn check_advertised_address_list<P: ListenerPort>(
+    key: &'static str,
+    entries: &[AdvertisedAddressEntry<P>],
+    tls: Option<&FabricTlsOptions>,
+) -> Result<(), InvalidConfigurationError> {
+    if entries.len() > MAX_ADVERTISED_ADDRESSES {
+        return Err(InvalidConfigurationError::AdvertisedAddressList {
+            key,
+            reason: format!(
+                "{} entries exceed the limit of {MAX_ADVERTISED_ADDRESSES}",
+                entries.len()
+            ),
+        });
+    }
+    for (index, entry) in entries.iter().enumerate() {
+        let invalid = |reason: String| InvalidConfigurationError::AdvertisedAddress {
+            key,
+            address: entry.address.to_string(),
+            reason,
+        };
+        check_advertised_address(key, Some(&entry.address), false)?;
+        if entries[..index].contains(entry) {
+            return Err(invalid(format!(
+                "duplicate entry for location '{}'",
+                entry.location
+            )));
+        }
+        if let Some(tls) = tls {
+            tls.validate_advertised_address(&entry.address)
+                .map_err(|err| invalid(err.to_string()))?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InvalidConfigurationError {
     #[error(
@@ -594,6 +656,8 @@ pub enum InvalidConfigurationError {
         address: String,
         reason: String,
     },
+    #[error("invalid {key}: {reason}")]
+    AdvertisedAddressList { key: &'static str, reason: String },
 }
 
 /// Migrates a single field from a deprecated config location to its new one.
@@ -689,6 +753,11 @@ mod tests {
         };
 
         let grpc_unix = json!("grpc+unix:/run/f.sock");
+        let entries = |entries: &[&str]| json!(entries);
+        let hosts: Vec<String> = (0..9)
+            .map(|i| format!("us-east1@http://h{i}:5122"))
+            .collect();
+        let nine: Vec<&str> = hosts.iter().map(String::as_str).collect();
         for (key, value, valid) in [
             ("advertised-address", json!("unix:/run/f.sock"), true),
             ("advertised-address", grpc_unix.clone(), false),
@@ -699,11 +768,7 @@ mod tests {
             ),
             // Used to pass startup and then panic the peers that dialed it.
             ("advertised-address", json!("ftp://h:21"), false),
-            (
-                "networking.ctrl-advertised-address",
-                grpc_unix.clone(),
-                false,
-            ),
+            ("ctrl-advertised-address", grpc_unix.clone(), false),
             ("admin.advertised-address", grpc_unix.clone(), false),
             (
                 "ingress.advertised-address",
@@ -712,6 +777,32 @@ mod tests {
             ),
             // Seeds are never published, so the explicit gRPC spelling is fine there.
             ("metadata-client.addresses", json!([grpc_unix]), true),
+            // Lists are read only by versions that decode every address shape, so the explicit
+            // gRPC spelling is fine in them too.
+            (
+                "advertised-addresses",
+                entries(&[
+                    "us-east1.az1@http://10.1.7.3:5122",
+                    "us-east1@https://node-7.us-east1.internal",
+                ]),
+                true,
+            ),
+            (
+                "ctrl-advertised-addresses",
+                entries(&["external@grpc+unix:/run/c.sock"]),
+                true,
+            ),
+            (
+                "advertised-addresses",
+                entries(&["us-east1@ftp://h:21"]),
+                false,
+            ),
+            (
+                "advertised-addresses",
+                entries(&["us-east1@http://h:5122"; 2]),
+                false,
+            ),
+            ("advertised-addresses", entries(&nine), false),
         ] {
             assert_eq!(
                 validate(key, value.clone()).is_ok(),
@@ -729,6 +820,18 @@ mod tests {
             }
         ));
         assert!(err.to_string().contains("older Restate versions"), "{err}");
+
+        let err = validate("advertised-addresses", entries(&nine)).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                InvalidConfigurationError::AdvertisedAddressList {
+                    key: "advertised-addresses",
+                    ..
+                }
+            ),
+            "{err}"
+        );
     }
 
     #[test]
