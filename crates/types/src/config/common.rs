@@ -34,7 +34,7 @@ use crate::config::dynamodb_store::DynamoDbOptions;
 use crate::config::{DeprecatedServiceClientOptions, NetworkingOptions};
 use crate::locality::NodeLocation;
 use crate::net::address::{AdvertisedAddress, AdvertisedHost, ListenerPort};
-use crate::net::address::{BindAddress, FabricPort, TokioConsolePort};
+use crate::net::address::{BindAddress, ControlPort, FabricPort, TokioConsolePort};
 use crate::net::listener::AddressBook;
 use crate::nodes_config::Role;
 use crate::replication::ReplicationProperty;
@@ -195,6 +195,41 @@ impl<P: ListenerPort> Default for ListenerOptions<P> {
             advertised_address: None,
         }
     }
+}
+
+/// Advertisement overrides for the control RPCs served on the fabric listener. Flattened into the
+/// root options next to the fabric advertisement keys, and into the CLI overrides.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "schemars", schemars(default))]
+#[cfg_attr(feature = "clap", derive(clap::Args))]
+#[serde(rename_all = "kebab-case")]
+pub struct ControlOptions {
+    /// Hostname to advertise for control RPCs.
+    ///
+    /// Uses the shared fabric listener's actual port and TLS mode. If neither
+    /// control override is set, uses the complete fabric advertised address.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, env = "RESTATE_CTRL_ADVERTISED_HOST", global = true)
+    )]
+    pub(super) ctrl_advertised_host: Option<AdvertisedHost>,
+
+    /// Full address to advertise for control RPCs, including an external proxy.
+    ///
+    /// Takes precedence over the control advertised hostname. This changes only
+    /// the advertisement; control RPCs continue to share the fabric listener.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(
+        feature = "clap",
+        arg(long, env = "RESTATE_CTRL_ADVERTISED_ADDRESS", global = true)
+    )]
+    pub(super) ctrl_advertised_address: Option<AdvertisedAddress<ControlPort>>,
 }
 
 /// TLS mode for fabric inter-node communication.
@@ -362,6 +397,12 @@ pub struct CommonOptions {
 
     #[serde(flatten)]
     pub(super) fabric_listener_options: ListenerOptions<FabricPort>,
+
+    /// Control RPC advertised address overrides. Default to the fabric advertised address.
+    ///
+    /// Since v1.8.2
+    #[serde(flatten)]
+    pub(super) control: ControlOptions,
 
     /// # TLS Configuration
     ///
@@ -953,6 +994,24 @@ impl CommonOptions {
             .advertised_address(address_book)
     }
 
+    /// The control advertisement while control shares the fabric listener: the configured control
+    /// address, else the configured control host with the fabric port and TLS mode, else the
+    /// fabric advertised address.
+    pub fn control_advertised_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        if let Some(address) = &self.control.ctrl_advertised_address {
+            address.clone()
+        } else if let Some(host) = &self.control.ctrl_advertised_host {
+            address_book
+                .guess_advertised_address::<FabricPort>(Some(host))
+                .coerce()
+        } else {
+            self.advertised_address(address_book).coerce()
+        }
+    }
+
     #[cfg(feature = "unsafe-mutable-config")]
     pub fn set_node_name(&mut self, node_name: impl Into<String>) {
         self.node_name = Some(node_name.into())
@@ -1093,6 +1152,7 @@ impl Default for CommonOptions {
             base_dir: None,
             metadata_client: MetadataClientOptions::default(),
             fabric_listener_options: Default::default(),
+            control: Default::default(),
             tls: None,
             default_num_partitions: 24,
             default_replication: ReplicationProperty::new_unchecked(1),
@@ -1604,7 +1664,7 @@ mod tests {
         assert!(!config.dump().unwrap().contains("ctrl-"));
 
         for host in ["control.example.com", "[2001:db8::7]"] {
-            config.networking.control.ctrl_advertised_host = Some(host.parse().unwrap());
+            config.common.control.ctrl_advertised_host = Some(host.parse().unwrap());
             assert_eq!(
                 config.control_advertised_address(&address_book),
                 format!("https://{host}:{port}").parse().unwrap()
@@ -1613,11 +1673,11 @@ mod tests {
         }
 
         let proxy = "https://control.example.com:8443/rpc".parse().unwrap();
-        config.networking.control.ctrl_advertised_address = Some(proxy);
+        config.common.control.ctrl_advertised_address = Some(proxy);
         assert_eq!(
             config.control_advertised_address(&address_book),
             config
-                .networking
+                .common
                 .control
                 .ctrl_advertised_address
                 .clone()
@@ -1626,13 +1686,9 @@ mod tests {
         let dump = config.dump().unwrap();
         assert!(!dump.contains("[control]"));
         let dumped: toml::Value = toml::from_str(&dump).unwrap();
-        assert!(dumped["networking"].get("control").is_none());
-        assert!(dumped["networking"].get("ctrl-advertised-host").is_some());
-        assert!(
-            dumped["networking"]
-                .get("ctrl-advertised-address")
-                .is_some()
-        );
+        assert!(dumped.get("control").is_none());
+        assert!(dumped.get("ctrl-advertised-host").is_some());
+        assert!(dumped.get("ctrl-advertised-address").is_some());
         let round_trip: Configuration = toml::from_str(&dump).unwrap();
         assert_eq!(
             round_trip.control_advertised_address(&address_book),
@@ -1641,7 +1697,7 @@ mod tests {
 
         #[cfg(feature = "schemars")]
         {
-            let schema = schemars::schema_for!(NetworkingOptions);
+            let schema = schemars::schema_for!(CommonOptions);
             let properties = schema.get("properties").unwrap();
             assert!(properties.get("control").is_none());
             for name in ["ctrl-advertised-host", "ctrl-advertised-address"] {
@@ -1649,7 +1705,7 @@ mod tests {
             }
         }
 
-        config.networking.control = ControlOptions::default();
+        config.common.control = ControlOptions::default();
         for address in [
             "http://fabric.example.com:8122/prefix",
             "https://fabric.example.com:8443/prefix",
@@ -1695,7 +1751,7 @@ mod tests {
         for (section, key, value) in [
             ("", "advertised-host", "bad host"),
             ("[admin]", "advertised-host", "user@host"),
-            ("[networking]", "ctrl-advertised-host", "host:8443"),
+            ("", "ctrl-advertised-host", "host:8443"),
         ] {
             let err = load(&format!("{section}\n{key} = \"{value}\"")).unwrap_err();
             let message = err.to_string();
