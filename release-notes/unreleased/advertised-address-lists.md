@@ -65,5 +65,4 @@ must be an `https` address, as for `advertised-address`.
   connections keep using `advertised-address` and `ctrl-advertised-address`.
 - Until every metadata server runs Restate 1.9 or later, adding or removing a metadata server
   clears the lists of all nodes, and nodes running older Restate versions may drop them when they
-  update cluster metadata. A node publishes its lists again when it restarts; an upcoming change
-  republishes them without a restart.
+  update cluster metadata. A node notices this and publishes its lists again within seconds.
