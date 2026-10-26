@@ -14,9 +14,12 @@ use http::{HeaderName, Response, header};
 use http_body_util::Full;
 use tracing::{info, trace};
 
+use restate_types::Versioned;
 use restate_types::invocation::InvocationTarget;
 use restate_types::invocation::client::{InvocationOutput, InvocationOutputResponse};
-use restate_types::schema::invocation_target::InvocationTargetMetadata;
+use restate_types::schema::invocation_target::{
+    InvocationTargetMetadata, InvocationTargetResolver,
+};
 
 use crate::handler::Handler;
 use crate::handler::error::HandlerError;
@@ -24,6 +27,28 @@ use crate::handler::error::HandlerError;
 pub(crate) const IDEMPOTENCY_EXPIRES: HeaderName = HeaderName::from_static("idempotency-expires");
 /// Contains the string representation of the invocation id
 pub(crate) const X_RESTATE_ID: HeaderName = HeaderName::from_static("x-restate-id");
+
+impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher>
+where
+    Schemas: InvocationTargetResolver + Versioned,
+{
+    /// Resolves the metadata used to set the content type of an invocation output. The target
+    /// may have been removed since the invocation completed, so a miss is only an error while the
+    /// schema has not been loaded.
+    pub(crate) fn resolve_output_metadata(
+        &self,
+        invocation_target: &InvocationTarget,
+    ) -> Result<Option<InvocationTargetMetadata>, HandlerError> {
+        let schemas = self.schemas.pinned();
+        match schemas.resolve_latest_invocation_target(
+            invocation_target.service_name(),
+            invocation_target.handler_name(),
+        ) {
+            None if !schemas.valid() => Err(HandlerError::SchemaNotReady),
+            metadata => Ok(metadata),
+        }
+    }
+}
 
 impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
     pub(crate) fn reply_with_invocation_response(
@@ -35,7 +60,10 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
         }: InvocationOutput,
         invocation_target_metadata_retriever: impl FnOnce(
             &InvocationTarget,
-        ) -> Option<InvocationTargetMetadata>,
+        ) -> Result<
+            Option<InvocationTargetMetadata>,
+            HandlerError,
+        >,
     ) -> Result<Response<Full<Bytes>>, HandlerError> {
         // Prepare response metadata
         let mut response_builder = hyper::Response::builder();
@@ -61,8 +89,8 @@ impl<Schemas, Dispatcher> Handler<Schemas, Dispatcher> {
 
                 // Missing schema metadata must not prevent returning an available result.
                 // TODO fix https://github.com/restatedev/restate/issues/1496
-                if let Some(ct) =
-                    invocation_target_metadata_retriever(&invocation_target).and_then(|metadata| {
+                if let Some(ct) = invocation_target_metadata_retriever(&invocation_target)?
+                    .and_then(|metadata| {
                         metadata
                             .output_rules
                             .infer_content_type(response_payload.is_empty())

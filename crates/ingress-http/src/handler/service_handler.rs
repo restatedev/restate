@@ -342,7 +342,9 @@ where
             .await
             .map_err(HandlerError::InvocationDispatcherError)?;
 
-        Self::reply_with_invocation_response(response, move |_| Some(invocation_target_metadata))
+        Self::reply_with_invocation_response(response, move |_| {
+            Ok(Some(invocation_target_metadata))
+        })
     }
 
     async fn handle_service_send(

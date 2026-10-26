@@ -10,9 +10,9 @@ are registered, because the node had not loaded the service schema yet. The ingr
 The gRPC ingestion API had the same problem and reported `ERROR_KIND_NOT_FOUND`. It now reports the
 new `ERROR_KIND_UNAVAILABLE`, which means: reconnect and resend the same records later.
 
-Attaching to or fetching output by invocation ID or workflow key no longer returns `404` just because
-the response's service or handler schema is unavailable. Available results are returned without a
-`Content-Type` header when the registered content type cannot be resolved.
+Attaching to or fetching the output of an invocation or workflow no longer returns `404` when its
+service or handler was removed after the invocation completed. The result is returned without a
+`Content-Type` header instead. While the schema is still loading, these requests return `503`.
 
 ### Impact on Users
 - Clients no longer see spurious 404s during node startup or restarts.
