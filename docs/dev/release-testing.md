@@ -13,7 +13,7 @@ Use this checklist to prepare testing for a major/minor release. Tailor the task
 | Suite | What to check |
 | --- | --- |
 | [CI](../../.github/workflows/ci.yml) | Build, unit/integration tests, SDK integration tests, and E2E tests pass for the candidate. Review relevant non-blocking failures and exclusions too. |
-| [Jepsen](https://github.com/restatedev/jepsen/actions) | Consistency and fault-tolerance tests pass. Runs are dispatched [nightly](../../.github/workflows/jepsen-nightly-dispatch.yml); use the [workflow inputs](https://github.com/restatedev/jepsen/blob/main/.github/workflows/jepsen.yml) to select the candidate for release testing. |
+| [Jepsen](https://github.com/restatedev/jepsen/actions) | Consistency and fault-tolerance tests pass. Runs are scheduled nightly in that repository; use the [workflow inputs](https://github.com/restatedev/jepsen/blob/main/.github/workflows/jepsen.yml) to select the candidate for release testing. |
 | [E2E verification runner](https://github.com/restatedev/e2e-verification-runner/actions) | Correctness and upgrade/downgrade tests pass with the intended candidate, baseline versions, and configuration. |
 | [Long-lived load tests](https://github.com/restatedev/internal/blob/main/labs/lab-environment-long-lived-ec2/README.md) | Update the environment to the candidate, check for degradation over time, and compare performance and resource use with the previous release. |
 

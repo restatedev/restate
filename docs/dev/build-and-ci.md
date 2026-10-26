@@ -133,7 +133,6 @@ Triggered on: PRs, pushes to `main` and `release/*` branches, and as part of rel
 | `sdk-typescript` | SDK-TypeScript integration tests |
 | `sdk-rust` | SDK-Rust integration tests |
 | `e2e` | End-to-end tests from `restatedev/e2e` |
-| `jepsen` | Distributed systems tests (main branch only, non-fork PRs) |
 
 Experimental feature tests (`e2e-vqueues`, `e2e-experimental-kafka-ingestion`, etc.) run with `continue-on-error: true` and don't block merges.
 
@@ -181,13 +180,9 @@ Integration tests need a Docker image of the Restate server built from the PR/co
 - **Image tagging**: e2e tests re-tag the image to `localhost/restatedev/restate-commit-download:latest`. If this tag format changes, e2e tests break
 - **Docker containerd snapshotter**: OCI-format tarballs require the containerd snapshotter feature enabled in Docker. Jobs must configure this explicitly
 
-**Jepsen special case:**
+### Jepsen Tests
 
-Jepsen tests don't use the artifact mechanism. Instead, they:
-1. Wait for the docker job to complete and push to GHCR (on main branch, images are pushed to the registry)
-2. Pull the image by commit SHA tag from GHCR
-
-This avoids artifact transfer but only works for commits that push images to the registry (main branch, release tags).
+Jepsen tests run in [restatedev/jepsen](https://github.com/restatedev/jepsen/actions), which owns their nightly schedule. Use the [workflow inputs](https://github.com/restatedev/jepsen/blob/main/.github/workflows/jepsen.yml) to select a Restate commit, PR artifact, or container image for a manual run.
 
 ### Docker Build Workflow (`docker.yml`)
 
