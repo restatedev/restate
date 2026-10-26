@@ -10,12 +10,12 @@
 
 use std::num::NonZeroU32;
 
-use rocksdb::{BlockBasedOptions, Cache, WriteBufferManager};
+use rocksdb::{BlockBasedOptions, WriteBufferManager};
 
 use restate_types::config::{RocksDbLogLevel, RocksDbOptions, StatisticsLevel};
 
 use crate::logging::LoggingEventListener;
-use crate::{DbName, OpenMode, RocksAccess};
+use crate::{DbEnv, DbName, OpenMode, RocksAccess};
 
 /// A trait for customizing database options when it's being opened and enables live reaction to
 /// configuration changes.
@@ -24,13 +24,9 @@ pub trait DbConfigurator {
         OpenMode::ReadWrite
     }
 
-    fn get_db_options(
-        &self,
-        db_name: &DbName,
-        env: &rocksdb::Env,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-        limiter: &rocksdb::RateLimiter,
-    ) -> rocksdb::Options;
+    /// Builds options using supplied resources where present. Missing resources
+    /// leave this configurator's choices and native defaults in control.
+    fn get_db_options(&self, db_name: &DbName, env: &DbEnv) -> rocksdb::Options;
 
     fn apply_db_opts_from_config(
         &self,
@@ -67,19 +63,19 @@ pub fn create_empty_db_options(db_name: DbName) -> rocksdb::Options {
     db_options
 }
 
-pub fn create_default_db_options(
-    env: &rocksdb::Env,
-    db_name: &DbName,
-    write_buffer_manager: &rocksdb::WriteBufferManager,
-    limiter: &rocksdb::RateLimiter,
-) -> rocksdb::Options {
+pub fn create_default_db_options(env: &DbEnv, db_name: &DbName) -> rocksdb::Options {
     let mut db_options = rocksdb::Options::default();
-    db_options.set_env(env);
-    db_options.set_shared_ratelimiter(limiter);
+    if let Some(native_env) = &env.native_env {
+        db_options.set_env(native_env);
+    }
+    if let Some(limiter) = &env.rate_limiter {
+        db_options.set_shared_ratelimiter(limiter);
+    }
     db_options.create_if_missing(true);
     db_options.create_missing_column_families(true);
-    // write buffer is controlled by write buffer manager
-    db_options.set_write_buffer_manager(write_buffer_manager);
+    if let Some(write_buffer_manager) = &env.write_buffer_manager {
+        db_options.set_write_buffer_manager(write_buffer_manager);
+    }
     db_options.set_avoid_unnecessary_blocking_io(true);
     // Let rocksdb decide for level sizes.
     db_options.set_level_compaction_dynamic_level_bytes(true);
@@ -143,14 +139,11 @@ pub fn create_default_cf_options(
 ///
 /// A blanked implementation exists for `Fn(rocksdb::Options) -> rocksdb::Options + Send + Sync`
 /// to allow easy default -> custom_options transformation.
+///
+/// The environment is the same bundle selected at database open, including for
+/// subsequent column family creation and import. Resources may be absent.
 pub trait CfConfigurator {
-    fn get_cf_options(
-        &self,
-        db_name: &DbName,
-        cf_name: &str,
-        global_cache: &Cache,
-        write_buffer_manager: &rocksdb::WriteBufferManager,
-    ) -> rocksdb::Options;
+    fn get_cf_options(&self, db_name: &DbName, cf_name: &str, env: &DbEnv) -> rocksdb::Options;
 }
 
 /// Sets the background flush and compaction concurrency for a database.
