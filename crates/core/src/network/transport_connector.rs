@@ -8,15 +8,48 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::future::Future;
 
 use futures::Stream;
 
 use restate_types::NodeId;
+use restate_types::config::Configuration;
+use restate_types::net::address::{AdvertisedAddress, ControlPort, FabricPort};
+use restate_types::net::selection::{dialable, select_entry};
 use restate_types::nodes_config::{NodeConfig, NodesConfigError, NodesConfiguration};
 
 use super::protobuf::network::Message;
 use super::{ConnectError, Destination, DiscoveryError, Swimlane};
+
+/// The fabric address this process dials for `node`: the walk of
+/// [`restate_types::net::selection`] over the node's lists, with this process's configured
+/// `location` and its fabric TLS mode, ending with the node's `address`. The configured location
+/// is the one a node publishes when it joins, and it is known before the join, which is when the
+/// metadata client first selects.
+pub fn select_address(node: &NodeConfig) -> &AdvertisedAddress<FabricPort> {
+    let config = Configuration::pinned();
+    let tls_mode = config.common.fabric_tls_mode();
+    node.address_for(config.common.location(), |address| {
+        dialable(address, tls_mode)
+    })
+}
+
+/// The control address this process dials for `node`: its control entries, selected like
+/// [`select_address`], and then its fabric `address` on the control port, which every node must
+/// be able to reach and which the TLS checks at startup cover. Nodes never fall back to the
+/// published `ctrl_address`: that one is for tools and may be a route only they can reach, such
+/// as a proxy or a published container port. Control RPCs share the fabric listener and its TLS
+/// mode.
+pub fn select_ctrl_address(node: &NodeConfig) -> Cow<'_, AdvertisedAddress<ControlPort>> {
+    let config = Configuration::pinned();
+    let tls_mode = config.common.fabric_tls_mode();
+    select_entry(config.common.location(), &node.ctrl_addresses, |address| {
+        dialable(address, tls_mode)
+    })
+    .map(Cow::Borrowed)
+    .unwrap_or_else(|| Cow::Owned(node.address.clone().into_control()))
+}
 
 /// Finds a node in nodes configuration by ID and maps the error to [`DiscoveryError`]
 pub fn find_node(
@@ -242,5 +275,111 @@ pub mod test_util {
                 .map_err(|err| ConnectError::Transport(err.to_string()))?;
             Ok(output)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use enumset::EnumSet;
+
+    use restate_types::config::{CommonOptionsBuilder, set_current_config};
+    use restate_types::locality::NodeLocation;
+    use restate_types::net::address::ListenerPort;
+    use restate_types::nodes_config::{QualifiedAddress, Role};
+    use restate_types::{GenerationalNodeId, RestateVersion};
+
+    use super::*;
+
+    fn entry<P: ListenerPort>(address: &str, location: &str) -> QualifiedAddress<P> {
+        QualifiedAddress {
+            address: address.parse().unwrap(),
+            location: Some(location.parse().unwrap()),
+        }
+    }
+
+    fn node(
+        id: u32,
+        name: &str,
+        location: &str,
+        address: &str,
+        ctrl_address: Option<&str>,
+        addresses: Vec<QualifiedAddress<FabricPort>>,
+        ctrl_addresses: Vec<QualifiedAddress<ControlPort>>,
+    ) -> NodeConfig {
+        NodeConfig::builder()
+            .name(name.to_owned())
+            .current_generation(GenerationalNodeId::new(id, 1))
+            .location(location.parse().unwrap())
+            .address(address.parse().unwrap())
+            .ctrl_address(ctrl_address.map(|address| address.parse().unwrap()))
+            .addresses(addresses)
+            .ctrl_addresses(ctrl_addresses)
+            .roles(EnumSet::only(Role::Worker))
+            .binary_version(RestateVersion::current())
+            .build()
+    }
+
+    #[test]
+    fn selection_uses_the_configured_location() {
+        let common = CommonOptionsBuilder::default()
+            .location("us-east1.az1".parse::<NodeLocation>().unwrap())
+            .build()
+            .unwrap();
+        set_current_config(Configuration {
+            common,
+            ..Default::default()
+        });
+        let peer = node(
+            2,
+            "peer",
+            "",
+            "https://peer.example.com",
+            None,
+            vec![
+                entry("http://10.1.7.2:5122", "us-east1.az1"),
+                entry("http://peer.internal:5122", "us-east1"),
+            ],
+            vec![
+                entry("http://10.1.7.2:5122", "us-east1.az1"),
+                entry("http://localhost:25122", "external"),
+            ],
+        );
+        let bare = node(3, "bare", "", "http://bare:5122", None, vec![], vec![]);
+        let proxied = node(
+            4,
+            "proxied",
+            "",
+            "http://proxied:5122",
+            Some("https://proxy.example.com"),
+            vec![],
+            vec![],
+        );
+
+        // A caller in the peer's zone takes the zone entries of both lists.
+        assert_eq!(select_address(&peer).to_string(), "http://10.1.7.2:5122/");
+        assert_eq!(
+            select_ctrl_address(&peer).to_string(),
+            "http://10.1.7.2:5122/"
+        );
+        // Without a usable control entry, a node dials the fabric address on the control port,
+        // never the published control address, which is for tools.
+        assert_eq!(
+            select_ctrl_address(&bare).into_owned(),
+            bare.address.clone().into_control()
+        );
+        assert_eq!(
+            select_ctrl_address(&proxied).to_string(),
+            "http://proxied:5122/"
+        );
+        // A caller with no location, such as a tool, gets the scalars.
+        set_current_config(Configuration::default());
+        assert_eq!(
+            select_address(&peer).to_string(),
+            "https://peer.example.com/"
+        );
+        assert_eq!(
+            select_ctrl_address(&peer).to_string(),
+            "https://peer.example.com/"
+        );
     }
 }

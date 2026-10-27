@@ -57,7 +57,8 @@ use restate_metadata_store::{MetadataStoreClient, ReadError};
 use restate_types::config::InvalidConfigurationError;
 use restate_types::logs::metadata::ProviderConfiguration;
 use restate_types::net::address::{
-    AdminPort, AdvertisedAddress, FabricPort, HttpIngressPort, ListenerPort, PeerNetAddress,
+    AdminPort, AdvertisedAddress, ControlPort, FabricPort, HttpIngressPort, ListenerPort,
+    PeerNetAddress,
 };
 use restate_types::nodes_config::{ClusterFeature, MetadataServerState};
 use restate_types::protobuf::common::MetadataServerStatus;
@@ -195,7 +196,7 @@ impl NodeSpec {
         nodes
     }
 
-    pub fn set_metadata_servers(&mut self, all_servers: &[AdvertisedAddress<FabricPort>]) {
+    pub fn set_metadata_servers(&mut self, all_servers: &[AdvertisedAddress<ControlPort>]) {
         if let MetadataClientKind::Replicated { addresses } =
             &mut self.base_config.common.metadata_client.kind
         {

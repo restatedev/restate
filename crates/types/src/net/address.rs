@@ -641,6 +641,15 @@ impl<P: ListenerPort> AdvertisedAddress<P> {
     }
 }
 
+impl AdvertisedAddress<FabricPort> {
+    /// This address as a control address. Control RPCs are served on the fabric listener, so
+    /// every fabric address also reaches them; this is how the control address of a node that
+    /// configured none is derived.
+    pub fn into_control(self) -> AdvertisedAddress<ControlPort> {
+        self.coerce()
+    }
+}
+
 impl<P: ListenerPort> FromStr for AdvertisedAddress<P> {
     type Err = anyhow::Error;
 

@@ -62,7 +62,7 @@ async fn raft_metadata_cluster_smoke_test() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.advertised_address().clone())
+        .map(|node| node.advertised_address().clone().into_control())
         .collect();
 
     // Set a valid configuration with the cluster name for the GrpcMetadataServerClient to pick it up
@@ -183,7 +183,7 @@ async fn raft_metadata_cluster_chaos_test() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.advertised_address().clone())
+        .map(|node| node.advertised_address().clone().into_control())
         .collect();
 
     // Set a valid configuration with the cluster name for the GrpcMetadataServerClient to pick it up
@@ -381,7 +381,7 @@ async fn raft_metadata_cluster_reconfiguration() -> googletest::Result<()> {
     let addresses = cluster
         .nodes
         .iter()
-        .map(|node| node.advertised_address().clone())
+        .map(|node| node.advertised_address().clone().into_control())
         .collect();
 
     let metadata_store_client_options = MetadataClientOptions {
