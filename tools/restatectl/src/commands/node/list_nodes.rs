@@ -45,7 +45,9 @@ pub struct ListNodesOpts {
 
 pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> anyhow::Result<()> {
     match connection.get_nodes_configuration().await {
-        Ok(nodes_configuration) => list_nodes_configuration(&nodes_configuration, opts).await,
+        Ok(nodes_configuration) => {
+            list_nodes_configuration(connection, &nodes_configuration, opts).await
+        }
         Err(ConnectionInfoError::MetadataValueNotAvailable { contacted_nodes })
             if !contacted_nodes.is_empty() =>
         {
@@ -68,13 +70,14 @@ pub async fn list_nodes(connection: &ConnectionInfo, opts: &ListNodesOpts) -> an
 }
 
 async fn list_nodes_configuration(
+    connection: &ConnectionInfo,
     nodes_configuration: &NodesConfiguration,
     opts: &ListNodesOpts,
 ) -> anyhow::Result<()> {
     let nodes = nodes_configuration.iter().collect::<BTreeMap<_, _>>();
 
     let nodes_extra_info = if opts.extra {
-        fetch_extra_info(nodes_configuration).await?
+        fetch_extra_info(connection, nodes_configuration).await?
     } else {
         HashMap::new()
     };
@@ -126,7 +129,11 @@ async fn list_nodes_configuration(
                 Cell::new(node_config.worker_config.worker_state),
             ]);
             node_row.extend(render_optional_columns(
-                nodes_extra_info.get(node_config.ctrl_address().as_ref()),
+                nodes_extra_info.get(
+                    connection
+                        .ctrl_address_for(nodes_configuration, node_config)
+                        .as_ref(),
+                ),
                 render_ident_extras,
             ));
         }
@@ -233,13 +240,16 @@ fn render_ident_extras(ident_response: &IdentResponse) -> Vec<Cell> {
 }
 
 async fn fetch_extra_info(
+    connection: &ConnectionInfo,
     nodes_configuration: &NodesConfiguration,
 ) -> anyhow::Result<HashMap<AdvertisedAddress<ControlPort>, IdentResponse>> {
     let mut get_ident_tasks =
         JoinSet::<anyhow::Result<(AdvertisedAddress<ControlPort>, IdentResponse)>>::new();
 
     for (node_id, node_config) in nodes_configuration.iter() {
-        let address = node_config.ctrl_address().into_owned();
+        let address = connection
+            .ctrl_address_for(nodes_configuration, node_config)
+            .into_owned();
         let get_ident = async move {
             let channel = grpc_channel(address.clone());
             let mut node_ctl_svc_client = new_node_ctl_client(channel, &CliContext::get().network);
