@@ -20,8 +20,8 @@ use restate_util_time::NonZeroFriendlyDuration;
 
 use crate::PlainNodeId;
 use crate::locality::NodeLocation;
+use crate::net::address::FabricPort;
 use crate::net::address::{AdvertisedAddress, AdvertisedHost, BindAddress};
-use crate::net::address::{ControlPort, FabricPort};
 use crate::nodes_config::Role;
 
 use super::{AdvertisedAddressEntry, ControlOptions, ListenMode, LogFormat};
@@ -127,10 +127,6 @@ pub struct CommonOptionCliOverride {
     /// `restate-data` under the current working directory.
     #[clap(long, global = true)]
     pub base_dir: Option<PathBuf>,
-
-    /// Address of the metadata store server to bootstrap the node from.
-    #[clap(long, global = true)]
-    pub metadata_store_address: Option<AdvertisedAddress<ControlPort>>,
 
     /// Address to bind for the node-to-node communication. e.g. `[::]:5122`.
     /// This overrides bind-ip and bind-port if set.
