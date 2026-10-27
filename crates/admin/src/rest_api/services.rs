@@ -52,7 +52,7 @@ pub async fn list_services<Metadata, Discovery, Telemetry, Invocations, Transpor
 where
     Metadata: MetadataService,
 {
-    let services = state.schema_registry.list_services();
+    let services = state.schema_registry.list_services().await;
 
     Ok(ListServicesResponse { services }.into())
 }
@@ -83,6 +83,7 @@ where
     state
         .schema_registry
         .get_service(&service_name)
+        .await
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
@@ -120,6 +121,7 @@ where
     state
         .schema_registry
         .get_service_openapi(&service_name, ingress_address)
+        .await
         .map(Into::into)
         .ok_or_else(|| MetaApiError::ServiceNotFound(service_name))
 }
@@ -217,7 +219,7 @@ where
     Metadata: MetadataService,
     Transport: TransportConnect,
 {
-    if let Some(svc) = state.schema_registry.get_service(&service_name) {
+    if let Some(svc) = state.schema_registry.get_service(&service_name).await {
         if !svc.ty.has_state() {
             return Err(MetaApiError::UnsupportedOperation("modify state", svc.ty));
         }

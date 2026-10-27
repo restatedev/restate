@@ -11,8 +11,9 @@
 pub mod keys {
     //! Keys of values stored in the metadata store
 
-    use crate::identifiers::PartitionId;
     use bytestring::ByteString;
+
+    use crate::identifiers::{JsonSchemasId, PartitionId};
 
     // todo: remove
     pub static NODES_CONFIG_KEY: ByteString = ByteString::from_static("nodes_config");
@@ -22,10 +23,19 @@ pub mod keys {
     /// Cluster-global rule book (limiter rules).
     /// *Since v1.7.0*
     pub static RULE_BOOK_KEY: ByteString = ByteString::from_static("rule_book");
+    /// Index of all handler JSON schema objects stored under [`deployment_json_schemas_key`].
+    /// *Since v1.8.2*
+    pub static JSON_SCHEMAS_INDEX_KEY: ByteString = ByteString::from_static("json_schemas_index");
     // end todo
 
     pub static PARTITION_PROCESSOR_EPOCH_PREFIX: &str = "pp_epoch";
     pub fn partition_processor_epoch_key(partition_id: PartitionId) -> ByteString {
         ByteString::from(format!("{PARTITION_PROCESSOR_EPOCH_PREFIX}_{partition_id}"))
+    }
+
+    pub static DEPLOYMENT_JSON_SCHEMAS_PREFIX: &str = "dp_json_schemas";
+    /// *Since v1.8.2*
+    pub fn deployment_json_schemas_key(id: JsonSchemasId) -> ByteString {
+        ByteString::from(format!("{DEPLOYMENT_JSON_SCHEMAS_PREFIX}_{id}"))
     }
 }

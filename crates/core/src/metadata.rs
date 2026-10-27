@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod json_schemas;
 mod manager;
 mod metadata_client_wrapper;
 mod metadata_migrations;
@@ -38,6 +39,7 @@ use restate_types::{GenerationalNodeId, Version, Versioned};
 pub use self::manager::{MetadataManager, TargetVersion};
 use crate::network::Connection;
 use crate::{ShutdownError, TaskCenter, TaskId, TaskKind};
+pub use json_schemas::store_json_schemas;
 pub use metadata_migrations::migrate_metadata;
 
 use self::metadata_client_wrapper::MetadataClientWrapper;

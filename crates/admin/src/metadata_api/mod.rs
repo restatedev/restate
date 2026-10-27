@@ -46,12 +46,15 @@ static PROTECTED_KEYS: LazyLock<HashSet<ByteString>> = LazyLock::new(|| {
         keys::BIFROST_CONFIG_KEY.clone(),
         keys::NODES_CONFIG_KEY.clone(),
         keys::SCHEMA_INFORMATION_KEY.clone(),
+        keys::JSON_SCHEMAS_INDEX_KEY.clone(),
     ]
     .into()
 });
 
 fn is_protected(key: &ByteString) -> bool {
-    PROTECTED_KEYS.contains(key) || key.starts_with(keys::PARTITION_PROCESSOR_EPOCH_PREFIX)
+    PROTECTED_KEYS.contains(key)
+        || key.starts_with(keys::PARTITION_PROCESSOR_EPOCH_PREFIX)
+        || key.starts_with(keys::DEPLOYMENT_JSON_SCHEMAS_PREFIX)
 }
 
 #[derive(Clone, derive_more::Deref)]

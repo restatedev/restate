@@ -21,7 +21,7 @@ use tracing::{Span, debug, info, info_span};
 
 use restate_admin_rest_model::version::AdminApiVersion;
 use restate_core::network::{TransportConnect, net_util};
-use restate_core::{MetadataWriter, TaskCenter};
+use restate_core::{MetadataWriter, TaskCenter, TaskKind};
 use restate_ingestion_client::IngestionClient;
 use restate_limiter::rule_book::RuleBookObserver;
 use restate_metadata_store::MetadataStoreClient;
@@ -76,7 +76,7 @@ where
             listeners,
             ingestion_client,
             schema_registry: SchemaRegistry::new(
-                MetadataService(metadata_writer),
+                MetadataService::new(metadata_writer),
                 service_discovery,
                 TelemetryClient(telemetry_http_client),
             ),
@@ -110,6 +110,14 @@ where
         mut updateable_config: impl LiveLoad<Live = AdminOptions>,
     ) -> anyhow::Result<()> {
         let opts = updateable_config.live_load();
+
+        let _ = TaskCenter::spawn(
+            TaskKind::Disposable,
+            "json-schemas-sweep",
+            crate::schema_registry_integration::sweep_json_schemas_on_startup(
+                self.metadata_client.clone(),
+            ),
+        );
 
         let rest_state = state::AdminServiceState::new(
             self.schema_registry,

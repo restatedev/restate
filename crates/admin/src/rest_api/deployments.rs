@@ -229,6 +229,7 @@ where
     let (deployment, services) = state
         .schema_registry
         .get_deployment_and_services(deployment_id)
+        .await
         .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
     Ok(to_detailed_deployment_response(deployment, services).into())
@@ -446,6 +447,7 @@ where
                 let (deployment, services) = state
                     .schema_registry
                     .get_deployment_and_services(deployment_id)
+                    .await
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
                 return Ok(to_detailed_deployment_response(deployment, services).into());
@@ -507,6 +509,7 @@ where
                 let (deployment, services) = state
                     .schema_registry
                     .get_deployment_and_services(deployment_id)
+                    .await
                     .ok_or_else(|| MetaApiError::DeploymentNotFound(deployment_id))?;
 
                 return Ok(to_detailed_deployment_response(deployment, services).into());

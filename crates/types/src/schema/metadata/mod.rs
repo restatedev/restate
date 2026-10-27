@@ -8,11 +8,13 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod json_schemas;
 mod lite;
 mod openapi;
 mod serde_hacks;
 pub mod updater;
 
+pub use json_schemas::{DeploymentJsonSchemas, JsonSchemasIndex};
 pub use lite::SchemaUnindexedLite;
 
 use std::collections::HashMap;
@@ -35,7 +37,7 @@ use crate::config::{Configuration, InvocationRetryPolicyOptions};
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
-use crate::identifiers::{DeploymentId, SubscriptionId};
+use crate::identifiers::{DeploymentId, JsonSchemasId, SubscriptionId};
 use crate::invocation::{InvocationTargetType, ServiceType, WorkflowHandlerType};
 use crate::live::Pinned;
 use crate::metadata::GlobalMetadata;
@@ -387,6 +389,14 @@ struct Deployment {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
+
+    /// The [`DeploymentJsonSchemas`] holding the handlers' JSON schemas, when they are not
+    /// stored inline.
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 11)]
+    json_schemas: Option<JsonSchemasId>,
 }
 
 impl MapAsVecItem for Deployment {
@@ -728,11 +738,22 @@ impl ServiceRevision {
         }
     }
 
+    /// `json_schemas` are the handlers' JSON schemas when they are not stored inline.
     fn as_openapi_spec(
         &self,
         ingress_address: AdvertisedAddress<HttpIngressPort>,
+        json_schemas: Option<&DeploymentJsonSchemas>,
     ) -> serde_json::Value {
-        let service_openapi = {
+        let service_openapi = if let Some(json_schemas) = json_schemas {
+            // Not cached, as the cache can't tell which JSON schemas it was inferred with
+            Arc::new(ServiceOpenAPI::infer(
+                &self.name,
+                self.ty,
+                &self.metadata,
+                &self.handlers,
+                json_schemas.service(&self.name),
+            ))
+        } else {
             let cached_openapi = self.service_openapi_cache.load();
             if let Some(result) = cached_openapi.as_ref() {
                 Arc::clone(result)
@@ -743,6 +764,7 @@ impl ServiceRevision {
                     self.ty,
                     &self.metadata,
                     &self.handlers,
+                    None,
                 ));
                 self.service_openapi_cache.store(Some(computed.clone()));
                 computed
@@ -1208,9 +1230,7 @@ impl ServiceMetadataResolver for Schema {
         service_name: impl AsRef<str>,
         ingress_address: AdvertisedAddress<HttpIngressPort>,
     ) -> Option<Value> {
-        self.active_service_revisions
-            .get(service_name.as_ref())
-            .map(|revision| revision.service_revision.as_openapi_spec(ingress_address))
+        self.resolve_latest_service_openapi_with(service_name, ingress_address, None)
     }
 
     fn list_services(&self) -> Vec<service::ServiceMetadata> {
@@ -1232,6 +1252,25 @@ impl ServiceMetadataResolver for Schema {
             .values()
             .map(|revision| revision.service_revision.name.clone())
             .collect()
+    }
+}
+
+impl Schema {
+    /// Like [`ServiceMetadataResolver::resolve_latest_service_openapi`], with the JSON schemas
+    /// object referenced by the service's deployment, if any.
+    pub fn resolve_latest_service_openapi_with(
+        &self,
+        service_name: impl AsRef<str>,
+        ingress_address: AdvertisedAddress<HttpIngressPort>,
+        json_schemas: Option<&DeploymentJsonSchemas>,
+    ) -> Option<Value> {
+        self.active_service_revisions
+            .get(service_name.as_ref())
+            .map(|revision| {
+                revision
+                    .service_revision
+                    .as_openapi_spec(ingress_address, json_schemas)
+            })
     }
 }
 

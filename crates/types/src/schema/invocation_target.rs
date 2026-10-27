@@ -555,12 +555,20 @@ fn try_display_json_detailed_info<D: fmt::Display>(
     schema: Option<&serde_json::Value>,
     default: impl FnOnce() -> D,
 ) -> fmt::Result {
-    if let Some(serde_json::Value::String(title)) = schema.and_then(|s| s.get("title")) {
-        write!(f, "JSON '{title}'")
-    } else if let Some(serde_json::Value::String(ty)) = schema.and_then(|s| s.get("type")) {
-        write!(f, "JSON {ty}")
+    match schema.and_then(json_schema_description) {
+        Some(description) => f.write_str(&description),
+        None => write!(f, "{}", default()),
+    }
+}
+
+/// Human readable description of a JSON schema, based on its title or type.
+pub(crate) fn json_schema_description(schema: &serde_json::Value) -> Option<String> {
+    if let Some(serde_json::Value::String(title)) = schema.get("title") {
+        Some(format!("JSON '{title}'"))
+    } else if let Some(serde_json::Value::String(ty)) = schema.get("type") {
+        Some(format!("JSON {ty}"))
     } else {
-        write!(f, "{}", default())
+        None
     }
 }
 

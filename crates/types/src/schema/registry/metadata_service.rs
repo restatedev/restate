@@ -10,12 +10,27 @@
 
 use std::sync::Arc;
 
+use crate::identifiers::JsonSchemasId;
 use crate::live::Pinned;
-use crate::schema::Schema;
 use crate::schema::registry::SchemaRegistryError;
+use crate::schema::{DeploymentJsonSchemas, Schema};
 
 pub trait MetadataService {
     fn get(&self) -> Pinned<Schema>;
+
+    /// Fetches the JSON schemas object referenced by a deployment. Returns `None` if it can't be
+    /// fetched, in which case the handlers are reported without JSON schemas.
+    fn get_json_schemas(
+        &self,
+        id: JsonSchemasId,
+    ) -> impl Future<Output = Option<Arc<DeploymentJsonSchemas>>> + Send;
+
+    /// Stores a JSON schemas object under the new `id`, to be referenced by a deployment.
+    fn store_json_schemas(
+        &self,
+        id: JsonSchemasId,
+        json_schemas: &DeploymentJsonSchemas,
+    ) -> impl Future<Output = Result<(), SchemaRegistryError>> + Send;
 
     fn update<T: Send, F>(
         &self,
@@ -38,6 +53,21 @@ pub mod mocks {
     impl MetadataService for Arc<ArcSwap<Schema>> {
         fn get(&self) -> Pinned<Schema> {
             Pinned::new(self)
+        }
+
+        fn get_json_schemas(
+            &self,
+            _id: JsonSchemasId,
+        ) -> impl Future<Output = Option<Arc<DeploymentJsonSchemas>>> + Send {
+            std::future::ready(None)
+        }
+
+        fn store_json_schemas(
+            &self,
+            _id: JsonSchemasId,
+            _json_schemas: &DeploymentJsonSchemas,
+        ) -> impl Future<Output = Result<(), SchemaRegistryError>> + Send {
+            std::future::ready(Ok(()))
         }
 
         fn update<T: Send, F>(

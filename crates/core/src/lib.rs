@@ -52,7 +52,7 @@ pub use identification::Identification;
 
 pub use metadata::{
     Metadata, MetadataBuilder, MetadataKind, MetadataManager, MetadataWriter, SyncError,
-    TargetVersion, migrate_metadata, spawn_metadata_manager,
+    TargetVersion, migrate_metadata, spawn_metadata_manager, store_json_schemas,
 };
 pub use task_center::{
     AsyncRuntime, Handle, MetadataFutureExt, RuntimeError, RuntimeTaskHandle, TaskCenter,

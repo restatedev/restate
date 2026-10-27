@@ -145,6 +145,9 @@ pub(super) struct DeploymentLite {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[bilrost(tag = 10)]
     limits: Option<DeploymentLimits>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[bilrost(tag = 11)]
+    json_schemas: Option<JsonSchemasId>,
 }
 
 impl DeploymentLite {
@@ -159,6 +162,7 @@ impl DeploymentLite {
             metadata,
             services,
             limits,
+            json_schemas,
         }: &Deployment,
     ) -> Self {
         Self {
@@ -179,6 +183,7 @@ impl DeploymentLite {
                 })
                 .collect(),
             limits: *limits,
+            json_schemas: *json_schemas,
         }
     }
 }
@@ -195,6 +200,7 @@ impl From<DeploymentLite> for Deployment {
             metadata,
             services,
             limits,
+            json_schemas,
         }: DeploymentLite,
     ) -> Self {
         Self {
@@ -210,6 +216,7 @@ impl From<DeploymentLite> for Deployment {
                 .map(|(name, service)| (name, Arc::new(Arc::unwrap_or_clone(service).into())))
                 .collect(),
             limits,
+            json_schemas,
         }
     }
 }
