@@ -41,6 +41,7 @@ use restate_types::time::MillisSinceEpoch;
 use super::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
 };
+use crate::metric_definitions::SNAPSHOT_UPLOAD_BYTES;
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -1065,7 +1066,10 @@ async fn put_snapshot_object(
 
     if snapshot.metadata().await?.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
         let payload = PutPayload::from(tokio::fs::read(file_path).await?);
-        return object_store.put(key, payload).await.map_err(|e| e.into());
+        let size = payload.content_length() as u64;
+        let result = object_store.put(key, payload).await?;
+        metrics::counter!(SNAPSHOT_UPLOAD_BYTES).increment(size);
+        return Ok(result);
     }
 
     debug!("Performing multipart upload for {key}");
@@ -1085,9 +1089,10 @@ async fn put_snapshot_object(
             }
 
             if !buf.is_empty() {
-                upload
-                    .put_part(PutPayload::from_bytes(buf.split().freeze()))
-                    .await?;
+                let part = buf.split().freeze();
+                let part_size = part.len() as u64;
+                upload.put_part(PutPayload::from_bytes(part)).await?;
+                metrics::counter!(SNAPSHOT_UPLOAD_BYTES).increment(part_size);
             }
 
             if len == 0 {
