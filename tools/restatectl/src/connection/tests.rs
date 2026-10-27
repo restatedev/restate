@@ -25,7 +25,10 @@ use restate_core::protobuf::node_ctl_svc::{
     new_node_ctl_client,
 };
 use restate_types::logs::metadata::Logs;
-use restate_types::nodes_config::{ClusterFingerprint, NodeConfig, NodesConfiguration, Role};
+use restate_types::net::address::ControlPort;
+use restate_types::nodes_config::{
+    ClusterFingerprint, NodeConfig, NodesConfiguration, QualifiedAddress, Role,
+};
 use restate_types::partition_table::PartitionTable;
 use restate_types::protobuf::common::{MetadataKind, NodeStatus};
 use restate_types::storage::StorageCodec;
@@ -112,6 +115,34 @@ impl NodeCtlSvc for ControlService {
     }
 }
 
+/// Serves the control service for `nodes` on each listener, recording calls by route.
+fn serve(
+    nodes: &Arc<NodesConfiguration>,
+    calls: &Arc<Mutex<Vec<(&'static str, &'static str)>>>,
+    listeners: impl IntoIterator<Item = (&'static str, TcpListener)>,
+) -> JoinSet<Result<(), tonic::transport::Error>> {
+    let mut servers = JoinSet::new();
+    for (route, listener) in listeners {
+        let service = NodeCtlSvcServer::new(ControlService {
+            route,
+            nodes: nodes.clone(),
+            calls: calls.clone(),
+        })
+        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
+        .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
+        servers.spawn(async move {
+            let incoming = futures::stream::unfold(listener, |listener| async {
+                Some((listener.accept().await.map(|(stream, _)| stream), listener))
+            });
+            tonic::transport::Server::builder()
+                .add_service(service)
+                .serve_with_incoming(incoming)
+                .await
+        });
+    }
+    servers
+}
+
 #[tokio::test]
 async fn discovered_calls_use_control_routes_and_legacy_fallback() -> anyhow::Result<()> {
     let fabric = TcpListener::bind("127.0.0.1:0").await?;
@@ -147,25 +178,11 @@ async fn discovered_calls_use_control_routes_and_legacy_fallback() -> anyhow::Re
     );
     let nodes = Arc::new(nodes);
     let calls = Arc::new(Mutex::new(Vec::new()));
-    let mut servers = JoinSet::new();
-    for (route, listener) in [("fabric", fabric), ("control", control), ("legacy", legacy)] {
-        let service = NodeCtlSvcServer::new(ControlService {
-            route,
-            nodes: nodes.clone(),
-            calls: calls.clone(),
-        })
-        .accept_compressed(tonic::codec::CompressionEncoding::Zstd)
-        .accept_compressed(tonic::codec::CompressionEncoding::Gzip);
-        servers.spawn(async move {
-            let incoming = futures::stream::unfold(listener, |listener| async {
-                Some((listener.accept().await.map(|(stream, _)| stream), listener))
-            });
-            tonic::transport::Server::builder()
-                .add_service(service)
-                .serve_with_incoming(incoming)
-                .await
-        });
-    }
+    let _servers = serve(
+        &nodes,
+        &calls,
+        [("fabric", fabric), ("control", control), ("legacy", legacy)],
+    );
 
     let connection = ConnectionInfo::try_parse_from(["ctl", "--address", &fabric_address])?;
     connection.get_nodes_configuration().await?;
@@ -276,5 +293,113 @@ async fn discovered_calls_use_control_routes_and_legacy_fallback() -> anyhow::Re
         let parsed = ConnectionInfo::try_parse_from(["ctl", "--address", input])?;
         assert_eq!(parsed.get_effective_addresses()[0].to_string(), expected);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn location_entries_are_selected_by_seed_inference_and_flag() -> anyhow::Result<()> {
+    // Node 1 publishes a plain control address and entries for callers in `external` and in
+    // zone `z1`; node 2 publishes a plain control address and an `external` entry behind an
+    // `https` one. Selection needs no network, so only node 1's external route is served, for
+    // the end-to-end call at the end; the other addresses just have to differ.
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let n1_external = format!("http://{}", listener.local_addr()?);
+    let address = |route: &str| match route {
+        "n1-external" => n1_external.clone(),
+        route => format!("http://{route}:5122"),
+    };
+    let entry = |route: &str, location: &str| QualifiedAddress::<ControlPort> {
+        address: address(route).parse().unwrap(),
+        location: Some(location.parse().unwrap()),
+    };
+    let mut nodes = NodesConfiguration::new(
+        Version::MIN,
+        "location-routing".to_owned(),
+        ClusterFingerprint::generate(),
+    );
+    nodes.upsert_node(
+        NodeConfig::builder()
+            .name("n1".to_owned())
+            .current_generation(GenerationalNodeId::new(1, 1))
+            .address(address("n1-plain").parse()?)
+            .ctrl_address(Some(address("n1-plain").parse()?))
+            .ctrl_addresses(vec![
+                entry("n1-external", "external"),
+                entry("n1-zone", "z1"),
+            ])
+            .roles(Role::Admin.into())
+            .binary_version(RestateVersion::current())
+            .build(),
+    );
+    nodes.upsert_node(
+        NodeConfig::builder()
+            .name("n2".to_owned())
+            .current_generation(GenerationalNodeId::new(2, 1))
+            .address(address("n2-plain").parse()?)
+            .ctrl_address(Some(address("n2-plain").parse()?))
+            .ctrl_addresses(vec![
+                QualifiedAddress {
+                    address: "https://n2.example.com".parse()?,
+                    location: Some("external".parse()?),
+                },
+                entry("n2-external", "external"),
+            ])
+            .roles(Role::Worker.into())
+            .binary_version(RestateVersion::current())
+            .build(),
+    );
+    let nodes = Arc::new(nodes);
+    let dials = |args: &[&str]| -> anyhow::Result<[String; 2]> {
+        let connection = ConnectionInfo::try_parse_from([&["ctl"][..], args].concat())?;
+        Ok(["n1", "n2"].map(|name| {
+            connection
+                .ctrl_address_for(&nodes, nodes.find_node_by_name(name).unwrap())
+                .to_string()
+        }))
+    };
+    let dialed = |route: &str| format!("{}/", address(route));
+    let n1_plain = address("n1-plain");
+    let two_locations = format!("{},{}", n1_external, address("n1-zone"));
+    for (args, expected, case) in [
+        (
+            vec!["--address", &n1_external],
+            ["n1-external", "n2-external"],
+            "a seed matching node 1's external entry adopts external for every node; node 2's \
+             https entry is skipped without a CA",
+        ),
+        (
+            vec!["--address", &n1_plain],
+            ["n1-plain", "n2-plain"],
+            "a seed matching no entry: the plain addresses",
+        ),
+        (
+            vec!["--address", &n1_external, "--location", "z1"],
+            ["n1-zone", "n2-plain"],
+            "--location overrides inference; a node without an entry there keeps its plain address",
+        ),
+        (
+            vec!["--address", &two_locations],
+            ["n1-plain", "n2-plain"],
+            "seeds matching entries in two locations are ambiguous: the plain addresses",
+        ),
+    ] {
+        assert_eq!(dials(&args)?, expected.map(dialed), "{case}");
+    }
+
+    // End to end: a tool seeded through the external route makes its discovered calls there.
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let mut servers = serve(&nodes, &calls, [("n1-external", listener)]);
+    let connection = ConnectionInfo::try_parse_from(["ctl", "--address", &n1_external])?;
+    connection.get_nodes_configuration().await?;
+    let ident = connection
+        .try_each(Some(Role::Admin), |channel| async {
+            new_node_ctl_client(channel, &CliContext::get().network)
+                .get_ident(())
+                .await
+        })
+        .await?
+        .into_inner();
+    assert_eq!(ident.cluster_name, "n1-external");
+    servers.abort_all();
     Ok(())
 }

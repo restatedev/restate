@@ -125,7 +125,11 @@ async fn get_info(connection: &ConnectionInfo, opts: &InfoOpts) -> anyhow::Resul
             continue;
         }
         let mut client = new_log_server_client(
-            grpc_channel(node.ctrl_address().into_owned()),
+            grpc_channel(
+                connection
+                    .ctrl_address_for(&nodes_config, node)
+                    .into_owned(),
+            ),
             &CliContext::get().network,
         );
         let Ok(Some(loglet_info)) = client

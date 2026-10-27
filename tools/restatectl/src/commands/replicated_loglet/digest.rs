@@ -65,11 +65,8 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
             let node = nodes_config.find_node_by_id(node_id).unwrap_or_else(|_| {
                 panic!("Node {node_id} doesn't seem to exist in nodes configuration");
             });
-            info!(
-                "Requesting digest from node {} at {}",
-                node_id,
-                node.ctrl_address()
-            );
+            let address = connection.ctrl_address_for(&nodes_config, node);
+            info!("Requesting digest from node {} at {}", node_id, address);
             if !node.has_role(Role::LogServer) {
                 warn!(
                     "Node {} is not running the log-server role, will not connect to it",
@@ -77,7 +74,7 @@ async fn get_digest(connection: &ConnectionInfo, opts: &DigestOpts) -> anyhow::R
                 );
                 return None;
             }
-            Some((node_id, grpc_channel(node.ctrl_address().into_owned())))
+            Some((node_id, grpc_channel(address.into_owned())))
         })
         .collect();
 
