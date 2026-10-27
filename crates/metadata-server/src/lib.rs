@@ -230,7 +230,7 @@ pub async fn create_metadata_server_and_client(
             // make sure we include our own address in the list of addresses if we are hosting
             // a metadata server ourselves.
             if config.common.roles.contains(Role::MetadataServer) {
-                addresses.push(config.common.advertised_address(address_book));
+                addresses.push(config.own_control_address(address_book));
             }
             (
                 server.boxed(),

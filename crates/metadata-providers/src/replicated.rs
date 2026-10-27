@@ -22,6 +22,7 @@ use tonic::{Code, Status};
 use tracing::{debug, instrument, trace};
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
+use restate_core::network::select_ctrl_address;
 use restate_core::{Metadata, TaskCenter, TaskKind, cancellation_watcher};
 use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_metadata_server_grpc::grpc::new_metadata_server_client;
@@ -31,7 +32,7 @@ use restate_metadata_store::{
 use restate_types::config::Configuration;
 use restate_types::errors::{ConversionError, SimpleStatus, is_retryable_status};
 use restate_types::metadata::{Precondition, VersionedValue};
-use restate_types::net::address::{AdvertisedAddress, FabricPort};
+use restate_types::net::address::{AdvertisedAddress, ControlPort};
 use restate_types::net::connect_opts::{CommonClientConnectionOptions, GrpcConnectionOptions};
 use restate_types::net::metadata::MetadataKind;
 use restate_types::nodes_config::{
@@ -47,7 +48,7 @@ pub const KNOWN_LEADER_KEY: &str = "x-restate-known-leader";
 
 /// Creates the [`MetadataStoreClient`] for the replicated metadata server.
 pub fn create_replicated_metadata_client(
-    addresses: Vec<AdvertisedAddress<FabricPort>>,
+    addresses: Vec<AdvertisedAddress<ControlPort>>,
     backoff_policy: Option<RetryPolicy>,
     connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
 ) -> MetadataStoreClient {
@@ -60,7 +61,7 @@ struct MetadataServerSvcClientWithAddress {
     #[deref]
     #[deref_mut]
     client: MetadataServerSvcClient<Channel>,
-    address: AdvertisedAddress<FabricPort>,
+    address: AdvertisedAddress<ControlPort>,
 }
 
 impl MetadataServerSvcClientWithAddress {
@@ -75,7 +76,7 @@ impl MetadataServerSvcClientWithAddress {
         }
     }
 
-    fn address(&self) -> AdvertisedAddress<FabricPort> {
+    fn address(&self) -> AdvertisedAddress<ControlPort> {
         self.address.clone()
     }
 }
@@ -83,10 +84,22 @@ impl MetadataServerSvcClientWithAddress {
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct KnownLeader {
     pub node_id: PlainNodeId,
-    pub address: AdvertisedAddress<FabricPort>,
+    pub address: AdvertisedAddress<ControlPort>,
 }
 
 impl KnownLeader {
+    /// The address to dial this leader at: the one selected for it when `nodes_config` knows the
+    /// node, else the one the hint carries, the leader's fabric address on the control port.
+    pub fn dial_address(
+        &self,
+        nodes_config: &NodesConfiguration,
+    ) -> AdvertisedAddress<ControlPort> {
+        nodes_config.find_node_by_id(self.node_id).map_or_else(
+            |_| self.address.clone(),
+            |node| select_ctrl_address(node).into_owned(),
+        )
+    }
+
     pub fn add_to_status(&self, status: &mut tonic::Status) {
         status.metadata_mut().insert(
             KNOWN_LEADER_KEY,
@@ -128,7 +141,7 @@ pub struct GrpcMetadataServerClient {
 
 impl GrpcMetadataServerClient {
     pub fn new(
-        metadata_store_addresses: Vec<AdvertisedAddress<FabricPort>>,
+        metadata_store_addresses: Vec<AdvertisedAddress<ControlPort>>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
         let channel_manager =
@@ -171,9 +184,7 @@ impl GrpcMetadataServerClient {
     }
 
     fn choose_known_leader(&self, known_leader: KnownLeader) {
-        let channel = self
-            .channel_manager
-            .register_address(known_leader.node_id, known_leader.address);
+        let channel = self.channel_manager.register_known_leader(known_leader);
         *self.current_leader.lock() = Some(MetadataServerSvcClientWithAddress::new(
             channel,
             self.connection_options.deref(),
@@ -399,7 +410,7 @@ impl MetadataStore for GrpcMetadataServerClient {
         let config = Configuration::pinned();
 
         let advertised_address =
-            TaskCenter::with_current(|tc| config.common.advertised_address(tc.address_book()));
+            TaskCenter::with_current(|tc| config.own_control_address(tc.address_book()));
         if !config.common.roles.contains(Role::MetadataServer) {
             return Err(ProvisionError::NotSupported(format!(
                 "Node '{}' does not run the metadata-server role. Try to provision a different node.",
@@ -443,7 +454,7 @@ impl MetadataStore for GrpcMetadataServerClient {
 #[error("No known metadata server")]
 struct NoKnownMetadataServer;
 
-fn map_status_to_read_error(address: AdvertisedAddress<FabricPort>, status: Status) -> ReadError {
+fn map_status_to_read_error(address: AdvertisedAddress<ControlPort>, status: Status) -> ReadError {
     if is_retryable_status(&status) {
         ReadError::retryable(StatusError::new(address, status))
     } else {
@@ -451,7 +462,10 @@ fn map_status_to_read_error(address: AdvertisedAddress<FabricPort>, status: Stat
     }
 }
 
-fn map_status_to_write_error(address: AdvertisedAddress<FabricPort>, status: Status) -> WriteError {
+fn map_status_to_write_error(
+    address: AdvertisedAddress<ControlPort>,
+    status: Status,
+) -> WriteError {
     if is_retryable_status(&status) {
         WriteError::retryable(StatusError::new(address, status))
     } else if status.code() == Code::FailedPrecondition {
@@ -462,7 +476,7 @@ fn map_status_to_write_error(address: AdvertisedAddress<FabricPort>, status: Sta
 }
 
 fn map_status_to_provision_error(
-    address: AdvertisedAddress<FabricPort>,
+    address: AdvertisedAddress<ControlPort>,
     status: Status,
 ) -> ProvisionError {
     if is_retryable_status(&status) {
@@ -475,12 +489,12 @@ fn map_status_to_provision_error(
 #[derive(Debug, Clone, thiserror::Error)]
 #[error("[{address}] {status}")]
 struct StatusError {
-    address: AdvertisedAddress<FabricPort>,
+    address: AdvertisedAddress<ControlPort>,
     status: SimpleStatus,
 }
 
 impl StatusError {
-    fn new(address: AdvertisedAddress<FabricPort>, status: Status) -> Self {
+    fn new(address: AdvertisedAddress<ControlPort>, status: Status) -> Self {
         Self {
             address,
             status: SimpleStatus(status),
@@ -496,7 +510,7 @@ struct ChannelManager {
 
 impl ChannelManager {
     fn new(
-        initial_addresses: Vec<AdvertisedAddress<FabricPort>>,
+        initial_addresses: Vec<AdvertisedAddress<ControlPort>>,
         connection_options: Arc<dyn CommonClientConnectionOptions + Send + Sync>,
     ) -> Self {
         ChannelManager {
@@ -505,19 +519,25 @@ impl ChannelManager {
         }
     }
 
-    fn register_address(
-        &self,
-        plain_node_id: PlainNodeId,
-        address: AdvertisedAddress<FabricPort>,
-    ) -> ChannelWithAddress {
+    /// The channel to the leader a server pointed at, dialed at its [`KnownLeader::dial_address`];
+    /// a channel that already dials it is kept.
+    fn register_known_leader(&self, known_leader: KnownLeader) -> ChannelWithAddress {
+        let node_id = known_leader.node_id;
+        let address = Metadata::try_with_current(|metadata| {
+            known_leader.dial_address(&metadata.nodes_config_ref())
+        })
+        .unwrap_or(known_leader.address);
+        let mut channels = self.channels.lock();
+        if let Some(channel) = channels.channels.get(&node_id)
+            && channel.address == address
+        {
+            return channel.clone();
+        }
         let channel = ChannelWithAddress::new(
             address.clone(),
             create_tonic_channel(address, self.connection_options.deref(), DNSResolution::Gai),
         );
-        self.channels
-            .lock()
-            .register(plain_node_id, channel.clone());
-
+        channels.register(node_id, channel.clone());
         channel
     }
 
@@ -553,29 +573,27 @@ impl ChannelManager {
         let has_joined_cluster = metadata.my_node_id_opt().is_some();
 
         let new_channels = nodes_configuration
-            .iter()
-            .filter_map(|(node_id, node_config)| {
-                // We only consider metadata store members.
-                if node_config.roles.contains(Role::MetadataServer)
-                    && matches!(
-                        node_config.metadata_server_config.metadata_server_state,
-                        MetadataServerState::Member
-                    )
-                {
-                    Some((
-                        node_id,
-                        ChannelWithAddress::new(
-                            node_config.address.clone(),
-                            create_tonic_channel(
-                                node_config.address.clone(),
-                                self.connection_options.deref(),
-                                DNSResolution::Gai,
-                            ),
+            .iter_role(Role::MetadataServer)
+            .filter(|(_, node_config)| {
+                matches!(
+                    node_config.metadata_server_config.metadata_server_state,
+                    MetadataServerState::Member
+                )
+            })
+            .map(|(node_id, node_config)| {
+                let address = select_ctrl_address(node_config).into_owned();
+                debug!(%node_id, %address, "Metadata server channel");
+                (
+                    node_id,
+                    ChannelWithAddress::new(
+                        address.clone(),
+                        create_tonic_channel(
+                            address,
+                            self.connection_options.deref(),
+                            DNSResolution::Gai,
                         ),
-                    ))
-                } else {
-                    None
-                }
+                    ),
+                )
             });
 
         let mut channels = self.channels.lock();
@@ -595,11 +613,11 @@ impl ChannelManager {
 struct ChannelWithAddress {
     #[deref]
     channel: Channel,
-    address: AdvertisedAddress<FabricPort>,
+    address: AdvertisedAddress<ControlPort>,
 }
 
 impl ChannelWithAddress {
-    fn new(address: AdvertisedAddress<FabricPort>, inner: Channel) -> Self {
+    fn new(address: AdvertisedAddress<ControlPort>, inner: Channel) -> Self {
         Self {
             channel: inner,
             address,
@@ -609,7 +627,7 @@ impl ChannelWithAddress {
 
 #[derive(Clone, Debug, derive_more::From)]
 enum ChannelOrInitialAddress {
-    InitialAddress(#[from] AdvertisedAddress<FabricPort>),
+    InitialAddress(#[from] AdvertisedAddress<ControlPort>),
     Channel(#[from] ChannelWithAddress),
 }
 
@@ -633,7 +651,7 @@ impl ChannelOrInitialAddress {
     }
 
     #[allow(dead_code)]
-    fn address(&self) -> &AdvertisedAddress<FabricPort> {
+    fn address(&self) -> &AdvertisedAddress<ControlPort> {
         match self {
             ChannelOrInitialAddress::InitialAddress(address) => address,
             ChannelOrInitialAddress::Channel(channel) => &channel.address,
@@ -645,13 +663,13 @@ impl ChannelOrInitialAddress {
 struct Channels {
     // initial addresses we will keep in address form and resolve+connect every time they are used
     // this is to allow for the initial addresses being dns entries that resolve to multiple node IPs
-    initial_addresses: Vec<AdvertisedAddress<FabricPort>>,
+    initial_addresses: Vec<AdvertisedAddress<ControlPort>>,
     channels: IndexMap<PlainNodeId, ChannelWithAddress>,
-    last: Option<AdvertisedAddress<FabricPort>>,
+    last: Option<AdvertisedAddress<ControlPort>>,
 }
 
 impl Channels {
-    fn new(initial_addresses: Vec<AdvertisedAddress<FabricPort>>) -> Self {
+    fn new(initial_addresses: Vec<AdvertisedAddress<ControlPort>>) -> Self {
         assert!(!initial_addresses.is_empty());
         Channels {
             initial_addresses,
@@ -729,13 +747,101 @@ impl Channels {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::sync::Arc;
 
     use rand::SeedableRng;
-    use restate_types::{PlainNodeId, net::address::AdvertisedAddress};
     use test_log::test;
     use tonic::transport::Channel;
 
-    use super::{ChannelWithAddress, Channels};
+    use restate_core::TestCoreEnvBuilder;
+    use restate_types::config::{
+        CommonOptionsBuilder, Configuration, NetworkingOptions, set_current_config,
+    };
+    use restate_types::locality::NodeLocation;
+    use restate_types::net::address::AdvertisedAddress;
+    use restate_types::nodes_config::{
+        ClusterFingerprint, NodeConfig, NodesConfiguration, QualifiedAddress, Role,
+    };
+    use restate_types::{GenerationalNodeId, PlainNodeId, RestateVersion, Version};
+
+    use super::{ChannelManager, ChannelWithAddress, Channels, KnownLeader};
+
+    #[test(restate_core::test)]
+    async fn known_leaders_are_dialed_at_their_selected_address() {
+        let common = CommonOptionsBuilder::default()
+            .location("us-east1.az1".parse::<NodeLocation>().unwrap())
+            .build()
+            .unwrap();
+        set_current_config(Configuration {
+            common,
+            ..Default::default()
+        });
+        let node = |id: u32, name: &str, ctrl_addresses: Vec<QualifiedAddress<_>>| {
+            NodeConfig::builder()
+                .name(name.to_owned())
+                .current_generation(GenerationalNodeId::new(id, 1))
+                .address(format!("http://{name}:5122").parse().unwrap())
+                .ctrl_address(Some(format!("http://{name}:5122").parse().unwrap()))
+                .ctrl_addresses(ctrl_addresses)
+                .roles(Role::MetadataServer.into())
+                .binary_version(RestateVersion::current())
+                .build()
+        };
+        let mut nodes = NodesConfiguration::new(
+            Version::MIN,
+            "hints".to_owned(),
+            ClusterFingerprint::generate(),
+        );
+        nodes.upsert_node(node(1, "me", vec![]));
+        nodes.upsert_node(node(
+            2,
+            "leader",
+            vec![QualifiedAddress {
+                address: "http://10.1.7.2:5122".parse().unwrap(),
+                location: Some("us-east1.az1".parse().unwrap()),
+            }],
+        ));
+        let _env = TestCoreEnvBuilder::with_incoming_only_connector()
+            .set_nodes_config(nodes)
+            .build()
+            .await;
+        let manager = ChannelManager::new(
+            vec!["http://seed:5122".parse().unwrap()],
+            Arc::new(NetworkingOptions::default()),
+        );
+        let hint = |node_id: u32| KnownLeader {
+            node_id: PlainNodeId::new(node_id),
+            address: "http://leader:5122".parse().unwrap(),
+        };
+
+        // A known node is dialed at the address selected for this process, not the hint's; an
+        // unknown node where the hint says.
+        assert_eq!(
+            manager.register_known_leader(hint(2)).address.to_string(),
+            "http://10.1.7.2:5122/"
+        );
+        assert_eq!(
+            manager.register_known_leader(hint(9)).address.to_string(),
+            "http://leader:5122/"
+        );
+    }
+
+    // A runtime without a task center, as in a tool: a hint is dialed as given, without panicking.
+    #[tokio::test]
+    async fn known_leaders_outside_a_task_center_are_dialed_as_hinted() {
+        let manager = ChannelManager::new(
+            vec!["http://seed:5122".parse().unwrap()],
+            Arc::new(NetworkingOptions::default()),
+        );
+        let hint = KnownLeader {
+            node_id: PlainNodeId::new(2),
+            address: "http://leader:5122".parse().unwrap(),
+        };
+        assert_eq!(
+            manager.register_known_leader(hint).address.to_string(),
+            "http://leader:5122/"
+        );
+    }
 
     #[test]
     #[should_panic(expected = "!initial_addresses.is_empty()")]

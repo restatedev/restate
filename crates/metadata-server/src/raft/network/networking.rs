@@ -23,7 +23,7 @@ use restate_core::network::net_util;
 use restate_core::{Metadata, ShutdownError, TaskCenter, TaskHandle, TaskKind};
 use restate_types::PlainNodeId;
 use restate_types::config::{Configuration, NetworkingOptions};
-use restate_types::net::address::{AdvertisedAddress, FabricPort};
+use restate_types::net::address::{AdvertisedAddress, ControlPort};
 
 use crate::raft::network::connection_manager::ConnectionManager;
 use crate::raft::network::grpc_svc::new_metadata_server_network_client;
@@ -57,7 +57,7 @@ impl<T> TrySendError<T> {
 #[derive(derive_more::Debug)]
 pub struct Networking<M> {
     connection_manager: ConnectionManager<M>,
-    addresses: HashMap<PlainNodeId, AdvertisedAddress<FabricPort>>,
+    addresses: HashMap<PlainNodeId, AdvertisedAddress<ControlPort>>,
     #[debug(skip)]
     connection_attempts: HashMap<PlainNodeId, TaskHandle<anyhow::Result<()>>>,
     serde_buffer: BytesMut,
@@ -80,7 +80,7 @@ where
     pub fn register_address(
         &mut self,
         peer: PlainNodeId,
-        address: AdvertisedAddress<FabricPort>,
+        address: AdvertisedAddress<ControlPort>,
     ) -> bool {
         match self.addresses.entry(peer) {
             Entry::Occupied(mut entry) => {
@@ -160,7 +160,7 @@ where
     fn try_connecting_to(
         connection_manager: ConnectionManager<M>,
         target: PlainNodeId,
-        address: AdvertisedAddress<FabricPort>,
+        address: AdvertisedAddress<ControlPort>,
         networking_options: &NetworkingOptions,
     ) -> Result<TaskHandle<anyhow::Result<()>>, ShutdownError> {
         TaskCenter::spawn_unmanaged_child(

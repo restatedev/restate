@@ -22,14 +22,13 @@ use tracing::{debug, warn};
 use restate_types::config::{Configuration, NetworkingOptions, TlsMode};
 use restate_types::net::address::{AdvertisedAddress, GrpcPort, ListenerPort, PeerNetAddress};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
-use restate_types::net::selection::dialable;
 
 use crate::network::grpc::DEFAULT_GRPC_COMPRESSION;
 use crate::network::net_util::{DNSResolution, apply_options, connect_tonic_endpoint};
 use crate::network::protobuf::core_node_svc::core_node_svc_client::CoreNodeSvcClient;
 use crate::network::protobuf::network::Message;
 use crate::network::tls::TlsClientConfig;
-use crate::network::transport_connector::find_node;
+use crate::network::transport_connector::{find_node, select_address};
 use crate::network::{ConnectError, Destination, Swimlane, TransportConnect};
 use crate::{Metadata, TaskCenter, TaskKind};
 
@@ -47,15 +46,13 @@ impl TransportConnect for GrpcConnector {
     ) -> Result<impl Stream<Item = Message> + Send + Unpin + 'static, ConnectError> {
         let address = match destination {
             Destination::Node(node_id) => {
-                // Selected once per connection from the current configuration and this node's
-                // location, so retries dial the same address until a newer configuration arrives.
-                let config = Configuration::pinned();
-                let tls_mode = config.common.fabric_tls_mode();
-                find_node(&Metadata::with_current(|m| m.nodes_config_ref()), *node_id)?
-                    .address_for(config.common.location(), |address| {
-                        dialable(address, tls_mode)
-                    })
-                    .clone()
+                // Selected once per connection from the current configuration, so retries dial
+                // the same address until a newer configuration arrives.
+                select_address(find_node(
+                    &Metadata::with_current(|m| m.nodes_config_ref()),
+                    *node_id,
+                )?)
+                .clone()
             }
             Destination::Address(address) => address.clone(),
         };

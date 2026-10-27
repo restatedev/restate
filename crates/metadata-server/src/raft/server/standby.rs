@@ -20,6 +20,7 @@ use rand::rng;
 use tracing::{Span, debug, instrument, trace};
 
 use restate_core::network::net_util::{DNSResolution, create_tonic_channel};
+use restate_core::network::select_ctrl_address;
 use restate_core::{Metadata, MetadataWriter};
 use restate_metadata_providers::replicated::KnownLeader;
 use restate_types::Version;
@@ -259,7 +260,7 @@ impl Standby {
                 "Trying to join metadata store at node '{}'",
                 known_leader.node_id
             );
-            known_leader.address
+            known_leader.dial_address(nodes_config)
         } else {
             // pick random metadata store member node
             let member_node = nodes_config.iter().filter_map(|(node, config)| {
@@ -275,11 +276,10 @@ impl Standby {
                 member_node
             );
 
-            nodes_config
+            let node = nodes_config
                 .find_node_by_id(member_node)
-                .expect("must be present")
-                .address
-                .clone()
+                .expect("must be present");
+            select_ctrl_address(node).into_owned()
         };
 
         let mut client = {
@@ -328,7 +328,7 @@ impl Standby {
             .choose(&mut rng())
             .map(|(node_id, node_config)| KnownLeader {
                 node_id,
-                address: node_config.address.clone(),
+                address: node_config.address.clone().into_control(),
             })
     }
 }
