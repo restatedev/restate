@@ -10,6 +10,10 @@ ignore = [
     { id = "RUSTSEC-2025-0057", reason = "fxhash is not maintained anymore, currently used only by raft-rs" },
     # smartstring is a dependency of rust-rocksdb
     { id = "RUSTSEC-2026-0249", reason = "The smartstring crate is unmaintained; all versions are affected. The GitHub repository was archived by the owner on 2026-05-03." },
+    # zstd 0.13 / zstd-safe 7 are pulled by arrow-ipc 59 (datafusion 55). Remove once datafusion moves to arrow 60.
+    { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via arrow-ipc 59; the affected `with_context` constructors are not used" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via arrow-ipc 59; the affected `seekable` feature is not enabled" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via arrow-ipc 59; arrow-ipc only uses the unaffected bulk API, not streaming decompression" },
 ]
 
 
