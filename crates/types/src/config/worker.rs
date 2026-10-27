@@ -22,7 +22,7 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 
 use super::{
     BackgroundWorkBudget, CommonOptions, DEFAULT_MESSAGE_SIZE_LIMIT, NetworkingOptions,
-    ObjectStoreOptions, RocksDbOptions,
+    ObjectStoreOptions, RocksDbOptions, SelfProposerCongestionControl,
 };
 use crate::config::throttling::ThrottlingOptions;
 use crate::config::{
@@ -215,6 +215,21 @@ pub struct WorkerOptions {
     #[cfg_attr(feature = "schemars", schemars(skip))]
     pub self_proposal_queue_memory_limit: NonZeroByteCount,
 
+    /// # Self-proposer congestion control
+    ///
+    /// Limits how many records a partition leader keeps in flight, i.e. proposed to its own log
+    /// but not yet applied. Changes take effect when a partition processor becomes leader.
+    ///
+    /// Default: disabled
+    ///
+    /// Since v1.8.2
+    #[cfg_attr(feature = "schemars", schemars(skip))]
+    #[serde(
+        default,
+        skip_serializing_if = "SelfProposerCongestionControl::is_default"
+    )]
+    pub self_proposer_congestion_control: SelfProposerCongestionControl,
+
     /// # VQueue metadata cache size
     ///
     /// The target number of VQueue metadata entries to cache per partition. Each entry uses
@@ -310,6 +325,7 @@ impl Default for WorkerOptions {
                 NonZeroUsize::new(64 * 1024 * 1024).expect("non zero"),
             ),
             vqueue_metadata_cache_size: serde_helpers::vqueue_metadata_cache_size_default(),
+            self_proposer_congestion_control: SelfProposerCongestionControl::default(),
         }
     }
 }
