@@ -107,7 +107,8 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     )
     .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
     .build()?;
-    let db = manager.open_db(spec).await?;
+    let (_, opening) = manager.open_db(spec)?;
+    let db = opening.await?;
 
     // Obtain real errors through the binding's public API. A cache-only read of
     // flushed data with caching disabled deterministically returns Incomplete.

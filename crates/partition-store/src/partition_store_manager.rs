@@ -183,7 +183,8 @@ impl PartitionStoreManager {
         .build()
         .expect("valid spec");
 
-        let rocksdb = RocksDbManager::get().open_db(db_spec).await?;
+        let (_, opening) = RocksDbManager::get().open_db(db_spec)?;
+        let rocksdb = opening.await?;
 
         db_cache_guard.insert(
             db_name,
