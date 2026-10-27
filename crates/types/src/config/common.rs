@@ -1554,7 +1554,7 @@ pub enum MetadataClientKind {
     Replicated {
         /// # Restate metadata server address list
         #[cfg_attr(feature = "schemars", schemars(with = "Vec<String>"))]
-        addresses: Vec<AdvertisedAddress<FabricPort>>,
+        addresses: Vec<AdvertisedAddress<ControlPort>>,
     },
     /// Store metadata on an external etcd cluster.
     ///
@@ -1644,9 +1644,9 @@ impl MetadataClientKind {
 enum MetadataClientKindShadow {
     #[serde(alias = "embedded")]
     Replicated {
-        address: Option<AdvertisedAddress<FabricPort>>,
+        address: Option<AdvertisedAddress<ControlPort>>,
         #[serde(default)]
-        addresses: Vec<AdvertisedAddress<FabricPort>>,
+        addresses: Vec<AdvertisedAddress<ControlPort>>,
     },
     Etcd {
         addresses: Vec<String>,
@@ -1667,9 +1667,9 @@ enum MetadataClientKindShadow {
     // Fallback to support not having to specify the type field
     #[serde(untagged)]
     Fallback {
-        address: Option<AdvertisedAddress<FabricPort>>,
+        address: Option<AdvertisedAddress<ControlPort>>,
         #[serde(default)]
-        addresses: Vec<AdvertisedAddress<FabricPort>>,
+        addresses: Vec<AdvertisedAddress<ControlPort>>,
     },
 }
 

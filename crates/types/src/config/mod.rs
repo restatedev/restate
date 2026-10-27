@@ -457,6 +457,17 @@ impl Configuration {
         self.common.control_advertised_address(address_book)
     }
 
+    /// The control address this node dials itself at: its fabric advertisement, which every node
+    /// must be able to reach, on the listener control shares. The control advertisement is for
+    /// tools and may be a route the node itself cannot reach, such as a published Docker port or
+    /// a proxy.
+    pub fn own_control_address(
+        &self,
+        address_book: &AddressBook,
+    ) -> AdvertisedAddress<ControlPort> {
+        self.common.advertised_address(address_book).into_control()
+    }
+
     /// The fabric addresses this node publishes for callers in specific locations.
     pub fn advertised_addresses(&self) -> Vec<QualifiedAddress<FabricPort>> {
         self.common.advertised_addresses()

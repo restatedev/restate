@@ -26,7 +26,7 @@ use typed_builder::TypedBuilder;
 use restate_metadata_server_grpc::MetadataServerConfiguration;
 use restate_types::{
     PlainNodeId,
-    net::address::{AdvertisedAddress, FabricPort},
+    net::address::{AdvertisedAddress, ControlPort, FabricPort},
 };
 use restate_types::{errors::GenericError, nodes_config::Role};
 
@@ -113,13 +113,8 @@ impl Cluster {
 
         let metadata_server_addresses: Vec<_> = nodes
             .iter()
-            .filter_map(|node| {
-                node.has_role(Role::MetadataServer).then_some(
-                    AdvertisedAddress::with_node_base_dir(
-                        &base_dir.as_path().join(node.node_name()),
-                    ),
-                )
-            })
+            .filter(|node| node.has_role(Role::MetadataServer))
+            .map(|node| metadata_server_seed(base_dir.as_path(), node.node_name()))
             .collect();
 
         for (i, mut node) in nodes.into_iter().enumerate() {
@@ -148,19 +143,22 @@ pub struct StartedCluster {
     pub nodes: Vec<StartedNode>,
 }
 
+/// The metadata seed for a node: its fabric Unix socket, as a control address. Control RPCs are
+/// served on the fabric listener, and the control port kind names a socket no node binds.
+fn metadata_server_seed(base_dir: &Path, node_name: &str) -> AdvertisedAddress<ControlPort> {
+    AdvertisedAddress::<FabricPort>::with_node_base_dir(&base_dir.join(node_name)).into_control()
+}
+
 impl StartedCluster {
     pub fn base_dir(&self) -> &Path {
         self.base_dir.as_path()
     }
 
-    pub fn collect_metadata_server_addresses(&self) -> Vec<AdvertisedAddress<FabricPort>> {
+    pub fn collect_metadata_server_addresses(&self) -> Vec<AdvertisedAddress<ControlPort>> {
         self.nodes
             .iter()
-            .filter_map(|node| {
-                node.has_role(Role::MetadataServer).then_some(
-                    AdvertisedAddress::with_node_base_dir(&self.base_dir().join(node.node_name())),
-                )
-            })
+            .filter(|node| node.has_role(Role::MetadataServer))
+            .map(|node| metadata_server_seed(self.base_dir(), node.node_name()))
             .collect()
     }
 
