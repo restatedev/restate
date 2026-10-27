@@ -8,10 +8,11 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::path::PathBuf;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 use std::{cmp::Ordering, fmt::Display, sync::Arc};
 
 use cling::{Collect, prelude::Parser};
@@ -31,9 +32,12 @@ use restate_types::errors;
 use restate_types::partition_table::PartitionTable;
 use restate_types::{
     Version, Versioned,
+    config::TlsMode,
+    locality::NodeLocation,
     logs::metadata::Logs,
-    net::address::{AdvertisedAddress, ControlPort},
-    nodes_config::{NodesConfiguration, Role},
+    net::address::{AdvertisedAddress, ControlPort, PeerNetAddress},
+    net::selection::dialable,
+    nodes_config::{NodeConfig, NodesConfiguration, Role},
     protobuf::common::{MetadataKind, NodeStatus},
     storage::{StorageCodec, StorageDecode, StorageDecodeError},
 };
@@ -184,8 +188,20 @@ pub struct ConnectionInfo {
     )]
     pub single_address: Option<AdvertisedAddress<ControlPort>>,
 
+    /// The location of this tool, written like a node `location` as `region` or `region.zone`.
+    ///
+    /// Nodes advertise addresses for callers in specific locations. With a location, restatectl
+    /// dials the entries for it, as a node there would. Without one, it adopts the location of
+    /// the entry that a seed address matches, when exactly one location matches, and otherwise
+    /// dials the plain advertised addresses.
+    #[clap(long, env = "RESTATECTL_LOCATION", global = true)]
+    pub location: Option<NodeLocation>,
+
     #[clap(flatten)]
     pub tls: TlsOpts,
+
+    #[clap(skip)]
+    caller_location: Arc<OnceLock<NodeLocation>>,
 
     #[clap(skip)]
     nodes_configuration: Arc<Mutex<Option<NodesConfiguration>>>,
@@ -206,6 +222,34 @@ pub struct ConnectionInfo {
 impl ConnectionInfo {
     pub fn is_single_address_mode(&self) -> bool {
         self.single_address.is_some()
+    }
+
+    /// The location this tool dials from: `--location`, else the one inferred from the seeds
+    /// once, from the first nodes configuration seen.
+    fn caller_location(&self, nodes_config: &NodesConfiguration) -> &NodeLocation {
+        self.caller_location.get_or_init(|| {
+            self.location
+                .clone()
+                .unwrap_or_else(|| infer_location(&self.address, nodes_config))
+        })
+    }
+
+    /// The control address to dial for `node`: its first entry for this tool's location that
+    /// this binary can dial, else its plain control address.
+    pub fn ctrl_address_for<'a>(
+        &self,
+        nodes_config: &NodesConfiguration,
+        node: &'a NodeConfig,
+    ) -> Cow<'a, AdvertisedAddress<ControlPort>> {
+        // A tool has no `require` policy; it dials `https` only when given a CA.
+        let tls_mode = if self.tls.tls_ca.is_some() {
+            TlsMode::Prefer
+        } else {
+            TlsMode::Off
+        };
+        node.ctrl_address_for(self.caller_location(nodes_config), |address| {
+            dialable(address, tls_mode)
+        })
     }
 
     fn get_effective_addresses(&self) -> Vec<&AdvertisedAddress<ControlPort>> {
@@ -248,7 +292,7 @@ impl ConnectionInfo {
     ) -> Vec<AdvertisedAddress<ControlPort>> {
         let mut nodes_addresses = nodes_config
             .iter()
-            .map(|(_, node)| node.ctrl_address().into_owned())
+            .map(|(_, node)| self.ctrl_address_for(nodes_config, node).into_owned())
             .collect::<Vec<_>>();
 
         nodes_addresses.shuffle(&mut rng());
@@ -552,26 +596,20 @@ impl ConnectionInfo {
         let nodes_config = self.get_nodes_configuration().await?;
         let mut open_connections = self.open_connections.lock().await;
 
-        let iterator = match role {
+        // Select each node's address once; nodes with an open connection go first, then by id.
+        let mut nodes = match role {
             Some(role) => Either::Left(nodes_config.iter_role(role)),
             None => Either::Right(nodes_config.iter()),
         }
-        .sorted_by(|a, b| {
-            // nodes for which we already have open channels get higher precedence.
-            match (
-                open_connections.contains_key(a.1.ctrl_address().as_ref()),
-                open_connections.contains_key(b.1.ctrl_address().as_ref()),
-            ) {
-                (true, false) => Ordering::Less,
-                (false, true) => Ordering::Greater,
-                (_, _) => a.0.cmp(&b.0),
-            }
+        .map(|(node_id, node)| (node_id, self.ctrl_address_for(&nodes_config, node)))
+        .collect::<Vec<_>>();
+        nodes.sort_by_key(|(node_id, address)| {
+            (!open_connections.contains_key(address.as_ref()), *node_id)
         });
 
         let mut errors = NodesErrors::default();
 
-        for (_, node) in iterator {
-            let address = node.ctrl_address();
+        for (_, address) in nodes {
             let channel = self.connect_internal(&address, &mut open_connections).await;
 
             if let Some(channel) = channel {
@@ -650,6 +688,56 @@ impl ConnectionInfo {
 }
 
 /// Error type returned by a [`ConnectionInfo::try_each`] node_operation closure
+/// The location a tool adopts when none is given: that of the entries a seed address matches,
+/// when they all share one location. Seeds are compared with every node's control entries and
+/// fabric entries by the address they dial, so `localhost:15122` matches
+/// `external@http://localhost:15122`.
+fn infer_location(
+    seeds: &[AdvertisedAddress<ControlPort>],
+    nodes_config: &NodesConfiguration,
+) -> NodeLocation {
+    let seeds: Vec<PeerNetAddress> = seeds
+        .iter()
+        .filter_map(|seed| seed.clone().into_address().ok())
+        .collect();
+    let mut matched: Vec<&NodeLocation> = Vec::new();
+    for (_, node) in nodes_config.iter() {
+        let control = node
+            .ctrl_addresses
+            .iter()
+            .map(|entry| (entry.address.clone().into_address(), &entry.location));
+        let fabric = node
+            .addresses
+            .iter()
+            .map(|entry| (entry.address.clone().into_address(), &entry.location));
+        for (peer, location) in control.chain(fabric) {
+            if let (Ok(peer), Some(location)) = (peer, location)
+                && seeds.contains(&peer)
+                && !matched.contains(&location)
+            {
+                matched.push(location);
+            }
+        }
+    }
+    match matched.as_slice() {
+        [location] => {
+            debug!(%location, "Adopted the location of the entry a seed address matches");
+            (*location).clone()
+        }
+        [] => {
+            debug!("No advertised address entry matches a seed address; using the plain addresses");
+            NodeLocation::new()
+        }
+        _ => {
+            debug!(
+                ?matched,
+                "Seed addresses match entries in several locations; using the plain addresses"
+            );
+            NodeLocation::new()
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum NodeOperationError {
     /// An error that can be retried on a different node
