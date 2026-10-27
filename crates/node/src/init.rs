@@ -378,7 +378,7 @@ mod tests {
         assert_eq!(first.ctrl_address.as_ref(), Some(&expected_control));
 
         let mut overridden = serde_json::to_value(&config).unwrap();
-        overridden["networking"]["ctrl-advertised-address"] =
+        overridden["ctrl-advertised-address"] =
             serde_json::json!("https://control.example.com:8443");
         let overridden: Configuration = serde_json::from_value(overridden).unwrap();
         let restarted = NodeInit::join_cluster_inner(&store, &overridden)

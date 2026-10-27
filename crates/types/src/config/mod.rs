@@ -452,9 +452,7 @@ impl Configuration {
         &self,
         address_book: &AddressBook,
     ) -> AdvertisedAddress<ControlPort> {
-        self.networking
-            .control
-            .advertised_address(&self.common, address_book)
+        self.common.control_advertised_address(address_book)
     }
 
     /// Dumps the configuration to a string
@@ -517,8 +515,8 @@ impl Configuration {
             true,
         )?;
         check_advertised_address(
-            "networking.ctrl-advertised-address",
-            self.networking.control.ctrl_advertised_address.as_ref(),
+            "ctrl-advertised-address",
+            self.common.control.ctrl_advertised_address.as_ref(),
             true,
         )?;
         check_advertised_address(
@@ -699,11 +697,7 @@ mod tests {
             ),
             // Used to pass startup and then panic the peers that dialed it.
             ("advertised-address", json!("ftp://h:21"), false),
-            (
-                "networking.ctrl-advertised-address",
-                grpc_unix.clone(),
-                false,
-            ),
+            ("ctrl-advertised-address", grpc_unix.clone(), false),
             ("admin.advertised-address", grpc_unix.clone(), false),
             (
                 "ingress.advertised-address",
