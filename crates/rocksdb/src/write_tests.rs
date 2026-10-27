@@ -160,7 +160,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                     }
                 },
                 db: &db,
-                lease: Some(lease),
+                lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
             };
             let result = db
                 .write_batch_internal("inline-lease", Priority::High, mode, write)
@@ -207,7 +207,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                 db.write_batch_with_index(batch, opts)
             },
             db: &db,
-            lease: Some(lease),
+            lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
         };
         let (completed, mut notification) = oneshot::channel();
         let observed = Arc::new(DbRefsOnWake {
@@ -279,7 +279,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                 Err(terminal.clone())
             },
             db: &db,
-            lease: Some(lease),
+            lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
         }
         .into_background();
         match outcome {

@@ -17,7 +17,7 @@ use restate_core::ShutdownError;
 use restate_core::io::OwnedLease;
 
 use super::{DbRef, RocksDbManager};
-use crate::{DbEnv, DbSpec, RocksAccess, RocksDb, RocksError};
+use crate::{DbCleanup, DbEnv, DbSpec, RocksDb, RocksError};
 
 /// Owns an accepted open through dispatch, native execution, and publication.
 /// Its inputs and outcome stay with the guard, including if the job is discarded.
@@ -64,12 +64,8 @@ impl OpenGuard {
             unreachable!("an open guard runs once");
         };
         self.state = OpenState::Completed(self.manager.open_native(spec, env).map(|native| {
-            RocksDb::from_access(
-                self.manager.clone(),
-                native,
-                self.tracked,
-                self.closed.clone(),
-            )
+            self.manager
+                .bind_db(native, self.tracked, self.closed.clone())
         }));
     }
 }
@@ -141,52 +137,25 @@ struct ShutdownCompletion<'a> {
 
 impl Drop for ShutdownCompletion<'_> {
     fn drop(&mut self) {
-        self.db
+        let registration = self.db.registration.as_ref().expect("registered database");
+        registration
             .manager
-            .finish_shutdown(self.db.registration, self.completed);
+            .finish_shutdown(registration.tracked, self.completed);
     }
 }
 
 /// Owns final-reference cleanup. Dropping a queued job still performs cleanup;
 /// completion is published only after native destruction actually returns.
 pub(super) struct CloseGuard {
-    db: Option<RocksAccess>,
-    closed: CancellationToken,
-    tracked: DbRef,
-    needs_shutdown: bool,
+    _cleanup: DbCleanup,
     _active: OwnedLease,
-    manager: RocksDbManager,
 }
 
 impl CloseGuard {
-    pub fn new(
-        manager: RocksDbManager,
-        db: RocksAccess,
-        closed: CancellationToken,
-        tracked: DbRef,
-        needs_shutdown: bool,
-        active: OwnedLease,
-    ) -> Self {
+    pub fn new(cleanup: DbCleanup, active: OwnedLease) -> Self {
         Self {
-            db: Some(db),
-            closed,
-            tracked,
-            needs_shutdown,
+            _cleanup: cleanup,
             _active: active,
-            manager,
         }
-    }
-}
-
-impl Drop for CloseGuard {
-    fn drop(&mut self) {
-        let db = self.db.take().expect("cleanup runs once");
-        if self.needs_shutdown {
-            db.shutdown();
-        }
-        drop(db);
-        // Neither an unwind from shutdown/destruction nor a cancelled waiter
-        // substitutes for reaching this point after actual resource release.
-        self.manager.finish_close(self.tracked, self.closed.clone());
     }
 }

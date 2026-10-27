@@ -49,6 +49,9 @@ pub enum RocksError {
     #[error("database is not tracked by this manager")]
     #[code(unknown)]
     NotRegistered,
+    #[error("database is already attached to a manager")]
+    #[code(unknown)]
+    AlreadyRegistered,
     #[error("database path '{}' does not match booked path '{}'", actual.display(), expected.display())]
     #[code(unknown)]
     PathMismatch { expected: PathBuf, actual: PathBuf },
