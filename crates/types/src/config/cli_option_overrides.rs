@@ -135,10 +135,7 @@ pub struct CommonOptionCliOverride {
     pub advertised_address: Option<AdvertisedAddress<FabricPort>>,
 
     #[clap(flatten)]
-    #[serde(
-        rename = "networking",
-        skip_serializing_if = "ControlOptions::is_empty"
-    )]
+    #[serde(flatten)]
     control: ControlOptions,
 
     /// Default Number Of Partitions
@@ -264,9 +261,9 @@ mod tests {
             r#"
             node-name = "control-cli-test"
             advertised-address = "http://fabric.example.com:5122"
-            [networking]
             ctrl-advertised-host = "control.example.com"
             ctrl-advertised-address = "https://file.example.com"
+            [networking]
             disable-compression = true
             "#,
         )
@@ -311,7 +308,7 @@ mod tests {
                 .load_once()
                 .unwrap();
             assert_eq!(
-                serde_json::to_value(&config).unwrap()["networking"]["ctrl-advertised-host"],
+                serde_json::to_value(&config).unwrap()["ctrl-advertised-host"],
                 expected_host
             );
             assert_eq!(
@@ -327,6 +324,7 @@ mod tests {
 
         let defaults = serde_json::to_value(CommonOptionCliOverride::default()).unwrap();
         assert!(defaults.get("control").is_none());
+        assert!(defaults.get("ctrl-advertised-host").is_none());
         assert!(defaults.get("networking").is_none());
     }
 
