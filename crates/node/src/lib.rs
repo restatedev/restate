@@ -228,6 +228,19 @@ impl Node {
                 tls_opts.validate_advertised_address(
                     &config.common.advertised_address(&address_book),
                 )?;
+                // Entries that `require` forbids were rejected when the configuration loaded;
+                // under `prefer` this logs each plaintext entry once, now that logging is up.
+                let mut checked = std::collections::HashSet::new();
+                for entry in config.advertised_addresses() {
+                    if checked.insert(entry.address.to_string()) {
+                        tls_opts.validate_advertised_address(&entry.address)?;
+                    }
+                }
+                for entry in config.control_advertised_addresses() {
+                    if checked.insert(entry.address.to_string()) {
+                        tls_opts.validate_advertised_address(&entry.address)?;
+                    }
+                }
                 let server_config = TlsServerConfig::new(tls_opts)?;
                 let client_config = TlsClientConfig::from_fabric_options(tls_opts)?;
                 spawn_reloader(
@@ -868,7 +881,9 @@ fn create_initial_nodes_configuration(
         )
         .location(common_opts.location().clone())
         .address(my_advertised_address)
+        .addresses(config.advertised_addresses())
         .ctrl_address(Some(my_ctrl_address))
+        .ctrl_addresses(config.control_advertised_addresses())
         .roles(common_opts.roles)
         .binary_version(RestateVersion::current())
         .build();
