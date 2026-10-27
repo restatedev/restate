@@ -8590,6 +8590,7 @@ dependencies = [
  "restate-util-time",
  "restate-workspace-hack",
  "rust-rocksdb",
+ "slotmap",
  "static_assertions",
  "strum",
  "thiserror 2.0.20",
