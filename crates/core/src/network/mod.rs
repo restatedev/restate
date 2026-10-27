@@ -43,7 +43,7 @@ pub use network_sender::*;
 pub use networking::Networking;
 pub use protobuf::network::ConnectionDirection;
 pub use server_builder::NetworkServerBuilder;
-pub use transport_connector::TransportConnect;
+pub use transport_connector::{TransportConnect, select_address, select_ctrl_address};
 pub use types::*;
 
 #[cfg(feature = "test-util")]

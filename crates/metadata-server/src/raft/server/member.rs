@@ -33,6 +33,7 @@ use tracing::{debug, info, instrument, trace, warn};
 use tracing_slog::TracingSlogDrain;
 use ulid::Ulid;
 
+use restate_core::network::select_ctrl_address;
 use restate_core::{Metadata, MetadataWriter, TaskCenter};
 use restate_metadata_providers::replicated::KnownLeader;
 use restate_metadata_server_grpc::grpc::MetadataServerSnapshot;
@@ -181,9 +182,7 @@ impl Member {
         networking.register_address(
             my_member_id.node_id,
             TaskCenter::with_current(|tc| {
-                Configuration::pinned()
-                    .common
-                    .advertised_address(tc.address_book())
+                Configuration::pinned().own_control_address(tc.address_book())
             }),
         );
 
@@ -1288,7 +1287,7 @@ impl Member {
             if let Ok(node_config) = nodes_config.find_node_by_id(plain_node_id) {
                 // todo remove addresses from nodes that are no longer needed
                 self.networking
-                    .register_address(plain_node_id, node_config.address.clone());
+                    .register_address(plain_node_id, select_ctrl_address(node_config).into_owned());
             }
         }
     }
@@ -1528,7 +1527,9 @@ impl Member {
             .ok()
             .map(|node_config| KnownLeader {
                 node_id: leader,
-                address: node_config.address.clone(),
+                // The fabric address on the control port: what every receiver, old or new, can
+                // reach. Receivers that know the node select an address for it instead.
+                address: node_config.address.clone().into_control(),
             })
     }
 }

@@ -82,11 +82,12 @@ pub struct Metadata {
 }
 
 impl Metadata {
+    /// Runs `f` on the current metadata, if this is a task-center task with access to it.
     pub fn try_with_current<F, R>(f: F) -> Option<R>
     where
         F: Fn(&Metadata) -> R,
     {
-        TaskCenter::with_metadata(|m| f(m))
+        TaskCenter::try_with_current(|tc| tc.with_metadata(|m| f(m))).flatten()
     }
 
     pub fn try_current() -> Option<Metadata> {
