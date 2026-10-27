@@ -8,11 +8,15 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use derive_builder::Builder;
-use metrics::{gauge, histogram};
-use tokio::sync::oneshot;
+use metrics::{Gauge, gauge, histogram};
+use parking_lot::Mutex;
+
+use restate_core::ShutdownError;
+use restate_core::io::{IoExecutor, IoOp, IoTask};
 
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{OP_TYPE, PRIORITY, Priority, STORAGE_BG_TASK_IN_FLIGHT};
@@ -53,37 +57,23 @@ pub struct ReadyStorageTask<OP> {
     created_at: Instant,
 }
 
+struct InFlight(Gauge);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.decrement(1);
+    }
+}
+
 impl<OP, R> ReadyStorageTask<OP>
 where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
     pub fn into_runner(self) -> impl FnOnce() -> R + Send + 'static {
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-         PRIORITY => self.priority.as_static_str(),
-         OP_TYPE => self.kind.as_static_str(),
-        )
-        .increment(1);
-
+        let task = self.into_task();
         let span = tracing::Span::current();
-
-        move || span.in_scope(|| self.run())
-    }
-
-    pub fn into_async_runner(self, tx: oneshot::Sender<R>) -> impl FnOnce() + Send + 'static {
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-         PRIORITY => self.priority.as_static_str(),
-         OP_TYPE => self.kind.as_static_str(),
-        )
-        .increment(1);
-        let span = tracing::Span::current();
-
-        move || {
-            span.in_scope(|| {
-                let result = self.run();
-                let _ = tx.send(result);
-            })
-        }
+        move || span.in_scope(task)
     }
 
     fn run(self) -> R {
@@ -92,11 +82,168 @@ where
         histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(self.created_at.elapsed());
         let res = (self.op)();
         histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(start.elapsed());
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-             PRIORITY => self.priority.as_static_str(),
-             OP_TYPE => self.kind.as_static_str(),
-        )
-        .decrement(1);
         res
+    }
+}
+
+impl<OP, R> IoOp for ReadyStorageTask<OP>
+where
+    OP: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    type Output = R;
+
+    fn priority(&self) -> Priority {
+        self.priority
+    }
+
+    fn into_task(self) -> impl IoTask<Self::Output> {
+        let gauge = gauge!(STORAGE_BG_TASK_IN_FLIGHT,
+         PRIORITY => self.priority.as_static_str(),
+         OP_TYPE => self.kind.as_static_str(),
+        );
+        gauge.increment(1);
+        // Keep the operation and guard together, releasing captured resources
+        // before decrementing even if the prepared task is dropped without running.
+        let task = (self, InFlight(gauge));
+
+        move || {
+            let (task, _in_flight) = task;
+            task.run()
+        }
+    }
+
+    fn call(self) -> Self::Output {
+        (self.op)()
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct SinglePoolExecutor {
+    pool: threadpool::ThreadPool,
+}
+
+impl SinglePoolExecutor {
+    pub fn new(name: String, num_threads: usize) -> Self {
+        let pool = threadpool::Builder::new()
+            .thread_name(name)
+            .num_threads(num_threads)
+            .build();
+
+        Self { pool }
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn max_count(&self) -> usize {
+        self.pool.max_count()
+    }
+}
+
+impl IoExecutor for SinglePoolExecutor {
+    fn dispatch_fn(&self, _priority: Priority, task: impl IoTask<()>) -> Result<(), ShutdownError> {
+        let span = tracing::Span::current();
+        self.pool.execute(move || {
+            span.in_scope(task);
+        });
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct GlobalExecutor(Arc<GlobalExecutorInner>);
+
+impl GlobalExecutor {
+    pub fn new(
+        high_pri_pool: threadpool::ThreadPool,
+        low_pri_pool: threadpool::ThreadPool,
+    ) -> Self {
+        Self(Arc::new(GlobalExecutorInner {
+            shutting_down: Mutex::new(false),
+            high_pri_pool,
+            low_pri_pool,
+        }))
+    }
+
+    /// Marks the executor as closed for new work. The executor will continue
+    /// driving enqueued work.
+    pub fn close(&self) {
+        *self.0.shutting_down.lock() = true;
+    }
+}
+
+struct GlobalExecutorInner {
+    shutting_down: Mutex<bool>,
+    high_pri_pool: threadpool::ThreadPool,
+    low_pri_pool: threadpool::ThreadPool,
+}
+
+impl IoExecutor for GlobalExecutor {
+    fn dispatch_fn(&self, priority: Priority, task: impl IoTask<()>) -> Result<(), ShutdownError> {
+        let span = tracing::Span::current();
+        // Serialize acceptance with close so accepted work is enqueued before
+        // close returns. Rejected tasks are dropped after releasing the lock.
+        let shutting_down = self.0.shutting_down.lock();
+        if *shutting_down {
+            drop(shutting_down);
+            return Err(ShutdownError);
+        }
+        let pool = match priority {
+            Priority::High => &self.0.high_pri_pool,
+            Priority::Low => &self.0.low_pri_pool,
+        };
+        pool.execute(move || span.in_scope(task));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use restate_core::io::{FlightTracker, TrackedExecutor};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn global_pool_routes_priority_and_rejects_after_close() {
+        let backend = GlobalExecutor::new(
+            threadpool::Builder::new()
+                .num_threads(1)
+                .thread_name("test-high".to_owned())
+                .build(),
+            threadpool::Builder::new()
+                .num_threads(1)
+                .thread_name("test-low".to_owned())
+                .build(),
+        );
+        let flights = Arc::new(FlightTracker::default());
+        let executor = TrackedExecutor::new(&backend, &flights);
+        let high = executor
+            .spawn(
+                StorageTask::default()
+                    .kind(StorageTaskKind::MultiGet)
+                    .priority(Priority::High)
+                    .op(|| std::thread::current().name().unwrap().to_owned())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        let low = executor
+            .spawn_fn(Priority::Low, || {
+                std::thread::current().name().unwrap().to_owned()
+            })
+            .unwrap();
+        backend.close();
+        backend.close();
+
+        assert_eq!(high.await.unwrap(), "test-high");
+        assert_eq!(low.await.unwrap(), "test-low");
+        for priority in [Priority::High, Priority::Low] {
+            assert!(
+                executor
+                    .dispatch_fn(priority, || panic!("rejected task must not run"))
+                    .is_err()
+            );
+        }
+        flights.seal();
+        flights.drain().await;
     }
 }

@@ -43,7 +43,8 @@ pub async fn build_rocksdb() -> Result<Arc<RocksDb>, RocksError> {
         .build()
         .expect("valid spec");
 
-    db_manager.open_db(db_spec).await
+    let (_, opening) = db_manager.open_db(db_spec)?;
+    opening.await
 }
 
 struct RocksConfigurator;

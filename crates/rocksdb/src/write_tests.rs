@@ -20,11 +20,11 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
+use restate_core::io::FlightTracker;
 use restate_platform::sync::Mutex;
 use restate_types::config::node_dir;
 use restate_types::protobuf::common::DatabaseKind;
 
-use crate::admission::Admission;
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
@@ -53,7 +53,7 @@ impl CfConfigurator for Configurator {
 
 // Captured by the write closure: its destruction must precede lease completion.
 struct DropProbe {
-    admission: Weak<Admission>,
+    admission: Weak<FlightTracker>,
     released: Arc<AtomicBool>,
 }
 
@@ -107,7 +107,8 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     )
     .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
     .build()?;
-    let db = manager.open_db(spec).await?;
+    let (_, opening) = manager.open_db(spec)?;
+    let db = opening.await?;
 
     // Obtain real errors through the binding's public API. A cache-only read of
     // flushed data with caching disabled deterministically returns Incomplete.
@@ -134,7 +135,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         IoMode::Default,
     ] {
         for fail in [false, true] {
-            let admission = Arc::new(Admission::default());
+            let admission = Arc::new(FlightTracker::default());
             let lease = admission.try_acquire().unwrap();
             admission.seal();
             let released = Arc::new(AtomicBool::new(false));
@@ -175,7 +176,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     // even after the async result waiter has been destroyed.
     for mode in [IoMode::AlwaysBackground, IoMode::Default] {
         let pause = manager.pause_background(Priority::High).await;
-        let admission = Arc::new(Admission::default());
+        let admission = Arc::new(FlightTracker::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal(); // Default-mode promotion must work after sealing too.
         let released = Arc::new(AtomicBool::new(false));
@@ -258,7 +259,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     // Exercise destruction without execution, a terminal error, and unwinding
     // through the same owned operation used by the background executor.
     for outcome in 0..3 {
-        let admission = Arc::new(Admission::default());
+        let admission = Arc::new(FlightTracker::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal();
         let released = Arc::new(AtomicBool::new(false));
