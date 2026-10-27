@@ -179,6 +179,12 @@ impl SemanticRestateVersion {
     pub fn is_newer_than(&self, other: &Self) -> bool {
         self.cmp_precedence(other) == std::cmp::Ordering::Greater
     }
+
+    /// True if this version's release, its major, minor and patch, is equal or newer than the
+    /// other's, so that a pre-release such as `1.9.0-dev` counts as `1.9.0`.
+    pub fn release_is_equal_or_newer_than(&self, other: &Self) -> bool {
+        (self.major(), self.minor(), self.patch()) >= (other.major(), other.minor(), other.patch())
+    }
 }
 
 impl std::fmt::Display for SemanticRestateVersion {
