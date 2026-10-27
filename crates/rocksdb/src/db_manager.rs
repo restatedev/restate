@@ -25,20 +25,19 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use restate_core::io::{FlightTracker, IoExecutor, OwnedLease, TrackedExecutor};
+use restate_core::io::{FlightTracker, IoExecutor, OwnedLease};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_platform::sync::Mutex;
 use restate_types::config::{CommonOptions, Configuration};
 use restate_util_string::ReString;
 
 use self::completion::{CloseGuard, OpenGuard, ShutdownGuard};
 use self::tracking::{Status, TrackedDb};
-use crate::background::{GlobalExecutor, ReadyStorageTask, SinglePoolExecutor, StorageTask};
+use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
 use crate::db_env::check_memory_limit;
 use crate::{
-    DbEnv, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksDbReadPerfGuard, RocksError,
-    StorageTaskKind, metric_definitions,
+    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, Priority, RocksAccess, RocksDb,
+    RocksDbReadPerfGuard, RocksError, StorageTaskKind, metric_definitions,
 };
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
@@ -114,7 +113,6 @@ struct ManagerInner {
     // callbacks, notifications, and final database drops happen outside it.
     state: Mutex<State>,
     shutting_down: AtomicBool,
-    background_tracker: Arc<FlightTracker>,
     // Admission is controlled by the incarnation protocol. Final-reference
     // cleanup remains possible for externally pinned databases after shutdown.
     lifecycle_tracker: Arc<FlightTracker>,
@@ -156,7 +154,6 @@ impl RocksDbManager {
             db_env,
             state: Mutex::default(),
             shutting_down: AtomicBool::new(false),
-            background_tracker: Arc::default(),
             lifecycle_tracker: Arc::default(),
             executor,
             lifecycle_executor,
@@ -498,6 +495,44 @@ impl RocksDbManager {
         tracked: DbRef,
         result: Result<RocksAccess, RocksError>,
     ) -> Result<Arc<RocksDb>, RocksError> {
+        self.finalize_db(
+            tracked,
+            result.map(|native| RocksDb::new(native, self.0.executor.clone())),
+        )
+    }
+
+    /// Attach an independently constructed database to a booked remote incarnation.
+    /// Consumes exclusive ownership and publishes shared handles only after binding.
+    /// On rejection, an unattached database is destroyed synchronously on the
+    /// caller's thread. An existing registration keeps its original cleanup path.
+    /// Must run on a blocking thread, like [`Self::register_db`].
+    pub fn attach_db(&self, tracked: DbRef, db: RocksDb) -> Result<Arc<RocksDb>, RocksError> {
+        if db.registration.is_some() {
+            return Err(RocksError::AlreadyRegistered);
+        }
+        self.finalize_db(tracked, Ok(db))
+    }
+
+    fn bind_db(
+        &self,
+        native: RocksAccess,
+        tracked: DbRef,
+        closed: CancellationToken,
+    ) -> Arc<RocksDb> {
+        let mut db = RocksDb::new(native, self.0.executor.clone());
+        db.registration = Some(DbRegistration {
+            manager: self.clone(),
+            tracked,
+            closed,
+        });
+        Arc::new(db)
+    }
+
+    fn finalize_db(
+        &self,
+        tracked: DbRef,
+        result: Result<RocksDb, RocksError>,
+    ) -> Result<Arc<RocksDb>, RocksError> {
         let mut state = self.0.state.lock();
         let entry = state
             .tracked
@@ -508,11 +543,11 @@ impl RocksDbManager {
                     return Err(RocksError::NotRemoteOpen);
                 }
                 if let Ok(native) = &result
-                    && native.path() != &entry.path
+                    && native.db.path() != &entry.path
                 {
                     return Err(RocksError::PathMismatch {
                         expected: entry.path.clone(),
-                        actual: native.path().clone(),
+                        actual: native.db.path().clone(),
                     });
                 }
                 Ok(entry)
@@ -523,7 +558,6 @@ impl RocksDbManager {
                 let disposal = result.is_ok().then(|| self.track_lifecycle());
                 drop(state);
                 if let Ok(native) = result {
-                    native.shutdown();
                     drop(native);
                 }
                 drop(disposal);
@@ -532,9 +566,14 @@ impl RocksDbManager {
         };
         let (completion, accepted) = entry.take_remote_open();
         let result = match result {
-            Ok(native) => {
+            Ok(mut db) => {
                 // Bind the lifetime once, before any Arc can leave this call.
-                let db = RocksDb::from_access(self.clone(), native, tracked, entry.closed.clone());
+                db.registration = Some(DbRegistration {
+                    manager: self.clone(),
+                    tracked,
+                    closed: entry.closed.clone(),
+                });
+                let db = Arc::new(db);
                 if self.0.shutting_down.load(Ordering::Acquire) {
                     drop(state);
                     // Final-reference cleanup takes over accounting before the
@@ -652,7 +691,6 @@ impl RocksDbManager {
         // Clear without replacing the SlotMap, preserving stale-key rejection.
         state.tracked.clear();
         state.by_path.clear();
-        self.0.background_tracker.reset();
         self.0.shutting_down.store(false, Ordering::Release);
         Ok(())
     }
@@ -744,23 +782,13 @@ impl RocksDbManager {
             .collect()
     }
 
-    /// Closes the database and waits for completion.
-    pub(crate) async fn close_db(&self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
-        let db = Arc::try_unwrap(db)?;
-        let closed = db.closed().log_slow_after(
-            Duration::from_secs(5),
-            tracing::Level::WARN,
-            format!("Closing RocksDB database '{}'", db.name()),
-        );
-        // Drop transfers the native payload to cleanup. The observer owns no
-        // database reference and remains valid if its waiter is cancelled.
-        drop(db);
-        closed.await;
-        Ok(())
-    }
-
     /// Final-reference cleanup addresses only the originating incarnation.
-    pub(crate) fn drop_db(&self, db: RocksAccess, closed: CancellationToken, registration: DbRef) {
+    pub(crate) fn drop_db(&self, mut cleanup: DbCleanup) {
+        let registration = cleanup
+            .registration
+            .as_ref()
+            .expect("registered database")
+            .tracked;
         let active = self.track_lifecycle();
         let needs_shutdown = {
             let mut state = self.0.state.lock();
@@ -769,21 +797,15 @@ impl RocksDbManager {
                 .get_mut(registration)
                 .is_none_or(TrackedDb::begin_close)
         };
-        let cleanup = CloseGuard::new(
-            self.clone(),
-            db,
-            closed,
-            registration,
-            needs_shutdown,
-            active,
-        );
+        cleanup.needs_shutdown = needs_shutdown;
+        let cleanup = CloseGuard::new(cleanup, active);
         self.0
             .lifecycle_executor
             .dispatch_fn(Priority::Low, move || drop(cleanup))
             .expect("lifecycle executor remains available through native cleanup");
     }
 
-    fn finish_close(&self, registration: DbRef, closed: CancellationToken) {
+    pub(crate) fn finish_close(&self, registration: DbRef, closed: CancellationToken) {
         let completed = {
             let mut state = self.0.state.lock();
             state
@@ -851,8 +873,14 @@ impl RocksDbManager {
     /// Interrupted preparation keeps shutdown pending until physical close.
     pub async fn shutdown(&self) {
         self.seal_opens();
-        self.0.background_tracker.seal();
-        self.0.background_tracker.drain().await;
+        let databases = self.get_all_dbs();
+        for db in &databases {
+            db.seal();
+        }
+        for db in &databases {
+            db.drain().await;
+        }
+        drop(databases);
         self.wait_for_cleanup().await;
         let pending: Vec<_> = self
             .0
@@ -909,63 +937,6 @@ impl RocksDbManager {
         if !databases.is_empty() {
             eprintln!("[rocksdb] flushed all!");
         }
-    }
-
-    /// Spawn a rocksdb blocking operation in the background
-    pub(crate) async fn async_spawn<OP, R>(
-        &self,
-        task: ReadyStorageTask<OP>,
-    ) -> Result<R, ShutdownError>
-    where
-        OP: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        if self.0.shutting_down.load(Ordering::Acquire) {
-            return Err(ShutdownError);
-        }
-
-        self.async_spawn_unchecked(task).await
-    }
-
-    /// Allows work after node shutdown is requested, until manager shutdown seals
-    /// background I/O. Every accepted task still participates in that drain.
-    pub(crate) async fn async_spawn_unchecked<OP, R>(
-        &self,
-        task: ReadyStorageTask<OP>,
-    ) -> Result<R, ShutdownError>
-    where
-        OP: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        self.executor()
-            .spawn(task)?
-            .await
-            .map_err(|_| ShutdownError)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn spawn<OP>(&self, task: ReadyStorageTask<OP>) -> Result<(), ShutdownError>
-    where
-        OP: FnOnce() + Send + 'static,
-    {
-        if self.0.shutting_down.load(Ordering::Acquire) {
-            return Err(ShutdownError);
-        }
-        self.spawn_unchecked(task)
-    }
-
-    pub(crate) fn spawn_unchecked<OP>(
-        &self,
-        task: ReadyStorageTask<OP>,
-    ) -> Result<(), ShutdownError>
-    where
-        OP: FnOnce() + Send + 'static,
-    {
-        self.executor().dispatch(task)
-    }
-
-    fn executor(&self) -> TrackedExecutor<'_, GlobalExecutor> {
-        TrackedExecutor::new(&self.0.executor, &self.0.background_tracker)
     }
 }
 
