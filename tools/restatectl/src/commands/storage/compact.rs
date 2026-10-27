@@ -106,7 +106,11 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
     let addresses: Vec<AdvertisedAddress<ControlPort>> = if opts.node.is_empty() {
         nodes_config
             .iter()
-            .map(|(_, node)| node.ctrl_address().into_owned())
+            .map(|(_, node)| {
+                connection
+                    .ctrl_address_for(&nodes_config, node)
+                    .into_owned()
+            })
             .collect()
     } else {
         opts.node
@@ -114,7 +118,7 @@ async fn compact(connection: &ConnectionInfo, opts: &CompactOpts) -> anyhow::Res
             .map(|node_id| {
                 nodes_config
                     .find_node_by_id(*node_id)
-                    .map(|n| n.ctrl_address().into_owned())
+                    .map(|n| connection.ctrl_address_for(&nodes_config, n).into_owned())
                     .map_err(|_| {
                         anyhow::anyhow!("Node {} not found in cluster configuration", node_id)
                     })

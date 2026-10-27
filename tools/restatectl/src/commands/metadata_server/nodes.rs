@@ -21,7 +21,7 @@ use restate_cli_util::{c_print, c_println};
 use restate_metadata_server_grpc::grpc::RemoveNodeRequest;
 use restate_metadata_server_grpc::grpc::metadata_server_svc_client::MetadataServerSvcClient;
 use restate_types::PlainNodeId;
-use restate_types::nodes_config::{MetadataServerState, NodeConfig, Role};
+use restate_types::nodes_config::{MetadataServerState, NodeConfig, NodesConfiguration, Role};
 use restate_types::retries::RetryPolicy;
 
 use crate::connection::ConnectionInfo;
@@ -59,7 +59,7 @@ async fn add_node(
 
         // todo proxy request through an arbitrary Restate node to avoid requiring access to all metadata server nodes
         let channel = connection_info
-            .connect(&node_config.ctrl_address())
+            .connect(&connection_info.ctrl_address_for(&nodes_configuration, node_config))
             .await
             .context(format!("failed connecting to node {node_to_add}"))?;
         let mut client = MetadataServerSvcClient::new(channel);
@@ -124,7 +124,14 @@ async fn remove_node(
                 tokio::time::sleep(sleep).await;
             }
 
-            match try_remove_node(*node_to_remove, &metadata_node_set, connection_info).await {
+            match try_remove_node(
+                *node_to_remove,
+                &nodes_configuration,
+                &metadata_node_set,
+                connection_info,
+            )
+            .await
+            {
                 Ok(_) => {
                     errors = None;
                     metadata_node_set.remove(node_to_remove);
@@ -166,6 +173,7 @@ async fn remove_node(
 
 async fn try_remove_node(
     node_to_remove: PlainNodeId,
+    nodes_configuration: &NodesConfiguration,
     metadata_node_set: &HashMap<PlainNodeId, &NodeConfig>,
     connection_info: &ConnectionInfo,
 ) -> Result<(), HashMap<PlainNodeId, Status>> {
@@ -178,7 +186,10 @@ async fn try_remove_node(
     // todo try to figure out who's the current leader and directly reach out to the leader
     //  based on the metadata server status call
     for (server_id, node_config) in metadata_node_set.iter() {
-        let channel = match connection_info.connect(&node_config.ctrl_address()).await {
+        let channel = match connection_info
+            .connect(&connection_info.ctrl_address_for(nodes_configuration, node_config))
+            .await
+        {
             Ok(channel) => channel,
             Err(err) => {
                 errors.insert(*server_id, Status::unavailable(err.to_string()));

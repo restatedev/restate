@@ -17,8 +17,9 @@ through different networks, for example over a private address within a zone; wh
 list is set, it is advertised for control as well, because control RPCs share the fabric listener.
 
 For Docker Compose, give each node its published port under a location no node lives in, such as
-`external`. Once tools select among these addresses, a tool that connects through such an address
-will use it for every node:
+`external`. A tool that connects through such an address adopts its location and uses the
+matching entry of every node, so `restatectl --address http://localhost:15122` reaches the whole
+cluster through the published ports:
 
 ```yaml
 services:
@@ -64,10 +65,13 @@ an `https` address, as for `advertised-address`.
 
 - Nothing changes unless you set one of the new keys.
 - Nodes choose among the `advertised-addresses` entries when they connect to each other, and
-  among the control entries when they talk to the metadata servers. Tools begin to use the
-  control entries in an upcoming change; until then they keep using `ctrl-advertised-address`.
-- `metadata-client.addresses` and `--metadata-store-address` are control addresses now. Nothing
-  changes for existing values, because control RPCs are served on the same port as before.
+  among the control entries when they talk to the metadata servers.
+- `restatectl` chooses among the control entries. It takes its location from `--location` or
+  `RESTATECTL_LOCATION`, else from the entry a seed address matches when exactly one location
+  matches, and otherwise uses the plain control addresses. With `--single-address`, that address
+  is the seed.
+- `metadata-client.addresses` are control addresses now. Nothing changes for existing values,
+  because control RPCs are served on the same port as before.
 - Until every metadata server runs Restate 1.9 or later, adding or removing a metadata server
   clears the lists of all nodes, and nodes running older Restate versions may drop them when they
   update cluster metadata. A node notices this and publishes its lists again within seconds.

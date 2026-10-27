@@ -129,7 +129,15 @@ async fn compact_cluster_status(
                 )
                 .with_uptime(Duration::from_secs(alive.uptime_s));
 
-                alive_node_status(&mut row, alive, node_config, &logs).await?;
+                alive_node_status(
+                    &mut row,
+                    alive,
+                    node_config,
+                    &logs,
+                    connection,
+                    &nodes_config,
+                )
+                .await?;
             }
             State::Dead(_dead) => {
                 row.with_id(node_id, Color::Red);
@@ -149,6 +157,8 @@ async fn alive_node_status(
     alive_node: &AliveNode,
     node_config: &NodeConfig,
     logs: &Logs,
+    connection: &ConnectionInfo,
+    nodes_config: &NodesConfiguration,
 ) -> anyhow::Result<()> {
     let node_id: GenerationalNodeId = alive_node
         .generational_node_id
@@ -223,7 +233,11 @@ async fn alive_node_status(
     row.with_logs(counter);
 
     if node_config.has_role(Role::MetadataServer) {
-        let metadata_channel = grpc_channel(node_config.ctrl_address().into_owned());
+        let metadata_channel = grpc_channel(
+            connection
+                .ctrl_address_for(nodes_config, node_config)
+                .into_owned(),
+        );
         let metadata_store_status =
             new_metadata_server_client(metadata_channel, &CliContext::get().network)
                 .status(().into_request())
