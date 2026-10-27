@@ -13,6 +13,7 @@ mod init;
 mod introspection;
 mod metric_definitions;
 mod network_server;
+mod republish;
 mod roles;
 
 use std::sync::Arc;
@@ -687,6 +688,16 @@ impl Node {
         .await?;
 
         migrate_metadata(&metadata_writer).await?;
+
+        // Put the advertised address lists back whenever another writer drops them.
+        TaskCenter::spawn(
+            TaskKind::Background,
+            "republish-address-lists",
+            republish::run(
+                metadata_writer.clone(),
+                republish::AddressLists::from_node_config(&my_node_config),
+            ),
+        )?;
 
         // Start the DataFusion remote scanner server — serves scan RPCs from
         // the admin node for node-level and partition-level tables.
