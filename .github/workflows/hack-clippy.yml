@@ -23,22 +23,22 @@ jobs:
     env:
       RUST_BACKTRACE: full
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           components: clippy
           rustflags: ""
           cache: false
 
       - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        uses: WarpBuilds/rust-cache@v2.9.1
         with:
           cache-on-failure: "true"
 
       - name: Install cargo-hakari and cargo-hack
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-hakari,cargo-hack
 
@@ -49,12 +49,12 @@ jobs:
         uses: ./.github/actions/install-protoc
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: nextest@0.9.98
 
       - name: Setup just
-        uses: extractions/setup-just@v2
+        uses: extractions/setup-just@v2.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
