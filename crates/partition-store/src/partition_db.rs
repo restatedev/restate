@@ -10,7 +10,6 @@
 
 use std::marker::PhantomData;
 use std::num::NonZeroU32;
-use std::ops::DerefMut;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -21,11 +20,16 @@ use rocksdb::{
 };
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
+use restate_core::io::IoExecutor;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
-use restate_rocksdb::{DatabaseScope, DbName, RocksDb, RocksError};
+use restate_rocksdb::{
+    DatabaseScope, DbName, Priority, RawRocksDb, RocksDb, RocksDbReadPerfGuard, RocksError,
+    StorageTaskKind,
+};
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -57,10 +61,29 @@ pub struct PartitionDb {
     admission: Arc<DatabaseScope>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
+    physical: Arc<PhysicalPartition>,
+}
+
+struct PhysicalPartition {
     // Note: Rust will drop the fields in the order they are declared in the struct.
     // It's crucial to keep the column family and the database in this exact order.
     cf: PartitionBoundCfHandle,
     database: PartitionStoreDb,
+    released: PhysicalRelease,
+}
+
+// Fires `released` when dropped. As the last field of `PhysicalPartition`, it drops
+// after the CF handle and the database `Arc`, so the signal means both are gone.
+// It doesn't fire while a panic unwinds: a pending deletion then keeps waiting
+// instead of deleting the column family.
+struct PhysicalRelease(CancellationToken);
+
+impl Drop for PhysicalRelease {
+    fn drop(&mut self) {
+        if !std::thread::panicking() {
+            self.0.cancel();
+        }
+    }
 }
 
 impl PartitionDb {
@@ -75,10 +98,14 @@ impl PartitionDb {
             admission: database.rocksdb.register_scope(),
             durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
-            // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
-            // it's safe to use here as long as database is dropped last.
-            cf: unsafe { PartitionBoundCfHandle::new(cf) },
-            database,
+            physical: Arc::new(PhysicalPartition {
+                // SAFETY: the CF handle borrows from the database. `PhysicalPartition` drops
+                // `cf` before `database`, and all PartitionDb clones share it through an
+                // `Arc`, so the handle never outlives the database.
+                cf: unsafe { PartitionBoundCfHandle::new(cf) },
+                database,
+                released: PhysicalRelease(CancellationToken::new()),
+            }),
         }
     }
 
@@ -87,7 +114,7 @@ impl PartitionDb {
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
-        &self.database.rocksdb
+        &self.physical.database.rocksdb
     }
 
     pub(crate) fn admission(&self) -> &Arc<DatabaseScope> {
@@ -96,11 +123,11 @@ impl PartitionDb {
 
     #[cfg(test)]
     pub fn into_rocksdb(self) -> Arc<RocksDb> {
-        self.database.rocksdb
+        self.rocksdb().clone()
     }
 
     pub fn cf_handle(&self) -> &Arc<BoundColumnFamily<'_>> {
-        &self.cf.0
+        &self.physical.cf.0
     }
 
     pub(crate) fn table_cf_handle(&self, _table_kind: TableKind) -> &Arc<BoundColumnFamily<'_>> {
@@ -108,7 +135,7 @@ impl PartitionDb {
     }
 
     pub(crate) fn cf_handle_for_key_kind(&self, _key_kind: KeyKind) -> &Arc<BoundColumnFamily<'_>> {
-        &self.cf.0
+        &self.physical.cf.0
     }
 
     pub fn cf_names(&self) -> Vec<ReString> {
@@ -116,13 +143,89 @@ impl PartitionDb {
     }
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
+        // Flushing can run after the partition is closed, so it counts against the
+        // database, not the partition's scope. Keep `physical` until it finishes, so
+        // the column family can't be deleted meanwhile.
+        let physical = self.physical.clone();
+        let cf_name = self.partition().cf_name().into();
         self.rocksdb()
             .clone()
-            .flush_memtables(
-                std::slice::from_ref(&restate_rocksdb::CfName::from(self.partition().cf_name())),
-                wait,
+            .run_background_read_op(
+                "flush-partition",
+                StorageTaskKind::FlushMemtables,
+                Priority::Low,
+                move |_| {
+                    physical
+                        .database
+                        .rocksdb
+                        .inner()
+                        .flush_memtables(std::slice::from_ref(&cf_name), wait)
+                },
             )
+            .await?
+    }
+
+    /// Returns a future that completes once nothing holds this partition's column
+    /// family handle anymore: all PartitionDb clones, and the background work that kept
+    /// one, are gone. It doesn't mean the column family was deleted; that result is in
+    /// [`State::Retiring`]. The future itself keeps nothing alive.
+    pub(crate) fn released(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        self.physical.released.0.clone().cancelled_owned()
+    }
+
+    pub(crate) async fn export_cf(
+        &self,
+        export_dir: std::path::PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        // Snapshots can be exported from a closed partition, so this counts against the
+        // database, not the partition's scope. `physical` keeps the column family from
+        // being deleted until the export finishes.
+        let physical = self.physical.clone();
+        let name = self.partition().cf_name().into();
+        self.rocksdb()
+            .clone()
+            .run_background_read_op(
+                "export-column-family",
+                StorageTaskKind::ExportColumnFamily,
+                Priority::Low,
+                move |_| {
+                    physical
+                        .database
+                        .rocksdb
+                        .inner()
+                        .export_cf(name, export_dir)
+                },
+            )
+            .await?
+    }
+
+    pub(crate) async fn run_background_read_op<OP, R>(
+        &self,
+        name: &'static str,
+        kind: StorageTaskKind,
+        priority: Priority,
+        op: OP,
+    ) -> Result<R, RocksError>
+    where
+        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let physical = self.physical.clone();
+        let task = self
+            .admission
+            .prepare_op(self.rocksdb(), move |db| {
+                let result = op(db.inner().as_raw_db());
+                drop(physical);
+                result
+            })
+            .with_guard(move || RocksDbReadPerfGuard::new(name))
+            .background(name, kind)
+            .with_priority(priority);
+        self.rocksdb()
+            .executor()
+            .spawn(task)?
             .await
+            .map_err(|_| ShutdownError.into())
     }
 
     pub(crate) fn note_archived_lsn(&self, archived_lsn: Lsn) -> bool {
@@ -150,7 +253,7 @@ impl PartitionDb {
     }
 
     pub(crate) fn note_durable_lsn(&self, lsn: Lsn) {
-        self.database.notifications.note_durable_lsn(
+        self.physical.database.notifications.note_durable_lsn(
             self.meta.partition_id,
             self.cf_handle_for_key_kind(KeyKind::Fsm).id(),
             lsn,
@@ -158,7 +261,7 @@ impl PartitionDb {
     }
 
     fn unregister_durable_lsn(&self) {
-        self.database.notifications.unregister(
+        self.physical.database.notifications.unregister(
             self.meta.partition_id,
             self.cf_handle_for_key_kind(KeyKind::Fsm).id(),
         );
@@ -167,13 +270,14 @@ impl PartitionDb {
     pub(crate) async fn update_memory_budget(&self, memory_budget: usize) {
         // impacts only this partition's column-families
         let cf_names = self.cf_names();
-        let rocksdb = self.rocksdb().clone();
+        let physical = self.physical.clone();
 
         // NOTE: Updating rocksdb's options is a blocking operations and may take a few
         // tens of milliseconds on each column family. We need to perform this operation
         // on non-blocking threads to avoid stalling the tokio runtime (starving failure
         // detector, etc.).
         let _ = tokio::task::spawn_blocking(move || {
+            let rocksdb = &physical.database.rocksdb;
             let opts = &Configuration::pinned().worker.storage;
             let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts);
             for cf in cf_names {
@@ -294,7 +398,7 @@ impl PartitionCell {
             guard.db().is_none(),
             "retire the previous admission lifetime first"
         );
-        db.database.notifications.register(
+        db.physical.database.notifications.register(
             self.meta.partition_id,
             db.cf_handle_for_key_kind(KeyKind::Fsm).id(),
             db.durable_lsn_sender().clone(),
@@ -348,7 +452,7 @@ impl PartitionCell {
         // to this inconsistency hasn't been fully established yet, but we suspect that it
         // might happen if a previous provision/import created the CF and then failed
         // before the cell state was updated. See https://github.com/restatedev/restate/issues/4534
-        Self::drop_cf_from_rocksdb(&self.meta, rocksdb).await?;
+        self.drop_stale_cf(guard, rocksdb).await?;
         let cf_name = self.meta.cf_name();
         debug!("Creating new column family {}", cf_name);
         rocksdb.clone().open_cf(self.meta.cf_name().into()).await?;
@@ -403,7 +507,7 @@ impl PartitionCell {
 
         // Defensive: see the comment in provision() and
         // https://github.com/restatedev/restate/issues/4534
-        Self::drop_cf_from_rocksdb(&self.meta, rocksdb).await?;
+        self.drop_stale_cf(guard, rocksdb).await?;
 
         rocksdb
             .clone()
@@ -435,14 +539,47 @@ impl PartitionCell {
     ) -> Result<(), RocksError> {
         let cf_name = meta.cf_name();
         if rocksdb.inner().cf_handle(cf_name.as_ref()).is_some() {
-            let db = Arc::clone(rocksdb);
-            let cf_name = cf_name.clone();
-            tokio::task::spawn_blocking(move || db.inner().as_raw_db().drop_cf(cf_name.as_ref()))
-                .await
-                .map_err(|_| RocksError::Shutdown(ShutdownError))??;
+            rocksdb.clone().drop_cf(cf_name.into()).await?;
             debug!("Column family {} dropped", meta.cf_name());
         }
         Ok(())
+    }
+
+    async fn drop_stale_cf(
+        &self,
+        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        rocksdb: &Arc<RocksDb>,
+    ) -> Result<(), RocksError> {
+        if rocksdb.inner().cf_handle(self.cf_name().as_ref()).is_some() {
+            self.start_retirement(guard, rocksdb.clone(), std::future::ready(()));
+            guard.finish_retirement().await?;
+        }
+        Ok(())
+    }
+
+    fn start_retirement(
+        &self,
+        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        rocksdb: Arc<RocksDb>,
+        released: impl Future<Output = ()> + Send + 'static,
+    ) {
+        let meta = self.meta.clone();
+        let (completion, result) = watch::channel(None);
+        // Switch the cell to `Retiring` before dropping its PartitionDb. If the caller
+        // is cancelled from here on, the cell stays `Retiring` instead of becoming
+        // `Unknown`, so nothing reopens the partition while it's being deleted.
+        **guard = State::Retiring { result };
+        // This task waits until nothing uses the column family, deletes it, and
+        // publishes the result. It runs on its own, so cancelled callers don't stop
+        // it. If the runtime shuts down first, the result channel closes without a
+        // result and the cell stays `Retiring`, since we can't tell whether the
+        // deletion happened. The deletion itself runs on the lifecycle pool.
+        tokio::spawn(async move {
+            released.await;
+            let result = Self::drop_cf_from_rocksdb(&meta, &rocksdb).await;
+            drop(rocksdb);
+            completion.send_replace(Some(result));
+        });
     }
 
     /// Deletes the underlying column famil(ies) and closes the [`PartitionDb`].
@@ -453,17 +590,13 @@ impl PartitionCell {
         // Keep the sealed lifetime in the cell while draining. Cancelling this
         // waiter must not allow a reopen/replacement to bypass admitted work.
         guard.close().await;
-        // We set the state to Unknown in case we returned an error during the drop process.
-        let state = std::mem::replace(guard.deref_mut(), State::Unknown);
-        match state {
-            State::Unknown | State::CfMissing => { /* nothing to do */ }
-            State::Open { db } | State::Closing { db, .. } | State::Closed { db, .. } => {
-                // Do not hold a notification lock across native drop or storage
-                // destruction; either can wait for an outstanding flush callback.
-                db.unregister_durable_lsn();
-                Self::drop_cf_from_rocksdb(&self.meta, db.rocksdb()).await?;
-            }
+        if let Some(db) = guard.db() {
+            db.unregister_durable_lsn();
+            let released = db.released();
+            let rocksdb = db.rocksdb().clone();
+            self.start_retirement(guard, rocksdb, released);
         }
+        guard.finish_retirement().await?;
         self.set_cf_missing(guard).await;
         Ok(())
     }
@@ -472,9 +605,11 @@ impl PartitionCell {
     pub async fn clone_db(&self) -> Option<PartitionDb> {
         let guard = self.inner.read().await;
         match &*guard {
-            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {
-                None
-            }
+            State::Unknown
+            | State::CfMissing
+            | State::Closing { .. }
+            | State::Closed { .. }
+            | State::Retiring { .. } => None,
             State::Open { db } => Some(db.clone()),
         }
     }
@@ -483,15 +618,21 @@ impl PartitionCell {
     pub async fn get_partition_if_open(&self) -> Option<Arc<Partition>> {
         let guard = self.inner.read().await;
         match &*guard {
-            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {
-                None
-            }
+            State::Unknown
+            | State::CfMissing
+            | State::Closing { .. }
+            | State::Closed { .. }
+            | State::Retiring { .. } => None,
             State::Open { db } => Some(Arc::clone(db.partition())),
         }
     }
 
     #[cfg(test)]
     pub async fn reset_to_unknown(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>) {
+        guard
+            .finish_retirement()
+            .await
+            .expect("retirement completes");
         self.set_cf_missing(guard).await;
         **guard = State::Unknown;
     }
@@ -523,6 +664,14 @@ pub(crate) enum State {
         db: PartitionDb,
         closed_at: Instant,
     },
+    /// The column family is being deleted, or its deletion failed or was interrupted.
+    /// Holds only the deletion's result, which every waiter can read, including ones
+    /// that start after earlier waiters were cancelled. On success the cell becomes
+    /// `CfMissing`. After a failure or interruption it stays here, so the partition
+    /// isn't reopened over a half-deleted column family.
+    Retiring {
+        result: watch::Receiver<Option<Result<(), RocksError>>>,
+    },
 }
 
 impl State {
@@ -536,7 +685,7 @@ impl State {
 
     pub fn closed_since(&self) -> Option<Duration> {
         match self {
-            State::Unknown | State::CfMissing => None,
+            State::Unknown | State::CfMissing | State::Retiring { .. } => None,
             State::Open { .. } | State::Closing { .. } => None,
             State::Closed { closed_at, .. } => Some(closed_at.elapsed()),
         }
@@ -549,10 +698,12 @@ impl State {
         )
     }
 
-    pub async fn get_or_reopen(&mut self) -> Option<PartitionDb> {
+    pub async fn get_or_reopen(&mut self) -> Result<Option<PartitionDb>, RocksError> {
+        self.finish_retirement().await?;
         let db = match &*self {
-            State::Unknown | State::CfMissing => return None,
-            State::Open { db } => return Some(db.clone()),
+            State::Unknown | State::CfMissing => return Ok(None),
+            State::Retiring { .. } => unreachable!("successful retirement removes the record"),
+            State::Open { db } => return Ok(Some(db.clone())),
             State::Closing { db, closing_at } => {
                 // A cancelled close may have left admitted work in flight.
                 Self::drain_for_close(db, *closing_at).await;
@@ -563,19 +714,37 @@ impl State {
         let mut db = db.clone();
         db.admission = db.rocksdb().register_scope();
         *self = State::Open { db: db.clone() };
-        Some(db)
+        Ok(Some(db))
+    }
+
+    async fn finish_retirement(&mut self) -> Result<(), RocksError> {
+        if let State::Retiring { result } = self {
+            result
+                .wait_for(Option::is_some)
+                .await
+                .map_err(|_| ShutdownError)?
+                .as_ref()
+                .expect("completed retirement")
+                .clone()?;
+            *self = State::CfMissing;
+        }
+        Ok(())
     }
 
     pub fn db(&self) -> Option<&PartitionDb> {
         match self {
-            State::Unknown | State::CfMissing => None,
+            State::Unknown | State::CfMissing | State::Retiring { .. } => None,
             State::Open { db } | State::Closing { db, .. } | State::Closed { db, .. } => Some(db),
         }
     }
 
     pub async fn close(&mut self) {
         match &mut *self {
-            State::Unknown | State::CfMissing | State::Closing { .. } | State::Closed { .. } => {}
+            State::Unknown
+            | State::CfMissing
+            | State::Closing { .. }
+            | State::Closed { .. }
+            | State::Retiring { .. } => {}
             State::Open { db } => {
                 db.admission.seal();
                 *self = State::Closing {
