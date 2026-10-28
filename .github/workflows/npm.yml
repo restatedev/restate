@@ -46,21 +46,21 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: "Download GitHub Artifacts"
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           pattern: artifacts-*
           merge-multiple: true
@@ -130,15 +130,15 @@ jobs:
             binary: restate-server
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4.4.0
 
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4.4.0
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
