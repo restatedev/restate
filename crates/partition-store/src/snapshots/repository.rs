@@ -14,6 +14,8 @@ use std::sync::Arc;
 use ahash::{HashMap, HashMapExt};
 use anyhow::{Context, anyhow, bail};
 use bytes::BytesMut;
+use futures::TryStreamExt;
+use metrics::Gauge;
 use object_store::path::Path as ObjectPath;
 use object_store::{
     MultipartUpload, ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
@@ -41,6 +43,7 @@ use restate_types::time::MillisSinceEpoch;
 use super::{
     LocalPartitionSnapshot, PartitionSnapshotMetadata, SnapshotDir, SnapshotFormatVersion,
 };
+use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_BYTES, SNAPSHOT_UPLOAD_BYTES};
 
 /// Provides read and write access to the long-term partition snapshot storage destination.
 ///
@@ -381,11 +384,13 @@ impl SnapshotRepository {
         local_snapshot: SnapshotDir,
     ) -> anyhow::Result<PartitionSnapshotStatus> {
         use crate::metric_definitions::{
-            SNAPSHOT_UPLOAD_DURATION, SNAPSHOT_UPLOAD_FAILED, SNAPSHOT_UPLOAD_SUCCESS,
+            SNAPSHOT_UPLOAD_DURATION, SNAPSHOT_UPLOAD_FAILED, SNAPSHOT_UPLOAD_INFLIGHT,
+            SNAPSHOT_UPLOAD_SUCCESS,
         };
 
         debug!("Publishing partition snapshot to: {}", self.destination);
 
+        let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_UPLOAD_INFLIGHT));
         let start = tokio::time::Instant::now();
         let put_result = self
             .put_snapshot_inner(snapshot, local_snapshot.path())
@@ -699,8 +704,11 @@ impl SnapshotRepository {
         &self,
         partition_id: PartitionId,
     ) -> anyhow::Result<Option<LocalPartitionSnapshot>> {
-        use crate::metric_definitions::{SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED};
+        use crate::metric_definitions::{
+            SNAPSHOT_DOWNLOAD_DURATION, SNAPSHOT_DOWNLOAD_FAILED, SNAPSHOT_DOWNLOAD_INFLIGHT,
+        };
 
+        let _inflight = InflightGuard::new(metrics::gauge!(SNAPSHOT_DOWNLOAD_INFLIGHT));
         let start = tokio::time::Instant::now();
         let result = self.get_latest_inner(partition_id).await;
 
@@ -814,6 +822,7 @@ impl SnapshotRepository {
             let object_store = Arc::clone(&self.object_store);
             let snapshot_id = snapshot_metadata.snapshot_id;
             let snapshot_filename = filename.to_owned();
+            let downloaded_bytes = metrics::counter!(SNAPSHOT_DOWNLOAD_BYTES);
 
             let handle = downloads.build_task().name(filename).spawn(async move {
                 let _permit = concurrency_limiter.acquire().await?;
@@ -823,7 +832,8 @@ impl SnapshotRepository {
                         .get(&key)
                         .await
                         .map_err(|e| anyhow!("Failed to download partition {partition_id} snapshot {snapshot_id} file {key:?}: {e}"))?
-                        .into_stream(),
+                        .into_stream()
+                        .inspect_ok(|chunk| downloaded_bytes.increment(chunk.len() as u64)),
                 );
 
                 let mut snapshot_file =
@@ -1061,11 +1071,15 @@ async fn put_snapshot_object(
     buf: &mut BytesMut,
 ) -> anyhow::Result<object_store::PutResult> {
     debug!(path = ?file_path, "Putting snapshot object from local file");
+    let uploaded_bytes = metrics::counter!(SNAPSHOT_UPLOAD_BYTES);
     let mut snapshot = tokio::fs::File::open(file_path).await?;
 
-    if snapshot.metadata().await?.len() < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
+    let file_len = snapshot.metadata().await?.len();
+    if file_len < MULTIPART_UPLOAD_CHUNK_SIZE_BYTES as u64 {
         let payload = PutPayload::from(tokio::fs::read(file_path).await?);
-        return object_store.put(key, payload).await.map_err(|e| e.into());
+        let result = object_store.put(key, payload).await?;
+        uploaded_bytes.increment(file_len);
+        return Ok(result);
     }
 
     debug!("Performing multipart upload for {key}");
@@ -1085,9 +1099,10 @@ async fn put_snapshot_object(
             }
 
             if !buf.is_empty() {
-                upload
-                    .put_part(PutPayload::from_bytes(buf.split().freeze()))
-                    .await?;
+                let part = buf.split().freeze();
+                let part_len = part.len() as u64;
+                upload.put_part(PutPayload::from_bytes(part)).await?;
+                uploaded_bytes.increment(part_len);
             }
 
             if len == 0 {
@@ -1105,6 +1120,22 @@ async fn put_snapshot_object(
             upload.abort().await?;
             Err(err)
         }
+    }
+}
+
+/// Holds a gauge incremented for as long as the guard lives, so cancelled transfers are released too.
+struct InflightGuard(Gauge);
+
+impl InflightGuard {
+    fn new(gauge: Gauge) -> Self {
+        gauge.increment(1);
+        Self(gauge)
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.decrement(1);
     }
 }
 
