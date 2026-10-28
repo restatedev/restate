@@ -621,6 +621,13 @@ pub struct CommitToken {
     rx: oneshot::Receiver<Committed>,
 }
 
+impl CommitToken {
+    #[cfg(any(test, feature = "test-util"))]
+    pub fn new(rx: oneshot::Receiver<Committed>) -> Self {
+        Self { rx }
+    }
+}
+
 impl std::future::Future for CommitToken {
     type Output = Result<Committed, oneshot::error::RecvError>;
 
@@ -641,6 +648,14 @@ enum AppendOperation {
 }
 
 impl AppendOperation {
+    fn cost_in_num_records(&self) -> usize {
+        match self {
+            AppendOperation::Enqueue(_, _) => 1,
+            AppendOperation::EnqueueWithNotification(_, _, _) => 1,
+            AppendOperation::Canary(_) => 0,
+        }
+    }
+
     fn cost_in_bytes(&self) -> usize {
         match self {
             AppendOperation::Enqueue(record, _) => record.estimated_encode_size(),
@@ -654,6 +669,7 @@ impl AppendOperation {
 
 struct Batch {
     inner: Vec<AppendOperation>,
+    num_records: usize,
     bytes_accumulated: usize,
 }
 
@@ -661,6 +677,7 @@ impl Batch {
     fn with_capacity(capacity: usize) -> Self {
         Self {
             inner: Vec::with_capacity(capacity),
+            num_records: 0,
             bytes_accumulated: 0,
         }
     }
@@ -668,17 +685,19 @@ impl Batch {
     /// Returns true if an operation of the given size can fit in the batch
     /// without exceeding the byte limit or max count.
     fn can_fit(&self, op_size: usize, byte_limit: usize, max_count: usize) -> bool {
-        self.bytes_accumulated + op_size <= byte_limit && self.inner.len() < max_count
+        self.bytes_accumulated + op_size <= byte_limit && self.num_records < max_count
     }
 
     fn push(&mut self, op: AppendOperation) {
         self.bytes_accumulated += op.cost_in_bytes();
+        self.num_records += op.cost_in_num_records();
         self.inner.push(op);
     }
 
     fn reset(&mut self) {
         self.bytes_accumulated = 0;
         self.inner.clear();
+        self.num_records = 0;
     }
 }
 
