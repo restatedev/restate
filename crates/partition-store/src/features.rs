@@ -380,14 +380,19 @@ async fn enable_helper<F: StorageFeature>(
     // memtable flush order also keeps this batch behind the preceding copy batches.
     let mut opts = rocksdb::WriteOptions::default();
     opts.disable_wal(true);
+    let lease = partition_db
+        .admission()
+        .try_acquire()
+        .ok_or(StorageError::OperationalError)?;
     partition_db
         .rocksdb()
-        .write_batch(
+        .write_batch_leased(
             "storage-feature-migration-finalization",
             Priority::High,
             IoMode::Default,
             opts,
             finalization,
+            lease,
         )
         .await
         .context("failed to commit storage feature migration finalization")

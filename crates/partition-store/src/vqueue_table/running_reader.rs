@@ -22,6 +22,8 @@ use crate::vqueue_table::inbox::{RunningKey, RunningKeyRef};
 
 pub struct VQueueRunningReader {
     it: DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
+    // Release the iterator before its physical partition pin.
+    _db: PartitionDb,
 }
 
 impl VQueueRunningReader {
@@ -53,9 +55,9 @@ impl VQueueRunningReader {
 
         Self {
             // Safety:
-            // The iterator is guaranteed to be dropped before the database is dropped, we hold to the
-            // PartitionDb in the scheduler which pins the database and the column family.
+            // The owned partition pin outlives the iterator.
             it: unsafe { super::ignore_iterator_lifetime(it) },
+            _db: db.clone(),
         }
     }
 }

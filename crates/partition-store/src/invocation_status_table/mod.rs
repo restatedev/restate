@@ -78,7 +78,7 @@ where
 {
     const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 
-    let rocksdb = store.partition_db().rocksdb().clone();
+    let rocksdb = store.partition_db().clone();
     let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
 
     async move {

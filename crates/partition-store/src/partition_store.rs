@@ -29,9 +29,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
-use restate_core::ShutdownError;
-use restate_rocksdb::admission::Admission;
-use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
+use restate_core::io::AdmissionClosed;
+use restate_rocksdb::{DatabaseScope, IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
@@ -453,7 +452,7 @@ impl PartitionStore {
         priority: Priority,
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
         self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
@@ -465,7 +464,7 @@ impl PartitionStore {
         priority: Priority,
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+    ) -> Result<ReceiverStream<Result<O>>, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
@@ -482,7 +481,7 @@ impl PartitionStore {
         opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
         f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_for_each(tx, f);
         self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
@@ -502,12 +501,18 @@ impl PartitionStore {
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), ShutdownError> {
+        mut on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+    ) -> Result<(), AdmissionClosed> {
+        let partition = self.db.clone();
+        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| {
+            let _pin = &partition;
+            on_iter(item)
+        };
         match scan {
             PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 self.db.rocksdb().clone().run_background_iterator(
+                    self.db.admission(),
                     // todo(asoli): Pass an owned cf handle instead of name
                     self.db.partition().cf_name().into(),
                     name,
@@ -520,6 +525,7 @@ impl PartitionStore {
             PhysicalScan::RangeExclusive(_key_kind, scan_mode, start, end) => {
                 configure_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
+                    self.db.admission(),
                     self.db.partition().cf_name().as_ref().into(),
                     name,
                     priority,
@@ -540,7 +546,7 @@ impl PartitionStore {
     /// when no durable position is known or the old column family has been removed.
     pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Lsn>> {
         let needs_recovery = *self.db.durable_lsn_sender().borrow() == Lsn::INVALID;
-        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self).await? {
+        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self)? {
             self.db.note_durable_lsn(lsn);
         }
 
@@ -620,9 +626,7 @@ impl PartitionStore {
 
         let export_files = self
             .db
-            .rocksdb()
-            .clone()
-            .export_cf(self.db.partition().cf_name().into(), snapshot_dir.clone())
+            .export_cf(snapshot_dir.clone())
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
@@ -940,7 +944,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
-    admission: &'a Arc<Admission>,
+    admission: &'a Arc<DatabaseScope>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
