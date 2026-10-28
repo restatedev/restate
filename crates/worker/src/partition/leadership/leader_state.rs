@@ -80,8 +80,9 @@ use super::self_proposer_scheduler::{
 // An arbitrary small number of bytes to be used when there is nothing to propose.
 const NOOP_BYTES_WRITTEN: usize = 1024; // 1KiB
 
-/// A no-op proposal that writes no records but is charged a small number of bytes to the
-/// scheduler so that a flow which is ready but has nothing to do doesn't lose its position.
+/// A no-op proposal that writes no records. The scheduler doesn't charge it, but the flow loses
+/// its position in the ready queue. The bytes only count towards the leader's per-round
+/// `bytes_admitted` budget so that a round made of no-ops still terminates.
 const NOOP_PROPOSAL: WrittenRecords = WrittenRecords {
     bytes_written: NOOP_BYTES_WRITTEN,
     records_written: 0,
