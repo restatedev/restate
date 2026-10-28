@@ -30,6 +30,7 @@ mod networking;
 mod object_store;
 mod query_engine;
 mod rocksdb;
+mod self_proposer;
 mod throttling;
 mod worker;
 
@@ -52,6 +53,7 @@ pub use networking::*;
 pub use object_store::*;
 pub use query_engine::*;
 pub use rocksdb::*;
+pub use self_proposer::*;
 pub use throttling::*;
 pub use worker::*;
 
