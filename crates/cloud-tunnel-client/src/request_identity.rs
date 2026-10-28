@@ -117,8 +117,9 @@ pub(crate) fn validate_request_identity(
     }
 
     // Without `target`, only the audience suffix above binds the request. That cannot be used to
-    // downgrade a newer server's token: the claims are signed, so a token without `target` was
-    // issued by a server that predates it, and such a token expires within minutes.
+    // downgrade a newer server's token: the claims are signed, and a current server signs a
+    // `target` for every call, Lambda included. A token without one was issued by a server that
+    // predates the claim, and it expires within minutes.
     match claims.target {
         Some(target) if !target_matches(&target, tunnel, method, path_and_query) => {
             Err(Error::TargetMismatch {
@@ -288,6 +289,8 @@ MC4CAQAwBQYDK2VwBCIEIPe++4ZTPQDF81otpoU/mOGHC2vOAVp9WbiCblvn3nXO
             "/abc/laptop/https/greeter.svc/9080/base/invoke/Greeter/greet",
             "/abclaptop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
             "/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
+            // what a Lambda deployment's token carries
+            "/invoke/Greeter/greet",
         ] {
             assert_matches!(
                 validate(&claims(other), Method::POST, received),

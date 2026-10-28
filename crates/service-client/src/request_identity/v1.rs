@@ -108,12 +108,14 @@ pub(crate) struct Claims<'aud> {
     target: Option<RequestTarget<'aud>>,
 }
 
-/// The `target` claim: the request exactly as restate-server sends it to an HTTP deployment.
+/// The `target` claim: the request exactly as restate-server sends it.
 ///
 /// Serialized as `{"method": "POST", "path_and_query": "/base/invoke/Greeter/greet"}`.
-/// `path_and_query` is the deployment's base path joined with `aud`, followed by `?` and the query
-/// when the URL carries one, byte for byte as it appears in the request line. Lambda deployments
-/// have no URL and get no `target`. Verifiers that do not know the claim ignore it.
+/// For an HTTP deployment, `path_and_query` is the deployment's base path joined with `aud`,
+/// followed by `?` and the query when the URL carries one, byte for byte as it appears in the
+/// request line. A Lambda deployment has no URL, so its `path_and_query` is the relative path.
+/// Every token a current server signs carries `target`. Verifiers that do not know the claim
+/// ignore it.
 #[derive(Serialize)]
 pub(crate) struct RequestTarget<'a> {
     method: &'a str,

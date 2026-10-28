@@ -159,12 +159,12 @@ impl ServiceClient {
         let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
             Some(request_identity::v1::Signer::new(
                 parts.path.path(),
-                http_path_and_query.as_ref().map(|path_and_query| {
-                    request_identity::v1::RequestTarget::new(
-                        parts.method.as_str(),
-                        path_and_query.as_str(),
-                    )
-                }),
+                // Lambda has no request line, so its target carries the relative path. Signing a
+                // target for every call means only tokens from older servers lack one.
+                Some(request_identity::v1::RequestTarget::new(
+                    parts.method.as_str(),
+                    http_path_and_query.as_ref().unwrap_or(&parts.path).as_str(),
+                )),
                 parts.request_identity_sub_field.as_deref(),
                 request_identity_key,
             ))
