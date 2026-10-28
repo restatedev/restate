@@ -261,6 +261,7 @@ mod wire {
 
     use super::MetadataUpdate;
     use crate::{
+        config::Configuration,
         net::{ProtocolVersion, metadata::MetadataContainer},
         schema::SchemaUnindexed,
         storage::{self},
@@ -332,7 +333,11 @@ mod wire {
                 )?;
             }
             MetadataContainer::Schema(value) => {
-                storage::encode::encode_bilrost_zstd(value.as_ref().deref(), &mut bytes)?;
+                storage::encode::encode_bilrost_zstd(
+                    value.as_ref().deref(),
+                    &mut bytes,
+                    Configuration::pinned().common.schema_compression_level(),
+                )?;
             }
         };
 
