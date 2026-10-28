@@ -355,9 +355,9 @@ mod tests {
             expected: [true, false, false, false],
             seen_cfs: Arc::default(),
         };
-        let db = manager
-            .open_db_with_env(spec(&path, &configurator), DbEnv::in_memory()?)
-            .await?;
+        let (_, opening) =
+            manager.open_db_with_env(spec(&path, &configurator), DbEnv::in_memory()?)?;
+        let db = opening.await?;
         db.clone().open_cf(CfName::new("data-source")).await?;
         {
             let cf = db.inner().cf_handle("data-source").unwrap();

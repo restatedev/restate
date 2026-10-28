@@ -69,7 +69,8 @@ impl RocksDbLogStoreBuilder {
             .ensure_column_families(cfs)
             .build()
             .expect("valid spec");
-        let rocksdb = db_manager.open_db_with_env(db_spec, env).await?;
+        let (_, opening) = db_manager.open_db_with_env(db_spec, env)?;
+        let rocksdb = opening.await?;
 
         Ok(Self { rocksdb })
     }

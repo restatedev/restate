@@ -8,40 +8,102 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod completion;
+#[cfg(test)]
+mod lifecycle_tests;
+mod tracking;
+
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::future::Future;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
-use parking_lot::RwLock;
+use slotmap::SlotMap;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
+use restate_core::io::{FlightTracker, IoExecutor, OwnedLease};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
-use restate_futures_util::overdue::OverdueLoggingExt;
+use restate_platform::sync::Mutex;
 use restate_types::config::{CommonOptions, Configuration};
 
-use crate::background::ReadyStorageTask;
+use self::completion::{CloseGuard, OpenGuard, ShutdownGuard};
+use self::tracking::TrackedDb;
+use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
 use crate::db_env::check_memory_limit;
 use crate::{
-    DbEnv, DbName, DbSpec, Priority, RocksAccess, RocksDb, RocksError, metric_definitions,
+    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, Priority, RocksAccess, RocksDb, RocksError,
+    StorageTaskKind, metric_definitions,
 };
 
 static DB_MANAGER: OnceLock<RocksDbManager> = OnceLock::new();
 
-/// Tracks rocksdb databases created by various components, memory budgeting, monitoring, and
-/// acting as a single entry point for all running databases on the node.
+slotmap::new_key_type! {
+    /// Identifies one lifetime of a database at a path, from open until close (an
+    /// "incarnation"), within the manager that issued it. Opening the same path
+    /// again creates a new `DbRef`; after that, the old one is reported as
+    /// `NotRegistered`. Copying or dropping a `DbRef` has no effect on the database.
+    pub struct DbRef;
+}
+
+#[derive(Default)]
+struct State {
+    tracked: SlotMap<DbRef, TrackedDb>,
+    by_path: HashMap<PathBuf, DbRef>,
+}
+
+impl State {
+    /// Remove the previous, closed incarnation at `path`. The caller inserts the
+    /// new incarnation before unlocking; no active lifetime may be replaced.
+    fn remove_previous(&mut self, path: &Path) -> Result<(), RocksError> {
+        if let Some(previous) = self.by_path.get(path).copied() {
+            if !self.tracked[previous].is_closed() {
+                return Err(RocksError::AlreadyOpen);
+            }
+            self.tracked.remove(previous);
+        }
+        Ok(())
+    }
+}
+
+/// Tracks the RocksDB databases opened on this node, from opening until their
+/// native resources are released.
 ///
-/// It doesn't try to limit rocksdb use-cases from accessing the raw rocksdb.
-#[derive(derive_more::Debug)]
+/// The manager makes sure a path is open at most once, applies memory and
+/// configuration updates, and closes databases on its own lifecycle thread pool
+/// when their last handle is dropped. It keeps a successful open's result until
+/// someone collects it, then only a weak handle. It doesn't stop components from
+/// using the raw RocksDB handle directly.
+///
+/// Cloning is cheap; clones share the same state.
+#[derive(Clone, derive_more::Debug)]
 #[debug("RocksDbManager")]
-pub struct RocksDbManager {
-    dbs: RwLock<HashMap<DbName, Weak<RocksDb>>>,
+pub struct RocksDbManager(Arc<ManagerInner>);
+
+#[derive(Clone, derive_more::Debug)]
+#[debug("WeakRocksDbManager")]
+pub struct WeakRocksDbManager(Weak<ManagerInner>);
+
+impl WeakRocksDbManager {
+    pub fn upgrade(&self) -> Option<RocksDbManager> {
+        self.0.upgrade().map(RocksDbManager)
+    }
+}
+
+/// State shared by all clones of a [`RocksDbManager`].
+struct ManagerInner {
+    // Inspect and transition incarnation metadata under this lock. Native work,
+    // callbacks, notifications, and final database drops happen outside it.
+    state: Mutex<State>,
     shutting_down: AtomicBool,
-    close_db_tasks: TaskTracker,
-    high_pri_pool: threadpool::ThreadPool,
-    low_pri_pool: threadpool::ThreadPool,
+    // Admission is controlled by the incarnation protocol. Final-reference
+    // cleanup remains possible for externally pinned databases after shutdown.
+    lifecycle_tracker: Arc<FlightTracker>,
+    executor: GlobalExecutor,
+    lifecycle_executor: SinglePoolExecutor,
     // Keep at the end of the struct to ensure it's dropped last
     db_env: DbEnv,
 }
@@ -56,18 +118,14 @@ impl RocksDbManager {
         DB_MANAGER.get()
     }
 
-    /// Create a new instance of the database manager. This should not be executed concurrently,
-    /// only run it once on program startup.
+    /// Creates a manager that runs regular I/O on `executor` and opens and closes
+    /// databases on its own `rs:io-lifecycle` pool. `executor` may be shared with
+    /// other managers; [`Self::shutdown`] only stops this manager's databases.
     ///
-    /// Must run in task_center scope.
-    pub fn init() -> &'static Self {
-        // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
-        if let Some(manager) = DB_MANAGER.get() {
-            return manager;
-        }
+    /// Unlike [`Self::init`], the manager isn't installed as the global one.
+    /// Must run inside a TaskCenter, since it starts the configuration watchdog.
+    pub fn new(opts: &CommonOptions, executor: GlobalExecutor) -> RocksDbManager {
         metric_definitions::describe_metrics();
-        let opts = &Configuration::pinned().common;
-
         let mut db_env = DbEnv::from_common_options(opts).expect("rocksdb env is created");
 
         // Initialize the process-wide pools only once at manager startup.
@@ -78,113 +136,303 @@ impl RocksDbManager {
             env.set_low_priority_background_threads(1);
         }
 
-        // Create our own storage thread pools
-        let high_pri_pool = threadpool::Builder::new()
-            .thread_name("rs:io-hi".to_owned())
-            .num_threads(opts.storage_high_priority_bg_threads().into())
-            .build();
+        // Run native lifecycle work independently of ordinary I/O and Tokio.
+        // Keep independent databases moving while another opens or flushes.
+        // This executor remains available for final-reference cleanup after shutdown.
+        let lifecycle_executor = SinglePoolExecutor::new(
+            "rs:io-lifecycle".to_owned(),
+            opts.storage_lifecycle_threads().get(),
+        );
 
-        let low_pri_pool = threadpool::Builder::new()
-            .thread_name("rs:io-lo".to_owned())
-            .num_threads(opts.storage_low_priority_bg_threads().into())
-            .build();
-
-        let dbs = RwLock::default();
-
-        let manager = Self {
+        let manager = RocksDbManager(Arc::new(ManagerInner {
             db_env,
-            dbs,
+            state: Mutex::default(),
             shutting_down: AtomicBool::new(false),
-            close_db_tasks: TaskTracker::default(),
-            high_pri_pool,
-            low_pri_pool,
-        };
-
-        DB_MANAGER.set(manager).expect("DBManager initialized once");
-        // Dependencies of test crates do not necessarily enable test-util.
-        // Registration is unconditional; only shutdown_for_test runs finalizers.
-        TaskCenter::register_test_finalizer(Box::pin(async {
-            Self::get().shutdown().await;
+            lifecycle_tracker: Arc::default(),
+            executor,
+            lifecycle_executor,
         }));
+
         // Start db monitoring.
         TaskCenter::spawn(
             TaskKind::SystemService,
             "db-manager",
-            DbWatchdog::run(Self::get()),
+            DbWatchdog::run(manager.clone()),
         )
         .expect("run db watchdog");
 
+        manager
+    }
+
+    /// Create a new instance of the database manager. This should not be executed concurrently,
+    /// only run it once on program startup.
+    ///
+    /// Must run in task_center scope.
+    pub fn init() -> &'static Self {
+        // best-effort, it doesn't make concurrent access safe, but it's better than nothing.
+        if let Some(manager) = DB_MANAGER.get() {
+            return manager;
+        }
+        let config = Configuration::pinned();
+        let executor = GlobalExecutor::from_options(&config.common);
+        let manager = Self::new(&config.common, executor);
+        // Dependencies of test crates do not necessarily enable test-util.
+        // Registration is unconditional; only shutdown_for_test runs finalizers.
+        {
+            let manager = manager.clone();
+            TaskCenter::register_test_finalizer(Box::pin(async move {
+                manager.shutdown().await;
+                let state = manager.0.state.lock();
+                for (tracked, entry) in &state.tracked {
+                    assert!(
+                        entry.is_closed(),
+                        "database lifetime survived test teardown: {tracked:?} ({})",
+                        entry.name,
+                    );
+                }
+            }));
+        }
+        DB_MANAGER.set(manager).expect("DBManager initialized once");
         Self::get()
     }
 
+    pub fn downgrade(&self) -> WeakRocksDbManager {
+        WeakRocksDbManager(Arc::downgrade(&self.0))
+    }
+
+    /// Returns the first live database with this reporting name. Names need not
+    /// be unique across paths and do not identify an incarnation.
     pub fn get_db(&self, name: DbName) -> Option<Arc<RocksDb>> {
-        let read_guard = self.dbs.upgradable_read();
-        let db = read_guard.get(&name)?.upgrade();
-        if let Some(db) = db {
-            Some(db)
-        } else {
-            let mut write_guard = parking_lot::RwLockUpgradableReadGuard::upgrade(read_guard);
-            // clean it up unless someone else added it back
-            let db = write_guard.get(&name)?.upgrade();
-            match db {
-                Some(db) => Some(db),
-                None => {
-                    write_guard.remove(&name);
-                    None
-                }
-            }
-        }
+        let guard = self.0.state.lock();
+        guard
+            .tracked
+            .values()
+            .filter(|entry| entry.name == name)
+            .find_map(TrackedDb::handle)
+    }
+
+    /// Returns the current tracked incarnation for the supplied path in any
+    /// lifecycle state, or None if the path is untracked. Uses the path as supplied
+    /// to opening, without resolving filesystem aliases.
+    pub fn get_db_ref(&self, path: &Path) -> Option<DbRef> {
+        self.0.state.lock().by_path.get(path).copied()
     }
 
     /// Default shared resources, controlled by this manager's configuration watcher.
     /// Clone and customize the bundle to override or opt out of selected resources.
     pub fn db_env(&self) -> &DbEnv {
-        &self.db_env
+        &self.0.db_env
     }
 
-    pub async fn open_db(&'static self, db_spec: DbSpec) -> Result<Arc<RocksDb>, RocksError> {
-        self.open_db_with_env(db_spec, self.db_env.clone()).await
+    /// Synchronously admit and dispatch an open using the manager's resources.
+    /// Only an absent or Closed path is accepted. Uses the supplied DbSpec path
+    /// directly; callers coordinate filesystem aliases.
+    ///
+    /// Returns the fresh incarnation and its completion future. Dropping that
+    /// future leaves the open and its unclaimed result accessible through
+    /// [`Self::get_db_by_ref`]. Shutdown disposes of unclaimed results.
+    pub fn open_db(
+        &self,
+        db_spec: DbSpec,
+    ) -> Result<
+        (
+            DbRef,
+            impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<>,
+        ),
+        RocksError,
+    > {
+        self.open_db_with_env(db_spec, self.db_env().clone())
     }
 
     /// Opens with exactly the supplied resources, without filling absent fields
     /// from the default environment. Shared default resources still observe updates
     /// from this manager; custom resources are not enrolled in its resource tuning.
-    pub async fn open_db_with_env(
-        &'static self,
+    /// Uses the same supplied-path fencing as [`Self::open_db`].
+    pub fn open_db_with_env(
+        &self,
         db_spec: DbSpec,
         env: DbEnv,
-    ) -> Result<Arc<RocksDb>, RocksError> {
-        if self
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(RocksError::Shutdown(ShutdownError));
+    ) -> Result<
+        (
+            DbRef,
+            impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<>,
+        ),
+        RocksError,
+    > {
+        let open = self.admit_open(db_spec, env)?;
+        let tracked = open.tracked;
+        // Capture this incarnation's completion before dispatch can fail and a
+        // competing path-based open can replace the resulting Closed entry.
+        let opening = self.get_db_by_ref(tracked);
+        let task = StorageTask::default()
+            .kind(StorageTaskKind::OpenDb)
+            .op(move || open.run())
+            .build()
+            .expect("valid open task");
+        self.0.lifecycle_executor.dispatch(task)?;
+        Ok((tracked, opening))
+    }
+
+    fn admit_open(&self, spec: DbSpec, env: DbEnv) -> Result<OpenGuard, RocksError> {
+        let mut state = self.0.state.lock();
+        if self.0.shutting_down.load(Ordering::Acquire) {
+            return Err(ShutdownError.into());
         }
+        state.remove_previous(&spec.path)?;
+        let (completion, result) = watch::channel(None);
+        let entry = TrackedDb::opening(&spec, result);
+        let closed = entry.closed.clone();
+        let tracked = state.tracked.insert(entry);
+        state.by_path.insert(spec.path.clone(), tracked);
+        // Admission and accounting are atomic with sealing. Dispatch does not
+        // depend on polling the returned future.
+        Ok(OpenGuard::new(
+            self.clone(),
+            tracked,
+            closed,
+            spec,
+            env,
+            self.track_lifecycle(),
+            completion,
+        ))
+    }
 
-        // get latest options
-        let name = db_spec.name.clone();
-        let path = db_spec.path.clone();
-        let wrapper = RocksDb::open(self, db_spec, env).await?;
-        self.dbs
-            .write()
-            .insert(name.clone(), Arc::downgrade(&wrapper));
+    /// Obtain a live database or await its accepted open. The open's result is
+    /// claimed on first retrieval; later calls upgrade the manager's weak handle.
+    /// Dropping this future does not cancel opening.
+    ///
+    /// The reference belongs to this manager and never follows a replacement at
+    /// the same path. Existing waiters retain an open failure after replacement.
+    pub fn get_db_by_ref(
+        &self,
+        tracked: DbRef,
+    ) -> impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<> {
+        let completion = self
+            .0
+            .state
+            .lock()
+            .tracked
+            .get(tracked)
+            .map(|entry| entry.open_result.clone())
+            .ok_or(RocksError::NotRegistered);
+        let manager = self.clone();
+        async move {
+            let mut completion = completion?;
+            let result = completion
+                .wait_for(Option::is_some)
+                .await
+                .map_err(|_| ShutdownError)?
+                .as_ref()
+                .expect("completed open")
+                .clone();
+            result?;
+            let (db, accepted) = {
+                let mut state = manager.0.state.lock();
+                if manager.0.shutting_down.load(Ordering::Acquire) {
+                    return Err(ShutdownError.into());
+                }
+                state
+                    .tracked
+                    .get_mut(tracked)
+                    .ok_or(RocksError::NotRegistered)?
+                    .claim()?
+            };
+            // Dropping a token can wake shutdown waiters. Keep it outside the lock.
+            drop(accepted);
+            Ok(db)
+        }
+    }
 
-        debug!(
-            db = %name,
-            path = %path.display(),
-            "Opened rocksdb database"
-        );
-        Ok(wrapper)
+    fn prepare_open(
+        &self,
+        spec: DbSpec,
+        env: DbEnv,
+    ) -> Result<crate::rock_access::PreparedOpen, RocksError> {
+        if self.0.shutting_down.load(Ordering::Acquire) {
+            return Err(ShutdownError.into());
+        }
+        // todo: add create_if_missing to DbSpec and make directory and
+        // native database creation follow that policy.
+        RocksAccess::prepare_open(spec, env)
+    }
+
+    fn publish_open(
+        &self,
+        tracked: DbRef,
+        db: Arc<RocksDb>,
+        accepted: OwnedLease,
+    ) -> Result<(), RocksError> {
+        let mut state = self.0.state.lock();
+        let entry = if self.0.shutting_down.load(Ordering::Acquire) {
+            Err(ShutdownError.into())
+        } else {
+            state
+                .tracked
+                .get_mut(tracked)
+                .ok_or(RocksError::NotRegistered)
+        };
+        match entry {
+            Ok(entry) => {
+                let name = db.name().clone();
+                let elapsed = entry.opened(db, accepted);
+                drop(state);
+                debug!(db = %name, ?tracked, duration = ?elapsed, "RocksDB open completed");
+                Ok(())
+            }
+            Err(error) => {
+                drop(state);
+                drop(db);
+                drop(accepted);
+                Err(error)
+            }
+        }
+    }
+
+    fn bind_db(
+        &self,
+        native: RocksAccess,
+        tracked: DbRef,
+        closed: CancellationToken,
+    ) -> Arc<RocksDb> {
+        let mut db = RocksDb::new(native, self.0.executor.clone());
+        db.registration = Some(DbRegistration {
+            manager: self.clone(),
+            tracked,
+            closed,
+        });
+        Arc::new(db)
+    }
+
+    /// Observe this incarnation's physical completion without pinning native
+    /// resources or following later replacements.
+    pub fn closed(
+        &self,
+        tracked: DbRef,
+    ) -> Result<impl Future<Output = ()> + Send + 'static + use<>, RocksError> {
+        Ok(self
+            .0
+            .state
+            .lock()
+            .tracked
+            .get(tracked)
+            .ok_or(RocksError::NotRegistered)?
+            .closed
+            .clone()
+            .cancelled_owned())
     }
 
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn reset(&'static self) -> anyhow::Result<()> {
-        self.shutting_down
-            .store(true, std::sync::atomic::Ordering::Release);
+    pub async fn reset(&self) -> anyhow::Result<()> {
         self.shutdown().await;
-        self.dbs.write().clear();
-        self.shutting_down
-            .store(false, std::sync::atomic::Ordering::Release);
+        let mut state = self.0.state.lock();
+        anyhow::ensure!(
+            state.tracked.values().all(TrackedDb::is_closed),
+            "cannot reset RocksDB manager while database lifetimes remain active"
+        );
+        // Clear without replacing the SlotMap, preserving stale-key rejection.
+        state.tracked.clear();
+        state.by_path.clear();
+        self.0.shutting_down.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -192,27 +440,44 @@ impl RocksDbManager {
     /// Used to deterministically test queued work and cancelled result waiters.
     #[cfg(any(test, feature = "test-util"))]
     pub async fn pause_background(&self, priority: Priority) -> Vec<std::sync::mpsc::Sender<()>> {
-        let pool = match priority {
-            Priority::High => &self.high_pri_pool,
-            Priority::Low => &self.low_pri_pool,
-        };
+        let pool = &self.0.executor;
+        let mut resumes = Vec::with_capacity(pool.max_count(priority));
+        for _ in 0..pool.max_count(priority) {
+            let (resume, paused) = std::sync::mpsc::channel();
+            let (started, reached) = tokio::sync::oneshot::channel();
+            resumes.push(resume);
+            pool.dispatch_fn(priority, move || {
+                let _ = started.send(());
+                let _ = paused.recv();
+            })
+            .expect("test pool accepts work");
+            reached.await.expect("background worker started");
+        }
+        resumes
+    }
+
+    /// Occupy every lifecycle worker after all previously queued work has completed.
+    #[cfg(any(test, feature = "test-util"))]
+    pub async fn pause_lifecycle(&self) -> Vec<std::sync::mpsc::Sender<()>> {
+        let pool = &self.0.lifecycle_executor;
         let mut resumes = Vec::with_capacity(pool.max_count());
         for _ in 0..pool.max_count() {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.execute(move || {
+            pool.dispatch_fn(Priority::Low, move || {
                 let _ = started.send(());
                 let _ = paused.recv();
-            });
-            reached.await.expect("background worker started");
+            })
+            .expect("lifecycle pool accepts work");
+            reached.await.expect("lifecycle worker started");
         }
         resumes
     }
 
     /// Capacity of the default shared WBM, excluding independently supplied WBMs.
     pub fn get_total_write_buffer_capacity(&self) -> u64 {
-        self.db_env
+        self.db_env()
             .write_buffer_manager
             .as_ref()
             .map_or(0, |manager| manager.get_buffer_size() as u64)
@@ -220,7 +485,7 @@ impl RocksDbManager {
 
     /// Usage of the default shared WBM, excluding independently supplied WBMs.
     pub fn get_total_write_buffer_usage(&self) -> u64 {
-        self.db_env
+        self.db_env()
             .write_buffer_manager
             .as_ref()
             .map_or(0, |manager| manager.get_usage() as u64)
@@ -236,30 +501,18 @@ impl RocksDbManager {
     ) -> Result<rocksdb::perf::MemoryUsage, RocksError> {
         // for safety.
         // keep databases alive while we are aggregating memory usage
-        let mut pinned = vec![];
+        let pinned = self.get_all_dbs();
         let mut builder = rocksdb::perf::MemoryUsageBuilder::new()?;
-        if filter.is_empty() {
-            if let Some(cache) = &self.db_env.cache {
-                builder.add_cache(cache);
-            }
-            for db in self.dbs.read().values() {
-                let Some(db) = db.upgrade() else {
-                    continue;
-                };
-                pinned.push(db);
-            }
-        } else {
-            for key in filter {
-                if let Some(db) = self.dbs.read().get(key) {
-                    let Some(db) = db.upgrade() else {
-                        continue;
-                    };
-                    pinned.push(db);
-                }
-            }
+        if filter.is_empty()
+            && let Some(cache) = &self.db_env().cache
+        {
+            builder.add_cache(cache);
         }
 
         for db in &pinned {
+            if !filter.is_empty() && !filter.contains(db.name()) {
+                continue;
+            }
             builder.add_db(db.inner().as_raw_db());
             if let Some(cache) = &db.inner().db_env().cache {
                 // The native builder deduplicates shared caches.
@@ -281,77 +534,170 @@ impl RocksDbManager {
     }
 
     pub fn get_all_dbs(&self) -> Vec<Arc<RocksDb>> {
-        self.dbs.read().values().filter_map(Weak::upgrade).collect()
+        let guard = self.0.state.lock();
+        guard
+            .tracked
+            .values()
+            .filter_map(TrackedDb::handle)
+            .collect()
     }
 
-    /// Closes the database and waits for completion.
-    pub(crate) async fn close_db(&self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
-        let db = Arc::try_unwrap(db)?;
-        let closed = db.closed().log_slow_after(
-            Duration::from_secs(5),
-            tracing::Level::WARN,
-            format!("Closing RocksDB database '{}'", db.name()),
-        );
-        // Drop transfers the native payload to cleanup. The observer owns no
-        // database reference and remains valid if its waiter is cancelled.
-        drop(db);
-        closed.await;
-        Ok(())
+    /// Close the originating incarnation after its final reference is released.
+    /// This releases native resources without deleting the database's stored data.
+    pub(crate) fn close_db(&self, mut cleanup: DbCleanup) {
+        let registration = cleanup
+            .registration
+            .as_ref()
+            .expect("registered database")
+            .tracked;
+        let active = self.track_lifecycle();
+        let needs_shutdown = {
+            let mut state = self.0.state.lock();
+            state
+                .tracked
+                .get_mut(registration)
+                .is_none_or(TrackedDb::begin_close)
+        };
+        cleanup.needs_shutdown = needs_shutdown;
+        let cleanup = CloseGuard::new(cleanup, active);
+        self.0
+            .lifecycle_executor
+            .dispatch_fn(Priority::Low, move || drop(cleanup))
+            .expect("lifecycle executor remains available through native cleanup");
     }
 
-    /// Closes the database in the background
-    ///
-    /// This is intended to be used by the [`RocksDb`] instance Drop impl to close the database.
-    /// Manager shutdown removes databases from the map after arranging preparatory
-    /// shutdown work. Native destruction must still be dispatched and tracked even
-    /// for databases no longer in that map.
-    ///
-    /// if you need to wait for the shutdown, then use [`RocksDb::close`] instead.
-    pub(crate) fn background_close_db(&self, db: RocksAccess, closed: CancellationToken) {
-        let needs_shutdown = self.dbs.write().remove(db.name()).is_some();
-        self.close_db_tasks.spawn_blocking(move || {
-            if needs_shutdown {
-                db.shutdown();
-            }
-            // shutdown() only borrows the database. Complete only after the
-            // native destructor and the selected environment have been released.
-            drop(db);
-            closed.cancel();
-        });
-    }
-
-    /// Ask all databases to shut down cleanly
-    pub async fn shutdown(&'static self) {
-        self.close_db_tasks.close();
-        for (name, db) in self.dbs.write().drain() {
-            let Some(db) = db.upgrade() else {
-                continue;
-            };
-
-            self.close_db_tasks.spawn_blocking(move || {
-                db.db.shutdown();
-                name
-            });
+    pub(crate) fn finish_close(&self, registration: DbRef, closed: CancellationToken) {
+        let completed = {
+            let mut state = self.0.state.lock();
+            state
+                .tracked
+                .get_mut(registration)
+                .map(|entry| (entry.name.clone(), entry.finish_close()))
+        };
+        if let Some((name, elapsed)) = completed {
+            debug!(db = %name, tracked = ?registration, duration = ?elapsed, "RocksDB lifetime completed");
         }
-        // wait for all tasks to complete
-        self.close_db_tasks.wait().await;
-        if let Some(env) = &self.db_env.native_env {
+        // Observers may run user code. Native destruction and metadata updates
+        // must both finish before waking them, without holding the manager lock.
+        closed.cancel();
+    }
+
+    fn finish_shutdown(&self, tracked: DbRef, completed: bool) {
+        if let Some(entry) = self.0.state.lock().tracked.get_mut(tracked) {
+            entry.finish_shutdown(completed);
+        }
+    }
+
+    pub(crate) fn track_lifecycle(&self) -> OwnedLease {
+        self.0
+            .lifecycle_tracker
+            .try_acquire()
+            .expect("lifecycle admission is controlled by the manager")
+            .into_owned()
+    }
+
+    pub(crate) fn dispatch_cleanup(&self, task: impl FnOnce() + Send + 'static) {
+        // Keep resources before accounting even if the queued closure is discarded.
+        let cleanup = (task, self.track_lifecycle());
+        self.0
+            .lifecycle_executor
+            .dispatch_fn(Priority::Low, move || {
+                let (task, _active) = cleanup;
+                task();
+            })
+            .expect("lifecycle executor remains available through native cleanup");
+    }
+
+    fn seal_opens(&self) {
+        let unclaimed: Vec<_> = {
+            let mut state = self.0.state.lock();
+            self.0.shutting_down.store(true, Ordering::Release);
+            state
+                .tracked
+                .values_mut()
+                .filter_map(TrackedDb::take_unclaimed)
+                .collect()
+        };
+        // Dispose before waiting on admission tokens, including results whose
+        // original future was dropped. Database drops re-enter the manager.
+        drop(unclaimed);
+    }
+
+    async fn wait_for_cleanup(&self) {
+        self.0.lifecycle_tracker.wait_idle().await;
+        // Native opening, preparation, or destruction may unwind without a known
+        // outcome. Keep those lifetimes pending until physical completion.
+        let pending: Vec<_> = self
+            .0
+            .state
+            .lock()
+            .tracked
+            .values()
+            .filter_map(TrackedDb::pending_cleanup)
+            .collect();
+        for closed in pending {
+            closed.cancelled().await;
+        }
+    }
+
+    /// Stops new opens and new database work, waits for accepted work to finish,
+    /// then flushes the WAL and the `flush_on_shutdown` column families of every
+    /// database that is still open.
+    ///
+    /// Databases still referenced elsewhere stay open; use [`RocksDb::closed`] to
+    /// wait until they are actually closed. If a flush panics, shutdown keeps
+    /// waiting until that database is closed.
+    pub async fn shutdown(&self) {
+        self.seal_opens();
+        let databases = self.get_all_dbs();
+        for db in &databases {
+            db.seal();
+        }
+        for db in &databases {
+            db.drain().await;
+        }
+        drop(databases);
+        self.wait_for_cleanup().await;
+        let pending: Vec<_> = self
+            .0
+            .state
+            .lock()
+            .tracked
+            .values_mut()
+            .filter_map(|entry| {
+                let db = entry.claim_shutdown()?;
+                // Publish the claim and its accounting under the same lock.
+                Some(ShutdownGuard::new(db, self.track_lifecycle()))
+            })
+            .collect();
+        for shutdown in pending {
+            self.0
+                .lifecycle_executor
+                .dispatch_fn(Priority::Low, move || drop(shutdown))
+                .expect("lifecycle executor remains available through native cleanup");
+        }
+        self.wait_for_cleanup().await;
+        if let Some(env) = &self.db_env().native_env {
             env.clone().join_all_threads();
         }
-        info!("Rocksdb manager shutdown completed");
+        info!("Rocksdb manager shutdown tasks completed");
     }
 
     /// Emergency shutdown is ongoing, this will ensure rocksdb's wal is fsynced.
-    pub fn on_ungraceful_shutdown(&'static self) {
-        let Some(guard) = self.dbs.try_read_for(Duration::from_secs(1)) else {
-            eprintln!("[rocksdb] couldn't acquire rwlock to flush in time");
+    pub fn on_ungraceful_shutdown(&self) {
+        let Some(guard) = self.0.state.try_lock_for(Duration::from_secs(1)) else {
+            eprintln!("[rocksdb] couldn't acquire registry lock to flush in time");
             return;
         };
+        let databases: Vec<_> = guard
+            .tracked
+            .values()
+            .filter_map(TrackedDb::unprepared_handle)
+            .collect();
+        drop(guard);
         // WAL first
-        for (name, db) in guard.iter() {
-            let Some(db) = db.upgrade() else {
-                continue;
-            };
+        for db in &databases {
+            let name = db.name();
             if let Err(e) = db.db.flush_wal(true) {
                 eprintln!("[rocksdb] failed to flush WAL of {name}: {e}");
             } else {
@@ -360,94 +706,23 @@ impl RocksDbManager {
         }
 
         // Best effort normal shutdown
-        for db in guard.values() {
-            let Some(db) = db.upgrade() else {
-                continue;
-            };
+        for db in &databases {
             db.db.shutdown();
         }
 
-        if !guard.is_empty() {
+        if !databases.is_empty() {
             eprintln!("[rocksdb] flushed all!");
         }
     }
-
-    /// Spawn a rocksdb blocking operation in the background
-    pub(crate) async fn async_spawn<OP, R>(
-        &self,
-        task: ReadyStorageTask<OP>,
-    ) -> Result<R, ShutdownError>
-    where
-        OP: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        if self
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(ShutdownError);
-        }
-
-        self.async_spawn_unchecked(task).await
-    }
-
-    /// Ignores the shutdown signal. This should be used if an IO operation needs
-    /// to be performed _during_ shutdown.
-    pub(crate) async fn async_spawn_unchecked<OP, R>(
-        &self,
-        task: ReadyStorageTask<OP>,
-    ) -> Result<R, ShutdownError>
-    where
-        OP: FnOnce() -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let (tx, rx) = tokio::sync::oneshot::channel();
-        let priority = task.priority;
-        match priority {
-            Priority::High => self.high_pri_pool.execute(task.into_async_runner(tx)),
-            Priority::Low => self.low_pri_pool.execute(task.into_async_runner(tx)),
-        }
-        rx.await.map_err(|_| ShutdownError)
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn spawn<OP>(&self, task: ReadyStorageTask<OP>) -> Result<(), ShutdownError>
-    where
-        OP: FnOnce() + Send + 'static,
-    {
-        if self
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Err(ShutdownError);
-        }
-        self.spawn_unchecked(task);
-        Ok(())
-    }
-
-    pub(crate) fn spawn_unchecked<OP>(&self, task: ReadyStorageTask<OP>)
-    where
-        OP: FnOnce() + Send + 'static,
-    {
-        match task.priority {
-            Priority::High => self.high_pri_pool.execute(task.into_runner()),
-            Priority::Low => self.low_pri_pool.execute(task.into_runner()),
-        }
-    }
-}
-
-#[allow(dead_code)]
-struct ConfigSubscription {
-    name: DbName,
 }
 
 struct DbWatchdog {
-    manager: &'static RocksDbManager,
+    manager: RocksDbManager,
     current_common_opts: CommonOptions,
 }
 
 impl DbWatchdog {
-    pub async fn run(manager: &'static RocksDbManager) -> anyhow::Result<()> {
+    pub async fn run(manager: RocksDbManager) -> anyhow::Result<()> {
         let prev_opts = Configuration::pinned().common.clone();
         let mut watchdog = Self {
             manager,
@@ -465,9 +740,7 @@ impl DbWatchdog {
                 biased;
                 _ = &mut shutdown_watch => {
                     // Shutdown requested.
-                    manager
-                        .shutting_down
-                        .store(true, std::sync::atomic::Ordering::Release);
+                    watchdog.manager.seal_opens();
                     break;
                 }
                 _ = config_watch.changed() => {
@@ -481,11 +754,7 @@ impl DbWatchdog {
 
     fn on_config_update(&mut self) {
         // ignore if in shutdown
-        if self
-            .manager
-            .shutting_down
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
+        if self.manager.0.shutting_down.load(Ordering::Acquire) {
             info!("Ignoring config update as we are shutting down");
             return;
         }
@@ -502,12 +771,12 @@ impl DbWatchdog {
                 new_common_opts.rocksdb_total_memory_size()
             );
             check_memory_limit(new_common_opts);
-            if let Some(cache) = &self.manager.db_env.cache {
+            if let Some(cache) = &self.manager.db_env().cache {
                 cache
                     .clone()
                     .set_capacity(new_common_opts.rocksdb_total_memory_size().as_usize());
             }
-            if let Some(manager) = &self.manager.db_env.write_buffer_manager {
+            if let Some(manager) = &self.manager.db_env().write_buffer_manager {
                 manager.set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
             }
         }
@@ -522,20 +791,15 @@ impl DbWatchdog {
                 "[config update] Setting rocksdb total memtables size limit to {}",
                 new_common_opts.rocksdb_total_memtables_size()
             );
-            if let Some(manager) = &self.manager.db_env.write_buffer_manager {
+            if let Some(manager) = &self.manager.db_env().write_buffer_manager {
                 manager.set_buffer_size(new_common_opts.rocksdb_total_memtables_size().as_usize());
             }
         }
 
         // Databases choose to react to config updates as they see fit.
         // e.g. set write_buffer_size
-        // A final Arc drop re-enters background_close_db, which takes the write
-        // lock. Snapshot weak references and upgrade them outside the registry lock.
-        let dbs: Vec<_> = self.manager.dbs.read().values().cloned().collect();
-        for db in dbs {
-            let Some(db) = db.upgrade() else {
-                continue;
-            };
+        // Native callbacks and final reference drops run outside registry locks.
+        for db in self.manager.get_all_dbs() {
             db.note_config_update();
         }
 
@@ -571,7 +835,7 @@ mod tests {
         fn note_config_update(&self, _db: &RocksAccess) {
             // On regression, retain the external owner so the test can report the
             // failure instead of deadlocking when the watchdog drops its Arc.
-            if RocksDbManager::get().dbs.try_write().is_some() {
+            if RocksDbManager::get().0.state.try_lock().is_some() {
                 // Leave the watchdog holding the last strong reference.
                 self.owner.lock().take();
             }
@@ -618,7 +882,8 @@ mod tests {
             )
             .cf_patterns(Vec::new())
             .build()?;
-            let db = manager.open_db_with_env(spec, env).await?;
+            let (_, opening) = manager.open_db_with_env(spec, env)?;
+            let db = opening.await?;
             let raw = db.inner().as_raw_db();
             raw.put(b"key", [42; 4096])?;
             raw.flush()?;
@@ -688,19 +953,20 @@ mod tests {
             )
             .cf_patterns(Vec::new())
             .build()?;
-            let db = manager.open_db(spec).await?;
+            let (_, opening) = manager.open_db(spec)?;
+            let db = opening.await?;
             *configurator.owner.lock() = Some(db);
             owners.push(configurator.owner);
         }
 
         let mut watchdog = DbWatchdog {
-            manager,
+            manager: manager.clone(),
             current_common_opts: Configuration::pinned().common.clone(),
         };
         watchdog.on_config_update();
 
         let released_in_callback = owners.iter().all(|owner| owner.lock().is_none());
-        let databases_unregistered = manager.dbs.read().is_empty();
+        let databases_released = manager.get_all_dbs().is_empty();
         // Also release retained owners on regression, after the registry lock is gone.
         for owner in owners {
             owner.lock().take();
@@ -713,7 +979,7 @@ mod tests {
             "config callbacks must run without the database registry lock"
         );
         assert!(
-            databases_unregistered,
+            databases_released,
             "the watchdog must release its final database references before returning"
         );
         Ok(())

@@ -87,7 +87,8 @@ impl RocksDbLogStore {
         .ensure_column_families(cfs)
         .build()
         .expect("valid spec");
-        let rocksdb = db_manager.open_db(db_spec).await?;
+        let (_, opening) = db_manager.open_db(db_spec)?;
+        let rocksdb = opening.await?;
         Ok(Self { rocksdb })
     }
 
