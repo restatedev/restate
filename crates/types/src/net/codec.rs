@@ -94,10 +94,11 @@ pub fn encode_as_flexbuffers<T: Serialize>(value: T) -> Vec<u8> {
     flexbuffers::to_vec(value).expect("network message serde can't fail")
 }
 
-/// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde. the buffer
-/// must have the complete message and not internally chunked.
+/// Utility method to decode a [`DeserializeOwned`] type from flexbuffers using serde. `buf` must
+/// hold exactly one message. Flexbuffers reads from one contiguous slice: contiguous input is
+/// decoded in place, segmented input is first copied into one buffer.
 pub fn decode_as_flexbuffers<T: DeserializeOwned>(
-    buf: impl Buf,
+    mut buf: impl Buf,
     protocol_version: ProtocolVersion,
 ) -> Result<T, anyhow::Error> {
     assert!(
@@ -105,7 +106,13 @@ pub fn decode_as_flexbuffers<T: DeserializeOwned>(
         "unknown protocol version should never be set"
     );
 
-    flexbuffers::from_slice(buf.chunk()).with_context(|| {
+    let len = buf.remaining();
+    let decoded = if buf.chunk().len() == len {
+        flexbuffers::from_slice(buf.chunk())
+    } else {
+        flexbuffers::from_slice(&buf.copy_to_bytes(len))
+    };
+    decoded.with_context(|| {
         format!(
             "failed decoding (flexbuffers) network message {}",
             type_name::<T>()
@@ -128,4 +135,44 @@ pub fn decode_as_bilrost<T: OwnedMessage>(
     );
 
     T::decode(buf).context("failed decoding (bilrost) network message")
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::{Buf, Bytes};
+    use serde::{Deserialize, Serialize};
+
+    use super::*;
+
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Message {
+        id: u64,
+        name: String,
+        values: Vec<u32>,
+    }
+
+    fn decode(buf: impl Buf) -> Message {
+        decode_as_flexbuffers(buf, ProtocolVersion::V2).unwrap()
+    }
+
+    #[test]
+    fn flexbuffers_decode_from_segmented_input() {
+        let message = Message {
+            id: 7,
+            name: "restate".to_owned(),
+            values: vec![1, 2, 3],
+        };
+        let encoded = Bytes::from(encode_as_flexbuffers(&message));
+        assert_eq!(decode(encoded.clone()), message);
+        for at in 0..=encoded.len() {
+            let chained = encoded.slice(..at).chain(encoded.slice(at..));
+            assert_eq!(decode(chained), message, "split at {at}");
+        }
+        let third = encoded.len() / 3;
+        let three = encoded
+            .slice(..third)
+            .chain(encoded.slice(third..2 * third))
+            .chain(encoded.slice(2 * third..));
+        assert_eq!(decode(three), message);
+    }
 }
