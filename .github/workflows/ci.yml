@@ -49,7 +49,7 @@ jobs:
           prefix-key: "v1-rust-xtask"
           cache-on-failure: "true"
       - name: Install protoc
-        uses: ./.github/actions/install-protoc
+        uses: $/.github/actions/install-protoc
       - name: Check cli/src/commands/sql_tables.rs is up-to-date
         run: |
           cargo xtask generate-cli-sql-tables > cli/src/commands/sql_tables.rs
@@ -100,7 +100,7 @@ jobs:
         run: cargo hakari disable
 
       - name: Install protoc
-        uses: ./.github/actions/install-protoc
+        uses: $/.github/actions/install-protoc
 
       - name: Install nextest
         uses: taiki-e/install-action@v2.88.0

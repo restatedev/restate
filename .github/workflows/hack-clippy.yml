@@ -46,7 +46,7 @@ jobs:
         run: cargo hakari disable
 
       - name: Install protoc
-        uses: ./.github/actions/install-protoc
+        uses: $/.github/actions/install-protoc
 
       - name: Install nextest
         uses: taiki-e/install-action@v2.88.0

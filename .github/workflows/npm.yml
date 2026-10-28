@@ -50,7 +50,7 @@ jobs:
 
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
 
@@ -134,7 +134,7 @@ jobs:
 
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
 
