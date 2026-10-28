@@ -107,9 +107,9 @@ pub struct PoolConfig {
     pub(crate) max_connection_age: Option<Duration>,
 
     /// Fractional jitter added to `max_connection_age`, expressed as a
-    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is derived
-    /// from the connection id, so each connection has a stable deadline and
-    /// connections opened together do not all retire on the same tick.
+    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is drawn once
+    /// per connection when it is created, so each connection has a fixed
+    /// deadline and connections opened together do not all retire at once.
     ///
     /// Default 0.1 (10% of max_connection_age)
     pub(crate) max_connection_age_jitter: f32,

@@ -20,6 +20,11 @@ use restate_util_time::{FriendlyDuration, NonZeroFriendlyDuration};
 /// fragment their payload into many tiny DATA frames.
 const MIN_DATA_FRAME_BUDGET: usize = 25_600;
 
+/// Lower bound for `http2-max-connection-age`. Shorter ages make every
+/// connection re-handshake too often to be worth the rebalancing.
+pub const MIN_HTTP2_MAX_CONNECTION_AGE: std::time::Duration =
+    std::time::Duration::from_secs(10 * 60);
+
 /// # HTTP client options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -106,26 +111,27 @@ pub struct HttpOptions {
     /// existed when they were opened and newly added backends receive no
     /// traffic until a new connection is made.
     ///
-    /// Set to `0` to disable: connections then live until idle or closed by
-    /// the peer.
+    /// Must be at least 10 minutes, to avoid excessive connection churn.
+    /// Unset means connections live until they are idle or closed by the peer.
     ///
     /// Since: v1.8.2
     ///
-    /// Default: 0 (unlimited)
-    pub http2_max_connection_age: FriendlyDuration,
+    /// Default: unset (unlimited)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http2_max_connection_age: Option<FriendlyDuration>,
 
     /// # HTTP/2 Max Connection Age Jitter
     ///
     /// Fractional jitter added to `http2-max-connection-age`, expressed as a
-    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is fixed per
-    /// connection, so connections opened at the same time do not all retire
-    /// at once.
+    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is drawn once
+    /// per connection when it is created, so connections opened at the same
+    /// time do not all retire at once.
     ///
-    /// Only meaningful when `http2-max-connection-age` is not zero.
+    /// Only meaningful when `http2-max-connection-age` is set.
     ///
     /// Since: v1.8.2
     ///
-    /// Default 0.1 (10% of http2-max-connection-age)
+    /// Default: 0.1 (10% of http2-max-connection-age)
     pub http2_max_connection_age_jitter: f32,
 
     /// # HTTP/2 initial stream window size
@@ -186,7 +192,7 @@ impl Default for HttpOptions {
             http2_initial_max_send_streams: None,
             http2_streams_per_connection_limit: NonZeroUsize::new(128).unwrap(),
             http2_idle_connection_timeout: FriendlyDuration::from_secs(300),
-            http2_max_connection_age: FriendlyDuration::from_secs(0),
+            http2_max_connection_age: None,
             http2_max_connection_age_jitter: 0.1,
             http2_initial_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(2 * 1024 * 1024).unwrap(),

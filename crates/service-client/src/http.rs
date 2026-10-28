@@ -159,11 +159,7 @@ impl HttpClient {
                 } else {
                     Some(options.http2_idle_connection_timeout.into())
                 })
-                .max_connection_age(if options.http2_max_connection_age.is_zero() {
-                    None
-                } else {
-                    Some(options.http2_max_connection_age.into())
-                })
+                .max_connection_age(options.http2_max_connection_age.map(Into::into))
                 .max_connection_age_jitter(options.http2_max_connection_age_jitter);
 
             let builder = match options.http2_initial_max_send_streams {
