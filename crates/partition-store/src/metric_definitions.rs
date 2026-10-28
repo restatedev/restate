@@ -19,6 +19,14 @@ pub(crate) const SNAPSHOT_DOWNLOAD_DURATION: &str =
     "restate.partition_store.snapshots.download.duration.seconds";
 pub(crate) const SNAPSHOT_DOWNLOAD_FAILED: &str =
     "restate.partition_store.snapshots.download.failed.total";
+pub(crate) const SNAPSHOT_UPLOAD_INFLIGHT: &str =
+    "restate.partition_store.snapshots.upload.inflight";
+pub(crate) const SNAPSHOT_UPLOAD_BYTES: &str =
+    "restate.partition_store.snapshots.upload.bytes.total";
+pub(crate) const SNAPSHOT_DOWNLOAD_INFLIGHT: &str =
+    "restate.partition_store.snapshots.download.inflight";
+pub(crate) const SNAPSHOT_DOWNLOAD_BYTES: &str =
+    "restate.partition_store.snapshots.download.bytes.total";
 pub(crate) const PARTITION_MEMTABLE_BUDGET: &str = "restate.partition_store.memtable_budget.bytes";
 pub(crate) const NUM_OPEN_PARTITIONS: &str = "restate.partition_store.num_open";
 pub(crate) const RECLAIM_FLUSH: &str = "restate.partition_store.reclaim_flush.total";
@@ -52,6 +60,30 @@ pub(crate) fn describe_metrics() {
         SNAPSHOT_DOWNLOAD_FAILED,
         Unit::Count,
         "Number of failed partition snapshot download operations"
+    );
+
+    describe_gauge!(
+        SNAPSHOT_UPLOAD_INFLIGHT,
+        Unit::Count,
+        "Number of partition snapshot uploads in progress"
+    );
+
+    describe_counter!(
+        SNAPSHOT_UPLOAD_BYTES,
+        Unit::Bytes,
+        "Bytes of partition snapshot files uploaded to the snapshot repository"
+    );
+
+    describe_gauge!(
+        SNAPSHOT_DOWNLOAD_INFLIGHT,
+        Unit::Count,
+        "Number of partition snapshot downloads in progress"
+    );
+
+    describe_counter!(
+        SNAPSHOT_DOWNLOAD_BYTES,
+        Unit::Bytes,
+        "Bytes of partition snapshot files downloaded from the snapshot repository"
     );
 
     describe_gauge!(
