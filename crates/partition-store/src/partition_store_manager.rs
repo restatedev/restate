@@ -16,7 +16,7 @@ use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
 use tracing::{debug, error, info, instrument, warn};
 
-use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
+use restate_rocksdb::{CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_types::config::Configuration;
 use restate_types::identifiers::{PartitionId, SnapshotId};
@@ -116,6 +116,7 @@ impl SharedState {
 }
 
 struct CachedDb {
+    tracked: DbRef,
     rocksdb: Weak<RocksDb>,
     notifications: Arc<DurableLsnSenders>,
 }
@@ -153,13 +154,30 @@ impl PartitionStoreManager {
         let mut db_cache_guard = self.db_cache.lock().await;
         let db_name = restate_rocksdb::DbName::from(partition.db_name(self.use_multi_db_layout));
 
-        if let Some(cached) = db_cache_guard.get(&db_name)
-            && let Some(rocksdb) = cached.rocksdb.upgrade()
-        {
-            return Ok(PartitionStoreDb {
-                rocksdb,
-                notifications: cached.notifications.clone(),
-            });
+        if let Some(cached) = db_cache_guard.get_mut(&db_name) {
+            let result = match cached.rocksdb.upgrade() {
+                Some(rocksdb) => Ok(rocksdb),
+                None => RocksDbManager::get().get_db_by_ref(cached.tracked).await,
+            };
+            match result {
+                Ok(rocksdb) => {
+                    cached.rocksdb = Arc::downgrade(&rocksdb);
+                    return Ok(PartitionStoreDb {
+                        rocksdb,
+                        notifications: cached.notifications.clone(),
+                    });
+                }
+                Err(RocksError::NotOpen) => {
+                    // Weak expiry precedes native cleanup. Retain the identity
+                    // across cancellation while waiting for the old path to close.
+                    RocksDbManager::get().closed(cached.tracked)?.await;
+                }
+                Err(error) => {
+                    db_cache_guard.remove(&db_name);
+                    return Err(error);
+                }
+            }
+            db_cache_guard.remove(&db_name);
         }
 
         // We need to create/open this database.
@@ -183,16 +201,28 @@ impl PartitionStoreManager {
         .build()
         .expect("valid spec");
 
-        let (_, opening) = RocksDbManager::get().open_db(db_spec)?;
-        let rocksdb = opening.await?;
-
+        let (tracked, opening) = RocksDbManager::get().open_db(db_spec)?;
+        // Record both identity and listener registry before the first await. A
+        // later caller can adopt the exact open if this waiter is discarded.
         db_cache_guard.insert(
-            db_name,
+            db_name.clone(),
             CachedDb {
-                rocksdb: Arc::downgrade(&rocksdb),
+                tracked,
+                rocksdb: Weak::new(),
                 notifications: notifications.clone(),
             },
         );
+        let rocksdb = match opening.await {
+            Ok(rocksdb) => rocksdb,
+            Err(error) => {
+                db_cache_guard.remove(&db_name);
+                return Err(error);
+            }
+        };
+        db_cache_guard
+            .get_mut(&db_name)
+            .expect("pending open")
+            .rocksdb = Arc::downgrade(&rocksdb);
 
         Ok(PartitionStoreDb {
             rocksdb,
@@ -261,7 +291,7 @@ impl PartitionStoreManager {
 
         let mut state_guard = cell.inner.write().await;
 
-        if let Some(db) = state_guard.get_or_reopen().await {
+        if let Some(db) = state_guard.get_or_reopen().await? {
             // we have a database, but perhaps it doesn't meet the min_applied_lsn requirement?
             let mut partition_store = PartitionStore::from(db);
             match target_lsn {
@@ -476,6 +506,155 @@ mod tests {
     }
 
     #[restate_core::test]
+    async fn cancelled_open_is_adopted_with_its_original_notifications() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let paused = rocksdb.pause_lifecycle().await;
+            let mut opening = Box::pin(manager.open_rocksdb(&partition));
+            assert!(
+                opening
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(opening);
+            let db_name = restate_rocksdb::DbName::from(partition.db_name(layout));
+            let (tracked, notifications) = {
+                let cache = manager.db_cache.lock().await;
+                let pending = &cache[&db_name];
+                (pending.tracked, pending.notifications.clone())
+            };
+            let mut retry = Box::pin(manager.open_rocksdb(&partition));
+            assert!(
+                retry
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(retry);
+            drop(paused);
+            // The next lifecycle barrier proves open publication has completed,
+            // without claiming the manager's buffered result.
+            drop(timeout(DEADLINE, rocksdb.pause_lifecycle()).await?);
+            let db = timeout(DEADLINE, manager.open_rocksdb(&partition)).await??;
+            assert_eq!(db.rocksdb.registration(), Some(tracked));
+            assert!(Arc::ptr_eq(&notifications, &db.notifications));
+            db.rocksdb.close().await.expect("last database pin");
+            let reopened = timeout(DEADLINE, manager.open_rocksdb(&partition)).await??;
+            assert_ne!(reopened.rocksdb.registration(), Some(tracked));
+            assert!(!Arc::ptr_eq(&notifications, &reopened.notifications));
+            reopened.rocksdb.close().await.expect("last database pin");
+            drop(manager);
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn retirement_survives_cancelled_waiters_and_waits_for_physical_users()
+    -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let mut neighbor = manager.open(&sibling, None).await?;
+            write_applied_lsn(&mut store, 10).await?;
+            let database = manager.open_rocksdb(&partition).await?;
+            let cf_id = store.cf_for_key_kind(KeyKind::Fsm).id();
+            let released = store.partition_db().released();
+            let (started, reached) = oneshot::channel();
+            let (resume, paused) = mpsc::channel::<()>();
+            let mut read = Box::pin(store.partition_db().run_background_read_op(
+                "retirement-read",
+                restate_rocksdb::StorageTaskKind::MultiGet,
+                Priority::High,
+                move |_| {
+                    let _ = started.send(());
+                    let _ = paused.recv();
+                },
+            ));
+            assert!(
+                read.as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            timeout(DEADLINE, reached).await??;
+            drop(read);
+            let mut retirement = Box::pin(manager.drop_partition(partition.partition_id));
+            assert!(
+                retirement
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(retirement);
+            let cell = manager.state.get(partition.partition_id).unwrap();
+            let mut result = match &*cell.inner.read().await {
+                State::Retiring { result } => result.clone(),
+                _ => panic!("retirement must remain reachable"),
+            };
+            drop(store);
+            let mut released = Box::pin(released);
+            assert!(
+                released
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            let mut reopen = Box::pin(manager.open(&partition, None));
+            assert!(
+                reopen
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(reopen);
+            write_applied_lsn(&mut neighbor, 20).await?;
+            assert!(
+                database
+                    .rocksdb
+                    .inner()
+                    .cf_handle(partition.cf_name().as_ref())
+                    .is_some()
+            );
+            let paused_cleanup = rocksdb.pause_lifecycle().await;
+            drop(resume);
+            timeout(DEADLINE, released).await?;
+            assert!(
+                result.borrow().is_none(),
+                "pin release is not native deletion"
+            );
+            drop(paused_cleanup);
+            // Completion progresses without any retirement/open waiter polling it.
+            timeout(DEADLINE, result.wait_for(Option::is_some))
+                .await??
+                .as_ref()
+                .unwrap()
+                .clone()?;
+            assert!(
+                database
+                    .rocksdb
+                    .inner()
+                    .cf_handle(partition.cf_name().as_ref())
+                    .is_none()
+            );
+            let mut fresh = timeout(DEADLINE, manager.open(&partition, None)).await??;
+            assert_ne!(fresh.cf_for_key_kind(KeyKind::Fsm).id(), cf_id);
+            assert_eq!(fresh.get_applied_lsn().await?, None);
+            assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
+            drop((fresh, neighbor, database, cell, manager));
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
     async fn cancelled_commits_close_and_reopen_keep_the_old_lifetime_sealed() -> anyhow::Result<()>
     {
         const DEADLINE: Duration = Duration::from_secs(10);
@@ -624,10 +803,6 @@ mod tests {
                     .is_pending()
             );
             drop(pause);
-            timeout(DEADLINE, replace).await??;
-            let mut fresh = manager.open(&partition, None).await?;
-            assert_ne!(fresh.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
-            assert_eq!(fresh.get_applied_lsn().await?, None);
             let mut rejected = reopened.transaction();
             rejected.put_applied_lsn(Lsn::new(500))?;
             assert!(matches!(
@@ -635,10 +810,14 @@ mod tests {
                 Err(StorageError::OperationalError)
             ));
             drop(rejected);
-            write_applied_lsn(&mut fresh, 600).await?;
-
             drop(old);
             drop(reopened);
+            timeout(DEADLINE, replace).await??;
+            let mut fresh = manager.open(&partition, None).await?;
+            assert_ne!(fresh.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
+            assert_eq!(fresh.get_applied_lsn().await?, None);
+            write_applied_lsn(&mut fresh, 600).await?;
+
             drop(fresh);
             drop(sibling_store);
             drop(cell);
@@ -720,6 +899,9 @@ mod tests {
 
             // Direct import must reset the old watch itself, without an
             // explicit drop_partition call, even while its callback is delayed.
+            let recovered_watch = retired_store.get_durable_lsn().await?;
+            assert!(fresh_watch.same_channel(&recovered_watch));
+            drop(retired_store);
             let mut store =
                 timeout(DEADLINE, manager.open_from_snapshot(&partition, snapshot)).await??;
             assert_ne!(store.cf_for_key_kind(KeyKind::Fsm).id(), replaced_cf_id);
@@ -730,10 +912,8 @@ mod tests {
                 "direct_import_resets_old_watch"
             );
             assert_eq!(*imported_watch.borrow(), Lsn::new(300));
-            let recovered_watch = retired_store.get_durable_lsn().await;
             drop(resume);
             timeout(DEADLINE, completed).await??;
-            let recovered_watch = recovered_watch?;
             assert!(fresh_watch.same_channel(&recovered_watch));
             assert_eq!(
                 *recovered_watch.borrow(),
@@ -749,7 +929,6 @@ mod tests {
             assert_eq!(*imported_watch.borrow(), Lsn::new(600));
             assert_eq!(*fresh_watch.borrow(), Lsn::INVALID);
             assert_eq!(*original_watch.borrow(), Lsn::INVALID);
-            drop(retired_store);
             drop(store);
             drop(manager);
             database
