@@ -138,6 +138,21 @@ impl TaskCenter {
         Self::with_current(|tc| tc.set_on_shutdown(on_shutdown))
     }
 
+    /// Register cleanup to await after ordinary shutdown in the test harness.
+    /// Registration must finish before test finalization starts. Finalizers run
+    /// in registration order and must not retain resources owned by each other.
+    #[doc(hidden)]
+    pub fn register_test_finalizer(finalizer: BoxFuture<'static, ()>) {
+        Self::with_current(|tc| {
+            tc.inner
+                .test_finalizers
+                .lock()
+                .as_mut()
+                .expect("test finalization has already started")
+                .push(finalizer);
+        });
+    }
+
     /// Returns true if the task center was requested to shutdown
     pub fn is_shutdown_requested() -> bool {
         Self::with_current(|tc| tc.is_shutdown_requested())
@@ -338,6 +353,7 @@ struct TaskCenterInner {
     default_runtime: Option<tokio::runtime::Runtime>,
     global_cancel_token: CancellationToken,
     shutdown_requested: AtomicBool,
+    graceful_shutdown_completed: AtomicBool,
     current_exit_code: AtomicI32,
     managed_tasks: Mutex<HashMap<TaskId, Arc<Task>>>,
     global_metadata: OnceLock<Metadata>,
@@ -348,6 +364,8 @@ struct TaskCenterInner {
     root_task_context: TaskContext,
     // A callback to be executed after task center finishes shutdown.
     on_shutdown: Mutex<Option<BoxFuture<'static, ()>>>,
+    // None closes registration once test finalization starts.
+    test_finalizers: Mutex<Option<Vec<BoxFuture<'static, ()>>>>,
 }
 
 impl TaskCenterInner {
@@ -373,6 +391,7 @@ impl TaskCenterInner {
             default_runtime,
             global_cancel_token: CancellationToken::new(),
             shutdown_requested: AtomicBool::new(false),
+            graceful_shutdown_completed: AtomicBool::new(false),
             current_exit_code: AtomicI32::new(0),
             managed_tasks: Mutex::new(HashMap::new()),
             global_metadata: OnceLock::new(),
@@ -385,6 +404,7 @@ impl TaskCenterInner {
             cluster_state: Default::default(),
             health: Health::default(),
             on_shutdown: Mutex::default(),
+            test_finalizers: Mutex::new(Some(Vec::new())),
         }
     }
 
@@ -1040,6 +1060,17 @@ impl TaskCenterInner {
     }
 
     async fn shutdown_node(self: &Arc<Self>, reason: &str, exit_code: i32) {
+        let grace_period = Configuration::pinned().common.shutdown_grace_period();
+        self.shutdown_node_with_timeout(reason, exit_code, Some(grace_period))
+            .await;
+    }
+
+    async fn shutdown_node_with_timeout(
+        self: &Arc<Self>,
+        reason: &str,
+        exit_code: i32,
+        grace_period: Option<Duration>,
+    ) {
         if self
             .shutdown_requested
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -1050,11 +1081,13 @@ impl TaskCenterInner {
         }
 
         let start = Instant::now();
-        let shutdown_result = tokio::time::timeout(
-            Configuration::pinned().common.shutdown_grace_period(),
-            self.shutdown_node_inner(reason, exit_code),
-        )
-        .await;
+        let shutdown = self.shutdown_node_inner(reason, exit_code);
+        let shutdown_result = if let Some(grace_period) = grace_period {
+            tokio::time::timeout(grace_period, shutdown).await
+        } else {
+            shutdown.await;
+            Ok(())
+        };
 
         if shutdown_result.is_err() {
             warn!(
@@ -1114,6 +1147,8 @@ impl TaskCenterInner {
             on_shutdown.await;
         }
         info!("Task center has stopped");
+        self.graceful_shutdown_completed
+            .store(true, Ordering::Release);
         self.global_cancel_token.cancel();
     }
 
@@ -1344,6 +1379,113 @@ mod tests {
     use restate_types::config::CommonOptionsBuilder;
 
     use super::*;
+    use crate as restate_core;
+
+    #[tokio::test(start_paused = true)]
+    async fn finalizers_wait_for_existing_shutdown() -> Result<()> {
+        use std::task::{Context, Waker};
+
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let (entered, reached) = oneshot::channel();
+        let (resume, paused) = oneshot::channel();
+        tc.set_on_shutdown(Box::pin(async move {
+            entered.send(()).unwrap();
+            paused.await.unwrap();
+        }));
+        let finalized = Arc::new(AtomicBool::new(false));
+        tc.run_sync(|| {
+            let finalized = finalized.clone();
+            TaskCenter::register_test_finalizer(Box::pin(async move {
+                finalized.store(true, Ordering::Release);
+            }));
+        });
+        let shutdown = tokio::spawn({
+            let tc = tc.clone();
+            async move { tc.shutdown_node("already requested", 1).await }
+        });
+        reached.await.unwrap();
+        let mut teardown = Box::pin(tc.shutdown_for_test());
+        assert!(
+            teardown
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+                .is_pending()
+        );
+        assert!(!finalized.load(Ordering::Acquire));
+        resume.send(()).unwrap();
+        teardown.await;
+        shutdown.await.unwrap();
+        assert!(finalized.load(Ordering::Acquire));
+        assert_eq!(tc.inner.current_exit_code.load(Ordering::Relaxed), 1);
+        Ok(())
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn finalizers_reject_incomplete_shutdown() -> Result<()> {
+        let tc = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        tc.set_on_shutdown(Box::pin(std::future::pending()));
+        let finalized = Arc::new(AtomicBool::new(false));
+        tc.run_sync(|| {
+            let finalized = finalized.clone();
+            TaskCenter::register_test_finalizer(Box::pin(async move {
+                finalized.store(true, Ordering::Release);
+            }));
+        });
+        tc.inner
+            .shutdown_node_with_timeout("timeout", 1, Some(Duration::ZERO))
+            .await;
+        assert!(
+            AssertUnwindSafe(tc.shutdown_for_test())
+                .catch_unwind()
+                .await
+                .is_err()
+        );
+        assert!(!finalized.load(Ordering::Acquire));
+        Ok(())
+    }
+
+    #[crate::test(start_paused = true)]
+    async fn harness_shutdown_waits_for_real_threads() {
+        check_harness_shutdown();
+    }
+
+    #[crate::test(start_paused = true)]
+    async fn harness_shutdown_accepts_an_already_resumed_clock() {
+        tokio::time::resume();
+        check_harness_shutdown();
+    }
+
+    fn check_harness_shutdown() {
+        struct Completion(bool);
+
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                assert!(
+                    self.0,
+                    "harness abandoned shutdown before native completion"
+                );
+            }
+        }
+
+        let mut completed = Completion(false);
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            let (finished, completion) = oneshot::channel();
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = finished.send(());
+            });
+            completion.await.expect("worker completed");
+            worker.join().expect("worker did not panic");
+            completed.0 = true;
+            drop(completed);
+        }));
+    }
 
     #[tokio::test(start_paused = true)]
     #[traced_test]

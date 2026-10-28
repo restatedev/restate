@@ -441,8 +441,8 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
+    use restate_core::TestCoreEnvBuilder;
     use restate_core::network::NetworkServerBuilder;
-    use restate_core::{TaskCenter, TestCoreEnvBuilder};
     use restate_log_server::LogServerService;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{Configuration, set_current_config};
@@ -510,8 +510,6 @@ mod tests {
         };
 
         future(env).await?;
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 

@@ -16,7 +16,6 @@ use bytes::Bytes;
 use bytestring::ByteString;
 use futures_util::StreamExt;
 
-use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_table::{JournalEntry, ReadJournalTable, WriteJournalTable};
 use restate_types::identifiers::{InvocationId, InvocationUuid};
@@ -150,5 +149,4 @@ async fn journal_tests() {
 
     let mut txn = rocksdb.transaction();
     verify_journal_deleted(&mut txn).await;
-    RocksDbManager::get().shutdown().await;
 }

@@ -91,7 +91,6 @@ pub struct TestEnv {
 impl TestEnv {
     pub async fn shutdown(self) {
         TaskCenter::shutdown_node("test complete", 0).await;
-        RocksDbManager::get().shutdown().await;
     }
 
     pub async fn create() -> Self {

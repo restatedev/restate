@@ -469,7 +469,6 @@ mod tests {
 
     use restate_clock::RoughTimestamp;
     use restate_clock::time::MillisSinceEpoch;
-    use restate_core::TaskCenter;
     use restate_futures_util::concurrency::Concurrency;
     use restate_limiter::LimitKey;
     use restate_memory::{MemoryPool, NonZeroByteCount};
@@ -521,10 +520,7 @@ mod tests {
     }
 
     async fn storage_test_environment() -> PartitionStore {
-        let rocksdb_manager = RocksDbManager::init();
-        TaskCenter::set_on_shutdown(Box::pin(async {
-            rocksdb_manager.shutdown().await;
-        }));
+        RocksDbManager::init();
 
         let manager = PartitionStoreManager::create(true)
             .await

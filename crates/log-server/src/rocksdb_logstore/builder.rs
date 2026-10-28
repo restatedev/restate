@@ -513,7 +513,6 @@ fn cf_metadata_options(
 mod tests {
     use test_log::test;
 
-    use restate_core::TaskCenter;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::{Configuration, node_dir, set_current_config};
     use restate_types::logs::metadata::SegmentIndex;
@@ -627,8 +626,6 @@ mod tests {
         update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
 
         drop(builder);
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }

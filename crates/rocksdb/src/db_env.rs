@@ -397,8 +397,7 @@ mod tests {
         assert!(std::fs::read_dir(&path)?.next().is_none());
         assert!(!export.exists());
         drop(fresh);
-        task_center.shutdown_node("test completed", 0).await;
-        manager.shutdown().await;
+        task_center.shutdown_for_test().await;
         Ok(())
     }
 }

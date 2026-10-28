@@ -1516,7 +1516,7 @@ mod tests {
 
     #[restate_core::test]
     async fn concurrent_writes_and_reads() -> googletest::Result<()> {
-        let rocksdb = RocksDbManager::init();
+        RocksDbManager::init();
         let partition_store_manager = PartitionStoreManager::create(true).await?;
         let mut partition_store = partition_store_manager
             .open(
@@ -1551,13 +1551,12 @@ mod tests {
 
         assert_eq!(value_a, value_b);
 
-        rocksdb.shutdown().await;
         Ok(())
     }
 
     #[restate_core::test]
     async fn seal_is_written_to_wal() -> googletest::Result<()> {
-        let rocksdb = RocksDbManager::init();
+        RocksDbManager::init();
         let partition_store_manager = PartitionStoreManager::create(true).await?;
         let mut partition_store = partition_store_manager
             .open(
@@ -1583,7 +1582,6 @@ mod tests {
         assert_eq!(batch.len(), 1);
         assert!(updates.next().is_none());
 
-        rocksdb.shutdown().await;
         Ok(())
     }
 

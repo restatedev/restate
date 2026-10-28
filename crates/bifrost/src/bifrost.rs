@@ -1301,8 +1301,6 @@ mod tests {
             append_counter_after_seal = counter_now;
         }
 
-        // questionable.
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 

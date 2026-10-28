@@ -292,7 +292,6 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         assert_eq!(Arc::strong_count(&db), 1);
     }
     db.close().await.expect("all operation references released");
-    task_center.shutdown_node("test completed", 0).await;
-    manager.shutdown().await;
+    task_center.shutdown_for_test().await;
     Ok(())
 }

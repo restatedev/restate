@@ -32,7 +32,7 @@ async fn barrier_fsm() -> googletest::Result<()> {
         not(eq(&SemanticRestateVersion::unknown()))
     );
 
-    let rocksdb = RocksDbManager::init();
+    RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create(true).await?;
 
@@ -65,6 +65,5 @@ async fn barrier_fsm() -> googletest::Result<()> {
     // it's actually persisted
     assert_that!(&current_min, eq(SemanticRestateVersion::current()));
 
-    rocksdb.shutdown().await;
     Ok(())
 }

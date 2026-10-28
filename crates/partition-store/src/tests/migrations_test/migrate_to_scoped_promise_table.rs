@@ -166,6 +166,4 @@ async fn migrate_to_scoped_promise_table_moves_unscoped_promises_to_scoped_table
         );
         assert_eq!(observed.get(&lookup), Some(promise));
     }
-
-    RocksDbManager::get().shutdown().await;
 }

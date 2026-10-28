@@ -153,6 +153,4 @@ async fn migrate_to_scoped_state_table_moves_unscoped_state_to_scoped_table() {
         );
         assert_eq!(observed.get(&lookup), Some(value));
     }
-
-    RocksDbManager::get().shutdown().await;
 }

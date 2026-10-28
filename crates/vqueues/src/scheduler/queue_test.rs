@@ -33,7 +33,6 @@ use std::time::Duration;
 
 use restate_clock::RoughTimestamp;
 use restate_clock::time::MillisSinceEpoch;
-use restate_core::TaskCenter;
 use restate_partition_store::{
     PartitionDb, PartitionStore, PartitionStoreManager, PartitionStoreTransaction,
 };
@@ -383,10 +382,7 @@ impl VQueueStore for GatedPartitionDb {
 }
 
 async fn storage_test_environment() -> PartitionStore {
-    let rocksdb_manager = RocksDbManager::init();
-    TaskCenter::set_on_shutdown(Box::pin(async {
-        rocksdb_manager.shutdown().await;
-    }));
+    RocksDbManager::init();
 
     let manager = PartitionStoreManager::create(true)
         .await

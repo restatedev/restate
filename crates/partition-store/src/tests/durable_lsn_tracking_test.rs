@@ -42,7 +42,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
         .with_thread_ids(true)
         .init();
 
-    let rocksdb = RocksDbManager::init();
+    RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create(true).await?;
 
@@ -108,13 +108,12 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
     partition_store.partition_db().flush_memtables(true).await?;
     assert_eq!(Lsn::new(200), *watch_durable_lsn.borrow());
 
-    rocksdb.shutdown().await;
     Ok(())
 }
 
 #[restate_core::test]
 async fn partition_durability_fsm() -> googletest::Result<()> {
-    let rocksdb = RocksDbManager::init();
+    RocksDbManager::init();
 
     let partition_store_manager = PartitionStoreManager::create(true).await?;
 
@@ -157,6 +156,5 @@ async fn partition_durability_fsm() -> googletest::Result<()> {
         })
     );
 
-    rocksdb.shutdown().await;
     Ok(())
 }

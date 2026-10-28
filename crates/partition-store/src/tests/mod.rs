@@ -83,7 +83,6 @@ async fn read_write() {
     locks_table_test::run_tests(store.clone()).await;
 
     snapshots_test::run_tests(manager.clone(), store.clone()).await;
-    RocksDbManager::get().shutdown().await;
 }
 
 pub(crate) fn mock_service_invocation(service_id: ServiceId) -> Box<ServiceInvocation> {

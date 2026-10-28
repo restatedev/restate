@@ -99,6 +99,11 @@ impl RocksDbManager {
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
+        // Dependencies of test crates do not necessarily enable test-util.
+        // Registration is unconditional; only shutdown_for_test runs finalizers.
+        TaskCenter::register_test_finalizer(Box::pin(async {
+            Self::get().shutdown().await;
+        }));
         // Start db monitoring.
         TaskCenter::spawn(
             TaskKind::SystemService,

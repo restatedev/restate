@@ -260,7 +260,7 @@ mod tests {
     use googletest::prelude::*;
 
     use restate_bifrost::{Bifrost, DataRecord};
-    use restate_core::{TaskCenter, TestCoreEnv};
+    use restate_core::TestCoreEnv;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
@@ -311,11 +311,6 @@ mod tests {
 
     async fn open_store() -> PartitionStore {
         RocksDbManager::init();
-        // The test harness shuts the node down after the body runs; hook RocksDB
-        // teardown onto that instead of shutting the manager down in every test.
-        TaskCenter::set_on_shutdown(Box::pin(async {
-            RocksDbManager::get().shutdown().await;
-        }));
         PartitionStoreManager::create(true)
             .await
             .unwrap()
