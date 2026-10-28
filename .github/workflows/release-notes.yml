@@ -19,13 +19,13 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
         with:
           submodules: recursive
 
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
 
