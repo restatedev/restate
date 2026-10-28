@@ -501,8 +501,13 @@ impl PartitionStore {
         priority: Priority,
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
-        on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
+        mut on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
     ) -> Result<(), AdmissionClosed> {
+        let partition = self.db.clone();
+        let on_iter = move |item: Result<(&[u8], &[u8]), RocksError>| {
+            let _pin = &partition;
+            on_iter(item)
+        };
         match scan {
             PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
@@ -621,9 +626,7 @@ impl PartitionStore {
 
         let export_files = self
             .db
-            .rocksdb()
-            .clone()
-            .export_cf(self.db.partition().cf_name().into(), snapshot_dir.clone())
+            .export_cf(snapshot_dir.clone())
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
