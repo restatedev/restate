@@ -903,15 +903,14 @@ pub struct CommonOptions {
 
     /// # Schema compression level
     ///
-    /// Zstandard (zstd) compression level for schema metadata and schema
-    /// updates stored in the partition log and sent between nodes. This only
-    /// affects data that uses the bilrost encoding; see
-    /// `experimental-enable-schema-bilrost-encoding`.
+    /// Zstandard (zstd) compression level for schema data. It always applies
+    /// to schema updates sent between nodes. It applies to stored schemas only
+    /// when `experimental-enable-schema-bilrost-encoding` is enabled.
     ///
     /// `0` (the default) uses zstd's default level (currently `3`). Higher
-    /// values (up to `22`) produce smaller output but use more CPU on every
+    /// values (up to `19`) produce smaller output but use more CPU on every
     /// schema change. Negative values select zstd's faster, lower-ratio modes.
-    /// Values outside `-22..=22` are clamped to that range. Changing this
+    /// Values outside `-22..=19` are clamped to that range. Changing this
     /// setting does not affect data that has already been written, and data
     /// written at any level can be read by all nodes.
     ///
@@ -1362,7 +1361,7 @@ impl CommonOptions {
     }
 
     pub fn schema_compression_level(&self) -> i32 {
-        self.schema_compression_level.clamp(-22, 22)
+        self.schema_compression_level.clamp(-22, 19)
     }
 }
 
