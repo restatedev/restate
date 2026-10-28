@@ -24,7 +24,7 @@ use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
-use restate_rocksdb::admission::Admission;
+use restate_core::io::FlightTracker;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{DbName, RocksDb, RocksError};
 use restate_storage_api::StorageError;
@@ -55,7 +55,7 @@ pub(crate) struct PartitionStoreDb {
 #[derive(Clone)]
 pub struct PartitionDb {
     meta: Arc<Partition>,
-    admission: Arc<Admission>,
+    admission: Arc<FlightTracker>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
@@ -73,7 +73,7 @@ impl PartitionDb {
     ) -> Self {
         Self {
             meta,
-            admission: Arc::new(Admission::default()),
+            admission: Arc::new(FlightTracker::default()),
             durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
@@ -91,7 +91,7 @@ impl PartitionDb {
         &self.database.rocksdb
     }
 
-    pub(crate) fn admission(&self) -> &Arc<Admission> {
+    pub(crate) fn admission(&self) -> &Arc<FlightTracker> {
         &self.admission
     }
 
@@ -561,7 +561,7 @@ impl State {
             State::Closed { db, .. } => db,
         };
         let mut db = db.clone();
-        db.admission = Arc::new(Admission::default());
+        db.admission = Arc::new(FlightTracker::default());
         *self = State::Open { db: db.clone() };
         Some(db)
     }
