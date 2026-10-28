@@ -140,11 +140,31 @@ impl ServiceClient {
     {
         let (mut parts, body) = req.into_parts();
 
+        let http_path_and_query = match &parts.address {
+            Endpoint::Http(uri, _, _) => match http::join_path(uri, &parts.path) {
+                Ok(path_and_query) => Some(path_and_query),
+                Err(err) => {
+                    return future::ready(Err(ServiceClientError::Http(Box::new(HttpCallError {
+                        uri: uri.clone(),
+                        source: HttpError::Http(err.into()),
+                    }))))
+                    .right_future();
+                }
+            },
+            Endpoint::Lambda(..) => None,
+        };
+
         let request_identity_key = self.request_identity_key.load();
 
         let signer = if let Some(request_identity_key) = request_identity_key.as_deref() {
             Some(request_identity::v1::Signer::new(
                 parts.path.path(),
+                http_path_and_query.as_ref().map(|path_and_query| {
+                    request_identity::v1::RequestTarget::new(
+                        parts.method.as_str(),
+                        path_and_query.as_str(),
+                    )
+                }),
                 parts.request_identity_sub_field.as_deref(),
                 request_identity_key,
             ))
@@ -167,7 +187,8 @@ impl ServiceClient {
             Endpoint::Http(uri, version, auth) => {
                 let http = self.http.clone();
                 let method = parts.method.into();
-                let path = parts.path;
+                let path_and_query =
+                    http_path_and_query.expect("joined above for every HTTP endpoint");
                 let mut headers = parts.headers;
                 async move {
                     if let Some(HttpAuth::GoogleIdToken(auth)) = auth {
@@ -207,7 +228,7 @@ impl ServiceClient {
                         headers.insert(X_SERVERLESS_AUTHORIZATION, bearer);
                     }
                     let resp = http
-                        .request(uri.clone(), version, method, body, path, headers)
+                        .send(uri.clone(), version, method, body, path_and_query, headers)
                         .await
                         .map_err(|source| {
                             ServiceClientError::Http(Box::new(HttpCallError { uri, source }))
@@ -323,6 +344,15 @@ impl<B> Request<B> {
 pub enum Method {
     Post,
     Get,
+}
+
+impl Method {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Method::Post => "POST",
+            Method::Get => "GET",
+        }
+    }
 }
 
 impl From<Method> for hyper::http::Method {

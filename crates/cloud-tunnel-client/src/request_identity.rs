@@ -8,9 +8,12 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::collections::HashSet;
+
 use http::HeaderMap;
 use serde::Deserialize;
-use std::collections::HashSet;
+
+use crate::util::TunnelPath;
 
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
@@ -26,6 +29,13 @@ pub(crate) enum Error {
     InvalidJWT,
     #[error("Could not validate JWT: {0}")]
     JWTValidation(#[from] jsonwebtoken::errors::Error),
+    #[error("JWT audience '{aud}' does not match the request path")]
+    AudienceMismatch { aud: String },
+    #[error("JWT target '{method} {path_and_query}' does not match the request")]
+    TargetMismatch {
+        method: String,
+        path_and_query: String,
+    },
 }
 
 pub(crate) fn parse_public_key(public_key: &str) -> Result<jsonwebtoken::DecodingKey, Error> {
@@ -40,12 +50,34 @@ pub(crate) fn parse_public_key(public_key: &str) -> Result<jsonwebtoken::Decodin
 }
 
 #[derive(Deserialize)]
-struct Claims {}
+struct Claims {
+    aud: String,
+    #[serde(default)]
+    target: Option<Target>,
+}
+
+/// The request exactly as restate-server sent it: the deployment's base path joined with `aud`,
+/// plus the query of the deployment URL. Servers that predate the claim do not send it.
+#[derive(Deserialize)]
+struct Target {
+    method: String,
+    path_and_query: String,
+}
+
+/// The tunnel this client serves. restate-server dials `/{unprefixed_environment_id}/{tunnel_name}`
+/// followed by the path this client receives, and the tunnel proxy strips that prefix.
+pub(crate) struct Tunnel<'a> {
+    pub(crate) environment_id: &'a str,
+    /// Known once the start handshake has completed, which happens before any request is proxied.
+    pub(crate) tunnel_name: Option<&'a str>,
+}
 
 pub(crate) fn validate_request_identity(
     decoding_key: &jsonwebtoken::DecodingKey,
+    tunnel: &Tunnel<'_>,
     headers: &HeaderMap,
-    path: &str,
+    method: &http::Method,
+    path_and_query: &str,
 ) -> Result<(), Error> {
     match headers
         .get("x-restate-signature-scheme")
@@ -72,10 +104,304 @@ pub(crate) fn validate_request_identity(
     validate.reject_tokens_expiring_in_less_than = 0;
     validate.validate_exp = true;
     validate.validate_nbf = true;
+    // jsonwebtoken only supports exact audience matches, so the audience is checked below
     validate.validate_aud = false;
-    validate.set_audience(&[path]);
 
-    jsonwebtoken::decode::<Claims>(jwt, decoding_key, &validate)?;
+    let claims = jsonwebtoken::decode::<Claims>(jwt, decoding_key, &validate)?.claims;
 
-    Ok(())
+    let path = path_and_query
+        .split_once('?')
+        .map_or(path_and_query, |(path, _)| path);
+    if !audience_matches(&claims.aud, path) {
+        return Err(Error::AudienceMismatch { aud: claims.aud });
+    }
+
+    // Without `target`, only the audience suffix above binds the request. That cannot be used to
+    // downgrade a newer server's token: the claims are signed, so a token without `target` was
+    // issued by a server that predates it, and such a token expires within minutes.
+    match claims.target {
+        Some(target) if !target_matches(&target, tunnel, method, path_and_query) => {
+            Err(Error::TargetMismatch {
+                method: target.method,
+                path_and_query: target.path_and_query,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// `aud` is the request path relative to the deployment URL, while this client receives
+/// `/{scheme}/{host}/{port}` followed by the deployment's base path and that relative path. Only
+/// a whole-segment suffix of the destination path can be checked, because the base path is
+/// unknown here.
+fn audience_matches(aud: &str, path: &str) -> bool {
+    if !aud.starts_with('/') || aud == "/" {
+        return false;
+    }
+    TunnelPath::split(path).is_ok_and(|tunnel_path| tunnel_path.destination_path.ends_with(aud))
+}
+
+fn target_matches(
+    target: &Target,
+    tunnel: &Tunnel<'_>,
+    method: &http::Method,
+    path_and_query: &str,
+) -> bool {
+    let (Some(environment_id), Some(tunnel_name)) = (
+        tunnel.environment_id.strip_prefix("env_"),
+        tunnel.tunnel_name,
+    ) else {
+        return false;
+    };
+    let received = target
+        .path_and_query
+        .strip_prefix('/')
+        .and_then(|rest| rest.strip_prefix(environment_id))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.strip_prefix(tunnel_name));
+
+    target.method == method.as_str() && received == Some(path_and_query)
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use std::assert_matches;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use http::{HeaderValue, Method};
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use serde::Serialize;
+
+    use super::*;
+
+    // The key pair restate-service-client's request identity tests use
+    const PRIVATE_KEY: &[u8] = br#"-----BEGIN PRIVATE KEY-----
+MC4CAQAwBQYDK2VwBCIEIPe++4ZTPQDF81otpoU/mOGHC2vOAVp9WbiCblvn3nXO
+-----END PRIVATE KEY-----"#;
+    pub(crate) const PUBLIC_KEY: &str = "publickeyv1_AfQwmwfgEZhrWpvv8N52SHpRtZqGGaFr4AZN6qtYWSiY";
+
+    pub(crate) const TUNNEL: Tunnel<'static> = Tunnel {
+        environment_id: "env_abc",
+        tunnel_name: Some("laptop"),
+    };
+
+    #[derive(Serialize)]
+    #[serde(untagged)]
+    pub(crate) enum Aud<'a> {
+        One(&'a str),
+        Many(Vec<&'a str>),
+    }
+
+    #[derive(Serialize)]
+    pub(crate) struct TestTarget<'a> {
+        pub(crate) method: &'a str,
+        pub(crate) path_and_query: &'a str,
+    }
+
+    #[derive(Serialize)]
+    pub(crate) struct TestClaims<'a> {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) aud: Option<Aud<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        pub(crate) target: Option<TestTarget<'a>>,
+        pub(crate) exp: u64,
+        pub(crate) iat: u64,
+        pub(crate) nbf: u64,
+    }
+
+    impl<'a> TestClaims<'a> {
+        /// Valid for a minute either side of now, like restate-server's default leeway.
+        pub(crate) fn new(aud: &'a str, target: Option<(&'a str, &'a str)>) -> Self {
+            let now = now();
+            Self {
+                aud: Some(Aud::One(aud)),
+                target: target.map(|(method, path_and_query)| TestTarget {
+                    method,
+                    path_and_query,
+                }),
+                exp: now + 60,
+                iat: now,
+                nbf: now - 60,
+            }
+        }
+
+        pub(crate) fn headers(&self) -> HeaderMap {
+            let jwt = jsonwebtoken::encode(
+                &Header::new(Algorithm::EdDSA),
+                self,
+                &EncodingKey::from_ed_pem(PRIVATE_KEY).unwrap(),
+            )
+            .unwrap();
+
+            let mut headers = HeaderMap::new();
+            headers.insert("x-restate-signature-scheme", HeaderValue::from_static("v1"));
+            headers.insert("x-restate-jwt-v1", jwt.try_into().unwrap());
+            headers
+        }
+    }
+
+    fn now() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
+    fn validate(
+        claims: &TestClaims<'_>,
+        method: Method,
+        path_and_query: &str,
+    ) -> Result<(), Error> {
+        validate_request_identity(
+            &parse_public_key(PUBLIC_KEY).unwrap(),
+            &TUNNEL,
+            &claims.headers(),
+            &method,
+            path_and_query,
+        )
+    }
+
+    #[test]
+    fn target_claim_binds_the_whole_request() {
+        let received = "/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a";
+        let signed = "/abc/laptop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a";
+        let claims = |path_and_query| {
+            TestClaims::new("/invoke/Greeter/greet", Some(("POST", path_and_query)))
+        };
+
+        validate(&claims(signed), Method::POST, received).unwrap();
+        validate(
+            &TestClaims::new("/discover", Some(("GET", "/abc/laptop/http/h/80/discover"))),
+            Method::GET,
+            "/http/h/80/discover",
+        )
+        .unwrap();
+
+        // each differs from `signed` in one place, so only the target can reject it
+        for other in [
+            "/xyz/laptop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
+            "/abc/desktop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
+            "/abc/laptop/https/admin.svc/9080/base/invoke/Greeter/greet?tenant=a",
+            "/abc/laptop/https/greeter.svc/8443/base/invoke/Greeter/greet?tenant=a",
+            "/abc/laptop/https/greeter.svc/9080/other/invoke/Greeter/greet?tenant=a",
+            "/abc/laptop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=b",
+            "/abc/laptop/https/greeter.svc/9080/base/invoke/Greeter/greet",
+            "/abclaptop/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
+            "/https/greeter.svc/9080/base/invoke/Greeter/greet?tenant=a",
+        ] {
+            assert_matches!(
+                validate(&claims(other), Method::POST, received),
+                Err(Error::TargetMismatch { .. }),
+                "{other} should be rejected"
+            );
+        }
+        assert_matches!(
+            validate(&claims(signed), Method::GET, received),
+            Err(Error::TargetMismatch { .. })
+        );
+
+        // an unknown tunnel name or an environment id without its prefix matches nothing
+        let key = parse_public_key(PUBLIC_KEY).unwrap();
+        for tunnel in [
+            Tunnel {
+                environment_id: "env_abc",
+                tunnel_name: None,
+            },
+            Tunnel {
+                environment_id: "abc",
+                tunnel_name: Some("laptop"),
+            },
+        ] {
+            assert_matches!(
+                validate_request_identity(
+                    &key,
+                    &tunnel,
+                    &claims(signed).headers(),
+                    &Method::POST,
+                    received
+                ),
+                Err(Error::TargetMismatch { .. })
+            );
+        }
+    }
+
+    #[test]
+    fn audience_suffix_binds_the_path_without_a_target_claim() {
+        let accepted = [
+            (
+                "/invoke/Greeter/greet",
+                "/https/greeter.svc/9080/invoke/Greeter/greet",
+            ),
+            (
+                "/invoke/Greeter/greet",
+                "/http/10.0.0.1/80/base/path/invoke/Greeter/greet?tenant=a",
+            ),
+            ("/discover", "/https/greeter.svc/9080/base/discover"),
+            ("/discover", "/https/greeter.svc/9080/base//discover"),
+            (
+                "/serdes/Greeter/encode/Name",
+                "/https/greeter.svc/9080/serdes/Greeter/encode/Name",
+            ),
+        ];
+        for (aud, path) in accepted {
+            validate(&TestClaims::new(aud, None), Method::POST, path)
+                .unwrap_or_else(|err| panic!("{aud} at {path} should be accepted: {err}"));
+        }
+
+        let rejected = [
+            (
+                "/invoke/Greeter/greet",
+                "/https/greeter.svc/9080/invoke/Greeter/other",
+            ),
+            (
+                "/invoke/Greeter/greet",
+                "/https/greeter.svc/9080/invoke/Greeter/greet/extra",
+            ),
+            (
+                "/invoke/Greeter/greet",
+                "/https/greeter.svc/9080/xinvoke/Greeter/greet",
+            ),
+            ("/invoke/Greeter/greet", "/https/Greeter/greet"),
+            ("/invoke/Greeter/greet", "/invoke/Greeter/greet"),
+            ("/discover", "/http/h/80"),
+            ("/discover", "/http/h/80?/discover"),
+            ("/", "/https/greeter.svc/9080/"),
+            ("", "/https/greeter.svc/9080/"),
+            ("discover", "/https/greeter.svc/9080/discover"),
+        ];
+        for (aud, path) in rejected {
+            assert_matches!(
+                validate(&TestClaims::new(aud, None), Method::POST, path),
+                Err(Error::AudienceMismatch { .. }),
+                "{aud:?} at {path} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_and_stale_tokens_are_rejected() {
+        let path = "/https/greeter.svc/9080/discover";
+        let now = now();
+        let mut array_aud = TestClaims::new("/discover", None);
+        array_aud.aud = Some(Aud::Many(vec!["/discover"]));
+        let mut missing_aud = TestClaims::new("/discover", None);
+        missing_aud.aud = None;
+        let mut expired = TestClaims::new("/discover", None);
+        (expired.nbf, expired.iat, expired.exp) = (now - 120, now - 60, now - 1);
+        let mut not_yet_valid = TestClaims::new("/discover", None);
+        (not_yet_valid.nbf, not_yet_valid.iat, not_yet_valid.exp) = (now + 60, now + 60, now + 120);
+
+        for (name, claims) in [
+            ("array aud", array_aud),
+            ("missing aud", missing_aud),
+            ("expired", expired),
+            ("not yet valid", not_yet_valid),
+        ] {
+            assert_matches!(
+                validate(&claims, Method::POST, path),
+                Err(Error::JWTValidation(_)),
+                "{name} should be rejected"
+            );
+        }
+    }
 }

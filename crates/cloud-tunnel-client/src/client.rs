@@ -356,8 +356,15 @@ where
 
         if let Err(err) = super::request_identity::validate_request_identity(
             &self.request_identity_key,
+            &super::request_identity::Tunnel {
+                environment_id: &self.environment_id,
+                tunnel_name: self.tunnel_name.get().map(String::as_str),
+            },
             req.headers(),
-            req.uri().path(),
+            req.method(),
+            req.uri()
+                .path_and_query()
+                .map_or_else(|| req.uri().path(), PathAndQuery::as_str),
         ) {
             error!(%err, path = req.uri().path(), "Failed to validate request identity");
 
@@ -524,4 +531,103 @@ fn fix_path<B>(req: Request<B>) -> Request<B> {
     req_parts.uri = Uri::from_parts(uri_parts).expect("fix_path should not create an invalid uri");
 
     Request::from_parts(req_parts, body)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+    use std::sync::Mutex;
+
+    use bytes::Bytes;
+    use http::{HeaderMap, HeaderValue, Method};
+    use http_body_util::combinators::BoxBody;
+    use http_body_util::{Empty, Full};
+    use hyper_util::rt::{TokioExecutor, TokioIo};
+
+    use super::*;
+    use crate::request_identity::tests::{PUBLIC_KEY, TUNNEL, TestClaims};
+
+    #[tokio::test]
+    async fn proxy_answers_a_mismatched_identity_with_401_and_a_notification() {
+        let notifications = Arc::new(Mutex::new(Vec::new()));
+        let handler = Handler::<(), ()>::new(
+            hyper::service::service_fn(|_: Request<Incoming>| {
+                std::future::ready(Ok::<_, Infallible>(Response::new(Full::<Bytes>::default())))
+            }),
+            TUNNEL.environment_id,
+            PUBLIC_KEY,
+            "bearer",
+            TUNNEL.tunnel_name.map(Into::into),
+            Some({
+                let notifications = notifications.clone();
+                move |notification| {
+                    notifications.lock().unwrap().push(match notification {
+                        HandlerNotification::Started { .. } => "started".to_owned(),
+                        HandlerNotification::Request => "request".to_owned(),
+                        HandlerNotification::RequestIdentityError(err) => err,
+                        HandlerNotification::Error(err) => format!("error: {err}"),
+                    })
+                }
+            }),
+        )
+        .unwrap();
+
+        let (tunnel_io, client_io) = tokio::io::duplex(64 * 1024);
+        let cancel = CancellationToken::new();
+        let serve = tokio::spawn(handler.serve(
+            TokioIo::new(client_io),
+            cancel.clone(),
+            CancellationToken::new(),
+        ));
+        let (mut tunnel, connection) =
+            hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tunnel_io))
+                .await
+                .unwrap();
+        tokio::spawn(connection);
+
+        let trailers = HeaderMap::from_iter(
+            [
+                ("tunnel-status", "ok"),
+                ("proxy-url", "https://tunnel.example.com:9080/abc/laptop"),
+                ("tunnel-url", "https://tunnel.example.com:9090"),
+                ("tunnel-name", "laptop"),
+            ]
+            .map(|(name, value)| (name.parse().unwrap(), HeaderValue::from_static(value))),
+        );
+        let start = Request::new(BoxBody::new(
+            Empty::<Bytes>::new().with_trailers(async { Some(Ok(trailers)) }),
+        ));
+        assert_eq!(
+            tunnel.send_request(start).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let path = "/https/greeter.svc/9080/invoke/Greeter/greet";
+        for (signed_tunnel, expected) in [
+            ("laptop", StatusCode::OK),
+            ("desktop", StatusCode::UNAUTHORIZED),
+        ] {
+            let signed = format!("/abc/{signed_tunnel}{path}");
+            let mut request = Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .body(BoxBody::new(Empty::<Bytes>::new()))
+                .unwrap();
+            *request.headers_mut() =
+                TestClaims::new("/invoke/Greeter/greet", Some(("POST", &signed))).headers();
+            let response = tunnel.send_request(request).await.unwrap();
+            assert_eq!(response.status(), expected, "signed for {signed_tunnel}");
+        }
+
+        cancel.cancel();
+        let _ = serve.await;
+
+        let notifications = notifications.lock().unwrap();
+        assert_eq!(notifications.len(), 3, "{notifications:?}");
+        assert_eq!(notifications[..2], ["started", "request"]);
+        assert!(
+            notifications[2].contains("/abc/desktop"),
+            "{notifications:?}"
+        );
+    }
 }
