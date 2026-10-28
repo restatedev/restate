@@ -269,7 +269,7 @@ mod tests {
             ctrl-advertised-host = "control.example.com"
             ctrl-advertised-address = "https://file.example.com"
             [networking]
-            disable-compression = true
+            disable-compression = false
             "#,
         )
         .unwrap();
@@ -324,7 +324,8 @@ mod tests {
                 config.common.advertised_address(&address_book),
                 "http://fabric.example.com:5122".parse().unwrap()
             );
-            assert!(config.networking.disable_compression);
+            // The default is `true`, so this shows the file's networking section survived.
+            assert!(!config.networking.disable_compression);
             // Flags that do not set a list leave the file's list alone.
             assert_eq!(config.advertised_addresses().len(), 1);
         }
