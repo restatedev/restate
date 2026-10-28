@@ -246,6 +246,7 @@ pub struct UpsertSchemaCommand {
 mod upsert_schema_storage {
     use bytes::{Buf, BytesMut};
 
+    use restate_types::config::Configuration;
     use restate_types::storage::{
         StorageCodecKind, StorageDecode, StorageDecodeError, StorageEncode, StorageEncodeError,
         decode, encode,
@@ -264,7 +265,11 @@ mod upsert_schema_storage {
                 StorageCodecKind::FlexbuffersSerde => {
                     encode::encode_serde(self, buf, StorageCodecKind::FlexbuffersSerde)
                 }
-                StorageCodecKind::ZstdBilrostDefault => encode::encode_bilrost_zstd(self, buf),
+                StorageCodecKind::ZstdBilrostDefault => encode::encode_bilrost_zstd(
+                    self,
+                    buf,
+                    Configuration::pinned().common.schema_compression_level(),
+                ),
                 _ => unreachable!("unsupported StorageCodecKind"),
             }
         }
@@ -367,7 +372,7 @@ mod tests {
                 StorageCodecKind::FlexbuffersSerde => {
                     encode::encode_serde(&command, &mut buf, codec).unwrap()
                 }
-                _ => encode::encode_bilrost_zstd(&command, &mut buf).unwrap(),
+                _ => encode::encode_bilrost_zstd(&command, &mut buf, 0).unwrap(),
             }
 
             // the codec recorded in the envelope header drives the decoding

@@ -208,6 +208,7 @@ mod storage {
     };
 
     use super::{Schema, SchemaUnindexed};
+    use crate::config::Configuration;
     use crate::storage;
 
     impl StorageEncode for SchemaUnindexed {
@@ -225,9 +226,11 @@ mod storage {
                 StorageCodecKind::FlexbuffersSerde => {
                     storage::encode::encode_serde(self, buf, self.default_codec())
                 }
-                StorageCodecKind::ZstdBilrostDefault => {
-                    storage::encode::encode_bilrost_zstd(self, buf)
-                }
+                StorageCodecKind::ZstdBilrostDefault => storage::encode::encode_bilrost_zstd(
+                    self,
+                    buf,
+                    Configuration::pinned().common.schema_compression_level(),
+                ),
                 _ => unreachable!("unsupported StorageCodecKind"),
             }
         }

@@ -93,8 +93,9 @@ pub fn encode_bilrost_writer<T: bilrost::Message, W: Write>(
 pub fn encode_bilrost_zstd<T: bilrost::Message>(
     value: &T,
     buf: &mut BytesMut,
+    level: i32,
 ) -> Result<(), StorageEncodeError> {
-    let mut compressor = zstd::Encoder::new(buf.writer(), 0)
+    let mut compressor = zstd::Encoder::new(buf.writer(), level)
         .map_err(|err| StorageEncodeError::EncodeValue(err.into()))?;
     encode_bilrost_writer(value, &mut compressor)?;
 
