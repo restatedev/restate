@@ -14,10 +14,12 @@ use std::sync::{Arc, OnceLock, Weak};
 use std::time::Duration;
 
 use parking_lot::RwLock;
+use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 use tracing::{debug, info, warn};
 
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::config::{CommonOptions, Configuration};
 
 use crate::background::ReadyStorageTask;
@@ -285,30 +287,36 @@ impl RocksDbManager {
     /// Closes the database and waits for completion.
     pub(crate) async fn close_db(&self, db: Arc<RocksDb>) -> Result<(), Arc<RocksDb>> {
         let db = Arc::try_unwrap(db)?;
-        // unconditionally remove the db from the map
-        self.dbs.write().remove(db.name());
-        let handle = self.close_db_tasks.spawn_blocking(move || {
-            db.db.shutdown();
-        });
-        let _ = handle.await;
+        let closed = db.closed().log_slow_after(
+            Duration::from_secs(5),
+            tracing::Level::WARN,
+            format!("Closing RocksDB database '{}'", db.name()),
+        );
+        // Drop transfers the native payload to cleanup. The observer owns no
+        // database reference and remains valid if its waiter is cancelled.
+        drop(db);
+        closed.await;
         Ok(())
     }
 
     /// Closes the database in the background
     ///
     /// This is intended to be used by the [`RocksDb`] instance Drop impl to close the database.
-    /// If the database has already been removed from the map, then we'll assume that the shutdown
-    /// routine has already been executed by a previous call to [`RocksDb::close`] or by
-    /// [`RocksDbManager`]'s shutdown routine.
+    /// Manager shutdown removes databases from the map after arranging preparatory
+    /// shutdown work. Native destruction must still be dispatched and tracked even
+    /// for databases no longer in that map.
     ///
     /// if you need to wait for the shutdown, then use [`RocksDb::close`] instead.
-    pub(crate) fn background_close_db(&self, db: RocksAccess) {
-        let Some(_db) = self.dbs.write().remove(db.name()) else {
-            // database has already been closed via other means
-            return;
-        };
+    pub(crate) fn background_close_db(&self, db: RocksAccess, closed: CancellationToken) {
+        let needs_shutdown = self.dbs.write().remove(db.name()).is_some();
         self.close_db_tasks.spawn_blocking(move || {
-            db.shutdown();
+            if needs_shutdown {
+                db.shutdown();
+            }
+            // shutdown() only borrows the database. Complete only after the
+            // native destructor and the selected environment have been released.
+            drop(db);
+            closed.cancel();
         });
     }
 
