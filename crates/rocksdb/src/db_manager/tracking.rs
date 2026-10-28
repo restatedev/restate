@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use restate_core::io::OwnedLease;
+use restate_util_string::ReString;
 
 use crate::{DbName, DbSpec, RocksDb, RocksError};
 
@@ -24,17 +26,32 @@ use crate::{DbName, DbSpec, RocksDb, RocksError};
 /// caller collects it.
 pub(super) struct TrackedDb {
     pub name: DbName,
+    pub path: PathBuf,
     pub status: Status,
     pub closed: CancellationToken,
     // Outcome of the open: success or the error, without the database itself.
     // Waiters keep their own receiver, so they still get it after the path is
-    // reopened.
-    pub open_result: watch::Receiver<Option<Result<(), RocksError>>>,
+    // reopened. `None` for a hold created without an open.
+    pub open_result: Option<watch::Receiver<Option<Result<(), RocksError>>>>,
+    // Hold placed while the database was still active. When it closes, the record
+    // becomes `Held` with this reason instead of `Closed`.
+    pub hold_after_close: Option<ReString>,
 }
 
 pub(super) enum Status {
+    /// Closed, and reserved by its owner so nothing else opens the path, e.g. while
+    /// its files are being deleted or repaired.
+    Held { since: Instant, reason: ReString },
     /// The open has been accepted and is queued or running.
     Opening { since: Instant },
+    /// The owner is opening the database itself and must report the result (see
+    /// `RocksDbManager::remote_open_db`). Until then the path stays reserved and
+    /// shutdown waits; dropping the `DbRef` doesn't change that.
+    RemoteOpen {
+        since: Instant,
+        completion: watch::Sender<Option<Result<(), RocksError>>>,
+        accepted: OwnedLease,
+    },
     /// Native opening completed; monitoring and config updates are enabled.
     Open {
         since: Instant,
@@ -68,7 +85,9 @@ pub(super) enum ShutdownState {
 impl Status {
     fn since(&self) -> Instant {
         match self {
-            Self::Opening { since }
+            Self::Held { since, .. }
+            | Self::Opening { since }
+            | Self::RemoteOpen { since, .. }
             | Self::Open { since, .. }
             | Self::Closing { since }
             | Self::Closed { since } => *since,
@@ -79,28 +98,77 @@ impl Status {
 impl TrackedDb {
     pub fn opening(
         spec: &DbSpec,
+        status: Status,
+        hold_after_close: Option<ReString>,
         open_result: watch::Receiver<Option<Result<(), RocksError>>>,
     ) -> Self {
         Self {
             name: spec.name.clone(),
-            status: Status::Opening {
-                since: Instant::now(),
-            },
+            path: spec.path.clone(),
+            status,
             closed: CancellationToken::new(),
-            open_result,
+            open_result: Some(open_result),
+            hold_after_close,
         }
     }
 
     pub fn opened(&mut self, db: Arc<RocksDb>, accepted: OwnedLease) -> Duration {
+        let elapsed = self.registered(&db);
+        if let Status::Open { unclaimed, .. } = &mut self.status {
+            *unclaimed = Some((db, accepted));
+        }
+        elapsed
+    }
+
+    pub fn registered(&mut self, db: &Arc<RocksDb>) -> Duration {
         debug_assert!(matches!(self.status, Status::Opening { .. }));
         let elapsed = self.status.since().elapsed();
         self.status = Status::Open {
             since: Instant::now(),
-            handle: Arc::downgrade(&db),
-            unclaimed: Some((db, accepted)),
+            handle: Arc::downgrade(db),
+            unclaimed: None,
             shutdown: ShutdownState::Needed,
         };
         elapsed
+    }
+
+    pub fn held(name: DbName, path: PathBuf, reason: ReString) -> Self {
+        let closed = CancellationToken::new();
+        closed.cancel();
+        Self {
+            name,
+            path,
+            status: Status::Held {
+                since: Instant::now(),
+                reason,
+            },
+            closed,
+            open_result: None,
+            hold_after_close: None,
+        }
+    }
+
+    pub fn is_held(&self) -> bool {
+        self.hold_after_close.is_some() || matches!(self.status, Status::Held { .. })
+    }
+
+    /// Takes the result sender and lifecycle lease out of a remote open, so they
+    /// aren't dropped under the lock. The caller then publishes the database, or
+    /// marks the failed open closed.
+    pub fn take_remote_open(
+        &mut self,
+    ) -> (watch::Sender<Option<Result<(), RocksError>>>, OwnedLease) {
+        let since = self.status.since();
+        let status = std::mem::replace(&mut self.status, Status::Opening { since });
+        let Status::RemoteOpen {
+            completion,
+            accepted,
+            ..
+        } = status
+        else {
+            unreachable!("remote finalization is validated under the manager lock");
+        };
+        (completion, accepted)
     }
 
     pub fn handle(&self) -> Option<Arc<RocksDb>> {
@@ -111,7 +179,7 @@ impl TrackedDb {
     }
 
     pub fn is_closed(&self) -> bool {
-        matches!(self.status, Status::Closed { .. })
+        matches!(self.status, Status::Closed { .. } | Status::Held { .. })
     }
 
     /// Takes the uncollected database and its lease out of the record, so the caller
@@ -139,13 +207,15 @@ impl TrackedDb {
 
     pub fn pending_cleanup(&self) -> Option<CancellationToken> {
         match &self.status {
-            Status::Opening { .. } | Status::Closing { .. } => Some(self.closed.clone()),
+            Status::Opening { .. } | Status::RemoteOpen { .. } | Status::Closing { .. } => {
+                Some(self.closed.clone())
+            }
             Status::Open {
                 shutdown: ShutdownState::Interrupted,
                 ..
             } => Some(self.closed.clone()),
             Status::Open { handle, .. } if handle.strong_count() == 0 => Some(self.closed.clone()),
-            Status::Open { .. } | Status::Closed { .. } => None,
+            Status::Open { .. } | Status::Closed { .. } | Status::Held { .. } => None,
         }
     }
 
@@ -221,8 +291,10 @@ impl TrackedDb {
             Status::Opening { .. } | Status::Closing { .. }
         ));
         let elapsed = self.status.since().elapsed();
-        self.status = Status::Closed {
-            since: Instant::now(),
+        let since = Instant::now();
+        self.status = match self.hold_after_close.take() {
+            Some(reason) => Status::Held { since, reason },
+            None => Status::Closed { since },
         };
         elapsed
     }

@@ -8,6 +8,8 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::path::PathBuf;
+
 use codederror::CodedError;
 use tracing::warn;
 
@@ -39,9 +41,24 @@ pub enum RocksError {
     #[error("database incarnation is not open")]
     #[code(unknown)]
     NotOpen,
+    #[error("database path is reserved by its owner")]
+    #[code(unknown)]
+    Reserved,
+    #[error("database incarnation has no owner hold")]
+    #[code(unknown)]
+    NotHeld,
+    #[error("database incarnation is not awaiting an owner-driven open result")]
+    #[code(unknown)]
+    NotRemoteOpen,
     #[error("database is not tracked by this manager")]
     #[code(unknown)]
     NotRegistered,
+    #[error("database is already attached to a manager")]
+    #[code(unknown)]
+    AlreadyRegistered,
+    #[error("database path '{}' does not match booked path '{}'", actual.display(), expected.display())]
+    #[code(unknown)]
+    PathMismatch { expected: PathBuf, actual: PathBuf },
     #[error("already exists")]
     #[code(unknown)]
     ColumnFamilyExists,

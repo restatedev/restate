@@ -208,9 +208,9 @@ impl RocksDb {
         self.db.spec().kind
     }
 
-    /// Wraps an open native database without a manager. Dropping its last `Arc`
-    /// closes it on the dropping thread. Use [`RocksDbManager::open_db`] for a
-    /// managed database.
+    /// Wraps an open native database. To put it under a manager, pass it to
+    /// [`RocksDbManager::attach_db`] before sharing it. Otherwise it stays
+    /// standalone, and dropping its last `Arc` closes it on the dropping thread.
     pub fn new(db: RocksAccess, executor: GlobalExecutor) -> Self {
         Self {
             executor,

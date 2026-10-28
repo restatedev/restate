@@ -18,11 +18,11 @@ use std::time::Duration;
 use tokio::sync::oneshot;
 use tokio::time::timeout;
 
-use restate_core::TaskCenterBuilder;
 use restate_core::io::{AdmissionClosed, IoExecutor, IoOp};
+use restate_core::{ShutdownError, TaskCenterBuilder};
 use restate_platform::sync::Mutex;
 
-use super::{DbRef, ManagerInner, RocksDbManager, WeakRocksDbManager};
+use super::{DbRef, ManagerInner, RocksDbManager, Status, WeakRocksDbManager};
 use crate::background::StorageTask;
 use crate::close_tests::{DropBarrier, db_spec};
 use crate::configuration::{DbConfigurator, create_default_db_options};
@@ -149,7 +149,8 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
 }
 
 #[tokio::test]
-async fn database_admission_is_independent_of_other_databases() -> anyhow::Result<()> {
+async fn database_admission_is_independent_and_attachment_preserves_close_observers()
+-> anyhow::Result<()> {
     let task_center = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
         .build()?
@@ -157,150 +158,190 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let global = task_center.run_sync(RocksDbManager::init);
     let manager = owned_manager(global);
 
-    let executor = crate::GlobalExecutor::new(
-        threadpool::ThreadPool::new(1),
-        threadpool::ThreadPool::new(1),
-    );
-    let spec = db_spec("standalone", None);
-    let env = manager.db_env().clone();
-    let native = tokio::task::spawn_blocking(move || RocksAccess::open_db(spec, env)).await??;
-    let db = Arc::new(crate::RocksDb::new(native, executor.clone()));
-    let constructed_closed = db.closed();
-    assert_eq!(db.registration(), None);
-    db.clone().open_cf(crate::CfName::new("retired")).await?;
-    // The result can arrive before the worker releases its lease, so wait for the
-    // tracker to go idle.
-    timeout(DEADLINE, db.background_tracker.wait_idle()).await?;
-    let discarded = db.prepare_op(|_| {
-        panic!("an undispatched operation must not execute");
-    });
-    assert!(db.background_tracker.is_idle());
-    drop(discarded);
-    assert!(db.background_tracker.is_idle());
-    let tracker_refs = Arc::strong_count(&db.background_tracker);
-    db.prepare_op(move |db| {
-        assert!(!db.background_tracker.is_idle());
-        assert_eq!(Arc::strong_count(&db.background_tracker), tracker_refs);
-    })
-    .call()?;
-    assert!(db.background_tracker.is_idle());
-    let discarded = db
-        .prepare_op(|_| {
-            panic!("a discarded task must not execute");
-        })
-        .background("discarded-task", StorageTaskKind::MultiGet)
-        .into_task()?;
-    assert!(!db.background_tracker.is_idle());
-    drop(discarded);
-    assert!(db.background_tracker.is_idle());
-    let prepared = db
-        .prepare_op(|db| db.inner().open_cf(crate::CfName::new("external")))
-        .background("prepared", StorageTaskKind::OpenColumnFamily)
-        .with_priority(Priority::High);
-    assert_eq!(prepared.priority(), Priority::High);
-    assert!(db.background_tracker.is_idle());
-    let prepared = prepared.into_task()?;
-    let unadmitted = db.prepare_op(|_| {
-        panic!("sealing before submission must reject execution");
-    });
-
-    let spec = db_spec("standalone-neighbor", None);
-    let env = manager.db_env().clone();
-    let native = tokio::task::spawn_blocking(move || RocksAccess::open_db(spec, env)).await??;
-    let neighbor = Arc::new(crate::RocksDb::new(native, executor.clone()));
-
-    let (started, reached) = oneshot::channel();
-    let (resume, paused) = mpsc::channel::<()>();
-    let mut read = Box::pin(db.clone().run_background_read_op(
-        "database-drain",
-        StorageTaskKind::MultiGet,
-        Priority::High,
-        move |_| {
-            let _ = started.send(());
-            let _ = paused.recv();
-        },
-    ));
-    assert_pending(read.as_mut());
-    timeout(DEADLINE, reached).await??;
-    drop(read);
-    let mut drained = Box::pin(db.drain());
-    assert_pending(drained.as_mut());
-    // Draining one database doesn't affect another database on the same pools.
-    neighbor.clone().flush_wal(true).await?;
-    drop(resume);
-    assert_pending(drained.as_mut());
-    // `prepared` took its lease in into_task() before sealing, so it still runs and
-    // drain() waits for it.
-    let external = crate::SinglePoolExecutor::new("external-storage".to_owned(), 1);
-    external.spawn_fn(Priority::High, prepared)?.await??;
-    timeout(DEADLINE, drained).await?;
-    // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
-    // Submitting it now fails.
-    assert_eq!(
-        external.dispatch(unadmitted.background("unadmitted", StorageTaskKind::MultiGet)),
-        Err(AdmissionClosed)
-    );
-    assert_eq!(db.prepare_op(|_| ()).call(), Err(AdmissionClosed));
-    assert!(matches!(
-        external.spawn(
-            db.prepare_op(|_| ())
-                .background("sealed-spawn", StorageTaskKind::MultiGet)
-        ),
-        Err(AdmissionClosed)
-    ));
-    assert!(matches!(
-        db.clone().flush_wal(true).await,
-        Err(RocksError::AdmissionClosed(AdmissionClosed))
-    ));
-    for mode in [
-        crate::IoMode::AllowBlockingIO,
-        crate::IoMode::OnlyIfNonBlocking,
-        crate::IoMode::AlwaysBackground,
-        crate::IoMode::Default,
-    ] {
-        assert!(
-            db.write_batch(
-                "sealed-db",
-                Priority::High,
-                mode,
-                rocksdb::WriteOptions::default(),
-                rocksdb::WriteBatch::default()
-            )
-            .await
-            .is_err()
+    for attached in [false, true] {
+        let executor = crate::GlobalExecutor::new(
+            threadpool::ThreadPool::new(1),
+            threadpool::ThreadPool::new(1),
         );
+        let spec = db_spec(
+            if attached {
+                "late-attachment"
+            } else {
+                "standalone"
+            },
+            None,
+        );
+        let reservation = attached
+            .then(|| manager.remote_open_db(&spec))
+            .transpose()?;
+        let manager_closed = reservation
+            .map(|tracked| manager.closed(tracked))
+            .transpose()?;
+        let env = manager.db_env().clone();
+        let native = tokio::task::spawn_blocking(move || RocksAccess::open_db(spec, env)).await??;
+        let db = crate::RocksDb::new(native, executor.clone());
+        let constructed_closed = db.closed();
+        assert_eq!(db.registration(), None);
+        let db = if let Some(tracked) = reservation {
+            manager.attach_db(tracked, db)?
+        } else {
+            Arc::new(db)
+        };
+        assert_eq!(db.registration(), reservation);
+        db.clone().open_cf(crate::CfName::new("retired")).await?;
+        // The result can arrive before the worker releases its lease, so wait for the
+        // tracker to go idle.
+        timeout(DEADLINE, db.background_tracker.wait_idle()).await?;
+        let discarded = db.prepare_op(|_| {
+            panic!("an undispatched operation must not execute");
+        });
+        assert!(db.background_tracker.is_idle());
+        drop(discarded);
+        assert!(db.background_tracker.is_idle());
+        let tracker_refs = Arc::strong_count(&db.background_tracker);
+        db.prepare_op(move |db| {
+            assert!(!db.background_tracker.is_idle());
+            assert_eq!(Arc::strong_count(&db.background_tracker), tracker_refs);
+        })
+        .call()?;
+        assert!(db.background_tracker.is_idle());
+        let discarded = db
+            .prepare_op(|_| {
+                panic!("a discarded task must not execute");
+            })
+            .background("discarded-task", StorageTaskKind::MultiGet)
+            .into_task()?;
+        assert!(!db.background_tracker.is_idle());
+        drop(discarded);
+        assert!(db.background_tracker.is_idle());
+        let prepared = db
+            .prepare_op(|db| db.inner().open_cf(crate::CfName::new("external")))
+            .background("prepared", StorageTaskKind::OpenColumnFamily)
+            .with_priority(Priority::High);
+        assert_eq!(prepared.priority(), Priority::High);
+        assert!(db.background_tracker.is_idle());
+        let prepared = prepared.into_task()?;
+        let unadmitted = db.prepare_op(|_| {
+            panic!("sealing before submission must reject execution");
+        });
+
+        let spec = db_spec(
+            if attached {
+                "attached-neighbor"
+            } else {
+                "standalone-neighbor"
+            },
+            None,
+        );
+        let env = manager.db_env().clone();
+        let native = tokio::task::spawn_blocking(move || RocksAccess::open_db(spec, env)).await??;
+        let neighbor = Arc::new(crate::RocksDb::new(native, executor.clone()));
+
+        let (started, reached) = oneshot::channel();
+        let (resume, paused) = mpsc::channel::<()>();
+        let mut read = Box::pin(db.clone().run_background_read_op(
+            "database-drain",
+            StorageTaskKind::MultiGet,
+            Priority::High,
+            move |_| {
+                let _ = started.send(());
+                let _ = paused.recv();
+            },
+        ));
+        assert_pending(read.as_mut());
+        timeout(DEADLINE, reached).await??;
+        drop(read);
+        let mut drained = Box::pin(db.drain());
+        assert_pending(drained.as_mut());
+        // Draining one database doesn't affect another database on the same pools.
+        neighbor.clone().flush_wal(true).await?;
+        drop(resume);
+        assert_pending(drained.as_mut());
+        // `prepared` took its lease in into_task() before sealing, so it still runs and
+        // drain() waits for it.
+        let external = crate::SinglePoolExecutor::new("external-storage".to_owned(), 1);
+        external.spawn_fn(Priority::High, prepared)?.await??;
+        timeout(DEADLINE, drained).await?;
+        // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
+        // Submitting it now fails.
+        assert_eq!(
+            external.dispatch(unadmitted.background("unadmitted", StorageTaskKind::MultiGet)),
+            Err(AdmissionClosed)
+        );
+        assert_eq!(db.prepare_op(|_| ()).call(), Err(AdmissionClosed));
+        assert!(matches!(
+            external.spawn(
+                db.prepare_op(|_| ())
+                    .background("sealed-spawn", StorageTaskKind::MultiGet)
+            ),
+            Err(AdmissionClosed)
+        ));
+        assert!(matches!(
+            db.clone().flush_wal(true).await,
+            Err(RocksError::AdmissionClosed(AdmissionClosed))
+        ));
+        for mode in [
+            crate::IoMode::AllowBlockingIO,
+            crate::IoMode::OnlyIfNonBlocking,
+            crate::IoMode::AlwaysBackground,
+            crate::IoMode::Default,
+        ] {
+            assert!(
+                db.write_batch(
+                    "sealed-db",
+                    Priority::High,
+                    mode,
+                    rocksdb::WriteOptions::default(),
+                    rocksdb::WriteBatch::default()
+                )
+                .await
+                .is_err()
+            );
+        }
+        // The other database still accepts work.
+        neighbor.clone().flush_wal(true).await?;
+        // The flush's result can arrive before its lease is released. Wait for idle
+        // first, so the check below only sees what the rejected work left behind.
+        timeout(DEADLINE, neighbor.background_tracker.wait_idle()).await?;
+        neighbor.seal();
+        let rejected = neighbor.prepare_op(|_| {
+            panic!("a rejected operation must not execute");
+        });
+        assert_eq!(
+            executor.dispatch(rejected.background("rejected", StorageTaskKind::MultiGet)),
+            Err(AdmissionClosed)
+        );
+        assert!(neighbor.clone().flush_wal(true).await.is_err());
+        assert!(neighbor.background_tracker.is_idle());
+        // Deleting a column family still works after sealing, on any executor.
+        external
+            .spawn(db.clone().prepare_drop_cf(crate::CfName::new("external")))?
+            .await??;
+        assert!(db.inner().cf_handle("external").is_none());
+
+        // drop_cf() also works after sealing, and dropping its future doesn't cancel
+        // the deletion.
+        drop(db.clone().drop_cf(crate::CfName::new("retired")));
+        lifecycle_queue_drained(&manager).await?;
+        assert!(db.inner().cf_handle("retired").is_none());
+
+        // A sealed database still closes normally, with or without a manager.
+        // `closed` futures obtained before attaching are still woken.
+        if let Some(tracked) = reservation {
+            let db = Arc::try_unwrap(db).expect("last pin");
+            assert!(matches!(
+                manager.attach_db(tracked, db),
+                Err(RocksError::AlreadyRegistered)
+            ));
+        } else {
+            db.close().await.expect("last pin");
+        }
+        timeout(DEADLINE, constructed_closed).await?;
+        if let Some(closed) = manager_closed {
+            timeout(DEADLINE, closed).await?;
+        }
+        neighbor.close().await.expect("last pin");
     }
-    // The other database still accepts work.
-    neighbor.clone().flush_wal(true).await?;
-    // The flush's result can arrive before its lease is released. Wait for idle
-    // first, so the check below only sees what the rejected work left behind.
-    timeout(DEADLINE, neighbor.background_tracker.wait_idle()).await?;
-    neighbor.seal();
-    let rejected = neighbor.prepare_op(|_| {
-        panic!("a rejected operation must not execute");
-    });
-    assert_eq!(
-        executor.dispatch(rejected.background("rejected", StorageTaskKind::MultiGet)),
-        Err(AdmissionClosed)
-    );
-    assert!(neighbor.clone().flush_wal(true).await.is_err());
-    assert!(neighbor.background_tracker.is_idle());
-    // Deleting a column family still works after sealing, on any executor.
-    external
-        .spawn(db.clone().prepare_drop_cf(crate::CfName::new("external")))?
-        .await??;
-    assert!(db.inner().cf_handle("external").is_none());
-
-    // drop_cf() also works after sealing, and dropping its future doesn't cancel
-    // the deletion.
-    drop(db.clone().drop_cf(crate::CfName::new("retired")));
-    lifecycle_queue_drained(&manager).await?;
-    assert!(db.inner().cf_handle("retired").is_none());
-
-    // A sealed standalone database still closes normally.
-    db.close().await.expect("last pin");
-    timeout(DEADLINE, constructed_closed).await?;
-    neighbor.close().await.expect("last pin");
     manager.shutdown().await;
     global.shutdown().await;
     Ok(())
@@ -331,6 +372,14 @@ fn with_single_blocking_thread(
 
 async fn pause_lifecycle(manager: &RocksDbManager) -> Vec<mpsc::Sender<()>> {
     manager.pause_lifecycle().await
+}
+
+async fn blocking_queue_drained() -> anyhow::Result<()> {
+    // These tests use a runtime with one blocking thread, so this no-op task runs
+    // only after the blocking task that opened the database has sent its result.
+    // That lets a test wait for it without polling the open's future.
+    timeout(DEADLINE, tokio::task::spawn_blocking(|| ())).await??;
+    Ok(())
 }
 
 async fn lifecycle_queue_drained(manager: &RocksDbManager) -> anyhow::Result<()> {
@@ -492,59 +541,95 @@ async fn open_guards_finalize_discarded_jobs_and_interrupted_preparation() -> an
     let global = task_center.run_sync(RocksDbManager::init);
     let manager = owned_manager(global);
 
-    let (spec, gates) = gated_spec("discarded-open", false);
-    let path = spec.path.clone();
-    let open = manager.admit_open(spec, manager.db_env().clone())?;
-    let tracked = open.tracked;
-    let opening = manager.get_db_by_ref(tracked);
-    let closed = manager.0.state.lock().tracked[tracked].closed.clone();
-    // Drop the open job without running it. Its guard must first release everything
-    // it captured, then mark the database closed and wake waiters.
-    let disposal = tokio::task::spawn_blocking(move || drop(open));
-    timeout(DEADLINE, gates.close_reached).await??;
-    assert_eq!(gates.opens.load(Ordering::Relaxed), 0);
-    assert_eq!(manager.get_db_ref(&path), Some(tracked));
-    assert!(!manager.0.state.lock().tracked[tracked].is_closed());
-    assert!(!closed.is_cancelled());
-    assert!(!manager.0.lifecycle_tracker.is_idle());
-    assert!(manager.0.state.try_lock().is_some());
-    drop(gates.close_resume);
-    timeout(DEADLINE, disposal).await??;
-    assert!(closed.is_cancelled());
-    assert!(gates.finished.load(Ordering::Acquire));
-    assert!(manager.0.lifecycle_tracker.is_idle());
-    let (replacement, reopened) = manager.open_db(db_spec("discarded-open", None))?;
-    assert_ne!(replacement, tracked);
-    let db = reopened.await?;
-    assert!(matches!(opening.await, Err(RocksError::Shutdown(_))));
-    assert_eq!(manager.get_db_ref(&path), Some(replacement));
-    db.close().await.expect("no retained database pins");
+    for reserved in [false, true] {
+        let name = if reserved {
+            "discarded-reserved-open"
+        } else {
+            "discarded-open"
+        };
+        let owner = if reserved {
+            let spec = db_spec(name, None);
+            Some(manager.hold_db(spec.name, spec.path, "discarded open".into())?)
+        } else {
+            None
+        };
+        let (spec, gates) = gated_spec(name, false);
+        let path = spec.path.clone();
+        let open = manager.admit_open(spec, manager.db_env().clone(), owner)?;
+        let tracked = open.tracked;
+        let opening = manager.get_db_by_ref(tracked);
+        let closed = manager.0.state.lock().tracked[tracked].closed.clone();
+        // Drop the open job without running it. Its guard must first release everything
+        // it captured, then mark the database closed and wake waiters.
+        let disposal = tokio::task::spawn_blocking(move || drop(open));
+        timeout(DEADLINE, gates.close_reached).await??;
+        assert_eq!(gates.opens.load(Ordering::Relaxed), 0);
+        assert_eq!(manager.get_db_ref(&path), Some(tracked));
+        assert!(!manager.0.state.lock().tracked[tracked].is_closed());
+        assert!(!closed.is_cancelled());
+        assert!(!manager.0.lifecycle_tracker.is_idle());
+        assert!(manager.0.state.try_lock().is_some());
+        drop(gates.close_resume);
+        timeout(DEADLINE, disposal).await??;
+        assert!(closed.is_cancelled());
+        assert!(gates.finished.load(Ordering::Acquire));
+        assert_eq!(manager.0.state.lock().tracked[tracked].is_held(), reserved);
+        assert!(manager.0.lifecycle_tracker.is_idle());
+        if owner.is_some() {
+            manager
+                .release_db(tracked)
+                .expect("discarded opening preserves owner authority");
+        }
+        let (replacement, reopened) = manager.open_db(db_spec(name, None))?;
+        assert_ne!(replacement, tracked);
+        let db = reopened.await?;
+        assert!(matches!(opening.await, Err(RocksError::Shutdown(_))));
+        assert_eq!(manager.get_db_ref(&path), Some(replacement));
+        db.close().await.expect("no retained database pins");
+    }
 
     for cf in [false, true] {
-        let mut spec = db_spec("interrupted-open", None);
-        if cf {
-            spec.cf_patterns.insert(
-                0,
-                (
-                    Box::new(CfPrefixPattern::ANY),
-                    Box::new(PanickingConfigurator),
-                ),
-            );
-        } else {
-            spec.db_configurator = Box::new(PanickingConfigurator);
+        for held in [false, true] {
+            let mut spec = db_spec("interrupted-open", None);
+            let owner = held
+                .then(|| manager.hold_db(spec.name.clone(), spec.path.clone(), "owner".into()))
+                .transpose()?;
+            if cf {
+                spec.cf_patterns.insert(
+                    0,
+                    (
+                        Box::new(CfPrefixPattern::ANY),
+                        Box::new(PanickingConfigurator),
+                    ),
+                );
+            } else {
+                spec.db_configurator = Box::new(PanickingConfigurator);
+            }
+            let tracked = if let Some(owner) = owner {
+                let (tracked, opening) = manager.reopen_db(owner, spec)?;
+                drop(opening);
+                tracked
+            } else {
+                let (tracked, opening) = manager.open_db(spec)?;
+                drop(opening);
+                tracked
+            };
+            let opening = manager.get_db_by_ref(tracked);
+            let closed = manager.closed(tracked)?;
+            assert!(matches!(
+                timeout(DEADLINE, opening).await?,
+                Err(RocksError::Shutdown(_))
+            ));
+            timeout(DEADLINE, closed).await?;
+            assert_eq!(manager.0.state.lock().tracked[tracked].is_held(), held);
+            if held {
+                assert!(manager.open_db(db_spec("interrupted-open", None)).is_err());
+                manager.release_db(tracked)?;
+            }
+            let (_, opening) = manager.open_db(db_spec("interrupted-open", None))?;
+            let db = timeout(DEADLINE, opening).await??;
+            timeout(DEADLINE, db.close()).await?.expect("last pin");
         }
-        let (tracked, opening) = manager.open_db(spec)?;
-        drop(opening);
-        let opening = manager.get_db_by_ref(tracked);
-        let closed = manager.closed(tracked)?;
-        assert!(matches!(
-            timeout(DEADLINE, opening).await?,
-            Err(RocksError::Shutdown(_))
-        ));
-        timeout(DEADLINE, closed).await?;
-        let (_, opening) = manager.open_db(db_spec("interrupted-open", None))?;
-        let db = timeout(DEADLINE, opening).await??;
-        timeout(DEADLINE, db.close()).await?.expect("last pin");
     }
     timeout(DEADLINE, manager.shutdown()).await?;
     global.shutdown().await;
@@ -1166,6 +1251,279 @@ async fn failed_open_releases_resources_before_releasing_its_path() -> anyhow::R
 }
 
 #[tokio::test]
+async fn remote_open_validates_refs_and_paths_and_preserves_failed_owner_holds()
+-> anyhow::Result<()> {
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()?
+        .into_handle();
+    let manager = task_center.run_sync(RocksDbManager::init);
+    let name = "remote-owner";
+    let spec = db_spec(name, None);
+    let path = spec.path.clone();
+    let held = manager.hold_db(spec.name.clone(), path.clone(), "owner maintenance".into())?;
+    timeout(DEADLINE, manager.closed(held)?).await?;
+    assert!(!path.exists());
+    assert!(matches!(
+        manager.get_db_by_ref(held).await,
+        Err(RocksError::NotOpen)
+    ));
+    assert!(matches!(
+        manager.hold_db(spec.name.clone(), path.clone(), "competing owner".into()),
+        Err(RocksError::Reserved)
+    ));
+    assert!(matches!(
+        manager.remote_reopen_db(held, &db_spec("wrong-held-path", None)),
+        Err(RocksError::PathMismatch { .. })
+    ));
+
+    let tracked = manager.remote_reopen_db(held, &spec)?;
+    assert_ne!(tracked, held);
+    assert_eq!(manager.get_db_ref(&path), Some(tracked));
+    let mut closed = Box::pin(manager.closed(tracked)?);
+    let mut retrieval = Box::pin(manager.get_db_by_ref(tracked));
+    assert_pending(closed.as_mut());
+    assert_pending(retrieval.as_mut());
+    assert!(matches!(
+        manager.register_db(held, Err(ShutdownError.into())),
+        Err(RocksError::NotRegistered)
+    ));
+    assert!(matches!(
+        manager.release_db(tracked),
+        Err(RocksError::AlreadyOpen)
+    ));
+    assert!(matches!(
+        manager.remote_open_db(&spec),
+        Err(RocksError::Reserved)
+    ));
+
+    // Report a database opened at the wrong path. register_db() must close it
+    // before returning the error, without holding the manager lock meanwhile,
+    // and leave the reservation as it was.
+    let (wrong_spec, gates) = gated_spec("wrong-remote-payload", false);
+    drop(gates.open_resume);
+    let env = manager.db_env().clone();
+    let rejected = tokio::task::spawn_blocking(move || {
+        manager.register_db(tracked, RocksAccess::open_db(wrong_spec, env))
+    });
+    timeout(DEADLINE, gates.close_reached).await??;
+    assert!(manager.0.state.try_lock().is_some());
+    assert!(matches!(
+        manager.0.state.lock().tracked[tracked].status,
+        Status::RemoteOpen { .. }
+    ));
+    assert_pending(closed.as_mut());
+    assert_pending(retrieval.as_mut());
+    assert!(!manager.0.lifecycle_tracker.is_idle());
+    drop(gates.close_resume);
+    assert!(matches!(
+        timeout(DEADLINE, rejected).await??,
+        Err(RocksError::PathMismatch { .. })
+    ));
+    assert!(gates.finished.load(Ordering::Acquire));
+
+    // Nothing was opened at the reserved path. Only the owner's report ends the
+    // reservation; dropping a waiter or the rejected call above didn't.
+    drop(retrieval);
+    let wake = Arc::new(CloseWake {
+        manager: manager.downgrade(),
+        tracked,
+        observed_closed: AtomicBool::new(false),
+    });
+    let waker = Waker::from(wake.clone());
+    assert!(
+        closed
+            .as_mut()
+            .poll(&mut Context::from_waker(&waker))
+            .is_pending()
+    );
+    assert!(matches!(
+        manager.register_db(tracked, Err(ShutdownError.into())),
+        Err(RocksError::Shutdown(_))
+    ));
+    timeout(DEADLINE, closed).await?;
+    assert!(wake.observed_closed.load(Ordering::Acquire));
+    assert!(manager.0.state.lock().tracked[tracked].is_held());
+
+    let (spec, gates) = gated_spec(name, true);
+    let failed = manager.remote_reopen_db(tracked, &spec)?;
+    let retained_error = manager.get_db_by_ref(failed);
+    let mut closed = Box::pin(manager.closed(failed)?);
+    let env = manager.db_env().clone();
+    let opening = tokio::task::spawn_blocking(move || {
+        manager.register_db(failed, RocksAccess::open_db(spec, env))
+    });
+    timeout(DEADLINE, gates.open_reached).await??;
+    drop(gates.open_resume);
+    timeout(DEADLINE, gates.close_reached).await??;
+    assert_pending(closed.as_mut());
+    assert!(!manager.0.lifecycle_tracker.is_idle());
+    assert!(matches!(
+        manager.release_db(failed),
+        Err(RocksError::AlreadyOpen)
+    ));
+    drop(gates.close_resume);
+    let error = timeout(DEADLINE, opening).await??.unwrap_err();
+    assert!(matches!(error, RocksError::Other(_)));
+    timeout(DEADLINE, closed).await?;
+    assert!(gates.finished.load(Ordering::Acquire));
+    // The failed open's lease is released right after its result is published,
+    // so wait until it's gone.
+    timeout(DEADLINE, manager.0.lifecycle_tracker.wait_idle()).await?;
+    assert!(manager.0.lifecycle_tracker.is_idle());
+    assert!(manager.0.state.lock().tracked[failed].is_held());
+
+    let spec = db_spec(name, None);
+    let replacement = manager.remote_reopen_db(failed, &spec)?;
+    assert_ne!(replacement, failed);
+    assert!(matches!(
+        manager.closed(failed),
+        Err(RocksError::NotRegistered)
+    ));
+    assert!(matches!(
+        manager.register_db(failed, Err(ShutdownError.into())),
+        Err(RocksError::NotRegistered)
+    ));
+    assert_eq!(
+        retained_error.await.unwrap_err().to_string(),
+        error.to_string()
+    );
+    let env = manager.db_env().clone();
+    let db = tokio::task::spawn_blocking(move || {
+        manager.register_db(replacement, RocksAccess::open_db(spec, env))
+    })
+    .await??;
+    assert_eq!(db.registration(), Some(replacement));
+    assert!(matches!(
+        manager.register_db(replacement, Err(ShutdownError.into())),
+        Err(RocksError::NotRemoteOpen)
+    ));
+    assert!(!db.closed.is_cancelled());
+    db.close().await.expect("owner holds the last native pin");
+    manager.release_db(replacement)?;
+    assert!(matches!(
+        manager.release_db(replacement),
+        Err(RocksError::NotHeld)
+    ));
+    manager.shutdown().await;
+    Ok(())
+}
+
+#[test]
+fn remote_open_shutdown_waits_for_finalization_but_not_handed_off_handles() -> anyhow::Result<()> {
+    with_single_blocking_thread(async {
+        let task_center = TaskCenterBuilder::default()
+            .default_runtime_handle(tokio::runtime::Handle::current())
+            .build()?
+            .into_handle();
+        let manager = task_center.run_sync(RocksDbManager::init);
+
+        let spec = db_spec("abandoned-remote-open", None);
+        let tracked = manager.remote_open_db(&spec)?;
+        assert!(matches!(
+            manager.remote_open_db(&spec),
+            Err(RocksError::AlreadyOpen)
+        ));
+        assert!(matches!(
+            manager.open_db(db_spec("abandoned-remote-open", None)),
+            Err(RocksError::AlreadyOpen)
+        ));
+        let observer = manager.get_db_by_ref(tracked);
+        drop(observer);
+        let mut shutdown = Box::pin(manager.shutdown());
+        assert_pending(shutdown.as_mut());
+        assert!(matches!(
+            manager.remote_open_db(&spec),
+            Err(RocksError::Shutdown(_))
+        ));
+        assert!(matches!(
+            manager.hold_db(spec.name.clone(), spec.path.clone(), "shutdown".into()),
+            Err(RocksError::Shutdown(_))
+        ));
+        assert!(!manager.0.lifecycle_tracker.is_idle());
+        assert!(!manager.0.state.lock().tracked[tracked].is_closed());
+        assert!(matches!(
+            manager.register_db(tracked, Err(ShutdownError.into())),
+            Err(RocksError::Shutdown(_))
+        ));
+        timeout(DEADLINE, shutdown).await?;
+        manager.reset().await?;
+
+        for fail in [false, true] {
+            let (spec, gates) = gated_spec(
+                if fail {
+                    "remote-failed-shutdown"
+                } else {
+                    "remote-shutdown"
+                },
+                fail,
+            );
+            let tracked = manager.remote_open_db(&spec)?;
+            manager.hold_db_by_ref(tracked, "shutdown maintenance".into())?;
+            let observer = manager.get_db_by_ref(tracked);
+            let mut closed = Box::pin(manager.closed(tracked)?);
+            let env = manager.db_env().clone();
+            let opening = tokio::task::spawn_blocking(move || {
+                manager.register_db(tracked, RocksAccess::open_db(spec, env))
+            });
+            timeout(DEADLINE, gates.open_reached).await??;
+            let mut shutdown = Box::pin(manager.shutdown());
+            assert_pending(shutdown.as_mut());
+            drop(gates.open_resume);
+            timeout(DEADLINE, gates.close_reached).await??;
+            assert_pending(shutdown.as_mut());
+            assert_pending(closed.as_mut());
+            assert!(manager.0.state.try_lock().is_some());
+            assert!(!manager.0.lifecycle_tracker.is_idle());
+            assert!(matches!(
+                manager.release_db(tracked),
+                Err(RocksError::AlreadyOpen)
+            ));
+            drop(gates.close_resume);
+            let error = timeout(DEADLINE, opening).await??.unwrap_err();
+            assert!(if fail {
+                matches!(error, RocksError::Other(_))
+            } else {
+                matches!(error, RocksError::Shutdown(_))
+            });
+            assert_eq!(observer.await.unwrap_err().to_string(), error.to_string());
+            timeout(DEADLINE, closed).await?;
+            timeout(DEADLINE, shutdown).await?;
+            assert!(gates.finished.load(Ordering::Acquire));
+            assert!(manager.0.lifecycle_tracker.is_idle());
+            assert!(
+                manager.reset().await.is_err(),
+                "shutdown preserves owner holds"
+            );
+            manager.release_db(tracked)?;
+            manager.reset().await?;
+        }
+
+        // The owner registered the database but hasn't collected it yet: the result
+        // sits in an unawaited blocking task. It's the owner's database now, not
+        // unfinished work, so shutdown flushes it but can't close it.
+        let spec = db_spec("remote-buffered-owner", None);
+        let tracked = manager.remote_open_db(&spec)?;
+        let mut closed = Box::pin(manager.closed(tracked)?);
+        let env = manager.db_env().clone();
+        let unpolled = tokio::task::spawn_blocking(move || {
+            manager.register_db(tracked, RocksAccess::open_db(spec, env))
+        });
+        blocking_queue_drained().await?;
+        assert!(manager.0.lifecycle_tracker.is_idle());
+        timeout(DEADLINE, manager.shutdown()).await?;
+        assert_pending(closed.as_mut());
+        assert!(manager.reset().await.is_err());
+        let db = unpolled.await??;
+        assert_eq!(db.registration(), Some(tracked));
+        db.close().await.expect("buffered result was the last pin");
+        timeout(DEADLINE, closed).await?;
+        manager.reset().await?;
+        Ok(())
+    })
+}
+
+#[tokio::test]
 async fn registration_uses_supplied_paths_and_first_matching_live_name() -> anyhow::Result<()> {
     let task_center = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
@@ -1189,6 +1547,7 @@ async fn registration_uses_supplied_paths_and_first_matching_live_name() -> anyh
     let db = opening.await?;
     assert_eq!(db.registration(), Some(tracked));
     assert_eq!(manager.get_db_ref(&path), Some(tracked));
+    assert_eq!(manager.0.state.lock().tracked[tracked].path, path);
     assert_eq!(db.inner().path(), &path);
     assert!(Arc::ptr_eq(&manager.get_db_by_ref(tracked).await?, &db));
     assert!(Arc::ptr_eq(
@@ -1249,6 +1608,177 @@ async fn registration_uses_supplied_paths_and_first_matching_live_name() -> anyh
     assert!(!reopened.closed.is_cancelled());
     reopened.close().await.expect("no retained database pins");
     manager.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn owner_hold_survives_close_delete_and_failed_or_cancelled_reopen() -> anyhow::Result<()> {
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()?
+        .into_handle();
+    let manager = task_center.run_sync(RocksDbManager::init);
+    let name = "owner-held-db";
+    let (spec, gates) = gated_spec(name, false);
+    let path = spec.path.clone();
+    let (first, opening) = manager.open_db(spec)?;
+    let mut opening = Box::pin(opening);
+    reach_gate(opening.as_mut(), gates.open_reached).await?;
+    drop(gates.open_resume);
+    let db = timeout(DEADLINE, opening).await??;
+    manager.hold_db_by_ref(first, "owner maintenance".into())?;
+    let mut owner = first;
+    let first_closed = db.closed.clone();
+    assert_eq!(
+        Arc::strong_count(&db),
+        1,
+        "a hold must not pin native resources"
+    );
+    assert!(matches!(
+        manager.hold_db_by_ref(first, "competing hold".into()),
+        Err(RocksError::Reserved)
+    ));
+    db.inner().as_raw_db().put(b"old", b"value")?;
+    assert!(matches!(
+        manager.release_db(owner),
+        Err(RocksError::AlreadyOpen)
+    ));
+
+    let closed = manager.closed(owner)?;
+    let mut close = Box::pin(db.close());
+    assert_pending(close.as_mut());
+    timeout(DEADLINE, gates.close_reached).await??;
+    assert!(matches!(
+        manager.open_db(db_spec(name, None)),
+        Err(RocksError::Reserved)
+    ));
+    assert!(matches!(
+        manager.reopen_db(owner, db_spec(name, None)),
+        Err(RocksError::AlreadyOpen)
+    ));
+    assert_eq!(
+        manager.get_db_ref(&path),
+        Some(first),
+        "rejection is not acceptance"
+    );
+    drop(close);
+    drop(gates.close_resume);
+    timeout(DEADLINE, closed).await?;
+    assert!(manager.0.state.lock().tracked[first].is_closed());
+    assert!(manager.0.state.lock().tracked[first].is_held());
+    assert_eq!(manager.get_db_ref(&path), Some(first));
+    assert!(gates.finished.load(Ordering::Acquire));
+
+    assert!(matches!(
+        manager.remote_open_db(&db_spec(name, None)),
+        Err(RocksError::Reserved)
+    ));
+    assert_eq!(manager.get_db_ref(&path), Some(first));
+
+    tokio::fs::remove_dir_all(&path).await?;
+    assert!(!path.exists());
+    assert!(matches!(
+        manager.open_db(db_spec(name, None)),
+        Err(RocksError::Reserved)
+    ));
+    assert!(
+        !path.exists(),
+        "a rejected open must not recreate the owner's directory"
+    );
+    assert!(matches!(
+        manager.reopen_db(owner, db_spec("wrong-held-path", None)),
+        Err(RocksError::PathMismatch { .. })
+    ));
+
+    // Whether the reopen fails or its future is dropped, the hold survives: it
+    // moved to the new DbRef as soon as the reopen was accepted.
+    for fail in [true, false] {
+        let (spec, gates) = gated_spec(name, fail);
+        let previous = owner;
+        let (tracked, opening) =
+            manager.reopen_db_with_env(owner, spec, manager.db_env().clone())?;
+        owner = tracked;
+        assert_ne!(tracked, previous);
+        assert_eq!(manager.get_db_ref(&path), Some(tracked));
+        let mut opening = Box::pin(opening);
+        reach_gate(opening.as_mut(), gates.open_reached).await?;
+        if fail {
+            drop(gates.open_resume);
+            reach_gate(opening.as_mut(), gates.close_reached).await?;
+            assert!(matches!(
+                manager.open_db(db_spec(name, None)),
+                Err(RocksError::Reserved)
+            ));
+            drop(gates.close_resume);
+            assert!(timeout(DEADLINE, opening).await?.is_err());
+        } else {
+            drop(opening);
+            let closed = manager.closed(owner)?;
+            let mut retrieval = Box::pin(manager.get_db_by_ref(tracked));
+            assert_pending(retrieval.as_mut());
+            drop(gates.open_resume);
+            let db = timeout(DEADLINE, retrieval).await??;
+            assert_eq!(db.registration(), Some(tracked));
+            assert_eq!(Arc::strong_count(&db), 1);
+            drop(db);
+            timeout(DEADLINE, gates.close_reached).await??;
+            assert!(matches!(
+                manager.open_db(db_spec(name, None)),
+                Err(RocksError::Reserved)
+            ));
+            drop(gates.close_resume);
+            timeout(DEADLINE, closed).await?;
+        }
+        assert_ne!(owner, previous);
+        assert_eq!(manager.get_db_ref(&path), Some(owner));
+        assert!(!manager.0.state.lock().tracked.contains_key(previous));
+        assert!(matches!(
+            manager.release_db(previous),
+            Err(RocksError::NotRegistered)
+        ));
+        assert!(gates.finished.load(Ordering::Acquire));
+        assert!(matches!(
+            manager.open_db(db_spec(name, None)),
+            Err(RocksError::Reserved)
+        ));
+    }
+
+    let (tracked, opening) = manager.reopen_db(owner, db_spec(name, None))?;
+    owner = tracked;
+    let db = opening.await?;
+    assert_eq!(db.inner().as_raw_db().get(b"old")?, None);
+    assert_eq!(db.registration(), Some(owner));
+    assert_ne!(owner, first);
+    manager.finish_close(first, first_closed);
+    assert!(!db.closed.is_cancelled());
+    assert!(matches!(
+        manager.open_db(db_spec(name, None)),
+        Err(RocksError::Reserved)
+    ));
+    assert_eq!(Arc::strong_count(&db), 1);
+    db.close().await.expect("owner is the last database pin");
+    manager
+        .release_db(owner)
+        .expect("physical close allows explicit release");
+    let (_, opening) = manager.open_db(db_spec(name, None))?;
+    let db = opening.await?;
+
+    manager.hold_db_by_ref(
+        db.registration().expect("registered"),
+        "discarded owner ref".into(),
+    )?;
+    db.close().await.expect("hold owns no database pin");
+    assert!(matches!(
+        manager.open_db(db_spec(name, None)),
+        Err(RocksError::Reserved)
+    ));
+    timeout(DEADLINE, manager.shutdown()).await?;
+    assert!(
+        manager.reset().await.is_err(),
+        "reset must retain abandoned owner holds"
+    );
+    manager.release_db(manager.get_db_ref(&path).expect("held incarnation"))?;
+    manager.reset().await?;
     Ok(())
 }
 

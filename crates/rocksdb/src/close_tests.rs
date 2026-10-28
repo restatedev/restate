@@ -26,7 +26,7 @@ use restate_types::protobuf::common::DatabaseKind;
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
-use crate::{CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, RocksDbManager};
+use crate::{CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, RocksAccess, RocksDbManager};
 
 // Owned by native options/the database, not by the completion observer. Blocking
 // its destruction distinguishes physical release from preparatory shutdown work.
@@ -82,6 +82,7 @@ pub(crate) fn db_spec(name: &str, listener: Option<DropBarrier>) -> DbSpec {
 enum CloseMode {
     Explicit,
     Background,
+    Remote,
     OutsideRuntime,
 }
 
@@ -157,6 +158,7 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
     for (index, mode) in [
         CloseMode::Explicit,
         CloseMode::Background,
+        CloseMode::Remote,
         CloseMode::OutsideRuntime,
     ]
     .into_iter()
@@ -174,8 +176,17 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
                 finished: finished.clone(),
             }),
         );
-        let (_, opening) = manager.open_db(spec)?;
-        let db = opening.await?;
+        let db = if matches!(mode, CloseMode::Remote) {
+            let tracked = manager.remote_open_db(&spec)?;
+            let env = manager.db_env().clone();
+            tokio::task::spawn_blocking(move || {
+                manager.register_db(tracked, RocksAccess::open_db(spec, env))
+            })
+            .await??
+        } else {
+            let (_, opening) = manager.open_db(spec)?;
+            opening.await?
+        };
         db.inner().as_raw_db().put(b"key", b"value")?;
 
         let mut closed = Box::pin(db.closed());
@@ -204,7 +215,7 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
                 );
                 close = Some(waiter);
             }
-            CloseMode::Background => {
+            CloseMode::Background | CloseMode::Remote => {
                 let retained = db.clone();
                 drop(db);
                 assert!(

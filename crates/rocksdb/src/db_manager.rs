@@ -18,7 +18,7 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use slotmap::SlotMap;
 use tokio::sync::watch;
@@ -29,9 +29,10 @@ use restate_core::io::{FlightTracker, IoExecutor, OwnedLease};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_platform::sync::Mutex;
 use restate_types::config::{CommonOptions, Configuration};
+use restate_util_string::ReString;
 
 use self::completion::{CloseGuard, OpenGuard, ShutdownGuard};
-use self::tracking::TrackedDb;
+use self::tracking::{Status, TrackedDb};
 use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
 use crate::db_env::check_memory_limit;
 use crate::{
@@ -57,16 +58,41 @@ struct State {
 
 impl State {
     /// Forgets the previous record for `path`, which must be closed (`AlreadyOpen`
-    /// otherwise). The caller must insert the new record before releasing the lock,
-    /// so no other open can take the path in between.
-    fn remove_previous(&mut self, path: &Path) -> Result<(), RocksError> {
-        if let Some(previous) = self.by_path.get(path).copied() {
-            if !self.tracked[previous].is_closed() {
-                return Err(RocksError::AlreadyOpen);
+    /// otherwise), and returns its hold reason if `owner` is moving its hold to the
+    /// new record. Without an `owner`, a held path fails with `Reserved`. The caller
+    /// must insert the new record before releasing the lock, so no other open can
+    /// take the path in between.
+    fn remove_previous(
+        &mut self,
+        path: &Path,
+        owner: Option<DbRef>,
+    ) -> Result<Option<ReString>, RocksError> {
+        let previous = self.by_path.get(path).copied();
+        if let Some(owner) = owner {
+            let entry = self.tracked.get(owner).ok_or(RocksError::NotRegistered)?;
+            if entry.path != path {
+                return Err(RocksError::PathMismatch {
+                    expected: entry.path.clone(),
+                    actual: path.to_path_buf(),
+                });
             }
-            self.tracked.remove(previous);
+            if !entry.is_held() {
+                return Err(RocksError::NotHeld);
+            }
+            debug_assert_eq!(previous, Some(owner));
+        } else if previous.is_some_and(|key| self.tracked[key].is_held()) {
+            return Err(RocksError::Reserved);
         }
-        Ok(())
+        if previous.is_some_and(|key| !self.tracked[key].is_closed()) {
+            return Err(RocksError::AlreadyOpen);
+        }
+        Ok(previous.and_then(|key| {
+            let entry = self.tracked.remove(key).expect("current incarnation");
+            match entry.status {
+                Status::Held { reason, .. } => Some(reason),
+                _ => None,
+            }
+        }))
     }
 }
 
@@ -189,8 +215,8 @@ impl RocksDbManager {
                 let state = manager.0.state.lock();
                 for (tracked, entry) in &state.tracked {
                     assert!(
-                        entry.is_closed(),
-                        "database lifetime survived test teardown: {tracked:?} ({})",
+                        entry.is_closed() && !entry.is_held(),
+                        "database lifetime or owner hold survived test teardown: {tracked:?} ({})",
                         entry.name,
                     );
                 }
@@ -215,10 +241,11 @@ impl RocksDbManager {
             .find_map(TrackedDb::handle)
     }
 
-    /// Returns the [`DbRef`] of the latest database opened at `path`, whatever its
-    /// state (opening, open, or closed), or `None` if the manager hasn't seen this
-    /// path. The path is compared exactly as given to [`Self::open_db`]; a symlink or
-    /// other alias for the same directory doesn't match.
+    /// Returns the [`DbRef`] of the latest database opened or held at `path`,
+    /// whatever its state (opening, open, closed, or held), or `None` if the manager
+    /// hasn't seen this path. The path is compared exactly as given to
+    /// [`Self::open_db`] or [`Self::hold_db`]; a symlink or other alias for the same
+    /// directory doesn't match.
     pub fn get_db_ref(&self, path: &Path) -> Option<DbRef> {
         self.0.state.lock().by_path.get(path).copied()
     }
@@ -281,7 +308,58 @@ impl RocksDbManager {
         ),
         RocksError,
     > {
-        let open = self.admit_open(db_spec, env)?;
+        self.open_db_inner(db_spec, env, None)
+    }
+
+    /// Reopens a database you hold (see [`Self::hold_db`]) once it has fully closed.
+    /// The hold moves to the returned new `DbRef` as soon as the reopen is accepted,
+    /// and stays there even if the open fails or its future is dropped. Keep the new
+    /// `DbRef`: you need it to release the hold later.
+    pub fn reopen_db(
+        &self,
+        tracked: DbRef,
+        spec: DbSpec,
+    ) -> Result<
+        (
+            DbRef,
+            impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<>,
+        ),
+        RocksError,
+    > {
+        self.reopen_db_with_env(tracked, spec, self.db_env().clone())
+    }
+
+    /// Like [`Self::reopen_db`], with exactly the supplied resources (see
+    /// [`Self::open_db_with_env`]). `spec` must use the same path as `tracked`
+    /// (`PathMismatch` otherwise).
+    pub fn reopen_db_with_env(
+        &self,
+        tracked: DbRef,
+        spec: DbSpec,
+        env: DbEnv,
+    ) -> Result<
+        (
+            DbRef,
+            impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<>,
+        ),
+        RocksError,
+    > {
+        self.open_db_inner(spec, env, Some(tracked))
+    }
+
+    fn open_db_inner(
+        &self,
+        spec: DbSpec,
+        env: DbEnv,
+        owner: Option<DbRef>,
+    ) -> Result<
+        (
+            DbRef,
+            impl Future<Output = Result<Arc<RocksDb>, RocksError>> + Send + 'static + use<>,
+        ),
+        RocksError,
+    > {
+        let open = self.admit_open(spec, env, owner)?;
         let tracked = open.tracked;
         // Get the result future before dispatching. If dispatch fails, the record is
         // closed and another open could replace it right away, losing this result.
@@ -295,19 +373,32 @@ impl RocksDbManager {
         Ok((tracked, opening))
     }
 
-    fn admit_open(&self, spec: DbSpec, env: DbEnv) -> Result<OpenGuard, RocksError> {
+    fn admit_open(
+        &self,
+        spec: DbSpec,
+        env: DbEnv,
+        owner: Option<DbRef>,
+    ) -> Result<OpenGuard, RocksError> {
         let mut state = self.0.state.lock();
         if self.0.shutting_down.load(Ordering::Acquire) {
             return Err(ShutdownError.into());
         }
-        state.remove_previous(&spec.path)?;
+        let hold_after_close = state.remove_previous(&spec.path, owner)?;
         let (completion, result) = watch::channel(None);
-        let entry = TrackedDb::opening(&spec, result);
+        let entry = TrackedDb::opening(
+            &spec,
+            Status::Opening {
+                since: Instant::now(),
+            },
+            hold_after_close,
+            result,
+        );
         let closed = entry.closed.clone();
         let tracked = state.tracked.insert(entry);
         state.by_path.insert(spec.path.clone(), tracked);
-        // Booking the path and taking the lifecycle lease happen under the same lock
-        // as shutdown's check, so shutdown either rejects this open or waits for it.
+        // Booking the path, moving any hold, and taking the lifecycle lease happen
+        // under the same lock as shutdown's check, so shutdown either rejects this
+        // open or waits for it.
         Ok(OpenGuard::new(
             self.clone(),
             tracked,
@@ -322,7 +413,8 @@ impl RocksDbManager {
     /// Returns the database for `tracked`, waiting for its open to finish if needed.
     /// The first call after a successful open takes the database from the manager.
     /// Later calls get it only while someone else still holds an `Arc`, and fail with
-    /// `NotOpen` otherwise. Dropping this future doesn't cancel the open.
+    /// `NotOpen` otherwise. Dropping this future doesn't cancel the open; for a
+    /// remote open, the owner must still report the result.
     ///
     /// A `DbRef` always means the same incarnation. After the path is reopened, the
     /// old ref fails with `NotRegistered`, while callers that were already waiting
@@ -341,15 +433,16 @@ impl RocksDbManager {
             .ok_or(RocksError::NotRegistered);
         let manager = self.clone();
         async move {
-            let mut completion = completion?;
-            let result = completion
-                .wait_for(Option::is_some)
-                .await
-                .map_err(|_| ShutdownError)?
-                .as_ref()
-                .expect("completed open")
-                .clone();
-            result?;
+            if let Some(mut completion) = completion? {
+                let result = completion
+                    .wait_for(Option::is_some)
+                    .await
+                    .map_err(|_| ShutdownError)?
+                    .as_ref()
+                    .expect("completed open")
+                    .clone();
+                result?;
+            }
             let (db, accepted) = {
                 let mut state = manager.0.state.lock();
                 if manager.0.shutting_down.load(Ordering::Acquire) {
@@ -412,6 +505,92 @@ impl RocksDbManager {
         }
     }
 
+    /// Reserves `spec`'s path for a database you open yourself, on your own thread,
+    /// and returns its `DbRef`. Report the result with [`Self::register_db`] or
+    /// [`Self::attach_db`], also when the open fails or never starts, and keep this
+    /// manager alive until then. Until you report, nothing else can open the path and
+    /// shutdown waits. Dropping the `DbRef` or a waiter doesn't change that.
+    ///
+    /// ```ignore
+    /// let tracked = manager.remote_open_db(&spec)?;
+    /// let db = tokio::task::spawn_blocking(move || {
+    ///     manager.register_db(tracked, RocksAccess::open_db(spec, env))
+    /// })
+    /// .await??;
+    /// ```
+    pub fn remote_open_db(&self, spec: &DbSpec) -> Result<DbRef, RocksError> {
+        self.remote_open_db_inner(spec, None)
+    }
+
+    /// Like [`Self::remote_open_db`], for a database you hold (see [`Self::hold_db`])
+    /// that has fully closed. The hold moves to the returned new `DbRef`, also if the
+    /// open fails; keep it to release the hold later.
+    pub fn remote_reopen_db(&self, tracked: DbRef, spec: &DbSpec) -> Result<DbRef, RocksError> {
+        self.remote_open_db_inner(spec, Some(tracked))
+    }
+
+    fn remote_open_db_inner(
+        &self,
+        spec: &DbSpec,
+        owner: Option<DbRef>,
+    ) -> Result<DbRef, RocksError> {
+        let mut state = self.0.state.lock();
+        if self.0.shutting_down.load(Ordering::Acquire) {
+            return Err(ShutdownError.into());
+        }
+        let hold_after_close = state.remove_previous(&spec.path, owner)?;
+        let (completion, result) = watch::channel(None);
+        let entry = TrackedDb::opening(
+            spec,
+            Status::RemoteOpen {
+                since: Instant::now(),
+                completion,
+                accepted: self.track_lifecycle(),
+            },
+            hold_after_close,
+            result,
+        );
+        let tracked = state.tracked.insert(entry);
+        state.by_path.insert(spec.path.clone(), tracked);
+        Ok(tracked)
+    }
+
+    /// Reports the result of an open started with [`Self::remote_open_db`]. Call it
+    /// from a blocking thread: if the call is rejected (unknown `DbRef`, wrong path,
+    /// or not a remote open), a successfully opened database is closed right here.
+    /// A rejected call leaves the reservation as it was.
+    ///
+    /// Pass `Err` only once the failed open has stopped and released everything it
+    /// allocated (or never started): the path becomes free to reopen right away. If
+    /// the open was cancelled or panicked and might still hold resources, don't
+    /// report it yet. An owner hold, if present, is kept.
+    ///
+    /// During shutdown the result is still accepted, but a successfully opened
+    /// database is closed and `Shutdown` is returned. Otherwise you get the database,
+    /// and from then on it's yours, like one returned by [`Self::open_db`].
+    pub fn register_db(
+        &self,
+        tracked: DbRef,
+        result: Result<RocksAccess, RocksError>,
+    ) -> Result<Arc<RocksDb>, RocksError> {
+        self.finalize_db(
+            tracked,
+            result.map(|native| RocksDb::new(native, self.0.executor.clone())),
+        )
+    }
+
+    /// Like [`Self::register_db`], for a database you built yourself with
+    /// [`RocksDb::new`]. Fails with `AlreadyRegistered` if `db` already belongs to a
+    /// manager; it's then closed through that manager. If the call is rejected for
+    /// another reason, `db` is closed right here on the calling thread, so call this
+    /// from a blocking thread too.
+    pub fn attach_db(&self, tracked: DbRef, db: RocksDb) -> Result<Arc<RocksDb>, RocksError> {
+        if db.registration.is_some() {
+            return Err(RocksError::AlreadyRegistered);
+        }
+        self.finalize_db(tracked, Ok(db))
+    }
+
     fn bind_db(
         &self,
         native: RocksAccess,
@@ -427,9 +606,146 @@ impl RocksDbManager {
         Arc::new(db)
     }
 
+    fn finalize_db(
+        &self,
+        tracked: DbRef,
+        result: Result<RocksDb, RocksError>,
+    ) -> Result<Arc<RocksDb>, RocksError> {
+        let mut state = self.0.state.lock();
+        let entry = state
+            .tracked
+            .get_mut(tracked)
+            .ok_or(RocksError::NotRegistered)
+            .and_then(|entry| {
+                if !matches!(entry.status, Status::RemoteOpen { .. }) {
+                    return Err(RocksError::NotRemoteOpen);
+                }
+                if let Ok(native) = &result
+                    && native.db.path() != &entry.path
+                {
+                    return Err(RocksError::PathMismatch {
+                        expected: entry.path.clone(),
+                        actual: native.db.path().clone(),
+                    });
+                }
+                Ok(entry)
+            });
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                let disposal = result.is_ok().then(|| self.track_lifecycle());
+                drop(state);
+                if let Ok(native) = result {
+                    drop(native);
+                }
+                drop(disposal);
+                return Err(error);
+            }
+        };
+        let (completion, accepted) = entry.take_remote_open();
+        let result = match result {
+            Ok(mut db) => {
+                // Link the database to this record before creating the `Arc`, so every handle
+                // that leaves this call belongs to the manager.
+                db.registration = Some(DbRegistration {
+                    manager: self.clone(),
+                    tracked,
+                    closed: entry.closed.clone(),
+                });
+                let db = Arc::new(db);
+                if self.0.shutting_down.load(Ordering::Acquire) {
+                    drop(state);
+                    // Dropping the only `Arc` hands the database to its close job, which
+                    // takes its own lifecycle lease. This open's lease is released only
+                    // below, so shutdown can't miss the close.
+                    drop(db);
+                    Err(ShutdownError.into())
+                } else {
+                    entry.name = db.name().clone();
+                    let elapsed = entry.registered(&db);
+                    drop(state);
+                    debug!(db = %db.name(), ?tracked, duration = ?elapsed, "Remote RocksDB open completed");
+                    Ok(db)
+                }
+            }
+            Err(error) => {
+                let closed = entry.closed.clone();
+                drop(state);
+                self.finish_close(tracked, closed);
+                Err(error)
+            }
+        };
+        completion.send_replace(Some(result.as_ref().map(|_| ()).map_err(Clone::clone)));
+        drop(accepted);
+        result
+    }
+
+    /// Reserves a path that isn't open, for example while you delete or repair its
+    /// files, so nothing else opens it. Doesn't open anything. The hold stays until
+    /// you call [`Self::release_db`], or move it to a new `DbRef` with
+    /// [`Self::reopen_db`] or [`Self::remote_reopen_db`]. Dropping the `DbRef`
+    /// doesn't release it.
+    pub fn hold_db(
+        &self,
+        name: DbName,
+        path: PathBuf,
+        reason: ReString,
+    ) -> Result<DbRef, RocksError> {
+        let mut state = self.0.state.lock();
+        if self.0.shutting_down.load(Ordering::Acquire) {
+            return Err(ShutdownError.into());
+        }
+        state.remove_previous(&path, None)?;
+        let tracked = state
+            .tracked
+            .insert(TrackedDb::held(name, path.clone(), reason));
+        state.by_path.insert(path, tracked);
+        Ok(tracked)
+    }
+
+    /// Puts a hold on an existing database, open or not. While it's open, the hold
+    /// has no effect; once it has closed, the path stays reserved like with
+    /// [`Self::hold_db`]. The hold doesn't keep the database open, and it's allowed
+    /// during shutdown. Fails with `Reserved` if there's already a hold.
+    pub fn hold_db_by_ref(&self, tracked: DbRef, reason: ReString) -> Result<(), RocksError> {
+        let mut state = self.0.state.lock();
+        let entry = state
+            .tracked
+            .get_mut(tracked)
+            .ok_or(RocksError::NotRegistered)?;
+        if entry.is_held() {
+            return Err(RocksError::Reserved);
+        }
+        if let Status::Closed { since } = entry.status {
+            entry.status = Status::Held { since, reason };
+        } else {
+            entry.hold_after_close = Some(reason);
+        }
+        Ok(())
+    }
+
+    /// Releases an owner hold so the path can be opened again. Fails with
+    /// `AlreadyOpen` if the database hasn't finished closing yet, and with
+    /// `NotHeld` if there is no hold.
+    pub fn release_db(&self, tracked: DbRef) -> Result<(), RocksError> {
+        let mut state = self.0.state.lock();
+        let entry = state
+            .tracked
+            .get_mut(tracked)
+            .ok_or(RocksError::NotRegistered)?;
+        if !entry.is_held() {
+            return Err(RocksError::NotHeld);
+        }
+        let Status::Held { since, .. } = entry.status else {
+            return Err(RocksError::AlreadyOpen);
+        };
+        entry.status = Status::Closed { since };
+        Ok(())
+    }
+
     /// Returns a future that completes once this incarnation is fully closed and its
-    /// native resources are released. It doesn't keep the database open, and it
-    /// doesn't follow a later reopen of the same path.
+    /// native resources are released. It doesn't keep the database open, doesn't
+    /// release a hold, and doesn't follow a later reopen of the same path.
     pub fn closed(
         &self,
         tracked: DbRef,
@@ -451,8 +767,11 @@ impl RocksDbManager {
         self.shutdown().await;
         let mut state = self.0.state.lock();
         anyhow::ensure!(
-            state.tracked.values().all(TrackedDb::is_closed),
-            "cannot reset RocksDB manager while database lifetimes remain active"
+            state
+                .tracked
+                .values()
+                .all(|entry| entry.is_closed() && !entry.is_held()),
+            "cannot reset RocksDB manager while database lifetimes or owner holds remain active"
         );
         // Clear the SlotMap instead of replacing it, so old `DbRef`s are still rejected.
         state.tracked.clear();
