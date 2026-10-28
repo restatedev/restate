@@ -453,6 +453,13 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
     };
 
     let body_ident = quote! { body };
+    // Shutdown joins real threads, including native storage cleanup. A paused
+    // clock can auto-advance its grace-period timeout before that work completes.
+    let resume_time = if config.start_paused == Some(true) {
+        quote! { ::tokio::time::resume(); }
+    } else {
+        quote! {}
+    };
     let last_block = quote_spanned! {last_stmt_end_span=>
         #[allow(clippy::all)]
         {
@@ -474,7 +481,10 @@ fn parse_knobs(mut input: ItemFn, config: FinalConfig) -> TokenStream {
                 .expect("Failed building task-center");
 
             let ret = rt.block_on(#body_ident.in_tc(&task_center.to_handle()));
-            rt.block_on(task_center.into_handle().shutdown_node("completed", 0));
+            rt.block_on(async {
+                #resume_time
+                task_center.into_handle().shutdown_node("completed", 0).await;
+            });
             ret
         }
     };

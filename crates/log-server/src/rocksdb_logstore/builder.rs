@@ -617,7 +617,10 @@ mod tests {
         let config = Configuration::default();
         set_current_config(config.clone());
 
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let builder = RocksDbLogStoreBuilder::create().await?;
         let mut log_server_options = config.log_server;
         log_server_options.rocksdb_enable_blob_separation = true;
@@ -628,8 +631,6 @@ mod tests {
         update_data_cf_options(builder.rocksdb.inner(), &log_server_options)?;
 
         drop(builder);
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }
