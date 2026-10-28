@@ -183,7 +183,8 @@ impl PartitionStoreManager {
         .build()
         .expect("valid spec");
 
-        let rocksdb = RocksDbManager::get().open_db(db_spec).await?;
+        let (_, opening) = RocksDbManager::get().open_db(db_spec)?;
+        let rocksdb = opening.await?;
 
         db_cache_guard.insert(
             db_name,
@@ -577,7 +578,8 @@ mod tests {
             drop(pause);
             let mut reopened = timeout(DEADLINE, manager.open(&partition, None)).await??;
             assert_eq!(reopened.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
-            assert_eq!(reopened.get_applied_lsn().await?, Some(Lsn::new(100)));
+            // The abandoned queued commit is disposed of before reopening, not applied.
+            assert_eq!(reopened.get_applied_lsn().await?, None);
             assert!(!Arc::ptr_eq(
                 &admission,
                 reopened.partition_db().admission()
@@ -1008,6 +1010,7 @@ mod tests {
             let state = Arc::downgrade(&manager.state);
             let mut store = manager.open(&partition, None).await?;
             let database = Arc::downgrade(store.partition_db().rocksdb());
+            let mut native_closed = Box::pin(store.partition_db().rocksdb().closed());
             let mut durable_lsn = store.get_durable_lsn().await?;
             durable_lsn.borrow_and_update();
 
@@ -1039,7 +1042,7 @@ mod tests {
                 store.partition_db().flush_memtables(true).await?;
             }
 
-            let (closed_tx, mut closed_rx) = oneshot::channel();
+            let (closed_tx, closed_rx) = oneshot::channel();
             let closer = std::thread::spawn(move || {
                 drop(manager);
                 drop(store);
@@ -1056,15 +1059,19 @@ mod tests {
                 })
                 .await?;
                 assert!(state.upgrade().is_none(), "callback_does_not_pin_manager");
-                assert!(matches!(
-                    closed_rx.try_recv(),
-                    Err(oneshot::error::TryRecvError::Empty)
-                ));
+                assert!(
+                    native_closed
+                        .as_mut()
+                        .poll(&mut Context::from_waker(Waker::noop()))
+                        .is_pending(),
+                    "paused callback prevents native completion"
+                );
                 drop(resume_tx.take());
             }
 
             timeout(DEADLINE, closed_rx).await??;
             closer.join().expect("database_drop_thread_succeeded");
+            timeout(DEADLINE, native_closed).await?;
             changed.await?;
             assert!(callback_is_native, "callback_runs_outside_tokio");
             assert!(
