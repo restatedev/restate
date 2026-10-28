@@ -138,6 +138,21 @@ impl TaskCenter {
         Self::with_current(|tc| tc.set_on_shutdown(on_shutdown))
     }
 
+    /// Register cleanup to await after ordinary shutdown in the test harness.
+    /// Registration must finish before test finalization starts. Finalizers run
+    /// in registration order and must not retain resources owned by each other.
+    #[doc(hidden)]
+    pub fn register_test_finalizer(finalizer: BoxFuture<'static, ()>) {
+        Self::with_current(|tc| {
+            tc.inner
+                .test_finalizers
+                .lock()
+                .as_mut()
+                .expect("test finalization has already started")
+                .push(finalizer);
+        });
+    }
+
     /// Returns true if the task center was requested to shutdown
     pub fn is_shutdown_requested() -> bool {
         Self::with_current(|tc| tc.is_shutdown_requested())
@@ -348,6 +363,8 @@ struct TaskCenterInner {
     root_task_context: TaskContext,
     // A callback to be executed after task center finishes shutdown.
     on_shutdown: Mutex<Option<BoxFuture<'static, ()>>>,
+    // None closes registration once test finalization starts.
+    test_finalizers: Mutex<Option<Vec<BoxFuture<'static, ()>>>>,
 }
 
 impl TaskCenterInner {
@@ -385,6 +402,7 @@ impl TaskCenterInner {
             cluster_state: Default::default(),
             health: Health::default(),
             on_shutdown: Mutex::default(),
+            test_finalizers: Mutex::new(Some(Vec::new())),
         }
     }
 
@@ -1040,6 +1058,17 @@ impl TaskCenterInner {
     }
 
     async fn shutdown_node(self: &Arc<Self>, reason: &str, exit_code: i32) {
+        let grace_period = Configuration::pinned().common.shutdown_grace_period();
+        self.shutdown_node_with_timeout(reason, exit_code, Some(grace_period))
+            .await;
+    }
+
+    async fn shutdown_node_with_timeout(
+        self: &Arc<Self>,
+        reason: &str,
+        exit_code: i32,
+        grace_period: Option<Duration>,
+    ) {
         if self
             .shutdown_requested
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -1050,11 +1079,13 @@ impl TaskCenterInner {
         }
 
         let start = Instant::now();
-        let shutdown_result = tokio::time::timeout(
-            Configuration::pinned().common.shutdown_grace_period(),
-            self.shutdown_node_inner(reason, exit_code),
-        )
-        .await;
+        let shutdown = self.shutdown_node_inner(reason, exit_code);
+        let shutdown_result = if let Some(grace_period) = grace_period {
+            tokio::time::timeout(grace_period, shutdown).await
+        } else {
+            shutdown.await;
+            Ok(())
+        };
 
         if shutdown_result.is_err() {
             warn!(
@@ -1344,6 +1375,44 @@ mod tests {
     use restate_types::config::CommonOptionsBuilder;
 
     use super::*;
+    use crate as restate_core;
+
+    #[crate::test(start_paused = true)]
+    async fn harness_shutdown_waits_for_real_threads() {
+        check_harness_shutdown();
+    }
+
+    #[crate::test(start_paused = true)]
+    async fn harness_shutdown_accepts_an_already_resumed_clock() {
+        tokio::time::resume();
+        check_harness_shutdown();
+    }
+
+    fn check_harness_shutdown() {
+        struct Completion(bool);
+
+        impl Drop for Completion {
+            fn drop(&mut self) {
+                assert!(
+                    self.0,
+                    "harness abandoned shutdown before native completion"
+                );
+            }
+        }
+
+        let mut completed = Completion(false);
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            let (finished, completion) = oneshot::channel();
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = finished.send(());
+            });
+            completion.await.expect("worker completed");
+            worker.join().expect("worker did not panic");
+            completed.0 = true;
+            drop(completed);
+        }));
+    }
 
     #[tokio::test(start_paused = true)]
     #[traced_test]

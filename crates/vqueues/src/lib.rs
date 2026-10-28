@@ -1610,7 +1610,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use restate_core::TaskCenter;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
     use restate_storage_api::Transaction;
@@ -1621,10 +1620,7 @@ mod tests {
     use super::*;
 
     async fn storage_test_environment() -> PartitionStore {
-        let rocksdb_manager = RocksDbManager::init();
-        TaskCenter::set_on_shutdown(Box::pin(async {
-            rocksdb_manager.shutdown().await;
-        }));
+        RocksDbManager::init();
 
         let manager = PartitionStoreManager::create(true)
             .await

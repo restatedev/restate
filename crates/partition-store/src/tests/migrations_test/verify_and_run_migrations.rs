@@ -240,8 +240,6 @@ async fn flag_off_keeps_partition_at_v1_5() {
     assert_eq!(count_legacy_promise(&store), legacy_promise_before);
     assert_eq!(count_scoped_state(&store), 0);
     assert_eq!(count_scoped_promise(&store), 0);
-
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -379,8 +377,6 @@ async fn scoped_tables_migrate_independently_and_bump_version() {
             .expect("read bootstrapped storage features")
             .is_some()
     );
-
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -420,8 +416,6 @@ async fn does_not_automatically_migrate_scoped_tables_at_1_8() {
     assert_eq!(count_legacy_promise(&store), service_ids.len());
     assert_eq!(count_scoped_state(&store), 0);
     assert_eq!(count_scoped_promise(&store), 0);
-
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -475,8 +469,6 @@ async fn future_unknown_features_report_the_names_raising_the_barrier() {
         other => panic!("unexpected error: {other}"),
     }
     assert_eq!(storage_version(&store), StorageVersion::None);
-
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -515,8 +507,6 @@ async fn flag_on_writes_post_migration_land_in_scoped() {
 
     assert_eq!(count_legacy_state(&store), 0);
     assert_eq!(count_scoped_state(&store), 1);
-
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -651,6 +641,4 @@ async fn obsolete_vqueue_metadata_cleanup_is_version_gated_and_idempotent() {
         let txn = store.transaction();
         assert!(txn.get_vqueue(&after_cleanup_qid).await.unwrap().is_some());
     }
-
-    RocksDbManager::get().shutdown().await;
 }

@@ -16,7 +16,6 @@ use super::storage_test_environment;
 
 use bytes::Bytes;
 use bytestring::ByteString;
-use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::promise_table::{
     Promise, PromiseResult, PromiseState, ReadPromiseTable, WritePromiseTable,
@@ -120,6 +119,4 @@ async fn promise_table() {
             .unwrap(),
         Some(PROMISE_COMPLETED)
     );
-
-    RocksDbManager::get().shutdown().await;
 }

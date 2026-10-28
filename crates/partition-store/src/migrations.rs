@@ -206,7 +206,6 @@ mod tests {
         assert_eq!(single_key_ranges, vec![KeyRange::new(42, 42)]);
 
         drop((ctx, left_ctx, right_ctx, single_key_ctx));
-        RocksDbManager::get().shutdown().await;
     }
 
     #[restate_core::test]
@@ -249,8 +248,6 @@ mod tests {
             msg.contains("9999") && msg.contains("storage version"),
             "unexpected error message: {msg}"
         );
-
-        RocksDbManager::get().shutdown().await;
     }
 }
 

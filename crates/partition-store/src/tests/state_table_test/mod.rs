@@ -20,7 +20,6 @@ use futures::{Stream, StreamExt};
 use restate_memory::{
     ByteCount, LocalMemoryPool, MemoryPool, NonZeroByteCount, OutOfMemoryKind, PinnableMemoryStream,
 };
-use restate_rocksdb::RocksDbManager;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::{BudgetedReadError, IsolationLevel, Transaction};
 use restate_types::Scope;
@@ -259,7 +258,6 @@ async fn budgeted_point_reads_are_lazy_and_snapshot_consistent() {
         assert!(live.next().await.is_none());
         assert!(frozen.next().await.is_none());
     }
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -330,7 +328,6 @@ async fn budgeted_point_reads_wait_wake_and_cancel() {
     assert_eq!(budget.in_flight(), 4);
     drop(second_held);
     assert_eq!(budget.in_flight(), 0);
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test]
@@ -372,7 +369,6 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
         assert_eq!(budget.in_flight(), 0);
     }
     drop(txn);
-    RocksDbManager::get().shutdown().await;
 }
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
@@ -411,6 +407,4 @@ async fn delete_all() {
         .expect("should not fail")
         .is_some()
     );
-
-    RocksDbManager::get().shutdown().await;
 }

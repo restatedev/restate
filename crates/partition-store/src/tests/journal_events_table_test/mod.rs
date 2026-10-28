@@ -10,7 +10,6 @@
 
 use super::storage_test_environment;
 use futures_util::StreamExt;
-use restate_rocksdb::RocksDbManager;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_events::EventView;
 use restate_storage_api::journal_events::{ReadJournalEventsTable, WriteJournalEventsTable};
@@ -65,6 +64,4 @@ async fn event() {
     let mut journal_events = rocksdb.get_journal_events(&MOCK_INVOCATION_ID_1).unwrap();
     assert!(journal_events.next().await.is_none());
     drop(journal_events);
-
-    RocksDbManager::get().shutdown().await;
 }

@@ -283,6 +283,19 @@ impl Handle {
         self.inner.shutdown_node(reason, exit_code).await;
     }
 
+    /// Await test teardown without a deadline driven by Tokio's possibly paused clock.
+    /// The test runner is responsible for terminating a stuck test process.
+    #[doc(hidden)]
+    pub async fn shutdown_for_test(&self) {
+        self.inner
+            .shutdown_node_with_timeout("completed", 0, None)
+            .await;
+        let finalizers = self.inner.test_finalizers.lock().take().unwrap_or_default();
+        for finalizer in finalizers {
+            finalizer.await;
+        }
+    }
+
     /// Use to monitor an on-going shutdown when requested
     pub fn shutdown_token(&self) -> CancellationToken {
         self.inner.global_cancel_token.clone()
@@ -337,9 +350,5 @@ impl OwnedHandle {
     /// The exit code that the process should exit with.
     pub fn exit_code(&self) -> i32 {
         self.inner.current_exit_code.load(Ordering::Relaxed)
-    }
-
-    pub fn is_shutdown_callback_set(&self) -> bool {
-        self.inner.on_shutdown.lock().is_some()
     }
 }

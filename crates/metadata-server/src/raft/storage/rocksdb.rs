@@ -797,7 +797,6 @@ mod tests {
         assert_eq!(storage.get_first_index(), 1);
         assert_eq!(storage.get_snapshot()?, Snapshot::default());
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -829,7 +828,6 @@ mod tests {
             assert_eq!(stored_entry, entry);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -910,7 +908,6 @@ mod tests {
             assert_eq!(stored_entry, entry);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -971,7 +968,6 @@ mod tests {
                 .is_err()
         );
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -1016,7 +1012,6 @@ mod tests {
             assert_eq!(stored_entries[index - 1], new_entries[index - 5]);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }

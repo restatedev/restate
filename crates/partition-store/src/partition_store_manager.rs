@@ -756,7 +756,6 @@ mod tests {
                 .await
                 .expect("all_storage_users_released");
         }
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -803,7 +802,6 @@ mod tests {
             .close()
             .await
             .expect("all_storage_users_released");
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -866,7 +864,6 @@ mod tests {
                 .await
                 .expect("all_storage_users_released");
         }
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -926,7 +923,6 @@ mod tests {
             drop(manager);
             database.close().await.expect("all_storage_users_released");
         }
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -997,7 +993,6 @@ mod tests {
             drop(manager);
             database.close().await.expect("all_storage_users_released");
         }
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -1089,7 +1084,6 @@ mod tests {
             drop(manager);
             database.close().await.expect("all_storage_users_released");
         }
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }

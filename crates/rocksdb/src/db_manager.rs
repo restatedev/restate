@@ -99,6 +99,10 @@ impl RocksDbManager {
         };
 
         DB_MANAGER.set(manager).expect("DBManager initialized once");
+        #[cfg(any(test, feature = "test-util"))]
+        TaskCenter::register_test_finalizer(Box::pin(async {
+            Self::get().shutdown().await;
+        }));
         // Start db monitoring.
         TaskCenter::spawn(
             TaskKind::SystemService,

@@ -140,7 +140,7 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
         })?;
 
     // Waiting for 10
-    let handle2: TaskHandle<googletest::Result<()>> =
+    let mut handle2: TaskHandle<googletest::Result<()>> =
         TaskCenter::spawn_unmanaged(TaskKind::TestRunner, "read", {
             let loglet = loglet.clone();
             async move {
@@ -186,11 +186,14 @@ pub async fn gapless_loglet_smoke_test(loglet: Arc<dyn Loglet>) -> googletest::R
 
     // test timeout future items
     let start = tokio::time::Instant::now();
-    let res = tokio::time::timeout(Duration::from_secs(10), handle2).await;
+    let res = tokio::time::timeout(Duration::from_secs(10), &mut handle2).await;
 
     // We have timedout waiting.
     assert!(res.is_err());
     assert!(start.elapsed() >= Duration::from_secs(10));
+    // Timing out a join handle does not stop the reader or release its loglet.
+    handle2.abort();
+    assert!(handle2.await.is_err());
     // Tail didn't change.
     assert_eq!(
         Lsn::new(5),

@@ -1206,7 +1206,6 @@ mod tests {
         TaskCenter::current()
             .shutdown_node("test_completed", 0)
             .await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -1385,7 +1384,6 @@ mod tests {
         TaskCenter::current()
             .shutdown_node("test_completed", 0)
             .await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 

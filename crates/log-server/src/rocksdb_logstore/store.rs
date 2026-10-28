@@ -629,7 +629,6 @@ mod tests {
     use googletest::prelude::*;
     use test_log::test;
 
-    use restate_core::TaskCenter;
     use restate_memory::MemoryLease;
     use restate_rocksdb::RocksDbManager;
     use restate_types::logs::{LogletId, LogletOffset, Record, SequenceNumber};
@@ -715,8 +714,6 @@ mod tests {
         let marker_again = log_store.load_marker().await?;
         assert_that!(marker_again, some(eq(marker)));
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -804,8 +801,6 @@ mod tests {
             some(eq(&GenerationalNodeId::new(2, 212)))
         );
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -967,8 +962,6 @@ mod tests {
             ]
         );
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }
