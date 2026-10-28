@@ -29,8 +29,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
-use restate_core::ShutdownError;
-use restate_rocksdb::admission::Admission;
+use restate_core::io::AdmissionClosed;
+use restate_core::io::FlightTracker;
 use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
@@ -453,7 +453,7 @@ impl PartitionStore {
         priority: Priority,
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> std::ops::ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let mut opts = ReadOptions::default();
         opts.set_async_io(true);
         self.iterator_for_each_physical(name, priority, opts, scan.into(), f)
@@ -465,7 +465,7 @@ impl PartitionStore {
         priority: Priority,
         scan: TableScan<K>,
         f: impl FnMut((&[u8], &[u8])) -> Result<Option<O>> + Send + 'static,
-    ) -> Result<ReceiverStream<Result<O>>, ShutdownError> {
+    ) -> Result<ReceiverStream<Result<O>>, AdmissionClosed> {
         let (tx, rx) = mpsc::channel(8);
         let on_iter = Self::iterator_step_filter_map(tx, f);
         let mut opts = ReadOptions::default();
@@ -482,7 +482,7 @@ impl PartitionStore {
         opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
         f: impl FnMut((&[u8], &[u8])) -> ControlFlow<Result<()>> + Send + 'static,
-    ) -> Result<impl Future<Output = Result<()>>, ShutdownError> {
+    ) -> Result<impl Future<Output = Result<()>>, AdmissionClosed> {
         let (tx, rx) = oneshot::channel();
         let on_iter = Self::iterator_step_for_each(tx, f);
         self.run_iterator_internal(name, priority, opts, scan, on_iter)?;
@@ -503,7 +503,7 @@ impl PartitionStore {
         mut opts: ReadOptions,
         scan: PhysicalScan<Bytes>,
         on_iter: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), ShutdownError> {
+    ) -> Result<(), AdmissionClosed> {
         match scan {
             PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
@@ -940,7 +940,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
-    admission: &'a Arc<Admission>,
+    admission: &'a Arc<FlightTracker>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,
