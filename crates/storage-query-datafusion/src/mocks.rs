@@ -164,6 +164,47 @@ impl SelectPartitions for MockPartitionSelector {
 #[allow(dead_code)]
 pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
 
+#[tokio::test]
+async fn query_fixture_shutdown_waits_for_native_close() -> anyhow::Result<()> {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+    use std::time::Duration;
+
+    use restate_core::{TaskCenterBuilder, TaskCenterFutureExt};
+
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()?;
+    let handle = task_center.to_handle();
+    let engine = MockQueryEngine::create().in_tc(&handle).await;
+    let mut closed = Box::pin(engine.1.partition_db().rocksdb().closed());
+    let paused = RocksDbManager::get().pause_lifecycle().await;
+    drop(engine);
+    let mut shutdown = Box::pin(handle.shutdown_for_test());
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        closed
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(paused);
+    tokio::time::timeout(Duration::from_secs(10), shutdown).await?;
+    assert!(
+        closed
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready(),
+        "returning from fixture shutdown must include native destruction"
+    );
+    Ok(())
+}
+
 #[derive(Debug)]
 struct NoopSvc;
 

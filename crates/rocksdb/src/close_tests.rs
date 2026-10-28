@@ -26,14 +26,14 @@ use restate_types::protobuf::common::DatabaseKind;
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
-use crate::{CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, RocksDb, RocksDbManager};
+use crate::{CfPrefixPattern, DbEnv, DbName, DbSpec, DbSpecBuilder, RocksAccess, RocksDbManager};
 
 // Owned by native options/the database, not by the completion observer. Blocking
 // its destruction distinguishes physical release from preparatory shutdown work.
-struct DropBarrier {
-    started: Option<oneshot::Sender<()>>,
-    resume: Mutex<mpsc::Receiver<()>>,
-    finished: Arc<AtomicBool>,
+pub(crate) struct DropBarrier {
+    pub(crate) started: Option<oneshot::Sender<()>>,
+    pub(crate) resume: Mutex<mpsc::Receiver<()>>,
+    pub(crate) finished: Arc<AtomicBool>,
 }
 
 impl EventListener for DropBarrier {}
@@ -66,7 +66,7 @@ impl CfConfigurator for Configurator {
     }
 }
 
-fn db_spec(name: &str, listener: Option<DropBarrier>) -> DbSpec {
+pub(crate) fn db_spec(name: &str, listener: Option<DropBarrier>) -> DbSpec {
     DbSpecBuilder::new(
         DbName::new(name),
         DatabaseKind::PartitionStore,
@@ -82,8 +82,8 @@ fn db_spec(name: &str, listener: Option<DropBarrier>) -> DbSpec {
 enum CloseMode {
     Explicit,
     Background,
-    Unregistered,
-    Inline,
+    Remote,
+    OutsideRuntime,
 }
 
 #[tokio::test]
@@ -116,7 +116,8 @@ async fn task_center_finalization_waits_for_native_close() -> anyhow::Result<()>
             finished: finished.clone(),
         }),
     );
-    let db = manager.open_db(spec).await?;
+    let (_, opening) = manager.open_db(spec)?;
+    let db = opening.await?;
     let mut closed = Box::pin(db.closed());
     drop(db);
     timeout(Duration::from_secs(10), reached).await??;
@@ -157,8 +158,8 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
     for (index, mode) in [
         CloseMode::Explicit,
         CloseMode::Background,
-        CloseMode::Unregistered,
-        CloseMode::Inline,
+        CloseMode::Remote,
+        CloseMode::OutsideRuntime,
     ]
     .into_iter()
     .enumerate()
@@ -175,11 +176,16 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
                 finished: finished.clone(),
             }),
         );
-        let db = if matches!(mode, CloseMode::Unregistered) {
-            // Native destruction must be dispatched even without a registry entry.
-            RocksDb::open(manager, spec, manager.db_env().clone()).await?
+        let db = if matches!(mode, CloseMode::Remote) {
+            let tracked = manager.remote_open_db(&spec)?;
+            let env = manager.db_env().clone();
+            tokio::task::spawn_blocking(move || {
+                manager.register_db(tracked, RocksAccess::open_db(spec, env))
+            })
+            .await??
         } else {
-            manager.open_db(spec).await?
+            let (_, opening) = manager.open_db(spec)?;
+            opening.await?
         };
         db.inner().as_raw_db().put(b"key", b"value")?;
 
@@ -194,7 +200,7 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
         );
 
         let mut close = None;
-        let mut inline_drop = None;
+        let mut outside_runtime_drop = None;
         match mode {
             CloseMode::Explicit => {
                 let retained = db.clone();
@@ -209,7 +215,7 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
                 );
                 close = Some(waiter);
             }
-            CloseMode::Background | CloseMode::Unregistered => {
+            CloseMode::Background | CloseMode::Remote => {
                 let retained = db.clone();
                 drop(db);
                 assert!(
@@ -225,9 +231,14 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
                 )
                 .await??;
             }
-            CloseMode::Inline => {
-                // No ambient Tokio runtime: native destruction happens here.
-                inline_drop = Some(std::thread::spawn(move || drop(db)));
+            CloseMode::OutsideRuntime => {
+                // No ambient Tokio runtime: cleanup still uses the lifecycle pool.
+                let (dropped, returned) = oneshot::channel();
+                outside_runtime_drop = Some(std::thread::spawn(move || {
+                    drop(db);
+                    let _ = dropped.send(());
+                }));
+                timeout(DEADLINE, returned).await??;
             }
         }
 
@@ -245,13 +256,14 @@ async fn native_close_survives_cancelled_waiters_and_releases_directory() -> any
         drop(resume);
         timeout(DEADLINE, closed).await?;
         assert!(finished.load(Ordering::Acquire));
-        if let Some(thread) = inline_drop {
-            thread.join().expect("inline cleanup succeeded");
+        if let Some(thread) = outside_runtime_drop {
+            thread.join().expect("outside-runtime drop succeeded");
         }
 
         // Physical completion releases the native directory lock and lets the
         // existing execution pools open the database again immediately.
-        let reopened = manager.open_db(db_spec(&name, None)).await?;
+        let (_, opening) = manager.open_db(db_spec(&name, None))?;
+        let reopened = opening.await?;
         assert_eq!(
             reopened.inner().as_raw_db().get(b"key")?.as_deref(),
             Some(b"value".as_slice())
