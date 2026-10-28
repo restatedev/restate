@@ -645,7 +645,10 @@ mod tests {
     use crate::tasks::StoreStorageTask;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         // create logstore.
         let builder = RocksDbLogStoreBuilder::create().await?;
         Ok(builder.start(Default::default()).await?)
@@ -715,8 +718,6 @@ mod tests {
         let marker_again = log_store.load_marker().await?;
         assert_that!(marker_again, some(eq(marker)));
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -804,8 +805,6 @@ mod tests {
             some(eq(&GenerationalNodeId::new(2, 212)))
         );
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -967,8 +966,6 @@ mod tests {
             ]
         );
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }

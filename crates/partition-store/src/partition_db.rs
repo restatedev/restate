@@ -24,9 +24,8 @@ use tokio::time::Instant;
 use tracing::{debug, info, instrument, warn};
 
 use restate_core::ShutdownError;
-use restate_rocksdb::admission::Admission;
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
-use restate_rocksdb::{DbName, RocksDb, RocksError};
+use restate_rocksdb::{DatabaseScope, DbName, RocksDb, RocksError};
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
 use restate_types::logs::{Lsn, SequenceNumber};
@@ -55,7 +54,7 @@ pub(crate) struct PartitionStoreDb {
 #[derive(Clone)]
 pub struct PartitionDb {
     meta: Arc<Partition>,
-    admission: Arc<Admission>,
+    admission: Arc<DatabaseScope>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     // Note: Rust will drop the fields in the order they are declared in the struct.
@@ -73,7 +72,7 @@ impl PartitionDb {
     ) -> Self {
         Self {
             meta,
-            admission: Arc::new(Admission::default()),
+            admission: database.rocksdb.register_scope(),
             durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
             // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
@@ -91,7 +90,7 @@ impl PartitionDb {
         &self.database.rocksdb
     }
 
-    pub(crate) fn admission(&self) -> &Arc<Admission> {
+    pub(crate) fn admission(&self) -> &Arc<DatabaseScope> {
         &self.admission
     }
 
@@ -452,7 +451,7 @@ impl PartitionCell {
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
     ) -> Result<(), RocksError> {
         // Keep the sealed lifetime in the cell while draining. Cancelling this
-        // waiter must not allow a reopen/replacement to bypass admitted writes.
+        // waiter must not allow a reopen/replacement to bypass admitted work.
         guard.close().await;
         // We set the state to Unknown in case we returned an error during the drop process.
         let state = std::mem::replace(guard.deref_mut(), State::Unknown);
@@ -511,13 +510,13 @@ pub(crate) enum State {
     Open {
         db: PartitionDb,
     },
-    /// Transaction-commit admission is sealed; drainage has not yet been confirmed.
+    /// Partition I/O admission is sealed; drainage has not yet been confirmed.
     /// Retain the sealed lifetime here even if the close waiter is cancelled.
     Closing {
         db: PartitionDb,
         closing_at: Instant,
     },
-    /// Transaction-commit admission is sealed and admitted commits have drained.
+    /// Partition I/O admission is sealed and admitted work has drained.
     /// Physical resources remain available for maintenance, reopening, or deletion.
     Closed {
         db: PartitionDb,
@@ -554,14 +553,14 @@ impl State {
             State::Unknown | State::CfMissing => return None,
             State::Open { db } => return Some(db.clone()),
             State::Closing { db, closing_at } => {
-                // A cancelled close may have left admitted writes in flight.
+                // A cancelled close may have left admitted work in flight.
                 Self::drain_for_close(db, *closing_at).await;
                 db
             }
             State::Closed { db, .. } => db,
         };
         let mut db = db.clone();
-        db.admission = Arc::new(Admission::default());
+        db.admission = db.rocksdb().register_scope();
         *self = State::Open { db: db.clone() };
         Some(db)
     }

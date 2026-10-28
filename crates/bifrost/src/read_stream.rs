@@ -804,7 +804,10 @@ mod tests {
         let read_from = Lsn::from(6);
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         let svc = BifrostService::new(env.metadata_writer).enable_local_loglet(config);
         let bifrost = svc.handle();
@@ -883,7 +886,10 @@ mod tests {
             .build()
             .await;
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         let svc = BifrostService::new(node_env.metadata_writer.clone()).enable_local_loglet(config);
         let bifrost = svc.handle();
@@ -981,7 +987,10 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer.clone())
@@ -1142,7 +1151,10 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
@@ -1262,7 +1274,10 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer)
@@ -1393,7 +1408,10 @@ mod tests {
             .await;
 
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         // enable both in-memory and local loglet types
         let svc = BifrostService::new(node_env.metadata_writer.clone())
@@ -1467,7 +1485,10 @@ mod tests {
             .build()
             .await;
         let config = Constant::new(LocalLogletOptions::default()).boxed();
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let svc = BifrostService::new(node_env.metadata_writer.clone())
             .enable_local_loglet(config)
             .enable_in_memory_loglet();

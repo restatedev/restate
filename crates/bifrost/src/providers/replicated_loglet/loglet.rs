@@ -473,7 +473,10 @@ mod tests {
         set_current_config(config.clone());
         let config = Live::from_value(config);
 
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let mut address_book = AddressBook::new(restate_types::config::node_filepath(""));
 
         let mut node_env =
@@ -510,8 +513,6 @@ mod tests {
         };
 
         future(env).await?;
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
