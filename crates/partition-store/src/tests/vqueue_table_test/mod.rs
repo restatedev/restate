@@ -28,8 +28,12 @@
 use std::collections::BTreeSet;
 
 use restate_clock::time::MillisSinceEpoch;
+use restate_limiter::LimitKey;
 use restate_storage_api::Transaction;
 use restate_storage_api::vqueue_table::filters::ScanEntryIdFilter;
+use restate_storage_api::vqueue_table::metadata::{
+    Action, MoveMetrics, Update, VQueueLink, VQueueMeta,
+};
 use restate_storage_api::vqueue_table::{
     EntryContext, EntryKey, EntryMetadata, EntryStateRef, EntryStatusHeader, EntryValue, Options,
     ReadVQueueTable, Stage, Status, VQueueCursor, VQueueRunningCursor, VQueueStore,
@@ -781,4 +785,43 @@ pub(crate) async fn run_tests(mut rocksdb: PartitionStore) {
     // sees current storage and that an existing reader holds a fixed view.
     fresh_reader_sees_current_state(&mut rocksdb).await;
     existing_reader_does_not_see_post_snapshot_writes(&mut rocksdb).await;
+    describe_vqueue_reports_counters_and_rows(&mut rocksdb).await;
+}
+
+/// The diagnostic description names the stored counters, the rows per stage and the status
+/// headers, so a running count with no row behind it is visible at a glance.
+async fn describe_vqueue_reports_counters_and_rows(rocksdb: &mut PartitionStore) {
+    let qid = VQueueId::custom(7000, "diag");
+    let at = UniqueTimestamp::try_from(1_000u64).unwrap();
+    let metrics = MoveMetrics {
+        last_transition_at: at,
+        has_started: false,
+        first_runnable_at: MillisSinceEpoch::new(1_000),
+        scheduler_wait_stats: None,
+    };
+    let mut meta = VQueueMeta::new(at, None, LimitKey::None, VQueueLink::None);
+
+    let mut txn = rocksdb.transaction();
+    txn.create_vqueue(&qid, &meta);
+    let (key, value) = default_entry(1);
+    txn.put_vqueue_inbox(&qid, Stage::Inbox, &key, &value);
+    for next_stage in [Stage::Inbox, Stage::Running] {
+        let update = Update::new(
+            at,
+            Action::Move {
+                prev_stage: None,
+                next_stage,
+                metrics: metrics.clone(),
+            },
+        );
+        let _ = txn.update_vqueue(&qid, &mut meta, &update);
+    }
+    txn.commit().await.expect("commit should succeed");
+    drop(txn);
+
+    let report = rocksdb.partition_db().describe_vqueue(&qid);
+    assert!(report.contains("num_inbox=1 num_running=1"), "{report}");
+    assert!(report.contains("inbox: 1 rows"), "{report}");
+    assert!(report.contains("running: 0 rows"), "{report}");
+    assert!(report.contains("status headers: 0"), "{report}");
 }

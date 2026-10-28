@@ -27,4 +27,8 @@ impl VQueueStore for PartitionDb {
     fn new_inbox_reader(&self, qid: &VQueueId, opts: Options) -> Self::InboxReader {
         VQueueWaitingReader::new(self, qid, opts)
     }
+
+    fn describe_vqueue(&self, qid: &VQueueId) -> String {
+        super::diagnostics::describe_vqueue(self, qid)
+    }
 }

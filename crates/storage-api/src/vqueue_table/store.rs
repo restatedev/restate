@@ -30,6 +30,13 @@ pub trait VQueueStore {
 
     fn new_run_reader(&self, qid: &VQueueId) -> Self::RunningReader;
     fn new_inbox_reader(&self, qid: &VQueueId, opts: Options) -> Self::InboxReader;
+
+    /// Describes the stored state of a vqueue for diagnostics: its metadata row, the rows it
+    /// holds per stage and the status headers that point at it. Only called after an
+    /// inconsistency has been detected; the default has nothing to show.
+    fn describe_vqueue(&self, _qid: &VQueueId) -> String {
+        "no storage diagnostics available".to_owned()
+    }
 }
 
 /// Iterator over inbox-stage vqueue entries

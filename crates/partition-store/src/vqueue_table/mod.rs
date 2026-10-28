@@ -8,6 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+mod diagnostics;
 mod entry;
 mod inbox;
 mod inbox_reader;
@@ -29,9 +30,10 @@ use anyhow::Context;
 use bilrost::{BorrowedMessage, Message, OwnedMessage};
 use bytes::BytesMut;
 use futures::FutureExt;
+use metrics::counter;
 use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 use strum::EnumCount;
-use tracing::error;
+use tracing::{error, warn};
 
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
@@ -53,6 +55,7 @@ use self::entry::entry_status_header_from_raw;
 use self::inbox::InboxKeyRef;
 use self::key_codec::HasLock;
 use crate::keys::{DecodeTableKey, EncodeTableKey, EncodeTableKeyPrefix, KeyDecode, KeyKind};
+use crate::metric_definitions::VQUEUE_COUNTER_UNDERFLOW;
 use crate::scan::TableScan;
 use crate::vqueue_table::input::InputPayloadKeyRef;
 use crate::{
@@ -238,6 +241,19 @@ impl WriteVQueueTable for PartitionStoreTransaction<'_> {
         let was_active_before = meta.is_active();
         let should_write_full = restate_util_random::pseudo_random() < full_write_threshold
             || update.ts.saturating_sub_ms(meta.stats().last_modified_at()) > HOUR_MS;
+        if let Some(stage) = update.decremented_stage()
+            && meta.stage_count(stage) == 0
+        {
+            // The counter saturates at zero, so this is the only trace that the metadata and
+            // the stage rows disagree.
+            warn!(
+                vqueue = %qid,
+                %stage,
+                action = ?update.action,
+                "vqueue counter underflow: an entry leaves a stage whose counter is already 0"
+            );
+            counter!(VQUEUE_COUNTER_UNDERFLOW, "stage" => stage.to_string()).increment(1);
+        }
         meta.apply_update(update);
         let is_active_now = meta.is_active();
 

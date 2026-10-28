@@ -14,13 +14,16 @@ use std::time::Duration;
 use enum_map::{Enum, EnumMap};
 use metrics::counter;
 use tokio::time::Instant;
+use tracing::error;
 
 use restate_clock::RoughTimestamp;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::EntryMetadata;
 use restate_storage_api::vqueue_table::metadata::VQueueMeta;
 use restate_storage_api::vqueue_table::scheduler::YieldReason;
-use restate_storage_api::vqueue_table::{EntryKey, EntryValue, VQueueStore, stats::WaitStats};
+use restate_storage_api::vqueue_table::{
+    EntryKey, EntryValue, VQueueRunningCursor, VQueueStore, stats::WaitStats,
+};
 use restate_types::vqueues::{EntryId, VQueueId};
 use restate_worker_api::ResourceKind;
 
@@ -28,7 +31,8 @@ use crate::cache::{self, VQueueHandle};
 use crate::metric_definitions::{
     VQUEUE_CONCURRENCY_RULES_WAIT_MS, VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
     VQUEUE_INVOKER_CONCURRENCY_WAIT_MS, VQUEUE_INVOKER_MEMORY_WAIT_MS,
-    VQUEUE_INVOKER_THROTTLING_WAIT_MS, VQUEUE_LOCK_WAIT_MS, VQUEUE_THROTTLING_RULES_WAIT_MS,
+    VQUEUE_INVOKER_THROTTLING_WAIT_MS, VQUEUE_LOCK_WAIT_MS, VQUEUE_RUNNING_COUNT_MISMATCH,
+    VQUEUE_THROTTLING_RULES_WAIT_MS,
 };
 use crate::scheduler::queue::QueueItem;
 
@@ -329,6 +333,10 @@ impl<S: VQueueStore> VQueueState<S> {
         storage: &S,
         refill_mode: RefillMode,
     ) -> Poll<Result<Eligibility, StorageError>> {
+        if let Some(num_running) = self.queue.pending_running_count() {
+            Self::check_running_stage_is_backed(slot, storage, num_running);
+        }
+
         ready!(self.queue.poll_advance_if_needed(
             cx,
             storage,
@@ -339,6 +347,26 @@ impl<S: VQueueStore> VQueueState<S> {
         ))?;
 
         Poll::Ready(Ok(self.check_eligibility(slot.meta()).as_compact()))
+    }
+
+    /// The scheduler relies on the metadata's running count matching the running-stage rows;
+    /// a mismatch is a bug. Before the queue opens its running stage for the first time, check
+    /// that rows exist behind the count and, if they do not, log a full description of the
+    /// vqueue so the divergence can be traced.
+    fn check_running_stage_is_backed(slot: &cache::Slot, storage: &S, num_running: u32) {
+        let mut probe = storage.new_run_reader(slot.vqueue_id());
+        probe.seek_to_first();
+        if !matches!(probe.peek(), Ok(None)) {
+            return;
+        }
+        counter!(VQUEUE_RUNNING_COUNT_MISMATCH).increment(1);
+        error!(
+            vqueue = %slot.vqueue_id(),
+            num_running,
+            cached_meta = ?slot.meta(),
+            storage = %storage.describe_vqueue(slot.vqueue_id()),
+            "vqueue metadata counts running entries but its running stage holds no rows"
+        );
     }
 
     pub fn check_eligibility(&self, meta: &VQueueMeta) -> DetailedEligibility {

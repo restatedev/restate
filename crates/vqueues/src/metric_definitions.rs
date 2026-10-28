@@ -13,6 +13,8 @@ use metrics::{Unit, counter, describe_counter};
 pub const VQUEUE_ENQUEUE: &str = "restate.vqueue.scheduler.enqueue.total";
 pub const VQUEUE_SCHEDULER_DECISION: &str = "restate.vqueue.scheduler.decision.total";
 pub const VQUEUE_RUN_CONFIRMED: &str = "restate.vqueue.scheduler.run_confirmed.total";
+pub const VQUEUE_RUNNING_COUNT_MISMATCH: &str =
+    "restate.vqueue.scheduler.running_count_mismatch.total";
 pub const VQUEUE_INVOKER_MEMORY_WAIT_MS: &str =
     "restate.vqueue.scheduler.invoker_memory_wait_ms.total";
 pub const VQUEUE_INVOKER_CONCURRENCY_WAIT_MS: &str =
@@ -92,6 +94,12 @@ pub fn describe_metrics() {
         VQUEUE_DEPLOYMENT_CONCURRENCY_WAIT_MS,
         Unit::Count,
         "Cumulative number of milliseconds spent blocked on deployment concurrency capacity"
+    );
+
+    describe_counter!(
+        VQUEUE_RUNNING_COUNT_MISMATCH,
+        Unit::Count,
+        "Number of vqueues whose metadata counted running entries while their running stage held no rows when the scheduler opened it"
     );
 }
 
