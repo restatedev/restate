@@ -21,6 +21,7 @@ use datafusion::common::DataFusionError;
 use googletest::matcher::{Matcher, MatcherResult};
 use serde_json::Value;
 
+use restate_core::TaskCenter;
 use restate_metadata_store::MetadataStoreClient;
 use restate_partition_store::{PartitionStore, PartitionStoreManager};
 use restate_rocksdb::RocksDbManager;
@@ -164,6 +165,48 @@ impl SelectPartitions for MockPartitionSelector {
 #[allow(dead_code)]
 pub(crate) struct MockQueryEngine(Arc<PartitionStoreManager>, PartitionStore, QueryContext);
 
+#[tokio::test]
+async fn query_fixture_shutdown_waits_for_native_close() -> anyhow::Result<()> {
+    use std::future::Future;
+    use std::task::{Context, Waker};
+    use std::time::Duration;
+
+    use restate_core::{TaskCenterBuilder, TaskCenterFutureExt};
+
+    let task_center = TaskCenterBuilder::default()
+        .default_runtime_handle(tokio::runtime::Handle::current())
+        .build()?;
+    let handle = task_center.to_handle();
+    let engine = MockQueryEngine::create().in_tc(&handle).await;
+    assert!(task_center.is_shutdown_callback_set());
+    let mut closed = Box::pin(engine.1.partition_db().rocksdb().closed());
+    let paused = RocksDbManager::get().pause_lifecycle().await;
+    drop(engine);
+    let mut shutdown = Box::pin(handle.shutdown_node("test completed", 0));
+    assert!(
+        shutdown
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    assert!(
+        closed
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_pending()
+    );
+    drop(paused);
+    tokio::time::timeout(Duration::from_secs(10), shutdown).await?;
+    assert!(
+        closed
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+            .is_ready(),
+        "returning from fixture shutdown must include native destruction"
+    );
+    Ok(())
+}
+
 #[derive(Debug)]
 struct NoopSvc;
 
@@ -204,7 +247,12 @@ impl MockQueryEngine {
         + 'static,
     ) -> Self {
         // Prepare Rocksdb
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        // The test harness must wait for native destruction before process exit
+        // tears down RocksDB's C++ statics. Dropping the engine only queues it.
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let manager = PartitionStoreManager::create(true)
             .await
             .expect("DB creation succeeds");

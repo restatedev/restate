@@ -296,7 +296,7 @@ mod tests {
     use test_log::test;
 
     use crate::loglet::Loglet;
-    use restate_core::{TaskCenter, TestCoreEnvBuilder};
+    use restate_core::TestCoreEnvBuilder;
     use restate_rocksdb::RocksDbManager;
     use restate_types::config::Configuration;
     use restate_types::live::{Live, LiveLoadExt};
@@ -312,8 +312,6 @@ mod tests {
                 async fn [<local_loglet_  $test>]() -> googletest::Result<()> {
                     let loglet = create_loglet().await.into_test_result()?;
                     crate::loglet::loglet_tests::$test(loglet).await?;
-                    TaskCenter::shutdown_node("test completed", 0).await;
-                    RocksDbManager::get().shutdown().await;
                     Ok(())
                 }
             }
@@ -327,7 +325,10 @@ mod tests {
             .await;
 
         let config = Live::from_value(Configuration::default());
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let params = LogletParams::from("42".to_string());
 
         let local_loglet_config = config.map(|config| &config.bifrost.local);
@@ -360,7 +361,10 @@ mod tests {
             .await;
 
         let config = Live::from_value(Configuration::default());
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         let local_loglet_config = config.map(|config| &config.bifrost.local);
         let log_store = RocksDbLogStore::create(local_loglet_config.clone()).await?;
@@ -377,8 +381,6 @@ mod tests {
             crate::loglet::loglet_tests::append_after_seal_concurrent(loglet).await?;
         }
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
