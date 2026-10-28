@@ -544,7 +544,7 @@ impl PartitionStore {
     /// when no durable position is known or the old column family has been removed.
     pub async fn get_durable_lsn(&mut self) -> Result<watch::Receiver<Lsn>> {
         let needs_recovery = *self.db.durable_lsn_sender().borrow() == Lsn::INVALID;
-        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self).await? {
+        if needs_recovery && let Some(lsn) = get_locally_durable_lsn(self)? {
             self.db.note_durable_lsn(lsn);
         }
 
