@@ -229,6 +229,14 @@ impl RocksDbManager {
         &self.0.db_env
     }
 
+    /// The `rs:io-lifecycle` pool that opens and closes this manager's databases.
+    /// Other components can share it for lifecycle work that must not wait behind
+    /// regular storage I/O, such as creating or importing partition stores. That
+    /// work competes with opening and closing databases for the same threads.
+    pub fn lifecycle_executor(&self) -> &SinglePoolExecutor {
+        &self.0.lifecycle_executor
+    }
+
     /// Starts opening a database with the manager's shared resources and returns
     /// right away, with the new database's [`DbRef`] and a future for the result.
     ///
