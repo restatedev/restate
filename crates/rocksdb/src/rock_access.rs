@@ -12,10 +12,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, ImportColumnFamilyOptions};
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::RawRocksDb;
 use crate::RocksError;
@@ -179,6 +180,28 @@ impl RocksAccess {
         &self.db
     }
 
+    pub fn export_cf(
+        &self,
+        name: CfName,
+        export_dir: PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        let _perf = RocksDbReadPerfGuard::new("export-column-family");
+        let checkpoint = Checkpoint::new(self.as_raw_db())?;
+        let cf = self
+            .cf_handle(name.as_str())
+            .ok_or_else(|| RocksError::UnknownColumnFamily(name.clone()))?;
+        let metadata = checkpoint.export_column_family(&cf, export_dir.as_path())?;
+        if metadata.get_files().is_empty() {
+            error!(
+                "Refusing to create an empty snapshot! RocksDB column family export \
+                returned an empty set of files. The export is retained at: {}",
+                export_dir.display()
+            );
+            return Err(RocksError::SnapshotEmpty);
+        }
+        Ok(metadata)
+    }
+
     pub fn open_cf(&self, name: CfName) -> Result<(), RocksError> {
         let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
         debug!("Creating column family {}/{name}", self.name());
@@ -237,7 +260,7 @@ impl RocksAccess {
         info!("Rocksdb '{}' was gracefully closed", self.name());
     }
 
-    pub(crate) fn import_cf(
+    pub fn import_cf(
         &self,
         name: CfName,
         metadata: ExportImportFilesMetaData,

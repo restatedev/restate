@@ -1344,6 +1344,25 @@ mod tests {
     use restate_types::config::CommonOptionsBuilder;
 
     use super::*;
+    use crate as restate_core;
+
+    #[crate::test(start_paused = true)]
+    async fn harness_shutdown_waits_for_real_threads() {
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            let (finished, completion) = oneshot::channel();
+            let worker = std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(50));
+                let _ = finished.send(());
+            });
+            // With a paused clock this deadline auto-advances while the real
+            // thread is still working, just like a native storage close.
+            tokio::time::timeout(Duration::from_secs(10), completion)
+                .await
+                .expect("shutdown must use real time")
+                .expect("worker completed");
+            worker.join().expect("worker did not panic");
+        }));
+    }
 
     #[tokio::test(start_paused = true)]
     #[traced_test]

@@ -968,7 +968,10 @@ mod tests {
     use super::LogletWorker;
 
     async fn setup() -> Result<RocksDbLogStore> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let metadata_builder = MetadataBuilder::default();
         assert!(TaskCenter::try_set_global_metadata(
             metadata_builder.to_metadata()
@@ -1034,9 +1037,6 @@ mod tests {
         let stored = msg2_reply.await?;
         assert_that!(stored.status, eq(Status::Ok));
         assert_that!(stored.local_tail, eq(LogletOffset::new(5)));
-
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
 
         Ok(())
     }
@@ -1156,8 +1156,6 @@ mod tests {
         assert_that!(info.trim_point, eq(LogletOffset::INVALID));
         assert_that!(info.sealed, eq(true));
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -1297,8 +1295,6 @@ mod tests {
         assert_that!(info.local_tail, eq(LogletOffset::new(18)));
         assert_that!(info.trim_point, eq(LogletOffset::INVALID));
         assert_that!(info.sealed, eq(true));
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
@@ -1494,9 +1490,6 @@ mod tests {
             }
         }
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
-
         Ok(())
     }
 
@@ -1680,8 +1673,6 @@ mod tests {
         assert_that!(loglet_state.trim_point(), eq(LogletOffset::new(6)));
         assert_that!(loglet_state.local_tail().offset(), eq(LogletOffset::new(7)));
 
-        TaskCenter::shutdown_node("test completed", 0).await;
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }

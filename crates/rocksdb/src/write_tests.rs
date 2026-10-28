@@ -20,11 +20,11 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
+use restate_core::io::FlightTracker;
 use restate_platform::sync::Mutex;
 use restate_types::config::node_dir;
 use restate_types::protobuf::common::DatabaseKind;
 
-use crate::admission::Admission;
 use crate::configuration::{
     CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
 };
@@ -53,7 +53,7 @@ impl CfConfigurator for Configurator {
 
 // Captured by the write closure: its destruction must precede lease completion.
 struct DropProbe {
-    admission: Weak<Admission>,
+    admission: Weak<FlightTracker>,
     released: Arc<AtomicBool>,
 }
 
@@ -107,7 +107,8 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     )
     .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
     .build()?;
-    let db = manager.open_db(spec).await?;
+    let (_, opening) = manager.open_db(spec)?;
+    let db = opening.await?;
 
     // Obtain real errors through the binding's public API. A cache-only read of
     // flushed data with caching disabled deterministically returns Incomplete.
@@ -134,7 +135,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         IoMode::Default,
     ] {
         for fail in [false, true] {
-            let admission = Arc::new(Admission::default());
+            let admission = Arc::new(FlightTracker::default());
             let lease = admission.try_acquire().unwrap();
             admission.seal();
             let released = Arc::new(AtomicBool::new(false));
@@ -159,7 +160,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                     }
                 },
                 db: &db,
-                lease: Some(lease),
+                lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
             };
             let result = db
                 .write_batch_internal("inline-lease", Priority::High, mode, write)
@@ -171,11 +172,15 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         }
     }
 
-    // Both dispatch branches must retain the lease while queued, then running,
-    // even after the async result waiter has been destroyed.
-    for mode in [IoMode::AlwaysBackground, IoMode::Default] {
+    // Both background branches retain leases until disposal or execution ends.
+    // Abandoned queued writes are skipped; already-running writes complete.
+    for (mode, cancel_before_start) in [IoMode::AlwaysBackground, IoMode::Default]
+        .into_iter()
+        .flat_map(|mode| [true, false].map(|cancel| (mode, cancel)))
+    {
+        db.inner().as_raw_db().delete(b"background")?;
         let pause = manager.pause_background(Priority::High).await;
-        let admission = Arc::new(Admission::default());
+        let admission = Arc::new(FlightTracker::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal(); // Default-mode promotion must work after sealing too.
         let released = Arc::new(AtomicBool::new(false));
@@ -206,7 +211,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                 db.write_batch_with_index(batch, opts)
             },
             db: &db,
-            lease: Some(lease),
+            lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
         };
         let (completed, mut notification) = oneshot::channel();
         let observed = Arc::new(DbRefsOnWake {
@@ -229,21 +234,28 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                 .poll(&mut Context::from_waker(Waker::noop()))
                 .is_pending()
         );
-        drop(write);
         assert!(!released.load(Ordering::Acquire));
         assert!(matches!(
             notification.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
         ));
-        drop(pause);
-        timeout(DEADLINE, reached).await??;
-        assert!(!released.load(Ordering::Acquire));
-        assert!(
-            drain
-                .as_mut()
-                .poll(&mut Context::from_waker(&waker))
-                .is_pending()
-        );
+        if cancel_before_start {
+            drop(write);
+            assert!(!released.load(Ordering::Acquire));
+            drop(pause);
+            assert!(timeout(DEADLINE, reached).await?.is_err());
+        } else {
+            drop(pause);
+            timeout(DEADLINE, reached).await??;
+            drop(write);
+            assert!(!released.load(Ordering::Acquire));
+            assert!(
+                drain
+                    .as_mut()
+                    .poll(&mut Context::from_waker(&waker))
+                    .is_pending()
+            );
+        }
         drop(resume);
         // Register a second waiter so the ownership-observing waker stays installed.
         timeout(DEADLINE, admission.drain()).await?;
@@ -251,14 +263,14 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         assert!(released.load(Ordering::Acquire));
         assert_eq!(
             db.inner().as_raw_db().get(b"background")?.as_deref(),
-            Some(b"value".as_slice())
+            (!cancel_before_start).then_some(b"value".as_slice())
         );
     }
 
     // Exercise destruction without execution, a terminal error, and unwinding
     // through the same owned operation used by the background executor.
     for outcome in 0..3 {
-        let admission = Arc::new(Admission::default());
+        let admission = Arc::new(FlightTracker::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal();
         let released = Arc::new(AtomicBool::new(false));
@@ -278,7 +290,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
                 Err(terminal.clone())
             },
             db: &db,
-            lease: Some(lease),
+            lease: (Some(lease), db.background_tracker.try_acquire().unwrap()),
         }
         .into_background();
         match outcome {

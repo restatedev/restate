@@ -8,11 +8,14 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
+use std::sync::Arc;
 use std::time::Instant;
 
 use derive_builder::Builder;
-use metrics::{gauge, histogram};
-use tokio::sync::oneshot;
+use metrics::{Gauge, gauge, histogram};
+use parking_lot::Mutex;
+
+use restate_core::io::{AdmissionClosed, FlightTracker, IoExecutor, IoOp, IoTask, TrackedTask};
 
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{OP_TYPE, PRIORITY, Priority, STORAGE_BG_TASK_IN_FLIGHT};
@@ -23,6 +26,7 @@ pub enum StorageTaskKind {
     WriteBatch,
     OpenColumnFamily,
     ImportColumnFamily,
+    DropColumnFamily,
     ExportColumnFamily,
     FlushWal,
     FlushMemtables,
@@ -39,11 +43,137 @@ impl StorageTaskKind {
     }
 }
 
+/// A storage operation without scheduling metadata. Construction does not acquire
+/// admission; call inline or attach background metadata before submission.
+#[must_use = "execute, schedule, or explicitly drop the operation"]
+pub struct StorageOp<'a, OP> {
+    op: OP,
+    tracker: &'a Arc<FlightTracker>,
+}
+
+impl<'a, OP, R> StorageOp<'a, OP>
+where
+    OP: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    pub(crate) fn new(op: OP, tracker: &'a Arc<FlightTracker>) -> Self {
+        Self { op, tracker }
+    }
+
+    /// Create a caller-selected guard on the executing thread, after admission.
+    /// The guard need not be Send. It is dropped after execution or on unwind;
+    /// rejection and disposal without execution never invoke the factory.
+    /// This is ordinary closure composition and does not prevent nested guards.
+    ///
+    /// # Examples
+    ///
+    /// Opt into RocksDB read metrics. Construct the guard inside the factory,
+    /// rather than capturing an existing guard: RocksDB perf guards are thread-local.
+    /// Use `RocksDbWritePerfGuard` instead for write operations.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard};
+    /// use std::sync::Arc;
+    ///
+    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
+    /// let value = db
+    ///     .prepare_op(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .with_guard(|| RocksDbReadPerfGuard::new("lookup"))
+    ///     .call()??;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Inject latency before background execution. The factory can return `()`
+    /// when no cleanup is needed. The delay happens on the worker, not at submission.
+    ///
+    /// ```no_run
+    /// use restate_core::io::IoExecutor;
+    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
+    /// use std::{sync::Arc, time::Duration};
+    ///
+    /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
+    /// let task = db
+    ///     .prepare_op(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)))
+    ///     .background("delayed-lookup", StorageTaskKind::MultiGet);
+    /// let result = executor.spawn(task)?;
+    /// // Keep `result` alive and await it; dropping it can skip queued work.
+    /// // Use `executor.dispatch(task)` instead for fire-and-forget execution.
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// Scope a test-only thread-local fault flag to execution, restoring its
+    /// previous value even if the operation unwinds. The operation (or a helper
+    /// it calls) can consult the flag to decide whether to inject a failure.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::RocksDb;
+    /// use std::{cell::Cell, sync::Arc};
+    ///
+    /// thread_local! {
+    ///     static INJECT_FAILURE: Cell<bool> = const { Cell::new(false) };
+    /// }
+    /// struct RestoreFaultFlag(bool);
+    /// impl Drop for RestoreFaultFlag {
+    ///     fn drop(&mut self) {
+    ///         INJECT_FAILURE.set(self.0);
+    ///     }
+    /// }
+    ///
+    /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
+    /// db.prepare_op(|_db| assert!(INJECT_FAILURE.get()))
+    ///     .with_guard(|| RestoreFaultFlag(INJECT_FAILURE.replace(true)))
+    ///     .call()?;
+    /// assert!(!INJECT_FAILURE.get());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_guard<G>(
+        self,
+        make_guard: impl FnOnce() -> G + Send + 'static,
+    ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
+        let Self { op, tracker } = self;
+        StorageOp::new(
+            move || {
+                let _guard = make_guard();
+                op()
+            },
+            tracker,
+        )
+    }
+
+    /// Execute inline with borrowed admission and no automatic instrumentation.
+    pub fn call(self) -> Result<R, AdmissionClosed> {
+        let lease = self.tracker.try_acquire().ok_or(AdmissionClosed)?;
+        Ok(TrackedTask::new(self.op, lease).run())
+    }
+
+    /// Attach background metadata without acquiring admission or adding guards.
+    pub fn background(self, name: &'static str, kind: StorageTaskKind) -> ReadyStorageTask<'a, OP> {
+        StorageTask::default()
+            .op(self.op)
+            .tracker(self.tracker)
+            .name(name)
+            .kind(kind)
+            .build()
+            .unwrap()
+    }
+}
+
+/// A storage operation ready to attempt execution. An optional borrowed tracker
+/// is admitted only by `call` or `into_task`; construction does not block drainage.
 #[derive(Builder)]
 #[builder(pattern = "owned")]
 #[builder(name = "StorageTask")]
-pub struct ReadyStorageTask<OP> {
+#[must_use = "dispatch, execute, or explicitly drop the prepared storage operation"]
+pub struct ReadyStorageTask<'a, OP> {
     op: OP,
+    #[builder(default, setter(strip_option))]
+    tracker: Option<&'a Arc<FlightTracker>>,
+    #[builder(default, setter(strip_option))]
+    name: Option<&'static str>,
     #[builder(default)]
     pub(crate) priority: Priority,
     /// required
@@ -53,50 +183,310 @@ pub struct ReadyStorageTask<OP> {
     created_at: Instant,
 }
 
-impl<OP, R> ReadyStorageTask<OP>
+struct InFlight(Gauge);
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.decrement(1);
+    }
+}
+
+impl<OP, R> ReadyStorageTask<'_, OP>
 where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    pub fn into_runner(self) -> impl FnOnce() -> R + Send + 'static {
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-         PRIORITY => self.priority.as_static_str(),
-         OP_TYPE => self.kind.as_static_str(),
-        )
-        .increment(1);
+    /// Override the scheduling hint before preparing or dispatching the task.
+    pub fn with_priority(mut self, priority: Priority) -> Self {
+        self.priority = priority;
+        self
+    }
+}
 
-        let span = tracing::Span::current();
+impl<OP, R> IoOp for ReadyStorageTask<'_, OP>
+where
+    OP: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    type Output = R;
 
-        move || span.in_scope(|| self.run())
+    fn priority(&self) -> Priority {
+        self.priority
     }
 
-    pub fn into_async_runner(self, tx: oneshot::Sender<R>) -> impl FnOnce() + Send + 'static {
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
+    fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
+        let lease = self
+            .tracker
+            .map(|tracker| {
+                tracker
+                    .try_acquire()
+                    .map(|lease| lease.into_owned())
+                    .ok_or(AdmissionClosed)
+            })
+            .transpose()?;
+        let gauge = gauge!(STORAGE_BG_TASK_IN_FLIGHT,
          PRIORITY => self.priority.as_static_str(),
          OP_TYPE => self.kind.as_static_str(),
-        )
-        .increment(1);
-        let span = tracing::Span::current();
+        );
+        gauge.increment(1);
+        // Keep the operation and guard together, releasing captured resources
+        // before decrementing even if the prepared task is dropped without running.
+        let Self {
+            op,
+            name,
+            kind,
+            created_at,
+            ..
+        } = self;
+        let task = TrackedTask::new(
+            move || {
+                let _span = tracing::debug_span!("storage-task", name).entered();
+                let start = Instant::now();
+                let labels = [(OP_TYPE, kind.as_static_str())];
+                histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(created_at.elapsed());
+                let res = op();
+                histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(start.elapsed());
+                res
+            },
+            (InFlight(gauge), lease),
+        );
+        Ok(move || task.run())
+    }
 
-        move || {
-            span.in_scope(|| {
-                let result = self.run();
-                let _ = tx.send(result);
-            })
+    fn call(self) -> Result<Self::Output, AdmissionClosed> {
+        let lease = self
+            .tracker
+            .map(|tracker| tracker.try_acquire().ok_or(AdmissionClosed))
+            .transpose()?;
+        Ok(TrackedTask::new(self.op, lease).run())
+    }
+}
+
+/// A named, independently owned blocking pool for a storage execution lane.
+#[derive(Clone)]
+pub struct SinglePoolExecutor {
+    pool: threadpool::ThreadPool,
+}
+
+impl SinglePoolExecutor {
+    pub fn new(name: String, num_threads: usize) -> Self {
+        let pool = threadpool::Builder::new()
+            .thread_name(name)
+            .num_threads(num_threads)
+            .build();
+
+        Self { pool }
+    }
+}
+
+impl IoExecutor for SinglePoolExecutor {
+    fn dispatch_fn(
+        &self,
+        _priority: Priority,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed> {
+        let span = tracing::Span::current();
+        self.pool.execute(move || {
+            span.in_scope(task);
+        });
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct GlobalExecutor(Arc<GlobalExecutorInner>);
+
+impl GlobalExecutor {
+    /// Create the shared priority pools using the configured storage thread counts.
+    pub fn from_options(opts: &restate_types::config::CommonOptions) -> Self {
+        Self::new(
+            threadpool::Builder::new()
+                .thread_name("rs:io-hi".to_owned())
+                .num_threads(opts.storage_high_priority_bg_threads().into())
+                .build(),
+            threadpool::Builder::new()
+                .thread_name("rs:io-lo".to_owned())
+                .num_threads(opts.storage_low_priority_bg_threads().into())
+                .build(),
+        )
+    }
+
+    #[cfg(any(test, feature = "test-util"))]
+    pub(crate) fn max_count(&self, priority: Priority) -> usize {
+        match priority {
+            Priority::High => self.0.high_pri_pool.max_count(),
+            Priority::Low => self.0.low_pri_pool.max_count(),
         }
     }
 
-    fn run(self) -> R {
-        let start = Instant::now();
-        let labels = [(OP_TYPE, self.kind.as_static_str())];
-        histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(self.created_at.elapsed());
-        let res = (self.op)();
-        histogram!(STORAGE_BG_TASK_RUN_DURATION, &labels).record(start.elapsed());
-        gauge!(STORAGE_BG_TASK_IN_FLIGHT,
-             PRIORITY => self.priority.as_static_str(),
-             OP_TYPE => self.kind.as_static_str(),
-        )
-        .decrement(1);
-        res
+    pub fn new(
+        high_pri_pool: threadpool::ThreadPool,
+        low_pri_pool: threadpool::ThreadPool,
+    ) -> Self {
+        Self(Arc::new(GlobalExecutorInner {
+            shutting_down: Mutex::new(false),
+            high_pri_pool,
+            low_pri_pool,
+        }))
+    }
+
+    /// Marks the executor as closed for new work. The executor will continue
+    /// driving enqueued work.
+    pub fn close(&self) {
+        *self.0.shutting_down.lock() = true;
+    }
+}
+
+struct GlobalExecutorInner {
+    shutting_down: Mutex<bool>,
+    high_pri_pool: threadpool::ThreadPool,
+    low_pri_pool: threadpool::ThreadPool,
+}
+
+impl IoExecutor for GlobalExecutor {
+    fn dispatch_fn(
+        &self,
+        priority: Priority,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed> {
+        let span = tracing::Span::current();
+        // Serialize acceptance with close so accepted work is enqueued before
+        // close returns. Rejected tasks are dropped after releasing the lock.
+        let shutting_down = self.0.shutting_down.lock();
+        if *shutting_down {
+            drop(shutting_down);
+            return Err(AdmissionClosed);
+        }
+        let pool = match priority {
+            Priority::High => &self.0.high_pri_pool,
+            Priority::Low => &self.0.low_pri_pool,
+        };
+        pool.execute(move || span.in_scope(task));
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use restate_core::io::{FlightTracker, TrackedExecutor};
+
+    use super::*;
+
+    #[test]
+    fn guards_are_execution_local_and_optional() {
+        struct Guard {
+            _local: Rc<()>,
+            thread: std::thread::ThreadId,
+            tracker: Arc<FlightTracker>,
+            drops: Arc<AtomicUsize>,
+        }
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                assert_eq!(self.thread, std::thread::current().id());
+                assert!(!self.tracker.is_idle());
+                self.drops.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let tracker = Arc::new(FlightTracker::default());
+        let drops = Arc::new(AtomicUsize::new(0));
+        let factory = {
+            let tracker = tracker.clone();
+            let drops = drops.clone();
+            move || Guard {
+                _local: Rc::new(()),
+                thread: std::thread::current().id(),
+                tracker,
+                drops,
+            }
+        };
+        let op = StorageOp::new(|| 42, &tracker).with_guard(factory.clone());
+        assert!(tracker.is_idle());
+        assert_eq!(op.call().unwrap(), 42);
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert!(tracker.is_idle());
+
+        let task = StorageOp::new(|| 43, &tracker)
+            .with_guard(factory.clone())
+            .background("guarded", StorageTaskKind::MultiGet);
+        assert_eq!(task.priority(), Priority::Low);
+        assert!(tracker.is_idle());
+        let task = task.into_task().unwrap();
+        assert_eq!(drops.load(Ordering::Relaxed), 1);
+        assert_eq!(std::thread::spawn(task).join().unwrap(), 43);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+        assert!(tracker.is_idle());
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            StorageOp::new(|| panic!("operation panic"), &tracker)
+                .with_guard(factory)
+                .call()
+        }));
+        assert!(result.is_err());
+        assert_eq!(drops.load(Ordering::Relaxed), 3);
+        assert!(tracker.is_idle());
+
+        let task = StorageOp::new(|| (), &tracker)
+            .with_guard(|| panic!("discard must not create a guard"))
+            .background("discarded", StorageTaskKind::MultiGet)
+            .into_task()
+            .unwrap();
+        drop(task);
+        assert!(tracker.is_idle());
+        tracker.seal();
+        assert_eq!(
+            StorageOp::new(|| (), &tracker)
+                .with_guard(|| panic!("rejection must not create a guard"))
+                .call(),
+            Err(AdmissionClosed)
+        );
+    }
+
+    #[tokio::test]
+    async fn global_pool_routes_priority_and_rejects_after_close() {
+        let backend = GlobalExecutor::new(
+            threadpool::Builder::new()
+                .num_threads(1)
+                .thread_name("test-high".to_owned())
+                .build(),
+            threadpool::Builder::new()
+                .num_threads(1)
+                .thread_name("test-low".to_owned())
+                .build(),
+        );
+        let flights = Arc::new(FlightTracker::default());
+        let executor = TrackedExecutor::new(&backend, &flights);
+        let high = executor
+            .spawn(
+                StorageTask::default()
+                    .kind(StorageTaskKind::MultiGet)
+                    .priority(Priority::High)
+                    .op(|| std::thread::current().name().unwrap().to_owned())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        let low = executor
+            .spawn_fn(Priority::Low, || {
+                std::thread::current().name().unwrap().to_owned()
+            })
+            .unwrap();
+        backend.close();
+        backend.close();
+
+        assert_eq!(high.await.unwrap(), "test-high");
+        assert_eq!(low.await.unwrap(), "test-low");
+        for priority in [Priority::High, Priority::Low] {
+            assert!(
+                executor
+                    .dispatch_fn(priority, || panic!("rejected task must not run"))
+                    .is_err()
+            );
+        }
+        flights.seal();
+        flights.drain().await;
     }
 }
