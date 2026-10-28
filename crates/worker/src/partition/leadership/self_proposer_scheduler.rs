@@ -21,9 +21,11 @@ use metrics::gauge;
 use tracing::{debug, warn};
 
 use restate_bifrost::{CommitToken, WrittenRecords};
+use restate_types::config::SelfProposerFlow;
 use restate_types::logs::Lsn;
 use restate_types::sharding::PartitionId;
 
+use super::congestion_control::{CongestionControl, FlowClass};
 use crate::metric_definitions::{PARTITION_LABEL, SELF_PROPOSER_INFLIGHT};
 
 // Every flow's credit per round, in records. Flows that propose a record at a time are served in
@@ -47,14 +49,14 @@ struct Shared {
 impl Shared {
     /// Sets the wake notification of the flow, returning whether it was already set.
     fn set_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
-        let previous = self.woken.fetch_or(flow.bit(), Ordering::AcqRel);
-        previous & flow.bit() != 0
+        let previous = self.woken.fetch_or(bit(flow), Ordering::AcqRel);
+        previous & bit(flow) != 0
     }
 
     /// Clears the wake notification of the flow, returning whether it was set.
     fn take_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
-        let previous = self.woken.fetch_and(!flow.bit(), Ordering::AcqRel);
-        previous & flow.bit() != 0
+        let previous = self.woken.fetch_and(!bit(flow), Ordering::AcqRel);
+        previous & bit(flow) != 0
     }
 }
 
@@ -105,56 +107,29 @@ struct FlowState {
     state: State,
 }
 
-#[derive(Debug, Clone, Enum, Copy, PartialEq)]
-pub(crate) enum SelfProposerSchedulerFlow {
-    Invoker,
-    Timer,
-    Shuffle,
-    Cleaner,
-    UpsertSchema,
-    UpsertRuleBook,
-    NetworkService,
-    PartitionMaintenance,
-    Scheduler,
+pub(crate) type SelfProposerSchedulerFlow = SelfProposerFlow;
+
+/// Returns the cost multiplier for a flow. The multiplier is multiplied by the number of records proposed for that
+/// flow, resulting into it being charged more for those records. A higher multiplier biases the scheduler "against"
+/// that flow (i.e. deprioritizing it).
+fn cost_multiplier(flow: SelfProposerSchedulerFlow) -> u32 {
+    match flow {
+        // The cleaner's records are expensive to process.
+        SelfProposerSchedulerFlow::Cleaner => 10,
+        SelfProposerSchedulerFlow::Invoker
+        | SelfProposerSchedulerFlow::Timer
+        | SelfProposerSchedulerFlow::Shuffle
+        | SelfProposerSchedulerFlow::UpsertSchema
+        | SelfProposerSchedulerFlow::UpsertRuleBook
+        | SelfProposerSchedulerFlow::NetworkService
+        | SelfProposerSchedulerFlow::PartitionMaintenance
+        | SelfProposerSchedulerFlow::Scheduler => 1,
+    }
 }
 
-impl SelfProposerSchedulerFlow {
-    /// Returns the cost multiplier for a flow. The multiplier is multiplied by the number of records proposed for that
-    /// flow, resulting into it being charged more for those records. A higher multiplier biases the scheduler "against"
-    /// that flow (i.e. deprioritizing it).
-    fn cost_multiplier(&self) -> u32 {
-        match self {
-            // The cleaner's records are expensive to process.
-            SelfProposerSchedulerFlow::Cleaner => 10,
-            SelfProposerSchedulerFlow::Invoker => 1,
-            SelfProposerSchedulerFlow::Timer => 1,
-            SelfProposerSchedulerFlow::Shuffle => 1,
-            SelfProposerSchedulerFlow::UpsertSchema => 1,
-            SelfProposerSchedulerFlow::UpsertRuleBook => 1,
-            SelfProposerSchedulerFlow::NetworkService => 1,
-            SelfProposerSchedulerFlow::PartitionMaintenance => 1,
-            SelfProposerSchedulerFlow::Scheduler => 1,
-        }
-    }
-
-    /// The flow's bit in [`Shared::woken`].
-    fn bit(self) -> u16 {
-        1 << self.into_usize()
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            SelfProposerSchedulerFlow::Invoker => "invoker",
-            SelfProposerSchedulerFlow::Timer => "timer",
-            SelfProposerSchedulerFlow::Shuffle => "shuffle",
-            SelfProposerSchedulerFlow::Cleaner => "cleaner",
-            SelfProposerSchedulerFlow::UpsertSchema => "upsert-schema",
-            SelfProposerSchedulerFlow::UpsertRuleBook => "upsert-rule-book",
-            SelfProposerSchedulerFlow::NetworkService => "network-service",
-            SelfProposerSchedulerFlow::PartitionMaintenance => "partition-maintenance",
-            SelfProposerSchedulerFlow::Scheduler => "scheduler",
-        }
-    }
+/// The flow's bit in [`Shared::woken`].
+fn bit(flow: SelfProposerSchedulerFlow) -> u16 {
+    1 << flow.into_usize()
 }
 
 /// The scheduler's decision of which flow to poll next. The caller must then poll the returned flow and
@@ -200,7 +175,7 @@ impl<'a> SchedulerDecision<'a> {
         self.received_feedback = true;
         let cost = result
             .records_written
-            .saturating_mul(self.flow.cost_multiplier() as usize) as i64;
+            .saturating_mul(cost_multiplier(self.flow) as usize) as i64;
         let state = self.flow_state();
         state.deficit = state.deficit.saturating_sub(cost);
         std::debug_assert_matches!(state.state, State::Polling);
@@ -283,23 +258,30 @@ struct InflightTracker {
 
     // Stat Aggregates
     total_per_flow_inflight: EnumMap<SelfProposerSchedulerFlow, usize>,
+    total_per_class_inflight: EnumMap<FlowClass, usize>,
     total_inflight: usize,
+    classes: EnumMap<SelfProposerSchedulerFlow, FlowClass>,
 
     // Metrics
     metrics: EnumMap<SelfProposerSchedulerFlow, FlowMetrics>,
 }
 
 impl InflightTracker {
-    fn new(partition_id: PartitionId) -> Self {
+    fn new(
+        partition_id: PartitionId,
+        classes: EnumMap<SelfProposerSchedulerFlow, FlowClass>,
+    ) -> Self {
         Self {
             batches: VecDeque::new(),
             current_batch: Default::default(),
 
             total_per_flow_inflight: Default::default(),
+            total_per_class_inflight: Default::default(),
             total_inflight: 0,
+            classes,
 
             metrics: EnumMap::from_fn(|flow: SelfProposerSchedulerFlow| FlowMetrics {
-                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition_id.to_string(), "flow" => flow.as_str()),
+                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition_id.to_string(), "flow" => <&'static str>::from(flow)),
             }),
         }
     }
@@ -308,6 +290,7 @@ impl InflightTracker {
         let records = written.records_written;
         self.current_batch[flow] += records;
         self.total_per_flow_inflight[flow] += records;
+        self.total_per_class_inflight[self.classes[flow]] += records;
         self.total_inflight += records;
     }
 
@@ -315,6 +298,9 @@ impl InflightTracker {
         for (flow, records) in batch.inflight.iter() {
             self.total_per_flow_inflight[flow] =
                 self.total_per_flow_inflight[flow].saturating_sub(*records);
+            let class = self.classes[flow];
+            self.total_per_class_inflight[class] =
+                self.total_per_class_inflight[class].saturating_sub(*records);
             self.total_inflight = self.total_inflight.saturating_sub(*records);
         }
     }
@@ -389,10 +375,16 @@ pub(crate) struct SelfProposerScheduler {
 
     // Inflight proposal tracking
     inflight: InflightTracker,
+
+    // None when congestion control is disabled.
+    congestion_control: Option<CongestionControl>,
 }
 
 impl SelfProposerScheduler {
-    pub(crate) fn new(partition_id: PartitionId) -> SelfProposerScheduler {
+    pub(crate) fn new(
+        partition_id: PartitionId,
+        congestion_control: Option<CongestionControl>,
+    ) -> SelfProposerScheduler {
         let state = EnumMap::from_fn(|_| FlowState {
             deficit: 0,
             state: State::Queued,
@@ -415,7 +407,14 @@ impl SelfProposerScheduler {
             ready_ring: VecDeque::from_iter(state.iter().map(|(flow, _)| flow)),
             state,
             wakers,
-            inflight: InflightTracker::new(partition_id),
+            inflight: InflightTracker::new(
+                partition_id,
+                congestion_control
+                    .as_ref()
+                    .map(CongestionControl::classes)
+                    .unwrap_or_default(),
+            ),
+            congestion_control,
         }
     }
 
@@ -426,7 +425,7 @@ impl SelfProposerScheduler {
             return;
         }
         for (flow, state) in self.state.iter_mut() {
-            if woken & flow.bit() == 0 {
+            if woken & bit(flow) == 0 {
                 continue;
             }
             match state.state {
@@ -455,6 +454,12 @@ impl SelfProposerScheduler {
         let progressed = self.inflight.poll_on_progress(cx, applied_lsn);
         if progressed {
             self.inflight.report_metrics();
+            if let Some(cc) = &mut self.congestion_control {
+                cc.on_inflight_dropped(
+                    &self.inflight.total_per_class_inflight,
+                    self.inflight.total_inflight,
+                );
+            }
         }
     }
 
@@ -469,6 +474,19 @@ impl SelfProposerScheduler {
         self.shared.parent_waker.register(cx.waker());
         self.drain_woken();
 
+        // The records in flight don't change until a decision is returned.
+        let inflight = &self.inflight;
+        let congestion_control = &mut self.congestion_control;
+        let mut eligible = |flow: SelfProposerSchedulerFlow| {
+            congestion_control.as_mut().is_none_or(|cc| {
+                cc.admits(
+                    flow,
+                    &inflight.total_per_class_inflight,
+                    inflight.total_inflight,
+                )
+            })
+        };
+
         loop {
             let round_length = self.ready_ring.len();
             if round_length == 0 {
@@ -481,6 +499,10 @@ impl SelfProposerScheduler {
                     .ready_ring
                     .pop_front()
                     .expect("guarded by the round_length check earlier");
+                if !eligible(flow) {
+                    self.ready_ring.push_back(flow);
+                    continue;
+                }
                 let state = &mut self.state[flow];
                 std::debug_assert_matches!(state.state, State::Queued);
 
@@ -505,6 +527,11 @@ impl SelfProposerScheduler {
                 }
             }
 
+            if closest_deficit == i64::MIN {
+                // Every ready flow is gated. Commit/apply progress wakes the processor.
+                return None;
+            }
+
             // We did one full round and no flows were returned. It means that all flows are in debit.
             // As an optimization, let's fast forward the rounds until we find an eligible flow.
             // To do that we:
@@ -514,7 +541,9 @@ impl SelfProposerScheduler {
             assert!(closest_deficit <= 0);
             let rounds_to_skip = closest_deficit.saturating_abs() / QUANTUM;
             self.ready_ring.iter().for_each(|flow| {
-                self.state[*flow].deficit += rounds_to_skip * QUANTUM;
+                if eligible(*flow) {
+                    self.state[*flow].deficit += rounds_to_skip * QUANTUM;
+                }
             });
         }
     }
@@ -522,11 +551,13 @@ impl SelfProposerScheduler {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Wake, Waker};
 
     use restate_bifrost::{CommitToken, Committed, WrittenRecords};
+    use restate_types::config::{SelfProposerCongestionControl, SelfProposerCongestionControlMode};
     use restate_types::logs::Lsn;
     use restate_types::sharding::PartitionId;
 
@@ -574,7 +605,7 @@ mod tests {
         let waker = Waker::from(Arc::clone(&test_waker));
         let mut cx = Context::from_waker(&waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // First poll, expecting the invoker flow.
         let dec = scheduler
@@ -649,7 +680,7 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // Report 100x the quantum for the invoker
         let dec = scheduler
@@ -705,7 +736,7 @@ mod tests {
     #[test]
     fn shares_records() {
         let mut cx = Context::from_waker(Waker::noop());
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // The invoker proposes batches of 4 records and the timer one record at a time, both
         // always ready; the other flows are pending. The invoker gets a quarter of the timer's turns,
@@ -729,11 +760,75 @@ mod tests {
     }
 
     #[test]
+    fn classes_keep_their_share() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut scheduler = super::SelfProposerScheduler::new(
+            PartitionId::new_unchecked(1),
+            super::CongestionControl::new(
+                &SelfProposerCongestionControl {
+                    mode: SelfProposerCongestionControlMode::Static {
+                        limit: NonZeroUsize::new(10).unwrap(),
+                    },
+                    ..Default::default()
+                },
+                PartitionId::new_unchecked(1),
+            ),
+        );
+
+        // A limit of 10 keeps 2 records free for the latency class, so the regular and background
+        // classes may use 8 together (the background class at most 1 of them). The invoker and the
+        // timer use up those 8...
+        let dec = scheduler.poll_next_ready(&mut cx).expect("a ready flow");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
+        dec.on_proposal_enqueued(proposal(7));
+        let dec = scheduler.poll_next_ready(&mut cx).expect("the timer");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Timer);
+        dec.on_proposal_enqueued(proposal(1));
+
+        // ...which skips the other regular flows and the cleaner, but leaves the network service
+        // its whole share.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("the network service");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::NetworkService);
+        dec.on_proposal_enqueued(proposal(2));
+        assert!(scheduler.poll_next_ready(&mut cx).is_none());
+
+        // Committing doesn't reopen the gate, only applying does.
+        let (tx, rx) = tokio::sync::oneshot::channel::<Committed>();
+        scheduler.on_round_end(CommitToken::new(rx));
+        tx.send(committed(10)).expect("receiver is alive");
+        scheduler.poll_on_progress(&mut cx, Lsn::new(9));
+        assert!(scheduler.poll_next_ready(&mut cx).is_none());
+
+        // Once the batch is applied, the invoker gets scheduled again.
+        scheduler.poll_on_progress(&mut cx, Lsn::new(10));
+        assert_eq!(
+            scheduler
+                .inflight
+                .total_per_class_inflight
+                .values()
+                .sum::<usize>(),
+            0
+        );
+        loop {
+            let dec = scheduler
+                .poll_next_ready(&mut cx)
+                .expect("the gate reopened");
+            if dec.flow == SelfProposerSchedulerFlow::Invoker {
+                dec.on_pending();
+                break;
+            }
+            dec.on_pending();
+        }
+    }
+
+    #[test]
     fn tracks_inflight_records() {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // The invoker proposes 1 KiB across 2 records, which uses up its credit for the round.
         let dec = scheduler
