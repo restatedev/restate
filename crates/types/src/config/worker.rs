@@ -843,6 +843,16 @@ pub struct StorageOptions {
     #[serde(flatten)]
     pub rocksdb: RocksDbOptions,
 
+    /// Partition-store lifecycle thread pool
+    ///
+    /// Number of threads for partition column-family creation, snapshot import,
+    /// and deletion, independently of ordinary storage I/O. Defaults to 4.
+    /// Changes require a restart.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle_threads: Option<NonZeroUsize>,
+
     /// The memory budget for rocksdb memtables in bytes
     ///
     /// The total is divided evenly across partitions. The server will rebalance the memory budget
@@ -1097,6 +1107,11 @@ pub struct StorageOptions {
 }
 
 impl StorageOptions {
+    pub fn lifecycle_threads(&self) -> NonZeroUsize {
+        self.lifecycle_threads
+            .unwrap_or(NonZeroUsize::new(4).unwrap())
+    }
+
     pub fn apply_common(&mut self, common: &CommonOptions) {
         self.rocksdb.apply_common(&common.rocksdb);
         if self.rocksdb_memory_budget.is_none() {
@@ -1166,6 +1181,7 @@ impl Default for StorageOptions {
         #[allow(deprecated)]
         StorageOptions {
             rocksdb: RocksDbOptions::default(),
+            lifecycle_threads: None,
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,

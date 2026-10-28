@@ -160,7 +160,7 @@ fn put<S: StorageAccess>(
     storage.put_kv_proto(key, state_value)
 }
 
-pub async fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<Option<Lsn>> {
+pub fn get_locally_durable_lsn(partition_store: &mut PartitionStore) -> Result<Option<Lsn>> {
     get_durable::<SequenceNumber, _>(
         partition_store,
         partition_store.partition_id(),

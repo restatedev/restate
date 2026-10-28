@@ -283,6 +283,15 @@ impl Handle {
         self.inner.shutdown_node(reason, exit_code).await;
     }
 
+    /// Await test teardown without a deadline driven by Tokio's possibly paused clock.
+    /// The test runner is responsible for terminating a stuck test process.
+    #[doc(hidden)]
+    pub async fn shutdown_for_test(&self) {
+        self.inner
+            .shutdown_node_with_timeout("completed", 0, None)
+            .await;
+    }
+
     /// Use to monitor an on-going shutdown when requested
     pub fn shutdown_token(&self) -> CancellationToken {
         self.inner.global_cancel_token.clone()

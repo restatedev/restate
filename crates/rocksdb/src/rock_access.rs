@@ -12,10 +12,11 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use rocksdb::checkpoint::Checkpoint;
 use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, ImportColumnFamilyOptions};
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::RawRocksDb;
 use crate::RocksError;
@@ -36,6 +37,14 @@ pub struct RocksAccess {
     // Retain the selected resources through native database destruction, including
     // when the entire RocksAccess is moved to detached cleanup.
     db_env: DbEnv,
+}
+
+/// Configuration is complete, but no native database has been opened yet.
+pub(crate) struct PreparedOpen {
+    db_spec: DbSpec,
+    db_options: rocksdb::Options,
+    descriptors: Vec<ColumnFamilyDescriptor>,
+    env: DbEnv,
 }
 
 fn prepare_cf_options(
@@ -108,6 +117,10 @@ impl RocksAccess {
     /// Opens a database and retains its selected resources through native destruction.
     /// Absent resources are left to database-specific configuration and native defaults.
     pub fn open_db(db_spec: DbSpec, env: DbEnv) -> Result<Self, RocksError> {
+        Self::prepare_open(db_spec, env)?.open()
+    }
+
+    pub(crate) fn prepare_open(db_spec: DbSpec, env: DbEnv) -> Result<PreparedOpen, RocksError> {
         let db_options = db_spec.db_configurator.get_db_options(db_spec.name(), &env);
 
         let mut all_cfs: HashSet<CfName> = match rocksdb::DB::list_cf(&db_options, &db_spec.path) {
@@ -129,6 +142,23 @@ impl RocksAccess {
         };
 
         let descriptors = prepare_descriptors(&db_spec, &env, &mut all_cfs)?;
+        Ok(PreparedOpen {
+            db_spec,
+            db_options,
+            descriptors,
+            env,
+        })
+    }
+}
+
+impl PreparedOpen {
+    pub(crate) fn open(self) -> Result<RocksAccess, RocksError> {
+        let Self {
+            db_spec,
+            db_options,
+            descriptors,
+            env,
+        } = self;
         trace!(path = %db_spec.path.display(), "Opening rocksdb database '{}'", db_spec.name());
 
         match db_spec.open_mode() {
@@ -161,7 +191,9 @@ impl RocksAccess {
             }
         }
     }
+}
 
+impl RocksAccess {
     pub fn spec(&self) -> &DbSpec {
         &self.db_spec
     }
@@ -177,6 +209,28 @@ impl RocksAccess {
 
     pub fn as_raw_db(&self) -> &RawRocksDb {
         &self.db
+    }
+
+    pub fn export_cf(
+        &self,
+        name: CfName,
+        export_dir: PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        let _perf = RocksDbReadPerfGuard::new("export-column-family");
+        let checkpoint = Checkpoint::new(self.as_raw_db())?;
+        let cf = self
+            .cf_handle(name.as_str())
+            .ok_or_else(|| RocksError::UnknownColumnFamily(name.clone()))?;
+        let metadata = checkpoint.export_column_family(&cf, export_dir.as_path())?;
+        if metadata.get_files().is_empty() {
+            error!(
+                "Refusing to create an empty snapshot! RocksDB column family export \
+                returned an empty set of files. The export is retained at: {}",
+                export_dir.display()
+            );
+            return Err(RocksError::SnapshotEmpty);
+        }
+        Ok(metadata)
     }
 
     pub fn open_cf(&self, name: CfName) -> Result<(), RocksError> {
@@ -237,7 +291,7 @@ impl RocksAccess {
         info!("Rocksdb '{}' was gracefully closed", self.name());
     }
 
-    pub(crate) fn import_cf(
+    pub fn import_cf(
         &self,
         name: CfName,
         metadata: ExportImportFilesMetaData,

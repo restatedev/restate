@@ -900,7 +900,10 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
 
         let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
@@ -1205,7 +1208,10 @@ mod tests {
             .set_provider_kind(ProviderKind::Local)
             .build()
             .await;
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let bifrost = Bifrost::init_local(node_env.metadata_writer).await;
 
         // create an appender
@@ -1301,8 +1307,6 @@ mod tests {
             append_counter_after_seal = counter_now;
         }
 
-        // questionable.
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 

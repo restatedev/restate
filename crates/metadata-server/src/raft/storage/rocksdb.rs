@@ -790,20 +790,25 @@ mod tests {
 
     #[test_log::test(restate_core::test)]
     async fn initial_values() -> googletest::Result<()> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let storage = RocksDbStorage::create().await?;
 
         assert_eq!(storage.get_last_index(), 0);
         assert_eq!(storage.get_first_index(), 1);
         assert_eq!(storage.get_snapshot()?, Snapshot::default());
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
     #[test_log::test(restate_core::test)]
     async fn append_entries() -> googletest::Result<()> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let mut storage = RocksDbStorage::create().await?;
 
         let last_index = 10;
@@ -829,13 +834,15 @@ mod tests {
             assert_eq!(stored_entry, entry);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
     #[test_log::test(restate_core::test)]
     async fn apply_snapshot() -> googletest::Result<()> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let mut storage = RocksDbStorage::create().await?;
 
         let last_index = 10;
@@ -910,13 +917,15 @@ mod tests {
             assert_eq!(stored_entry, entry);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
     #[test_log::test(restate_core::test)]
     async fn trim() -> googletest::Result<()> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let mut storage = RocksDbStorage::create().await?;
 
         let last_index = 10;
@@ -971,13 +980,15 @@ mod tests {
                 .is_err()
         );
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 
     #[test_log::test(restate_core::test)]
     async fn overwrite_entries() -> googletest::Result<()> {
-        RocksDbManager::init();
+        let rocksdb_manager = RocksDbManager::init();
+        restate_core::TaskCenter::set_on_shutdown(Box::pin(async {
+            rocksdb_manager.shutdown().await;
+        }));
         let mut storage = RocksDbStorage::create().await?;
 
         let last_index = 10;
@@ -1016,7 +1027,6 @@ mod tests {
             assert_eq!(stored_entries[index - 1], new_entries[index - 5]);
         }
 
-        RocksDbManager::get().shutdown().await;
         Ok(())
     }
 }
