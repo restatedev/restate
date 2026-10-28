@@ -23,10 +23,10 @@ jobs:
     env:
       RUSTFLAGS: -D warnings
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
       - uses: dtolnay/rust-toolchain@stable
       - name: Install cargo-hakari
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-hakari
       - name: Check workspace-hack Cargo.toml is up-to-date
@@ -37,14 +37,14 @@ jobs:
     name: Check CLI SQL tables reference
     runs-on: warp-ubuntu-latest-x64-4x
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           rustflags: ""
           cache: false
       - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        uses: WarpBuilds/rust-cache@v2.9.1 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
         with:
           prefix-key: "v1-rust-xtask"
           cache-on-failure: "true"
@@ -73,17 +73,17 @@ jobs:
       # - name: Install liburing
       #   run: sudo apt-get update && sudo apt-get install -y liburing-dev
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.4.0
 
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           components: clippy
           rustflags: ""
           cache: false
 
       - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        uses: WarpBuilds/rust-cache@v2.9.1 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
         with:
           prefix-key: "v1-rust"
           cache-on-failure: "true"
@@ -92,7 +92,7 @@ jobs:
         run: df -h / && du -sh target/ 2>/dev/null || true
 
       - name: Install cargo-hakari
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: cargo-hakari
 
@@ -103,12 +103,12 @@ jobs:
         uses: ./.github/actions/install-protoc
 
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: nextest@0.9.98
 
       - name: Setup just
-        uses: extractions/setup-just@v3
+        uses: extractions/setup-just@v3.1.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -135,7 +135,7 @@ jobs:
       - name: Run doctest
         run: just doctest
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4.6.2
         if: always()
         with:
           name: local-cluster-runner
@@ -315,7 +315,7 @@ jobs:
     needs: docker
     steps:
       - name: Set up Docker containerd snapshotter
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@v4.7.0
         with:
           version: "v28.5.2"
           set-host: true
@@ -328,7 +328,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           name: restate.tar
       - name: Install restate snapshot
@@ -358,7 +358,7 @@ jobs:
     needs: docker
     steps:
       - name: Set up Docker containerd snapshotter
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@v4.7.0
         with:
           version: "v28.5.2"
           set-host: true
@@ -371,7 +371,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           name: restate.tar
       - name: Install restate snapshot
@@ -408,7 +408,7 @@ jobs:
     needs: docker
     steps:
       - name: Set up Docker containerd snapshotter
-        uses: docker/setup-docker-action@v4
+        uses: docker/setup-docker-action@v4.7.0
         with:
           version: "v28.5.2"
           set-host: true
@@ -421,7 +421,7 @@ jobs:
 
       ### Download the Restate container image, if needed
       - name: Download restate snapshot from in-progress workflow
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.2
         with:
           name: restate.tar
       - name: Install restate snapshot

@@ -22,32 +22,32 @@ jobs:
       contents: read
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v6.1.0
         with:
           fetch-depth: 1
 
       # Restate: give the agent a Rust build environment matching ci.yml
       - name: Install Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1.17.0
         with:
           rustflags: ""
           cache: false
       - name: Setup Rust Caching
-        uses: WarpBuilds/rust-cache@v2 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
+        uses: WarpBuilds/rust-cache@v2.9.1 # a fork of Swatinem/rust-cache@v2 that uses warpbuild cache
         with:
           prefix-key: "v1-rust"
           cache-on-failure: "true"
       - name: Install protoc
         uses: ./.github/actions/install-protoc
       - name: Install nextest
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@v2.88.0
         with:
           tool: nextest@0.9.98
       - name: Fetch dependencies
         run: cargo fetch --locked
 
       - name: Run agent
-        uses: pullfrog/pullfrog@v0
+        uses: pullfrog/pullfrog@v0.1.102
         with:
           prompt: ${{ inputs.prompt }}
         env:
