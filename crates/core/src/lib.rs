@@ -18,6 +18,7 @@
 
 mod error;
 mod identification;
+pub mod io;
 mod metadata;
 pub mod metric_definitions;
 pub mod network;
