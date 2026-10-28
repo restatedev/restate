@@ -339,6 +339,8 @@ jobs:
 
       ### Run e2e tests
       - name: Run E2E tests
+        # Pinned to a commit in actions.lock. To pick up the latest e2e main, run:
+        #   gh actions-lock --relock .github/workflows/ci.yml
         uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-test-report
@@ -382,6 +384,8 @@ jobs:
 
       ### Run e2e tests with bilrost schema enabled.
       - name: Run E2E tests
+        # Pinned to a commit in actions.lock. To pick up the latest e2e main, run:
+        #   gh actions-lock --relock .github/workflows/ci.yml
         uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-test-bilrost-schema-report
@@ -432,6 +436,8 @@ jobs:
 
       ### Run e2e tests with vqueues enabled.
       - name: Run E2E tests
+        # Pinned to a commit in actions.lock. To pick up the latest e2e main, run:
+        #   gh actions-lock --relock .github/workflows/ci.yml
         uses: restatedev/e2e/e2e-tests@main
         with:
           testArtifactOutput: e2e-test-vqueues-report
