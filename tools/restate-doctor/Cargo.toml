@@ -23,6 +23,8 @@ restate-cli-util = { workspace = true }
 restate-core = { workspace = true }
 restate-limiter = { workspace = true }
 restate-log-server = { workspace = true, features = ["expose-internals", "test-util"] }
+restate-metadata-providers = { workspace = true, features = ["replicated", "etcd", "objstore", "dynamodb"] }
+restate-metadata-server = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-object-store-util = { workspace = true }
 restate-partition-store = { workspace = true }
@@ -43,6 +45,7 @@ bytestring = { workspace = true }
 clap = { workspace = true, features = ["derive", "env", "wrap_help", "color", "std", "suggestions", "usage"] }
 clap_complete = { workspace = true }
 cling = { workspace = true }
+enumset = { workspace = true }
 comfy-table = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = { version = "3.4" }
@@ -60,11 +63,20 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 strum = { workspace = true }
 thiserror = { workspace = true }
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 ulid = { workspace = true }
 url = { workspace = true }
+
+[dev-dependencies]
+restate-local-cluster-runner = { workspace = true }
+mock-service-endpoint = { workspace = true }
+restate-types = { workspace = true, features = ["test-util"] }
+reqwest = { workspace = true }
+test-log = { workspace = true }
+tonic = { workspace = true }
 
 [build-dependencies]
 vergen-gitcl = { workspace = true }
