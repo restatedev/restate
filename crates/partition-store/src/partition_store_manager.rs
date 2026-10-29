@@ -14,6 +14,7 @@ use std::sync::{Arc, Weak};
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_rocksdb::{CfPrefixPattern, DbSpecBuilder, RocksDb, RocksDbManager, RocksError};
@@ -246,11 +247,23 @@ impl PartitionStoreManager {
     ///
     /// If `target_lsn` is `None`, then the store will be opened from the local database
     /// regardless of whether there is a snapshot available or not.
-    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
     pub async fn open(
         &self,
         partition: &Partition,
         target_lsn: Option<Lsn>,
+    ) -> Result<PartitionStore, OpenError> {
+        self.open_cancellable(partition, target_lsn, &CancellationToken::new())
+            .await
+    }
+
+    /// Like [`Self::open`], but aborts an in-progress snapshot download and returns
+    /// [`OpenError::Cancelled`] once `cancellation` fires.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    pub async fn open_cancellable(
+        &self,
+        partition: &Partition,
+        target_lsn: Option<Lsn>,
+        cancellation: &CancellationToken,
     ) -> Result<PartitionStore, OpenError> {
         let database = self.open_rocksdb(partition).await?;
 
@@ -281,11 +294,15 @@ impl PartitionStoreManager {
         // **
 
         // Attempt to get the latest available snapshot from the snapshot repository:
-        let snapshot = self
+        let snapshot = match self
             .snapshots
-            .download_latest_snapshot(partition.partition_id)
+            .download_latest_snapshot(partition.partition_id, cancellation)
             .await
-            .map_err(OpenError::Snapshot)?;
+        {
+            Ok(snapshot) => snapshot,
+            Err(_) if cancellation.is_cancelled() => return Err(OpenError::Cancelled),
+            Err(err) => return Err(OpenError::Snapshot(err)),
+        };
 
         match (snapshot, target_lsn) {
             (None, None) => {
