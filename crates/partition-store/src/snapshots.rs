@@ -15,7 +15,7 @@ mod snapshot_task;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::{PartitionDb, PartitionStore, SnapshotError, SnapshotErrorKind};
+use crate::{PartitionStore, SnapshotError, SnapshotErrorKind};
 
 pub use self::metadata::*;
 pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
@@ -80,27 +80,18 @@ impl Snapshots {
             })
     }
 
-    pub async fn refresh_latest_partition_snapshot_status(
+    /// Asks the repository for the partition's latest snapshot status. Returns `None` if
+    /// no repository is configured or it has no snapshot of the partition.
+    pub async fn get_latest_snapshot_status(
         &self,
-        db: PartitionDb,
+        partition_id: PartitionId,
     ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
         let Some(repository) = &self.repository else {
             return Ok(None);
         };
-
-        let partition_id = db.partition().partition_id;
-        let log_id = db.partition().log_id();
-
-        let status = match repository
+        repository
             .get_latest_partition_snapshot_status(partition_id)
-            .await?
-        {
-            Some(status) => status,
-            None => PartitionSnapshotStatus::none(log_id),
-        };
-
-        let _ = db.note_archived_lsn(status.archived_lsn);
-        Ok(Some(status))
+            .await
     }
 
     #[instrument(level = "error", skip_all, fields(partition_id = %partition_id))]

@@ -96,13 +96,8 @@ impl SnapshotPartitionTask {
                 kind: SnapshotErrorKind::RepositoryIo(e),
             })?;
 
-        if let Some(db) = self
-            .partition_store_manager
-            .get_partition_db(self.partition_id)
-            .await
-        {
-            db.note_archived_lsn(status.archived_lsn);
-        }
+        self.partition_store_manager
+            .note_archived_lsn(self.partition_id, status.archived_lsn);
 
         Ok(status)
     }

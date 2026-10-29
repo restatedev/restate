@@ -242,16 +242,40 @@ impl PartitionStoreManager {
         self.snapshots.is_repository_configured()
     }
 
+    /// Asks the snapshot repository for the partition's latest snapshot status and records
+    /// its archived LSN. This doesn't need the partition's store: it works whether the store
+    /// is open, closed, or not on this node at all. Returns `None` if no snapshot repository
+    /// is configured.
     pub async fn refresh_latest_partition_snapshot_status(
         &self,
-        partition_id: PartitionId,
+        partition: &Partition,
     ) -> anyhow::Result<Option<PartitionSnapshotStatus>> {
-        let Some(db) = self.get_partition_db(partition_id).await else {
+        if !self.snapshots.is_repository_configured() {
             return Ok(None);
-        };
-        self.snapshots
-            .refresh_latest_partition_snapshot_status(db)
-            .await
+        }
+        // Asking the repository needs only the partition id, so nothing of the partition's
+        // cell or store is held while the request is in flight.
+        let status = self
+            .snapshots
+            .get_latest_snapshot_status(partition.partition_id)
+            .await?
+            // Without a snapshot, report an empty status, so the caller knows the partition
+            // is still waiting for its first one.
+            .unwrap_or_else(|| PartitionSnapshotStatus::none(partition.log_id()));
+        // A partition this manager hasn't seen yet gets a cell in the `Unknown` state, so
+        // its archived LSN is already known when its store is opened.
+        self.state
+            .get_or_default(partition)
+            .note_archived_lsn(status.archived_lsn);
+        Ok(Some(status))
+    }
+
+    /// Records the partition's archived LSN, as reported by the snapshot repository.
+    /// Does nothing if this manager has never seen the partition.
+    pub(crate) fn note_archived_lsn(&self, partition_id: PartitionId, archived_lsn: Lsn) {
+        if let Some(cell) = self.state.get(partition_id) {
+            cell.note_archived_lsn(archived_lsn);
+        }
     }
 
     /// Returns a partition db that's already open by a running partition processor

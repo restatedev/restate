@@ -233,17 +233,6 @@ impl PartitionDb {
             .map_err(|_| ShutdownError.into())
     }
 
-    pub(crate) fn note_archived_lsn(&self, archived_lsn: Lsn) -> bool {
-        self.archived_lsn.send_if_modified(|current| {
-            if current.as_mut().is_none_or(|c| &archived_lsn > c) {
-                *current = Some(archived_lsn);
-                true
-            } else {
-                false
-            }
-        })
-    }
-
     /// The last (locally) known archived LSN for this partition
     pub fn get_archived_lsn(&self) -> Option<Lsn> {
         *self.archived_lsn.borrow()
@@ -408,6 +397,21 @@ impl PartitionCell {
 
     pub fn cf_name(&self) -> CfName {
         self.meta.cf_name()
+    }
+
+    /// Moves the partition's archived LSN forward, as reported by the snapshot
+    /// repository, and never back. The value belongs to the partition, not to its
+    /// store, so this works whatever state the store is in and doesn't lock the cell's
+    /// state.
+    pub(crate) fn note_archived_lsn(&self, archived_lsn: Lsn) {
+        self.archived_lsn.send_if_modified(|current| {
+            if current.as_mut().is_none_or(|c| &archived_lsn > c) {
+                *current = Some(archived_lsn);
+                true
+            } else {
+                false
+            }
+        });
     }
 
     fn open_local_cf(&self, guard: &mut tokio::sync::RwLockWriteGuard<'_, State>, db: PartitionDb) {

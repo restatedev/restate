@@ -816,7 +816,8 @@ where
             }
             EventKind::SnapshotStatusUpdateSkipped => {
                 self.pending_snapshot_status_refreshes.remove(&partition_id);
-                // No-op: no snapshot found or error fetching status (logged upstream)
+                // No-op: no snapshot repository, partition no longer in the partition table,
+                // or error fetching status (logged upstream)
             }
             EventKind::PartitionStoreDropped(result) => {
                 self.on_partition_store_dropped(partition_id, result);
@@ -1321,8 +1322,17 @@ where
             .name(&format!("update-latest-snapshot-{partition_id}"))
             .spawn(
                 async move {
+                    let Some(partition) = Metadata::with_current(|m| {
+                        m.partition_table_ref().get(&partition_id).cloned()
+                    }) else {
+                        // The partition is no longer in the partition table.
+                        return AsynchronousEvent {
+                            partition_id,
+                            inner: EventKind::SnapshotStatusUpdateSkipped,
+                        };
+                    };
                     match psm
-                        .refresh_latest_partition_snapshot_status(partition_id)
+                        .refresh_latest_partition_snapshot_status(&partition)
                         .await
                     {
                         Ok(Some(snapshot_status)) => AsynchronousEvent {
@@ -1330,7 +1340,7 @@ where
                             inner: EventKind::SnapshotStatusUpdated { snapshot_status },
                         },
                         Ok(None) => {
-                            // Partition snapshot not found in repository
+                            // No snapshot repository is configured
                             AsynchronousEvent {
                                 partition_id,
                                 inner: EventKind::SnapshotStatusUpdateSkipped,
