@@ -12,7 +12,9 @@ mod metadata;
 mod repository;
 mod snapshot_task;
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::{PartitionStore, SnapshotError, SnapshotErrorKind};
@@ -22,9 +24,9 @@ pub use self::repository::{PartitionSnapshotStatus, SnapshotRepository};
 pub use self::snapshot_task::*;
 
 use tokio::sync::Semaphore;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument, warn};
 
-use restate_types::config::Configuration;
+use restate_types::config::{Configuration, SnapshotsOptions};
 use restate_types::identifiers::{PartitionId, SnapshotId};
 use restate_types::logs::Lsn;
 
@@ -112,5 +114,137 @@ impl Snapshots {
             }
         };
         Ok(snapshot)
+    }
+}
+
+/// The directory that an export of `snapshot_id` is written to, inside `snapshot_base_path`.
+pub(crate) fn export_dir(snapshot_base_path: &Path, snapshot_id: SnapshotId) -> PathBuf {
+    snapshot_base_path.join(snapshot_id.to_string())
+}
+
+/// Removes snapshot exports left over from a previous run, e.g. one that crashed while
+/// exporting. Only call it while no export can be in progress, such as at startup.
+///
+/// It removes only what exports create: the `<partition id>/<snapshot id>` directories
+/// under [`SnapshotsOptions::snapshots_base_dir`], and the `<snapshot id>.tmp` directories
+/// that RocksDB stages them in. Anything else, symbolic links included, is left alone.
+/// Logs only if it removed something or failed to.
+pub fn remove_leftover_exports(options: &SnapshotsOptions) {
+    let base_dir = options.snapshots_base_dir();
+    let mut removed = 0;
+    for partition_dir in real_subdirs(&base_dir) {
+        let Some(partition_id) = parse_dir_name::<PartitionId>(&partition_dir) else {
+            continue;
+        };
+        // Compare full paths, so only names that exports would produce match.
+        if partition_dir != options.snapshots_dir(partition_id) {
+            continue;
+        }
+        for dir in real_subdirs(&partition_dir) {
+            let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+                continue;
+            };
+            let Ok(snapshot_id) = name.strip_suffix(".tmp").unwrap_or(name).parse() else {
+                continue;
+            };
+            let export = export_dir(&partition_dir, snapshot_id);
+            let mut staging = OsString::from(export.as_os_str());
+            staging.push(".tmp");
+            if dir != export && dir != staging {
+                continue;
+            }
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => {
+                    debug!(path = %dir.display(), "Removed leftover snapshot export");
+                    removed += 1;
+                }
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                Err(err) => warn!(
+                    %err,
+                    path = %dir.display(),
+                    "Failed to remove leftover snapshot export",
+                ),
+            }
+        }
+    }
+    if removed > 0 {
+        info!(
+            removed,
+            path = %base_dir.display(),
+            "Removed snapshot exports left over from a previous run",
+        );
+    }
+}
+
+/// The directories directly inside `dir`, without following symbolic links.
+fn real_subdirs(dir: &Path) -> Vec<PathBuf> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
+        Err(err) => {
+            warn!(%err, path = %dir.display(), "Failed to list snapshot exports");
+            return Vec::new();
+        }
+    };
+    entries
+        .filter_map(Result::ok)
+        // `DirEntry::file_type` doesn't follow symbolic links, so they don't count as
+        // directories here.
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+        .map(|entry| entry.path())
+        .collect()
+}
+
+fn parse_dir_name<T: std::str::FromStr>(dir: &Path) -> Option<T> {
+    dir.file_name()?.to_str()?.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use restate_types::config::SnapshotsOptions;
+    use restate_types::identifiers::{PartitionId, SnapshotId};
+
+    use super::{export_dir, remove_leftover_exports};
+
+    #[cfg(unix)]
+    #[test]
+    fn remove_leftover_exports_removes_only_what_exports_create() {
+        let options = SnapshotsOptions::default();
+        let base_dir = options.snapshots_base_dir();
+        // Nothing to do before any export created the directory.
+        remove_leftover_exports(&options);
+        assert!(!base_dir.exists());
+
+        let partition_dir = options.snapshots_dir(PartitionId::from(7));
+        let export = export_dir(&partition_dir, SnapshotId::new());
+        let staging = PathBuf::from(format!("{}.tmp", export.display()));
+        std::fs::create_dir_all(export.join("nested")).unwrap();
+        std::fs::write(export.join("000001.sst"), b"data").unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+
+        // Paths that exports don't create, including ones named like theirs.
+        let non_canonical = base_dir.join("007").join(SnapshotId::new().to_string());
+        let unknown_dir = partition_dir.join("not-a-snapshot");
+        let file = partition_dir.join(SnapshotId::new().to_string());
+        let link = partition_dir.join(SnapshotId::new().to_string());
+        let link_target = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(&non_canonical).unwrap();
+        std::fs::create_dir_all(&unknown_dir).unwrap();
+        std::fs::write(&file, b"data").unwrap();
+        std::fs::write(link_target.path().join("000001.sst"), b"data").unwrap();
+        std::os::unix::fs::symlink(link_target.path(), &link).unwrap();
+
+        remove_leftover_exports(&options);
+
+        assert!(!export.exists());
+        assert!(!staging.exists());
+        assert!(base_dir.is_dir() && partition_dir.is_dir());
+        assert!(non_canonical.is_dir());
+        assert!(unknown_dir.is_dir());
+        assert!(file.is_file());
+        assert!(link.is_symlink());
+        assert!(link_target.path().join("000001.sst").is_file());
     }
 }
