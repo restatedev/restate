@@ -45,7 +45,7 @@ use crate::faults::{self, FaultPoint, Faults};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
 use crate::{TableKind, configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 /// A physical database and the notification registry installed in its listener.
@@ -178,10 +178,12 @@ impl PartitionDb {
         self.physical.released.0.clone().cancelled_owned()
     }
 
+    /// Exports the column family into `export_dir`, which RocksDB creates. Returns a
+    /// guard that deletes the directory when dropped, along with the export's metadata.
     pub(crate) async fn export_cf(
         &self,
         export_dir: std::path::PathBuf,
-    ) -> Result<ExportImportFilesMetaData, RocksError> {
+    ) -> Result<(SnapshotDir, ExportImportFilesMetaData), RocksError> {
         // Snapshots can be exported from a closed partition, so this counts against the
         // database, not the partition's scope. `physical` keeps the column family from
         // being deleted until the export finishes.
@@ -194,11 +196,15 @@ impl PartitionDb {
                 StorageTaskKind::ExportColumnFamily,
                 Priority::Low,
                 move |_| {
-                    physical
+                    let metadata = physical
                         .database
                         .rocksdb
                         .inner()
-                        .export_cf(name, export_dir)
+                        .export_cf(name, export_dir.clone())?;
+                    // Take ownership of the files here, on the worker. If the caller went
+                    // away while the export was running, nobody claims this result, and
+                    // dropping it deletes the files instead of leaving them behind.
+                    Ok((SnapshotDir::new(export_dir), metadata))
                 },
             )
             .await?
