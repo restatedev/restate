@@ -41,6 +41,7 @@ use restate_util_time::DurationExt;
 use crate::durable_lsn_tracking::{
     AppliedLsnCollectorFactory, DurableLsnEventListener, DurableLsnSenders,
 };
+use crate::faults::{self, FaultPoint, Faults};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
@@ -391,6 +392,7 @@ pub(crate) struct PartitionCell {
     executor: SinglePoolExecutor,
     archived_lsn: watch::Sender<Option<Lsn>>,
     pub(crate) inner: AsyncRwLock<State>,
+    pub(crate) faults: Faults,
 }
 
 impl PartitionCell {
@@ -400,6 +402,7 @@ impl PartitionCell {
             executor,
             archived_lsn: Default::default(),
             inner: AsyncRwLock::new(State::Unknown),
+            faults: Faults::default(),
         }
     }
 
@@ -546,6 +549,12 @@ impl PartitionCell {
             rocksdb,
             notifications,
         } = database;
+        let fault = self.faults.take(FaultPoint::Open);
+        let op = move |native: &RocksAccess| {
+            // Returns right away unless a test armed a fault.
+            futures::executor::block_on(faults::inject(fault))?;
+            op(native)
+        };
         let task = rocksdb.prepare_op(move |rocksdb| {
             let result = op(rocksdb.inner()).and_then(|()| {
                 let cf_name = meta.cf_name();
@@ -643,9 +652,13 @@ impl PartitionCell {
         // result and the cell stays `Retiring`, since we can't tell whether the
         // deletion happened. The deletion itself runs on the lifecycle executor.
         let executor = self.executor.clone();
+        let fault = self.faults.take(FaultPoint::Delete);
         tokio::spawn(async move {
             released.await;
-            let result = Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await;
+            let result = match faults::inject(fault).await {
+                Ok(()) => Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await,
+                Err(error) => Err(error),
+            };
             if let Err(error) = &result {
                 error!(
                     partition_id = %meta.partition_id,
