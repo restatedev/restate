@@ -226,7 +226,7 @@ async fn verify_journal_deleted<T: ReadJournalTable>(txn: &mut T, length: usize)
     assert!(notifications_index.is_empty());
 }
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn sleep_journal() {
     let mut rocksdb = storage_test_environment().await;
 
@@ -248,7 +248,7 @@ async fn sleep_journal() {
     verify_journal_deleted(&mut txn, 10).await;
 }
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn call_journal() {
     let mut rocksdb = storage_test_environment().await;
 

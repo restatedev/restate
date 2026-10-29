@@ -21,7 +21,7 @@ use restate_types::time::MillisSinceEpoch;
 const MOCK_INVOCATION_ID_1: InvocationId =
     InvocationId::from_parts(1, InvocationUuid::from_u128(12345678900001));
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn event() {
     let mut rocksdb = storage_test_environment().await;
 
