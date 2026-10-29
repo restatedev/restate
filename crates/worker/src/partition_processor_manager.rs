@@ -59,7 +59,7 @@ use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::GenerationalNodeId;
 use restate_types::cluster::cluster_state::ReplayStatus;
 use restate_types::cluster::cluster_state::{BrokenReason, PartitionProcessorStatus, RunMode};
-use restate_types::config::Configuration;
+use restate_types::config::{AutomaticSnapshots, Configuration};
 use restate_types::epoch::EpochMetadata;
 use restate_types::health::HealthStatus;
 use restate_types::identifiers::PartitionId;
@@ -1070,10 +1070,16 @@ where
             return;
         };
 
-        let snapshots_options = &self.updateable_config.live_load().worker.snapshots;
-        let snapshot_interval = snapshots_options.snapshot_interval;
-        let records_per_snapshot = snapshots_options.snapshot_interval_num_records;
-        if snapshot_interval.is_none() && records_per_snapshot.is_none() {
+        let Some(AutomaticSnapshots {
+            interval: snapshot_interval,
+            min_records: records_per_snapshot,
+        }) = self
+            .updateable_config
+            .live_load()
+            .worker
+            .snapshots
+            .automatic_snapshots()
+        else {
             return;
         };
 
@@ -1126,7 +1132,7 @@ where
                 if next_snapshot_target_lsn.is_none_or(|target| applied_lsn >= target)
                     && snapshot_interval.is_none_or(|interval| {
                         latest_snapshot.latest_snapshot_created_at.elapsed()
-                            > Duration::from(interval).add_jitter(0.1)
+                            > interval.add_jitter(0.1)
                     })
                 {
                     Some(partition_id)
