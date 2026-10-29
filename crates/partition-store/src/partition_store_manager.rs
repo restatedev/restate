@@ -524,10 +524,9 @@ mod tests {
 
     use parking_lot::Mutex;
     use rocksdb::AsColumnFamilyRef;
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::oneshot;
     use tokio::time::timeout;
 
-    use restate_core::ShutdownError;
     use restate_rocksdb::{Priority, RocksDbManager, RocksError};
     use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
     use restate_storage_api::{StorageError, Transaction};
@@ -539,6 +538,7 @@ mod tests {
 
     use super::PartitionStoreManager;
     use crate::PartitionStore;
+    use crate::faults::FaultPoint;
     use crate::keys::KeyKind;
     use crate::partition_db::State;
 
@@ -765,23 +765,111 @@ mod tests {
                 drop(store);
                 assert!(timeout(DEADLINE, manager.drop_partition_store(&partition)).await??);
             }
-
-            // Simulate a deletion that failed: the column family is still there, and
-            // the partition stays closed until a later drop retries the deletion.
-            let mut store = manager.open(&partition, None).await?;
-            write_applied_lsn(&mut store, 40).await?;
-            drop(store);
-            let cell = manager.state.get(partition.partition_id).unwrap();
-            let (_, result) = watch::channel(Some(Err(RocksError::Shutdown(ShutdownError))));
-            *cell.inner.write().await = State::Retiring { result };
-            assert!(manager.open(&partition, None).await.is_err());
-            assert!(timeout(DEADLINE, manager.drop_partition_store(&partition)).await??);
-            let mut store = manager.open(&partition, None).await?;
-            assert_eq!(store.get_applied_lsn().await?, None);
-            drop((store, cell));
-
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
             drop((neighbor, manager));
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn slow_and_failing_cf_work_keeps_the_partition_consistent() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            write_applied_lsn(&mut store, 10).await?;
+            drop(store);
+            let database = manager.open_rocksdb(&partition).await?;
+            let has_cf = || {
+                database
+                    .rocksdb
+                    .inner()
+                    .cf_handle(partition.cf_name().as_ref())
+                    .is_some()
+            };
+            let cell = manager.state.get(partition.partition_id).unwrap();
+
+            // A slow deletion finishes even though its caller went away, and opening
+            // the partition waits for it.
+            let (reached, resume) = cell.faults.pause(FaultPoint::Delete);
+            let mut dropping = Box::pin(manager.drop_partition_store(&partition));
+            assert!(
+                dropping
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(dropping);
+            timeout(DEADLINE, reached).await??;
+            assert!(has_cf());
+            let mut result = match &*cell.inner.read().await {
+                State::Retiring { result } => result.clone(),
+                _ => panic!("the deletion must remain reachable"),
+            };
+            let mut reopen = Box::pin(manager.open(&partition, None));
+            assert!(
+                reopen
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(reopen);
+            drop(resume);
+            timeout(DEADLINE, result.wait_for(Option::is_some))
+                .await??
+                .as_ref()
+                .unwrap()
+                .clone()?;
+            assert!(!has_cf());
+
+            // A failed deletion is reported to its caller and keeps the partition
+            // closed, with its column family, until a later drop retries it.
+            let mut store = manager.open(&partition, None).await?;
+            assert_eq!(store.get_applied_lsn().await?, None);
+            write_applied_lsn(&mut store, 20).await?;
+            drop(store);
+            cell.faults.fail(FaultPoint::Delete, RocksError::ReadOnly);
+            assert!(matches!(
+                manager.drop_partition_store(&partition).await,
+                Err(RocksError::ReadOnly)
+            ));
+            assert!(has_cf());
+            assert!(manager.open(&partition, None).await.is_err());
+            assert!(manager.drop_partition_store(&partition).await?);
+            assert!(!has_cf());
+
+            // A slow creation doesn't hold up other partitions. A drop that comes in
+            // meanwhile waits for it and then deletes what it created, even though the
+            // caller that started the creation went away.
+            let (reached, resume) = cell.faults.pause(FaultPoint::Open);
+            let mut opening = Box::pin(manager.open(&partition, None));
+            assert!(
+                opening
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            timeout(DEADLINE, reached).await??;
+            let mut neighbor = timeout(DEADLINE, manager.open(&sibling, None)).await??;
+            write_applied_lsn(&mut neighbor, 30).await?;
+            let mut dropping = Box::pin(manager.drop_partition_store(&partition));
+            assert!(
+                dropping
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(opening);
+            drop(resume);
+            assert!(timeout(DEADLINE, dropping).await??);
+            assert!(!has_cf());
+            assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(30)));
+
+            drop((neighbor, cell, database, manager));
             rocksdb.reset().await?;
         }
         Ok(())
