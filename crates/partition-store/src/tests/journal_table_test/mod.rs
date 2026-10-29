@@ -132,7 +132,7 @@ async fn verify_journal_deleted<T: ReadJournalTable>(txn: &mut T) {
     }
 }
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn journal_tests() {
     let mut rocksdb = storage_test_environment().await;
 

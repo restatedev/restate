@@ -371,7 +371,7 @@ async fn budgeted_point_reads_reject_infeasible_reservations() {
     drop(txn);
 }
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn delete_all() {
     let mut rocksdb = storage_test_environment().await;
 
