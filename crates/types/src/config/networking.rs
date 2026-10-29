@@ -78,7 +78,15 @@ pub struct NetworkingOptions {
 
     /// # Disable Compression
     ///
-    /// Disables Zstd compression for internal gRPC network connections
+    /// Disables Zstd compression of the messages a node sends over internal gRPC network
+    /// connections. Nodes accept compressed and uncompressed messages either way, so nodes with
+    /// different settings can talk to each other.
+    ///
+    /// Compression costs CPU and memory for every message, and each connection compresses its
+    /// messages one at a time, which limits its throughput. Set this to `false` to compress when
+    /// the network between nodes is slow or billed by volume and the payloads compress well.
+    ///
+    /// Since v1.8.2, the default is `true` (previously `false`).
     pub disable_compression: bool,
 
     /// # Data Stream Window Size
@@ -181,7 +189,7 @@ impl Default for NetworkingOptions {
             http2_keep_alive_interval: NonZeroFriendlyDuration::from_secs_unchecked(1),
             http2_keep_alive_timeout: NonZeroFriendlyDuration::from_secs_unchecked(3),
             http2_adaptive_window: None,
-            disable_compression: false,
+            disable_compression: true,
             // 4MiB
             data_stream_window_size: NonZeroByteCount::new(
                 NonZeroUsize::new(4 * 1024 * 1024).expect("Non zero number"),

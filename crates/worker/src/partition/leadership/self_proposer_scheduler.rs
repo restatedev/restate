@@ -21,12 +21,16 @@ use metrics::gauge;
 use tracing::{debug, warn};
 
 use restate_bifrost::{CommitToken, WrittenRecords};
+use restate_types::config::SelfProposerFlow;
 use restate_types::logs::Lsn;
 use restate_types::sharding::PartitionId;
 
+use super::congestion_control::{CongestionControl, FlowClass};
 use crate::metric_definitions::{PARTITION_LABEL, SELF_PROPOSER_INFLIGHT};
 
-const QUANTUM: i64 = 64 * 1024; // 64KiB
+// Every flow's credit per round, in records. Flows that propose a record at a time are served in
+// round robin, while a batch pays for every record it carries.
+const QUANTUM: i64 = 1;
 
 // Every flow gets one bit in `Shared::woken`.
 const _: () = assert!(
@@ -45,14 +49,14 @@ struct Shared {
 impl Shared {
     /// Sets the wake notification of the flow, returning whether it was already set.
     fn set_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
-        let previous = self.woken.fetch_or(flow.bit(), Ordering::AcqRel);
-        previous & flow.bit() != 0
+        let previous = self.woken.fetch_or(bit(flow), Ordering::AcqRel);
+        previous & bit(flow) != 0
     }
 
     /// Clears the wake notification of the flow, returning whether it was set.
     fn take_woken(&self, flow: SelfProposerSchedulerFlow) -> bool {
-        let previous = self.woken.fetch_and(!flow.bit(), Ordering::AcqRel);
-        previous & flow.bit() != 0
+        let previous = self.woken.fetch_and(!bit(flow), Ordering::AcqRel);
+        previous & bit(flow) != 0
     }
 }
 
@@ -93,7 +97,7 @@ enum State {
 
 #[derive(Debug, Clone)]
 struct FlowState {
-    /// Signed DRR deficit counter in bytes.
+    /// Signed DRR deficit counter in records (weighted by the flow's cost multiplier).
     ///
     /// Positive values are available service credits. Negative values are allowed
     /// and it means that the flow is currently in debit (because proposal sizes are
@@ -103,56 +107,29 @@ struct FlowState {
     state: State,
 }
 
-#[derive(Debug, Clone, Enum, Copy, PartialEq)]
-pub(crate) enum SelfProposerSchedulerFlow {
-    Invoker,
-    Timer,
-    Shuffle,
-    Cleaner,
-    UpsertSchema,
-    UpsertRuleBook,
-    NetworkService,
-    PartitionMaintenance,
-    Scheduler,
+pub(crate) type SelfProposerSchedulerFlow = SelfProposerFlow;
+
+/// Returns the cost multiplier for a flow. The multiplier is multiplied by the number of records proposed for that
+/// flow, resulting into it being charged more for those records. A higher multiplier biases the scheduler "against"
+/// that flow (i.e. deprioritizing it).
+fn cost_multiplier(flow: SelfProposerSchedulerFlow) -> u32 {
+    match flow {
+        // The cleaner's records are expensive to process.
+        SelfProposerSchedulerFlow::Cleaner => 10,
+        SelfProposerSchedulerFlow::Invoker
+        | SelfProposerSchedulerFlow::Timer
+        | SelfProposerSchedulerFlow::Shuffle
+        | SelfProposerSchedulerFlow::UpsertSchema
+        | SelfProposerSchedulerFlow::UpsertRuleBook
+        | SelfProposerSchedulerFlow::NetworkService
+        | SelfProposerSchedulerFlow::PartitionMaintenance
+        | SelfProposerSchedulerFlow::Scheduler => 1,
+    }
 }
 
-impl SelfProposerSchedulerFlow {
-    /// Returns the cost multiplier for a flow. The multiplier is multiplied by the number of bytes proposed for that flow,
-    /// resulting into it being charged more for those bytes. A higher multiplier biases the scheduler "against" that flow
-    /// (i.e. deprioritizing it).
-    fn cost_multiplier(&self) -> u32 {
-        match self {
-            // The cleaner messages are pretty small (just an invocation id), but are expensive to process.
-            SelfProposerSchedulerFlow::Cleaner => 10,
-            SelfProposerSchedulerFlow::Invoker => 1,
-            SelfProposerSchedulerFlow::Timer => 1,
-            SelfProposerSchedulerFlow::Shuffle => 1,
-            SelfProposerSchedulerFlow::UpsertSchema => 1,
-            SelfProposerSchedulerFlow::UpsertRuleBook => 1,
-            SelfProposerSchedulerFlow::NetworkService => 1,
-            SelfProposerSchedulerFlow::PartitionMaintenance => 1,
-            SelfProposerSchedulerFlow::Scheduler => 1,
-        }
-    }
-
-    /// The flow's bit in [`Shared::woken`].
-    fn bit(self) -> u16 {
-        1 << self.into_usize()
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            SelfProposerSchedulerFlow::Invoker => "invoker",
-            SelfProposerSchedulerFlow::Timer => "timer",
-            SelfProposerSchedulerFlow::Shuffle => "shuffle",
-            SelfProposerSchedulerFlow::Cleaner => "cleaner",
-            SelfProposerSchedulerFlow::UpsertSchema => "upsert-schema",
-            SelfProposerSchedulerFlow::UpsertRuleBook => "upsert-rule-book",
-            SelfProposerSchedulerFlow::NetworkService => "network-service",
-            SelfProposerSchedulerFlow::PartitionMaintenance => "partition-maintenance",
-            SelfProposerSchedulerFlow::Scheduler => "scheduler",
-        }
-    }
+/// The flow's bit in [`Shared::woken`].
+fn bit(flow: SelfProposerSchedulerFlow) -> u16 {
+    1 << flow.into_usize()
 }
 
 /// The scheduler's decision of which flow to poll next. The caller must then poll the returned flow and
@@ -178,6 +155,8 @@ impl<'a> SchedulerDecision<'a> {
     fn requeue(&mut self, force_back: bool) {
         let flow = self.flow;
         let state = &mut self.state[flow];
+        // Unreachable while `QUANTUM` is 1 (any proposal leaves the deficit <= 0), kept so the
+        // scheduler stays a correct DRR if the quantum is raised.
         if state.deficit > 0 && !force_back {
             self.ready_ring.push_front(flow);
         } else {
@@ -187,24 +166,24 @@ impl<'a> SchedulerDecision<'a> {
     }
 
     /// Report back the result of handling the flow to the self-proposer. A flow that managed to
-    /// write something will be automatically considered ready to be polled again. Depending on its
-    /// deficit, it may get re-enqueued at the head or the back of the ready queue.
+    /// write something will be automatically considered ready to be polled again. It gets
+    /// re-enqueued at the back of the ready queue unless it has deficit left (see `QUANTUM`).
     ///
-    /// Note: Flows that report back 0 bytes written will lose their position in the
+    /// Note: Flows that report back 0 records written will lose their position in the
     /// ready queue to avoid starvation.
     pub(crate) fn on_proposal_enqueued(mut self, result: WrittenRecords) {
         self.received_feedback = true;
         let cost = result
-            .bytes_written
-            .saturating_mul(self.flow.cost_multiplier() as usize) as i64;
+            .records_written
+            .saturating_mul(cost_multiplier(self.flow) as usize) as i64;
         let state = self.flow_state();
         state.deficit = state.deficit.saturating_sub(cost);
         std::debug_assert_matches!(state.state, State::Polling);
-        self.requeue(result.bytes_written == 0);
+        self.requeue(result.records_written == 0);
         self.inflight.add(self.flow, result);
     }
 
-    /// Reports back that the flow was ready, but reported an error without proposing any bytes.
+    /// Reports back that the flow was ready, but reported an error without proposing any records.
     /// Will be treated as an empty proposal (see [`SelfProposerScheduler::on_proposal_enqueued`]).
     pub(crate) fn on_error(self) {
         self.on_proposal_enqueued(WrittenRecords::default())
@@ -279,23 +258,30 @@ struct InflightTracker {
 
     // Stat Aggregates
     total_per_flow_inflight: EnumMap<SelfProposerSchedulerFlow, usize>,
+    total_per_class_inflight: EnumMap<FlowClass, usize>,
     total_inflight: usize,
+    classes: EnumMap<SelfProposerSchedulerFlow, FlowClass>,
 
     // Metrics
     metrics: EnumMap<SelfProposerSchedulerFlow, FlowMetrics>,
 }
 
 impl InflightTracker {
-    fn new(partition_id: PartitionId) -> Self {
+    fn new(
+        partition_id: PartitionId,
+        classes: EnumMap<SelfProposerSchedulerFlow, FlowClass>,
+    ) -> Self {
         Self {
             batches: VecDeque::new(),
             current_batch: Default::default(),
 
             total_per_flow_inflight: Default::default(),
+            total_per_class_inflight: Default::default(),
             total_inflight: 0,
+            classes,
 
             metrics: EnumMap::from_fn(|flow: SelfProposerSchedulerFlow| FlowMetrics {
-                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition_id.to_string(), "flow" => flow.as_str()),
+                in_flight: gauge!(SELF_PROPOSER_INFLIGHT, PARTITION_LABEL => partition_id.to_string(), "flow" => <&'static str>::from(flow)),
             }),
         }
     }
@@ -304,6 +290,7 @@ impl InflightTracker {
         let records = written.records_written;
         self.current_batch[flow] += records;
         self.total_per_flow_inflight[flow] += records;
+        self.total_per_class_inflight[self.classes[flow]] += records;
         self.total_inflight += records;
     }
 
@@ -311,6 +298,9 @@ impl InflightTracker {
         for (flow, records) in batch.inflight.iter() {
             self.total_per_flow_inflight[flow] =
                 self.total_per_flow_inflight[flow].saturating_sub(*records);
+            let class = self.classes[flow];
+            self.total_per_class_inflight[class] =
+                self.total_per_class_inflight[class].saturating_sub(*records);
             self.total_inflight = self.total_inflight.saturating_sub(*records);
         }
     }
@@ -369,8 +359,8 @@ impl InflightTracker {
 }
 
 /// A scheduler that sits in front of the self-proposer to decide which one of the possible self-proposer writers
-/// should be allowed to write next. This is a byte-aware DRR scheduler that tries to ensure fairness among the writers
-/// based on the amount of bytes each one have proposed.
+/// should be allowed to write next. This is a DRR scheduler that tries to ensure fairness among the writers based on
+/// the number of records each one has proposed, weighted by the flow's cost multiplier.
 ///
 /// Because the scheduler doesn't know the cost of a flow beforehand, flows report back their sizes after getting polled.
 /// This means that we allow flows to go into negative deficits. A flow with a negative deficit won't get polled again
@@ -385,10 +375,16 @@ pub(crate) struct SelfProposerScheduler {
 
     // Inflight proposal tracking
     inflight: InflightTracker,
+
+    // None when congestion control is disabled.
+    congestion_control: Option<CongestionControl>,
 }
 
 impl SelfProposerScheduler {
-    pub(crate) fn new(partition_id: PartitionId) -> SelfProposerScheduler {
+    pub(crate) fn new(
+        partition_id: PartitionId,
+        congestion_control: Option<CongestionControl>,
+    ) -> SelfProposerScheduler {
         let state = EnumMap::from_fn(|_| FlowState {
             deficit: 0,
             state: State::Queued,
@@ -411,7 +407,14 @@ impl SelfProposerScheduler {
             ready_ring: VecDeque::from_iter(state.iter().map(|(flow, _)| flow)),
             state,
             wakers,
-            inflight: InflightTracker::new(partition_id),
+            inflight: InflightTracker::new(
+                partition_id,
+                congestion_control
+                    .as_ref()
+                    .map(CongestionControl::classes)
+                    .unwrap_or_default(),
+            ),
+            congestion_control,
         }
     }
 
@@ -422,7 +425,7 @@ impl SelfProposerScheduler {
             return;
         }
         for (flow, state) in self.state.iter_mut() {
-            if woken & flow.bit() == 0 {
+            if woken & bit(flow) == 0 {
                 continue;
             }
             match state.state {
@@ -451,6 +454,12 @@ impl SelfProposerScheduler {
         let progressed = self.inflight.poll_on_progress(cx, applied_lsn);
         if progressed {
             self.inflight.report_metrics();
+            if let Some(cc) = &mut self.congestion_control {
+                cc.on_inflight_dropped(
+                    &self.inflight.total_per_class_inflight,
+                    self.inflight.total_inflight,
+                );
+            }
         }
     }
 
@@ -465,6 +474,19 @@ impl SelfProposerScheduler {
         self.shared.parent_waker.register(cx.waker());
         self.drain_woken();
 
+        // The records in flight don't change until a decision is returned.
+        let inflight = &self.inflight;
+        let congestion_control = &mut self.congestion_control;
+        let mut eligible = |flow: SelfProposerSchedulerFlow| {
+            congestion_control.as_mut().is_none_or(|cc| {
+                cc.admits(
+                    flow,
+                    &inflight.total_per_class_inflight,
+                    inflight.total_inflight,
+                )
+            })
+        };
+
         loop {
             let round_length = self.ready_ring.len();
             if round_length == 0 {
@@ -477,6 +499,10 @@ impl SelfProposerScheduler {
                     .ready_ring
                     .pop_front()
                     .expect("guarded by the round_length check earlier");
+                if !eligible(flow) {
+                    self.ready_ring.push_back(flow);
+                    continue;
+                }
                 let state = &mut self.state[flow];
                 std::debug_assert_matches!(state.state, State::Queued);
 
@@ -501,6 +527,11 @@ impl SelfProposerScheduler {
                 }
             }
 
+            if closest_deficit == i64::MIN {
+                // Every ready flow is gated. Commit/apply progress wakes the processor.
+                return None;
+            }
+
             // We did one full round and no flows were returned. It means that all flows are in debit.
             // As an optimization, let's fast forward the rounds until we find an eligible flow.
             // To do that we:
@@ -510,7 +541,9 @@ impl SelfProposerScheduler {
             assert!(closest_deficit <= 0);
             let rounds_to_skip = closest_deficit.saturating_abs() / QUANTUM;
             self.ready_ring.iter().for_each(|flow| {
-                self.state[*flow].deficit += rounds_to_skip * QUANTUM;
+                if eligible(*flow) {
+                    self.state[*flow].deficit += rounds_to_skip * QUANTUM;
+                }
             });
         }
     }
@@ -518,11 +551,13 @@ impl SelfProposerScheduler {
 
 #[cfg(test)]
 mod tests {
+    use std::num::NonZeroUsize;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::task::{Context, Wake, Waker};
 
     use restate_bifrost::{CommitToken, Committed, WrittenRecords};
+    use restate_types::config::{SelfProposerCongestionControl, SelfProposerCongestionControlMode};
     use restate_types::logs::Lsn;
     use restate_types::sharding::PartitionId;
 
@@ -537,12 +572,12 @@ mod tests {
         }
     }
 
-    /// A proposal of `bytes_written` bytes. The scheduler only accounts for the bytes, so the
-    /// record count is not meaningful in these tests.
-    fn proposal(bytes_written: usize) -> WrittenRecords {
+    /// A proposal of `records_written` records. The scheduler only accounts for the records, so
+    /// the byte count is not meaningful in these tests.
+    fn proposal(records_written: usize) -> WrittenRecords {
         WrittenRecords {
-            bytes_written,
-            records_written: 1,
+            bytes_written: records_written * 100,
+            records_written,
         }
     }
 
@@ -570,17 +605,9 @@ mod tests {
         let waker = Waker::from(Arc::clone(&test_waker));
         let mut cx = Context::from_waker(&waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // First poll, expecting the invoker flow.
-        let dec = scheduler
-            .poll_next_ready(&mut cx)
-            .expect("expected flow, got none");
-        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
-
-        // Report back 1KB of commands written
-        dec.on_proposal_enqueued(proposal(1024));
-        // Invoker's deficit should still be positive, so asking the scheduler again should yield it again.
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
@@ -624,10 +651,10 @@ mod tests {
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
         assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
-        // Report back 128KB of commands, to consume the entire deficit of the invoker.
-        dec.on_proposal_enqueued(proposal(128 * 1024));
+        // A record consumes the invoker's credit for the round...
+        dec.on_proposal_enqueued(proposal(1));
 
-        // The invoker is the only queued flow, it should get its deficit back.
+        // ...but it's the only queued flow, so it gets the next round's credit right away.
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
@@ -653,7 +680,7 @@ mod tests {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
         // Report 100x the quantum for the invoker
         let dec = scheduler
@@ -707,13 +734,103 @@ mod tests {
     }
 
     #[test]
+    fn shares_records() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
+
+        // The invoker proposes batches of 4 records and the timer one record at a time, both
+        // always ready; the other flows are pending. The invoker gets a quarter of the timer's turns,
+        // and the same number of records.
+        let (mut invoker, mut timer) = (0, 0);
+        while invoker + timer < 1000 {
+            let dec = scheduler.poll_next_ready(&mut cx).expect("a flow is ready");
+            match dec.flow {
+                SelfProposerSchedulerFlow::Invoker => {
+                    invoker += 1;
+                    dec.on_proposal_enqueued(proposal(4));
+                }
+                SelfProposerSchedulerFlow::Timer => {
+                    timer += 1;
+                    dec.on_proposal_enqueued(proposal(1));
+                }
+                _ => dec.on_pending(),
+            }
+        }
+        assert_eq!((invoker, timer), (200, 800));
+    }
+
+    #[test]
+    fn classes_keep_their_share() {
+        let mut cx = Context::from_waker(Waker::noop());
+        let mut scheduler = super::SelfProposerScheduler::new(
+            PartitionId::new_unchecked(1),
+            super::CongestionControl::new(
+                &SelfProposerCongestionControl {
+                    mode: SelfProposerCongestionControlMode::Static {
+                        limit: NonZeroUsize::new(10).unwrap(),
+                    },
+                    ..Default::default()
+                },
+                PartitionId::new_unchecked(1),
+            ),
+        );
+
+        // A limit of 10 keeps 2 records free for the latency class, so the regular and background
+        // classes may use 8 together (the background class at most 1 of them). The invoker and the
+        // timer use up those 8...
+        let dec = scheduler.poll_next_ready(&mut cx).expect("a ready flow");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
+        dec.on_proposal_enqueued(proposal(7));
+        let dec = scheduler.poll_next_ready(&mut cx).expect("the timer");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Timer);
+        dec.on_proposal_enqueued(proposal(1));
+
+        // ...which skips the other regular flows and the cleaner, but leaves the network service
+        // its whole share.
+        let dec = scheduler
+            .poll_next_ready(&mut cx)
+            .expect("the network service");
+        assert_eq!(dec.flow, SelfProposerSchedulerFlow::NetworkService);
+        dec.on_proposal_enqueued(proposal(2));
+        assert!(scheduler.poll_next_ready(&mut cx).is_none());
+
+        // Committing doesn't reopen the gate, only applying does.
+        let (tx, rx) = tokio::sync::oneshot::channel::<Committed>();
+        scheduler.on_round_end(CommitToken::new(rx));
+        tx.send(committed(10)).expect("receiver is alive");
+        scheduler.poll_on_progress(&mut cx, Lsn::new(9));
+        assert!(scheduler.poll_next_ready(&mut cx).is_none());
+
+        // Once the batch is applied, the invoker gets scheduled again.
+        scheduler.poll_on_progress(&mut cx, Lsn::new(10));
+        assert_eq!(
+            scheduler
+                .inflight
+                .total_per_class_inflight
+                .values()
+                .sum::<usize>(),
+            0
+        );
+        loop {
+            let dec = scheduler
+                .poll_next_ready(&mut cx)
+                .expect("the gate reopened");
+            if dec.flow == SelfProposerSchedulerFlow::Invoker {
+                dec.on_pending();
+                break;
+            }
+            dec.on_pending();
+        }
+    }
+
+    #[test]
     fn tracks_inflight_records() {
         let waker = Waker::noop();
         let mut cx = Context::from_waker(waker);
 
-        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1));
+        let mut scheduler = super::SelfProposerScheduler::new(PartitionId::new_unchecked(1), None);
 
-        // The invoker proposes 1 KiB across 2 records.
+        // The invoker proposes 1 KiB across 2 records, which uses up its credit for the round.
         let dec = scheduler
             .poll_next_ready(&mut cx)
             .expect("expected flow, got none");
@@ -722,13 +839,6 @@ mod tests {
             bytes_written: 1024,
             records_written: 2,
         });
-
-        // The invoker still has credits, so it gets polled again; move on to the timer.
-        let dec = scheduler
-            .poll_next_ready(&mut cx)
-            .expect("expected flow, got none");
-        assert_eq!(dec.flow, SelfProposerSchedulerFlow::Invoker);
-        dec.on_pending();
 
         // The timer proposes 512 B across a single record.
         let dec = scheduler
