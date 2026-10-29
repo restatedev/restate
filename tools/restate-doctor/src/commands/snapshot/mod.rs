@@ -25,6 +25,7 @@ use bytestring::ByteString;
 use cling::prelude::*;
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
+use tokio_util::sync::CancellationToken;
 use tracing::info;
 use url::Url;
 
@@ -376,7 +377,7 @@ async fn open_partition(
 
     c_println!("Partition {partition_id}: downloading latest snapshot…");
     let snapshot = snapshot_repository
-        .get_latest(partition_id)
+        .get_latest(partition_id, &CancellationToken::new())
         .await
         .with_context(|| format!("failed to download snapshot for partition {partition_id}"))?
         .with_context(|| format!("no snapshot found for partition {partition_id}"))?;
