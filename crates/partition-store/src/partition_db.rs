@@ -41,6 +41,7 @@ use restate_util_time::DurationExt;
 use crate::durable_lsn_tracking::{
     AppliedLsnCollectorFactory, DurableLsnEventListener, DurableLsnSenders,
 };
+use crate::faults::{self, FaultPoint, Faults};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
@@ -391,6 +392,7 @@ pub(crate) struct PartitionCell {
     executor: SinglePoolExecutor,
     archived_lsn: watch::Sender<Option<Lsn>>,
     pub(crate) inner: AsyncRwLock<State>,
+    pub(crate) faults: Faults,
 }
 
 impl PartitionCell {
@@ -400,6 +402,7 @@ impl PartitionCell {
             executor,
             archived_lsn: Default::default(),
             inner: AsyncRwLock::new(State::Unknown),
+            faults: Faults::default(),
         }
     }
 
@@ -547,53 +550,60 @@ impl PartitionCell {
             rocksdb,
             notifications,
         } = database;
-        let task = rocksdb.prepare_op(move |rocksdb| {
-            let result = op(rocksdb.inner()).and_then(|()| {
-                let cf_name = meta.cf_name();
-                let database = PartitionStoreDb {
-                    rocksdb,
-                    notifications,
-                };
-                let db = PartitionDb::new(meta, archived_lsn, database)
-                    .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.into()))?;
-                // Load the durable LSN before anyone can see the partition or subscribe
-                // to its durability updates. If the read fails, keep the partition anyway
-                // (the column family itself is fine) with an unknown LSN;
-                // get_durable_lsn() reads it again later.
-                match crate::fsm_table::get_locally_durable_lsn(&mut crate::PartitionStore::from(
-                    db.clone(),
-                )) {
-                    Ok(Some(lsn)) => {
-                        db.durable_lsn.send_replace(lsn);
+        let executor = self.executor.clone();
+        // Hands the work to the lifecycle pool. `injected` is the outcome of a fault a
+        // test armed; if it's an error, the work reports it instead of running.
+        let submit = move |injected: Result<(), RocksError>| {
+            let task = rocksdb.prepare_op(move |rocksdb| {
+                let result = injected.and_then(|()| op(rocksdb.inner())).and_then(|()| {
+                    let cf_name = meta.cf_name();
+                    let database = PartitionStoreDb {
+                        rocksdb,
+                        notifications,
+                    };
+                    let db = PartitionDb::new(meta, archived_lsn, database)
+                        .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.into()))?;
+                    // Load the durable LSN before anyone can see the partition or subscribe
+                    // to its durability updates. If the read fails, keep the partition anyway
+                    // (the column family itself is fine) with an unknown LSN;
+                    // get_durable_lsn() reads it again later.
+                    match crate::fsm_table::get_locally_durable_lsn(
+                        &mut crate::PartitionStore::from(db.clone()),
+                    ) {
+                        Ok(Some(lsn)) => {
+                            db.durable_lsn.send_replace(lsn);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(partition_id = %db.partition().partition_id, %error,
+                                    "Could not initialize durable LSN; recovery will retry on access");
+                        }
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!(partition_id = %db.partition().partition_id, %error,
-                                "Could not initialize durable LSN; recovery will retry on access");
-                    }
+                    Ok(db)
+                });
+                // Log the failure here: if the caller that started this work went away, the
+                // next operation on the cell picks up the outcome but doesn't report it.
+                if let Err(error) = &result {
+                    warn!(
+                        %partition_id,
+                        %error,
+                        "Could not create or import the partition's column family"
+                    );
                 }
-                Ok(db)
+                worker_completion.send_replace(Some(result));
             });
-            // Log the failure here: if the caller that started this work went away, the
-            // next operation on the cell picks up the outcome but doesn't report it.
-            if let Err(error) = &result {
-                warn!(
-                    %partition_id,
-                    %error,
-                    "Could not create or import the partition's column family"
-                );
+            let dispatch = executor.dispatch(
+                task.background("initialize-partition", kind)
+                    .with_priority(Priority::Low),
+            );
+            if let Err(error) = dispatch {
+                // The executor rejected the task and already dropped it, with everything it
+                // captured, so it's safe to report the failure now.
+                completion.send_replace(Some(Err(error.into())));
             }
-            worker_completion.send_replace(Some(result));
-        });
-        let dispatch = self.executor.dispatch(
-            task.background("initialize-partition", kind)
-                .with_priority(Priority::Low),
-        );
-        if let Err(error) = dispatch {
-            // The executor rejected the task and already dropped it, with everything it
-            // captured, so it's safe to report the failure now.
-            completion.send_replace(Some(Err(error.into())));
-        }
+        };
+        // Submits right away unless a test armed a fault.
+        faults::run_after(self.faults.take(FaultPoint::Open), submit);
         // If the task panics or is dropped without running, the result channel closes
         // without a result. The cell then stays `Opening`, and later operations on it
         // (close, reopen, replace) give up instead of assuming the work finished.
@@ -653,9 +663,13 @@ impl PartitionCell {
         // result and the cell stays `Retiring`, since we can't tell whether the
         // deletion happened. The deletion itself runs on the lifecycle executor.
         let executor = self.executor.clone();
+        let fault = self.faults.take(FaultPoint::Delete);
         tokio::spawn(async move {
             released.await;
-            let result = Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await;
+            let result = match faults::inject(fault).await {
+                Ok(()) => Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await,
+                Err(error) => Err(error),
+            };
             if let Err(error) = &result {
                 error!(
                     partition_id = %meta.partition_id,
