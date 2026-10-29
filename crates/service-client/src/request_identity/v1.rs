@@ -91,6 +91,11 @@ pub struct Signer<'key, 'aud> {
     signing_key: &'key SigningKey,
 }
 
+/// The claims of a v1 request identity token.
+///
+/// `aud` is the path relative to the deployment URL, for example `/invoke/Greeter/greet`. It does
+/// not include the deployment's base path, so a receiver that sees the whole path cannot tell
+/// where the relative part starts. `target` closes that gap for HTTP deployments.
 #[derive(Serialize)]
 pub(crate) struct Claims<'aud> {
     aud: &'aud str,
@@ -99,6 +104,31 @@ pub(crate) struct Claims<'aud> {
     nbf: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     sub: Option<&'aud str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    target: Option<RequestTarget<'aud>>,
+}
+
+/// The `target` claim: the request exactly as restate-server sends it.
+///
+/// Serialized as `{"method": "POST", "path_and_query": "/base/invoke/Greeter/greet"}`.
+/// For an HTTP deployment, `path_and_query` is the deployment's base path joined with `aud`,
+/// followed by `?` and the query when the URL carries one, byte for byte as it appears in the
+/// request line. A Lambda deployment has no URL, so its `path_and_query` is the relative path.
+/// Every token a current server signs carries `target`. Verifiers that do not know the claim
+/// ignore it.
+#[derive(Serialize)]
+pub(crate) struct RequestTarget<'a> {
+    method: &'a str,
+    path_and_query: &'a str,
+}
+
+impl<'a> RequestTarget<'a> {
+    pub(crate) fn new(method: &'a str, path_and_query: &'a str) -> Self {
+        Self {
+            method,
+            path_and_query,
+        }
+    }
 }
 
 const JWT_HEADER: HeaderName = HeaderName::from_static("x-restate-jwt-v1");
@@ -108,6 +138,7 @@ impl<'key, 'aud> Signer<'key, 'aud> {
 
     pub(crate) fn new(
         path: &'aud str,
+        target: Option<RequestTarget<'aud>>,
         sub: Option<&'aud str>,
         signing_key: &'key SigningKey,
     ) -> Self {
@@ -125,6 +156,7 @@ impl<'key, 'aud> Signer<'key, 'aud> {
                 iat: unix_seconds,
                 exp: unix_seconds.saturating_add(leeway_seconds),
                 sub,
+                target,
             },
             signing_key,
         }
@@ -191,6 +223,14 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         nbf: u64,
         #[serde(default)]
         sub: Option<String>,
+        #[serde(default)]
+        target: Option<DecodedTarget>,
+    }
+
+    #[derive(serde::Deserialize, Debug, PartialEq)]
+    struct DecodedTarget {
+        method: String,
+        path_and_query: String,
     }
 
     #[test]
@@ -200,7 +240,7 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
 
         let key = SigningKey::from_pem_file(pemfile.path().to_path_buf(), Duration::from_secs(60))
             .unwrap();
-        let signer = Signer::new("/invoke/foo", None, &key);
+        let signer = Signer::new("/invoke/foo", None, None, &key);
 
         let headers = signer.insert_identity(HeaderMap::new()).unwrap();
 
@@ -240,6 +280,7 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         assert_eq!(decoded.claims.exp - decoded.claims.iat, 60);
         assert_eq!(decoded.claims.iat - decoded.claims.nbf, 60);
         assert_eq!(decoded.claims.sub, None);
+        assert_eq!(decoded.claims.target, None);
     }
 
     #[test]
@@ -249,7 +290,7 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
 
         let key = SigningKey::from_pem_file(pemfile.path().to_path_buf(), Duration::from_secs(300))
             .unwrap();
-        let headers = Signer::new("/invoke/foo", None, &key)
+        let headers = Signer::new("/invoke/foo", None, None, &key)
             .insert_identity(HeaderMap::new())
             .unwrap();
 
@@ -275,13 +316,18 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
     }
 
     #[test]
-    fn sign_with_sub() {
+    fn sign_with_sub_and_target() {
         let mut pemfile = tempfile::NamedTempFile::new().unwrap();
         pemfile.write_all(PRIVATE_KEY).unwrap();
 
         let key = SigningKey::from_pem_file(pemfile.path().to_path_buf(), Duration::from_secs(60))
             .unwrap();
-        let signer = Signer::new("/invoke/foo", Some("somekey"), &key);
+        let signer = Signer::new(
+            "/invoke/foo",
+            Some(RequestTarget::new("POST", "/base/invoke/foo?tenant=a")),
+            Some("somekey"),
+            &key,
+        );
 
         let headers = signer.insert_identity(HeaderMap::new()).unwrap();
 
@@ -321,5 +367,12 @@ MCowBQYDK2VwAyEAj5BTvH+WJo0QGHm2hdLOuk6P7szKgTQxmpnnmZe/DcU=
         assert_eq!(decoded.claims.exp - decoded.claims.iat, 60);
         assert_eq!(decoded.claims.iat - decoded.claims.nbf, 60);
         assert_eq!(decoded.claims.sub, Some("somekey".to_string()));
+        assert_eq!(
+            decoded.claims.target,
+            Some(DecodedTarget {
+                method: "POST".into(),
+                path_and_query: "/base/invoke/foo?tenant=a".into(),
+            })
+        );
     }
 }

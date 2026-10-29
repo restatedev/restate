@@ -13,23 +13,43 @@ use std::str::FromStr;
 use bytes::{BufMut, BytesMut};
 use http::Uri;
 
+/// A tunnel request path, `/{scheme}/{host}/{port}` followed by the path the destination receives.
+pub(crate) struct TunnelPath<'a> {
+    pub(crate) scheme: &'a str,
+    pub(crate) host: &'a str,
+    pub(crate) port: &'a str,
+    /// Starts with `/`, or is empty when nothing follows the port.
+    pub(crate) destination_path: &'a str,
+}
+
+impl<'a> TunnelPath<'a> {
+    pub(crate) fn split(path: &'a str) -> Result<Self, &'static str> {
+        let path = path.strip_prefix('/').ok_or("no leading /")?;
+        let (scheme, path) = path.split_once('/').ok_or("no host")?;
+        let (host, path) = path.split_once('/').ok_or("no port")?;
+        let (port, destination_path) = path.split_at(path.find('/').unwrap_or(path.len()));
+        Ok(Self {
+            scheme,
+            host,
+            port,
+            destination_path,
+        })
+    }
+}
+
 pub fn parse_tunnel_destination(
     path_and_query: &http::uri::PathAndQuery,
 ) -> Result<Uri, &'static str> {
-    let path = path_and_query
-        .path()
-        .strip_prefix('/')
-        .ok_or("no leading /")?;
-    let (scheme, path) = path.split_once("/").ok_or("no host")?;
+    let TunnelPath {
+        scheme,
+        host,
+        port,
+        destination_path,
+    } = TunnelPath::split(path_and_query.path())?;
     let scheme = http::uri::Scheme::from_str(scheme)
         .ok()
         .ok_or("invalid scheme")?;
-    let (host, path) = path.split_once("/").ok_or("no port")?;
-
-    let (port, path) = match path.split_once("/") {
-        Some((port, path)) => (port, path),
-        None => (path, ""),
-    };
+    let path = destination_path.strip_prefix('/').unwrap_or_default();
 
     let mut authority = BytesMut::with_capacity(host.len() + 1 + port.len());
     authority.put(host.as_bytes());

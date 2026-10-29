@@ -188,7 +188,7 @@ impl HttpClient {
         version: Option<Version>,
         body: B,
         method: Method,
-        path: PathAndQuery,
+        path_and_query: PathAndQuery,
         headers: HeaderMap<HeaderValue>,
     ) -> Result<Request<BoxBody>, http::Error>
     where
@@ -196,26 +196,7 @@ impl HttpClient {
         <B as Body>::Error: Error + Send + Sync + 'static,
     {
         let mut uri_parts = uri.into_parts();
-        uri_parts.path_and_query = match uri_parts.path_and_query {
-            None => Some(path),
-            Some(existing_path) => Some({
-                let path = format!(
-                    "{}/{}",
-                    existing_path
-                        .path()
-                        .strip_suffix('/')
-                        .unwrap_or_else(|| existing_path.path()),
-                    path.path().strip_prefix('/').unwrap_or_else(|| path.path()),
-                );
-                let path = if let Some(query) = existing_path.query() {
-                    format!("{path}?{query}")
-                } else {
-                    path
-                };
-
-                path.try_into()?
-            }),
-        };
+        uri_parts.path_and_query = Some(path_and_query);
 
         let mut http_request_builder = Request::builder()
             .method(method)
@@ -245,7 +226,31 @@ impl HttpClient {
         B: Body<Data = Bytes> + Send + Sized + 'static,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
-        let request = match Self::build_request(uri, version, body, method, path, headers) {
+        match join_path(&uri, &path) {
+            Ok(path_and_query) => self
+                .send(uri, version, method, body, path_and_query, headers)
+                .left_future(),
+            Err(err) => future::ready(Err(http::Error::from(err).into())).right_future(),
+        }
+    }
+
+    /// Sends a request to `uri` with its path and query replaced by `path_and_query`, which is
+    /// expected to come from [`join_path`].
+    pub(crate) fn send<B>(
+        &self,
+        uri: Uri,
+        version: Option<Version>,
+        method: Method,
+        body: B,
+        path_and_query: PathAndQuery,
+        headers: HeaderMap<HeaderValue>,
+    ) -> impl Future<Output = Result<Response<ResponseBody>, HttpError>> + Send + 'static
+    where
+        B: Body<Data = Bytes> + Send + Sized + 'static,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let request = match Self::build_request(uri, version, body, method, path_and_query, headers)
+        {
             Ok(request) => request,
             Err(err) => return future::ready(Err(err.into())).right_future(),
         };
@@ -277,6 +282,28 @@ impl HttpClient {
         };
 
         Either::Left(fut)
+    }
+}
+
+/// The path and query a request for `path`, relative to the deployment at `base`, is sent to.
+///
+/// A base without a path is replaced by `path`, query included. Otherwise `path` is appended to the
+/// base path, and the base query is kept while the query of `path` is dropped.
+pub(crate) fn join_path(
+    base: &Uri,
+    path: &PathAndQuery,
+) -> Result<PathAndQuery, http::uri::InvalidUri> {
+    let Some(base) = base.path_and_query() else {
+        return Ok(path.clone());
+    };
+    let joined = format!(
+        "{}/{}",
+        base.path().strip_suffix('/').unwrap_or_else(|| base.path()),
+        path.path().strip_prefix('/').unwrap_or_else(|| path.path()),
+    );
+    match base.query() {
+        Some(query) => format!("{joined}?{query}").try_into(),
+        None => joined.try_into(),
     }
 }
 
