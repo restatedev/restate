@@ -246,7 +246,7 @@ async fn collect_memory_usage(
     psm_state: &SharedState,
     partition_budget: usize,
 ) -> anyhow::Result<CollectedMemoryUsage> {
-    let dbs = psm_state.get_maybe_open_dbs().await;
+    let dbs = psm_state.get_maybe_open_dbs();
     if dbs.is_empty() {
         return Ok(Default::default());
     }
@@ -458,7 +458,7 @@ impl MemoryUsage {
         let partition_db = partition_state.db().unwrap();
 
         let cf_names = partition_db.cf_names();
-        let rocks_db = partition_db.rocksdb().clone();
+        let partition_db = partition_db.clone();
 
         let mut memory_usage = Self {
             closed_since: partition_state.closed_since(),
@@ -469,7 +469,7 @@ impl MemoryUsage {
         };
 
         tokio::task::spawn_blocking(move || {
-            let raw_rocks_db = rocks_db.inner();
+            let raw_rocks_db = partition_db.rocksdb().inner();
 
             for cf in cf_names {
                 memory_usage.total_bytes += raw_rocks_db
