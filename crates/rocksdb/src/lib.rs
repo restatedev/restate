@@ -10,6 +10,8 @@
 
 pub mod admission;
 mod background;
+#[cfg(test)]
+mod close_tests;
 pub mod configuration;
 mod db_env;
 mod db_manager;
@@ -23,6 +25,7 @@ mod rock_access;
 #[cfg(test)]
 mod write_tests;
 
+use std::future::Future;
 use std::mem::ManuallyDrop;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -33,6 +36,7 @@ use rocksdb::checkpoint::Checkpoint;
 use rocksdb::statistics::Histogram;
 use rocksdb::statistics::HistogramData;
 use rocksdb::statistics::Ticker;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
@@ -132,6 +136,7 @@ impl<B, OP> WriteOperation<&Arc<RocksDb>, B, OP, Option<Lease<'_>>> {
 pub struct RocksDb {
     manager: &'static RocksDbManager,
     db: ManuallyDrop<RocksAccess>,
+    closed: CancellationToken,
 }
 
 impl Drop for RocksDb {
@@ -141,10 +146,13 @@ impl Drop for RocksDb {
         let inner_db = unsafe { ManuallyDrop::take(&mut self.db) };
 
         if let Ok(_handle) = tokio::runtime::Handle::try_current() {
-            self.manager.background_close_db(inner_db);
+            self.manager
+                .background_close_db(inner_db, self.closed.clone());
         } else {
             // inline shutdown if the last drop was outside of tokio (in tests mainly)
             inner_db.shutdown();
+            drop(inner_db);
+            self.closed.cancel();
         }
     }
 }
@@ -179,6 +187,7 @@ impl RocksDb {
         Ok(Arc::new(Self {
             manager,
             db: ManuallyDrop::new(db),
+            closed: CancellationToken::new(),
         }))
     }
 
@@ -635,9 +644,20 @@ impl RocksDb {
         manager.async_spawn(task).await?
     }
 
-    /// Performs a clean shutdown of the database and waits for completion.
+    /// Observes completion of native database destruction and resource release.
     ///
-    /// This fails if there other live references to the database.
+    /// This does not initiate closing or retain the database. Obtain the future
+    /// before releasing the last database reference. Cancelling an observer does
+    /// not cancel cleanup, and completion does not require executor threads to exit.
+    pub fn closed(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        self.closed.clone().cancelled_owned()
+    }
+
+    /// Performs a clean shutdown and waits for native database destruction.
+    ///
+    /// This fails if there are other live references to the database. Once closing
+    /// starts, cancelling this future does not cancel cleanup. A separate
+    /// [`Self::closed`] observer can continue waiting for physical completion.
     pub async fn close(self: Arc<Self>) -> Result<(), Arc<Self>> {
         self.manager.close_db(self).await
     }
