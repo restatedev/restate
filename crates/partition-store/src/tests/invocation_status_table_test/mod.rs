@@ -158,7 +158,7 @@ async fn verify_point_lookups<T: ReadInvocationStatusTable>(txn: &mut T) {
     );
 }
 
-#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+#[restate_core::test]
 async fn invocation_status() {
     let mut rocksdb = storage_test_environment().await;
     let mut txn = rocksdb.transaction();
