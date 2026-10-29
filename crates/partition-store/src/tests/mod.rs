@@ -45,15 +45,17 @@ mod virtual_object_status_table_test;
 mod vqueue_table_test;
 
 async fn storage_test_environment() -> PartitionStore {
-    storage_test_environment_with_manager().await.1
+    storage_test_environment_with_manager(true).await.1
 }
 
-async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>, PartitionStore) {
+async fn storage_test_environment_with_manager(
+    use_multi_db_layout: bool,
+) -> (Arc<PartitionStoreManager>, PartitionStore) {
     //
     // create a rocksdb storage from options
     //
     RocksDbManager::init();
-    let manager = PartitionStoreManager::create(true)
+    let manager = PartitionStoreManager::create(use_multi_db_layout)
         .await
         .expect("DB storage creation succeeds");
     // A single partition store that spans all keys.
@@ -69,10 +71,19 @@ async fn storage_test_environment_with_manager() -> (Arc<PartitionStoreManager>,
 }
 
 #[restate_core::test]
-async fn read_write() {
+async fn read_write_single_db() {
+    read_write(false).await;
+}
+
+#[restate_core::test]
+async fn read_write_multi_db() {
+    read_write(true).await;
+}
+
+async fn read_write(multi_db: bool) {
     let _env = TestCoreEnv::create_with_single_node(1, 1).await;
 
-    let (manager, store) = storage_test_environment_with_manager().await;
+    let (manager, store) = storage_test_environment_with_manager(multi_db).await;
 
     inbox_table_test::run_tests(store.clone()).await;
     outbox_table_test::run_tests(store.clone()).await;

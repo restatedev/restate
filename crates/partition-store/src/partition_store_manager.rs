@@ -1336,11 +1336,20 @@ mod tests {
     }
 
     #[restate_core::test]
-    async fn delayed_flush_does_not_regress_durable_lsn() -> anyhow::Result<()> {
+    async fn delayed_flush_does_not_regress_durable_lsn_single_db() -> anyhow::Result<()> {
+        delayed_flush_does_not_regress_durable_lsn(false).await
+    }
+
+    #[restate_core::test]
+    async fn delayed_flush_does_not_regress_durable_lsn_multi_db() -> anyhow::Result<()> {
+        delayed_flush_does_not_regress_durable_lsn(true).await
+    }
+
+    async fn delayed_flush_does_not_regress_durable_lsn(multi_db: bool) -> anyhow::Result<()> {
         const DEADLINE: Duration = Duration::from_secs(10);
         RocksDbManager::init();
         let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
-        let manager = PartitionStoreManager::create(false).await?;
+        let manager = PartitionStoreManager::create(multi_db).await?;
         let mut store = manager.open(&partition, None).await?;
         let database = manager.open_rocksdb(&partition).await?;
         // Allow the second flush to complete while the first callback is paused.
