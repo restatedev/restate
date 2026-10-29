@@ -89,7 +89,8 @@ async fn dependency_build_registers_native_cleanup() -> anyhow::Result<()> {
     )
     .add_cf_pattern(CfPrefixPattern::ANY, Configurator(Mutex::new(None)))
     .build()?;
-    let db = manager.open_db(spec).await?;
+    let (_, opening) = manager.open_db(spec)?;
+    let db = opening.await?;
     drop(db);
     timeout(Duration::from_secs(10), native_drop_started).await??;
     let mut teardown = Box::pin(tc.shutdown_for_test());

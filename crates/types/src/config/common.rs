@@ -751,6 +751,17 @@ pub struct CommonOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub storage_low_priority_bg_threads: Option<NonZeroUsize>,
 
+    /// Storage lifecycle thread pool
+    ///
+    /// Number of threads used to open RocksDB databases, flush them on shutdown,
+    /// and close them. These threads are separate from the storage I/O thread pools
+    /// (`storage-high-priority-bg-threads` and `storage-low-priority-bg-threads`).
+    /// Defaults to 8. Changes require a restart.
+    ///
+    /// Since v1.8.2
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_lifecycle_threads: Option<NonZeroUsize>,
+
     /// # Total memory limit for this process
     ///
     /// This is intended to be determined automatically on Linux based on the cgroup limit,
@@ -1325,6 +1336,11 @@ impl CommonOptions {
             .unwrap_or_else(|| (*CPU_COUNT).try_into().unwrap())
     }
 
+    pub fn storage_lifecycle_threads(&self) -> NonZeroUsize {
+        self.storage_lifecycle_threads
+            .unwrap_or(NonZeroUsize::new(8).unwrap())
+    }
+
     pub fn rocksdb_high_priority_bg_threads(&self) -> NonZeroU32 {
         // Give 1/4 of the CPUs to flushes unless the user specifies a value.
         self.rocksdb_high_priority_threads
@@ -1406,6 +1422,7 @@ impl Default for CommonOptions {
             default_thread_stack_size: None,
             storage_high_priority_bg_threads: None,
             storage_low_priority_bg_threads: None,
+            storage_lifecycle_threads: None,
             process_total_memory_size: None,
             rocksdb_max_write_rate_per_second: NonZeroByteCount::try_from(7 * 1024 * 1024 * 1024)
                 .unwrap(),
