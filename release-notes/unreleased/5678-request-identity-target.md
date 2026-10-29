@@ -25,9 +25,9 @@ environment, tunnel, host, port, path, query or method is refused with `401 Unau
 
 ### Migration Guidance
 
-No action is needed for most users. If you run a Restate Cloud tunnel client, check that each
-deployment behind it is registered with the tunnel URL and no extra path prefix. Do this before
-you upgrade both Restate and the tunnel client.
+No action is needed for most users. If you run a Restate Cloud tunnel client, such as
+`restate cloud environments tunnel`, check that each deployment behind it is registered with
+`--tunnel-name` and no extra path prefix before you upgrade the tunnel client.
 
 ### Related Issues
 
