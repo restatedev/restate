@@ -35,9 +35,7 @@ use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
 use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
-use restate_storage_api::vqueue_table::{
-    self, EntryStatusHeader, ReadVQueueTable, WriteVQueueTable,
-};
+use restate_storage_api::vqueue_table::{self, ReadVQueueTable, WriteVQueueTable};
 use restate_types::blob::{BlobId, BlobKind};
 use restate_types::errors::{InvocationError, KILLED_INVOCATION_ERROR};
 use restate_types::identifiers::{BaseEntryId, InvocationId, InvocationUuid};
@@ -220,16 +218,11 @@ where
             None
         };
 
-        let sequence = entry_status
-            .as_ref()
-            .map(|r| r.seq())
-            .or(invocation_metadata.creation_seq);
-
         // The feature stores a *reference* (journal entry index) to the blob table instead of
         // inlining the result bytes, and synthesizes a missing output entry on Killed/Failed.
         // note: write_blob_table is only possible if canonical entry id is known
         let is_write_blob_table_enabled =
-            ctx.processor.fsm().features().is_write_blob_table_enabled() && sequence.is_some();
+            ctx.processor.fsm().features().is_write_blob_table_enabled();
 
         // The output is not written to the journal when using the output table. Append a payload-free
         // marker in its place instead, so the journal keeps its previous shape. Only v2 journals can
@@ -346,8 +339,11 @@ where
                     // todo: In the future we can use the Lsn/Seq of the Output journal instead of the
                     // invocation journal. this change is not breaking because we store the BlobId of the
                     // output blob on the invocation status as long as it's coordinated with a partition feature.
-                    let blob_id =
-                        BlobId::generate_output_blob_id(&invocation_id, sequence.unwrap());
+                    let blob_id = BlobId::generate_output_blob_id(
+                        UniqueTimestamp::from_unix_millis_unchecked(ctx.record_created_at),
+                        ctx.record_lsn,
+                        &invocation_id,
+                    );
                     ctx.storage.put_blob(
                         blob_id,
                         BlobBuilder::default()

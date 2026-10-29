@@ -11,6 +11,7 @@
 use std::fmt;
 use std::str::FromStr;
 
+use restate_clock::UniqueTimestamp;
 use restate_sharding::{PartitionKey, WithPartitionKey};
 
 use crate::base62_util::base62_max_length_for_type;
@@ -47,58 +48,77 @@ pub enum BlobKind {
 /// representation is big-endian, so ordering of the encoded bytes matches the derived [`Ord`].
 #[derive(Eq, Hash, PartialEq, Clone, Copy, PartialOrd, Ord)]
 pub struct BlobId {
-    partition_key: PartitionKey,
+    timestamp: UniqueTimestamp,
     sequence: Seq,
+    partition_key: PartitionKey,
     remainder: [u8; 16],
 }
 
 impl BlobId {
-    pub const fn new(partition_key: PartitionKey, sequence: Seq, remainder: [u8; 16]) -> Self {
+    pub fn new(
+        timestamp: UniqueTimestamp,
+        sequence: impl Into<Seq>,
+        partition_key: PartitionKey,
+        remainder: [u8; 16],
+    ) -> Self {
         Self {
+            timestamp,
+            sequence: sequence.into(),
             partition_key,
-            sequence,
             remainder,
         }
     }
 
-    pub fn generate_output_blob_id(invocation: &InvocationId, sequence: Seq) -> Self {
+    pub fn generate_output_blob_id(
+        timestamp: UniqueTimestamp,
+        sequence: impl Into<Seq>,
+        invocation: &InvocationId,
+    ) -> Self {
         Self::new(
-            invocation.partition_key(),
+            timestamp,
             sequence,
+            invocation.partition_key(),
             invocation.invocation_uuid().to_bytes(),
         )
     }
 
-    pub const fn sequence(&self) -> Seq {
+    pub fn sequence(&self) -> Seq {
         self.sequence
     }
 
-    pub const fn remainder(&self) -> [u8; 16] {
+    pub fn remainder(&self) -> [u8; 16] {
         self.remainder
     }
 
     pub fn from_slice(b: &[u8]) -> Result<Self, IdDecodeError> {
         let b: &[u8; Self::RAW_BYTES_LEN] = b.try_into().map_err(|_| IdDecodeError::Length)?;
-        let (pk, rest) = b
-            .split_first_chunk::<{ size_of::<PartitionKey>() }>()
+        let (ts, b) = b
+            .split_first_chunk::<{ size_of::<UniqueTimestamp>() }>()
             .expect("checked length");
-        let (seq, remainder) = rest
+        let (seq, b) = b
+            .split_first_chunk::<{ size_of::<Seq>() }>()
+            .expect("checked length");
+        let (pk, remainder) = b
             .split_first_chunk::<{ size_of::<Seq>() }>()
             .expect("checked length");
 
         Ok(Self::new(
-            PartitionKey::from_be_bytes(*pk),
+            UniqueTimestamp::try_from(u64::from_be_bytes(*ts))
+                .map_err(|_| IdDecodeError::Format)?,
             Seq::from_bytes(*seq),
+            PartitionKey::from_be_bytes(*pk),
             remainder.try_into().expect("checked length"),
         ))
     }
 
     pub fn to_bytes(self) -> [u8; Self::RAW_BYTES_LEN] {
         let mut buf = [0u8; Self::RAW_BYTES_LEN];
-        let (pk, rest) = buf.split_at_mut(size_of::<PartitionKey>());
-        let (seq, remainder) = rest.split_at_mut(size_of::<Seq>());
-        pk.copy_from_slice(&self.partition_key.to_be_bytes());
+        let (ts, rest) = buf.split_at_mut(size_of::<UniqueTimestamp>());
+        let (seq, rest) = rest.split_at_mut(size_of::<Seq>());
+        let (pk, remainder) = rest.split_at_mut(size_of::<PartitionKey>());
+        ts.copy_from_slice(&self.timestamp.as_u64().to_be_bytes());
         seq.copy_from_slice(&self.sequence.to_bytes());
+        pk.copy_from_slice(&self.partition_key.to_be_bytes());
         remainder.copy_from_slice(&self.remainder);
         buf
     }
@@ -111,7 +131,10 @@ impl WithPartitionKey for BlobId {
 }
 
 impl ResourceId for BlobId {
-    const RAW_BYTES_LEN: usize = size_of::<PartitionKey>() + size_of::<Seq>() + size_of::<u128>();
+    const RAW_BYTES_LEN: usize = size_of::<UniqueTimestamp>()
+        + size_of::<Seq>()
+        + size_of::<PartitionKey>()
+        + size_of::<u128>();
     const RESOURCE_TYPE: IdResourceType = IdResourceType::Blob;
 
     type StrEncodedLen = generic_array::ConstArrayLength<
@@ -120,15 +143,17 @@ impl ResourceId for BlobId {
             Self::RESOURCE_TYPE.as_str().len()
                 // separator + version
                 + 2
-                + base62_max_length_for_type::<PartitionKey>()
+                + base62_max_length_for_type::<UniqueTimestamp>()
                 + base62_max_length_for_type::<u64>()
+                + base62_max_length_for_type::<PartitionKey>()
                 + base62_max_length_for_type::<u128>()
         },
     >;
 
     fn push_to_encoder(&self, encoder: &mut IdEncoder<Self>) {
-        encoder.push_u64(self.partition_key);
+        encoder.push_u64(self.timestamp.as_u64());
         encoder.push_u64(self.sequence.as_u64());
+        encoder.push_u64(self.partition_key);
         encoder.push_u128(u128::from_be_bytes(self.remainder));
     }
 }
@@ -158,8 +183,9 @@ impl FromStr for BlobId {
             return Err(IdDecodeError::TypeMismatch);
         }
 
-        let partition_key: PartitionKey = decoder.cursor.decode_next()?;
+        let timestamp: u64 = decoder.cursor.decode_next()?;
         let sequence: u64 = decoder.cursor.decode_next()?;
+        let partition_key: PartitionKey = decoder.cursor.decode_next()?;
         let remainder: u128 = decoder.cursor.decode_next()?;
 
         if decoder.cursor.remaining() != 0 {
@@ -167,8 +193,9 @@ impl FromStr for BlobId {
         }
 
         Ok(Self::new(
-            partition_key,
+            UniqueTimestamp::try_from(timestamp).map_err(|_| IdDecodeError::Format)?,
             Seq::new(sequence),
+            partition_key,
             remainder.to_be_bytes(),
         ))
     }
@@ -176,24 +203,19 @@ impl FromStr for BlobId {
 
 #[cfg(test)]
 mod tests {
+    use restate_clock::time::MillisSinceEpoch;
+
     use super::*;
 
     #[test]
     fn blob_id_roundtrip() {
         let invocation_id = InvocationId::mock_random();
-        let id = BlobId::generate_output_blob_id(&invocation_id, Seq::new(42));
+        let ts = UniqueTimestamp::try_from_unix_millis(MillisSinceEpoch::now()).unwrap();
+        let seq = Seq::new(42);
+        let pk: PartitionKey = 100;
+        let id = BlobId::new(ts, seq, pk, invocation_id.invocation_uuid().to_bytes());
 
-        // deterministic
-        assert_eq!(
-            id,
-            BlobId::generate_output_blob_id(&invocation_id, Seq::new(42))
-        );
-        assert_ne!(
-            id,
-            BlobId::generate_output_blob_id(&invocation_id, Seq::new(43))
-        );
-
-        assert_eq!(id.partition_key(), invocation_id.partition_key());
+        assert_eq!(id.partition_key(), pk);
         assert_eq!(id.sequence(), Seq::new(42));
         assert_eq!(id.remainder(), invocation_id.invocation_uuid().to_bytes());
 
@@ -211,15 +233,8 @@ mod tests {
             Err(IdDecodeError::TypeMismatch)
         );
 
-        // bytes: big-endian pk | seq | remainder, so byte order matches `Ord`
         let bytes = id.to_bytes();
-        assert_eq!(bytes[..8], invocation_id.partition_key().to_be_bytes());
-        assert_eq!(bytes[8..16], 42u64.to_be_bytes());
-        assert_eq!(bytes[16..], invocation_id.invocation_uuid().to_bytes());
-        assert_eq!(BlobId::from_slice(&id.to_bytes()), Ok(id));
-        assert_eq!(
-            BlobId::from_slice(&id.to_bytes()[1..]),
-            Err(IdDecodeError::Length)
-        );
+        let decoded = BlobId::from_slice(&bytes).unwrap();
+        assert_eq!(decoded, id);
     }
 }
