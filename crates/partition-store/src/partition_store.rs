@@ -62,7 +62,7 @@ use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::LocalPartitionSnapshot;
+use crate::snapshots::{LocalPartitionSnapshot, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -624,7 +624,7 @@ impl PartitionStore {
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
         let (base_dir, export_files) = self
             .db
-            .export_cf(snapshot_base_path.join(snapshot_id.to_string()))
+            .export_cf(export_dir(snapshot_base_path, snapshot_id))
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
