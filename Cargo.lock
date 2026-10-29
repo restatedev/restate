@@ -8520,6 +8520,7 @@ dependencies = [
  "restate-clock",
  "restate-core",
  "restate-errors",
+ "restate-futures-util",
  "restate-limiter",
  "restate-memory",
  "restate-object-store-util",
