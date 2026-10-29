@@ -9,8 +9,10 @@
 // by the Apache License, Version 2.0.
 
 use codederror::CodedError;
-use restate_core::ShutdownError;
 use tracing::warn;
+
+use restate_core::ShutdownError;
+use restate_core::io::AdmissionClosed;
 
 use crate::CfName;
 
@@ -25,12 +27,21 @@ pub enum RocksError {
     #[error(transparent)]
     #[code(unknown)]
     Shutdown(#[from] ShutdownError),
+    #[error(transparent)]
+    #[code(unknown)]
+    AdmissionClosed(#[from] AdmissionClosed),
     #[error("unknown column family: {0}")]
     #[code(unknown)]
     UnknownColumnFamily(CfName),
     #[error("already open")]
     #[code(unknown)]
     AlreadyOpen,
+    #[error("database incarnation is not open")]
+    #[code(unknown)]
+    NotOpen,
+    #[error("database is not tracked by this manager")]
+    #[code(unknown)]
+    NotRegistered,
     #[error("already exists")]
     #[code(unknown)]
     ColumnFamilyExists,
