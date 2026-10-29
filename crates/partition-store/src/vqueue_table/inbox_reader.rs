@@ -8,12 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::sync::Arc;
-
 use bilrost::OwnedMessage;
 use rocksdb::DBRawIteratorWithThreadMode;
 
-use restate_rocksdb::RocksDb;
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::{
     CursorError, EntryKey, EntryValue, Options, Stage, VQueueCursor,
@@ -29,10 +26,7 @@ pub struct VQueueWaitingReader {
     qid: VQueueId,
     it: DBRawIteratorWithThreadMode<'static, rocksdb::DB>,
     // Safety: This must be dropped last since the iterator references memory allocated by it.
-    // This is only set to Some if the iterator is configured to run with blocking IO. The
-    // assumption is that blocking iterators will run in background threads, so we need to pin
-    // the database until the iterator is dropped.
-    _db: Option<Arc<RocksDb>>,
+    _db: PartitionDb,
 }
 
 impl VQueueWaitingReader {
@@ -75,12 +69,11 @@ impl VQueueWaitingReader {
         Self {
             qid: qid.clone(),
             // Safety:
-            // The iterator is guaranteed to be dropped before the database is dropped, we hold to the
-            // PartitionDb in the scheduler which pins the database and the column family.
-            //
-            // We also pin the database if blocking IO is configured.
+            // `_db` keeps the partition, and so its database and column family, alive
+            // for as long as this reader, and is dropped after the iterator. That holds
+            // even if the reader moves to another thread or outlives the scheduler.
             it: unsafe { super::ignore_iterator_lifetime(it) },
-            _db: opts.allow_blocking_io.then(|| db.rocksdb().clone()),
+            _db: db.clone(),
         }
     }
 }
