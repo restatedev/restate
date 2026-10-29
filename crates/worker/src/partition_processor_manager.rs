@@ -1847,11 +1847,20 @@ mod tests {
     use test_log::test;
     use tracing::info;
 
+    #[test(restate_core::test)]
+    async fn proper_partition_processor_lifecycle_single_db() -> googletest::Result<()> {
+        proper_partition_processor_lifecycle(false).await
+    }
+
+    #[test(restate_core::test)]
+    async fn proper_partition_processor_lifecycle_multi_db() -> googletest::Result<()> {
+        proper_partition_processor_lifecycle(true).await
+    }
+
     /// This test ensures that the lifecycle of partition processors is properly managed by the
     /// [`PartitionProcessorManager`]. See https://github.com/restatedev/restate/issues/2258 for
     /// more details.
-    #[test(restate_core::test)]
-    async fn proper_partition_processor_lifecycle() -> googletest::Result<()> {
+    async fn proper_partition_processor_lifecycle(multi_db: bool) -> googletest::Result<()> {
         let mut nodes_config = NodesConfiguration::new_for_testing();
         let node_id = GenerationalNodeId::new(42, 42);
         let node_config = NodeConfig::builder()
@@ -1876,7 +1885,7 @@ mod tests {
 
         let replica_set_states = PartitionReplicaSetStates::default();
 
-        let partition_store_manager = PartitionStoreManager::create(true).await?;
+        let partition_store_manager = PartitionStoreManager::create(multi_db).await?;
 
         let ingestion_client = IngestionClient::new(
             env_builder.networking.clone(),
