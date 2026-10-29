@@ -4,16 +4,18 @@
 
 ### What Changed
 
-Restate now opens and closes its RocksDB databases on a dedicated thread pool, separate from the
-thread pools used for regular storage reads and writes. A new option controls its size:
+Restate now opens and closes its RocksDB databases, and creates, imports, and deletes partition
+stores, on a dedicated thread pool, separate from the thread pools used for regular storage reads
+and writes. A new option controls its size:
 
-- `storage-lifecycle-threads`: threads for opening databases, flushing them on shutdown, and
-  closing them. Default: `8`.
+- `storage-lifecycle-threads`: threads for opening databases, flushing them on shutdown, closing
+  them, and creating, importing, and deleting partition stores. Default: `8`.
 
 ### Why This Matters
 
-Opening a database no longer has to wait for a free storage I/O thread. Those threads also serve
-regular reads and writes, so they can be busy for a long time.
+Opening a database, creating a partition store, or importing a partition snapshot no longer has to
+wait for a free storage I/O thread. Those threads also serve regular reads and writes, so they can
+be busy for a long time.
 
 ### Impact on Users
 
