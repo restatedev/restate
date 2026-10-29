@@ -41,31 +41,10 @@ pub struct AdminOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) advertised_admin_endpoint: Option<AdvertisedAddress<AdminPort>>,
 
-    /// # Advertised schema registry endpoint
-    ///
-    /// Absolute http(s) URL of the external schema registry, as reachable from the browser. Reported
-    /// by `GET /version` for the Web UI; Restate never calls it.
-    ///
-    /// Since v1.8.1
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_absolute_http_url"
-    )]
-    pub experimental_advertised_schema_registry_endpoint: Option<String>,
-
-    /// # Advertised ingress mux endpoint
-    ///
-    /// Absolute http(s) URL of the ingress mux, as reachable from the browser. Reported by
-    /// `GET /version` for the Web UI; Restate never calls it.
-    ///
-    /// Since v1.8.1
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_absolute_http_url"
-    )]
-    pub experimental_advertised_ingress_mux_endpoint: Option<String>,
+    /// Endpoints advertised to the Web UI. Boxed to keep `Configuration` small (it's held across
+    /// awaits).
+    #[serde(flatten)]
+    pub experimental_advertised: Box<AdvertisedUiEndpoints>,
 
     /// # Deployment routing headers
     ///
@@ -149,8 +128,7 @@ impl Default for AdminOptions {
     fn default() -> Self {
         Self {
             advertised_admin_endpoint: None,
-            experimental_advertised_schema_registry_endpoint: None,
-            experimental_advertised_ingress_mux_endpoint: None,
+            experimental_advertised: Box::default(),
             admin_listener_options: Default::default(),
             // max is limited by Tower's LoadShedLayer.
             deployment_routing_headers: vec![],
@@ -163,6 +141,42 @@ impl Default for AdminOptions {
             storage_accounting_update_interval: None,
         }
     }
+}
+
+/// # Advertised Web UI endpoints
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "AdvertisedUiEndpoints", default)
+)]
+#[serde(rename_all = "kebab-case")]
+pub struct AdvertisedUiEndpoints {
+    /// # Advertised schema registry endpoint
+    ///
+    /// Absolute http(s) URL of the external schema registry, as reachable from the browser. Reported
+    /// by `GET /version` for the Web UI; Restate never calls it.
+    ///
+    /// Since v1.8.1
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_absolute_http_url"
+    )]
+    pub experimental_advertised_schema_registry_endpoint: Option<String>,
+
+    /// # Advertised ingress mux endpoint
+    ///
+    /// Absolute http(s) URL of the ingress mux, as reachable from the browser. Reported by
+    /// `GET /version` for the Web UI; Restate never calls it.
+    ///
+    /// Since v1.8.1
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_absolute_http_url"
+    )]
+    pub experimental_advertised_ingress_mux_endpoint: Option<String>,
 }
 
 fn deserialize_absolute_http_url<'de, D: Deserializer<'de>>(
@@ -197,6 +211,7 @@ mod tests {
         let options = with_schema_registry_endpoint("https://registry.example.com:8443").unwrap();
         assert_eq!(
             options
+                .experimental_advertised
                 .experimental_advertised_schema_registry_endpoint
                 .as_deref(),
             Some("https://registry.example.com:8443")

@@ -71,17 +71,19 @@ static SCHEMALESS_DEPLOYMENT_ID: LazyLock<DeploymentId> = LazyLock::new(Deployme
 /// found in the schema registry (schemaless demo mode).
 fn single_endpoint_deployment(id: DeploymentId) -> Deployment {
     let config = Configuration::pinned();
-    let invoker = &config.worker.invoker;
-    let (protocol_type, http_version) = invoker.single_endpoint_mode.protocol_and_http_version();
+    let single_endpoint = &config.worker.invoker.single_endpoint;
+    let (protocol_type, http_version) = single_endpoint
+        .single_endpoint_mode
+        .protocol_and_http_version();
 
     Deployment::single_http_endpoint(
         id,
-        (*invoker.single_endpoint_address).clone(),
+        single_endpoint.single_endpoint_address.clone(),
         protocol_type,
         http_version,
         single_endpoint_headers(
-            &invoker.single_endpoint_auth_header,
-            invoker.single_endpoint_auth_token.as_ref(),
+            &single_endpoint.single_endpoint_auth_header,
+            single_endpoint.single_endpoint_auth_token.as_ref(),
         ),
     )
 }
@@ -527,10 +529,10 @@ where
                 let config = Configuration::pinned();
                 let invoker = &config.worker.invoker;
                 invoker.is_preflight().then(|| PreflightTarget {
-                    address: (*invoker.single_endpoint_address).clone(),
+                    address: invoker.single_endpoint.single_endpoint_address.clone(),
                     additional_headers: single_endpoint_headers(
-                        &invoker.single_endpoint_auth_header,
-                        invoker.single_endpoint_auth_token.as_ref(),
+                        &invoker.single_endpoint.single_endpoint_auth_header,
+                        invoker.single_endpoint.single_endpoint_auth_token.as_ref(),
                     ),
                     pin: journal_metadata.pinned_deployment.clone(),
                 })

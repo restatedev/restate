@@ -40,10 +40,12 @@ pub async fn version() -> Json<VersionInformation> {
         })),
         schema_registry_endpoint: config
             .admin
+            .experimental_advertised
             .experimental_advertised_schema_registry_endpoint
             .clone(),
         ingress_mux_endpoint: config
             .admin
+            .experimental_advertised
             .experimental_advertised_ingress_mux_endpoint
             .clone(),
         features: config.common.experimental.features(),

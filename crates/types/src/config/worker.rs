@@ -577,7 +577,22 @@ pub struct InvokerOptions {
     /// Since v1.7.3
     pub max_awaited_future_depth: usize,
 
-    // -- Schemaless (schemaregistryless) experimental single-endpoint mode --
+    /// Schemaless (schemaregistryless) experimental single-endpoint mode. Boxed to keep
+    /// `Configuration` small (it's held across awaits).
+    #[serde(flatten)]
+    pub single_endpoint: Box<SingleEndpointOptions>,
+}
+
+/// # Single endpoint options
+#[serde_as]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "schemars",
+    schemars(rename = "SingleEndpointOptions", default)
+)]
+#[serde(rename_all = "kebab-case", default)]
+pub struct SingleEndpointOptions {
     /// # Single endpoint address
     ///
     /// Base URI of the single SDK endpoint every invocation of a service that is not registered
@@ -586,10 +601,9 @@ pub struct InvokerOptions {
     /// `http://relay:9080/_/preflight/`.
     ///
     /// Since v1.8.1
-    // Boxed to keep `Configuration` small (it's held across awaits).
-    #[serde_as(as = "Box<serde_with::DisplayFromStr>")]
+    #[serde_as(as = "serde_with::DisplayFromStr")]
     #[cfg_attr(feature = "schemars", schemars(with = "String"))]
-    pub single_endpoint_address: Box<http::Uri>,
+    pub single_endpoint_address: http::Uri,
 
     /// # Single endpoint auth header name
     ///
@@ -624,6 +638,17 @@ pub struct InvokerOptions {
     ///
     /// Since v1.8.1
     pub single_endpoint_mode: SingleEndpointMode,
+}
+
+impl Default for SingleEndpointOptions {
+    fn default() -> Self {
+        Self {
+            single_endpoint_address: http::Uri::from_static("http://localhost:9080"),
+            single_endpoint_auth_header: http::header::AUTHORIZATION,
+            single_endpoint_auth_token: None,
+            single_endpoint_mode: SingleEndpointMode::Bidi,
+        }
+    }
 }
 
 /// Protocol mode used for the schemaless single endpoint.
@@ -667,7 +692,7 @@ impl SingleEndpointMode {
 impl InvokerOptions {
     /// Whether unregistered services are invoked through a relay speaking the preflight protocol.
     pub fn is_preflight(&self) -> bool {
-        self.single_endpoint_mode == SingleEndpointMode::Preflight
+        self.single_endpoint.single_endpoint_mode == SingleEndpointMode::Preflight
     }
 
     pub fn concurrent_invocations_limit(&self) -> Option<NonZeroUsize> {
@@ -790,10 +815,7 @@ impl Default for InvokerOptions {
             per_invocation_initial_memory: DEFAULT_PER_INVOCATION_INITIAL_MEMORY,
             service_client: ServiceClientOptions::default(),
             max_awaited_future_depth: 1000,
-            single_endpoint_address: Box::new(http::Uri::from_static("http://localhost:9080")),
-            single_endpoint_auth_header: http::header::AUTHORIZATION,
-            single_endpoint_auth_token: None,
-            single_endpoint_mode: SingleEndpointMode::Bidi,
+            single_endpoint: Box::default(),
         }
     }
 }
