@@ -62,7 +62,7 @@ use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir, export_dir};
+use crate::snapshots::{LocalPartitionSnapshot, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -622,11 +622,9 @@ impl PartitionStore {
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
-        let snapshot_dir = export_dir(snapshot_base_path, snapshot_id);
-
-        let export_files = self
+        let (base_dir, export_files) = self
             .db
-            .export_cf(snapshot_dir.clone())
+            .export_cf(export_dir(snapshot_base_path, snapshot_id))
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
 
@@ -634,11 +632,11 @@ impl PartitionStore {
             cf_name = %self.db.partition().cf_name(),
             %applied_lsn,
             "Exported column family snapshot to {:?}",
-            snapshot_dir
+            base_dir.path()
         );
 
         Ok(LocalPartitionSnapshot {
-            base_dir: SnapshotDir::new(snapshot_dir),
+            base_dir,
             files: export_files.get_files(),
             db_comparator_name: export_files.get_db_comparator_name(),
             log_id: self.db.partition().log_id(),
