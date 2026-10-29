@@ -27,5 +27,9 @@ tokio = { workspace = true, features = ["time"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 
+[dev-dependencies]
+hyper = { workspace = true, features = ["client", "http2"] }
+tokio = { workspace = true, features = ["io-util", "macros", "rt"] }
+
 [lints]
 workspace = true
