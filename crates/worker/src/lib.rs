@@ -25,7 +25,7 @@ mod subscription_integration;
 use std::sync::Arc;
 
 use codederror::CodedError;
-use tracing::info;
+use tracing::{info, warn};
 
 use restate_bifrost::Bifrost;
 use restate_core::MetadataKind;
@@ -46,7 +46,7 @@ use restate_storage_query_datafusion::context::{QueryContext, SelectPartitionsFr
 use restate_storage_query_datafusion::remote_query_scanner_manager::RemoteScannerManager;
 use restate_types::Version;
 use restate_types::Versioned;
-use restate_types::config::Configuration;
+use restate_types::config::{AutomaticSnapshots, Configuration};
 use restate_types::health::HealthStatus;
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::partitions::state::PartitionReplicaSetStates;
@@ -136,13 +136,31 @@ where
             SubscriptionControllerHandle::new(ingress_kafka.create_command_sender());
 
         let snapshots_options = &config.worker.snapshots;
-        if (snapshots_options.snapshot_interval.is_some()
+        if (snapshots_options
+            .snapshot_interval
+            .is_some_and(|interval| !interval.is_zero())
             || snapshots_options.snapshot_interval_num_records.is_some())
             && snapshots_options.destination.is_none()
         {
             return Err(BuildError::SnapshotRepository(anyhow::anyhow!(
                 "Periodic snapshot interval set without a specified snapshot destination"
             )));
+        }
+        match snapshots_options.automatic_snapshots() {
+            Some(AutomaticSnapshots {
+                interval,
+                min_records,
+            }) => info!(
+                ?interval,
+                ?min_records,
+                "Automatic partition snapshots enabled"
+            ),
+            None if snapshots_options.destination.is_some() => warn!(
+                "Automatic partition snapshots are disabled because snapshot-interval is 0. In a \
+                multi-node cluster, the log is only trimmed up to snapshots created with \
+                `restatectl snapshots create`"
+            ),
+            None => {}
         }
 
         // A dedicated ingestion client for PPM that uses

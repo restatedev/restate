@@ -1208,10 +1208,12 @@ fn is_default_max_successive_merges(i: &u16) -> bool {
 
 /// # Snapshot options
 ///
-/// Partition store object-store snapshotting settings. At a minimum, set `destination` to enable
-/// manual snapshotting via `restatectl`. Additionally, `snapshot-interval` and
-/// `snapshot-interval-num-records` can be used to configure automated periodic snapshots. For a
-/// complete example, see [Snapshots](https://docs.restate.dev/server/snapshots).
+/// Partition store object-store snapshotting settings. Setting `destination` enables automatic
+/// snapshots: by default, a partition is snapshotted once at least an hour **and** at least
+/// 100,000 log records have passed since its previous snapshot. Use `snapshot-interval` and
+/// `snapshot-interval-num-records` to change this, or set `snapshot-interval` to `0` to only
+/// create snapshots manually with `restatectl`. For a complete example, see
+/// [Snapshots](https://docs.restate.dev/server/snapshots).
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -1230,23 +1232,34 @@ pub struct SnapshotsOptions {
 
     /// # Automatic snapshot time interval
     ///
-    /// A time interval at which partition snapshots will be created. If
-    /// `snapshot-interval-num-records` is also set, it will be treated as an additional requirement
-    /// before a snapshot is taken. Use both time-based and record-based intervals to reduce the
-    /// number of snapshots created during times of low activity.
+    /// Minimum time since a partition's previous snapshot before it is snapshotted again.
+    ///
+    /// If `snapshot-interval-num-records` is also set, a snapshot is only taken when **both**
+    /// conditions are met: this much time has passed since the previous snapshot **and** at least
+    /// that many log records have been applied since. Setting both avoids snapshotting partitions
+    /// with little activity.
     ///
     /// Snapshot intervals are calculated based on the wall clock timestamps reported by cluster
     /// nodes, assuming a basic level of clock synchronization within the cluster.
     ///
     /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
     ///
-    /// Default: `None` - automatic snapshots are disabled
+    /// Set to `0` to disable automatic snapshots, leaving only manual snapshots.
+    ///
+    /// Default: `1h` if `destination` is set and neither this nor `snapshot-interval-num-records`
+    /// is configured. Since v1.8.2, setting `destination` alone enables automatic snapshots
+    /// (previously disabled).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub snapshot_interval: Option<FriendlyDuration>,
 
     /// # Automatic snapshot minimum records
     ///
-    /// Number of log records that trigger a snapshot to be created.
+    /// Minimum number of log records applied since a partition's previous snapshot before it is
+    /// snapshotted again.
+    ///
+    /// If `snapshot-interval` is also set, a snapshot is only taken when **both** conditions are
+    /// met: at least this many log records have been applied since the previous snapshot **and**
+    /// that much time has passed.
     ///
     /// As snapshots are created asynchronously, the actual number of new records that will trigger
     /// a snapshot will vary. The counter for the subsequent snapshot begins from the LSN at which
@@ -1254,7 +1267,9 @@ pub struct SnapshotsOptions {
     ///
     /// This setting does not influence explicitly requested snapshots triggered using `restatectl`.
     ///
-    /// Default: `None` - automatic snapshots are disabled
+    /// Default: `100000` if `destination` is set and neither this nor `snapshot-interval` is
+    /// configured. Since v1.8.2, setting `destination` alone enables automatic snapshots
+    /// (previously disabled).
     pub snapshot_interval_num_records: Option<NonZeroU64>,
 
     #[serde(flatten)]
@@ -1299,6 +1314,23 @@ fn default_num_retained() -> NonZero<u8> {
     NonZeroU8::new(1).unwrap()
 }
 
+/// Effective triggers for automatic partition snapshots. When both are set, both must be met.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AutomaticSnapshots {
+    /// Minimum time since the previous snapshot
+    pub interval: Option<Duration>,
+    /// Minimum number of log records since the previous snapshot
+    pub min_records: Option<NonZeroU64>,
+}
+
+impl AutomaticSnapshots {
+    /// Applies when a destination is set and neither trigger is configured.
+    pub const DEFAULT: Self = Self {
+        interval: Some(Duration::from_secs(60 * 60)),
+        min_records: Some(NonZeroU64::new(100_000).unwrap()),
+    };
+}
+
 impl Default for SnapshotsOptions {
     fn default() -> Self {
         Self {
@@ -1327,6 +1359,20 @@ impl SnapshotsOptions {
 
     pub fn export_concurrency_limit(&self) -> u32 {
         self.export_concurrency_limit.map(|v| v.get()).unwrap_or(4)
+    }
+
+    /// Returns the effective automatic snapshot triggers, or `None` if automatic snapshots are
+    /// disabled: no destination is set, or `snapshot-interval` is zero.
+    pub fn automatic_snapshots(&self) -> Option<AutomaticSnapshots> {
+        self.destination.as_ref()?;
+        match (self.snapshot_interval, self.snapshot_interval_num_records) {
+            (None, None) => Some(AutomaticSnapshots::DEFAULT),
+            (Some(interval), _) if interval.is_zero() => None,
+            (interval, min_records) => Some(AutomaticSnapshots {
+                interval: interval.map(FriendlyDuration::to_std),
+                min_records,
+            }),
+        }
     }
 
     pub fn snapshots_base_dir(&self) -> PathBuf {
@@ -1418,6 +1464,51 @@ mod tests {
 
         let options: WorkerOptions = serde_json::from_value(value).unwrap();
         assert!(options.disable_scheduler);
+    }
+
+    #[test]
+    fn automatic_snapshots_resolution() {
+        let parse = |fields: serde_json::Value| -> SnapshotsOptions {
+            let mut value = serde_json::to_value(SnapshotsOptions::default()).unwrap();
+            let serde_json::Value::Object(fields) = fields else {
+                unreachable!()
+            };
+            value.as_object_mut().unwrap().extend(fields);
+            serde_json::from_value(value).unwrap()
+        };
+
+        // Triggers have no effect without a destination
+        assert_eq!(None, SnapshotsOptions::default().automatic_snapshots());
+
+        // A destination alone enables the defaults
+        let options = parse(serde_json::json!({ "destination": "s3://bucket/prefix" }));
+        assert_eq!(
+            Some(AutomaticSnapshots::DEFAULT),
+            options.automatic_snapshots()
+        );
+
+        // A single configured trigger is used as-is, without mixing in the other default
+        let options = parse(serde_json::json!({
+            "destination": "s3://bucket/prefix",
+            "snapshot-interval-num-records": 1000,
+        }));
+        assert_eq!(
+            Some(AutomaticSnapshots {
+                interval: None,
+                min_records: NonZeroU64::new(1000),
+            }),
+            options.automatic_snapshots()
+        );
+
+        // A zero interval disables automatic snapshots, even with a record trigger
+        for interval in ["0s", "0"] {
+            let options = parse(serde_json::json!({
+                "destination": "s3://bucket/prefix",
+                "snapshot-interval": interval,
+                "snapshot-interval-num-records": 1000,
+            }));
+            assert_eq!(None, options.automatic_snapshots());
+        }
     }
 
     #[test]
