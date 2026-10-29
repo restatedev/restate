@@ -10,12 +10,14 @@
 
 use std::path::Path;
 use std::sync::{Arc, Weak};
+use std::time::Duration;
 
 use ahash::HashMap;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
 use tokio::sync::Mutex as AsyncMutex;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{Level, debug, error, info, instrument, warn};
 
+use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_rocksdb::{
     CfPrefixPattern, DbRef, DbSpecBuilder, RocksDb, RocksDbManager, RocksError, SinglePoolExecutor,
 };
@@ -36,6 +38,9 @@ use crate::snapshots::{LocalPartitionSnapshot, PartitionSnapshotStatus, Snapshot
 use crate::{BuildError, OpenError, PartitionStore, SnapshotErrorKind};
 
 const PARTITION_CF_PREFIX: &str = "data-";
+// Closing and dropping a partition wait for its in-flight work and open handles, such as
+// running queries. Warn if that takes longer than this.
+const LOG_SLOW_TRANSITION_AFTER: Duration = Duration::from_secs(5);
 
 pub(crate) struct SharedState {
     partitions: RwLock<HashMap<PartitionId, Arc<PartitionCell>>>,
@@ -111,18 +116,6 @@ impl SharedState {
 
         drop(state_guard);
         cell
-    }
-
-    #[cfg(test)]
-    pub async fn drop_partition(
-        &self,
-        partition_id: PartitionId,
-    ) -> Result<(), restate_rocksdb::RocksError> {
-        let Some(cell) = self.partitions.read().get(&partition_id).cloned() else {
-            return Ok(());
-        };
-        let mut state_guard = cell.inner.write().await;
-        cell.drop_cf(&mut state_guard).await
     }
 }
 
@@ -400,7 +393,13 @@ impl PartitionStoreManager {
             return;
         };
 
-        cell.inner.write().await.close().await;
+        async { cell.inner.write().await.close().await }
+            .log_slow_after(
+                LOG_SLOW_TRANSITION_AFTER,
+                Level::WARN,
+                format!("Closing partition {partition_id}"),
+            )
+            .await;
     }
 
     pub async fn export_partition(
@@ -444,12 +443,41 @@ impl PartitionStoreManager {
             .await
     }
 
-    #[cfg(test)]
-    pub async fn drop_partition(
-        &self,
-        partition_id: PartitionId,
-    ) -> Result<(), restate_rocksdb::RocksError> {
-        self.state.drop_partition(partition_id).await
+    /// Deletes this node's local copy of the partition, discarding all of its data.
+    /// Returns `true` if there was a column family to delete, `false` if there was
+    /// nothing to delete. It also finds a column family that this process hasn't
+    /// opened yet.
+    ///
+    /// The partition stops accepting work right away, and its column family is deleted
+    /// once nothing uses it anymore. So this waits until every [`PartitionStore`] of the
+    /// partition is dropped: stop its partition processor first. Opening the partition
+    /// meanwhile waits for the deletion. Once the partition has stopped accepting work,
+    /// the deletion goes ahead even if this call is cancelled. If an earlier deletion
+    /// failed, this retries it.
+    #[instrument(level = "error", skip_all, fields(partition_id = %partition.partition_id, cf_name = %partition.cf_name()))]
+    pub async fn drop_partition_store(&self, partition: &Partition) -> Result<bool, RocksError> {
+        let dropped = async {
+            let database = self.open_rocksdb(partition).await?;
+            let cell = self.state.get_or_default(partition);
+            let mut state_guard = cell.inner.write().await;
+            cell.drop_partition_store(&mut state_guard, &database).await
+        }
+        .log_slow_after(
+            LOG_SLOW_TRANSITION_AFTER,
+            Level::WARN,
+            format!(
+                "Dropping local store of partition {}",
+                partition.partition_id
+            ),
+        )
+        .await?;
+
+        if dropped {
+            info!("Dropped local partition store");
+        } else {
+            debug!("No local partition store to drop");
+        }
+        Ok(dropped)
     }
 
     /// Opens a partition store by importing an already-downloaded snapshot, discarding any
@@ -499,7 +527,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
-    use restate_rocksdb::{Priority, RocksDbManager};
+    use restate_rocksdb::{Priority, RocksDbManager, RocksError};
     use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
     use restate_storage_api::{StorageError, Transaction};
     use restate_types::config::Configuration;
@@ -510,6 +538,7 @@ mod tests {
 
     use super::PartitionStoreManager;
     use crate::PartitionStore;
+    use crate::faults::FaultPoint;
     use crate::keys::KeyKind;
     use crate::partition_db::State;
 
@@ -619,7 +648,7 @@ mod tests {
             );
             timeout(DEADLINE, reached).await??;
             drop(read);
-            let mut retirement = Box::pin(manager.drop_partition(partition.partition_id));
+            let mut retirement = Box::pin(manager.drop_partition_store(&partition));
             assert!(
                 retirement
                     .as_mut()
@@ -627,8 +656,10 @@ mod tests {
                     .is_pending()
             );
             drop(retirement);
+            // The deletion was committed before the caller went away, even though the
+            // running read still holds the partition's admission.
             let cell = manager.state.get(partition.partition_id).unwrap();
-            assert!(matches!(&*cell.inner.read().await, State::Closing { .. }));
+            assert!(matches!(&*cell.inner.read().await, State::Retiring { .. }));
             let mut released = Box::pin(released);
             assert!(
                 released
@@ -657,7 +688,7 @@ mod tests {
             timeout(DEADLINE, store.partition_db().admission().drain()).await?;
             // Reads count against the partition, so the drain above waited for them.
             // But `store` is still alive, so its column family must not be deleted yet.
-            let mut retirement = Box::pin(manager.drop_partition(partition.partition_id));
+            let mut retirement = Box::pin(manager.drop_partition_store(&partition));
             assert!(
                 retirement
                     .as_mut()
@@ -676,7 +707,7 @@ mod tests {
                 "pin release is not native deletion"
             );
             drop(paused_cleanup);
-            // The deletion finishes even though no drop_partition() or open() future is
+            // The deletion finishes even though no drop_partition_store() or open() future is
             // being polled.
             timeout(DEADLINE, result.wait_for(Option::is_some))
                 .await??
@@ -695,6 +726,170 @@ mod tests {
             assert_eq!(fresh.get_applied_lsn().await?, None);
             assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
             drop((fresh, neighbor, database, cell, manager));
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn drop_partition_store_deletes_local_data_and_reopens() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            // Leave both partitions on disk only, as after a restart.
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            let mut neighbor = manager.open(&sibling, None).await?;
+            write_applied_lsn(&mut store, 10).await?;
+            write_applied_lsn(&mut neighbor, 20).await?;
+            drop((store, neighbor, manager));
+            rocksdb.reset().await?;
+
+            let manager = PartitionStoreManager::create(layout).await?;
+            assert!(
+                manager.drop_partition_store(&partition).await?,
+                "finds a column family this process never opened"
+            );
+            assert!(!manager.drop_partition_store(&partition).await?);
+            let mut neighbor = manager.open(&sibling, None).await?;
+            assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
+
+            let database = manager.open_rocksdb(&partition).await?;
+            database
+                .rocksdb
+                .inner()
+                .open_cf(partition.cf_name().into())?;
+            assert!(
+                manager.drop_partition_store(&partition).await?,
+                "finds a leftover column family while the cell is CfMissing"
+            );
+            assert!(
+                database
+                    .rocksdb
+                    .inner()
+                    .cf_handle(partition.cf_name().as_ref())
+                    .is_none()
+            );
+            drop(database);
+
+            // In the multi-db layout, each drop releases the partition's database, so
+            // the next open has to wait until it has fully closed.
+            for _ in 0..3 {
+                let mut store = timeout(DEADLINE, manager.open(&partition, None)).await??;
+                assert_eq!(store.get_applied_lsn().await?, None);
+                write_applied_lsn(&mut store, 30).await?;
+                drop(store);
+                assert!(timeout(DEADLINE, manager.drop_partition_store(&partition)).await??);
+            }
+            assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(20)));
+            drop((neighbor, manager));
+            rocksdb.reset().await?;
+        }
+        Ok(())
+    }
+
+    #[restate_core::test]
+    async fn slow_and_failing_cf_work_keeps_the_partition_consistent() -> anyhow::Result<()> {
+        const DEADLINE: Duration = Duration::from_secs(10);
+        let rocksdb = RocksDbManager::init();
+        let partition = Partition::new(PartitionId::MIN, KeyRange::FULL);
+        let sibling = Partition::new(PartitionId::from(1), KeyRange::FULL);
+        for layout in [false, true] {
+            let manager = PartitionStoreManager::create(layout).await?;
+            let mut store = manager.open(&partition, None).await?;
+            write_applied_lsn(&mut store, 10).await?;
+            drop(store);
+            let database = manager.open_rocksdb(&partition).await?;
+            let has_cf = || {
+                database
+                    .rocksdb
+                    .inner()
+                    .cf_handle(partition.cf_name().as_ref())
+                    .is_some()
+            };
+            let cell = manager.state.get(partition.partition_id).unwrap();
+
+            // A slow deletion finishes even though its caller went away, and opening
+            // the partition waits for it.
+            let (reached, resume) = cell.faults.pause(FaultPoint::Delete);
+            let mut dropping = Box::pin(manager.drop_partition_store(&partition));
+            assert!(
+                dropping
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(dropping);
+            timeout(DEADLINE, reached).await??;
+            assert!(has_cf());
+            let mut result = match &*cell.inner.read().await {
+                State::Retiring { result } => result.clone(),
+                _ => panic!("the deletion must remain reachable"),
+            };
+            let mut reopen = Box::pin(manager.open(&partition, None));
+            assert!(
+                reopen
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(reopen);
+            drop(resume);
+            timeout(DEADLINE, result.wait_for(Option::is_some))
+                .await??
+                .as_ref()
+                .unwrap()
+                .clone()?;
+            assert!(!has_cf());
+
+            // A failed deletion is reported to its caller and keeps the partition
+            // closed, with its column family, until a later drop retries it.
+            let mut store = manager.open(&partition, None).await?;
+            assert_eq!(store.get_applied_lsn().await?, None);
+            write_applied_lsn(&mut store, 20).await?;
+            drop(store);
+            cell.faults.fail(FaultPoint::Delete, RocksError::ReadOnly);
+            assert!(matches!(
+                manager.drop_partition_store(&partition).await,
+                Err(RocksError::ReadOnly)
+            ));
+            assert!(has_cf());
+            assert!(manager.open(&partition, None).await.is_err());
+            assert!(manager.drop_partition_store(&partition).await?);
+            assert!(!has_cf());
+
+            // A slow creation doesn't hold up other partitions. A drop that comes in
+            // meanwhile waits for it and then deletes what it created, even though the
+            // caller that started the creation went away.
+            let (reached, resume) = cell.faults.pause(FaultPoint::Open);
+            let mut opening = Box::pin(manager.open(&partition, None));
+            assert!(
+                opening
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            timeout(DEADLINE, reached).await??;
+            // The paused creation holds no lifecycle thread.
+            drop(timeout(DEADLINE, rocksdb.pause_lifecycle()).await?);
+            let mut neighbor = timeout(DEADLINE, manager.open(&sibling, None)).await??;
+            write_applied_lsn(&mut neighbor, 30).await?;
+            let mut dropping = Box::pin(manager.drop_partition_store(&partition));
+            assert!(
+                dropping
+                    .as_mut()
+                    .poll(&mut Context::from_waker(Waker::noop()))
+                    .is_pending()
+            );
+            drop(opening);
+            drop(resume);
+            assert!(timeout(DEADLINE, dropping).await??);
+            assert!(!has_cf());
+            assert_eq!(neighbor.get_applied_lsn().await?, Some(Lsn::new(30)));
+
+            drop((neighbor, cell, database, manager));
             rocksdb.reset().await?;
         }
         Ok(())
@@ -732,7 +927,7 @@ mod tests {
                     .is_pending()
             );
             drop(closing);
-            let mut deletion = Box::pin(manager.drop_partition(partition.partition_id));
+            let mut deletion = Box::pin(manager.drop_partition_store(&partition));
             assert!(
                 deletion
                     .as_mut()
@@ -773,7 +968,7 @@ mod tests {
             assert!(notifications.same_channel(&adopted.get_durable_lsn().await?));
             assert!(!Arc::ptr_eq(&admission, adopted.partition_db().admission()));
             drop(adopted);
-            timeout(DEADLINE, manager.drop_partition(partition.partition_id)).await??;
+            timeout(DEADLINE, manager.drop_partition_store(&partition)).await??;
             // Creating, opening, and deleting the partition all finished while the
             // regular I/O pools were blocked, since they run on the lifecycle pool.
             drop(global_paused);
@@ -803,7 +998,7 @@ mod tests {
                     snapshot.db_comparator_name = "invalid comparator".into();
                 }
                 drop(store);
-                manager.drop_partition(partition.partition_id).await?;
+                manager.drop_partition_store(&partition).await?;
                 let paused = rocksdb.pause_lifecycle().await;
                 let mut importing = Box::pin(manager.open_from_snapshot(&partition, snapshot));
                 assert!(
@@ -961,15 +1156,7 @@ mod tests {
                     .is_pending()
             );
             drop(reopen);
-            // A cancelled replacement must also leave the old accounting reachable.
-            let mut replace = Box::pin(manager.drop_partition(partition.partition_id));
-            assert!(
-                replace
-                    .as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop()))
-                    .is_pending()
-            );
-            drop(replace);
+            // The cancelled reopen leaves the old accounting reachable.
             assert!(matches!(
                 *cell.inner.read().await,
                 State::Closing { closing_at: started_at, .. } if started_at == closing_at
@@ -1021,7 +1208,7 @@ mod tests {
             );
             drop(commit);
             drop(tx);
-            let mut replace = Box::pin(manager.drop_partition(partition.partition_id));
+            let mut replace = Box::pin(manager.drop_partition_store(&partition));
             assert!(
                 replace
                     .as_mut()
@@ -1088,7 +1275,7 @@ mod tests {
             timeout(DEADLINE, reached).await??;
             manager.close(partition.partition_id).await;
             drop(store);
-            timeout(DEADLINE, manager.drop_partition(partition.partition_id)).await??;
+            timeout(DEADLINE, manager.drop_partition_store(&partition)).await??;
             assert_eq!(*original_watch.borrow(), Lsn::INVALID);
 
             let mut store = timeout(DEADLINE, manager.open(&partition, None)).await??;
@@ -1124,7 +1311,7 @@ mod tests {
             manager.close(partition.partition_id).await;
 
             // Direct import must reset the old watch itself, without an
-            // explicit drop_partition call, even while its callback is delayed.
+            // explicit drop_partition_store call, even while its callback is delayed.
             let recovered_watch = retired_store.get_durable_lsn().await?;
             assert!(fresh_watch.same_channel(&recovered_watch));
             drop(retired_store);

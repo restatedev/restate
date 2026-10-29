@@ -21,7 +21,7 @@ use rocksdb::{
 use tokio::sync::{RwLock as AsyncRwLock, watch};
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use restate_core::ShutdownError;
 use restate_core::io::IoExecutor;
@@ -41,6 +41,7 @@ use restate_util_time::DurationExt;
 use crate::durable_lsn_tracking::{
     AppliedLsnCollectorFactory, DurableLsnEventListener, DurableLsnSenders,
 };
+use crate::faults::{self, FaultPoint, Faults};
 use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
@@ -391,6 +392,7 @@ pub(crate) struct PartitionCell {
     executor: SinglePoolExecutor,
     archived_lsn: watch::Sender<Option<Lsn>>,
     pub(crate) inner: AsyncRwLock<State>,
+    pub(crate) faults: Faults,
 }
 
 impl PartitionCell {
@@ -400,6 +402,7 @@ impl PartitionCell {
             executor,
             archived_lsn: Default::default(),
             inner: AsyncRwLock::new(State::Unknown),
+            faults: Faults::default(),
         }
     }
 
@@ -547,53 +550,60 @@ impl PartitionCell {
             rocksdb,
             notifications,
         } = database;
-        let task = rocksdb.prepare_op(move |rocksdb| {
-            let result = op(rocksdb.inner()).and_then(|()| {
-                let cf_name = meta.cf_name();
-                let database = PartitionStoreDb {
-                    rocksdb,
-                    notifications,
-                };
-                let db = PartitionDb::new(meta, archived_lsn, database)
-                    .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.into()))?;
-                // Load the durable LSN before anyone can see the partition or subscribe
-                // to its durability updates. If the read fails, keep the partition anyway
-                // (the column family itself is fine) with an unknown LSN;
-                // get_durable_lsn() reads it again later.
-                match crate::fsm_table::get_locally_durable_lsn(&mut crate::PartitionStore::from(
-                    db.clone(),
-                )) {
-                    Ok(Some(lsn)) => {
-                        db.durable_lsn.send_replace(lsn);
+        let executor = self.executor.clone();
+        // Hands the work to the lifecycle pool. `injected` is the outcome of a fault a
+        // test armed; if it's an error, the work reports it instead of running.
+        let submit = move |injected: Result<(), RocksError>| {
+            let task = rocksdb.prepare_op(move |rocksdb| {
+                let result = injected.and_then(|()| op(rocksdb.inner())).and_then(|()| {
+                    let cf_name = meta.cf_name();
+                    let database = PartitionStoreDb {
+                        rocksdb,
+                        notifications,
+                    };
+                    let db = PartitionDb::new(meta, archived_lsn, database)
+                        .ok_or_else(|| RocksError::UnknownColumnFamily(cf_name.into()))?;
+                    // Load the durable LSN before anyone can see the partition or subscribe
+                    // to its durability updates. If the read fails, keep the partition anyway
+                    // (the column family itself is fine) with an unknown LSN;
+                    // get_durable_lsn() reads it again later.
+                    match crate::fsm_table::get_locally_durable_lsn(
+                        &mut crate::PartitionStore::from(db.clone()),
+                    ) {
+                        Ok(Some(lsn)) => {
+                            db.durable_lsn.send_replace(lsn);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            warn!(partition_id = %db.partition().partition_id, %error,
+                                    "Could not initialize durable LSN; recovery will retry on access");
+                        }
                     }
-                    Ok(None) => {}
-                    Err(error) => {
-                        warn!(partition_id = %db.partition().partition_id, %error,
-                                "Could not initialize durable LSN; recovery will retry on access");
-                    }
+                    Ok(db)
+                });
+                // Log the failure here: if the caller that started this work went away, the
+                // next operation on the cell picks up the outcome but doesn't report it.
+                if let Err(error) = &result {
+                    warn!(
+                        %partition_id,
+                        %error,
+                        "Could not create or import the partition's column family"
+                    );
                 }
-                Ok(db)
+                worker_completion.send_replace(Some(result));
             });
-            // Log the failure here: if the caller that started this work went away, the
-            // next operation on the cell picks up the outcome but doesn't report it.
-            if let Err(error) = &result {
-                warn!(
-                    %partition_id,
-                    %error,
-                    "Could not create or import the partition's column family"
-                );
+            let dispatch = executor.dispatch(
+                task.background("initialize-partition", kind)
+                    .with_priority(Priority::Low),
+            );
+            if let Err(error) = dispatch {
+                // The executor rejected the task and already dropped it, with everything it
+                // captured, so it's safe to report the failure now.
+                completion.send_replace(Some(Err(error.into())));
             }
-            worker_completion.send_replace(Some(result));
-        });
-        let dispatch = self.executor.dispatch(
-            task.background("initialize-partition", kind)
-                .with_priority(Priority::Low),
-        );
-        if let Err(error) = dispatch {
-            // The executor rejected the task and already dropped it, with everything it
-            // captured, so it's safe to report the failure now.
-            completion.send_replace(Some(Err(error.into())));
-        }
+        };
+        // Submits right away unless a test armed a fault.
+        faults::run_after(self.faults.take(FaultPoint::Open), submit);
         // If the task panics or is dropped without running, the result channel closes
         // without a result. The cell then stays `Opening`, and later operations on it
         // (close, reopen, replace) give up instead of assuming the work finished.
@@ -620,16 +630,19 @@ impl PartitionCell {
         Ok(())
     }
 
+    /// Deletes a column family that exists in `rocksdb` although the cell has none.
+    /// Returns whether there was one.
     async fn drop_stale_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
         rocksdb: &Arc<RocksDb>,
-    ) -> Result<(), RocksError> {
-        if rocksdb.inner().cf_handle(self.cf_name().as_ref()).is_some() {
-            self.start_retirement(guard, rocksdb.clone(), std::future::ready(()));
-            guard.finish_retirement().await?;
+    ) -> Result<bool, RocksError> {
+        if rocksdb.inner().cf_handle(self.cf_name().as_ref()).is_none() {
+            return Ok(false);
         }
-        Ok(())
+        self.start_retirement(guard, rocksdb.clone(), std::future::ready(()));
+        guard.finish_retirement().await?;
+        Ok(true)
     }
 
     fn start_retirement(
@@ -650,32 +663,83 @@ impl PartitionCell {
         // result and the cell stays `Retiring`, since we can't tell whether the
         // deletion happened. The deletion itself runs on the lifecycle executor.
         let executor = self.executor.clone();
+        let fault = self.faults.take(FaultPoint::Delete);
         tokio::spawn(async move {
             released.await;
-            let result = Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await;
+            let result = match faults::inject(fault).await {
+                Ok(()) => Self::drop_cf_from_rocksdb(&meta, &rocksdb, &executor).await,
+                Err(error) => Err(error),
+            };
+            if let Err(error) = &result {
+                error!(
+                    partition_id = %meta.partition_id,
+                    cf_name = %meta.cf_name(),
+                    db = %rocksdb.name(),
+                    %error,
+                    "Could not delete the partition's column family. The partition stays \
+                    closed until a later drop of its store retries the deletion"
+                );
+            }
             drop(rocksdb);
             completion.send_replace(Some(result));
         });
     }
 
     /// Deletes the underlying column famil(ies) and closes the [`PartitionDb`].
+    ///
+    /// The partition stops accepting work right away. Waiting for work it already
+    /// accepted, and for its last handle to be dropped, happens in the retirement
+    /// task, so the deletion goes ahead even if this caller is cancelled.
     pub async fn drop_cf(
         &self,
         guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
     ) -> Result<(), RocksError> {
-        // Keep the sealed lifetime in the cell while draining. Cancelling this
-        // waiter must not allow a reopen/replacement to bypass admitted work.
         guard.finish_abandoned_open().await?;
-        guard.close().await;
         if let Some(db) = guard.db() {
+            db.admission.seal();
             db.unregister_durable_lsn();
+            let admission = db.admission.clone();
             let released = db.released();
             let rocksdb = db.rocksdb().clone();
-            self.start_retirement(guard, rocksdb, released);
+            self.start_retirement(guard, rocksdb, async move {
+                admission.drain().await;
+                released.await;
+            });
         }
         guard.finish_retirement().await?;
         self.set_cf_missing(guard).await;
         Ok(())
+    }
+
+    /// Deletes the partition's column family, whatever state the cell is in, and
+    /// leaves the cell `CfMissing`. Returns whether there was a column family to delete.
+    ///
+    /// Unlike [`Self::drop_cf`], this also finds a column family the cell doesn't know
+    /// about: one that is on disk but wasn't opened by this process yet (`Unknown`),
+    /// or a leftover one while the cell is `CfMissing` (see [`Self::provision`]).
+    pub async fn drop_partition_store(
+        &self,
+        guard: &mut tokio::sync::RwLockWriteGuard<'_, State>,
+        database: &PartitionStoreDb,
+    ) -> Result<bool, RocksError> {
+        if guard.is_unknown() {
+            self.open_cf(guard, database).await;
+        }
+        // Pick up a finished creation or import, so that its column family counts.
+        guard.finish_abandoned_open().await?;
+        // Retry a deletion that failed. It had already waited for the partition's
+        // work and handles before trying, so only the deletion itself runs again.
+        let failed = matches!(
+            &**guard,
+            State::Retiring { result } if result.borrow().as_ref().is_some_and(Result::is_err)
+        );
+        if failed {
+            info!("Retrying the deletion of the partition's column family");
+            self.start_retirement(guard, database.rocksdb.clone(), std::future::ready(()));
+        }
+        let existed = guard.db().is_some() || matches!(**guard, State::Retiring { .. });
+        self.drop_cf(guard).await?;
+        Ok(self.drop_stale_cf(guard, &database.rocksdb).await? || existed)
     }
 
     /// Clone the underlying [`PartitionDb`], if it is open.
@@ -764,7 +828,8 @@ pub(crate) enum State {
     /// Holds only the deletion's result, which every waiter can read, including ones
     /// that start after earlier waiters were cancelled. On success the cell becomes
     /// `CfMissing`. After a failure or interruption it stays here, so the partition
-    /// isn't reopened over a half-deleted column family.
+    /// isn't reopened over a half-deleted column family. A later
+    /// [`PartitionCell::drop_partition_store`] retries a deletion that failed.
     Retiring {
         result: watch::Receiver<Option<Result<(), RocksError>>>,
     },
