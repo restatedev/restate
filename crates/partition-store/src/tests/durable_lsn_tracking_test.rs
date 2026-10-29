@@ -32,7 +32,16 @@ const PARTITION: Partition = Partition::new(
 );
 
 #[restate_core::test]
-async fn track_latest_applied_lsn() -> googletest::Result<()> {
+async fn track_latest_applied_lsn_single_db() -> googletest::Result<()> {
+    track_latest_applied_lsn(false).await
+}
+
+#[restate_core::test]
+async fn track_latest_applied_lsn_multi_db() -> googletest::Result<()> {
+    track_latest_applied_lsn(true).await
+}
+
+async fn track_latest_applied_lsn(multi_db: bool) -> googletest::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .pretty()
@@ -44,7 +53,7 @@ async fn track_latest_applied_lsn() -> googletest::Result<()> {
 
     RocksDbManager::init();
 
-    let partition_store_manager = PartitionStoreManager::create(true).await?;
+    let partition_store_manager = PartitionStoreManager::create(multi_db).await?;
 
     let mut partition_store = partition_store_manager.open(&PARTITION, None).await?;
 
