@@ -62,7 +62,7 @@ use crate::migrations::MigrationError;
 use crate::partition_db::PartitionDb;
 use crate::scan::PhysicalScan;
 use crate::scan::TableScan;
-use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
+use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir, export_dir};
 use crate::{configure_prefix_iterator_opts, configure_range_iterator_opts};
 
 pub type DB = rocksdb::DB;
@@ -622,7 +622,7 @@ impl PartitionStore {
         tokio::fs::create_dir_all(snapshot_base_path)
             .await
             .map_err(|e| StorageError::SnapshotExport(e.into()))?;
-        let snapshot_dir = snapshot_base_path.join(snapshot_id.to_string());
+        let snapshot_dir = export_dir(snapshot_base_path, snapshot_id);
 
         let export_files = self
             .db
