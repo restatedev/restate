@@ -19,7 +19,8 @@ environment, tunnel, host, port, path, query or method is refused with `401 Unau
 
 - SDKs and other request identity verifiers need no changes.
 - An updated Restate Cloud tunnel client checks the new claim when the server provides it. With an
-  older server, the tunnel client checks that the token was issued for the same deployment path.
+  older server, it only checks that the request path ends with the endpoint the token was issued
+  for, such as `/invoke/Greeter/greet`.
 - Behind an updated tunnel client, register the deployment with
   `restate deployments register --tunnel-name <name> <service URL>`. A deployment registered with an
   extra path prefix in front of the tunnel gets `401 Unauthorized`.
