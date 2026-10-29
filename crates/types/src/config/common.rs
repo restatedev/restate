@@ -686,23 +686,30 @@ pub struct CommonOptions {
     /// to schema updates sent between nodes. It applies to stored schemas only
     /// when `experimental-enable-schema-bilrost-encoding` is enabled.
     ///
-    /// `0` (the default) uses zstd's default level (currently `3`). Higher
-    /// values (up to `19`) produce smaller output but use more CPU on every
-    /// schema change. Negative values select zstd's faster, lower-ratio modes.
+    /// Default level is 1. Higher values (up to `19`) produce smaller output
+    /// but use more CPU on every schema change. Negative values select zstd's
+    /// faster, lower-ratio modes.
     /// Values outside `-22..=19` are clamped to that range. Changing this
     /// setting does not affect data that has already been written, and data
     /// written at any level can be read by all nodes.
     ///
     /// Since v1.8.2
-    #[serde(default, skip_serializing_if = "is_default_compression")]
+    #[serde(
+        default = "default_compression_level",
+        skip_serializing_if = "is_default_compression_level"
+    )]
     schema_compression_level: i32,
 
     #[serde(flatten)]
     pub experimental: Experimental,
 }
 
-fn is_default_compression(lvl: &i32) -> bool {
-    *lvl == 0
+const fn default_compression_level() -> i32 {
+    1
+}
+
+fn is_default_compression_level(lvl: &i32) -> bool {
+    *lvl == default_compression_level()
 }
 
 /// Declares the [`Experimental`] feature-flag struct from a list of feature names.
@@ -1216,7 +1223,7 @@ impl Default for CommonOptions {
             disable_config_sql_table: false,
             gossip: GossipOptions::default(),
             hlc_max_drift: FriendlyDuration::from_millis(5000),
-            schema_compression_level: 0,
+            schema_compression_level: 1,
             experimental: Experimental::default(),
         }
     }
