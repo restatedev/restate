@@ -824,10 +824,7 @@ impl RocksDb {
         let task = StorageTask::default()
             .kind(StorageTaskKind::ImportColumnFamily)
             .priority(Priority::Low)
-            .op(move || {
-                let _x = RocksDbReadPerfGuard::new("import-column-family");
-                self.db.import_cf(name, metadata)
-            })
+            .op(move || self.db.import_cf(name, metadata))
             .build()
             .unwrap();
 

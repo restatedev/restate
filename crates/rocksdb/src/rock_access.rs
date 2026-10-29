@@ -296,6 +296,7 @@ impl RocksAccess {
         name: CfName,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
+        let _perf = RocksDbReadPerfGuard::new("import-column-family");
         let options = prepare_cf_options(&name, &self.db_spec, &self.db_env)?;
 
         let mut import_opts = ImportColumnFamilyOptions::default();

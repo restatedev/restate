@@ -754,7 +754,8 @@ pub struct CommonOptions {
     /// Storage lifecycle thread pool
     ///
     /// Number of threads used to open RocksDB databases, flush them on shutdown,
-    /// and close them. These threads are separate from the storage I/O thread pools
+    /// and close them, and to create, import, and delete partition stores. These
+    /// threads are separate from the storage I/O thread pools
     /// (`storage-high-priority-bg-threads` and `storage-low-priority-bg-threads`).
     /// Defaults to 8. Changes require a restart.
     ///
