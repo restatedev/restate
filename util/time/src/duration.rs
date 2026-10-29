@@ -709,7 +709,7 @@ impl schemars::JsonSchema for NonZeroFriendlyDuration {
 mod helpers {
     use std::str::FromStr;
 
-    use serde::de::Error;
+    use serde::de::{Error, Unexpected};
 
     use super::Duration;
 
@@ -729,6 +729,30 @@ mod helpers {
             Duration::<CAN_BE_ZERO>::from_str(value)
                 .map_err(Error::custom)
                 .map(|d| d.0)
+        }
+
+        // Zero is the only integer that is unambiguous without a unit. Accepting it allows an
+        // unquoted `0` in TOML and `0` in environment variables, which arrive as integers.
+        fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            if value == 0 {
+                self.visit_str("0")
+            } else {
+                Err(Error::invalid_type(Unexpected::Unsigned(value), &self))
+            }
+        }
+
+        fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+        where
+            E: serde::de::Error,
+        {
+            if value == 0 {
+                self.visit_str("0")
+            } else {
+                Err(Error::invalid_type(Unexpected::Signed(value), &self))
+            }
         }
     }
 }
@@ -934,5 +958,33 @@ mod tests {
             .unwrap(),
             "30d"
         );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn deserialize_integer_zero() {
+        use serde::Deserialize;
+        use serde::de::IntoDeserializer;
+        use serde::de::value::{Error, I64Deserializer, U64Deserializer};
+
+        // Unsigned (e.g. environment variables) and signed (e.g. TOML) integers
+        let unsigned: U64Deserializer<Error> = 0u64.into_deserializer();
+        assert!(FriendlyDuration::deserialize(unsigned).unwrap().is_zero());
+        let signed: I64Deserializer<Error> = 0i64.into_deserializer();
+        assert!(FriendlyDuration::deserialize(signed).unwrap().is_zero());
+
+        let unsigned: U64Deserializer<Error> = 0u64.into_deserializer();
+        assert_eq!(
+            NonZeroFriendlyDuration::deserialize(unsigned)
+                .unwrap_err()
+                .to_string(),
+            "duration cannot be zero"
+        );
+
+        // Any other integer is ambiguous without a unit
+        let unsigned: U64Deserializer<Error> = 60u64.into_deserializer();
+        assert!(FriendlyDuration::deserialize(unsigned).is_err());
+        let signed: I64Deserializer<Error> = (-1i64).into_deserializer();
+        assert!(FriendlyDuration::deserialize(signed).is_err());
     }
 }
