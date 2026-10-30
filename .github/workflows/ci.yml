@@ -147,6 +147,10 @@ jobs:
 
   docker:
     name: Create docker image
+    # pushes to ghcr.io on main
+    permissions:
+      contents: read
+      packages: write
     uses: ./.github/workflows/docker.yml
     with:
       uploadImageAsTarball: "restate.tar"
