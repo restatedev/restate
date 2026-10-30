@@ -10,13 +10,21 @@
 
 use std::sync::Arc;
 
-use restate_util_lifecycle::{KeepAlive, KeepAliveTarget};
+use restate_util_lifecycle::{Gate, KeepAlive, KeepAliveTarget, ScopeParent};
 
 use crate::RocksDb;
 
 impl KeepAliveTarget for RocksDb {
     fn name(&self) -> &str {
         RocksDb::name(self).as_str()
+    }
+}
+
+/// A database is the top of a tree of scopes. Sealing or draining the database
+/// also seals or drains every scope inside it.
+impl ScopeParent for RocksDb {
+    fn gate(&self) -> &Arc<Gate> {
+        RocksDb::gate(self)
     }
 }
 
@@ -36,6 +44,7 @@ mod tests {
     use std::task::{Context, Waker};
 
     use restate_types::protobuf::common::DatabaseKind;
+    use restate_util_lifecycle::Scope;
 
     use crate::configuration::{
         CfConfigurator, DbConfigurator, create_default_cf_options, create_default_db_options,
@@ -65,7 +74,7 @@ mod tests {
     }
 
     #[test]
-    fn keeps_the_database_open_until_the_last_clone_is_dropped() -> anyhow::Result<()> {
+    fn scopes_inside_the_database_keep_it_open_and_are_sealed_with_it() -> anyhow::Result<()> {
         let tempdir = restate_test_util::tempdir()?;
         let spec = DbSpecBuilder::new(
             DbName::new("keep-alive"),
@@ -85,18 +94,22 @@ mod tests {
         ));
         let mut closed = pin!(db.closed());
 
-        // The keep-alive outlives the database handle it came from, and clones
-        // share it.
+        // A scope inside the database is sealed together with it.
         let keep_alive = db.keep_alive();
         assert_eq!(format!("{keep_alive:?}"), r#"KeepAlive("keep-alive")"#);
+        let scope = Scope::new("partition", keep_alive.clone());
+        db.seal();
+        assert!(scope.gate().try_acquire().is_none());
+
+        // The keep-alive and the scope outlive the database handle they came
+        // from.
         drop(db);
-        let clone = keep_alive.clone();
         drop(keep_alive);
         assert!(is_pending(closed.as_mut()));
 
         // Without a manager, dropping the last reference closes the database on
         // the dropping thread.
-        drop(clone);
+        drop(scope);
         assert!(!is_pending(closed.as_mut()));
         Ok(())
     }
