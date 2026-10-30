@@ -583,7 +583,7 @@ impl RocksDb {
     }
 
     /// The shared I/O executor this database was created with. Handy for submitting
-    /// operations prepared with [`Self::prepare_op`].
+    /// operations prepared with [`Self::prepare`].
     pub fn executor(&self) -> &GlobalExecutor {
         &self.executor
     }
@@ -598,20 +598,20 @@ impl RocksDb {
     ///
     /// The closure receives an `Arc` of this database and may keep it in its
     /// result. See [`StorageOp::with_guard`] for examples.
-    pub fn prepare_op<R: Send + 'static>(
+    pub fn prepare<R: Send + 'static>(
         self: &Arc<Self>,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
     ) -> StorageOp<'_, impl FnOnce() -> R + Send + 'static> {
-        self.prepare_op_in(&self.gate, op)
+        self.prepare_in(&self.gate, op)
     }
 
-    /// Like [`Self::prepare_op`], but the operation counts in `gate`, which must
+    /// Like [`Self::prepare`], but the operation counts in `gate`, which must
     /// be inside this database (see [`Self::gate`]). Sealing and draining that
     /// gate then covers the operation.
     ///
     /// # Panics
     /// In debug builds, panics if `gate` is outside this database.
-    pub fn prepare_op_in<'a, R: Send + 'static>(
+    pub fn prepare_in<'a, R: Send + 'static>(
         self: &Arc<Self>,
         gate: &'a Arc<Gate>,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
