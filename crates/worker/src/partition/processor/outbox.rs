@@ -13,8 +13,10 @@ use core::ops::RangeInclusive;
 use tracing::trace;
 
 use restate_storage_api::StorageError;
+use restate_storage_api::blob_table::WriteBlobTable;
 use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
 use restate_storage_api::outbox_table::{OutboxMessage, ReadOutboxTable, WriteOutboxTable};
+use restate_types::blob::BlobId;
 use restate_types::message::MessageIndex;
 use restate_worker_api::processor::{OutboxAccess, OutboxMut};
 
@@ -23,6 +25,8 @@ pub struct Outbox {
     outbox_head_seq: MessageIndex,
     /// Sequence number of the next outbox message to be appended.
     outbox_tail_seq: MessageIndex,
+    /// Highest outbox message index whose blob reference has been released.
+    released_blob_index: Option<MessageIndex>,
 }
 
 impl Outbox {
@@ -31,6 +35,7 @@ impl Outbox {
         Self {
             outbox_tail_seq: 0,
             outbox_head_seq: 0,
+            released_blob_index: None,
         }
     }
 
@@ -40,9 +45,11 @@ impl Outbox {
     {
         let outbox_seq_number = storage.get_outbox_seq_number().await?;
         let outbox_head_seq_number = storage.get_outbox_head_seq_number().await?;
+        let released_blob_index = storage.get_released_outbox_blob_index().await?;
         Ok(Self {
             outbox_tail_seq: outbox_seq_number,
             outbox_head_seq: outbox_head_seq_number.unwrap_or(outbox_seq_number),
+            released_blob_index,
         })
     }
 }
@@ -86,6 +93,32 @@ impl OutboxMut for Outbox {
         // need to store the next outbox sequence number
         self.outbox_tail_seq += 1;
         txn.put_outbox_seq_number(self.outbox_tail_seq)?;
+        Ok(())
+    }
+
+    fn release_blobs<S>(
+        &mut self,
+        txn: &mut S,
+        releases: impl IntoIterator<Item = (MessageIndex, BlobId)>,
+    ) -> Result<(), StorageError>
+    where
+        S: WriteBlobTable + WriteFsmTable,
+    {
+        let mut released = None;
+        for (index, blob) in releases {
+            // Already released, e.g. re-proposed by a new leader that re-shuffled the outbox
+            if self.released_blob_index.is_some_and(|last| index <= last) {
+                continue;
+            }
+            trace!(restate.outbox.seq = index, %blob, "Effect: Release outbox blob");
+            txn.decrement_ref_count(blob, 1);
+            self.released_blob_index = Some(index);
+            released = Some(index);
+        }
+
+        if let Some(index) = released {
+            txn.put_released_outbox_blob_index(index)?;
+        }
         Ok(())
     }
 }

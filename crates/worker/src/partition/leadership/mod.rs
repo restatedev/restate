@@ -24,6 +24,7 @@ use std::str::FromStr;
 use std::time::Duration;
 
 use futures::{StreamExt, TryStreamExt};
+use restate_storage_api::blob_table::ReadBlobTable;
 use tokio::sync::mpsc;
 use tokio::time::Instant;
 use tokio_stream::wrappers::ReceiverStream;
@@ -757,11 +758,14 @@ where
             );
 
             let (shuffle_tx, shuffle_rx) = tokio::sync::watch::channel(None);
+            let (blob_release_tx, blob_release_rx) =
+                mpsc::channel(config.worker.internal_queue_length());
 
             let shuffle = Shuffle::new(
                 ShuffleMetadata::new(processor.partition_id()),
                 OutboxReader::from(partition_store.clone()),
                 shuffle_tx,
+                blob_release_tx,
                 config.worker.internal_queue_length(),
                 self.ingestion_client.clone(),
             );
@@ -840,6 +844,7 @@ where
                 self_proposer,
                 invoker_rx,
                 shuffle_rx,
+                blob_release_rx,
                 durability_tracker,
                 leader_query_guard,
                 node_ctx.rule_book_cache.subscribe(),
@@ -982,6 +987,16 @@ impl shuffle::OutboxReader for OutboxReader {
         };
 
         Ok(result)
+    }
+
+    async fn get_response_result(
+        &mut self,
+        blob: restate_types::blob::BlobId,
+    ) -> Result<Option<restate_types::invocation::ResponseResult>, OutboxReaderError> {
+        self.0
+            .get_blob::<restate_types::invocation::ResponseResult>(blob)
+            .await
+            .map_err(OutboxReaderError::Storage)
     }
 }
 

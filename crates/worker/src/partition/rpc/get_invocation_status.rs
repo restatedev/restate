@@ -21,7 +21,6 @@ use restate_types::net::partition_processor::{
 };
 
 use super::*;
-use crate::ReadBlobTableExt;
 
 impl<'a, TSchemas, Storage> RpcHandler<GetInvocationStatusRpcRequest>
     for RpcContext<'a, TSchemas, Storage>
@@ -100,10 +99,7 @@ where
                 // since we have this already.
                 // Currently we have to get the full failure output to extract the full
                 // error.
-                match storage
-                    .resolve_response_result_ref(&response_result)
-                    .await?
-                {
+                match response_result.resolve(storage).await? {
                     None => GetInvocationStatusRpcResponse::NotFound,
                     Some(ResponseResult::Failure(error)) => {
                         GetInvocationStatusRpcResponse::Status {

@@ -97,8 +97,9 @@ use restate_worker_api::{LeaderQueryCommand, LeaderQueryReceiver};
 
 use self::leadership::{CommitCallback, FromRpcReply, RpcProposalSender};
 use self::processor::commands::{
-    AnnounceLeaderContext, ApplyPartitionCommand, NextStep, TruncateOutboxContext,
-    UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext, VersionBarrierContext,
+    AnnounceLeaderContext, ApplyPartitionCommand, NextStep, ReleaseOutboxBlobsContext,
+    TruncateOutboxContext, UpdateDurabilityContext, UpsertRuleBookContext, UpsertSchemaContext,
+    VersionBarrierContext,
 };
 use self::processor::*;
 use self::state_machine::StateMachine;
@@ -1221,6 +1222,14 @@ where
             }
             v2::CommandKind::TruncateOutbox => {
                 TruncateOutboxContext {
+                    txn,
+                    processor: &mut self.ctx,
+                }
+                .apply(record.map(v2::Envelope::into_typed))
+                .await
+            }
+            v2::CommandKind::ReleaseOutboxBlobs => {
+                ReleaseOutboxBlobsContext {
                     txn,
                     processor: &mut self.ctx,
                 }

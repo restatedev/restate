@@ -199,6 +199,7 @@ pub enum SelfProposerFlow {
     Invoker,
     Timer,
     Shuffle,
+    ShuffleBlobRelease,
     Cleaner,
     UpsertSchema,
     UpsertRuleBook,
