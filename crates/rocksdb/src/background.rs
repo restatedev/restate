@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::Instant;
 
-use derive_builder::Builder;
 use metrics::{Gauge, gauge, histogram};
 use parking_lot::Mutex;
 
@@ -63,15 +62,22 @@ impl StorageTaskKind {
 
 /// An operation prepared with [`RocksDb::prepare`](crate::RocksDb::prepare)
 /// or [`RocksDb::prepare_in`](crate::RocksDb::prepare_in) that hasn't
-/// run yet. Run it on the current thread with [`Self::call`], or turn it into a
-/// background task with [`Self::background`]. Nothing is admitted until then.
+/// run yet. Run it on the current thread with [`Self::call`], or submit it to an
+/// executor, which runs it on a background thread. Nothing is admitted until
+/// then: the operation takes its lease from the gate when it runs or is
+/// submitted. The exception is
+/// [`RocksDb::prepare_drop_cf`](crate::RocksDb::prepare_drop_cf), which takes no
+/// lease, so that a column family can still be deleted after the database is
+/// sealed.
 ///
 /// Its kind says what the operation does. When it runs in the background, the
 /// kind labels the task's metrics and tracing span.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
 pub struct StorageOp<'a, OP> {
     op: OP,
-    gate: &'a Arc<Gate>,
+    // `None` for the few operations that must be accepted even after the
+    // database is sealed, such as deleting a column family.
+    gate: Option<&'a Arc<Gate>>,
     kind: StorageTaskKind,
 }
 
@@ -81,7 +87,11 @@ where
     R: Send + 'static,
 {
     pub(crate) fn new(op: OP, gate: &'a Arc<Gate>, kind: StorageTaskKind) -> Self {
-        Self { op, gate, kind }
+        Self {
+            op,
+            gate: Some(gate),
+            kind,
+        }
     }
 
     /// Calls `make_guard` on the thread that runs the operation, right before it
@@ -119,13 +129,12 @@ where
     /// use std::{sync::Arc, time::Duration};
     ///
     /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
-    /// let task = db
+    /// let op = db
     ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
-    ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)))
-    ///     .background();
-    /// let result = executor.spawn(task)?;
+    ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)));
+    /// let result = executor.spawn(op)?;
     /// // Keep `result` alive and await it; dropping it can skip queued work.
-    /// // Use `executor.dispatch(task)` instead for fire-and-forget execution.
+    /// // Use `executor.dispatch(op)` instead for fire-and-forget execution.
     /// # Ok(())
     /// # }
     /// ```
@@ -161,52 +170,47 @@ where
         make_guard: impl FnOnce() -> G + Send + 'static,
     ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
         let Self { op, gate, kind } = self;
-        StorageOp::new(
-            move || {
+        StorageOp {
+            op: move || {
                 let _guard = make_guard();
                 op()
             },
             gate,
             kind,
-        )
+        }
     }
 
     /// Runs the operation now, on the current thread. Fails with [`AdmissionClosed`]
     /// if the database (or scope) is sealed. Unlike background tasks, it records no
     /// task metrics or tracing span.
     pub fn call(self) -> Result<R, AdmissionClosed> {
-        let lease = self.gate.try_acquire().ok_or(AdmissionClosed)?;
+        let lease = self
+            .gate
+            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
+            .transpose()?;
         Ok(TrackedTask::new(self.op, lease).run())
     }
+}
 
-    /// Turns this into a background task. Admission is still checked only when the
-    /// task is submitted.
-    pub fn background(self) -> ReadyStorageTask<'a, OP> {
-        StorageTask::default()
-            .op(self.op)
-            .gate(self.gate)
-            .kind(self.kind)
-            .build()
-            .unwrap()
+impl<OP, R> StorageOp<'static, OP>
+where
+    OP: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    /// An operation that takes no lease, so it is accepted even after the
+    /// database is sealed. Only for work that must finish regardless, such as
+    /// deleting a column family or opening a database that was already
+    /// accounted for elsewhere.
+    pub(crate) fn without_admission(op: OP, kind: StorageTaskKind) -> Self {
+        Self {
+            op,
+            gate: None,
+            kind,
+        }
     }
 }
 
-/// A storage operation ready for an executor, with a kind for metrics. If it
-/// belongs to a gate, it's admitted only when it runs (`call`) or is submitted
-/// (`into_task`), so building one doesn't delay draining.
-#[derive(Builder)]
-#[builder(pattern = "owned")]
-#[builder(name = "StorageTask")]
-#[must_use = "dispatch, execute, or explicitly drop the prepared storage operation"]
-pub struct ReadyStorageTask<'a, OP> {
-    op: OP,
-    #[builder(default, setter(strip_option))]
-    gate: Option<&'a Arc<Gate>>,
-    /// required
-    kind: StorageTaskKind,
-}
-
-impl<OP, R> IoOp for ReadyStorageTask<'_, OP>
+impl<OP, R> IoOp for StorageOp<'_, OP>
 where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
@@ -217,7 +221,11 @@ where
         self.kind.as_static_str()
     }
 
-    fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
+    fn call(self) -> Result<R, AdmissionClosed> {
+        StorageOp::call(self)
+    }
+
+    fn into_task(self) -> Result<impl IoTask<R>, AdmissionClosed> {
         let lease = self
             .gate
             .map(|gate| {
@@ -230,14 +238,6 @@ where
         // even if the task is dropped without running.
         let task = TrackedTask::new(self.op, lease);
         Ok(move || task.run())
-    }
-
-    fn call(self) -> Result<Self::Output, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-            .transpose()?;
-        Ok(TrackedTask::new(self.op, lease).run())
     }
 }
 
@@ -485,9 +485,8 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert!(gate.is_idle());
 
-        let task = StorageOp::new(|| 43, &gate, StorageTaskKind::MultiGet)
-            .with_guard(factory.clone())
-            .background();
+        let task =
+            StorageOp::new(|| 43, &gate, StorageTaskKind::MultiGet).with_guard(factory.clone());
         assert!(gate.is_idle());
         let task = task.into_task().unwrap();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
@@ -510,7 +509,6 @@ mod tests {
 
         let task = StorageOp::new(|| (), &gate, StorageTaskKind::MultiGet)
             .with_guard(|| panic!("discard must not create a guard"))
-            .background()
             .into_task()
             .unwrap();
         drop(task);
@@ -534,13 +532,10 @@ mod tests {
         let high_pri = TrackedExecutor::new(backend.high_pri(), &gate);
         let low_pri = TrackedExecutor::new(backend.pool(Priority::Low), &gate);
         let high = high_pri
-            .spawn(
-                StorageTask::default()
-                    .kind(StorageTaskKind::MultiGet)
-                    .op(|| std::thread::current().name().unwrap().to_owned())
-                    .build()
-                    .unwrap(),
-            )
+            .spawn(StorageOp::without_admission(
+                || std::thread::current().name().unwrap().to_owned(),
+                StorageTaskKind::MultiGet,
+            ))
             .unwrap();
         let low = low_pri
             .spawn_fn("test", || std::thread::current().name().unwrap().to_owned())

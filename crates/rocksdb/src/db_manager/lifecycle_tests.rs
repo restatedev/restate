@@ -23,7 +23,6 @@ use restate_core::io::{AdmissionClosed, IoExecutor, IoOp};
 use restate_platform::sync::Mutex;
 
 use super::{DbRef, ManagerInner, RocksDbManager, WeakRocksDbManager};
-use crate::background::StorageTask;
 use crate::close_tests::{DropBarrier, db_spec};
 use crate::configuration::{DbConfigurator, create_default_db_options};
 use crate::{
@@ -96,13 +95,14 @@ async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Resul
     let running = db.gate().child();
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
-    let observer = db.executor().low_pri().spawn(
-        db.prepare_in(&running, StorageTaskKind::MultiGet, move |_db| {
+    let observer = db.executor().low_pri().spawn(db.prepare_in(
+        &running,
+        StorageTaskKind::MultiGet,
+        move |_db| {
             let _ = started.send(());
             let _ = paused.recv();
-        })
-        .background(),
-    )?;
+        },
+    ))?;
     timeout(DEADLINE, reached).await??;
     drop(observer);
     drop(running);
@@ -188,16 +188,13 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         .prepare(StorageTaskKind::MultiGet, |_| {
             panic!("a discarded task must not execute");
         })
-        .background()
         .into_task()?;
     assert!(!db.gate.is_idle());
     drop(discarded);
     assert!(db.gate.is_idle());
-    let prepared = db
-        .prepare(StorageTaskKind::OpenColumnFamily, |db| {
-            db.inner().open_cf(crate::CfName::new("external"))
-        })
-        .background();
+    let prepared = db.prepare(StorageTaskKind::OpenColumnFamily, |db| {
+        db.inner().open_cf(crate::CfName::new("external"))
+    });
     assert!(db.gate.is_idle());
     let prepared = prepared.into_task()?;
     let unadmitted = db.prepare(StorageTaskKind::MultiGet, |_| {
@@ -236,16 +233,13 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     timeout(DEADLINE, drained).await?;
     // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
     // Submitting it now fails.
-    assert_eq!(
-        external.dispatch(unadmitted.background()),
-        Err(AdmissionClosed)
-    );
+    assert_eq!(external.dispatch(unadmitted), Err(AdmissionClosed));
     assert_eq!(
         db.prepare(StorageTaskKind::MultiGet, |_| ()).call(),
         Err(AdmissionClosed)
     );
     assert!(matches!(
-        external.spawn(db.prepare(StorageTaskKind::MultiGet, |_| ()).background()),
+        external.spawn(db.prepare(StorageTaskKind::MultiGet, |_| ())),
         Err(AdmissionClosed)
     ));
     assert!(matches!(
@@ -279,10 +273,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let rejected = neighbor.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("a rejected operation must not execute");
     });
-    assert_eq!(
-        executor.low_pri().dispatch(rejected.background()),
-        Err(AdmissionClosed)
-    );
+    assert_eq!(executor.low_pri().dispatch(rejected), Err(AdmissionClosed));
     assert!(neighbor.clone().flush_wal(true).await.is_err());
     assert!(neighbor.gate.is_idle());
     // Deleting a column family still works after sealing, on any executor.
@@ -762,28 +753,25 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
         let (started, reached) = oneshot::channel();
         let (resume, paused) = mpsc::channel::<()>();
         let finished = Arc::new(AtomicBool::new(false));
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::MultiGet)
-            .op({
-                let db = db.clone();
-                let finished = finished.clone();
-                move || {
-                    let _ = started.send(());
-                    let _ = paused.recv();
-                    assert_eq!(
-                        db.inner().as_raw_db().get(b"key").unwrap().as_deref(),
-                        Some(b"value".as_slice())
-                    );
-                    finished.store(true, Ordering::Release);
-                }
-            })
-            .build()?;
+        let task = db.prepare(StorageTaskKind::MultiGet, {
+            let finished = finished.clone();
+            move |db| {
+                let _ = started.send(());
+                let _ = paused.recv();
+                assert_eq!(
+                    db.inner().as_raw_db().get(b"key").unwrap().as_deref(),
+                    Some(b"value".as_slice())
+                );
+                finished.store(true, Ordering::Release);
+            }
+        });
+        let pool = db.executor().pool(priority);
         if index == 0 {
-            let mut observer = Box::pin(db.tracked_executor(priority).spawn(task)?);
+            let mut observer = Box::pin(pool.spawn(task)?);
             assert_pending(observer.as_mut());
             drop(observer);
         } else {
-            db.tracked_executor(priority).dispatch(task)?;
+            pool.dispatch(task)?;
         }
 
         let mut shutdown = Box::pin(manager.shutdown());
@@ -796,14 +784,12 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
             Some(1)
         );
         let rejected = || {
-            StorageTask::default()
-                .kind(StorageTaskKind::FlushWal)
-                .op(|| panic!("late background work must be rejected"))
-                .build()
-                .unwrap()
+            db.prepare(StorageTaskKind::FlushWal, |_| {
+                panic!("late background work must be rejected")
+            })
         };
-        assert!(db.tracked_executor(priority).dispatch(rejected()).is_err());
-        assert!(db.tracked_executor(priority).spawn(rejected()).is_err());
+        assert!(pool.dispatch(rejected()).is_err());
+        assert!(pool.spawn(rejected()).is_err());
 
         drop(paused_pool);
         if index == 0 {
