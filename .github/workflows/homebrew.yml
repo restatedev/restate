@@ -35,13 +35,9 @@ jobs:
         with:
           repository: "restatedev/homebrew-tap"
           token: ${{ steps.app-token.outputs.token }}
-      - uses: actions/checkout@v4.4.0
-        with:
-          path: restate
-          sparse-checkout: .github/actions
       - name: Check if this is the latest release
         id: is-latest
-        uses: ./restate/.github/actions/is-latest-release
+        uses: $/.github/actions/is-latest-release
         with:
           tag: ${{ github.ref_name }}
       # So we have access to the formula
