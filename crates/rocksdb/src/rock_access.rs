@@ -13,7 +13,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use rocksdb::checkpoint::Checkpoint;
-use rocksdb::{BlockBasedOptions, ColumnFamilyDescriptor, ImportColumnFamilyOptions};
+use rocksdb::{
+    BlockBasedOptions, BoundColumnFamily, ColumnFamilyDescriptor, ImportColumnFamilyOptions,
+};
 use rocksdb::{CompactOptions, ExportImportFilesMetaData};
 use tokio::time::Instant;
 use tracing::{debug, error, info, trace, warn};
@@ -211,17 +213,30 @@ impl RocksAccess {
         &self.db
     }
 
+    /// Exports the column family called `name` into `export_dir`, which RocksDB
+    /// creates. Fails if there is no such column family, or if the export is
+    /// empty.
     pub fn export_cf(
         &self,
         name: CfName,
         export_dir: PathBuf,
     ) -> Result<ExportImportFilesMetaData, RocksError> {
-        let _perf = RocksDbReadPerfGuard::new("export-column-family");
-        let checkpoint = Checkpoint::new(self.as_raw_db())?;
         let cf = self
             .cf_handle(name.as_str())
-            .ok_or_else(|| RocksError::UnknownColumnFamily(name.clone()))?;
-        let metadata = checkpoint.export_column_family(&cf, export_dir.as_path())?;
+            .ok_or(RocksError::UnknownColumnFamily(name))?;
+        self.export_cf_by_handle(&cf, export_dir)
+    }
+
+    /// Like [`Self::export_cf`], for a column family the caller already holds a
+    /// handle to.
+    pub fn export_cf_by_handle(
+        &self,
+        cf: &Arc<BoundColumnFamily<'_>>,
+        export_dir: PathBuf,
+    ) -> Result<ExportImportFilesMetaData, RocksError> {
+        let _perf = RocksDbReadPerfGuard::new("export-column-family");
+        let checkpoint = Checkpoint::new(self.as_raw_db())?;
+        let metadata = checkpoint.export_column_family(cf, export_dir.as_path())?;
         if metadata.get_files().is_empty() {
             error!(
                 "Refusing to create an empty snapshot! RocksDB column family export \
@@ -315,14 +330,26 @@ impl RocksAccess {
         )?)
     }
 
+    /// Flushes the memtables of the column families called `cfs`, skipping names
+    /// that don't exist. With `wait`, returns once the flush has finished.
     pub fn flush_memtables(&self, cfs: &[CfName], wait: bool) -> Result<(), RocksError> {
         debug!("Flushing. db: {}, memtables: {:?}", self.name(), cfs);
-        let mut flushopts = rocksdb::FlushOptions::default();
-        flushopts.set_wait(wait);
         let cfs = cfs
             .iter()
             .filter_map(|name| self.cf_handle(name))
             .collect::<Vec<_>>();
+        self.flush_memtables_by_handle(&cfs, wait)
+    }
+
+    /// Like [`Self::flush_memtables`], for column families the caller already
+    /// holds handles to.
+    pub fn flush_memtables_by_handle(
+        &self,
+        cfs: &[Arc<BoundColumnFamily<'_>>],
+        wait: bool,
+    ) -> Result<(), RocksError> {
+        let mut flushopts = rocksdb::FlushOptions::default();
+        flushopts.set_wait(wait);
         // a side effect of the awkward rust-rocksdb interface!
         let cf_refs = cfs.iter().collect::<Vec<_>>();
         Ok(self.db.flush_cfs_opt(&cf_refs, &flushopts)?)
