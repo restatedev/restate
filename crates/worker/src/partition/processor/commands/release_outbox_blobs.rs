@@ -49,6 +49,8 @@ mod tests {
     use std::num::NonZeroU16;
 
     use restate_bifrost::DataRecord;
+    use restate_clock::UniqueTimestamp;
+    use restate_clock::time::MillisSinceEpoch;
     use restate_core::TaskCenter;
     use restate_partition_store::{PartitionStore, PartitionStoreManager};
     use restate_rocksdb::RocksDbManager;
@@ -63,7 +65,6 @@ mod tests {
     use restate_types::partitions::Partition;
     use restate_types::sharding::{KeyRange, PartitionId};
     use restate_types::time::NanosSinceEpoch;
-    use restate_types::vqueues::Seq;
     use restate_wal_protocol::v2::commands::OutboxBlobRelease;
     use restate_wal_protocol::v2::{self, Command};
 
@@ -130,7 +131,8 @@ mod tests {
     #[restate_core::test]
     async fn releases_each_outbox_index_once() {
         let mut storage = open_store().await;
-        let blob = BlobId::generate_output_blob_id(&InvocationId::mock_random(), Seq::new(1));
+        let now = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::now());
+        let blob = BlobId::generate_output_blob_id(now, 1, &InvocationId::mock_random());
 
         let mut txn = storage.transaction();
         txn.put_blob(

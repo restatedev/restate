@@ -565,6 +565,8 @@ mod ingestion_client_tests {
     use anyhow::{Context, anyhow};
     use bytes::Bytes;
     use futures::StreamExt;
+    use restate_clock::UniqueTimestamp;
+    use restate_clock::time::MillisSinceEpoch;
     use restate_core::partitions::PartitionRouting;
     use restate_ingestion_client::{IngestionClient, SessionOptions};
     use restate_types::net::RpcRequest;
@@ -1003,12 +1005,10 @@ mod ingestion_client_tests {
     #[test(restate_core::test)]
     async fn shuffle_releases_blob_after_ingestion() -> anyhow::Result<()> {
         let caller_id = InvocationId::mock_random();
+        let now = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::now());
         let command = InvocationResponseFromBlobCommand {
             target: JournalCompletionTarget::for_v3_completions(caller_id, 1),
-            blob: BlobId::generate_output_blob_id(
-                &InvocationId::mock_random(),
-                restate_types::vqueues::Seq::new(1),
-            ),
+            blob: BlobId::generate_output_blob_id(now, 1, &InvocationId::mock_random()),
         };
         let blob = command.blob;
         let mut shuffle_env = create_shuffle_env(BlobOutboxReader { index: 7, command }).await;
