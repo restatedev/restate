@@ -158,8 +158,8 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let manager = owned_manager(global);
 
     let executor = crate::GlobalExecutor::new(
-        crate::SinglePoolExecutor::new("test-high".to_owned(), 1),
-        crate::SinglePoolExecutor::new("test-low".to_owned(), 1),
+        crate::SinglePoolExecutor::new("test-high", 1),
+        crate::SinglePoolExecutor::new("test-low", 1),
     );
     let spec = db_spec("standalone", None);
     let env = manager.db_env().clone();
@@ -231,8 +231,8 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     assert_pending(drained.as_mut());
     // `prepared` took its lease in into_task() before sealing, so it still runs and
     // drain() waits for it.
-    let external = crate::SinglePoolExecutor::new("external-storage".to_owned(), 1);
-    external.spawn_fn(prepared)?.await??;
+    let external = crate::SinglePoolExecutor::new("external-storage", 1);
+    external.spawn_fn("test", prepared)?.await??;
     timeout(DEADLINE, drained).await?;
     // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
     // Submitting it now fails.
@@ -617,8 +617,8 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
             // Give this manager its own shared backend so blocking it does not
             // affect the singleton or the next iteration.
             let executor = crate::GlobalExecutor::new(
-                crate::SinglePoolExecutor::new("test-high".to_owned(), 1),
-                crate::SinglePoolExecutor::new("test-low".to_owned(), 1),
+                crate::SinglePoolExecutor::new("test-high", 1),
+                crate::SinglePoolExecutor::new("test-low", 1),
             );
             Arc::get_mut(&mut manager.0)
                 .expect("unshared manager")
@@ -726,7 +726,7 @@ async fn independent_database_lifecycle_progresses_while_one_worker_is_blocked()
     let manager = owned_manager(global);
     let (resume, paused) = mpsc::channel::<()>();
     let (started, reached) = oneshot::channel();
-    manager.0.lifecycle_executor.dispatch_fn(move || {
+    manager.0.lifecycle_executor.dispatch_fn("test", move || {
         let _ = started.send(());
         let _ = paused.recv();
     })?;
@@ -834,7 +834,11 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
         assert!(db.gate.is_idle());
         assert!(manager.0.lifecycle_gate.is_idle());
         // Shutting down this manager mustn't stop the pools it shares with the global one.
-        timeout(DEADLINE, global.0.executor.pool(priority).spawn_fn(|| ())?).await??;
+        timeout(
+            DEADLINE,
+            global.0.executor.pool(priority).spawn_fn("test", || ())?,
+        )
+        .await??;
         db.close().await.expect("owner holds the last pin");
     }
     global.shutdown().await;
