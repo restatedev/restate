@@ -42,7 +42,8 @@ use tracing::{debug, trace};
 use restate_types::time::MillisSinceEpoch;
 
 use crate::pool::{
-    authority::AuthorityPool, conn::PermittedRecvStream,
+    authority::AuthorityPool,
+    conn::{Connection, PermittedRecvStream},
     metric_definitions::CONNECTION_POOL_ACQUIRE_STREAM_DURATION,
 };
 
@@ -94,10 +95,11 @@ impl<C: Clone + Send + Sync + 'static> Pool<C> {
 
         let authorities = Arc::new(DashMap::default());
 
-        if let Some(idle_timeout) = config.idle_connection_timeout {
+        let policy = EvictionPolicy::from_config(&config);
+        if policy.is_enabled() {
             tokio::task::Builder::new()
                 .name("h2:eviction-task")
-                .spawn(eviction_task(Arc::downgrade(&authorities), idle_timeout))
+                .spawn(eviction_task(Arc::downgrade(&authorities), policy))
                 .unwrap();
         }
 
@@ -153,14 +155,84 @@ where
     }
 }
 
-/// Background task that periodically evicts idle connections.
+/// Why the eviction task removed a connection from its authority pool.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EvictReason {
+    /// No in-flight streams and `last_used_at` older than the idle timeout.
+    Idle,
+    /// Past the connection's `retire_at` deadline (max age plus jitter). In-flight
+    /// streams finish on the retired connection; new requests get a fresh one.
+    Aged,
+}
+
+/// Rules applied by [`eviction_task`] on every tick.
+#[derive(Debug, Clone, Copy)]
+struct EvictionPolicy {
+    idle_timeout: Option<Duration>,
+    /// Only sets how often the task runs: each connection carries its own
+    /// jittered deadline (see [`Connection::retire_at`]).
+    max_age: Option<Duration>,
+}
+
+impl EvictionPolicy {
+    fn from_config(config: &PoolConfig) -> Self {
+        Self {
+            idle_timeout: config.idle_connection_timeout,
+            max_age: config.max_connection_age,
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.idle_timeout.is_some() || self.max_age.is_some()
+    }
+
+    /// How often the eviction task wakes up: a quarter of the shortest
+    /// configured timeout, but never more often than every 10 seconds.
+    fn interval(&self) -> Duration {
+        let shortest = [self.idle_timeout, self.max_age]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(Duration::from_secs(10));
+        (shortest / 4).max(Duration::from_secs(10))
+    }
+
+    /// Returns why `con` should leave the pool at `now`, or `None` to keep it.
+    fn evict_reason<C>(&self, con: &Connection<C>, now: MillisSinceEpoch) -> Option<EvictReason> {
+        if con.retire_at().is_some_and(|retire_at| now >= retire_at) {
+            return Some(EvictReason::Aged);
+        }
+
+        if let Some(idle_timeout) = self.idle_timeout
+            && con.inflight() == 0
+            && now.duration_since(con.last_used_at()) >= idle_timeout
+        {
+            return Some(EvictReason::Idle);
+        }
+
+        None
+    }
+}
+
+/// Background task that periodically evicts idle and aged connections.
 ///
 /// On each tick the task walks every authority pool and removes connections
-/// that are idle: `inflight() == 0` **and** `last_used_at` is older than
-/// `idle_timeout`. Connections with in-flight streams are left in place so
-/// that ongoing requests — including long-lived streams whose `last_used_at`
-/// has gone stale — continue to be reused by new callers. Authority pools
-/// whose connection list becomes empty are removed from the [`DashMap`].
+/// that are either:
+///
+/// - idle: `inflight() == 0` **and** `last_used_at` is older than
+///   `idle_timeout`. Connections with in-flight streams are left in place so
+///   that ongoing requests — including long-lived streams whose `last_used_at`
+///   has gone stale — continue to be reused by new callers; or
+/// - aged: past its `retire_at` deadline (`created_at` plus `max_connection_age`
+///   and a per-connection jitter drawn at creation), regardless of in-flight
+///   streams. Removing the connection from the pool stops new streams from
+///   being opened on it, while in-flight streams keep it alive until they
+///   complete (see below).
+///   The next request opens a fresh connection, which lets an L4 load
+///   balancer re-spread connections across the backends available now.
+///
+/// Authority pools whose connection list becomes empty are removed from the
+/// [`DashMap`].
 ///
 /// Evicted connections do not need to be tracked here: each in-flight
 /// [`PermittedRecvStream`] holds an `Arc<ConnectionShared>`, so the
@@ -176,27 +248,40 @@ where
 /// fails).
 async fn eviction_task<C: Clone>(
     authorities: Weak<DashMap<PoolKey, AuthorityPool<C>>>,
-    idle_timeout: Duration,
+    policy: EvictionPolicy,
 ) {
-    let interval = (idle_timeout / 4).max(Duration::from_secs(10));
+    let interval = policy.interval();
 
     loop {
         tokio::time::sleep(interval).await;
 
-        // Evict idle connections from each authority pool.
+        // Evict idle and aged connections from each authority pool.
         match authorities.upgrade() {
             Some(map) => {
                 let now = MillisSinceEpoch::now();
                 map.retain(|key, pool| {
-                    let (size, evicted) = pool.retain(|con| {
-                        con.inflight() > 0 || now.duration_since(con.last_used_at()) < idle_timeout
+                    let mut idle = 0usize;
+                    let mut aged = 0usize;
+                    let (size, _evicted) = pool.retain(|con| match policy.evict_reason(con, now) {
+                        None => true,
+                        Some(EvictReason::Idle) => {
+                            idle += 1;
+                            false
+                        }
+                        Some(EvictReason::Aged) => {
+                            aged += 1;
+                            false
+                        }
                     });
 
-                    if !evicted.is_empty() {
+                    if idle > 0 {
+                        debug!("evicting {idle} idle connections from pool ({key})");
+                    }
+
+                    if aged > 0 {
                         debug!(
-                            "evicting {} idle connections from pool ({})",
-                            evicted.len(),
-                            key
+                            "retiring {aged} connections past max age from pool ({key}); \
+                             in-flight streams drain before close"
                         );
                     }
 
@@ -385,13 +470,23 @@ mod test {
     use http::{Request, Uri};
     use http_body_util::BodyExt;
 
-    use crate::pool::PoolBuilder;
+    use restate_types::time::MillisSinceEpoch;
+
     use crate::pool::test_util::TestConnector;
+    use crate::pool::{EvictReason, EvictionPolicy, PoolBuilder};
 
     fn make_pool(max_concurrent_streams: u32) -> super::Pool<TestConnector> {
         PoolBuilder::default()
             .initial_max_send_streams(std::num::NonZeroU32::new(max_concurrent_streams).unwrap())
             .build(TestConnector::new(max_concurrent_streams))
+    }
+
+    fn make_pool_with_max_age(max_age: Duration, jitter: f32) -> super::Pool<TestConnector> {
+        PoolBuilder::default()
+            .initial_max_send_streams(std::num::NonZeroU32::new(10).unwrap())
+            .max_connection_age(Some(max_age))
+            .max_connection_age_jitter(jitter)
+            .build(TestConnector::new(10))
     }
 
     fn make_pool_with_eviction(
@@ -527,5 +622,147 @@ mod test {
 
         // Now the draining pool should have no in-flight streams.
         assert_eq!(draining_pool.iter().fold(0, |acc, v| acc + v.inflight()), 0);
+    }
+
+    async fn open_connection(pool: &super::Pool<TestConnector>) {
+        let resp = pool
+            .request(
+                Request::builder()
+                    .uri("http://host-a:80")
+                    .body(http_body_util::Full::new(Bytes::from_static(b"hello")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        resp.into_body().collect().await.unwrap();
+    }
+
+    /// The deadline is drawn once, when the connection is created, and stays
+    /// within `created_at + age .. created_at + age * (1 + jitter)`.
+    #[tokio::test]
+    async fn retire_at_is_fixed_at_creation_and_bounded() {
+        let age = Duration::from_secs(600);
+        let pool = make_pool_with_max_age(age, 0.1);
+        open_connection(&pool).await;
+
+        let authority = pool.authorities.iter().next().unwrap().value().clone();
+        authority.retain(|con| {
+            let retire_at = con.retire_at().expect("max age is configured");
+            assert_eq!(con.retire_at(), Some(retire_at), "deadline must not move");
+            assert!(retire_at >= con.created_at() + age);
+            assert!(retire_at <= con.created_at() + age.mul_f32(1.1));
+            true
+        });
+
+        // Without a max age there is no deadline.
+        let pool = make_pool(10);
+        open_connection(&pool).await;
+        let authority = pool.authorities.iter().next().unwrap().value().clone();
+        authority.retain(|con| {
+            assert_eq!(con.retire_at(), None);
+            true
+        });
+    }
+
+    #[test]
+    fn eviction_interval_follows_shortest_timeout() {
+        let policy = |idle: Option<u64>, age: Option<u64>| EvictionPolicy {
+            idle_timeout: idle.map(Duration::from_secs),
+            max_age: age.map(Duration::from_secs),
+        };
+
+        assert!(!policy(None, None).is_enabled());
+        assert!(policy(Some(300), None).is_enabled());
+        assert!(policy(None, Some(300)).is_enabled());
+
+        // idle only: 300s / 4
+        assert_eq!(policy(Some(300), None).interval(), Duration::from_secs(75));
+        // age only: 120s / 4
+        assert_eq!(policy(None, Some(120)).interval(), Duration::from_secs(30));
+        // both: the shorter one wins
+        assert_eq!(
+            policy(Some(300), Some(120)).interval(),
+            Duration::from_secs(30)
+        );
+        // never more often than every 10s
+        assert_eq!(policy(None, Some(4)).interval(), Duration::from_secs(10));
+    }
+
+    /// A connection past its `retire_at` deadline is retired even while it has
+    /// in-flight streams: it leaves the pool (so the next request opens a new
+    /// connection) but the held stream keeps working until it is released.
+    /// Idle eviction alone never touches a connection with in-flight streams.
+    #[tokio::test]
+    async fn aged_connection_is_retired_while_inflight_streams_drain() {
+        let pool = make_pool_with_max_age(Duration::from_secs(600), 0.0);
+
+        // Open a connection and hold the response body to keep a stream in flight.
+        let body = pool
+            .request(
+                Request::builder()
+                    .uri("http://host-a:80")
+                    .body(http_body_util::Full::new(Bytes::from_static(b"hello")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .into_body();
+
+        let authority = pool.authorities.iter().next().unwrap().value().clone();
+        let mut deadline = None;
+        authority.retain(|con| {
+            deadline = con.retire_at();
+            true
+        });
+        let deadline = deadline.expect("max age is configured");
+        let policy = EvictionPolicy {
+            idle_timeout: Some(Duration::ZERO),
+            max_age: Some(Duration::from_secs(600)),
+        };
+
+        // Before the deadline the connection is busy and young, so it stays.
+        let (remaining, evicted) =
+            authority.retain(|con| policy.evict_reason(con, MillisSinceEpoch::now()).is_none());
+        assert_eq!(remaining, 1);
+        assert!(evicted.is_empty());
+
+        // At the deadline it is retired despite the in-flight stream.
+        let (remaining, evicted) =
+            authority.retain(|con| policy.evict_reason(con, deadline).is_none());
+        assert_eq!(remaining, 0);
+        assert_eq!(evicted.len(), 1);
+        let retired = &evicted[0];
+        assert_eq!(
+            policy.evict_reason(retired, deadline),
+            Some(EvictReason::Aged)
+        );
+        assert_eq!(retired.inflight(), 1, "held stream keeps the slot occupied");
+
+        // A new request after retirement lands on a brand-new connection.
+        let resp = pool
+            .request(
+                Request::builder()
+                    .uri("http://host-a:80")
+                    .body(http_body_util::Full::new(Bytes::from_static(b"again")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let echoed = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(echoed.as_ref(), b"again");
+
+        let (fresh, _) = authority.retain(|con| {
+            assert_ne!(
+                con.id(),
+                retired.id(),
+                "retired connection must not be reused"
+            );
+            true
+        });
+        assert_eq!(fresh, 1);
+
+        // Releasing the held body completes the stream on the retired connection.
+        drop(body);
+        assert_eq!(retired.inflight(), 0);
     }
 }

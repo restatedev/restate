@@ -943,6 +943,37 @@ mod tests {
     }
 
     #[test]
+    fn http2_max_connection_age_is_raised_to_minimum() {
+        let parse = |age: Option<&str>| {
+            let config = Configuration::default();
+            let mut json = serde_json::to_value(&config).unwrap();
+            if let Some(age) = age {
+                json["worker"]["invoker"]["http2-max-connection-age"] = json!(age);
+            }
+            serde_json::from_value::<Configuration>(json)
+                .unwrap()
+                .worker
+                .invoker
+                .service_client
+                .http
+                .http2_max_connection_age()
+        };
+
+        let min = std::time::Duration::from_secs(10 * 60);
+        // Unset: no age-based eviction.
+        assert_eq!(parse(None), None);
+        // Below the minimum: raised to 10 minutes.
+        assert_eq!(parse(Some("1s")), Some(min));
+        assert_eq!(parse(Some("9m 59s")), Some(min));
+        // At or above the minimum: kept as configured.
+        assert_eq!(parse(Some("10m")), Some(min));
+        assert_eq!(
+            parse(Some("1h")),
+            Some(std::time::Duration::from_secs(3600))
+        );
+    }
+
+    #[test]
     fn configuration_validate_empty_base_dir() {
         let mut config = Configuration::default();
         assert!(config.validate().is_ok());

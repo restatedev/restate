@@ -20,7 +20,7 @@ use tokio::sync::oneshot;
 use tokio::time::timeout;
 
 use restate_core::TaskCenterBuilder;
-use restate_core::io::FlightTracker;
+use restate_core::io::Gate;
 use restate_platform::sync::Mutex;
 use restate_types::config::node_dir;
 use restate_types::protobuf::common::DatabaseKind;
@@ -53,7 +53,7 @@ impl CfConfigurator for Configurator {
 
 // Captured by the write closure: its destruction must precede lease completion.
 struct DropProbe {
-    admission: Weak<FlightTracker>,
+    admission: Weak<Gate>,
     released: Arc<AtomicBool>,
 }
 
@@ -135,7 +135,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
         IoMode::Default,
     ] {
         for fail in [false, true] {
-            let admission = Arc::new(FlightTracker::default());
+            let admission = Arc::new(Gate::default());
             let lease = admission.try_acquire().unwrap();
             admission.seal();
             let released = Arc::new(AtomicBool::new(false));
@@ -181,7 +181,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     {
         db.inner().as_raw_db().delete(b"background")?;
         let pause = manager.pause_background(Priority::High).await;
-        let admission = Arc::new(FlightTracker::default());
+        let admission = Arc::new(Gate::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal(); // Default-mode promotion must work after sealing too.
         let released = Arc::new(AtomicBool::new(false));
@@ -271,7 +271,7 @@ async fn write_leases_follow_execution_and_release_resources_before_completion()
     // Exercise destruction without execution, a terminal error, and unwinding
     // through the same owned operation used by the background executor.
     for outcome in 0..3 {
-        let admission = Arc::new(FlightTracker::default());
+        let admission = Arc::new(Gate::default());
         let lease = admission.try_acquire().unwrap();
         admission.seal();
         let released = Arc::new(AtomicBool::new(false));

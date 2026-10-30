@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
-use super::{FlightTracker, OwnedLease};
+use super::{Gate, OwnedLease};
 
 /// The work was rejected because its scope or executor no longer accepts new
 /// work, typically during shutdown.
@@ -39,19 +39,19 @@ impl<O, T: FnOnce() -> O + Send + 'static + ?Sized> IoTask<O> for T {}
 /// ```ignore
 /// struct Flush<'a> {
 ///     db: &'a Arc<Db>,
-///     flights: &'a Arc<FlightTracker>,
+///     gate: &'a Arc<Gate>,
 /// }
 ///
 /// impl IoOp for Flush<'_> {
 ///     type Output = Result<(), FlushError>;
 ///
 ///     fn call(self) -> Result<Self::Output, AdmissionClosed> {
-///         let _lease = self.flights.try_acquire().ok_or(AdmissionClosed)?;
+///         let _lease = self.gate.try_acquire().ok_or(AdmissionClosed)?;
 ///         Ok(self.db.flush())
 ///     }
 ///
 ///     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
-///         let lease = self.flights.try_acquire().ok_or(AdmissionClosed)?.into_owned();
+///         let lease = self.gate.try_acquire().ok_or(AdmissionClosed)?.into_owned();
 ///         let db = Arc::clone(self.db); // borrowed -> owned
 ///         let in_flight = InFlightGauge::increment(); // decrements on drop
 ///         let queued_at = Instant::now();
@@ -301,14 +301,14 @@ impl Priority {
 }
 
 /// Wraps an executor so that everything submitted through it is counted by a
-/// [`FlightTracker`].
+/// [`Gate`].
 ///
 /// Each submission holds a lease from admission until the task has run or been
-/// dropped. Once the tracker is sealed, submissions fail with
-/// [`AdmissionClosed`], and [`FlightTracker::drain`] waits for accepted work.
+/// dropped. Once the gate is sealed, submissions fail with
+/// [`AdmissionClosed`], and [`Gate::drain`] waits for accepted work.
 ///
 /// Scopes sharing one backend are independent. For example, each partition on
-/// a database can have its own tracker while all use the same thread pools:
+/// a database can have its own gate while all use the same thread pools:
 ///
 /// ```ignore
 /// let p1 = TrackedExecutor::new(&pool, &p1_flights);
@@ -320,16 +320,16 @@ impl Priority {
 /// p1_flights.drain().await;           // doesn't wait for partition 2's work
 /// ```
 ///
-/// The tracker can also hold leases for work submitted elsewhere, or for results
+/// The gate can also hold leases for work submitted elsewhere, or for results
 /// that hold resources (see [`IoExecutor::spawn_fn`]).
 pub struct TrackedExecutor<'a, E> {
     executor: &'a E,
-    flights: &'a Arc<FlightTracker>,
+    gate: &'a Arc<Gate>,
 }
 
 impl<'a, E: IoExecutor> TrackedExecutor<'a, E> {
-    pub fn new(executor: &'a E, flights: &'a Arc<FlightTracker>) -> Self {
-        Self { executor, flights }
+    pub fn new(executor: &'a E, gate: &'a Arc<Gate>) -> Self {
+        Self { executor, gate }
     }
 }
 
@@ -343,7 +343,7 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
         priority: Priority,
         task: impl IoTask<()>,
     ) -> Result<(), AdmissionClosed> {
-        let submission = self.flights.try_acquire().ok_or(AdmissionClosed)?;
+        let submission = self.gate.try_acquire().ok_or(AdmissionClosed)?;
         let task = TrackedTask::new(task, submission.into_owned());
         self.executor.dispatch_fn(priority, move || task.run())
     }
@@ -436,10 +436,10 @@ mod tests {
             }
         }
 
-        let flights = Arc::new(FlightTracker::default());
+        let gate = Arc::new(Gate::default());
         let (tx, rx) = mpsc::channel();
         let backend = QueuedExecutor(tx);
-        let executor = TrackedExecutor::new(&backend, &flights);
+        let executor = TrackedExecutor::new(&backend, &gate);
         let mut result = Box::pin(executor.spawn_fn(Priority::Low, || 42).unwrap());
         let (reached, paused) = oneshot::channel();
         let (resume, wait) = mpsc::channel();
@@ -453,7 +453,7 @@ mod tests {
                 .poll(&mut Context::from_waker(&waker))
                 .is_pending()
         );
-        flights.seal();
+        gate.seal();
         let task = rx.try_recv().unwrap();
         let worker = std::thread::spawn(task);
         tokio::time::timeout(Duration::from_secs(10), paused)
@@ -461,8 +461,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(result.await.unwrap(), 42);
-        assert!(!flights.is_idle(), "a delivered result is not drainage");
-        let mut drain = Box::pin(flights.drain());
+        assert!(!gate.is_idle(), "a delivered result is not drainage");
+        let mut drain = Box::pin(gate.drain());
         assert!(
             drain
                 .as_mut()
@@ -474,7 +474,7 @@ mod tests {
             .await
             .unwrap();
         worker.join().unwrap();
-        assert!(flights.is_idle());
+        assert!(gate.is_idle());
     }
 
     impl Drop for DropProbe {
@@ -485,7 +485,7 @@ mod tests {
 
     #[tokio::test]
     async fn tracked_dispatch_covers_submission_disposal_and_retained_results() {
-        struct SealDuringDispatch(Arc<FlightTracker>);
+        struct SealDuringDispatch(Arc<Gate>);
 
         impl IoExecutor for SealDuringDispatch {
             fn barrier(&self, callback: impl FnOnce() + Send + 'static) {
@@ -505,63 +505,60 @@ mod tests {
             }
         }
 
-        let flights = Arc::new(FlightTracker::default());
-        let executor = SealDuringDispatch(flights.clone());
-        TrackedExecutor::new(&executor, &flights)
+        let gate = Arc::new(Gate::default());
+        let executor = SealDuringDispatch(gate.clone());
+        TrackedExecutor::new(&executor, &gate)
             .dispatch_fn(Priority::High, || {})
             .unwrap();
-        flights.drain().await;
+        gate.drain().await;
         assert!(
-            TrackedExecutor::new(&executor, &flights)
+            TrackedExecutor::new(&executor, &gate)
                 .dispatch_fn(Priority::High, || panic!("sealed"))
                 .is_err()
         );
 
-        struct CapturedResource(Arc<FlightTracker>);
+        struct CapturedResource(Arc<Gate>);
         impl Drop for CapturedResource {
             fn drop(&mut self) {
                 assert!(!self.0.is_idle(), "release resources before their flight");
             }
         }
 
-        let flights = Arc::new(FlightTracker::default());
+        let gate = Arc::new(Gate::default());
         let (tx, rx) = mpsc::channel();
         let backend = QueuedExecutor(tx);
-        let executor = TrackedExecutor::new(&backend, &flights);
-        let resource = CapturedResource(flights.clone());
+        let executor = TrackedExecutor::new(&backend, &gate);
+        let resource = CapturedResource(gate.clone());
         let observer = executor
             .spawn_fn(Priority::Low, move || drop(resource))
             .unwrap();
         drop(observer);
         assert!(
-            !flights.is_idle(),
+            !gate.is_idle(),
             "observer cancellation does not complete work"
         );
         rx.try_recv().unwrap()();
-        flights.wait_idle().await;
+        gate.wait_idle().await;
         // `wait_idle` doesn't seal: new leases can still be acquired.
-        let retained = flights.try_acquire().unwrap().into_owned();
+        let retained = gate.try_acquire().unwrap().into_owned();
         let observer = executor.spawn_fn(Priority::Low, move || retained).unwrap();
         rx.try_recv().unwrap()();
-        flights.seal();
-        assert!(
-            !flights.is_idle(),
-            "buffered output owns its explicit flight"
-        );
+        gate.seal();
+        assert!(!gate.is_idle(), "buffered output owns its explicit flight");
         drop(observer);
-        flights.drain().await;
+        gate.drain().await;
 
         for execute in [false, true] {
-            let flights = Arc::new(FlightTracker::default());
-            let executor = TrackedExecutor::new(&backend, &flights);
-            let resource = CapturedResource(flights.clone());
+            let gate = Arc::new(Gate::default());
+            let executor = TrackedExecutor::new(&backend, &gate);
+            let resource = CapturedResource(gate.clone());
             let observer = executor
                 .spawn_fn(Priority::Low, move || {
                     let _resource = resource;
                     panic!("interrupted task");
                 })
                 .unwrap();
-            flights.seal();
+            gate.seal();
             let task = rx.try_recv().unwrap();
             if execute {
                 assert!(catch_unwind(AssertUnwindSafe(task)).is_err());
@@ -571,18 +568,18 @@ mod tests {
                 drop(task);
             }
             assert!(matches!(observer.await, Err(IoTaskError)));
-            flights.drain().await;
+            gate.drain().await;
         }
 
-        let flights = Arc::new(FlightTracker::default());
-        let resource = CapturedResource(flights.clone());
+        let gate = Arc::new(Gate::default());
+        let resource = CapturedResource(gate.clone());
         drop(rx);
         assert!(
-            TrackedExecutor::new(&backend, &flights)
+            TrackedExecutor::new(&backend, &gate)
                 .dispatch_fn(Priority::Low, move || drop(resource))
                 .is_err()
         );
-        assert!(flights.is_idle(), "rejection disposes the complete task");
+        assert!(gate.is_idle(), "rejection disposes the complete task");
     }
 
     // This operation borrows non-Sync state and is neither Send nor 'static.
