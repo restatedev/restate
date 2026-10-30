@@ -283,7 +283,6 @@ pub struct Partition {
     pub partition_id: PartitionId,
     pub key_range: crate::sharding::KeyRange,
     log_id: Option<LogId>,
-    cf_name: Option<CfName>,
 }
 
 impl Partition {
@@ -292,7 +291,6 @@ impl Partition {
             partition_id,
             key_range,
             log_id: None,
-            cf_name: None,
         }
     }
 
@@ -315,9 +313,7 @@ impl Partition {
     }
 
     pub fn cf_name(&self) -> CfName {
-        self.cf_name
-            .clone()
-            .unwrap_or_else(|| CfName::for_partition(self.partition_id))
+        CfName::for_partition(self.partition_id)
     }
 }
 
@@ -466,7 +462,6 @@ pub struct PartitionShadow {
     pub key_range: crate::sharding::KeyRange,
     #[serde(default)]
     pub db_name: Option<DbName>,
-    pub cf_name: Option<CfName>,
 }
 
 /// Serialization helper which handles the deserialization of the current and older
@@ -500,7 +495,6 @@ impl From<PartitionTable> for PartitionTableShadow {
                         let partition_shadow = PartitionShadow {
                             log_id: partition.log_id,
                             key_range: partition.key_range,
-                            cf_name: partition.cf_name,
                             db_name: None,
                         };
 
@@ -532,7 +526,6 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
                         partition_id,
                         log_id: partition_shadow.log_id,
                         key_range: partition_shadow.key_range,
-                        cf_name: partition_shadow.cf_name,
                     };
 
                     builder.add_partition(partition)?;
@@ -548,6 +541,9 @@ impl TryFrom<PartitionTableShadow> for PartitionTable {
 }
 
 pub use crate::sharding::EqualSizedPartitionPartitioner;
+
+#[cfg(test)]
+mod compatibility_tests;
 
 #[cfg(test)]
 mod tests {

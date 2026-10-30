@@ -348,8 +348,14 @@ mod tests {
     use test_log::test;
 
     use restate_test_util::assert_eq;
+    use restate_types::identifiers::PartitionId;
+    use restate_types::metadata::Precondition;
+    use restate_types::metadata_store::keys::PARTITION_TABLE_KEY;
     use restate_types::net::address::AdvertisedAddress;
     use restate_types::nodes_config::{NodeConfig, Role};
+    use restate_types::partition_table::{Partition, PartitionReplication};
+    use restate_types::replication::ReplicationProperty;
+    use restate_types::sharding::KeyRange;
     use restate_types::{GenerationalNodeId, RestateVersion, Version};
 
     use crate::metadata::spawn_metadata_manager;
@@ -373,6 +379,81 @@ mod tests {
             |metadata| metadata.partition_table_version(),
             |value, version| value.set_version(version),
         )
+    }
+
+    #[test]
+    fn partition_table_rmw_retries_preserving_concurrent_changes() -> Result<()> {
+        let tc = TaskCenterBuilder::default().build()?.into_handle();
+        tc.block_on(async move {
+            let metadata_builder = MetadataBuilder::default();
+            let store = MetadataStoreClient::new_in_memory();
+            let manager = MetadataManager::new(metadata_builder, store.clone());
+            let writer = manager.writer();
+            spawn_metadata_manager(manager)?;
+
+            let mut builder = PartitionTable::default().into_builder();
+            builder.add_partition(Partition::new(PartitionId::from(0), KeyRange::new(0, 1023)))?;
+            let initial = builder.build();
+            store
+                .put(
+                    PARTITION_TABLE_KEY.clone(),
+                    &initial,
+                    Precondition::DoesNotExist,
+                )
+                .await?;
+            writer.update(Arc::new(initial.clone())).await?;
+
+            // Commit a competing change without updating the local cache. The first
+            // RMW attempt must fail its version precondition and fetch this version.
+            let mut builder = initial.clone().into_builder();
+            let added = Partition::new(PartitionId::from(7), KeyRange::new(2048, u64::MAX));
+            builder.add_partition(added.clone())?;
+            let concurrent = builder.build();
+            store
+                .put(
+                    PARTITION_TABLE_KEY.clone(),
+                    &concurrent,
+                    Precondition::MatchesVersion(initial.version()),
+                )
+                .await?;
+
+            let replication = PartitionReplication::Limit(ReplicationProperty::new_unchecked(2));
+            let mut attempts = 0;
+            let updated = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                writer
+                    .global_metadata()
+                    .read_modify_write(|table: Option<Arc<PartitionTable>>| {
+                        attempts += 1;
+                        let table = table.unwrap();
+                        assert_eq!(
+                            table.version(),
+                            if attempts == 1 {
+                                initial.version()
+                            } else {
+                                concurrent.version()
+                            }
+                        );
+                        let mut builder = (*table).clone().into_builder();
+                        builder.set_partition_replication(replication.clone());
+                        Ok::<_, std::convert::Infallible>(builder.build())
+                    }),
+            )
+            .await??;
+
+            assert_eq!(attempts, 2);
+            assert_eq!(updated.version(), concurrent.version().next());
+            assert_eq!(updated.replication(), &replication);
+            assert_eq!(updated.get(&added.id()), Some(&added));
+            assert_eq!(
+                updated.get(&PartitionId::from(0)),
+                initial.get(&PartitionId::from(0))
+            );
+            let persisted: PartitionTable = store.get(PARTITION_TABLE_KEY.clone()).await?.unwrap();
+            assert_eq!(persisted, *updated);
+            TaskCenter::current().cancel_tasks(None, None).await;
+            Ok(())
+        })
     }
 
     fn test_updates<T, F, S>(
