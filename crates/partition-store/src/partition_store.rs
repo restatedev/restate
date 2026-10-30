@@ -512,7 +512,7 @@ impl PartitionStore {
             PhysicalScan::Prefix(_key_kind, prefix) => {
                 configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
                 self.db.rocksdb().clone().run_background_iterator(
-                    self.db.admission(),
+                    self.db.gate(),
                     // todo(asoli): Pass an owned cf handle instead of name
                     self.db.partition().cf_name().into(),
                     name,
@@ -525,7 +525,7 @@ impl PartitionStore {
             PhysicalScan::RangeExclusive(_key_kind, scan_mode, start, end) => {
                 configure_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
                 self.db.rocksdb().clone().run_background_iterator(
-                    self.db.admission(),
+                    self.db.gate(),
                     self.db.partition().cf_name().as_ref().into(),
                     name,
                     priority,
@@ -579,7 +579,7 @@ impl PartitionStore {
             write_batch_with_index: Some(rocksdb::WriteBatchWithIndex::new(0, true)),
             data_cf_handle,
             rocksdb: self.db.rocksdb(),
-            admission: self.db.admission(),
+            admission: self.db.gate(),
             key_buffer: &mut self.key_buffer,
             value_buffer: &mut self.value_buffer,
             meta: self.db.partition(),

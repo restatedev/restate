@@ -33,7 +33,15 @@ use restate_util_string::{ReString, RestateString};
 /// There must exist a bijective mapping between the enum variant and its byte representation.
 /// See [`KeyKind::as_bytes`] and [`KeyKind::from_bytes`].
 #[derive(
-    Debug, Copy, Clone, Eq, PartialEq, EnumIter, derive_more::Display, strum::VariantArray,
+    Debug,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    EnumIter,
+    derive_more::Display,
+    strum::VariantArray,
+    enum_map::Enum,
 )]
 pub enum KeyKind {
     Deduplication,
