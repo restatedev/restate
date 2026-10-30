@@ -83,6 +83,30 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
         None => return segments, // Unknown key type, only show kind
     };
 
+    if key_kind == KeyKind::Blob {
+        // BlobId is not prefixed by the partition key: timestamp(8) + seq(8) + partition_key(8) + remainder(16)
+        let mut pos = 2;
+        let fields = [
+            (8, KeySegment::FixedField, "timestamp"),
+            (8, KeySegment::FixedField, "seq"),
+            (8, KeySegment::Partition, "partition_key"),
+            (16, KeySegment::FixedField, "remainder"),
+        ];
+        for (len, kind, label) in fields {
+            if pos + len > key.len() {
+                break;
+            }
+            segments.push(Segment {
+                kind,
+                start: pos,
+                len,
+                label,
+            });
+            pos += len;
+        }
+        return segments;
+    }
+
     if key.len() < 10 {
         return segments;
     }
@@ -104,7 +128,7 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
     match key_kind {
         // Fixed-size keys after partition
         #[allow(deprecated)]
-        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 | KeyKind::Blob => {
+        KeyKind::InvocationStatus | KeyKind::InvocationStatusV1 => {
             // InvocationUuid (16 bytes)
             if remaining >= 16 {
                 segments.push(Segment {
@@ -385,6 +409,8 @@ fn build_segments(key: &[u8]) -> Vec<Segment> {
                 }
             }
         }
+        // Handled above, blob keys are not prefixed by the partition key
+        KeyKind::Blob => {}
         KeyKind::JournalV2NotificationIdToNotificationIndex => {
             // InvocationUuid (16 bytes) + notification_id (var)
             if remaining >= 16 {
@@ -685,5 +711,31 @@ mod tests {
         assert!(labels.contains(&"scope"));
         assert!(labels.contains(&"service_name"));
         assert!(labels.contains(&"lock_key"));
+    }
+
+    #[test]
+    fn build_segments_for_blob_key() {
+        use restate_types::blob::BlobId;
+        use restate_types::clock::UniqueTimestamp;
+
+        let blob_id = BlobId::new(UniqueTimestamp::MIN, 7u64, 42, [0xab; 16]);
+        let mut key = Vec::new();
+        key.extend_from_slice(KeyKind::Blob.as_bytes());
+        key.extend_from_slice(&blob_id.to_bytes());
+
+        let segments = build_segments(&key);
+        let labels: Vec<&str> = segments.iter().map(|s| s.label).collect();
+        assert_eq!(
+            labels,
+            ["kind", "timestamp", "seq", "partition_key", "remainder"]
+        );
+
+        let pk = &segments[3];
+        assert!(matches!(pk.kind, KeySegment::Partition));
+        assert_eq!((pk.start, pk.len), (18, 8));
+        assert_eq!(key[pk.start..pk.start + pk.len], 42u64.to_be_bytes());
+
+        let last = segments.last().unwrap();
+        assert_eq!(last.start + last.len, key.len());
     }
 }

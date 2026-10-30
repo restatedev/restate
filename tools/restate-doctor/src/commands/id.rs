@@ -179,6 +179,10 @@ fn decode_blob_id(input: &str) -> anyhow::Result<()> {
 
     c_title!("🔍", "Decoded Components");
     let mut components = Table::new_styled();
+    components.add_kv_row(
+        "Created At:",
+        format_timestamp(id.timestamp().to_unix_millis()),
+    );
     components.add_kv_row("Partition Key:", id.partition_key());
     components.add_kv_row("Seq:", id.sequence());
     components.add_kv_row("ID:", u128::from_be_bytes(id.remainder()));
