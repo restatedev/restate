@@ -34,6 +34,9 @@ env:
 jobs:
   refresh:
     if: github.repository_owner == 'restatedev'
+    permissions:
+      contents: read
+      packages: write
     name: Refresh ${{ matrix.image.name }} (minor version offset ${{ matrix.minor-offset }})
     runs-on: ubuntu-latest
     strategy:
