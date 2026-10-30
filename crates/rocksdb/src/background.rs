@@ -62,7 +62,7 @@ impl StorageTaskKind {
 
 /// An operation prepared with [`RocksDb::prepare`](crate::RocksDb::prepare)
 /// or [`RocksDb::prepare_in`](crate::RocksDb::prepare_in) that hasn't
-/// run yet. Run it on the current thread with [`Self::call`], or submit it to an
+/// run yet. Run it on the current thread with [`IoOp::call`], or submit it to an
 /// executor, which runs it on a background thread. Nothing is admitted until
 /// then: the operation takes its lease from the gate when it runs or is
 /// submitted. The exception is
@@ -108,6 +108,7 @@ where
     /// Use `RocksDbWritePerfGuard` instead for write operations.
     ///
     /// ```no_run
+    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard, StorageTaskKind};
     /// use std::sync::Arc;
     ///
@@ -144,6 +145,7 @@ where
     /// it calls) can consult the flag to decide whether to inject a failure.
     ///
     /// ```no_run
+    /// use restate_core::io::IoOp;
     /// use restate_rocksdb::{RocksDb, StorageTaskKind};
     /// use std::{cell::Cell, sync::Arc};
     ///
@@ -179,17 +181,6 @@ where
             kind,
         }
     }
-
-    /// Runs the operation now, on the current thread. Fails with [`AdmissionClosed`]
-    /// if the database (or scope) is sealed. Unlike background tasks, it records no
-    /// task metrics or tracing span.
-    pub fn call(self) -> Result<R, AdmissionClosed> {
-        let lease = self
-            .gate
-            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
-            .transpose()?;
-        Ok(TrackedTask::new(self.op, lease).run())
-    }
 }
 
 impl<OP, R> StorageOp<'static, OP>
@@ -221,8 +212,15 @@ where
         self.kind.as_static_str()
     }
 
+    /// Runs the operation now, on the current thread. Fails with [`AdmissionClosed`]
+    /// if the database (or scope) is sealed. Unlike background tasks, it records no
+    /// task metrics or tracing span.
     fn call(self) -> Result<R, AdmissionClosed> {
-        StorageOp::call(self)
+        let lease = self
+            .gate
+            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
+            .transpose()?;
+        Ok(TrackedTask::new(self.op, lease).run())
     }
 
     fn into_task(self) -> Result<impl IoTask<R>, AdmissionClosed> {
