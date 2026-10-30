@@ -16,11 +16,22 @@ use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, PutMode, PutMultipartOptions, PutOptions, PutPayload, PutResult, UpdateVersion,
 };
+use tokio::sync::{RwLock, RwLockWriteGuard};
 
 /// An in-memory store that, like GCS, matches conditional updates on the object version
 /// alone and rejects them without one, so tests catch a tag that loses the version.
 #[derive(Debug, Default)]
-pub(crate) struct VersionMatchingStore(InMemory);
+pub(super) struct VersionMatchingStore {
+    objects: InMemory,
+    write_gate: RwLock<()>,
+}
+
+impl VersionMatchingStore {
+    /// Holds all writes until the returned guard is dropped.
+    pub(super) async fn pause_writes(&self) -> RwLockWriteGuard<'_, ()> {
+        self.write_gate.write().await
+    }
+}
 
 impl std::fmt::Display for VersionMatchingStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -49,7 +60,8 @@ impl ObjectStore for VersionMatchingStore {
                 version: None,
             });
         }
-        let result = self.0.put_opts(location, payload, opts).await?;
+        let _writes_allowed = self.write_gate.read().await;
+        let result = self.objects.put_opts(location, payload, opts).await?;
         Ok(PutResult {
             version: result.e_tag.clone(),
             ..result
@@ -61,7 +73,7 @@ impl ObjectStore for VersionMatchingStore {
         location: &Path,
         opts: PutMultipartOptions,
     ) -> object_store::Result<Box<dyn MultipartUpload>> {
-        self.0.put_multipart_opts(location, opts).await
+        self.objects.put_multipart_opts(location, opts).await
     }
 
     async fn get_opts(
@@ -69,7 +81,7 @@ impl ObjectStore for VersionMatchingStore {
         location: &Path,
         options: GetOptions,
     ) -> object_store::Result<GetResult> {
-        let mut result = self.0.get_opts(location, options).await?;
+        let mut result = self.objects.get_opts(location, options).await?;
         result.meta.version = result.meta.e_tag.clone();
         Ok(result)
     }
@@ -78,15 +90,15 @@ impl ObjectStore for VersionMatchingStore {
         &self,
         locations: BoxStream<'static, object_store::Result<Path>>,
     ) -> BoxStream<'static, object_store::Result<Path>> {
-        self.0.delete_stream(locations)
+        self.objects.delete_stream(locations)
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, object_store::Result<ObjectMeta>> {
-        self.0.list(prefix)
+        self.objects.list(prefix)
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> object_store::Result<ListResult> {
-        self.0.list_with_delimiter(prefix).await
+        self.objects.list_with_delimiter(prefix).await
     }
 
     async fn copy_opts(
@@ -95,6 +107,6 @@ impl ObjectStore for VersionMatchingStore {
         to: &Path,
         options: CopyOptions,
     ) -> object_store::Result<()> {
-        self.0.copy_opts(from, to, options).await
+        self.objects.copy_opts(from, to, options).await
     }
 }
