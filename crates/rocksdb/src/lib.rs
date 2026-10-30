@@ -50,7 +50,7 @@ pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOpti
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, ReadyStorageTask, SinglePoolExecutor, StorageOp, StorageTaskKind,
+    GlobalExecutor, Priority, ReadyStorageTask, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -68,8 +68,6 @@ use self::metric_definitions::*;
 
 pub type RawRocksDb = rocksdb::DBWithThreadMode<rocksdb::MultiThreaded>;
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
-
-pub use restate_core::io::Priority;
 
 /// Defines how to perform a potentially blocking rocksdb IO operation.
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
@@ -263,8 +261,8 @@ impl RocksDb {
     }
 
     #[cfg(test)]
-    fn tracked_executor(&self) -> TrackedExecutor<'_, GlobalExecutor> {
-        TrackedExecutor::new(&self.executor, &self.gate)
+    fn tracked_executor(&self, priority: Priority) -> TrackedExecutor<'_, SinglePoolExecutor> {
+        TrackedExecutor::new(self.executor.pool(priority), &self.gate)
     }
 
     pub(crate) fn note_config_update(&self) {
@@ -421,7 +419,6 @@ impl RocksDb {
                 write.options.set_no_slowdown(false);
                 let write = write.into_background();
                 let task = StorageTask::default()
-                    .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
                     .op(move || write.run(name))
                     .build()
@@ -436,6 +433,7 @@ impl RocksDb {
 
                 return self
                     .executor
+                    .pool(priority)
                     .spawn(task)?
                     .await
                     .map_err(|_| RocksError::Shutdown(ShutdownError))?
@@ -490,13 +488,13 @@ impl RocksDb {
                 write.options.set_no_slowdown(false);
                 let write = write.into_background();
                 let task = StorageTask::default()
-                    .priority(priority)
                     .kind(StorageTaskKind::WriteBatch)
                     .op(move || write.run(name))
                     .build()
                     .unwrap();
 
                 self.executor
+                    .pool(priority)
                     .spawn(task)?
                     .await
                     .map_err(|_| RocksError::Shutdown(ShutdownError))?
@@ -540,7 +538,6 @@ impl RocksDb {
         let executor = self.executor.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::BackgroundIterator)
-            .priority(priority)
             .op(move || {
                 // note: the perf guard's lifetime encapsulates all operations in the iterator and
                 // the total duration includes all the time spent blocking on the tx's capacity.
@@ -579,11 +576,12 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, gate).dispatch(task)
+        TrackedExecutor::new(executor.pool(priority), gate).dispatch(task)
     }
 
-    /// The shared I/O executor this database was created with. Handy for submitting
-    /// operations prepared with [`Self::prepare`].
+    /// The shared I/O pools this database was created with. Handy for submitting
+    /// operations prepared with [`Self::prepare`] to one of them, for example
+    /// `db.executor().low_pri().spawn(op.background())`.
     pub fn executor(&self) -> &GlobalExecutor {
         &self.executor
     }
@@ -700,7 +698,6 @@ impl RocksDb {
         let db = Arc::clone(self);
         let task = StorageTask::default()
             .kind(kind)
-            .priority(priority)
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new(name);
                 op(db.db.as_raw_db())
@@ -708,7 +705,7 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&self.executor, gate)
+        TrackedExecutor::new(self.executor.pool(priority), gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError.into())
@@ -724,7 +721,7 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?
@@ -743,7 +740,7 @@ impl RocksDb {
             })
             .build()
             .unwrap();
-        TrackedExecutor::new(&executor, &gate).dispatch(task)
+        TrackedExecutor::new(executor.low_pri(), &gate).dispatch(task)
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
@@ -761,7 +758,7 @@ impl RocksDb {
             .op(move || self.db.flush_memtables(&owned_cfs, wait))
             .build()
             .unwrap();
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?
@@ -777,7 +774,7 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?
@@ -796,7 +793,7 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?;
@@ -825,7 +822,7 @@ impl RocksDb {
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?
@@ -841,12 +838,11 @@ impl RocksDb {
         let gate = self.gate.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::ImportColumnFamily)
-            .priority(Priority::Low)
             .op(move || self.db.import_cf(name, metadata))
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?
@@ -862,12 +858,11 @@ impl RocksDb {
         let gate = self.gate.clone();
         let task = StorageTask::default()
             .kind(StorageTaskKind::ExportColumnFamily)
-            .priority(Priority::Low)
             .op(move || self.db.export_cf(name, export_dir))
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(executor.low_pri(), &gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError)?

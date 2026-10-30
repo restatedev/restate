@@ -276,10 +276,10 @@ impl PartitionDb {
                 drop(physical);
                 result
             })
-            .background()
-            .with_priority(Priority::Low);
+            .background();
         self.rocksdb()
             .executor()
+            .low_pri()
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError.into())
@@ -638,7 +638,7 @@ impl PartitionCell {
                 }
                 worker_completion.send_replace(Some(result));
             });
-            let dispatch = executor.dispatch(task.background().with_priority(Priority::Low));
+            let dispatch = executor.dispatch(task.background());
             if let Err(error) = dispatch {
                 // The executor rejected the task and already dropped it, with everything it
                 // captured, so it's safe to report the failure now.
