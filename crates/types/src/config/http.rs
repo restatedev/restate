@@ -22,8 +22,7 @@ const MIN_DATA_FRAME_BUDGET: usize = 25_600;
 
 /// Lower bound for `http2-max-connection-age`. Shorter ages make every
 /// connection re-handshake too often to be worth the rebalancing.
-pub const MIN_HTTP2_MAX_CONNECTION_AGE: std::time::Duration =
-    std::time::Duration::from_secs(10 * 60);
+const MIN_HTTP2_MAX_CONNECTION_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 
 /// # HTTP client options
 #[derive(Debug, Clone, Serialize, Deserialize, derive_builder::Builder)]
@@ -111,14 +110,15 @@ pub struct HttpOptions {
     /// existed when they were opened and newly added backends receive no
     /// traffic until a new connection is made.
     ///
-    /// Must be at least 10 minutes, to avoid excessive connection churn.
+    /// The minimum supported is 10 minutes, to avoid excessive connection
+    /// churn. Any value below this is raised to 10 minutes automatically.
     /// Unset means connections live until they are idle or closed by the peer.
     ///
     /// Since: v1.8.2
     ///
     /// Default: unset (unlimited)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub http2_max_connection_age: Option<FriendlyDuration>,
+    http2_max_connection_age: Option<FriendlyDuration>,
 
     /// # HTTP/2 Max Connection Age Jitter
     ///
@@ -223,6 +223,13 @@ impl HttpOptions {
         u32::try_from(self.http2_max_frame_size.as_usize())
             .unwrap_or(u32::MAX)
             .clamp(16_384, 16_777_215)
+    }
+
+    /// Configured max connection age, raised to at least 10 minutes. `None`
+    /// when unset (no age-based eviction).
+    pub fn http2_max_connection_age(&self) -> Option<std::time::Duration> {
+        self.http2_max_connection_age
+            .map(|age| age.to_std().max(MIN_HTTP2_MAX_CONNECTION_AGE))
     }
 
     pub fn data_frame_budget(&self) -> usize {

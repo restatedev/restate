@@ -66,8 +66,6 @@ use arc_swap::ArcSwap;
 use serde::{Deserialize, Serialize};
 use serde_with::serde_as;
 
-use restate_util_time::FriendlyDuration;
-
 use super::live::{LiveLoad, Pinned};
 use crate::PlainNodeId;
 use crate::errors::GenericError;
@@ -529,27 +527,7 @@ impl Configuration {
             }
         }
 
-        self.validate_http2_max_connection_age()?;
-
         self.validate_advertised_addresses()
-    }
-
-    /// A max connection age below [`MIN_HTTP2_MAX_CONNECTION_AGE`] would make every
-    /// connection to a deployment re-handshake far more often than rebalancing needs.
-    fn validate_http2_max_connection_age(&self) -> Result<(), InvalidConfigurationError> {
-        if let Some(age) = self
-            .worker
-            .invoker
-            .service_client
-            .http
-            .http2_max_connection_age
-            && age.to_std() < MIN_HTTP2_MAX_CONNECTION_AGE
-        {
-            return Err(InvalidConfigurationError::Http2MaxConnectionAgeTooShort(
-                age,
-            ));
-        }
-        Ok(())
     }
 
     /// Checks the advertised addresses set in the configuration. Inferred addresses are always
@@ -713,10 +691,6 @@ pub enum InvalidConfigurationError {
     DeriveBindAddress(String),
     #[error("node-name is required: {0}")]
     RequiredNodeName(String),
-    #[error(
-        "worker.invoker.http2-max-connection-age must be at least 10m, got '{0}'. Unset it to disable age-based eviction"
-    )]
-    Http2MaxConnectionAgeTooShort(FriendlyDuration),
     #[error("invalid {key} '{address}': {reason}")]
     AdvertisedAddress {
         key: &'static str,
@@ -969,45 +943,34 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_http2_max_connection_age_below_minimum() {
-        let validate = |age: Option<&str>| {
-            let mut config = Configuration::default();
-            config.common.set_node_name("validate-max-connection-age");
+    fn http2_max_connection_age_is_raised_to_minimum() {
+        let parse = |age: Option<&str>| {
+            let config = Configuration::default();
             let mut json = serde_json::to_value(&config).unwrap();
             if let Some(age) = age {
                 json["worker"]["invoker"]["http2-max-connection-age"] = json!(age);
             }
-            let config = serde_json::from_value::<Configuration>(json).unwrap();
-            let parsed = config
+            serde_json::from_value::<Configuration>(json)
+                .unwrap()
                 .worker
                 .invoker
                 .service_client
                 .http
-                .http2_max_connection_age;
-            (parsed, config.validate())
+                .http2_max_connection_age()
         };
 
-        // Unset: no age-based eviction, nothing to check.
-        let (parsed, result) = validate(None);
-        assert_eq!(parsed, None);
-        assert!(result.is_ok());
-
-        for age in ["10m", "1h"] {
-            let (parsed, result) = validate(Some(age));
-            assert!(parsed.is_some(), "{age} must parse");
-            assert!(result.is_ok(), "{age} must be accepted");
-        }
-
-        for age in ["1s", "9m 59s"] {
-            let (_, result) = validate(Some(age));
-            assert!(
-                matches!(
-                    result,
-                    Err(InvalidConfigurationError::Http2MaxConnectionAgeTooShort(_))
-                ),
-                "{age} must be rejected, got {result:?}"
-            );
-        }
+        let min = std::time::Duration::from_secs(10 * 60);
+        // Unset: no age-based eviction.
+        assert_eq!(parse(None), None);
+        // Below the minimum: raised to 10 minutes.
+        assert_eq!(parse(Some("1s")), Some(min));
+        assert_eq!(parse(Some("9m 59s")), Some(min));
+        // At or above the minimum: kept as configured.
+        assert_eq!(parse(Some("10m")), Some(min));
+        assert_eq!(
+            parse(Some("1h")),
+            Some(std::time::Duration::from_secs(3600))
+        );
     }
 
     #[test]
