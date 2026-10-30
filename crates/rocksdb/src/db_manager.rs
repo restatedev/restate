@@ -32,10 +32,10 @@ use restate_types::config::{CommonOptions, Configuration};
 
 use self::completion::{CloseGuard, OpenGuard, ShutdownGuard};
 use self::tracking::TrackedDb;
-use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
+use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageOp};
 use crate::db_env::check_memory_limit;
 use crate::{
-    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, Priority, RocksAccess, RocksDb, RocksError,
+    DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, RocksAccess, RocksDb, RocksError,
     StorageTaskKind, metric_definitions,
 };
 
@@ -143,10 +143,8 @@ impl RocksDbManager {
         // doesn't wait behind regular I/O or block Tokio, and one slow database doesn't
         // hold up the others. The pool is never shut down, so databases dropped after
         // shutdown can still be closed.
-        let lifecycle_executor = SinglePoolExecutor::new(
-            "rs:io-lifecycle".to_owned(),
-            opts.storage_lifecycle_threads().get(),
-        );
+        let lifecycle_executor =
+            SinglePoolExecutor::new("rs:io-lifecycle", opts.storage_lifecycle_threads().get());
 
         let manager = RocksDbManager(Arc::new(ManagerInner {
             db_env,
@@ -286,11 +284,8 @@ impl RocksDbManager {
         // Get the result future before dispatching. If dispatch fails, the record is
         // closed and another open could replace it right away, losing this result.
         let opening = self.get_db_by_ref(tracked);
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::OpenDb)
-            .op(move || open.run())
-            .build()
-            .expect("valid open task");
+        // The open is accounted for by its open guard, not by a gate.
+        let task = StorageOp::without_admission(move || open.run(), StorageTaskKind::OpenDb);
         self.0.lifecycle_executor.dispatch(task)?;
         Ok((tracked, opening))
     }
@@ -464,14 +459,17 @@ impl RocksDbManager {
     /// Occupy every worker in a pool until the returned senders are dropped.
     /// Used to deterministically test queued work and cancelled result waiters.
     #[cfg(any(test, feature = "test-util"))]
-    pub async fn pause_background(&self, priority: Priority) -> Vec<std::sync::mpsc::Sender<()>> {
-        let pool = &self.0.executor;
-        let mut resumes = Vec::with_capacity(pool.max_count(priority));
-        for _ in 0..pool.max_count(priority) {
+    pub async fn pause_background(
+        &self,
+        priority: crate::Priority,
+    ) -> Vec<std::sync::mpsc::Sender<()>> {
+        let pool = self.0.executor.pool(priority);
+        let mut resumes = Vec::with_capacity(pool.max_count());
+        for _ in 0..pool.max_count() {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(priority, move || {
+            pool.dispatch_fn("pause", move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -490,7 +488,7 @@ impl RocksDbManager {
             let (resume, paused) = std::sync::mpsc::channel();
             let (started, reached) = tokio::sync::oneshot::channel();
             resumes.push(resume);
-            pool.dispatch_fn(Priority::Low, move || {
+            pool.dispatch_fn("pause", move || {
                 let _ = started.send(());
                 let _ = paused.recv();
             })
@@ -588,7 +586,9 @@ impl RocksDbManager {
         let cleanup = CloseGuard::new(cleanup, active);
         self.0
             .lifecycle_executor
-            .dispatch_fn(Priority::Low, move || drop(cleanup))
+            .dispatch_fn(StorageTaskKind::CloseDb.as_static_str(), move || {
+                drop(cleanup)
+            })
             .expect("lifecycle executor remains available through native cleanup");
     }
 
@@ -623,13 +623,17 @@ impl RocksDbManager {
             .into_owned()
     }
 
-    pub(crate) fn dispatch_cleanup(&self, task: impl FnOnce() + Send + 'static) {
+    pub(crate) fn dispatch_cleanup(
+        &self,
+        kind: StorageTaskKind,
+        task: impl FnOnce() + Send + 'static,
+    ) {
         // Tuple fields drop in order, so the task's captures are released before the
         // lease, even if the job is dropped without running.
         let cleanup = (task, self.track_lifecycle());
         self.0
             .lifecycle_executor
-            .dispatch_fn(Priority::Low, move || {
+            .dispatch_fn(kind.as_static_str(), move || {
                 let (task, _active) = cleanup;
                 task();
             })
@@ -704,7 +708,9 @@ impl RocksDbManager {
         for shutdown in pending {
             self.0
                 .lifecycle_executor
-                .dispatch_fn(Priority::Low, move || drop(shutdown))
+                .dispatch_fn(StorageTaskKind::Shutdown.as_static_str(), move || {
+                    drop(shutdown)
+                })
                 .expect("lifecycle executor remains available through native cleanup");
         }
         self.wait_for_cleanup().await;

@@ -41,16 +41,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::{
-    AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease, TrackedExecutor, TrackedTask,
-};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease, TrackedTask};
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::protobuf::common::DatabaseKind;
 pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, ReadyStorageTask, SinglePoolExecutor, StorageOp, StorageTaskKind,
+    GlobalExecutor, Priority, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -63,13 +61,10 @@ pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
-use self::background::StorageTask;
 use self::metric_definitions::*;
 
 pub type RawRocksDb = rocksdb::DBWithThreadMode<rocksdb::MultiThreaded>;
 type BoxedCfMatcher = Box<dyn CfNameMatch + Send + Sync>;
-
-pub use restate_core::io::Priority;
 
 /// Defines how to perform a potentially blocking rocksdb IO operation.
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq)]
@@ -262,11 +257,6 @@ impl RocksDb {
         self.gate.drain().await;
     }
 
-    #[cfg(test)]
-    fn tracked_executor(&self) -> TrackedExecutor<'_, GlobalExecutor> {
-        TrackedExecutor::new(&self.executor, &self.gate)
-    }
-
     pub(crate) fn note_config_update(&self) {
         let configurator = &self.db.spec().db_configurator;
         configurator.note_config_update(&self.db);
@@ -420,12 +410,6 @@ impl RocksDb {
                 // In the background thread pool we can block on IO
                 write.options.set_no_slowdown(false);
                 let write = write.into_background();
-                let task = StorageTask::default()
-                    .priority(priority)
-                    .kind(StorageTaskKind::WriteBatch)
-                    .op(move || write.run(name))
-                    .build()
-                    .unwrap();
 
                 counter!(STORAGE_IO_OP,
                     DISPOSITION => DISPOSITION_BACKGROUND,
@@ -434,9 +418,14 @@ impl RocksDb {
                 )
                 .increment(1);
 
+                // The write keeps the lease it was admitted with, so a database sealed
+                // in the meantime doesn't reject it.
                 return self
                     .executor
-                    .spawn(task)?
+                    .pool(priority)
+                    .spawn_fn(StorageTaskKind::WriteBatch.as_static_str(), move || {
+                        write.run(name)
+                    })?
                     .await
                     .map_err(|_| RocksError::Shutdown(ShutdownError))?
                     .map_err(|e| e.into());
@@ -489,15 +478,13 @@ impl RocksDb {
                 // In the background thread pool we can block on IO
                 write.options.set_no_slowdown(false);
                 let write = write.into_background();
-                let task = StorageTask::default()
-                    .priority(priority)
-                    .kind(StorageTaskKind::WriteBatch)
-                    .op(move || write.run(name))
-                    .build()
-                    .unwrap();
-
+                // The write keeps the lease it was admitted with, so a database sealed
+                // since the first attempt doesn't reject the retry.
                 self.executor
-                    .spawn(task)?
+                    .pool(priority)
+                    .spawn_fn(StorageTaskKind::WriteBatch.as_static_str(), move || {
+                        write.run(name)
+                    })?
                     .await
                     .map_err(|_| RocksError::Shutdown(ShutdownError))?
                     .map_err(|e| e.into())
@@ -536,89 +523,87 @@ impl RocksDb {
         // ensure that we allow blocking IO.
         read_options.set_read_tier(rocksdb::ReadTier::All);
 
-        self.debug_assert_inside(gate);
-        let executor = self.executor.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::BackgroundIterator)
-            .priority(priority)
-            .op(move || {
-                // note: the perf guard's lifetime encapsulates all operations in the iterator and
-                // the total duration includes all the time spent blocking on the tx's capacity.
-                let _x = RocksDbReadPerfGuard::new(name);
-                let Some(cf) = self.db.cf_handle(cf.as_str()) else {
-                    on_item(Err(RocksError::UnknownColumnFamily(cf)));
-                    return;
-                };
-                let mut iter = RocksIterator::new(
-                    self.db.as_raw_db().raw_iterator_cf_opt(&cf, read_options),
-                    initial_action,
-                    // Borrow `on_item` instead of moving it in, so what it captures is dropped
-                    // only after the iterator and the CF handle are gone.
-                    &mut on_item,
-                );
-                loop {
-                    match iter.step() {
-                        iterator::Disposition::WouldBlock => {
-                            // we should not be here if the iterator is configured correctly.
-                            // as we are already in the storage thread pool, we expect the
-                            // iterator to be blocking.
-                            //
-                            // Why do we panic? because this iterator will be stopped short of all
-                            // values it should return and we don't want to mislead readers that
-                            // they have consumed the iterator cleanly.
-                            panic!(
-                                "RocksDB iterator is reporting that it WouldBlock but it's \
-                                already on the storage thread pool. This is a bug!"
-                            );
-                        }
-                        iterator::Disposition::Continue => continue,
-                        iterator::Disposition::Stop => return,
+        let op = self.prepare_in(gate, StorageTaskKind::BackgroundIterator, move |db| {
+            // note: the perf guard's lifetime encapsulates all operations in the iterator and
+            // the total duration includes all the time spent blocking on the tx's capacity.
+            let _x = RocksDbReadPerfGuard::new(name);
+            let Some(cf) = db.db.cf_handle(cf.as_str()) else {
+                on_item(Err(RocksError::UnknownColumnFamily(cf)));
+                return;
+            };
+            let mut iter = RocksIterator::new(
+                db.db.as_raw_db().raw_iterator_cf_opt(&cf, read_options),
+                initial_action,
+                // Borrow `on_item` instead of moving it in, so what it captures is dropped
+                // only after the iterator and the CF handle are gone.
+                &mut on_item,
+            );
+            loop {
+                match iter.step() {
+                    iterator::Disposition::WouldBlock => {
+                        // we should not be here if the iterator is configured correctly.
+                        // as we are already in the storage thread pool, we expect the
+                        // iterator to be blocking.
+                        //
+                        // Why do we panic? because this iterator will be stopped short of all
+                        // values it should return and we don't want to mislead readers that
+                        // they have consumed the iterator cleanly.
+                        panic!(
+                            "RocksDB iterator is reporting that it WouldBlock but it's \
+                            already on the storage thread pool. This is a bug!"
+                        );
                     }
+                    iterator::Disposition::Continue => continue,
+                    iterator::Disposition::Stop => return,
                 }
-            })
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, gate).dispatch(task)
+            }
+        });
+        self.executor.pool(priority).dispatch(op)
     }
 
-    /// The shared I/O executor this database was created with. Handy for submitting
-    /// operations prepared with [`Self::prepare_op`].
+    /// The shared I/O pools this database was created with. Handy for submitting
+    /// operations prepared with [`Self::prepare`] to one of them, for example
+    /// `db.executor().low_pri().spawn(op)`.
     pub fn executor(&self) -> &GlobalExecutor {
         &self.executor
     }
 
     /// Prepares an operation on this database without running it yet.
     ///
-    /// Run it on the current thread with [`StorageOp::call`], or turn it into a
-    /// background task with [`StorageOp::background`] and submit it to any
-    /// [`IoExecutor`]. Admission is checked at that point, not now: a prepared
+    /// Run it on the current thread with [`StorageOp::call`], or submit it to any
+    /// [`IoExecutor`], such as one of [`Self::executor`]'s pools, to run it on a
+    /// background thread. Admission is checked at that point, not now: a prepared
     /// operation doesn't delay [`Self::drain`], and if the database is sealed first,
     /// calling or submitting it fails with [`AdmissionClosed`].
     ///
+    /// `kind` says what the operation does. If it runs in the background, the
+    /// kind labels the task's metrics and tracing span.
+    ///
     /// The closure receives an `Arc` of this database and may keep it in its
     /// result. See [`StorageOp::with_guard`] for examples.
-    pub fn prepare_op<R: Send + 'static>(
+    pub fn prepare<R: Send + 'static>(
         self: &Arc<Self>,
+        kind: StorageTaskKind,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
     ) -> StorageOp<'_, impl FnOnce() -> R + Send + 'static> {
-        self.prepare_op_in(&self.gate, op)
+        self.prepare_in(&self.gate, kind, op)
     }
 
-    /// Like [`Self::prepare_op`], but the operation counts in `gate`, which must
+    /// Like [`Self::prepare`], but the operation counts in `gate`, which must
     /// be inside this database (see [`Self::gate`]). Sealing and draining that
     /// gate then covers the operation.
     ///
     /// # Panics
     /// In debug builds, panics if `gate` is outside this database.
-    pub fn prepare_op_in<'a, R: Send + 'static>(
+    pub fn prepare_in<'a, R: Send + 'static>(
         self: &Arc<Self>,
         gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
     ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
         self.debug_assert_inside(gate);
         let db = self.clone();
-        StorageOp::new(move || op(db), gate)
+        StorageOp::new(move || op(db), gate, kind)
     }
 
     /// Prepares deleting a column family, to submit to an executor of your choice.
@@ -628,7 +613,7 @@ impl RocksDb {
     pub fn prepare_drop_cf(
         self: Arc<Self>,
         name: CfName,
-    ) -> ReadyStorageTask<'static, impl FnOnce() -> Result<(), RocksError> + Send + 'static> {
+    ) -> StorageOp<'static, impl FnOnce() -> Result<(), RocksError> + Send + 'static> {
         let lease = self
             .registration
             .as_ref()
@@ -642,11 +627,7 @@ impl RocksDb {
             },
             lease,
         );
-        StorageTask::default()
-            .kind(StorageTaskKind::DropColumnFamily)
-            .op(move || task.run())
-            .build()
-            .unwrap()
+        StorageOp::without_admission(move || task.run(), StorageTaskKind::DropColumnFamily)
     }
 
     /// Runs a blocking read operation on the storage background thread-pool and
@@ -691,54 +672,35 @@ impl RocksDb {
         OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
         R: Send + 'static,
     {
-        self.debug_assert_inside(gate);
-        let db = Arc::clone(self);
-        let task = StorageTask::default()
-            .kind(kind)
-            .priority(priority)
-            .op(move || {
-                let _x = RocksDbReadPerfGuard::new(name);
-                op(db.db.as_raw_db())
-            })
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&self.executor, gate)
-            .spawn(task)?
+        let op = self.prepare_in(gate, kind, move |db| {
+            let _x = RocksDbReadPerfGuard::new(name);
+            op(db.db.as_raw_db())
+        });
+        self.executor
+            .pool(priority)
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError.into())
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn flush_wal(self: Arc<Self>, sync: bool) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::FlushWal)
-            .op(move || self.db.flush_wal(sync))
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync));
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub fn run_bg_wal_sync(self: Arc<Self>) -> Result<(), AdmissionClosed> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::FlushWal)
-            .op(move || {
-                if let Err(e) = self.db.flush_wal(true) {
-                    error!("Failed to flush rocksdb WAL: {}", e);
-                }
-            })
-            .build()
-            .unwrap();
-        TrackedExecutor::new(&executor, &gate).dispatch(task)
+        let op = self.prepare(StorageTaskKind::FlushWal, |db| {
+            if let Err(e) = db.db.flush_wal(true) {
+                error!("Failed to flush rocksdb WAL: {}", e);
+            }
+        });
+        self.executor.low_pri().dispatch(op)
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
@@ -747,33 +709,23 @@ impl RocksDb {
         cfs: &[CfName],
         wait: bool,
     ) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let mut owned_cfs = Vec::with_capacity(cfs.len());
-        owned_cfs.extend_from_slice(cfs);
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::FlushMemtables)
-            .op(move || self.db.flush_memtables(&owned_cfs, wait))
-            .build()
-            .unwrap();
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let owned_cfs = cfs.to_vec();
+        let op = self.prepare(StorageTaskKind::FlushMemtables, move |db| {
+            db.db.flush_memtables(&owned_cfs, wait)
+        });
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn flush_all(self: Arc<Self>) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::FlushMemtables)
-            .op(move || self.db.flush_all())
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::FlushMemtables, |db| db.db.flush_all());
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
@@ -783,16 +735,12 @@ impl RocksDb {
         self: Arc<Self>,
         options: ManualCompactionOptions,
     ) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::Compaction)
-            .op(move || self.db.compact_all(options))
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::Compaction, move |db| {
+            db.db.compact_all(options)
+        });
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?;
         Ok(())
@@ -812,16 +760,12 @@ impl RocksDb {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn open_cf(self: Arc<Self>, name: CfName) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::OpenColumnFamily)
-            .op(move || self.db.open_cf(name))
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::OpenColumnFamily, move |db| {
+            db.db.open_cf(name)
+        });
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
@@ -832,17 +776,12 @@ impl RocksDb {
         name: CfName,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::ImportColumnFamily)
-            .priority(Priority::Low)
-            .op(move || self.db.import_cf(name, metadata))
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::ImportColumnFamily, move |db| {
+            db.db.import_cf(name, metadata)
+        });
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
@@ -853,17 +792,12 @@ impl RocksDb {
         name: CfName,
         export_dir: PathBuf,
     ) -> Result<ExportImportFilesMetaData, RocksError> {
-        let executor = self.executor.clone();
-        let gate = self.gate.clone();
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::ExportColumnFamily)
-            .priority(Priority::Low)
-            .op(move || self.db.export_cf(name, export_dir))
-            .build()
-            .unwrap();
-
-        TrackedExecutor::new(&executor, &gate)
-            .spawn(task)?
+        let op = self.prepare(StorageTaskKind::ExportColumnFamily, move |db| {
+            db.db.export_cf(name, export_dir)
+        });
+        self.executor
+            .low_pri()
+            .spawn(op)?
             .await
             .map_err(|_| ShutdownError)?
     }
@@ -894,7 +828,7 @@ impl RocksDb {
             let _ = completion.send(result);
         };
         if let Some(manager) = manager {
-            manager.dispatch_cleanup(cleanup);
+            manager.dispatch_cleanup(StorageTaskKind::DropColumnFamily, cleanup);
         } else {
             cleanup();
         }

@@ -23,7 +23,6 @@ use restate_core::io::{AdmissionClosed, IoExecutor, IoOp};
 use restate_platform::sync::Mutex;
 
 use super::{DbRef, ManagerInner, RocksDbManager, WeakRocksDbManager};
-use crate::background::StorageTask;
 use crate::close_tests::{DropBarrier, db_spec};
 use crate::configuration::{DbConfigurator, create_default_db_options};
 use crate::{
@@ -55,12 +54,15 @@ async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Resul
     let lease = second.try_acquire().unwrap();
     assert!(db.gate.is_idle());
     drop(lease);
-    db.prepare_op_in(&second, |_| ()).call()?;
+    db.prepare_in(&second, StorageTaskKind::MultiGet, |_| ())
+        .call()?;
     // In debug builds, using a gate from another database panics.
     if cfg!(debug_assertions) {
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                neighbor.prepare_op_in(&second, |_| ()).call()
+                neighbor
+                    .prepare_in(&second, StorageTaskKind::MultiGet, |_| ())
+                    .call()
             }))
             .is_err()
         );
@@ -93,13 +95,14 @@ async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Resul
     let running = db.gate().child();
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
-    let observer = db.executor().spawn(
-        db.prepare_op_in(&running, move |_db| {
+    let observer = db.executor().low_pri().spawn(db.prepare_in(
+        &running,
+        StorageTaskKind::MultiGet,
+        move |_db| {
             let _ = started.send(());
             let _ = paused.recv();
-        })
-        .background("scoped-read", StorageTaskKind::MultiGet),
-    )?;
+        },
+    ))?;
     timeout(DEADLINE, reached).await??;
     drop(observer);
     drop(running);
@@ -155,8 +158,8 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     let manager = owned_manager(global);
 
     let executor = crate::GlobalExecutor::new(
-        threadpool::ThreadPool::new(1),
-        threadpool::ThreadPool::new(1),
+        crate::SinglePoolExecutor::new("test-high", 1),
+        crate::SinglePoolExecutor::new("test-low", 1),
     );
     let spec = db_spec("standalone", None);
     let env = manager.db_env().clone();
@@ -168,36 +171,33 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     // The result can arrive before the worker releases its lease, so wait for the
     // gate to go idle.
     timeout(DEADLINE, db.gate.wait_idle()).await?;
-    let discarded = db.prepare_op(|_| {
+    let discarded = db.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("an undispatched operation must not execute");
     });
     assert!(db.gate.is_idle());
     drop(discarded);
     assert!(db.gate.is_idle());
     let gate_refs = Arc::strong_count(&db.gate);
-    db.prepare_op(move |db| {
+    db.prepare(StorageTaskKind::MultiGet, move |db| {
         assert!(!db.gate.is_idle());
         assert_eq!(Arc::strong_count(&db.gate), gate_refs);
     })
     .call()?;
     assert!(db.gate.is_idle());
     let discarded = db
-        .prepare_op(|_| {
+        .prepare(StorageTaskKind::MultiGet, |_| {
             panic!("a discarded task must not execute");
         })
-        .background("discarded-task", StorageTaskKind::MultiGet)
         .into_task()?;
     assert!(!db.gate.is_idle());
     drop(discarded);
     assert!(db.gate.is_idle());
-    let prepared = db
-        .prepare_op(|db| db.inner().open_cf(crate::CfName::new("external")))
-        .background("prepared", StorageTaskKind::OpenColumnFamily)
-        .with_priority(Priority::High);
-    assert_eq!(prepared.priority(), Priority::High);
+    let prepared = db.prepare(StorageTaskKind::OpenColumnFamily, |db| {
+        db.inner().open_cf(crate::CfName::new("external"))
+    });
     assert!(db.gate.is_idle());
     let prepared = prepared.into_task()?;
-    let unadmitted = db.prepare_op(|_| {
+    let unadmitted = db.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("sealing before submission must reject execution");
     });
 
@@ -228,21 +228,18 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     assert_pending(drained.as_mut());
     // `prepared` took its lease in into_task() before sealing, so it still runs and
     // drain() waits for it.
-    let external = crate::SinglePoolExecutor::new("external-storage".to_owned(), 1);
-    external.spawn_fn(Priority::High, prepared)?.await??;
+    let external = crate::SinglePoolExecutor::new("external-storage", 1);
+    external.spawn_fn("test", prepared)?.await??;
     timeout(DEADLINE, drained).await?;
     // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
     // Submitting it now fails.
+    assert_eq!(external.dispatch(unadmitted), Err(AdmissionClosed));
     assert_eq!(
-        external.dispatch(unadmitted.background("unadmitted", StorageTaskKind::MultiGet)),
+        db.prepare(StorageTaskKind::MultiGet, |_| ()).call(),
         Err(AdmissionClosed)
     );
-    assert_eq!(db.prepare_op(|_| ()).call(), Err(AdmissionClosed));
     assert!(matches!(
-        external.spawn(
-            db.prepare_op(|_| ())
-                .background("sealed-spawn", StorageTaskKind::MultiGet)
-        ),
+        external.spawn(db.prepare(StorageTaskKind::MultiGet, |_| ())),
         Err(AdmissionClosed)
     ));
     assert!(matches!(
@@ -273,13 +270,10 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     // first, so the check below only sees what the rejected work left behind.
     timeout(DEADLINE, neighbor.gate.wait_idle()).await?;
     neighbor.seal();
-    let rejected = neighbor.prepare_op(|_| {
+    let rejected = neighbor.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("a rejected operation must not execute");
     });
-    assert_eq!(
-        executor.dispatch(rejected.background("rejected", StorageTaskKind::MultiGet)),
-        Err(AdmissionClosed)
-    );
+    assert_eq!(executor.low_pri().dispatch(rejected), Err(AdmissionClosed));
     assert!(neighbor.clone().flush_wal(true).await.is_err());
     assert!(neighbor.gate.is_idle());
     // Deleting a column family still works after sealing, on any executor.
@@ -332,6 +326,15 @@ async fn pause_lifecycle(manager: &RocksDbManager) -> Vec<mpsc::Sender<()>> {
 
 async fn lifecycle_queue_drained(manager: &RocksDbManager) -> anyhow::Result<()> {
     executor_drained(&manager.0.lifecycle_executor).await
+}
+
+async fn pools_drained(executor: &crate::GlobalExecutor) -> anyhow::Result<()> {
+    let (tx, rx) = oneshot::channel();
+    executor.barrier(move || {
+        let _ = tx.send(());
+    });
+    timeout(DEADLINE, rx).await??;
+    Ok(())
 }
 
 async fn executor_drained(executor: &impl IoExecutor) -> anyhow::Result<()> {
@@ -605,8 +608,8 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
             // Give this manager its own shared backend so blocking it does not
             // affect the singleton or the next iteration.
             let executor = crate::GlobalExecutor::new(
-                threadpool::ThreadPool::new(1),
-                threadpool::ThreadPool::new(1),
+                crate::SinglePoolExecutor::new("test-high", 1),
+                crate::SinglePoolExecutor::new("test-low", 1),
             );
             Arc::get_mut(&mut manager.0)
                 .expect("unshared manager")
@@ -696,7 +699,7 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
             assert!(manager.0.lifecycle_gate.is_idle());
             db.close().await.expect("owner retains the last pin");
             drop((high, low));
-            executor_drained(&executor).await?;
+            pools_drained(&executor).await?;
         }
         global.shutdown().await;
         Ok(())
@@ -714,13 +717,10 @@ async fn independent_database_lifecycle_progresses_while_one_worker_is_blocked()
     let manager = owned_manager(global);
     let (resume, paused) = mpsc::channel::<()>();
     let (started, reached) = oneshot::channel();
-    manager
-        .0
-        .lifecycle_executor
-        .dispatch_fn(Priority::Low, move || {
-            let _ = started.send(());
-            let _ = paused.recv();
-        })?;
+    manager.0.lifecycle_executor.dispatch_fn("test", move || {
+        let _ = started.send(());
+        let _ = paused.recv();
+    })?;
     timeout(DEADLINE, reached).await??;
 
     let (_, opening) = manager.open_db(db_spec("independent-lifecycle", None))?;
@@ -753,29 +753,25 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
         let (started, reached) = oneshot::channel();
         let (resume, paused) = mpsc::channel::<()>();
         let finished = Arc::new(AtomicBool::new(false));
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::MultiGet)
-            .priority(priority)
-            .op({
-                let db = db.clone();
-                let finished = finished.clone();
-                move || {
-                    let _ = started.send(());
-                    let _ = paused.recv();
-                    assert_eq!(
-                        db.inner().as_raw_db().get(b"key").unwrap().as_deref(),
-                        Some(b"value".as_slice())
-                    );
-                    finished.store(true, Ordering::Release);
-                }
-            })
-            .build()?;
+        let task = db.prepare(StorageTaskKind::MultiGet, {
+            let finished = finished.clone();
+            move |db| {
+                let _ = started.send(());
+                let _ = paused.recv();
+                assert_eq!(
+                    db.inner().as_raw_db().get(b"key").unwrap().as_deref(),
+                    Some(b"value".as_slice())
+                );
+                finished.store(true, Ordering::Release);
+            }
+        });
+        let pool = db.executor().pool(priority);
         if index == 0 {
-            let mut observer = Box::pin(db.tracked_executor().spawn(task)?);
+            let mut observer = Box::pin(pool.spawn(task)?);
             assert_pending(observer.as_mut());
             drop(observer);
         } else {
-            db.tracked_executor().dispatch(task)?;
+            pool.dispatch(task)?;
         }
 
         let mut shutdown = Box::pin(manager.shutdown());
@@ -788,14 +784,12 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
             Some(1)
         );
         let rejected = || {
-            StorageTask::default()
-                .kind(StorageTaskKind::FlushWal)
-                .op(|| panic!("late background work must be rejected"))
-                .build()
-                .unwrap()
+            db.prepare(StorageTaskKind::FlushWal, |_| {
+                panic!("late background work must be rejected")
+            })
         };
-        assert!(db.tracked_executor().dispatch(rejected()).is_err());
-        assert!(db.tracked_executor().spawn(rejected()).is_err());
+        assert!(pool.dispatch(rejected()).is_err());
+        assert!(pool.spawn(rejected()).is_err());
 
         drop(paused_pool);
         if index == 0 {
@@ -826,7 +820,11 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
         assert!(db.gate.is_idle());
         assert!(manager.0.lifecycle_gate.is_idle());
         // Shutting down this manager mustn't stop the pools it shares with the global one.
-        timeout(DEADLINE, global.0.executor.spawn_fn(priority, || ())?).await??;
+        timeout(
+            DEADLINE,
+            global.0.executor.pool(priority).spawn_fn("test", || ())?,
+        )
+        .await??;
         db.close().await.expect("owner holds the last pin");
     }
     global.shutdown().await;

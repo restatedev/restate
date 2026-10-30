@@ -50,18 +50,14 @@ impl<O, T: FnOnce() -> O + Send + 'static + ?Sized> IoTask<O> for T {}
 ///         Ok(self.db.flush())
 ///     }
 ///
+///     fn operation(&self) -> &'static str {
+///         "flush"
+///     }
+///
 ///     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
 ///         let lease = self.gate.try_acquire().ok_or(AdmissionClosed)?.into_owned();
 ///         let db = Arc::clone(self.db); // borrowed -> owned
-///         let in_flight = InFlightGauge::increment(); // decrements on drop
-///         let queued_at = Instant::now();
-///         let task = TrackedTask::new(
-///             move || {
-///                 record_queue_wait(queued_at.elapsed()); // only if it actually runs
-///                 db.flush()
-///             },
-///             (in_flight, lease),
-///         );
+///         let task = TrackedTask::new(move || db.flush(), lease);
 ///         Ok(move || task.run())
 ///     }
 /// }
@@ -69,10 +65,10 @@ impl<O, T: FnOnce() -> O + Send + 'static + ?Sized> IoTask<O> for T {}
 pub trait IoOp: Sized {
     type Output: Send + 'static;
 
-    /// Scheduling hint for background execution. Executors may ignore it.
-    fn priority(&self) -> Priority {
-        Priority::default()
-    }
+    /// What the operation does, such as `"flush"`. Executors label the metrics
+    /// of its background task with it, so it should be short and come from a
+    /// small, fixed set.
+    fn operation(&self) -> &'static str;
 
     /// Runs the operation inline on the current thread, with no background-task
     /// setup or background-only instrumentation.
@@ -94,13 +90,11 @@ pub trait IoOp: Sized {
     ///   been dropped; [`TrackedTask`] takes care of that.
     /// - Turn borrowed resources into owned ones, e.g. clone an `Arc`.
     ///
-    /// The executor runs the returned task, never [`Self::call`], so work that
-    /// only makes sense in the background goes *inside* the task: record
-    /// queue-wait time at its start, and execution time around the operation.
+    /// The executor runs the returned task, never [`Self::call`]. It also measures
+    /// the task (how long it waited and ran), so the task doesn't need to.
     ///
     /// The task may be rejected or dropped without ever running, so preparing it
-    /// must not record an execution. Bookkeeping done here, such as bumping an
-    /// in-flight gauge, should be undone by a drop guard captured in the task.
+    /// must not record an execution.
     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed>;
 }
 
@@ -115,7 +109,9 @@ pub struct IoTaskError;
 /// Runs blocking work on background threads.
 ///
 /// Implementors provide [`Self::dispatch_fn`] and [`Self::barrier`]; the other
-/// methods are helpers built on top. Submission is eager: a task is accepted or
+/// methods are helpers built on top. Each task comes with the name of the
+/// operation it performs (see [`IoOp::operation`]), which an executor can use to
+/// label the metrics it records about the task. Submission is eager: a task is accepted or
 /// rejected before the method returns, not when the returned future is first
 /// polled. Returned futures don't borrow the executor.
 ///
@@ -144,8 +140,8 @@ pub struct IoTaskError;
 /// may still be dropping captured resources. Use a [`TrackedExecutor`] to know
 /// when it is safe to shut down.
 pub trait IoExecutor {
-    /// Runs `callback` once all work submitted before this call, at any
-    /// priority, has either run or been dropped. Work submitted concurrently
+    /// Runs `callback` once all work submitted before this call has either run
+    /// or been dropped. Work submitted concurrently
     /// with this call may land on either side of the barrier.
     ///
     /// ```text
@@ -182,8 +178,11 @@ pub trait IoExecutor {
     /// A scope may finish draining before this returns (e.g. a worker ran the
     /// task already), so after handing the task off, implementations must not
     /// touch anything that is shut down once a scope drains.
-    fn dispatch_fn(&self, priority: Priority, task: impl IoTask<()>)
-    -> Result<(), AdmissionClosed>;
+    fn dispatch_fn(
+        &self,
+        operation: &'static str,
+        task: impl IoTask<()>,
+    ) -> Result<(), AdmissionClosed>;
 
     /// Submits a task and returns a future for its result.
     ///
@@ -206,12 +205,12 @@ pub trait IoExecutor {
     /// in the future until awaited or dropped. Give such results their own lease.
     fn spawn_fn<O: Send + 'static>(
         &self,
-        priority: Priority,
+        operation: &'static str,
         task: impl IoTask<O>,
     ) -> Result<impl Future<Output = Result<O, IoTaskError>> + Send + 'static, AdmissionClosed>
     {
         let (tx, rx) = oneshot::channel();
-        self.dispatch_fn(priority, move || {
+        self.dispatch_fn(operation, move || {
             if tx.is_closed() {
                 drop(task);
                 return;
@@ -223,7 +222,7 @@ pub trait IoExecutor {
     }
 
     /// Like [`Self::spawn_fn`], but for an [`IoOp`]: prepares it with
-    /// [`IoOp::into_task`] and submits it at the operation's priority.
+    /// [`IoOp::into_task`] and submits the task.
     ///
     /// Dropping the result future can skip queued work. If the work must run
     /// regardless, use [`Self::spawn_detached`] or [`Self::dispatch`].
@@ -237,8 +236,8 @@ pub trait IoExecutor {
     where
         O: IoOp,
     {
-        let priority = op.priority();
-        self.spawn_fn(priority, op.into_task()?)
+        let operation = op.operation();
+        self.spawn_fn(operation, op.into_task()?)
     }
 
     /// Like [`Self::spawn`], but the work runs even if the result future is
@@ -257,10 +256,10 @@ pub trait IoExecutor {
     where
         O: IoOp,
     {
-        let priority = op.priority();
+        let operation = op.operation();
         let task = op.into_task()?;
         let (tx, rx) = oneshot::channel();
-        self.dispatch_fn(priority, move || {
+        self.dispatch_fn(operation, move || {
             let result = task();
             let _ = tx.send(result);
         })?;
@@ -276,27 +275,9 @@ pub trait IoExecutor {
     where
         O: IoOp,
     {
-        let priority = op.priority();
+        let operation = op.operation();
         let task = op.into_task()?;
-        self.dispatch_fn(priority, move || drop(task()))
-    }
-}
-
-/// Scheduling hint: `High` marks latency-sensitive work.
-///
-/// Executors may interpret or ignore it; it guarantees neither ordering nor
-/// preference.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, strum::IntoStaticStr)]
-#[strum(serialize_all = "kebab-case")]
-pub enum Priority {
-    High,
-    #[default]
-    Low,
-}
-
-impl Priority {
-    pub fn as_static_str(&self) -> &'static str {
-        self.into()
+        self.dispatch_fn(operation, move || drop(task()))
     }
 }
 
@@ -340,12 +321,12 @@ impl<E: IoExecutor> IoExecutor for TrackedExecutor<'_, E> {
 
     fn dispatch_fn(
         &self,
-        priority: Priority,
+        operation: &'static str,
         task: impl IoTask<()>,
     ) -> Result<(), AdmissionClosed> {
         let submission = self.gate.try_acquire().ok_or(AdmissionClosed)?;
         let task = TrackedTask::new(task, submission.into_owned());
-        self.executor.dispatch_fn(priority, move || task.run())
+        self.executor.dispatch_fn(operation, move || task.run())
     }
 }
 
@@ -404,7 +385,7 @@ mod tests {
 
         fn dispatch_fn(
             &self,
-            _priority: Priority,
+            _operation: &'static str,
             task: impl IoTask<()>,
         ) -> Result<(), AdmissionClosed> {
             self.0.send(Box::new(task)).map_err(|_| AdmissionClosed)
@@ -440,7 +421,7 @@ mod tests {
         let (tx, rx) = mpsc::channel();
         let backend = QueuedExecutor(tx);
         let executor = TrackedExecutor::new(&backend, &gate);
-        let mut result = Box::pin(executor.spawn_fn(Priority::Low, || 42).unwrap());
+        let mut result = Box::pin(executor.spawn_fn("test", || 42).unwrap());
         let (reached, paused) = oneshot::channel();
         let (resume, wait) = mpsc::channel();
         let waker = Waker::from(Arc::new(PauseOnWake {
@@ -494,10 +475,9 @@ mod tests {
 
             fn dispatch_fn(
                 &self,
-                priority: Priority,
+                _operation: &'static str,
                 task: impl IoTask<()>,
             ) -> Result<(), AdmissionClosed> {
-                assert_eq!(priority, Priority::High);
                 self.0.seal();
                 assert!(!self.0.is_idle(), "accepted task is counted before handoff");
                 task();
@@ -508,12 +488,12 @@ mod tests {
         let gate = Arc::new(Gate::default());
         let executor = SealDuringDispatch(gate.clone());
         TrackedExecutor::new(&executor, &gate)
-            .dispatch_fn(Priority::High, || {})
+            .dispatch_fn("test", || {})
             .unwrap();
         gate.drain().await;
         assert!(
             TrackedExecutor::new(&executor, &gate)
-                .dispatch_fn(Priority::High, || panic!("sealed"))
+                .dispatch_fn("test", || panic!("sealed"))
                 .is_err()
         );
 
@@ -529,9 +509,7 @@ mod tests {
         let backend = QueuedExecutor(tx);
         let executor = TrackedExecutor::new(&backend, &gate);
         let resource = CapturedResource(gate.clone());
-        let observer = executor
-            .spawn_fn(Priority::Low, move || drop(resource))
-            .unwrap();
+        let observer = executor.spawn_fn("test", move || drop(resource)).unwrap();
         drop(observer);
         assert!(
             !gate.is_idle(),
@@ -541,7 +519,7 @@ mod tests {
         gate.wait_idle().await;
         // `wait_idle` doesn't seal: new leases can still be acquired.
         let retained = gate.try_acquire().unwrap().into_owned();
-        let observer = executor.spawn_fn(Priority::Low, move || retained).unwrap();
+        let observer = executor.spawn_fn("test", move || retained).unwrap();
         rx.try_recv().unwrap()();
         gate.seal();
         assert!(!gate.is_idle(), "buffered output owns its explicit flight");
@@ -553,7 +531,7 @@ mod tests {
             let executor = TrackedExecutor::new(&backend, &gate);
             let resource = CapturedResource(gate.clone());
             let observer = executor
-                .spawn_fn(Priority::Low, move || {
+                .spawn_fn("test", move || {
                     let _resource = resource;
                     panic!("interrupted task");
                 })
@@ -576,7 +554,7 @@ mod tests {
         drop(rx);
         assert!(
             TrackedExecutor::new(&backend, &gate)
-                .dispatch_fn(Priority::Low, move || drop(resource))
+                .dispatch_fn("test", move || drop(resource))
                 .is_err()
         );
         assert!(gate.is_idle(), "rejection disposes the complete task");
@@ -591,6 +569,10 @@ mod tests {
 
     impl IoOp for BorrowedOp<'_> {
         type Output = DropProbe;
+
+        fn operation(&self) -> &'static str {
+            "borrowed"
+        }
 
         fn call(self) -> Result<Self::Output, AdmissionClosed> {
             Ok(DropProbe(self.drops.clone()))
@@ -682,7 +664,7 @@ mod tests {
         assert_eq!(drops.load(Ordering::Relaxed), 2);
 
         let observer = executor
-            .spawn_fn(Priority::default(), || Err::<(), _>("operation failed"))
+            .spawn_fn("test", || Err::<(), _>("operation failed"))
             .unwrap();
         rx.try_recv().unwrap()();
         assert_eq!(observer.await.unwrap(), Err("operation failed"));
@@ -738,7 +720,7 @@ mod tests {
         let executor = QueuedExecutor(tx);
         let captured = DropProbe(drops.clone());
         let observer = executor
-            .spawn_fn(Priority::default(), move || {
+            .spawn_fn("test", move || {
                 let _captured = captured;
                 panic!("execution failed after acceptance");
             })
@@ -754,7 +736,7 @@ mod tests {
         let task_runs = runs.clone();
         let captured = DropProbe(drops.clone());
         assert!(matches!(
-            executor.spawn_fn(Priority::default(), move || {
+            executor.spawn_fn("test", move || {
                 let _captured = captured;
                 task_runs.fetch_add(1, Ordering::Relaxed);
             }),
