@@ -44,7 +44,7 @@ impl StorageTaskKind {
 }
 
 /// An operation prepared with [`RocksDb::prepare_op`](crate::RocksDb::prepare_op)
-/// or [`DatabaseScope::prepare_op`](crate::DatabaseScope::prepare_op) that hasn't
+/// or [`RocksDb::prepare_op_in`](crate::RocksDb::prepare_op_in) that hasn't
 /// run yet. Run it on the current thread with [`Self::call`], or turn it into a
 /// background task with [`Self::background`]. Nothing is admitted until then.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
