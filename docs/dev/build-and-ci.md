@@ -352,7 +352,7 @@ Release Docker images have debug symbols uploaded to [Polar Signals](https://www
 | `NOTARY_APPLE_ID` | Apple ID for notarization |
 | `NOTARY_APP_SPECIFIC_PASSWORD` | App-specific password |
 | `NPM_TOKEN` | npm publish token |
-| `HOMEBREW_TAP_TOKEN` | PAT for pushing to homebrew-tap |
+| `HOMEBREW_APP_PRIVATE_KEY` | Private key of the GitHub App for pushing to homebrew-tap (its Client ID is the `HOMEBREW_APP_CLIENT_ID` variable) |
 | `PARCA_TOKEN` | Polar Signals API token |
 | `DOCKER_USERNAME` | Docker Hub username |
 | `DOCKER_PASSWORD` | Docker Hub password/token |
