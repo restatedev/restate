@@ -206,13 +206,15 @@ async fn verify_tls_mode(
     let nodes = configure_tls_nodes(base_config, &mode_tls_dir, ca_cert, 3, mode);
 
     info!(?mode, "Starting 3-node cluster with fabric TLS");
-    let cluster = Cluster::builder()
-        .cluster_name(cluster_name)
-        .nodes(nodes)
-        .temp_base_dir(cluster_name)
-        .build()
-        .start()
-        .await?;
+    let cluster = Box::pin(
+        Cluster::builder()
+            .cluster_name(cluster_name)
+            .nodes(nodes)
+            .temp_base_dir(cluster_name)
+            .build()
+            .start(),
+    )
+    .await?;
 
     cluster.nodes[0]
         .provision_cluster(

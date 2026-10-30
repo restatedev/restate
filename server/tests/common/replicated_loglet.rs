@@ -134,12 +134,14 @@ where
 
     RocksDbManager::init();
 
-    let mut cluster = Cluster::builder()
-        .base_dir(base_dir.as_path().to_owned())
-        .nodes(nodes)
-        .build()
-        .start()
-        .await?;
+    let mut cluster = Box::pin(
+        Cluster::builder()
+            .base_dir(base_dir.as_path().to_owned())
+            .nodes(nodes)
+            .build()
+            .start(),
+    )
+    .await?;
 
     cluster.wait_healthy(Duration::from_secs(30)).await?;
 
