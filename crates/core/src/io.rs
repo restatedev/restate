@@ -13,14 +13,14 @@
 //! - [`IoOp`] describes a blocking operation that can run inline or be
 //!   prepared as a background [`IoTask`].
 //! - [`IoExecutor`] runs tasks on background threads.
-//! - [`FlightTracker`] counts unfinished work, so an owner (e.g. a database)
+//! - [`Gate`] counts unfinished work, so an owner (e.g. a database)
 //!   can stop accepting work and wait for what's in flight before closing.
 //! - [`TrackedExecutor`] combines the two: every submission is counted.
 
 mod executor;
-mod flight_tracker;
+mod gate;
 
 pub use executor::{
     AdmissionClosed, IoExecutor, IoOp, IoTask, IoTaskError, Priority, TrackedExecutor, TrackedTask,
 };
-pub use flight_tracker::{FlightTracker, Lease, OwnedLease};
+pub use gate::{Gate, Lease, OwnedLease};

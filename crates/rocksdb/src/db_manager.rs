@@ -25,7 +25,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, info, warn};
 
-use restate_core::io::{FlightTracker, IoExecutor, OwnedLease};
+use restate_core::io::{Gate, IoExecutor, OwnedLease};
 use restate_core::{ShutdownError, TaskCenter, TaskKind, cancellation_watcher};
 use restate_platform::sync::Mutex;
 use restate_types::config::{CommonOptions, Configuration};
@@ -104,7 +104,7 @@ struct ManagerInner {
     // Counts in-flight opens, shutdown flushes, and closes. Never sealed: a database
     // still referenced elsewhere can be dropped after shutdown, and its close must
     // still be accepted and counted.
-    lifecycle_tracker: Arc<FlightTracker>,
+    lifecycle_gate: Arc<Gate>,
     executor: GlobalExecutor,
     lifecycle_executor: SinglePoolExecutor,
     // Keep at the end of the struct to ensure it's dropped last
@@ -152,7 +152,7 @@ impl RocksDbManager {
             db_env,
             state: Mutex::default(),
             shutting_down: AtomicBool::new(false),
-            lifecycle_tracker: Arc::default(),
+            lifecycle_gate: Arc::default(),
             executor,
             lifecycle_executor,
         }));
@@ -617,7 +617,7 @@ impl RocksDbManager {
 
     pub(crate) fn track_lifecycle(&self) -> OwnedLease {
         self.0
-            .lifecycle_tracker
+            .lifecycle_gate
             .try_acquire()
             .expect("lifecycle admission is controlled by the manager")
             .into_owned()
@@ -654,7 +654,7 @@ impl RocksDbManager {
     }
 
     async fn wait_for_cleanup(&self) {
-        self.0.lifecycle_tracker.wait_idle().await;
+        self.0.lifecycle_gate.wait_idle().await;
         // Wait for databases that are still opening or closing, and for any whose flush
         // panicked: their `closed` signal fires only once the native database is gone.
         let pending: Vec<_> = self
