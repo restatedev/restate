@@ -45,6 +45,7 @@ use restate_core::io::{AdmissionClosed, Gate, IoExecutor, Lease, OwnedLease, Tra
 use restate_futures_util::overdue::OverdueLoggingExt;
 use restate_types::protobuf::common::DatabaseKind;
 pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOptions};
+use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
@@ -58,6 +59,7 @@ pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+use self::reads::ColumnFamilies;
 pub use self::rock_access::RocksAccess;
 pub use restate_util_lifecycle::KeepAlive;
 
@@ -501,41 +503,51 @@ impl RocksDb {
         }
     }
 
-    /// Runs an iterator on a background thread, counted in `gate`, which must be
-    /// inside this database (see [`Self::gate`]). Whatever `on_item` captures is
-    /// dropped after the iterator and before the work counts as finished, so
-    /// draining the gate also waits for those captures.
+    /// Runs an iterator over one of `scope`'s column families on a background
+    /// thread, counted in `gate`, which must be inside the scope. The work keeps
+    /// the scope, and with it the column family, alive until it is done.
+    /// Whatever `on_item` captures is dropped after the iterator and before the
+    /// work counts as finished, so draining the gate also waits for those
+    /// captures.
     ///
     /// # Panics
-    /// In debug builds, panics if `gate` is outside this database.
+    /// In debug builds, panics if `gate` isn't inside `scope`, or is outside this
+    /// database.
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub fn run_background_iterator(
+    pub fn run_background_iterator<C: ColumnFamilies>(
         self: Arc<Self>,
+        scope: &Scope<C>,
         gate: &Arc<Gate>,
-        cf: CfName,
+        cf: C::Cf,
         name: &'static str,
         priority: Priority,
         initial_action: IterAction,
         mut read_options: rocksdb::ReadOptions,
         mut on_item: impl FnMut(Result<(&[u8], &[u8]), RocksError>) -> IterAction + Send + 'static,
-    ) -> Result<(), AdmissionClosed> {
+    ) -> Result<(), AdmissionClosed>
+    where
+        C::Cf: Send,
+    {
+        debug_assert!(
+            gate.is_inside(scope.gate()),
+            "the gate isn't inside the scope"
+        );
         // ensure that we allow blocking IO.
         read_options.set_read_tier(rocksdb::ReadTier::All);
 
+        let scope = scope.clone();
         let op = self.prepare_in(gate, StorageTaskKind::BackgroundIterator, move |db| {
             // note: the perf guard's lifetime encapsulates all operations in the iterator and
             // the total duration includes all the time spent blocking on the tx's capacity.
             let _x = RocksDbReadPerfGuard::new(name);
-            let Some(cf) = db.db.cf_handle(cf.as_str()) else {
-                on_item(Err(RocksError::UnknownColumnFamily(cf)));
-                return;
-            };
             let mut iter = RocksIterator::new(
-                db.db.as_raw_db().raw_iterator_cf_opt(&cf, read_options),
+                db.db
+                    .as_raw_db()
+                    .raw_iterator_cf_opt(scope.payload().handles().get(cf), read_options),
                 initial_action,
                 // Borrow `on_item` instead of moving it in, so what it captures is dropped
-                // only after the iterator and the CF handle are gone.
+                // only after the iterator is gone.
                 &mut on_item,
             );
             loop {
