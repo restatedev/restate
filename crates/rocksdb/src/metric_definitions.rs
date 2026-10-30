@@ -63,6 +63,7 @@ pub const BLOCK_CACHE_HIT: &str = "restate.rocksdb.perf.block_cache_hit.total";
 pub const OP_TYPE: &str = "operation";
 pub const OP_NAME: &str = "name";
 pub const PRIORITY: &str = "priority";
+pub const EXECUTOR: &str = "executor";
 
 pub const DISPOSITION: &str = "disposition";
 
@@ -76,7 +77,7 @@ pub fn describe_metrics() {
     describe_gauge!(
         STORAGE_BG_TASK_IN_FLIGHT,
         Unit::Count,
-        "Number of background storage tasks in-flight"
+        "Number of background storage tasks submitted and not yet finished, by 'executor' and 'operation'"
     );
 
     describe_counter!(
@@ -100,13 +101,13 @@ pub fn describe_metrics() {
     describe_histogram!(
         STORAGE_BG_TASK_WAIT_DURATION,
         Unit::Seconds,
-        "Queueing time of storage task queues, with 'priority' label"
+        "Time background storage tasks waited from submission until they started, by 'executor' and 'operation'"
     );
 
     describe_histogram!(
         STORAGE_BG_TASK_RUN_DURATION,
         Unit::Seconds,
-        "Run time of storage tasks, with 'priority' label"
+        "Run time of background storage tasks, by 'executor' and 'operation'"
     );
 
     describe_histogram!(

@@ -220,11 +220,9 @@ impl PartitionDb {
 
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
         let cf_name = self.partition().cf_name().into();
-        self.run_background_op(
-            "flush-partition",
-            StorageTaskKind::FlushMemtables,
-            move |db| db.flush_memtables(std::slice::from_ref(&cf_name), wait),
-        )
+        self.run_background_op(StorageTaskKind::FlushMemtables, move |db| {
+            db.flush_memtables(std::slice::from_ref(&cf_name), wait)
+        })
         .await?
     }
 
@@ -243,17 +241,13 @@ impl PartitionDb {
         export_dir: std::path::PathBuf,
     ) -> Result<(SnapshotDir, ExportImportFilesMetaData), RocksError> {
         let name = self.partition().cf_name().into();
-        self.run_background_op(
-            "export-column-family",
-            StorageTaskKind::ExportColumnFamily,
-            move |db| {
-                let metadata = db.export_cf(name, export_dir.clone())?;
-                // Take ownership of the files here, on the worker. If the caller went
-                // away while the export was running, nobody claims this result, and
-                // dropping it deletes the files instead of leaving them behind.
-                Ok((SnapshotDir::new(export_dir), metadata))
-            },
-        )
+        self.run_background_op(StorageTaskKind::ExportColumnFamily, move |db| {
+            let metadata = db.export_cf(name, export_dir.clone())?;
+            // Take ownership of the files here, on the worker. If the caller went
+            // away while the export was running, nobody claims this result, and
+            // dropping it deletes the files instead of leaving them behind.
+            Ok((SnapshotDir::new(export_dir), metadata))
+        })
         .await?
     }
 
@@ -271,22 +265,18 @@ impl PartitionDb {
     /// deleting them waits for it.
     async fn run_background_op<R: Send + 'static>(
         &self,
-        name: &'static str,
         kind: StorageTaskKind,
         op: impl FnOnce(&RocksAccess) -> R + Send + 'static,
     ) -> Result<R, RocksError> {
         let physical = self.physical_scope().clone();
-        let task = self
-            .rocksdb()
-            .prepare_op(move |db| {
-                let result = op(db.inner());
-                drop(physical);
-                result
-            })
-            .background(name, kind)
-            .with_priority(Priority::Low);
+        let task = self.rocksdb().prepare(kind, move |db| {
+            let result = op(db.inner());
+            drop(physical);
+            result
+        });
         self.rocksdb()
             .executor()
+            .low_pri()
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError.into())
@@ -607,7 +597,7 @@ impl PartitionCell {
         // Hands the work to the lifecycle pool. `injected` is the outcome of a fault a
         // test armed; if it's an error, the work reports it instead of running.
         let submit = move |injected: Result<(), RocksError>| {
-            let task = rocksdb.prepare_op(move |rocksdb| {
+            let task = rocksdb.prepare(kind, move |rocksdb| {
                 let result = injected.and_then(|()| op(rocksdb.inner())).and_then(|()| {
                     let cf_name = meta.cf_name();
                     let database = PartitionStoreDb {
@@ -645,10 +635,7 @@ impl PartitionCell {
                 }
                 worker_completion.send_replace(Some(result));
             });
-            let dispatch = executor.dispatch(
-                task.background("initialize-partition", kind)
-                    .with_priority(Priority::Low),
-            );
+            let dispatch = executor.dispatch(task);
             if let Err(error) = dispatch {
                 // The executor rejected the task and already dropped it, with everything it
                 // captured, so it's safe to report the failure now.
