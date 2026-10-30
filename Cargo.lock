@@ -4024,7 +4024,7 @@ dependencies = [
  "hmac",
  "http 1.5.0",
  "jiff",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "reqwest",
  "rustc_version",
  "rustls",
@@ -5076,24 +5076,6 @@ dependencies = [
 
 [[package]]
 name = "jsonwebtoken"
-version = "10.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eba32bfb4ffdeaca3e34431072faf01745c9b26d25504aa7a6cf5684334fc4fc"
-dependencies = [
- "aws-lc-rs",
- "base64 0.22.1",
- "getrandom 0.2.17",
- "js-sys",
- "pem 3.0.6",
- "serde",
- "serde_json",
- "signature",
- "simple_asn1",
- "zeroize",
-]
-
-[[package]]
-name = "jsonwebtoken"
 version = "11.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e75fe14a82d81e5f5af639997db37d8b96045938a7ac6ab18cdbe1c7467e05e1"
@@ -6089,48 +6071,6 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-time",
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "octocrab"
-version = "0.54.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8486ecb1ba585c76dd91472320b5334e95d0d2e8b451a3f0a3fced4415ec3993"
-dependencies = [
- "arc-swap",
- "base64 0.22.1",
- "bytes",
- "cargo_metadata",
- "cfg-if",
- "chrono",
- "futures",
- "futures-core",
- "futures-util",
- "getrandom 0.2.17",
- "http 1.5.0",
- "http-body 1.1.0",
- "http-body-util",
- "http-serde",
- "hyper",
- "hyper-rustls",
- "hyper-timeout",
- "hyper-util",
- "jsonwebtoken 10.4.0",
- "percent-encoding",
- "pin-project",
- "rustls",
- "secrecy",
- "serde",
- "serde_json",
- "serde_path_to_error",
- "serde_urlencoded",
- "snafu",
- "tokio",
- "tower",
- "tower-http 0.6.11",
- "tracing",
- "url",
- "web-time",
 ]
 
 [[package]]
@@ -7671,7 +7611,6 @@ dependencies = [
  "json-patch",
  "mnemonic",
  "mock-service-endpoint",
- "octocrab",
  "open",
  "rand 0.10.2",
  "reqwest",
@@ -7764,7 +7703,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "restate-workspace-hack",
  "serde",
  "thiserror 2.0.20",
@@ -8632,7 +8571,6 @@ dependencies = [
  "http 1.5.0",
  "http-body-util",
  "mock-service-endpoint",
- "octocrab",
  "rand 0.10.2",
  "rcgen",
  "regex",
@@ -8703,7 +8641,7 @@ dependencies = [
  "hyper",
  "hyper-rustls",
  "hyper-util",
- "jsonwebtoken 11.1.0",
+ "jsonwebtoken",
  "metrics",
  "moka",
  "parking_lot",
@@ -9339,7 +9277,6 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "gardal",
- "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
  "half",
@@ -9424,7 +9361,6 @@ dependencies = [
  "toml_writer",
  "tonic",
  "tower",
- "tower-http 0.6.11",
  "tower-http 0.7.1",
  "tracing",
  "tracing-core",
@@ -9870,15 +9806,6 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
-
-[[package]]
-name = "secrecy"
-version = "0.10.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
-dependencies = [
- "zeroize",
-]
 
 [[package]]
 name = "security-framework"
@@ -10363,27 +10290,6 @@ dependencies = [
  "autocfg",
  "static_assertions",
  "version_check",
-]
-
-[[package]]
-name = "snafu"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e84b3f4eacbf3a1ce05eac6763b4d629d60cbc94d632e4092c54ade71f1e1a2"
-dependencies = [
- "snafu-derive",
-]
-
-[[package]]
-name = "snafu-derive"
-version = "0.8.9"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1c97747dbf44bb1ca44a561ece23508e99cb592e862f22222dcf42f51d1e451"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -11160,7 +11066,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 
@@ -11784,7 +11689,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
- "serde",
  "wasm-bindgen",
 ]
 
