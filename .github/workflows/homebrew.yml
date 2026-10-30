@@ -21,10 +21,20 @@ jobs:
       GITHUB_USER: "Restate bot"
       GITHUB_EMAIL: "code+bot@restate.dev"
     steps:
+      # Short-lived token of the Homebrew GitHub App, which is installed only on restatedev/homebrew-tap
+      - name: Generate token for homebrew-tap
+        id: app-token
+        uses: actions/create-github-app-token@v3.3.0
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: restatedev
+          repositories: homebrew-tap
+          permission-contents: write
       - uses: actions/checkout@v4.4.0
         with:
           repository: "restatedev/homebrew-tap"
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - uses: actions/checkout@v4.4.0
         with:
           path: restate
