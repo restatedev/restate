@@ -13,7 +13,6 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
-use enum_map::EnumMap;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
     AsColumnFamilyRef, BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData,
@@ -24,11 +23,12 @@ use tokio::time::Instant;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::{Gate, IoExecutor};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
+use restate_rocksdb::reads::ColumnFamilies;
 use restate_rocksdb::{
-    DbName, Priority, RawRocksDb, RocksAccess, RocksDb, RocksDbReadPerfGuard, RocksError,
-    SinglePoolExecutor, StorageTaskKind,
+    CfHandles, DbName, Priority, RawRocksDb, RocksAccess, RocksDb, RocksError, SinglePoolExecutor,
+    StorageTaskKind,
 };
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
@@ -47,7 +47,7 @@ use crate::keys::KeyKind;
 use crate::memory::{MemoryBudget, PartitionDbMemoryConfig};
 use crate::scan::PhysicalScan;
 use crate::snapshots::{LocalPartitionSnapshot, SnapshotDir};
-use crate::{TableKind, configure_prefix_iterator_opts, configure_range_iterator_opts};
+use crate::{PartitionReadSnapshot, TableKind};
 
 /// A physical database and the notification registry installed in its listener.
 /// Keep these together when reusing a database from the manager's weak cache.
@@ -57,37 +57,81 @@ pub(crate) struct PartitionStoreDb {
     pub notifications: Arc<DurableLsnSenders>,
 }
 
-/// An open partition: one session of work on the partition's column families.
+/// An open partition, through which its data is read and written.
 ///
-/// Each time the partition is opened, it gets a new session with its own gate.
-/// Closing the partition seals and drains that gate. The column families, and
-/// what lives as long as they do, are shared by all sessions of the partition.
+/// A partition's storage has two parts, which live for different lengths of
+/// time:
+///
+/// ```text
+/// database              the RocksDB database the partition lives in
+///  └─ physical partition    the partition's column families
+///      └─ session               one opening of the partition: a PartitionDb
+/// ```
+///
+/// - The **physical partition** holds the partition's column families, and the
+///   state that lives as long as they do, such as the partition's durable LSN.
+///   It is created when the column families are opened, and stays the same
+///   while the partition is closed and opened again. Once nothing holds it
+///   anymore, it is released. Deleting the column families waits for that.
+/// - A **session** is one opening of the partition. It has its own gate, which
+///   lets work in while the partition is open. Closing the partition seals that
+///   gate and waits for the work that was let in.
+///
+/// A sealed gate can't be opened again, so opening the partition again starts
+/// a new session on the same physical partition. That's why the two are
+/// separate: closing ends a session for good, but the column families have to
+/// survive it, so that the partition can be opened again, flushed, exported, or
+/// deleted.
+///
+/// Each session keeps its physical partition alive, and the physical partition
+/// keeps the database alive. Shutting down the database seals every session
+/// inside it.
+///
+/// Clones are cheap and share the same session. A clone kept from before the
+/// partition was closed stays closed, even after the partition is opened again.
 #[derive(Clone)]
-pub struct PartitionDb(Scope<Scope<PhysicalPartition>>);
+pub struct PartitionDb(Session);
 
-/// The partition's column families, and the state that lives as long as they do.
+/// One opening of a partition: a scope whose payload is the scope of its
+/// physical partition. See [`PartitionDb`].
+type Session = Scope<Scope<PhysicalPartition>>;
+
+/// A partition's column families, and the state that lives as long as they do.
+/// See [`PartitionDb`] for how it relates to the partition's sessions.
 ///
-/// It stays the same while the partition is closed and opened again. It is
-/// released once nothing holds it anymore, and deleting the column families
-/// waits for that.
-struct PhysicalPartition {
+/// Public only because it appears in the types of a snapshot's owned readers
+/// and scans (see [`crate::PartitionSnapshotReader`]). It can't be named outside
+/// this crate.
+pub struct PhysicalPartition {
     meta: Arc<Partition>,
-    // Looked up once, when the partition is first opened, and shared by every
-    // session. Every key kind lives in the same column family for now.
-    cfs: EnumMap<KeyKind, PartitionBoundCfHandle>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     notifications: Arc<DurableLsnSenders>,
-    // Last, so that the column family handles above are dropped while the
-    // database is still open.
-    database: KeepAlive<RocksDb>,
+    // Looked up once, when the partition is first opened, and shared by every
+    // session. Last, because it holds the keep-alive of the database.
+    cfs: CfHandles<KeyKind>,
+}
+
+impl PhysicalPartition {
+    pub(crate) fn partition(&self) -> &Arc<Partition> {
+        &self.meta
+    }
 }
 
 impl ScopePayload for PhysicalPartition {
     type Parent = RocksDb;
 
     fn parent(&self) -> &KeepAlive<RocksDb> {
-        &self.database
+        self.cfs.database()
+    }
+}
+
+// SAFETY: `cfs` is a field that is never replaced.
+unsafe impl ColumnFamilies for PhysicalPartition {
+    type Cf = KeyKind;
+
+    fn handles(&self) -> &CfHandles<KeyKind> {
+        &self.cfs
     }
 }
 
@@ -97,24 +141,16 @@ impl PartitionDb {
         archived_lsn: watch::Sender<Option<Lsn>>,
         database: PartitionStoreDb,
     ) -> Option<Self> {
-        let cf = database
-            .rocksdb
-            .inner()
-            .cf_handle(meta.cf_name().as_ref())?;
-        // SAFETY: the CF handle borrows from the database. `PhysicalPartition` declares
-        // `database` after `cfs`, so the handles are dropped first, and every
-        // PartitionDb shares the same `PhysicalPartition`. So no handle outlives the
-        // database.
-        let cf = unsafe { PartitionBoundCfHandle::new(cf) };
+        // For now, every key kind lives in the partition's only column family.
+        let cfs = CfHandles::new(&database.rocksdb, [meta.cf_name()], |_| 0).ok()?;
         let physical = Scope::new(
             meta.cf_name().into_inner(),
             PhysicalPartition {
-                cfs: EnumMap::from_fn(|_| cf.clone()),
                 meta,
                 durable_lsn: watch::Sender::new(Lsn::INVALID),
                 archived_lsn,
                 notifications: database.notifications,
-                database: database.rocksdb.keep_alive(),
+                cfs,
             },
         );
         Some(Self::open(physical))
@@ -126,7 +162,7 @@ impl PartitionDb {
         Self(Scope::new(name, physical))
     }
 
-    fn physical_scope(&self) -> &Scope<PhysicalPartition> {
+    pub(crate) fn physical_scope(&self) -> &Scope<PhysicalPartition> {
         self.0.payload()
     }
 
@@ -139,12 +175,26 @@ impl PartitionDb {
     }
 
     pub fn rocksdb(&self) -> &Arc<RocksDb> {
-        &self.physical().database
+        self.physical().cfs.database()
     }
 
     /// The gate of this session. Closing the partition seals and drains it.
     pub(crate) fn gate(&self) -> &Arc<Gate> {
         self.0.gate()
+    }
+
+    /// Takes a read snapshot of this partition, on the calling thread. Reads through
+    /// it see all of the partition's data as it was at this moment.
+    ///
+    /// The snapshot keeps the partition's column families alive and holds a lease
+    /// from the partition's session. Closing the partition or deleting its column
+    /// family therefore waits until the snapshot, and everything created from it,
+    /// has been dropped.
+    ///
+    /// Fails once the partition is closing or closed. That includes a handle kept
+    /// from before the partition was reopened, which stays closed.
+    pub fn read_snapshot(&self) -> Result<PartitionReadSnapshot, AdmissionClosed> {
+        PartitionReadSnapshot::new(self)
     }
 
     #[cfg(test)]
@@ -161,7 +211,7 @@ impl PartitionDb {
     }
 
     pub(crate) fn cf_handle_for_key_kind(&self, key_kind: KeyKind) -> &Arc<BoundColumnFamily<'_>> {
-        &self.physical().cfs[key_kind].0
+        self.physical().cfs.get(key_kind)
     }
 
     pub fn cf_names(&self) -> Vec<ReString> {
@@ -183,7 +233,8 @@ impl PartitionDb {
                 move |_| {
                     physical
                         .payload()
-                        .database
+                        .cfs
+                        .database()
                         .inner()
                         .flush_memtables(std::slice::from_ref(&cf_name), wait)
                 },
@@ -219,7 +270,8 @@ impl PartitionDb {
                 move |_| {
                     let metadata = physical
                         .payload()
-                        .database
+                        .cfs
+                        .database()
                         .inner()
                         .export_cf(name, export_dir.clone())?;
                     // Take ownership of the files here, on the worker. If the caller went
@@ -242,22 +294,15 @@ impl PartitionDb {
         OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
         R: Send + 'static,
     {
+        // Keep the column families until the operation is done with them.
         let physical = self.physical_scope().clone();
-        let task = self
-            .rocksdb()
-            .prepare_op_in(self.gate(), move |db| {
-                let result = op(db.inner().as_raw_db());
+        self.rocksdb()
+            .run_background_read_op_in(self.gate(), name, kind, priority, move |db| {
+                let result = op(db);
                 drop(physical);
                 result
             })
-            .with_guard(move || RocksDbReadPerfGuard::new(name))
-            .background(name, kind)
-            .with_priority(priority);
-        self.rocksdb()
-            .executor()
-            .spawn(task)?
             .await
-            .map_err(|_| ShutdownError.into())
     }
 
     /// The last (locally) known archived LSN for this partition
@@ -306,7 +351,7 @@ impl PartitionDb {
         // on non-blocking threads to avoid stalling the tokio runtime (starving failure
         // detector, etc.).
         let _ = tokio::task::spawn_blocking(move || {
-            let rocksdb = &physical.payload().database;
+            let rocksdb = physical.payload().cfs.database();
             let opts = &Configuration::pinned().worker.storage;
             let mem_config = PartitionDbMemoryConfig::calculate(memory_budget, opts);
             for cf in cf_names {
@@ -360,46 +405,14 @@ impl PartitionDb {
     where
         B: AsRef<[u8]>,
     {
-        match scan {
-            PhysicalScan::Prefix(key_kind, prefix) => {
-                configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
-                let table = self.cf_handle_for_key_kind(key_kind);
-                let mut it = self
-                    .rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(table, opts);
-                it.seek(prefix);
-                Ok(it)
-            }
-            PhysicalScan::RangeExclusive(key_kind, scan_mode, start, end) => {
-                configure_range_iterator_opts(&mut opts, scan_mode, start.as_ref(), end.as_ref());
-                let table = self.cf_handle_for_key_kind(key_kind);
-                let mut it = self
-                    .rocksdb()
-                    .inner()
-                    .as_raw_db()
-                    .raw_iterator_cf_opt(table, opts);
-                it.seek(start);
-                Ok(it)
-            }
-        }
-    }
-}
-
-#[derive(Clone)]
-pub(crate) struct PartitionBoundCfHandle(Arc<BoundColumnFamily<'static>>);
-
-impl PartitionBoundCfHandle {
-    // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
-    // It's safe to use if it's bound to a lifetime that guarantees that its associated
-    // rocksdb is dropped after this handle.
-    unsafe fn new(cf: Arc<BoundColumnFamily<'_>>) -> Self {
-        // SAFETY: the new BoundColumnFamily here just expanding lifetime to static,
-        // so that we can re-bind the lifetime to PartitionDb/PartitionStore instead of
-        // the database.
-        let static_cf = unsafe { Arc::from_raw(Arc::into_raw(cf).cast()) };
-        Self(static_cf)
+        scan.configure(&mut opts);
+        let mut it = self
+            .rocksdb()
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(self.cf_handle_for_key_kind(scan.key_kind()), opts);
+        it.seek(scan.start());
+        Ok(it)
     }
 }
 

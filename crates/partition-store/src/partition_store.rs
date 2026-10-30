@@ -508,33 +508,17 @@ impl PartitionStore {
             let _pin = &partition;
             on_iter(item)
         };
-        match scan {
-            PhysicalScan::Prefix(_key_kind, prefix) => {
-                configure_prefix_iterator_opts(&mut opts, prefix.as_ref());
-                self.db.rocksdb().clone().run_background_iterator(
-                    self.db.gate(),
-                    // todo(asoli): Pass an owned cf handle instead of name
-                    self.db.partition().cf_name().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(prefix),
-                    opts,
-                    on_iter,
-                )?;
-            }
-            PhysicalScan::RangeExclusive(_key_kind, scan_mode, start, end) => {
-                configure_range_iterator_opts(&mut opts, scan_mode, start.clone(), end);
-                self.db.rocksdb().clone().run_background_iterator(
-                    self.db.gate(),
-                    self.db.partition().cf_name().as_ref().into(),
-                    name,
-                    priority,
-                    IterAction::Seek(start),
-                    opts,
-                    on_iter,
-                )?;
-            }
-        }
+        scan.configure(&mut opts);
+        self.db.rocksdb().clone().run_background_iterator(
+            self.db.gate(),
+            // todo(asoli): Pass an owned cf handle instead of name
+            self.db.partition().cf_name().into(),
+            name,
+            priority,
+            IterAction::Seek(scan.into_start()),
+            opts,
+            on_iter,
+        )?;
         Ok(())
     }
 
