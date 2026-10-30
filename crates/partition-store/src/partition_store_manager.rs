@@ -410,7 +410,9 @@ impl PartitionStoreManager {
         }
     }
 
-    /// Seals transaction-commit admission and waits for admitted commits to finish.
+    /// Stops the partition from accepting new work, such as transaction commits and
+    /// read snapshots, and waits for the work it already accepted to finish. That
+    /// includes waiting until every read snapshot of the partition is dropped.
     /// Retained handles stay sealed even after a later reopen.
     pub async fn close(&self, partition_id: PartitionId) {
         let Some(cell) = self.state.get(partition_id) else {
@@ -473,8 +475,9 @@ impl PartitionStoreManager {
     /// opened yet.
     ///
     /// The partition stops accepting work right away, and its column family is deleted
-    /// once nothing uses it anymore. So this waits until every [`PartitionStore`] of the
-    /// partition is dropped: stop its partition processor first. Opening the partition
+    /// once nothing uses it anymore. So this waits until every [`PartitionStore`] and
+    /// read snapshot of the partition is dropped: stop its partition processor first,
+    /// and the queries reading from it. Opening the partition
     /// meanwhile waits for the deletion. Once the partition has stopped accepting work,
     /// the deletion goes ahead even if this call is cancelled. If an earlier deletion
     /// failed, this retries it.

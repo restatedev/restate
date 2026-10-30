@@ -9,12 +9,15 @@
 // by the Apache License, Version 2.0.
 
 use bytes::{Bytes, BytesMut};
+use rocksdb::ReadOptions;
 
 use restate_types::sharding::KeyRange;
 
 use crate::keys::{EncodeTableKeyPrefix, KeyEncode, KeyKind};
 use crate::scan::TableScan::{Prefix, RangeInclusive, ScanPartitionKeyRange};
-use crate::{ScanMode, convert_to_upper_bound};
+use crate::{
+    ScanMode, configure_prefix_iterator_opts, configure_range_iterator_opts, convert_to_upper_bound,
+};
 
 #[derive(Debug)]
 pub enum TableScan<K> {
@@ -93,9 +96,50 @@ impl<K: EncodeTableKeyPrefix> TableScan<K> {
     }
 }
 
-pub(crate) enum PhysicalScan<B> {
+/// A scan over encoded keys of one key kind. `B` holds the encoded bytes; it can
+/// be borrowed, because iterators copy what they need.
+pub enum PhysicalScan<B> {
+    /// All keys that start with the given bytes.
     Prefix(KeyKind, B),
+    /// All keys from the start (inclusive) to the end (exclusive).
     RangeExclusive(KeyKind, ScanMode, B, B),
+}
+
+impl<B: AsRef<[u8]>> PhysicalScan<B> {
+    /// The kind of keys this scan reads, which also decides its column family.
+    pub(crate) fn key_kind(&self) -> KeyKind {
+        match self {
+            Self::Prefix(key_kind, _) | Self::RangeExclusive(key_kind, ..) => *key_kind,
+        }
+    }
+
+    /// The key an iterator for this scan seeks to first.
+    pub(crate) fn start(&self) -> &B {
+        match self {
+            Self::Prefix(_, prefix) => prefix,
+            Self::RangeExclusive(_, _, start, _) => start,
+        }
+    }
+
+    /// Like [`Self::start`], but takes the scan apart.
+    pub(crate) fn into_start(self) -> B {
+        match self {
+            Self::Prefix(_, prefix) => prefix,
+            Self::RangeExclusive(_, _, start, _) => start,
+        }
+    }
+
+    /// Sets the iteration bounds this scan needs on `opts`. It also decides whether
+    /// seeks can use the column family's prefix extractor or must use total order,
+    /// replacing whatever `opts` said about either.
+    pub(crate) fn configure(&self, opts: &mut ReadOptions) {
+        match self {
+            Self::Prefix(_, prefix) => configure_prefix_iterator_opts(opts, prefix.as_ref()),
+            Self::RangeExclusive(_, scan_mode, start, end) => {
+                configure_range_iterator_opts(opts, *scan_mode, start.as_ref(), end.as_ref())
+            }
+        }
+    }
 }
 
 impl<K: EncodeTableKeyPrefix> From<TableScan<K>> for PhysicalScan<Bytes> {
