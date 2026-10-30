@@ -894,7 +894,7 @@ impl RocksDb {
             let _ = completion.send(result);
         };
         if let Some(manager) = manager {
-            manager.dispatch_cleanup(cleanup);
+            manager.dispatch_cleanup(StorageTaskKind::DropColumnFamily, cleanup);
         } else {
             cleanup();
         }
