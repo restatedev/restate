@@ -121,6 +121,8 @@ where
             .keep_alive_interval(config.keep_alive_interval)
             .keep_alive_timeout(config.keep_alive_timeout)
             .keep_alive_interval_jitter(config.keep_alive_interval_jitter)
+            .max_age(config.max_connection_age)
+            .max_age_jitter(config.max_connection_age_jitter)
             .build()
             .unwrap();
 

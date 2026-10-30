@@ -93,6 +93,26 @@ pub struct PoolConfig {
     /// How long a connection can be idle before it is evicted from the
     /// pool. `None` disables eviction entirely. Defaults to 5 minutes.
     pub(crate) idle_connection_timeout: Option<Duration>,
+
+    /// Maximum age of a connection before it is retired from the pool.
+    ///
+    /// Connections older than this are removed from the pool regardless of
+    /// in-flight streams: no new streams are opened on them, and the
+    /// underlying H2 session closes gracefully once the last in-flight
+    /// stream completes. The next request opens a fresh connection, which
+    /// lets an L4 load balancer (e.g. a Kubernetes `ClusterIP` service)
+    /// spread connections across backends added after the pool warmed up.
+    ///
+    /// `None` disables age-based eviction. Defaults to `None`.
+    pub(crate) max_connection_age: Option<Duration>,
+
+    /// Fractional jitter added to `max_connection_age`, expressed as a
+    /// fraction of the age (e.g. 0.1 = up to +10%). The jitter is drawn once
+    /// per connection when it is created, so each connection has a fixed
+    /// deadline and connections opened together do not all retire at once.
+    ///
+    /// Default 0.1 (10% of max_connection_age)
+    pub(crate) max_connection_age_jitter: f32,
 }
 
 impl Default for PoolConfig {
@@ -109,6 +129,8 @@ impl Default for PoolConfig {
             keep_alive_interval_jitter: 0.2,
             keep_alive_timeout: Duration::from_secs(20),
             idle_connection_timeout: Some(Duration::from_secs(300)),
+            max_connection_age: None,
+            max_connection_age_jitter: 0.1,
         }
     }
 }

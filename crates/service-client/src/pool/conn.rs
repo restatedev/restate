@@ -89,6 +89,10 @@ struct ConnectionShared {
     state: AtomicU8,
     h2: OnceLock<H2Handle>,
     created_at: MillisSinceEpoch,
+    /// When the pool should retire this connection: `created_at` plus the
+    /// configured max age and a jitter drawn once here. `None` when max age
+    /// is not configured.
+    retire_at: Option<MillisSinceEpoch>,
     last_used_at: AtomicU64,
     /// Waiters registered during the Connecting phase. Narrowly-scoped lock.
     /// This is an Option<T> to mark waiters list as invalid
@@ -106,6 +110,9 @@ impl ConnectionShared {
         );
 
         let now = MillisSinceEpoch::now();
+        let retire_at = config
+            .max_age
+            .map(|age| now + age.add_jitter(config.max_age_jitter.clamp(0.0, 1.0)));
         Self {
             id: next_connection_id(),
             config,
@@ -114,6 +121,7 @@ impl ConnectionShared {
             h2: OnceLock::new(),
             waiters: Mutex::new(Some(Vec::new())),
             created_at: now,
+            retire_at,
             last_used_at: AtomicU64::new(now.as_u64()),
         }
     }
@@ -168,6 +176,12 @@ pub struct ConnectionConfig {
     /// Fractional jitter added to `keep_alive_interval`, expressed as a fraction
     /// of the interval (e.g. 0.1 = up to +10%, 1.0 = up to +100%).
     keep_alive_interval_jitter: f32,
+    /// Retire the connection from its pool once it is this old. `None` keeps
+    /// it until it is idle or closed by the peer.
+    max_age: Option<Duration>,
+    /// Fractional jitter added to `max_age` (e.g. 0.1 = up to +10%), drawn
+    /// once when the connection is created.
+    max_age_jitter: f32,
 }
 
 impl Default for ConnectionConfig {
@@ -182,6 +196,8 @@ impl Default for ConnectionConfig {
             keep_alive_timeout: Duration::from_secs(20),
             keep_alive_interval: None,
             keep_alive_interval_jitter: 0.2f32,
+            max_age: None,
+            max_age_jitter: 0.1f32,
         }
     }
 }
@@ -237,6 +253,11 @@ impl<C> Connection<C> {
 
     pub fn created_at(&self) -> MillisSinceEpoch {
         self.shared.created_at
+    }
+
+    /// When the pool should retire this connection, if max age is configured.
+    pub fn retire_at(&self) -> Option<MillisSinceEpoch> {
+        self.shared.retire_at
     }
 
     pub fn last_used_at(&self) -> MillisSinceEpoch {
