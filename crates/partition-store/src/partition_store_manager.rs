@@ -709,7 +709,7 @@ mod tests {
             );
             let paused_cleanup = rocksdb.pause_lifecycle().await;
             drop(resume);
-            timeout(DEADLINE, store.partition_db().admission().drain()).await?;
+            timeout(DEADLINE, store.partition_db().gate().drain()).await?;
             // Reads count against the partition, so the drain above waited for them.
             // But `store` is still alive, so its column family must not be deleted yet.
             let mut retirement = Box::pin(manager.drop_partition_store(&partition));
@@ -973,7 +973,7 @@ mod tests {
                 let db = result.as_ref().unwrap().as_ref().unwrap();
                 (
                     db.cf_handle().id(),
-                    db.admission().clone(),
+                    db.gate().clone(),
                     db.durable_lsn_sender().subscribe(),
                 )
             };
@@ -990,7 +990,7 @@ mod tests {
             let mut adopted = timeout(DEADLINE, manager.open(&partition, None)).await??;
             assert_eq!(adopted.cf_for_key_kind(KeyKind::Fsm).id(), cf_id);
             assert!(notifications.same_channel(&adopted.get_durable_lsn().await?));
-            assert!(!Arc::ptr_eq(&admission, adopted.partition_db().admission()));
+            assert!(!Arc::ptr_eq(&admission, adopted.partition_db().gate()));
             drop(adopted);
             timeout(DEADLINE, manager.drop_partition_store(&partition)).await??;
             // Creating, opening, and deleting the partition all finished while the
@@ -1115,7 +1115,7 @@ mod tests {
             let mut old = manager.open(&partition, None).await?;
             let sibling_store = manager.open(&sibling, None).await?;
             let cell = manager.state.get(partition.partition_id).unwrap();
-            let admission = old.partition_db().admission().clone();
+            let admission = old.partition_db().gate().clone();
             let original_cf = old.cf_for_key_kind(KeyKind::Fsm).id();
             let pause = rocksdb.pause_background(Priority::High).await;
             let mut tx = old.transaction();
@@ -1145,7 +1145,7 @@ mod tests {
                 };
                 assert!(state.closed_since().is_none());
                 assert!(state.maybe_open());
-                assert!(Arc::ptr_eq(state.db().unwrap().admission(), &admission));
+                assert!(Arc::ptr_eq(state.db().unwrap().gate(), &admission));
                 *closing_at
             };
             assert!(admission.try_acquire().is_none());
@@ -1155,13 +1155,7 @@ mod tests {
                     .await
                     .is_none()
             );
-            assert!(
-                sibling_store
-                    .partition_db()
-                    .admission()
-                    .try_acquire()
-                    .is_some()
-            );
+            assert!(sibling_store.partition_db().gate().try_acquire().is_some());
 
             let mut rejected = old.transaction();
             rejected.put_applied_lsn(Lsn::new(200))?;
@@ -1196,10 +1190,7 @@ mod tests {
             assert_eq!(reopened.cf_for_key_kind(KeyKind::Fsm).id(), original_cf);
             // The abandoned queued commit is disposed of before reopening, not applied.
             assert_eq!(reopened.get_applied_lsn().await?, None);
-            assert!(!Arc::ptr_eq(
-                &admission,
-                reopened.partition_db().admission()
-            ));
+            assert!(!Arc::ptr_eq(&admission, reopened.partition_db().gate()));
             assert!(matches!(
                 rejected.commit().await,
                 Err(StorageError::OperationalError)

@@ -381,7 +381,7 @@ async fn enable_helper<F: StorageFeature>(
     let mut opts = rocksdb::WriteOptions::default();
     opts.disable_wal(true);
     let lease = partition_db
-        .admission()
+        .gate()
         .try_acquire()
         .ok_or(StorageError::OperationalError)?;
     partition_db
