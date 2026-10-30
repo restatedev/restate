@@ -1380,7 +1380,7 @@ impl SnapshotsOptions {
     }
 
     pub fn snapshots_dir(&self, partition_id: PartitionId) -> PathBuf {
-        super::data_dir("db-snapshots").join(partition_id.to_string())
+        self.snapshots_base_dir().join(partition_id.to_string())
     }
 }
 
