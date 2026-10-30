@@ -596,13 +596,17 @@ impl RocksDb {
     /// operation doesn't delay [`Self::drain`], and if the database is sealed first,
     /// calling or submitting it fails with [`AdmissionClosed`].
     ///
+    /// `kind` says what the operation does. If it runs in the background, the
+    /// kind labels the task's metrics and tracing span.
+    ///
     /// The closure receives an `Arc` of this database and may keep it in its
     /// result. See [`StorageOp::with_guard`] for examples.
     pub fn prepare<R: Send + 'static>(
         self: &Arc<Self>,
+        kind: StorageTaskKind,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
     ) -> StorageOp<'_, impl FnOnce() -> R + Send + 'static> {
-        self.prepare_in(&self.gate, op)
+        self.prepare_in(&self.gate, kind, op)
     }
 
     /// Like [`Self::prepare`], but the operation counts in `gate`, which must
@@ -614,11 +618,12 @@ impl RocksDb {
     pub fn prepare_in<'a, R: Send + 'static>(
         self: &Arc<Self>,
         gate: &'a Arc<Gate>,
+        kind: StorageTaskKind,
         op: impl FnOnce(Arc<Self>) -> R + Send + 'static,
     ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
         self.debug_assert_inside(gate);
         let db = self.clone();
-        StorageOp::new(move || op(db), gate)
+        StorageOp::new(move || op(db), gate, kind)
     }
 
     /// Prepares deleting a column family, to submit to an executor of your choice.

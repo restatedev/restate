@@ -47,10 +47,14 @@ impl StorageTaskKind {
 /// or [`RocksDb::prepare_in`](crate::RocksDb::prepare_in) that hasn't
 /// run yet. Run it on the current thread with [`Self::call`], or turn it into a
 /// background task with [`Self::background`]. Nothing is admitted until then.
+///
+/// Its kind says what the operation does. When it runs in the background, the
+/// kind labels the task's metrics and tracing span.
 #[must_use = "execute, schedule, or explicitly drop the operation"]
 pub struct StorageOp<'a, OP> {
     op: OP,
     gate: &'a Arc<Gate>,
+    kind: StorageTaskKind,
 }
 
 impl<'a, OP, R> StorageOp<'a, OP>
@@ -58,8 +62,8 @@ where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    pub(crate) fn new(op: OP, gate: &'a Arc<Gate>) -> Self {
-        Self { op, gate }
+    pub(crate) fn new(op: OP, gate: &'a Arc<Gate>, kind: StorageTaskKind) -> Self {
+        Self { op, gate, kind }
     }
 
     /// Calls `make_guard` on the thread that runs the operation, right before it
@@ -76,12 +80,12 @@ where
     /// Use `RocksDbWritePerfGuard` instead for write operations.
     ///
     /// ```no_run
-    /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard};
+    /// use restate_rocksdb::{RocksDb, RocksDbReadPerfGuard, StorageTaskKind};
     /// use std::sync::Arc;
     ///
     /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
     /// let value = db
-    ///     .prepare(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
     ///     .with_guard(|| RocksDbReadPerfGuard::new("lookup"))
     ///     .call()??;
     /// # Ok(())
@@ -98,9 +102,9 @@ where
     ///
     /// # fn example(db: &Arc<RocksDb>, executor: &impl IoExecutor) -> Result<(), Box<dyn std::error::Error>> {
     /// let task = db
-    ///     .prepare(|db| db.inner().as_raw_db().get(b"key"))
+    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
     ///     .with_guard(|| std::thread::sleep(Duration::from_millis(50)))
-    ///     .background("delayed-lookup", StorageTaskKind::MultiGet);
+    ///     .background();
     /// let result = executor.spawn(task)?;
     /// // Keep `result` alive and await it; dropping it can skip queued work.
     /// // Use `executor.dispatch(task)` instead for fire-and-forget execution.
@@ -113,7 +117,7 @@ where
     /// it calls) can consult the flag to decide whether to inject a failure.
     ///
     /// ```no_run
-    /// use restate_rocksdb::RocksDb;
+    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
     /// use std::{cell::Cell, sync::Arc};
     ///
     /// thread_local! {
@@ -127,7 +131,7 @@ where
     /// }
     ///
     /// # fn example(db: &Arc<RocksDb>) -> Result<(), Box<dyn std::error::Error>> {
-    /// db.prepare(|_db| assert!(INJECT_FAILURE.get()))
+    /// db.prepare(StorageTaskKind::MultiGet, |_db| assert!(INJECT_FAILURE.get()))
     ///     .with_guard(|| RestoreFaultFlag(INJECT_FAILURE.replace(true)))
     ///     .call()?;
     /// assert!(!INJECT_FAILURE.get());
@@ -138,13 +142,14 @@ where
         self,
         make_guard: impl FnOnce() -> G + Send + 'static,
     ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
-        let Self { op, gate } = self;
+        let Self { op, gate, kind } = self;
         StorageOp::new(
             move || {
                 let _guard = make_guard();
                 op()
             },
             gate,
+            kind,
         )
     }
 
@@ -156,14 +161,13 @@ where
         Ok(TrackedTask::new(self.op, lease).run())
     }
 
-    /// Turns this into a background task with a name and kind, used for metrics and
-    /// tracing. Admission is still checked only when the task is submitted.
-    pub fn background(self, name: &'static str, kind: StorageTaskKind) -> ReadyStorageTask<'a, OP> {
+    /// Turns this into a background task. Admission is still checked only when the
+    /// task is submitted.
+    pub fn background(self) -> ReadyStorageTask<'a, OP> {
         StorageTask::default()
             .op(self.op)
             .gate(self.gate)
-            .name(name)
-            .kind(kind)
+            .kind(self.kind)
             .build()
             .unwrap()
     }
@@ -181,8 +185,6 @@ pub struct ReadyStorageTask<'a, OP> {
     op: OP,
     #[builder(default, setter(strip_option))]
     gate: Option<&'a Arc<Gate>>,
-    #[builder(default, setter(strip_option))]
-    name: Option<&'static str>,
     #[builder(default)]
     pub(crate) priority: Priority,
     /// required
@@ -242,14 +244,15 @@ where
         // even if the task is dropped without running.
         let Self {
             op,
-            name,
             kind,
             created_at,
             ..
         } = self;
         let task = TrackedTask::new(
             move || {
-                let _span = tracing::debug_span!("storage-task", name).entered();
+                // Runs inside the caller's span, which the executor carries over.
+                let _span =
+                    tracing::debug_span!("storage-task", kind = kind.as_static_str()).entered();
                 let start = Instant::now();
                 let labels = [(OP_TYPE, kind.as_static_str())];
                 histogram!(STORAGE_BG_TASK_WAIT_DURATION, &labels).record(created_at.elapsed());
@@ -467,15 +470,16 @@ mod tests {
                 drops,
             }
         };
-        let op = StorageOp::new(|| 42, &gate).with_guard(factory.clone());
+        let op =
+            StorageOp::new(|| 42, &gate, StorageTaskKind::MultiGet).with_guard(factory.clone());
         assert!(gate.is_idle());
         assert_eq!(op.call().unwrap(), 42);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert!(gate.is_idle());
 
-        let task = StorageOp::new(|| 43, &gate)
+        let task = StorageOp::new(|| 43, &gate, StorageTaskKind::MultiGet)
             .with_guard(factory.clone())
-            .background("guarded", StorageTaskKind::MultiGet);
+            .background();
         assert_eq!(task.priority(), Priority::Low);
         assert!(gate.is_idle());
         let task = task.into_task().unwrap();
@@ -485,24 +489,28 @@ mod tests {
         assert!(gate.is_idle());
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            StorageOp::new(|| panic!("operation panic"), &gate)
-                .with_guard(factory)
-                .call()
+            StorageOp::new(
+                || panic!("operation panic"),
+                &gate,
+                StorageTaskKind::MultiGet,
+            )
+            .with_guard(factory)
+            .call()
         }));
         assert!(result.is_err());
         assert_eq!(drops.load(Ordering::Relaxed), 3);
         assert!(gate.is_idle());
 
-        let task = StorageOp::new(|| (), &gate)
+        let task = StorageOp::new(|| (), &gate, StorageTaskKind::MultiGet)
             .with_guard(|| panic!("discard must not create a guard"))
-            .background("discarded", StorageTaskKind::MultiGet)
+            .background()
             .into_task()
             .unwrap();
         drop(task);
         assert!(gate.is_idle());
         gate.seal();
         assert_eq!(
-            StorageOp::new(|| (), &gate)
+            StorageOp::new(|| (), &gate, StorageTaskKind::MultiGet)
                 .with_guard(|| panic!("rejection must not create a guard"))
                 .call(),
             Err(AdmissionClosed)

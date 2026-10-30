@@ -55,12 +55,15 @@ async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Resul
     let lease = second.try_acquire().unwrap();
     assert!(db.gate.is_idle());
     drop(lease);
-    db.prepare_in(&second, |_| ()).call()?;
+    db.prepare_in(&second, StorageTaskKind::MultiGet, |_| ())
+        .call()?;
     // In debug builds, using a gate from another database panics.
     if cfg!(debug_assertions) {
         assert!(
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                neighbor.prepare_in(&second, |_| ()).call()
+                neighbor
+                    .prepare_in(&second, StorageTaskKind::MultiGet, |_| ())
+                    .call()
             }))
             .is_err()
         );
@@ -94,11 +97,11 @@ async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Resul
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
     let observer = db.executor().spawn(
-        db.prepare_in(&running, move |_db| {
+        db.prepare_in(&running, StorageTaskKind::MultiGet, move |_db| {
             let _ = started.send(());
             let _ = paused.recv();
         })
-        .background("scoped-read", StorageTaskKind::MultiGet),
+        .background(),
     )?;
     timeout(DEADLINE, reached).await??;
     drop(observer);
@@ -168,36 +171,38 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     // The result can arrive before the worker releases its lease, so wait for the
     // gate to go idle.
     timeout(DEADLINE, db.gate.wait_idle()).await?;
-    let discarded = db.prepare(|_| {
+    let discarded = db.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("an undispatched operation must not execute");
     });
     assert!(db.gate.is_idle());
     drop(discarded);
     assert!(db.gate.is_idle());
     let gate_refs = Arc::strong_count(&db.gate);
-    db.prepare(move |db| {
+    db.prepare(StorageTaskKind::MultiGet, move |db| {
         assert!(!db.gate.is_idle());
         assert_eq!(Arc::strong_count(&db.gate), gate_refs);
     })
     .call()?;
     assert!(db.gate.is_idle());
     let discarded = db
-        .prepare(|_| {
+        .prepare(StorageTaskKind::MultiGet, |_| {
             panic!("a discarded task must not execute");
         })
-        .background("discarded-task", StorageTaskKind::MultiGet)
+        .background()
         .into_task()?;
     assert!(!db.gate.is_idle());
     drop(discarded);
     assert!(db.gate.is_idle());
     let prepared = db
-        .prepare(|db| db.inner().open_cf(crate::CfName::new("external")))
-        .background("prepared", StorageTaskKind::OpenColumnFamily)
+        .prepare(StorageTaskKind::OpenColumnFamily, |db| {
+            db.inner().open_cf(crate::CfName::new("external"))
+        })
+        .background()
         .with_priority(Priority::High);
     assert_eq!(prepared.priority(), Priority::High);
     assert!(db.gate.is_idle());
     let prepared = prepared.into_task()?;
-    let unadmitted = db.prepare(|_| {
+    let unadmitted = db.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("sealing before submission must reject execution");
     });
 
@@ -234,15 +239,15 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     // `unadmitted` was prepared but never submitted, so it didn't hold up the drain.
     // Submitting it now fails.
     assert_eq!(
-        external.dispatch(unadmitted.background("unadmitted", StorageTaskKind::MultiGet)),
+        external.dispatch(unadmitted.background()),
         Err(AdmissionClosed)
     );
-    assert_eq!(db.prepare(|_| ()).call(), Err(AdmissionClosed));
+    assert_eq!(
+        db.prepare(StorageTaskKind::MultiGet, |_| ()).call(),
+        Err(AdmissionClosed)
+    );
     assert!(matches!(
-        external.spawn(
-            db.prepare(|_| ())
-                .background("sealed-spawn", StorageTaskKind::MultiGet)
-        ),
+        external.spawn(db.prepare(StorageTaskKind::MultiGet, |_| ()).background()),
         Err(AdmissionClosed)
     ));
     assert!(matches!(
@@ -273,11 +278,11 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     // first, so the check below only sees what the rejected work left behind.
     timeout(DEADLINE, neighbor.gate.wait_idle()).await?;
     neighbor.seal();
-    let rejected = neighbor.prepare(|_| {
+    let rejected = neighbor.prepare(StorageTaskKind::MultiGet, |_| {
         panic!("a rejected operation must not execute");
     });
     assert_eq!(
-        executor.dispatch(rejected.background("rejected", StorageTaskKind::MultiGet)),
+        executor.dispatch(rejected.background()),
         Err(AdmissionClosed)
     );
     assert!(neighbor.clone().flush_wal(true).await.is_err());
