@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod background;
+mod cf_handles;
 #[cfg(test)]
 mod close_tests;
 pub mod configuration;
@@ -21,6 +22,7 @@ mod lifecycle;
 mod logging;
 mod metric_definitions;
 mod perf;
+pub mod reads;
 mod rock_access;
 #[cfg(test)]
 mod write_tests;
@@ -50,6 +52,7 @@ pub use restate_types::rocksdb::{BottommostLevelCompaction, ManualCompactionOpti
 pub use self::background::{
     GlobalExecutor, ReadyStorageTask, SinglePoolExecutor, StorageOp, StorageTaskKind,
 };
+pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
 pub use self::db_manager::{DbRef, RocksDbManager, WeakRocksDbManager};
 pub use self::db_spec::*;
@@ -665,19 +668,43 @@ impl RocksDb {
         OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let executor = self.executor.clone();
         let gate = self.gate.clone();
+        self.run_background_read_op_in(&gate, name, kind, priority, op)
+            .await
+    }
+
+    /// Like [`Self::run_background_read_op`], but the operation counts in `gate`,
+    /// which must be inside this database (see [`Self::gate`]). Sealing and
+    /// draining that gate then covers the operation.
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` is outside this database.
+    #[tracing::instrument(skip_all, fields(db = %self.name()))]
+    pub async fn run_background_read_op_in<OP, R>(
+        self: &Arc<Self>,
+        gate: &Arc<Gate>,
+        name: &'static str,
+        kind: StorageTaskKind,
+        priority: Priority,
+        op: OP,
+    ) -> Result<R, RocksError>
+    where
+        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        self.debug_assert_inside(gate);
+        let db = Arc::clone(self);
         let task = StorageTask::default()
             .kind(kind)
             .priority(priority)
             .op(move || {
                 let _x = RocksDbReadPerfGuard::new(name);
-                op(self.db.as_raw_db())
+                op(db.db.as_raw_db())
             })
             .build()
             .unwrap();
 
-        TrackedExecutor::new(&executor, &gate)
+        TrackedExecutor::new(&self.executor, gate)
             .spawn(task)?
             .await
             .map_err(|_| ShutdownError.into())
