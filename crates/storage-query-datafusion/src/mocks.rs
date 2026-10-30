@@ -294,6 +294,16 @@ impl MockQueryEngine {
     ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
         self.2.execute(sql.as_ref()).await
     }
+
+    pub async fn execute_with_params(
+        &self,
+        sql: impl AsRef<str> + Send,
+        params: impl Into<datafusion::common::ParamValues>,
+    ) -> Result<crate::context::QueryResult, crate::context::QueryError> {
+        self.2
+            .execute_with_params(sql.as_ref(), Some(params.into()))
+            .await
+    }
 }
 
 // --- Matchers for rows
