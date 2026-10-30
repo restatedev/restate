@@ -79,7 +79,6 @@ where
     const KEY_LEN: usize = InvocationStatusKey::serialized_length_fixed();
 
     let rocksdb = store.partition_db().clone();
-    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
 
     async move {
         rocksdb
@@ -87,12 +86,8 @@ where
                 "df-for-each-invocation-status",
                 StorageTaskKind::MultiGet,
                 Priority::Low,
-                move |raw_db| -> Result<()> {
-                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
-                        return Err(StorageError::Generic(anyhow::anyhow!(
-                            "column family {cf_name} not found for invocation-status multi-get"
-                        )));
-                    };
+                move |raw_db, cfs| -> Result<()> {
+                    let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
 
                     let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
                     let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
@@ -126,7 +121,7 @@ where
                         debug_assert!(remainder.is_empty(), "Each serialized InvocationStatusKey should have KEY_LEN");
 
                         let results = raw_db.batched_multi_get_cf_opt(
-                            &cf,
+                            cf,
                             keys,
                             true,
                             &readopts,
