@@ -13,6 +13,8 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rocksdb::compaction_filter::CompactionFilter;
+use rocksdb::compaction_filter_factory::CompactionFilterFactory;
 use rocksdb::table_properties::TablePropertiesExt;
 use rocksdb::{
     AsColumnFamilyRef, BoundColumnFamily, DBRawIteratorWithThreadMode, ExportImportFilesMetaData,
@@ -1135,6 +1137,7 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
             KeyKind::full_merge,
             KeyKind::partial_merge,
         );
+        cf_options.set_compaction_filter_factory(KeyKindCompactionFilterFactory);
         cf_options.set_max_successive_merges(config.rocksdb_max_successive_merges as usize);
 
         cf_options.set_disable_auto_compactions(config.rocksdb.rocksdb_disable_auto_compactions());
@@ -1209,5 +1212,32 @@ impl CfConfigurator for RocksConfigurator<AllDataCf> {
         cf_options.set_hard_pending_compaction_bytes_limit(2 * 1024 * 1024 * 1024 * 1024);
 
         cf_options
+    }
+}
+
+struct KeyKindCompactionFilter;
+
+impl CompactionFilter for KeyKindCompactionFilter {
+    fn filter(&mut self, level: u32, key: &[u8], value: &[u8]) -> rocksdb::CompactionDecision {
+        KeyKind::compaction_filter(level, key, value)
+    }
+    fn name(&self) -> &std::ffi::CStr {
+        c"CompactionFilter"
+    }
+}
+
+struct KeyKindCompactionFilterFactory;
+
+impl CompactionFilterFactory for KeyKindCompactionFilterFactory {
+    type Filter = KeyKindCompactionFilter;
+    fn create(
+        &mut self,
+        _context: rocksdb::compaction_filter_factory::CompactionFilterContext,
+    ) -> Self::Filter {
+        KeyKindCompactionFilter
+    }
+
+    fn name(&self) -> &std::ffi::CStr {
+        c"CompactionFilterFactor"
     }
 }

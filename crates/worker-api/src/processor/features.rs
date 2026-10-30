@@ -65,6 +65,13 @@ pub trait PartitionFeatures {
     fn is_preflight_signal_recording_enabled(&self) -> bool {
         self.has_feature(PartitionFeatureChange::EnablePreflightSignalRecording)
     }
+
+    /// Write invocation results into the blob
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.2*
+    fn is_write_blob_table_enabled(&self) -> bool;
 }
 
 impl PartitionFeatures for PersistedFeatures {
@@ -84,6 +91,7 @@ impl PartitionFeatures for PersistedFeatures {
             PartitionFeatureChange::EnablePreflightSignalRecording => {
                 self.preflight_signal_recording
             }
+            PartitionFeatureChange::EnableWriteBlobTable => self.write_blob_table,
         }
     }
 
@@ -110,6 +118,11 @@ impl PartitionFeatures for PersistedFeatures {
     #[inline]
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         self.preflight_invocation_termination_retention
+    }
+
+    #[inline]
+    fn is_write_blob_table_enabled(&self) -> bool {
+        self.write_blob_table
     }
 }
 
@@ -139,6 +152,10 @@ impl<T: PartitionFeatures> PartitionFeatures for &T {
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         (**self).is_preflight_invocation_termination_retention_enabled()
     }
+
+    fn is_write_blob_table_enabled(&self) -> bool {
+        (**self).is_write_blob_table_enabled()
+    }
 }
 
 impl<T: PartitionFeatures> PartitionFeatures for &mut T {
@@ -164,5 +181,9 @@ impl<T: PartitionFeatures> PartitionFeatures for &mut T {
 
     fn is_preflight_invocation_termination_retention_enabled(&self) -> bool {
         (**self).is_preflight_invocation_termination_retention_enabled()
+    }
+
+    fn is_write_blob_table_enabled(&self) -> bool {
+        (**self).is_write_blob_table_enabled()
     }
 }

@@ -57,6 +57,7 @@ prefixed_ids! {
         Snapshot("snap"),
         StateMutation("mut"),
         VQueue("vq"),
+        Blob("blob"),
         // used for testing
         #[cfg(test)]
         Test("tst"),
