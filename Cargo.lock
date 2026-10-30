@@ -7810,6 +7810,7 @@ dependencies = [
  "restate-platform",
  "restate-test-util",
  "restate-types",
+ "restate-util-lifecycle",
  "restate-util-string",
  "restate-util-time",
  "restate-workspace-hack",
@@ -8586,6 +8587,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
+ "restate-util-lifecycle",
  "restate-util-random",
  "restate-util-string",
  "restate-util-time",
@@ -9068,6 +9070,18 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
+]
+
+[[package]]
+name = "restate-util-lifecycle"
+version = "1.8.2-dev"
+dependencies = [
+ "parking_lot",
+ "restate-util-string",
+ "restate-workspace-hack",
+ "static_assertions",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]

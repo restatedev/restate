@@ -18,9 +18,8 @@
 //! - [`TrackedExecutor`] combines the two: every submission is counted.
 
 mod executor;
-mod gate;
 
 pub use executor::{
     AdmissionClosed, IoExecutor, IoOp, IoTask, IoTaskError, Priority, TrackedExecutor, TrackedTask,
 };
-pub use gate::{Gate, Lease, OwnedLease};
+pub use restate_util_lifecycle::{Gate, Lease, OwnedLease};
