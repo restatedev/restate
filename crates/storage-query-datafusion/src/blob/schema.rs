@@ -12,7 +12,7 @@ use crate::table_macro::*;
 
 use datafusion::arrow::datatypes::DataType;
 
-define_sort_order!(sys_blob(partition_key));
+define_sort_order!(sys_blob(created_at));
 
 define_table!(
     /// Blobs stored by each partition, such as invocation outputs.
@@ -22,6 +22,9 @@ define_table!(
 
     /// Blob ID, formatted as `blob_1...`. Matches `sys_invocation_status.completion_blob_id`.
     id: DataType::LargeUtf8,
+
+    /// Timestamp indicating when the blob was created. Derived from the blob ID.
+    created_at: TimestampMillisecond,
 
     /// The kind of the blob. Either `output`, `state` or `unknown`.
     kind: DataType::LargeUtf8,

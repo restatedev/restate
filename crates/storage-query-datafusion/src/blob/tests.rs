@@ -12,7 +12,7 @@ use std::num::NonZeroU16;
 
 use bytes::Bytes;
 use datafusion::arrow::array::{
-    Array, LargeBinaryArray, LargeStringArray, UInt32Array, UInt64Array,
+    Array, LargeBinaryArray, LargeStringArray, TimestampMillisecondArray, UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::StreamExt;
@@ -48,10 +48,15 @@ async fn get_blobs() {
     let mut engine = MockQueryEngine::create().await;
 
     let invocation_id = InvocationId::mock_random();
-    let now = UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::now());
-    let success_id = BlobId::generate_output_blob_id(now, 1, &invocation_id);
-    let failure_id = BlobId::generate_output_blob_id(now, 2, &invocation_id);
-    let state_id = BlobId::new(now, 3, invocation_id.partition_key(), [7; 16]);
+    // Each blob is created one second apart, which the created_at range query relies on.
+    let now = MillisSinceEpoch::now().as_u64();
+    let ts = |offset_ms: u64| {
+        UniqueTimestamp::from_unix_millis_unchecked(MillisSinceEpoch::new(now + offset_ms))
+    };
+    let created_at = |id: BlobId| id.timestamp().to_unix_millis().as_u64() as i64;
+    let success_id = BlobId::generate_output_blob_id(ts(0), 1, &invocation_id);
+    let failure_id = BlobId::generate_output_blob_id(ts(1000), 2, &invocation_id);
+    let state_id = BlobId::new(ts(2000), 3, invocation_id.partition_key(), [7; 16]);
     let failure = InvocationError::new(codes::INTERNAL, "my-error");
     let output = b"{\"greeting\":\"hi\"}";
 
@@ -83,7 +88,7 @@ async fn get_blobs() {
     // 'output' sorts before 'state' and 'failure' before 'success', so the row order is deterministic.
     let records = query(
         &engine,
-        "SELECT id, kind, ref_count, payload_length, result, output, output_utf8, failure_code, failure_json \
+        "SELECT id, created_at, kind, ref_count, payload_length, result, output, output_utf8, failure_code, failure_json \
          FROM sys_blob ORDER BY kind, result",
     )
     .await;
@@ -96,6 +101,7 @@ async fn get_blobs() {
                 0,
                 {
                     "id" => LargeStringArray: eq(failure_id.to_string()),
+                    "created_at" => TimestampMillisecondArray: eq(created_at(failure_id)),
                     "kind" => LargeStringArray: eq("output"),
                     "ref_count" => UInt32Array: eq(1),
                     "result" => LargeStringArray: eq("failure"),
@@ -107,6 +113,7 @@ async fn get_blobs() {
                 1,
                 {
                     "id" => LargeStringArray: eq(success_id.to_string()),
+                    "created_at" => TimestampMillisecondArray: eq(created_at(success_id)),
                     "kind" => LargeStringArray: eq("output"),
                     "ref_count" => UInt32Array: eq(2),
                     "result" => LargeStringArray: eq("success"),
@@ -118,6 +125,7 @@ async fn get_blobs() {
                 2,
                 {
                     "id" => LargeStringArray: eq(state_id.to_string()),
+                    "created_at" => TimestampMillisecondArray: eq(created_at(state_id)),
                     "kind" => LargeStringArray: eq("state"),
                     "ref_count" => UInt32Array: eq(1),
                     "payload_length" => UInt64Array: eq(5),
@@ -138,7 +146,7 @@ async fn get_blobs() {
 
     // Exercises the blob id pushdown, which multi-gets the requested ids instead of
     // scanning the whole partition. Ids without a stored blob are skipped.
-    let missing_id = BlobId::generate_output_blob_id(now, 4, &invocation_id);
+    let missing_id = BlobId::generate_output_blob_id(ts(0), 4, &invocation_id);
     let records = query(
         &engine,
         &format!("SELECT id, result FROM sys_blob WHERE id IN ('{success_id}', '{missing_id}')"),
@@ -156,4 +164,34 @@ async fn get_blobs() {
             }
         )
     );
+
+    // created_at bounds the scan to the blobs created within the range.
+    let records = query(
+        &engine,
+        &format!(
+            "SELECT id FROM sys_blob WHERE created_at >= to_timestamp_millis({}) AND created_at < to_timestamp_millis({})",
+            created_at(failure_id),
+            created_at(state_id),
+        ),
+    )
+    .await;
+
+    assert_eq!(1, records.num_rows());
+    assert_that!(
+        records,
+        row!(0, { "id" => LargeStringArray: eq(failure_id.to_string()) })
+    );
+
+    // Partition keys of the same partition are grouped into a single scan, so no row is
+    // returned twice.
+    let partition_key = invocation_id.partition_key();
+    let records = query(
+        &engine,
+        &format!(
+            "SELECT id FROM sys_blob WHERE partition_key IN ({partition_key}, {})",
+            partition_key.wrapping_add(1)
+        ),
+    )
+    .await;
+    assert_eq!(3, records.num_rows());
 }

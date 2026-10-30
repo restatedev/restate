@@ -82,6 +82,10 @@ impl BlobId {
         )
     }
 
+    pub fn timestamp(&self) -> UniqueTimestamp {
+        self.timestamp
+    }
+
     pub fn sequence(&self) -> Seq {
         self.sequence
     }
@@ -99,7 +103,7 @@ impl BlobId {
             .split_first_chunk::<{ size_of::<Seq>() }>()
             .expect("checked length");
         let (pk, remainder) = b
-            .split_first_chunk::<{ size_of::<Seq>() }>()
+            .split_first_chunk::<{ size_of::<PartitionKey>() }>()
             .expect("checked length");
 
         Ok(Self::new(

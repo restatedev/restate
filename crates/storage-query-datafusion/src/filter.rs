@@ -10,7 +10,7 @@
 
 use std::collections::{BTreeSet, HashSet};
 use std::fmt::{Debug, Formatter};
-use std::ops::RangeBounds;
+use std::ops::{RangeBounds, RangeInclusive};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -31,6 +31,7 @@ use restate_types::identifiers::{
     BaseEntryId, CanonicalEntryId, InvocationId, PartitionKey, ResourceId, WithPartitionKey,
 };
 use restate_types::sharding::KeyRange;
+use restate_types::time::MillisSinceEpoch;
 use restate_types::vqueues::VQueueId;
 
 use crate::partition_store_scanner::ScanLocalPartitionFilter;
@@ -71,6 +72,18 @@ pub(crate) struct PartitionKeySelection {
 
 impl Default for FirstMatchingPartitionKeyExtractor {
     fn default() -> Self {
+        Self::with_partition_key_fanout(PointReadFanout::PerKey)
+    }
+}
+
+impl FirstMatchingPartitionKeyExtractor {
+    /// Like [`Self::default`], but groups the matched partition keys into a single scan per
+    /// Restate partition. Use this for tables whose scanner ignores the partition key range.
+    pub fn grouped_partition_key() -> Self {
+        Self::with_partition_key_fanout(PointReadFanout::PerPartition)
+    }
+
+    fn with_partition_key_fanout(fanout: PointReadFanout) -> Self {
         let extractors = vec![PartitionKeyExtractorEntry {
             extractor: Box::new(MatchingColumnExtractor::new(
                 "partition_key",
@@ -79,13 +92,11 @@ impl Default for FirstMatchingPartitionKeyExtractor {
                     _ => anyhow::bail!("expected UInt64 partition key"),
                 },
             )),
-            fanout: PointReadFanout::PerKey,
+            fanout,
         }];
         Self { extractors }
     }
-}
 
-impl FirstMatchingPartitionKeyExtractor {
     pub fn with_scope(self, column_name: impl Into<String>) -> Self {
         // we only use the scope value if it's not empty, otherwise we cannot
         // rely on it to get the partition key.
@@ -679,32 +690,73 @@ fn parse_vqueue_entry_id_selection(
 
 #[derive(Debug, Clone)]
 pub struct BlobIdFilter {
-    pub partition_keys: KeyRange,
+    pub created_at: RangeInclusive<MillisSinceEpoch>,
     pub blob_ids: Option<IdSelection<BlobId>>,
 }
 
 impl ScanLocalPartitionFilter for BlobIdFilter {
     fn new(range: KeyRange, predicate: Option<Arc<dyn PhysicalExpr>>) -> Self {
+        let mut created_at = MillisSinceEpoch::UNIX_EPOCH..=MillisSinceEpoch::MAX;
+        let mut blob_ids = None;
+
         if let Some(predicate) = predicate
             && let Ok(predicate) = snapshot_physical_expr(predicate)
         {
             for conjunct in split_conjunction(&predicate) {
-                if let Some(blob_ids) =
-                    parse_id_selection("id", range, conjunct, |id: &BlobId| id.partition_key())
-                {
-                    return Self {
-                        partition_keys: range,
-                        blob_ids: Some(blob_ids),
-                    };
+                if let Some(bounds) = parse_timestamp_range("created_at", conjunct) {
+                    created_at = (*created_at.start()).max(*bounds.start())
+                        ..=(*created_at.end()).min(*bounds.end());
                 }
+
+                blob_ids = blob_ids.or_else(|| {
+                    parse_id_selection("id", range, conjunct, |id: &BlobId| id.partition_key())
+                });
             }
         }
 
         Self {
-            partition_keys: range,
-            blob_ids: None,
+            created_at,
+            blob_ids,
         }
     }
+}
+
+/// Parses `column <op> timestamp` (or the mirrored form) into the inclusive range of millis it
+/// admits. The range is empty (`start > end`) if no timestamp can match.
+fn parse_timestamp_range(
+    column_name: &str,
+    predicate: &Arc<dyn PhysicalExpr>,
+) -> Option<RangeInclusive<MillisSinceEpoch>> {
+    let binary = predicate.downcast_ref::<BinaryExpr>()?;
+    let (col, lit, op) = match extract_column_literal(binary.left(), binary.right()) {
+        Some((col, lit)) => (col, lit, *binary.op()),
+        None => {
+            let (col, lit) = extract_column_literal(binary.right(), binary.left())?;
+            (col, lit, binary.op().swap()?)
+        }
+    };
+
+    if col.name() != column_name {
+        return None;
+    }
+    let ScalarValue::TimestampMillisecond(Some(millis), _) = lit.value() else {
+        return None;
+    };
+
+    let millis = *millis;
+    let (start, end) = match op {
+        Operator::Eq => (millis, millis),
+        Operator::Gt => (millis.saturating_add(1), i64::MAX),
+        Operator::GtEq => (millis, i64::MAX),
+        Operator::Lt => (i64::MIN, millis.saturating_sub(1)),
+        Operator::LtEq => (i64::MIN, millis),
+        _ => return None,
+    };
+
+    if end < 0 {
+        return Some(MillisSinceEpoch::MAX..=MillisSinceEpoch::UNIX_EPOCH);
+    }
+    Some(MillisSinceEpoch::new(start.max(0) as u64)..=MillisSinceEpoch::new(end as u64))
 }
 
 #[derive(Debug, Clone)]

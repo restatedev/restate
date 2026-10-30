@@ -10,11 +10,12 @@
 
 use std::collections::BTreeSet;
 use std::num::NonZeroU16;
+use std::ops::RangeInclusive;
 
 use bytes::{BufMut, BytesMut};
 use restate_types::blob::{BlobId, BlobKind};
-use restate_types::sharding::KeyRange;
 use restate_types::storage::{StorageCodec, StorageDecode, StorageEncode};
+use restate_types::time::MillisSinceEpoch;
 
 use crate::{Result, StorageError};
 
@@ -158,7 +159,8 @@ pub struct BlobEntry<'a> {
 
 #[derive(Debug, Clone)]
 pub enum ScanBlobTableRange {
-    PartitionKey(KeyRange),
+    /// Every blob of the partition created within this inclusive range.
+    CreatedAt(RangeInclusive<MillisSinceEpoch>),
     BlobIdSet(BTreeSet<BlobId>),
 }
 

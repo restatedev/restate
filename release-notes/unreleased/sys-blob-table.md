@@ -13,6 +13,7 @@ embedding them in the invocation status record. When the option is enabled, a ne
 | --- | --- | --- |
 | `partition_key` | `UInt64` | Internal partitioning column. |
 | `id` | `LargeUtf8` | Blob ID (`blob_1...`). Matches `sys_invocation_status.completion_blob_id`. |
+| `created_at` | `TimestampMillisecond` | When the blob was created. Filtering on it (e.g. `created_at > now() - interval '1 hour'`) limits how much of the table is read. |
 | `kind` | `LargeUtf8` | Either `output`, `state` or `unknown`. |
 | `ref_count` | `UInt32` | Number of references to the blob. `0` means it is marked for deletion. |
 | `payload_length` | `UInt64` | Size of the blob payload in bytes. |

@@ -23,6 +23,9 @@ pub(crate) fn append_blob_row(builder: &mut SysBlobBuilder, entry: BlobEntry<'_>
     if row.is_id_defined() {
         row.fmt_id(entry.id);
     }
+    if row.is_created_at_defined() {
+        row.created_at(entry.id.timestamp().to_unix_millis().as_u64() as i64);
+    }
     row.kind(match entry.kind {
         BlobKind::Unknown => "unknown",
         BlobKind::Output => "output",

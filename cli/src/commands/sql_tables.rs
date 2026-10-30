@@ -17,6 +17,7 @@ pub static SQL_TABLES: &[SqlTableDoc] = &[
     SqlTableDoc { name: "sys_blob", description: "Blobs stored by each partition, such as invocation outputs.", columns: &[
         SqlColumnDoc { name: "partition_key", ty: "UInt64", description: "Internal column that is used for partitioning the blobs. Can be ignored." },
         SqlColumnDoc { name: "id", ty: "Utf8", description: "Blob ID, formatted as `blob_1...`. Matches `sys_invocation_status.completion_blob_id`." },
+        SqlColumnDoc { name: "created_at", ty: "TimestampMillisecond", description: "Timestamp indicating when the blob was created. Derived from the blob ID." },
         SqlColumnDoc { name: "kind", ty: "Utf8", description: "The kind of the blob. Either `output`, `state` or `unknown`." },
         SqlColumnDoc { name: "ref_count", ty: "UInt32", description: "Number of references to this blob. A blob with `ref_count = 0` is marked for deletion and has no payload." },
         SqlColumnDoc { name: "payload_length", ty: "UInt64", description: "Length of the blob payload in bytes." },

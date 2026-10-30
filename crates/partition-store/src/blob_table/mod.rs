@@ -24,7 +24,10 @@ use restate_storage_api::blob_table::{
 };
 use restate_storage_api::{Result, StorageError};
 use restate_types::blob::BlobId;
+use restate_types::clock::{self, UniqueTimestamp};
 use restate_types::identifiers::ResourceId;
+use restate_types::time::MillisSinceEpoch;
+use restate_types::vqueues::Seq;
 
 use crate::TableKind;
 use crate::error::break_on_err;
@@ -175,20 +178,41 @@ impl ScanBlobTable for PartitionStore {
         range: ScanBlobTableRange,
         mut f: F,
     ) -> Result<impl Future<Output = Result<()>> + Send> {
-        let partition_keys = match range {
+        let created_at = match range {
             ScanBlobTableRange::BlobIdSet(ids) => {
                 return Ok(multi_get_blob(self, ids, f).boxed());
             }
-            ScanBlobTableRange::PartitionKey(partition_keys) => partition_keys,
+            ScanBlobTableRange::CreatedAt(created_at) => created_at,
         };
+        if created_at.is_empty() {
+            return Ok(std::future::ready(Ok(())).boxed());
+        }
+
+        // Blob ids are prefixed by their creation timestamp, so the range bounds the seek. The
+        // end bound is the first id of the next millisecond and is skipped below if it exists.
+        let lower_bound = |millis: MillisSinceEpoch| {
+            let ts = match UniqueTimestamp::try_from_unix_millis(millis) {
+                Ok(ts) => ts,
+                Err(clock::Error::UnixTimestampBelowMin(_)) => UniqueTimestamp::MIN,
+                Err(_) => UniqueTimestamp::MAX,
+            };
+            BlobKey::builder().blob_id(BlobId::new(ts, Seq::MIN, 0, [0; 16]))
+        };
+        let start = lower_bound(*created_at.start());
+        let end = lower_bound(MillisSinceEpoch::new(
+            created_at.end().as_u64().saturating_add(1),
+        ));
 
         let scan_fut = self
             .iterator_for_each(
                 "df-blob",
                 Priority::Low,
-                TableScan::ScanPartitionKeyRange::<BlobKeyBuilder>(partition_keys),
+                TableScan::RangeInclusive(start, end),
                 move |(mut key, value)| {
                     let blob_id = break_on_err(BlobKey::deserialize_from(&mut key))?.blob_id;
+                    if !created_at.contains(&blob_id.timestamp().to_unix_millis()) {
+                        return ControlFlow::Continue(());
+                    }
                     let entry = break_on_err(decode_blob_entry(blob_id, value))?;
 
                     f(entry).map_break(Ok)

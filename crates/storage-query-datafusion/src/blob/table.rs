@@ -39,9 +39,10 @@ pub(crate) fn register_self(
     let table = PartitionedTableProvider::new(
         partition_selector,
         SysBlobBuilder::schema(),
+        // Blobs are keyed by creation time, so rows are not ordered by partition key.
         sys_blob_sort_order(),
         remote_scanner_manager.create_distributed_scanner(NAME, local_scanner),
-        FirstMatchingPartitionKeyExtractor::default().with_grouped_blob_id("id"),
+        FirstMatchingPartitionKeyExtractor::grouped_partition_key().with_grouped_blob_id("id"),
     );
     ctx.register_partitioned_table(NAME, Arc::new(table))
 }
@@ -83,7 +84,7 @@ impl From<BlobIdFilter> for ScanBlobTableRange {
     fn from(value: BlobIdFilter) -> Self {
         match value.blob_ids {
             Some(selection) => ScanBlobTableRange::BlobIdSet(selection.ids),
-            None => ScanBlobTableRange::PartitionKey(value.partition_keys),
+            None => ScanBlobTableRange::CreatedAt(value.created_at),
         }
     }
 }
