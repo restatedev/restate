@@ -8579,6 +8579,7 @@ dependencies = [
  "codederror",
  "derive_builder",
  "derive_more",
+ "enum-map",
  "metrics",
  "parking_lot",
  "restate-core",
