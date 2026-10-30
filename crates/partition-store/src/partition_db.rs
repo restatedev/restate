@@ -147,6 +147,16 @@ impl PartitionDb {
         vec![self.meta.cf_name().into_inner()]
     }
 
+    /// Total size of this partition's live SST files.
+    pub fn live_sst_files_size(&self) -> Result<u64, RocksError> {
+        Ok(self
+            .rocksdb
+            .inner()
+            .as_raw_db()
+            .property_int_value_cf(self.cf_handle(), "rocksdb.live-sst-files-size")?
+            .unwrap_or_default())
+    }
+
     pub async fn flush_memtables(&self, wait: bool) -> Result<(), RocksError> {
         // Flushing can run after the partition is closed, so it counts against the
         // database, not the partition's scope. Keep `physical` until it finishes, so

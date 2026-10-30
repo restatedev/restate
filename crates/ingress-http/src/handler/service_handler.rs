@@ -340,7 +340,7 @@ where
             .call(invocation_request)
             .instrument(trace_span!("Waiting for response"))
             .await
-            .map_err(HandlerError::InvocationDispatcherError)?;
+            .map_err(HandlerError::from_invocation_dispatcher)?;
 
         Self::reply_with_invocation_response(response, move |_| Ok(invocation_target_metadata))
     }
@@ -355,7 +355,7 @@ where
         let response = dispatcher
             .send(invocation_request)
             .await
-            .map_err(HandlerError::InvocationDispatcherError)?;
+            .map_err(HandlerError::from_invocation_dispatcher)?;
 
         trace!("Complete external HTTP send request successfully");
         Ok(Response::builder()

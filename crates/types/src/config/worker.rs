@@ -859,6 +859,21 @@ pub struct StorageOptions {
     /// partitions.
     rocksdb_memory_ratio: f32,
 
+    /// # Partition storage capacity
+    ///
+    /// Storage each partition may use on this node. Once a partition's store reaches 90% of this
+    /// capacity, requests that start a new invocation on it, such as HTTP ingress calls and sends
+    /// (rejected with HTTP 507 Insufficient Storage) or restarting an invocation as new, fail until
+    /// space is freed, for example by journal retention. Requests for existing invocations keep
+    /// being processed. Invocations from Kafka subscriptions, the ingestion API, and calls made by
+    /// other invocations are not rejected.
+    ///
+    /// Default: unset (no limit)
+    ///
+    /// Since v1.8.2
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_capacity: Option<NonZeroByteCount>,
+
     /// Whether to perform commits in background IO thread pools eagerly or not
     #[cfg_attr(feature = "schemars", schemars(skip))]
     #[serde(skip_serializing_if = "std::ops::Not::not", default)]
@@ -1169,6 +1184,7 @@ impl Default for StorageOptions {
             // set by apply_common in runtime
             rocksdb_memory_budget: None,
             rocksdb_memory_ratio: 0.49,
+            partition_capacity: None,
             always_commit_in_background: false,
             rocksdb_enable_l6_filters: false,
             rocksdb_disable_whole_key_filtering: false,
