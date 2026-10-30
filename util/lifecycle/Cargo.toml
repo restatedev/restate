@@ -1,0 +1,28 @@
+[package]
+name = "restate-util-lifecycle"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+default = []
+test-util = []
+
+[dependencies]
+restate-workspace-hack = { workspace = true }
+
+restate-util-string = { workspace = true }
+
+parking_lot = { workspace = true }
+static_assertions = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+tokio-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+
+[lints]
+workspace = true

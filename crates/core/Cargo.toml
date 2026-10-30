@@ -18,6 +18,7 @@ test-util = [
   "restate-core-derive",
   "restate-metadata-store/test-util",
   "restate-types/test-util",
+  "restate-util-lifecycle/test-util",
   "tokio/test-util"
 ]
 # Tokio task dumping. Not enabled by any of our binaries because dumping re-polls in-flight futures
@@ -33,6 +34,7 @@ restate-futures-util = { workspace = true }
 restate-memory = { workspace = true }
 restate-metadata-store = { workspace = true }
 restate-platform = { workspace = true }
+restate-util-lifecycle = { workspace = true }
 restate-util-time = { workspace = true }
 restate-types = { workspace = true }
 restate-util-string = { workspace = true, features = ["metrics"] }

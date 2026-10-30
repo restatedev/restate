@@ -20,6 +20,7 @@ restate-futures-util = { workspace = true }
 restate-platform = { workspace = true }
 restate-types = { workspace = true }
 restate-util-bytecount = { workspace = true, features = ["serde"] }
+restate-util-lifecycle = { workspace = true }
 restate-util-random = { workspace = true }
 restate-util-time = { workspace = true }
 
