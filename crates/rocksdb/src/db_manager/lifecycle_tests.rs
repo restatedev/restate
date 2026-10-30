@@ -45,7 +45,7 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
     let db = opening.await?;
     let (_, opening) = manager.open_db(db_spec("scope-neighbor", None))?;
     let neighbor = opening.await?;
-    timeout(DEADLINE, db.background_tracker.wait_idle()).await?;
+    timeout(DEADLINE, db.background_gate.wait_idle()).await?;
 
     let first = db.register_scope();
     let second = db.register_scope();
@@ -56,7 +56,7 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
     {
         let _registry = db.admission_scopes.lock();
         let lease = second.try_acquire().unwrap();
-        assert!(db.background_tracker.is_idle());
+        assert!(db.background_gate.is_idle());
         drop(lease);
         second.prepare_op(&db, |_| ()).call()?;
     }
@@ -86,7 +86,7 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
             .is_pending()
     );
     assert!(
-        db.background_tracker.is_idle(),
+        db.background_gate.is_idle(),
         "scope writes do not acquire direct admission"
     );
     drop(write);
@@ -106,7 +106,7 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
     timeout(DEADLINE, reached).await??;
     drop(observer);
     drop(running);
-    assert!(db.background_tracker.is_idle());
+    assert!(db.background_gate.is_idle());
 
     // Register scopes while another thread seals the database. Whether a scope was
     // registered before or after sealing, it must end up sealed.
@@ -169,36 +169,36 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     assert_eq!(db.registration(), None);
     db.clone().open_cf(crate::CfName::new("retired")).await?;
     // The result can arrive before the worker releases its lease, so wait for the
-    // tracker to go idle.
-    timeout(DEADLINE, db.background_tracker.wait_idle()).await?;
+    // gate to go idle.
+    timeout(DEADLINE, db.background_gate.wait_idle()).await?;
     let discarded = db.prepare_op(|_| {
         panic!("an undispatched operation must not execute");
     });
-    assert!(db.background_tracker.is_idle());
+    assert!(db.background_gate.is_idle());
     drop(discarded);
-    assert!(db.background_tracker.is_idle());
-    let tracker_refs = Arc::strong_count(&db.background_tracker);
+    assert!(db.background_gate.is_idle());
+    let gate_refs = Arc::strong_count(&db.background_gate);
     db.prepare_op(move |db| {
-        assert!(!db.background_tracker.is_idle());
-        assert_eq!(Arc::strong_count(&db.background_tracker), tracker_refs);
+        assert!(!db.background_gate.is_idle());
+        assert_eq!(Arc::strong_count(&db.background_gate), gate_refs);
     })
     .call()?;
-    assert!(db.background_tracker.is_idle());
+    assert!(db.background_gate.is_idle());
     let discarded = db
         .prepare_op(|_| {
             panic!("a discarded task must not execute");
         })
         .background("discarded-task", StorageTaskKind::MultiGet)
         .into_task()?;
-    assert!(!db.background_tracker.is_idle());
+    assert!(!db.background_gate.is_idle());
     drop(discarded);
-    assert!(db.background_tracker.is_idle());
+    assert!(db.background_gate.is_idle());
     let prepared = db
         .prepare_op(|db| db.inner().open_cf(crate::CfName::new("external")))
         .background("prepared", StorageTaskKind::OpenColumnFamily)
         .with_priority(Priority::High);
     assert_eq!(prepared.priority(), Priority::High);
-    assert!(db.background_tracker.is_idle());
+    assert!(db.background_gate.is_idle());
     let prepared = prepared.into_task()?;
     let unadmitted = db.prepare_op(|_| {
         panic!("sealing before submission must reject execution");
@@ -274,7 +274,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     neighbor.clone().flush_wal(true).await?;
     // The flush's result can arrive before its lease is released. Wait for idle
     // first, so the check below only sees what the rejected work left behind.
-    timeout(DEADLINE, neighbor.background_tracker.wait_idle()).await?;
+    timeout(DEADLINE, neighbor.background_gate.wait_idle()).await?;
     neighbor.seal();
     let rejected = neighbor.prepare_op(|_| {
         panic!("a rejected operation must not execute");
@@ -284,7 +284,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         Err(AdmissionClosed)
     );
     assert!(neighbor.clone().flush_wal(true).await.is_err());
-    assert!(neighbor.background_tracker.is_idle());
+    assert!(neighbor.background_gate.is_idle());
     // Deleting a column family still works after sealing, on any executor.
     external
         .spawn(db.clone().prepare_drop_cf(crate::CfName::new("external")))?
@@ -312,7 +312,7 @@ fn owned_manager(global: &RocksDbManager) -> RocksDbManager {
     RocksDbManager(Arc::new(ManagerInner {
         state: Mutex::default(),
         shutting_down: AtomicBool::new(false),
-        lifecycle_tracker: Default::default(),
+        lifecycle_gate: Default::default(),
         executor: global.0.executor.clone(),
         lifecycle_executor: global.0.lifecycle_executor.clone(),
         db_env: global.db_env().clone(),
@@ -506,13 +506,13 @@ async fn open_guards_finalize_discarded_jobs_and_interrupted_preparation() -> an
     assert_eq!(manager.get_db_ref(&path), Some(tracked));
     assert!(!manager.0.state.lock().tracked[tracked].is_closed());
     assert!(!closed.is_cancelled());
-    assert!(!manager.0.lifecycle_tracker.is_idle());
+    assert!(!manager.0.lifecycle_gate.is_idle());
     assert!(manager.0.state.try_lock().is_some());
     drop(gates.close_resume);
     timeout(DEADLINE, disposal).await??;
     assert!(closed.is_cancelled());
     assert!(gates.finished.load(Ordering::Acquire));
-    assert!(manager.0.lifecycle_tracker.is_idle());
+    assert!(manager.0.lifecycle_gate.is_idle());
     let (replacement, reopened) = manager.open_db(db_spec("discarded-open", None))?;
     assert_ne!(replacement, tracked);
     let db = reopened.await?;
@@ -574,7 +574,7 @@ async fn close_guard_releases_native_resources_before_completing_on_unwind() -> 
     timeout(DEADLINE, gates.close_reached).await??;
     assert!(!closed.is_cancelled());
     assert!(!gates.finished.load(Ordering::Acquire));
-    assert!(!manager.0.lifecycle_tracker.is_idle());
+    assert!(!manager.0.lifecycle_gate.is_idle());
     assert!(manager.0.state.try_lock().is_some());
     drop(gates.close_resume);
     assert!(cleanup.join().is_err());
@@ -582,7 +582,7 @@ async fn close_guard_releases_native_resources_before_completing_on_unwind() -> 
     lifecycle_queue_drained(manager).await?;
     assert!(closed.is_cancelled());
     assert!(gates.finished.load(Ordering::Acquire));
-    assert!(manager.0.lifecycle_tracker.is_idle());
+    assert!(manager.0.lifecycle_gate.is_idle());
     let (_, opening) = manager.open_db(db_spec("unwound-close", None))?;
     let db = opening.await?;
     assert_eq!(
@@ -632,7 +632,7 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
                     .unprepared_handle()
                     .is_some()
             );
-            assert!(db.background_tracker.is_idle());
+            assert!(db.background_gate.is_idle());
             let native = db.inner().as_raw_db();
             native.put(b"key", b"value")?;
             assert_eq!(
@@ -696,7 +696,7 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
                 "preparation is not physical close"
             );
             assert_eq!(Arc::strong_count(&db), 1);
-            assert!(manager.0.lifecycle_tracker.is_idle());
+            assert!(manager.0.lifecycle_gate.is_idle());
             db.close().await.expect("owner retains the last pin");
             drop((high, low));
             executor_drained(&executor).await?;
@@ -783,7 +783,7 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
 
         let mut shutdown = Box::pin(manager.shutdown());
         assert_pending(shutdown.as_mut());
-        assert!(!db.background_tracker.is_idle());
+        assert!(!db.background_gate.is_idle());
         assert_eq!(
             db.inner()
                 .as_raw_db()
@@ -826,8 +826,8 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
             !db.closed.is_cancelled(),
             "owner still holds the native database"
         );
-        assert!(db.background_tracker.is_idle());
-        assert!(manager.0.lifecycle_tracker.is_idle());
+        assert!(db.background_gate.is_idle());
+        assert!(manager.0.lifecycle_gate.is_idle());
         // Shutting down this manager mustn't stop the pools it shares with the global one.
         timeout(DEADLINE, global.0.executor.spawn_fn(priority, || ())?).await??;
         db.close().await.expect("owner holds the last pin");
@@ -872,7 +872,7 @@ fn interrupted_shutdown_preparation_remains_pending_until_native_close() -> anyh
         assert_pending(shutdown.as_mut());
         lifecycle_queue_drained(&manager).await?;
         assert_eq!(attempts.load(Ordering::Relaxed), 1);
-        assert!(manager.0.lifecycle_tracker.is_idle());
+        assert!(manager.0.lifecycle_gate.is_idle());
         assert!(!db.closed.is_cancelled());
         assert_pending(shutdown.as_mut());
         let mut concurrent_shutdown = Box::pin(manager.shutdown());
@@ -885,7 +885,7 @@ fn interrupted_shutdown_preparation_remains_pending_until_native_close() -> anyh
         timeout(DEADLINE, shutdown).await?;
         timeout(DEADLINE, concurrent_shutdown).await?;
         assert_eq!(attempts.load(Ordering::Relaxed), 2);
-        assert!(manager.0.lifecycle_tracker.is_idle());
+        assert!(manager.0.lifecycle_gate.is_idle());
         global.shutdown().await;
         Ok(())
     })
@@ -937,7 +937,7 @@ fn cancelled_open_waiters_retain_retrievable_incarnations() -> anyhow::Result<()
                     drop(gates.open_resume);
                     lifecycle_queue_drained(manager).await?;
                     assert!(
-                        !manager.0.lifecycle_tracker.is_idle(),
+                        !manager.0.lifecycle_gate.is_idle(),
                         "an unclaimed open still needs handoff"
                     );
                     let db = manager.get_db(DbName::new(&name)).unwrap();
@@ -954,7 +954,7 @@ fn cancelled_open_waiters_retain_retrievable_incarnations() -> anyhow::Result<()
             lifecycle_queue_drained(manager).await?;
             assert!(!closed.is_cancelled());
             assert!(!gates.finished.load(Ordering::Acquire));
-            assert!(!manager.0.lifecycle_tracker.is_idle());
+            assert!(!manager.0.lifecycle_gate.is_idle());
             // Only the DbRef is left: the result can still be collected without the
             // original future or any other waiter.
             let (early, late) = timeout(DEADLINE, async {
@@ -968,7 +968,7 @@ fn cancelled_open_waiters_retain_retrievable_incarnations() -> anyhow::Result<()
             let late = late?;
             assert!(Arc::ptr_eq(&db, &late));
             assert_eq!(db.registration(), Some(tracked));
-            assert!(manager.0.lifecycle_tracker.is_idle());
+            assert!(manager.0.lifecycle_gate.is_idle());
             drop(late);
             let unpolled_observer = manager.get_db_by_ref(tracked);
             assert_eq!(Arc::strong_count(&db), 1, "observers retain no database");
@@ -1099,7 +1099,7 @@ fn shutdown_drains_opens_through_handoff_or_disposal() -> anyhow::Result<()> {
             timeout(DEADLINE, shutdown).await?;
             assert!(gates.finished.load(Ordering::Acquire));
             assert!(manager.0.state.lock().tracked[tracked].is_closed());
-            assert!(manager.0.lifecycle_tracker.is_idle());
+            assert!(manager.0.lifecycle_gate.is_idle());
             if let Some(opening) = opening {
                 assert!(matches!(
                     timeout(DEADLINE, opening).await?,

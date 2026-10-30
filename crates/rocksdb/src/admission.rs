@@ -10,18 +10,18 @@
 
 use std::sync::{Arc, Weak};
 
-use restate_core::io::{FlightTracker, Lease};
+use restate_core::io::{Gate, Lease};
 
 use crate::{RocksDb, StorageOp};
 
 /// The scopes registered with one database. Only registration and sealing take
-/// this lock; operations only touch their own scope's tracker. Entries are weak,
-/// but in-flight work keeps its tracker alive, so dropping a scope while its work
+/// this lock; operations only touch their own scope's gate. Entries are weak,
+/// but in-flight work keeps its gate alive, so dropping a scope while its work
 /// is still running doesn't hide that work from database shutdown.
 #[derive(Default)]
 pub(crate) struct AdmissionScopes {
     pub sealed: bool,
-    pub trackers: Vec<Weak<FlightTracker>>,
+    pub gates: Vec<Weak<Gate>>,
 }
 
 /// A group of operations on one database that can be sealed and drained on its
@@ -33,14 +33,14 @@ pub(crate) struct AdmissionScopes {
 /// `Arc<RocksDb>`.
 pub struct DatabaseScope {
     database: Weak<RocksDb>,
-    tracker: Arc<FlightTracker>,
+    gate: Arc<Gate>,
 }
 
 impl DatabaseScope {
-    pub(crate) fn new(database: &Arc<RocksDb>, tracker: Arc<FlightTracker>) -> Self {
+    pub(crate) fn new(database: &Arc<RocksDb>, gate: Arc<Gate>) -> Self {
         Self {
             database: Arc::downgrade(database),
-            tracker,
+            gate,
         }
     }
 
@@ -49,18 +49,18 @@ impl DatabaseScope {
     pub fn try_acquire(&self) -> Option<DatabaseLease<'_>> {
         Some(DatabaseLease {
             scope: self,
-            lease: self.tracker.try_acquire()?,
+            lease: self.gate.try_acquire()?,
         })
     }
 
     /// Permanently reject new operations in this scope alone.
     pub fn seal(&self) {
-        self.tracker.seal();
+        self.gate.seal();
     }
 
     /// Wait for a sealed scope's accepted work to release its resources.
     pub async fn drain(&self) {
-        self.tracker.drain().await;
+        self.gate.drain().await;
     }
 
     fn assert_database(&self, database: &Arc<RocksDb>) {
@@ -70,9 +70,9 @@ impl DatabaseScope {
         );
     }
 
-    pub(crate) fn tracker_for(&self, database: &Arc<RocksDb>) -> &Arc<FlightTracker> {
+    pub(crate) fn gate_for(&self, database: &Arc<RocksDb>) -> &Arc<Gate> {
         self.assert_database(database);
-        &self.tracker
+        &self.gate
     }
 
     /// Like [`RocksDb::prepare_op`], but the work counts against this scope instead
@@ -88,7 +88,7 @@ impl DatabaseScope {
     ) -> StorageOp<'_, impl FnOnce() -> R + Send + 'static> {
         self.assert_database(database);
         let database = database.clone();
-        StorageOp::new(move || op(database), &self.tracker)
+        StorageOp::new(move || op(database), &self.gate)
     }
 }
 
