@@ -15,7 +15,7 @@ use derive_builder::Builder;
 use metrics::{Gauge, gauge, histogram};
 use parking_lot::Mutex;
 
-use restate_core::io::{AdmissionClosed, FlightTracker, IoExecutor, IoOp, IoTask, TrackedTask};
+use restate_core::io::{AdmissionClosed, Gate, IoExecutor, IoOp, IoTask, TrackedTask};
 
 use crate::metric_definitions::{STORAGE_BG_TASK_RUN_DURATION, STORAGE_BG_TASK_WAIT_DURATION};
 use crate::{OP_TYPE, PRIORITY, Priority, STORAGE_BG_TASK_IN_FLIGHT};
@@ -50,7 +50,7 @@ impl StorageTaskKind {
 #[must_use = "execute, schedule, or explicitly drop the operation"]
 pub struct StorageOp<'a, OP> {
     op: OP,
-    tracker: &'a Arc<FlightTracker>,
+    gate: &'a Arc<Gate>,
 }
 
 impl<'a, OP, R> StorageOp<'a, OP>
@@ -58,8 +58,8 @@ where
     OP: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    pub(crate) fn new(op: OP, tracker: &'a Arc<FlightTracker>) -> Self {
-        Self { op, tracker }
+    pub(crate) fn new(op: OP, gate: &'a Arc<Gate>) -> Self {
+        Self { op, gate }
     }
 
     /// Calls `make_guard` on the thread that runs the operation, right before it
@@ -138,13 +138,13 @@ where
         self,
         make_guard: impl FnOnce() -> G + Send + 'static,
     ) -> StorageOp<'a, impl FnOnce() -> R + Send + 'static> {
-        let Self { op, tracker } = self;
+        let Self { op, gate } = self;
         StorageOp::new(
             move || {
                 let _guard = make_guard();
                 op()
             },
-            tracker,
+            gate,
         )
     }
 
@@ -152,7 +152,7 @@ where
     /// if the database (or scope) is sealed. Unlike background tasks, it records no
     /// task metrics or tracing span.
     pub fn call(self) -> Result<R, AdmissionClosed> {
-        let lease = self.tracker.try_acquire().ok_or(AdmissionClosed)?;
+        let lease = self.gate.try_acquire().ok_or(AdmissionClosed)?;
         Ok(TrackedTask::new(self.op, lease).run())
     }
 
@@ -161,7 +161,7 @@ where
     pub fn background(self, name: &'static str, kind: StorageTaskKind) -> ReadyStorageTask<'a, OP> {
         StorageTask::default()
             .op(self.op)
-            .tracker(self.tracker)
+            .gate(self.gate)
             .name(name)
             .kind(kind)
             .build()
@@ -170,7 +170,7 @@ where
 }
 
 /// A storage operation ready for an executor, with a kind and priority for
-/// metrics and scheduling. If it belongs to a tracker, it's admitted only when
+/// metrics and scheduling. If it belongs to a gate, it's admitted only when
 /// it runs (`call`) or is submitted (`into_task`), so building one doesn't delay
 /// draining.
 #[derive(Builder)]
@@ -180,7 +180,7 @@ where
 pub struct ReadyStorageTask<'a, OP> {
     op: OP,
     #[builder(default, setter(strip_option))]
-    tracker: Option<&'a Arc<FlightTracker>>,
+    gate: Option<&'a Arc<Gate>>,
     #[builder(default, setter(strip_option))]
     name: Option<&'static str>,
     #[builder(default)]
@@ -225,10 +225,9 @@ where
 
     fn into_task(self) -> Result<impl IoTask<Self::Output>, AdmissionClosed> {
         let lease = self
-            .tracker
-            .map(|tracker| {
-                tracker
-                    .try_acquire()
+            .gate
+            .map(|gate| {
+                gate.try_acquire()
                     .map(|lease| lease.into_owned())
                     .ok_or(AdmissionClosed)
             })
@@ -265,8 +264,8 @@ where
 
     fn call(self) -> Result<Self::Output, AdmissionClosed> {
         let lease = self
-            .tracker
-            .map(|tracker| tracker.try_acquire().ok_or(AdmissionClosed))
+            .gate
+            .map(|gate| gate.try_acquire().ok_or(AdmissionClosed))
             .transpose()?;
         Ok(TrackedTask::new(self.op, lease).run())
     }
@@ -428,7 +427,7 @@ mod tests {
 
     use tokio::sync::oneshot;
 
-    use restate_core::io::{FlightTracker, TrackedExecutor};
+    use restate_core::io::{Gate, TrackedExecutor};
 
     use super::*;
 
@@ -445,65 +444,65 @@ mod tests {
         struct Guard {
             _local: Rc<()>,
             thread: std::thread::ThreadId,
-            tracker: Arc<FlightTracker>,
+            gate: Arc<Gate>,
             drops: Arc<AtomicUsize>,
         }
         impl Drop for Guard {
             fn drop(&mut self) {
                 assert_eq!(self.thread, std::thread::current().id());
-                assert!(!self.tracker.is_idle());
+                assert!(!self.gate.is_idle());
                 self.drops.fetch_add(1, Ordering::Relaxed);
             }
         }
 
-        let tracker = Arc::new(FlightTracker::default());
+        let gate = Arc::new(Gate::default());
         let drops = Arc::new(AtomicUsize::new(0));
         let factory = {
-            let tracker = tracker.clone();
+            let gate = gate.clone();
             let drops = drops.clone();
             move || Guard {
                 _local: Rc::new(()),
                 thread: std::thread::current().id(),
-                tracker,
+                gate,
                 drops,
             }
         };
-        let op = StorageOp::new(|| 42, &tracker).with_guard(factory.clone());
-        assert!(tracker.is_idle());
+        let op = StorageOp::new(|| 42, &gate).with_guard(factory.clone());
+        assert!(gate.is_idle());
         assert_eq!(op.call().unwrap(), 42);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        assert!(tracker.is_idle());
+        assert!(gate.is_idle());
 
-        let task = StorageOp::new(|| 43, &tracker)
+        let task = StorageOp::new(|| 43, &gate)
             .with_guard(factory.clone())
             .background("guarded", StorageTaskKind::MultiGet);
         assert_eq!(task.priority(), Priority::Low);
-        assert!(tracker.is_idle());
+        assert!(gate.is_idle());
         let task = task.into_task().unwrap();
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert_eq!(std::thread::spawn(task).join().unwrap(), 43);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
-        assert!(tracker.is_idle());
+        assert!(gate.is_idle());
 
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            StorageOp::new(|| panic!("operation panic"), &tracker)
+            StorageOp::new(|| panic!("operation panic"), &gate)
                 .with_guard(factory)
                 .call()
         }));
         assert!(result.is_err());
         assert_eq!(drops.load(Ordering::Relaxed), 3);
-        assert!(tracker.is_idle());
+        assert!(gate.is_idle());
 
-        let task = StorageOp::new(|| (), &tracker)
+        let task = StorageOp::new(|| (), &gate)
             .with_guard(|| panic!("discard must not create a guard"))
             .background("discarded", StorageTaskKind::MultiGet)
             .into_task()
             .unwrap();
         drop(task);
-        assert!(tracker.is_idle());
-        tracker.seal();
+        assert!(gate.is_idle());
+        gate.seal();
         assert_eq!(
-            StorageOp::new(|| (), &tracker)
+            StorageOp::new(|| (), &gate)
                 .with_guard(|| panic!("rejection must not create a guard"))
                 .call(),
             Err(AdmissionClosed)
@@ -522,8 +521,8 @@ mod tests {
                 .thread_name("test-low".to_owned())
                 .build(),
         );
-        let flights = Arc::new(FlightTracker::default());
-        let executor = TrackedExecutor::new(&backend, &flights);
+        let gate = Arc::new(Gate::default());
+        let executor = TrackedExecutor::new(&backend, &gate);
         let high = executor
             .spawn(
                 StorageTask::default()
@@ -539,7 +538,7 @@ mod tests {
                 std::thread::current().name().unwrap().to_owned()
             })
             .unwrap();
-        flights.seal();
+        gate.seal();
 
         assert_eq!(high.await.unwrap(), "test-high");
         assert_eq!(low.await.unwrap(), "test-low");
@@ -550,7 +549,7 @@ mod tests {
                     .is_err()
             );
         }
-        flights.drain().await;
+        gate.drain().await;
         observe_barrier(&backend).await.unwrap();
         assert_eq!(
             backend
@@ -584,9 +583,9 @@ mod tests {
             reached.await.unwrap();
             releases.push(release);
         }
-        let flights = Arc::new(FlightTracker::default());
-        flights.seal();
-        let executor = TrackedExecutor::new(&backend, &flights);
+        let gate = Arc::new(Gate::default());
+        gate.seal();
+        let executor = TrackedExecutor::new(&backend, &gate);
         let mut completed = observe_barrier(&executor);
         assert!(matches!(
             completed.try_recv(),
