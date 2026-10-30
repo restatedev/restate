@@ -93,12 +93,11 @@ async fn purge_obsolete_vqueue_metadata(
     let mut purged = 0u64;
     let partition_db = storage.partition_db().clone();
     let key_range = storage.partition_key_range();
-    let rocks = partition_db.rocksdb().clone();
+    let rocks = partition_db.rocksdb();
     let mut next_key = None;
 
     loop {
         let chunk = rocks
-            .clone()
             .run_background_read_op(
                 "purge-obsolete-vqueue-metadata",
                 StorageTaskKind::BackgroundIterator,
