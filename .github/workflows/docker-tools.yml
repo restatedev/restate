@@ -20,6 +20,9 @@ env:
 jobs:
   build-and-push-image:
     if: github.repository_owner == 'restatedev'
+    permissions:
+      contents: read
+      packages: write
     runs-on: warp-ubuntu-latest-x64-16x
     timeout-minutes: 70
 
