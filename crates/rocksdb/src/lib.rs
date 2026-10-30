@@ -21,6 +21,9 @@ mod iterator;
 mod logging;
 mod metric_definitions;
 mod perf;
+mod read_snapshot;
+#[cfg(test)]
+mod read_snapshot_tests;
 mod rock_access;
 #[cfg(test)]
 mod write_tests;
@@ -60,6 +63,10 @@ pub use self::error::*;
 pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
+pub use self::read_snapshot::{
+    OwnedPinnedBatch, OwnedReadSnapshot, OwnedSnapshotIterator, OwnedSnapshotReader, PinnedBatch,
+    ReadSnapshotOwner, SnapshotIterator, SnapshotReader,
+};
 pub use self::rock_access::RocksAccess;
 
 use self::background::StorageTask;
