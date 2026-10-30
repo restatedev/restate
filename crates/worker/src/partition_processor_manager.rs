@@ -53,7 +53,7 @@ use restate_metadata_server::{MetadataStoreClient, ReadModifyWriteError};
 use restate_metadata_store::{ReadWriteError, RetryError, retry_on_retryable_error};
 use restate_partition_store::PartitionStoreManager;
 use restate_partition_store::snapshots::{
-    PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository,
+    PartitionSnapshotStatus, SnapshotPartitionTask, SnapshotRepository, remove_leftover_exports,
 };
 use restate_partition_store::{SnapshotError, SnapshotErrorKind};
 use restate_types::GenerationalNodeId;
@@ -317,6 +317,12 @@ where
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let mut shutdown = std::pin::pin!(cancellation_watcher());
+
+        // Remove snapshot exports left over from a previous run, e.g. one that crashed while
+        // exporting. Exports only start from the loop below, so none can be in progress yet.
+        let snapshots_options = Configuration::pinned().worker.snapshots.clone();
+        let _ =
+            tokio::task::spawn_blocking(move || remove_leftover_exports(&snapshots_options)).await;
 
         if let Some(cache) = self.rule_book_cache_task.take() {
             TaskCenter::spawn_child(
