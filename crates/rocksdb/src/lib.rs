@@ -18,6 +18,7 @@ mod db_manager;
 mod db_spec;
 mod error;
 mod iterator;
+mod keep_alive;
 mod logging;
 mod metric_definitions;
 mod perf;
@@ -61,6 +62,7 @@ pub use self::iterator::IterAction;
 use self::iterator::RocksIterator;
 pub use self::perf::{RocksDbReadPerfGuard, RocksDbWritePerfGuard};
 pub use self::rock_access::RocksAccess;
+pub use restate_util_lifecycle::KeepAlive;
 
 use self::background::StorageTask;
 use self::metric_definitions::*;
