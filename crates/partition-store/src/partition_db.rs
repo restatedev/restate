@@ -24,11 +24,11 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 use restate_core::ShutdownError;
-use restate_core::io::IoExecutor;
+use restate_core::io::{Gate, IoExecutor};
 use restate_rocksdb::configuration::{CfConfigurator, DbConfigurator};
 use restate_rocksdb::{
-    DatabaseScope, DbName, Priority, RawRocksDb, RocksAccess, RocksDb, RocksDbReadPerfGuard,
-    RocksError, SinglePoolExecutor, StorageTaskKind,
+    DbName, Priority, RawRocksDb, RocksAccess, RocksDb, RocksDbReadPerfGuard, RocksError,
+    SinglePoolExecutor, StorageTaskKind,
 };
 use restate_storage_api::StorageError;
 use restate_types::config::Configuration;
@@ -59,7 +59,7 @@ pub(crate) struct PartitionStoreDb {
 #[derive(Clone)]
 pub struct PartitionDb {
     meta: Arc<Partition>,
-    admission: Arc<DatabaseScope>,
+    admission: Arc<Gate>,
     durable_lsn: watch::Sender<Lsn>,
     archived_lsn: watch::Sender<Option<Lsn>>,
     physical: Arc<PhysicalPartition>,
@@ -103,7 +103,7 @@ impl PartitionDb {
         let cf = unsafe { PartitionBoundCfHandle::new(cf) };
         Some(Self {
             meta,
-            admission: database.rocksdb.register_scope(),
+            admission: database.rocksdb.gate().child(),
             durable_lsn: watch::Sender::new(Lsn::INVALID),
             archived_lsn,
             physical: Arc::new(PhysicalPartition {
@@ -122,7 +122,7 @@ impl PartitionDb {
         &self.physical.database.rocksdb
     }
 
-    pub(crate) fn admission(&self) -> &Arc<DatabaseScope> {
+    pub(crate) fn admission(&self) -> &Arc<Gate> {
         &self.admission
     }
 
@@ -223,8 +223,8 @@ impl PartitionDb {
     {
         let physical = self.physical.clone();
         let task = self
-            .admission
-            .prepare_op(self.rocksdb(), move |db| {
+            .rocksdb()
+            .prepare_op_in(&self.admission, move |db| {
                 let result = op(db.inner().as_raw_db());
                 drop(physical);
                 result
@@ -888,7 +888,7 @@ impl State {
             State::Closed { db, .. } => db,
         };
         let mut db = db.clone();
-        db.admission = db.rocksdb().register_scope();
+        db.admission = db.rocksdb().gate().child();
         *self = State::Open { db: db.clone() };
         Ok(Some(db))
     }
