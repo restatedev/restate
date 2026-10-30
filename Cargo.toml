@@ -85,6 +85,7 @@ restate-storage-api = { path = "crates/storage-api" }
 restate-storage-query-datafusion = { path = "crates/storage-query-datafusion" }
 restate-sharding = { path = "crates/sharding" }
 restate-util-bytecount = { path = "util/bytecount" }
+restate-util-lifecycle = { path = "util/lifecycle" }
 restate-util-random = { path = "util/random" }
 restate-util-string = { path = "util/string" }
 restate-util-time = { path = "util/time" }
