@@ -29,8 +29,8 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 use tracing::{instrument, trace, warn};
 
-use restate_core::io::AdmissionClosed;
-use restate_rocksdb::{DatabaseScope, IoMode, IterAction, Priority, RocksDb, RocksError};
+use restate_core::io::{AdmissionClosed, Gate};
+use restate_rocksdb::{IoMode, IterAction, Priority, RocksDb, RocksError};
 use restate_storage_api::fsm_table::ReadFsmTable;
 use restate_storage_api::protobuf_types::{PartitionStoreProtobufValue, ProtobufStorageWrapper};
 use restate_storage_api::{IsolationLevel, Storage, StorageError, Transaction};
@@ -942,7 +942,7 @@ pub struct PartitionStoreTransaction<'a> {
     meta: &'a Arc<Partition>,
     write_batch_with_index: Option<rocksdb::WriteBatchWithIndex>,
     rocksdb: &'a Arc<RocksDb>,
-    admission: &'a Arc<DatabaseScope>,
+    admission: &'a Arc<Gate>,
     data_cf_handle: &'a Arc<BoundColumnFamily<'a>>,
     key_buffer: &'a mut BytesMut,
     value_buffer: &'a mut BytesMut,

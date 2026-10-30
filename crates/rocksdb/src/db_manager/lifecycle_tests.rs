@@ -34,39 +34,37 @@ use crate::{
 const DEADLINE: Duration = Duration::from_secs(10);
 
 #[tokio::test]
-async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow::Result<()> {
+async fn child_gates_are_sealed_and_drained_with_the_database() -> anyhow::Result<()> {
     let task_center = TaskCenterBuilder::default()
         .default_runtime_handle(tokio::runtime::Handle::current())
         .build()?
         .into_handle();
     let global = task_center.run_sync(RocksDbManager::init);
     let manager = owned_manager(global);
-    let (_, opening) = manager.open_db(db_spec("registered-scopes", None))?;
+    let (_, opening) = manager.open_db(db_spec("child-gates", None))?;
     let db = opening.await?;
     let (_, opening) = manager.open_db(db_spec("scope-neighbor", None))?;
     let neighbor = opening.await?;
-    timeout(DEADLINE, db.background_gate.wait_idle()).await?;
+    timeout(DEADLINE, db.gate.wait_idle()).await?;
 
-    let first = db.register_scope();
-    let second = db.register_scope();
+    let first = db.gate().child();
+    let second = db.gate().child();
     first.seal();
     assert!(first.try_acquire().is_none());
-    // Holding the scope registry lock here shows that acquiring a lease and running
-    // an operation in a scope don't take it.
-    {
-        let _registry = db.admission_scopes.lock();
-        let lease = second.try_acquire().unwrap();
-        assert!(db.background_gate.is_idle());
-        drop(lease);
-        second.prepare_op(&db, |_| ()).call()?;
+    // Work in a child gate counts only there, not in the database's own gate.
+    let lease = second.try_acquire().unwrap();
+    assert!(db.gate.is_idle());
+    drop(lease);
+    db.prepare_op_in(&second, |_| ()).call()?;
+    // In debug builds, using a gate from another database panics.
+    if cfg!(debug_assertions) {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                neighbor.prepare_op_in(&second, |_| ()).call()
+            }))
+            .is_err()
+        );
     }
-    // A scope from another database can't be used with this one: it panics.
-    assert!(
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            second.prepare_op(&neighbor, |_| ()).call()
-        }))
-        .is_err()
-    );
 
     let pause = manager.pause_background(Priority::High).await;
     let mut batch = rocksdb::WriteBatchWithIndex::new(0, true);
@@ -86,40 +84,39 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
             .is_pending()
     );
     assert!(
-        db.background_gate.is_idle(),
+        db.gate.is_idle(),
         "scope writes do not acquire direct admission"
     );
     drop(write);
-    drop(second); // The queued lease must remain discoverable through the weak registry.
+    drop(second); // The queued lease must still be found through the database's gate.
 
-    let running = db.register_scope();
+    let running = db.gate().child();
     let (started, reached) = oneshot::channel();
     let (resume, paused) = mpsc::channel::<()>();
     let observer = db.executor().spawn(
-        running
-            .prepare_op(&db, move |_db| {
-                let _ = started.send(());
-                let _ = paused.recv();
-            })
-            .background("scoped-read", StorageTaskKind::MultiGet),
+        db.prepare_op_in(&running, move |_db| {
+            let _ = started.send(());
+            let _ = paused.recv();
+        })
+        .background("scoped-read", StorageTaskKind::MultiGet),
     )?;
     timeout(DEADLINE, reached).await??;
     drop(observer);
     drop(running);
-    assert!(db.background_gate.is_idle());
+    assert!(db.gate.is_idle());
 
-    // Register scopes while another thread seals the database. Whether a scope was
-    // registered before or after sealing, it must end up sealed.
+    // Create child gates while another thread seals the database. Whether a gate
+    // was created before or after sealing, it must end up sealed.
     let raced = std::thread::scope(|threads| {
-        let register = threads.spawn(|| (0..32).map(|_| db.register_scope()).collect::<Vec<_>>());
+        let create = threads.spawn(|| (0..32).map(|_| db.gate().child()).collect::<Vec<_>>());
         db.seal();
-        register.join().unwrap()
+        create.join().unwrap()
     });
-    for scope in raced {
-        assert!(scope.try_acquire().is_none());
+    for gate in raced {
+        assert!(gate.try_acquire().is_none());
     }
-    assert!(db.register_scope().try_acquire().is_none());
-    assert!(neighbor.register_scope().try_acquire().is_some());
+    assert!(db.gate().child().try_acquire().is_none());
+    assert!(neighbor.gate().child().try_acquire().is_some());
     let mut drain = Box::pin(db.drain());
     assert!(
         drain
@@ -127,7 +124,7 @@ async fn registered_scopes_drain_without_shared_operation_admission() -> anyhow:
             .poll(&mut Context::from_waker(Waker::noop()))
             .is_pending()
     );
-    drop(drain); // Cancellation must not remove the queued scope from drainage.
+    drop(drain); // Cancellation must not remove the queued child gate from draining.
     drop(pause);
     let mut shutdown = Box::pin(manager.shutdown());
     assert!(
@@ -170,35 +167,35 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     db.clone().open_cf(crate::CfName::new("retired")).await?;
     // The result can arrive before the worker releases its lease, so wait for the
     // gate to go idle.
-    timeout(DEADLINE, db.background_gate.wait_idle()).await?;
+    timeout(DEADLINE, db.gate.wait_idle()).await?;
     let discarded = db.prepare_op(|_| {
         panic!("an undispatched operation must not execute");
     });
-    assert!(db.background_gate.is_idle());
+    assert!(db.gate.is_idle());
     drop(discarded);
-    assert!(db.background_gate.is_idle());
-    let gate_refs = Arc::strong_count(&db.background_gate);
+    assert!(db.gate.is_idle());
+    let gate_refs = Arc::strong_count(&db.gate);
     db.prepare_op(move |db| {
-        assert!(!db.background_gate.is_idle());
-        assert_eq!(Arc::strong_count(&db.background_gate), gate_refs);
+        assert!(!db.gate.is_idle());
+        assert_eq!(Arc::strong_count(&db.gate), gate_refs);
     })
     .call()?;
-    assert!(db.background_gate.is_idle());
+    assert!(db.gate.is_idle());
     let discarded = db
         .prepare_op(|_| {
             panic!("a discarded task must not execute");
         })
         .background("discarded-task", StorageTaskKind::MultiGet)
         .into_task()?;
-    assert!(!db.background_gate.is_idle());
+    assert!(!db.gate.is_idle());
     drop(discarded);
-    assert!(db.background_gate.is_idle());
+    assert!(db.gate.is_idle());
     let prepared = db
         .prepare_op(|db| db.inner().open_cf(crate::CfName::new("external")))
         .background("prepared", StorageTaskKind::OpenColumnFamily)
         .with_priority(Priority::High);
     assert_eq!(prepared.priority(), Priority::High);
-    assert!(db.background_gate.is_idle());
+    assert!(db.gate.is_idle());
     let prepared = prepared.into_task()?;
     let unadmitted = db.prepare_op(|_| {
         panic!("sealing before submission must reject execution");
@@ -274,7 +271,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
     neighbor.clone().flush_wal(true).await?;
     // The flush's result can arrive before its lease is released. Wait for idle
     // first, so the check below only sees what the rejected work left behind.
-    timeout(DEADLINE, neighbor.background_gate.wait_idle()).await?;
+    timeout(DEADLINE, neighbor.gate.wait_idle()).await?;
     neighbor.seal();
     let rejected = neighbor.prepare_op(|_| {
         panic!("a rejected operation must not execute");
@@ -284,7 +281,7 @@ async fn database_admission_is_independent_of_other_databases() -> anyhow::Resul
         Err(AdmissionClosed)
     );
     assert!(neighbor.clone().flush_wal(true).await.is_err());
-    assert!(neighbor.background_gate.is_idle());
+    assert!(neighbor.gate.is_idle());
     // Deleting a column family still works after sealing, on any executor.
     external
         .spawn(db.clone().prepare_drop_cf(crate::CfName::new("external")))?
@@ -632,7 +629,7 @@ fn lifecycle_work_survives_runtime_shutdown_and_busy_global_executor() -> anyhow
                     .unprepared_handle()
                     .is_some()
             );
-            assert!(db.background_gate.is_idle());
+            assert!(db.gate.is_idle());
             let native = db.inner().as_raw_db();
             native.put(b"key", b"value")?;
             assert_eq!(
@@ -783,7 +780,7 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
 
         let mut shutdown = Box::pin(manager.shutdown());
         assert_pending(shutdown.as_mut());
-        assert!(!db.background_gate.is_idle());
+        assert!(!db.gate.is_idle());
         assert_eq!(
             db.inner()
                 .as_raw_db()
@@ -826,7 +823,7 @@ async fn shutdown_drains_queued_and_running_io_before_preparing_databases() -> a
             !db.closed.is_cancelled(),
             "owner still holds the native database"
         );
-        assert!(db.background_gate.is_idle());
+        assert!(db.gate.is_idle());
         assert!(manager.0.lifecycle_gate.is_idle());
         // Shutting down this manager mustn't stop the pools it shares with the global one.
         timeout(DEADLINE, global.0.executor.spawn_fn(priority, || ())?).await??;
