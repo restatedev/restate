@@ -19,6 +19,7 @@ use restate_utoipa::openapi::request_body::RequestBody;
 use restate_utoipa::openapi::*;
 
 use super::Handler;
+use super::json_schemas::{HandlerJsonSchemas, ServiceJsonSchemas};
 use crate::identifiers::ServiceRevision;
 use crate::invocation::ServiceType;
 use crate::net::address::{AdvertisedAddress, HttpIngressPort, PeerNetAddress};
@@ -38,6 +39,7 @@ impl ServiceOpenAPI {
         service_type: ServiceType,
         service_metadata: &HashMap<String, String>,
         handlers: &HashMap<String, Handler>,
+        json_schemas: Option<&ServiceJsonSchemas>,
     ) -> Self {
         let mut schemas_collector = Vec::new();
 
@@ -73,10 +75,19 @@ impl ServiceOpenAPI {
                 continue;
             }
 
-            let request_body =
-                infer_handler_request_body(operation_id, handler_schemas, &mut schemas_collector);
-            let response =
-                infer_handler_response(operation_id, handler_schemas, &mut schemas_collector);
+            let json_schemas = json_schemas.and_then(|s| s.handlers.get(handler_name));
+            let request_body = infer_handler_request_body(
+                operation_id,
+                handler_schemas,
+                json_schemas,
+                &mut schemas_collector,
+            );
+            let response = infer_handler_response(
+                operation_id,
+                handler_schemas,
+                json_schemas,
+                &mut schemas_collector,
+            );
 
             let extensions = if !handler_schemas.metadata.is_empty() {
                 Some(
@@ -306,6 +317,7 @@ fn response_schema_ref(operation_id: &str) -> Ref {
 fn infer_handler_request_body(
     operation_id: &str,
     handler_schemas: &Handler,
+    json_schemas: Option<&HandlerJsonSchemas>,
     schemas_collector: &mut Vec<(String, Schema)>,
 ) -> Option<RequestBody> {
     let mut is_required = true;
@@ -341,7 +353,10 @@ fn infer_handler_request_body(
                 content_type,
                 schema,
             } => {
-                let mut schema = Schema::new(schema.clone().unwrap_or(Value::Bool(true)));
+                let schema = json_schemas
+                    .and_then(|s| s.input.as_ref())
+                    .or(schema.as_ref());
+                let mut schema = Schema::new(schema.cloned().unwrap_or(Value::Bool(true)));
                 if schema.0 == Value::Bool(true) {
                     // Even though the boolean schema true is valid Json Schema,
                     // tools generally like more the {} schema more.
@@ -380,12 +395,13 @@ fn infer_handler_request_body(
 fn infer_handler_response(
     operation_id: &str,
     handler_schemas: &Handler,
+    json_schemas: Option<&HandlerJsonSchemas>,
     schemas_collector: &mut Vec<(String, Schema)>,
 ) -> Response {
-    match (
-        &handler_schemas.output_rules.json_schema,
-        &handler_schemas.output_rules.content_type_rule,
-    ) {
+    let json_schema = json_schemas
+        .and_then(|s| s.output.as_ref())
+        .or(handler_schemas.output_rules.json_schema.as_ref());
+    match (json_schema, &handler_schemas.output_rules.content_type_rule) {
         (_, OutputContentTypeRule::None) => Response::builder().description("Empty").build(),
         (None, OutputContentTypeRule::Set { content_type, .. }) => Response::builder()
             .content(

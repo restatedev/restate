@@ -211,6 +211,7 @@ fn another_greeter_service() -> endpoint_manifest::Service {
 
 fn add_deployment_request(services: Vec<endpoint_manifest::Service>) -> AddDeploymentRequest {
     AddDeploymentRequest {
+        json_schemas: None,
         deployment_address: DeploymentAddress::mock(),
         additional_headers: Default::default(),
         metadata: Default::default(),
@@ -234,6 +235,7 @@ fn update_deployment_request(
     services: Vec<endpoint_manifest::Service>,
 ) -> UpdateDeploymentRequest {
     UpdateDeploymentRequest {
+        json_schemas: None,
         deployment_id,
         deployment_address: DeploymentAddress::mock(),
         additional_headers: Default::default(),
@@ -276,6 +278,7 @@ fn register_new_deployment_add_unregistered_service() {
     // Register first deployment
     let deployment_1 = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -294,6 +297,7 @@ fn register_new_deployment_add_unregistered_service() {
     updater = SchemaUpdater::new(schemas);
     let deployment_2 = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service(), another_greeter_service()])
         })
@@ -323,6 +327,7 @@ mod routing_header {
         let ((result, deployment_id_1), schema) =
             SchemaUpdater::update_and_return(Schema::default(), |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),
                         HeaderValue::from_static("1"),
@@ -339,6 +344,7 @@ mod routing_header {
         let ((result, deployment_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),
                         HeaderValue::from_static("2"),
@@ -355,6 +361,7 @@ mod routing_header {
         let ((result, deployment_id_3), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: Default::default(),
                     ..add_deployment_request(vec![greeter_service()])
                 })
@@ -367,6 +374,7 @@ mod routing_header {
         let ((result, expected_dp_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),
                         HeaderValue::from_static("2"),
@@ -383,6 +391,7 @@ mod routing_header {
         let ((result, expected_dp_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),
                         HeaderValue::from_static("2"),
@@ -413,6 +422,7 @@ mod routing_header {
         let ((result, deployment_id_1), schema) =
             SchemaUpdater::update_and_return(Schema::default(), |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-routing"),
                         HeaderValue::from_static("1"),
@@ -429,6 +439,7 @@ mod routing_header {
         let ((result, deployment_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: Default::default(),
                     ..add_deployment_request(vec![greeter_service()])
                 })
@@ -451,6 +462,7 @@ mod routing_header {
         let ((result, deployment_id_1), schema) =
             SchemaUpdater::update_and_return(Schema::default(), |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-restate-routing"),
                         HeaderValue::from_static("1"),
@@ -467,6 +479,7 @@ mod routing_header {
         let ((result, deployment_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-my-routing"),
                         HeaderValue::from_static("1"),
@@ -483,6 +496,7 @@ mod routing_header {
         let ((result, deployment_id_3), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: Default::default(),
                     ..add_deployment_request(vec![greeter_service()])
                 })
@@ -495,6 +509,7 @@ mod routing_header {
         let ((result, deployment_id_4), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [
                         (
                             HeaderName::from_static("x-restate-routing"),
@@ -517,6 +532,7 @@ mod routing_header {
         let ((result, expected_dp_id_2), schema) =
             SchemaUpdater::update_and_return(schema, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     additional_headers: [(
                         HeaderName::from_static("x-my-routing"),
                         HeaderValue::from_static("1"),
@@ -579,6 +595,7 @@ fn force_deploy_private_service() -> Result<(), SchemaError> {
     updater = SchemaUpdater::new(schemas);
     let new_deployment_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             allow_breaking_changes: AllowBreakingChanges::Yes,
             overwrite: Overwrite::Yes,
             ..add_deployment_request(vec![greeter_service()])
@@ -604,6 +621,7 @@ fn register_new_deployment_allow_breaking_changes() {
     // Register first deployment
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -622,6 +640,7 @@ fn register_new_deployment_allow_breaking_changes() {
     updater = SchemaUpdater::new(schemas);
     let deployment_2_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             allow_breaking_changes: AllowBreakingChanges::Yes,
             ..add_deployment_request(vec![greeter_virtual_object()])
@@ -650,6 +669,7 @@ mod change_service_type {
 
         let deployment_1_id = updater
             .add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service()])
             })
@@ -660,6 +680,7 @@ mod change_service_type {
         schemas.assert_service_deployment(GREETER_SERVICE_NAME, deployment_1_id);
 
         let compute_result = SchemaUpdater::new(schemas).add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_virtual_object()])
         });
@@ -675,6 +696,7 @@ mod change_service_type {
 
         let deployment_1_id = updater
             .add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service()])
             })
@@ -686,6 +708,7 @@ mod change_service_type {
         let ((result, deployment_id_2), schemas) =
             SchemaUpdater::update_and_return(schemas, |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
                     allow_breaking_changes: AllowBreakingChanges::Yes,
                     ..add_deployment_request(vec![greeter_virtual_object()])
@@ -707,6 +730,7 @@ mod change_service_type {
 
         let deployment_1_id = updater
             .add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service()])
             })
@@ -718,6 +742,7 @@ mod change_service_type {
         updater = SchemaUpdater::new(schemas);
         let deployment_2_id = updater
             .add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
                 allow_breaking_changes: AllowBreakingChanges::Yes,
                 ..add_deployment_request(vec![greeter_workflow()])
@@ -753,6 +778,7 @@ fn override_existing_deployment_removing_a_service() {
     let ((result, new_deployment_id), schemas) =
         SchemaUpdater::update_and_return(schemas, |updater| {
             updater.add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 allow_breaking_changes: AllowBreakingChanges::Yes,
                 overwrite: Overwrite::Yes,
                 ..add_deployment_request(vec![greeter_service()])
@@ -794,6 +820,7 @@ fn register_two_deployments_then_remove_first() {
     let ((_, deployment_id_1), schemas) =
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service(), another_greeter_service()])
             })
@@ -802,6 +829,7 @@ fn register_two_deployments_then_remove_first() {
 
     let ((_, deployment_id_2), schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -841,6 +869,7 @@ fn register_two_deployments_then_remove_second() {
     let ((_, deployment_id_1), schemas) =
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service(), another_greeter_service()])
             })
@@ -849,6 +878,7 @@ fn register_two_deployments_then_remove_second() {
 
     let ((_, deployment_id_2), schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -886,6 +916,7 @@ fn update_latest_deployment() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_virtual_object()])
         })
@@ -894,6 +925,7 @@ fn update_latest_deployment() {
 
     assert!(let SchemaError::NotFound(_) = updater.update_deployment(
             UpdateDeploymentRequest {
+                json_schemas: None,
                 overwrite: Overwrite::Yes,
                 ..update_deployment_request(DeploymentId::new(), vec![])
             }
@@ -901,6 +933,7 @@ fn update_latest_deployment() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             additional_headers: [(
                 HeaderName::from_static("foo"),
@@ -931,6 +964,7 @@ fn update_draining_deployment() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -939,6 +973,7 @@ fn update_draining_deployment() {
 
     let deployment_2_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service(), another_greeter_service()])
         })
@@ -947,6 +982,7 @@ fn update_draining_deployment() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             additional_headers: [(
                 HeaderName::from_static("foo"),
@@ -977,6 +1013,7 @@ fn update_deployment_same_uri() {
     let ((_, deployment_id_1), schemas) =
         SchemaUpdater::update_and_return(Schema::default(), |updater| {
             updater.add_deployment(AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
                 ..add_deployment_request(vec![greeter_service()])
             })
@@ -986,6 +1023,7 @@ fn update_deployment_same_uri() {
     // patching new invocations
     let ((_, deployment_id_2), schemas) = SchemaUpdater::update_and_return(schemas, |updater| {
         updater.add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -996,6 +1034,7 @@ fn update_deployment_same_uri() {
 
     let schemas = SchemaUpdater::update(schemas, |updater| {
         updater.update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..update_deployment_request(deployment_id_1, vec![greeter_service()])
         })
@@ -1027,6 +1066,7 @@ fn update_deployment_same_uri() {
         deployment_id_2,
         SchemaUpdater::update_and_return(schemas, |updater| updater.add_deployment(
             AddDeploymentRequest {
+                json_schemas: None,
                 deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
                 allow_breaking_changes: AllowBreakingChanges::Yes,
                 overwrite: Overwrite::Yes,
@@ -1045,6 +1085,7 @@ fn update_latest_deployment_add_handler() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1078,6 +1119,7 @@ fn update_latest_deployment_add_handler() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             overwrite: Overwrite::Yes,
             ..update_deployment_request(deployment_1_id, vec![updated_greeter_service])
         })
@@ -1112,6 +1154,7 @@ fn update_draining_deployment_add_handler() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1120,6 +1163,7 @@ fn update_draining_deployment_add_handler() {
 
     let deployment_2_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1153,6 +1197,7 @@ fn update_draining_deployment_add_handler() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             overwrite: Overwrite::Yes,
             ..update_deployment_request(deployment_1_id, vec![updated_greeter_service])
         })
@@ -1202,6 +1247,7 @@ fn update_latest_deployment_add_service() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1210,6 +1256,7 @@ fn update_latest_deployment_add_service() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             overwrite: Overwrite::Yes,
             ..update_deployment_request(
                 deployment_1_id,
@@ -1238,6 +1285,7 @@ fn update_draining_deployment_add_service() {
 
     let deployment_1_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9080"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1246,6 +1294,7 @@ fn update_draining_deployment_add_service() {
 
     let deployment_2_id = updater
         .add_deployment(AddDeploymentRequest {
+            json_schemas: None,
             deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
             ..add_deployment_request(vec![greeter_service()])
         })
@@ -1254,6 +1303,7 @@ fn update_draining_deployment_add_service() {
 
     updater
         .update_deployment(UpdateDeploymentRequest {
+            json_schemas: None,
             overwrite: Overwrite::Yes,
             ..update_deployment_request(
                 deployment_1_id,
@@ -1722,6 +1772,7 @@ mod endpoint_manifest_options_propagation {
         let ((_, deployment_id), schema) =
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri("http://localhost:9081"),
                     ..add_deployment_request(vec![endpoint_manifest::Service {
                         journal_retention: Some(60 * 1000), // A = 60 seconds again
@@ -1797,6 +1848,7 @@ mod endpoint_manifest_options_propagation {
         let ((_, deployment_id), schema) =
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri("http://localhost:9082"),
                     ..add_deployment_request(vec![endpoint_manifest::Service {
                         journal_retention: None,
@@ -2243,6 +2295,7 @@ mod endpoint_manifest_options_propagation {
         let ((_, deployment_id), schema) =
             SchemaUpdater::update_and_return(Schema::default(), move |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock(),
                     additional_headers: Default::default(),
                     metadata: Default::default(),
@@ -2417,6 +2470,7 @@ mod modify_service {
         let ((_, deployment_id_2), schema_after_second_deployment) =
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri("http://localhost:9082"),
                     ..add_deployment_request(vec![greeter_service()]) // identical service definition
                 })
@@ -2528,6 +2582,7 @@ mod modify_service {
         let ((_, deployment_id_2), schema_after_second_deployment) =
             SchemaUpdater::update_and_return(schema, move |updater| {
                 updater.add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri("http://localhost:9082"),
                     ..add_deployment_request(vec![greeter_workflow()]) // identical service definition
                 })
@@ -3328,6 +3383,7 @@ mod bilrost_encoded {
         SchemaUpdater::update(schema, |updater| {
             updater
                 .add_deployment(AddDeploymentRequest {
+                    json_schemas: None,
                     deployment_address: DeploymentAddress::mock_uri(&format!(
                         "http://localhost:{port}"
                     )),
@@ -3453,5 +3509,172 @@ mod lite {
             assert_eq!(serde_json::to_value(&lite).unwrap(), expected);
             assert_eq!(serde_json::to_value(&decoded).unwrap(), expected);
         }
+    }
+}
+
+mod json_schemas {
+    use super::*;
+
+    use std::collections::HashSet;
+
+    use bytes::BytesMut;
+    use serde_json::json;
+    use test_log::test;
+
+    use restate_test_util::{assert, assert_eq};
+
+    use crate::Version;
+    use crate::identifiers::JsonSchemasId;
+    use crate::net::address::{AdvertisedAddress, HttpIngressPort};
+    use crate::schema::{DeploymentJsonSchemas, JsonSchemasIndex};
+    use crate::storage::StorageCodec;
+    use crate::time::MillisSinceEpoch;
+
+    fn service_with_json_schemas() -> endpoint_manifest::Service {
+        let mut service = greeter_service();
+        service.handlers[0].input = Some(endpoint_manifest::InputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({
+                "type": "object",
+                "title": "Greeting",
+                "description": "x".repeat(1024),
+            })),
+            required: Some(false),
+        });
+        service.handlers[0].output = Some(endpoint_manifest::OutputPayload {
+            content_type: Some("application/json".to_owned()),
+            json_schema: Some(json!({"type": "string"})),
+            set_content_type_if_empty: None,
+        });
+        service
+    }
+
+    fn add(
+        services: Vec<endpoint_manifest::Service>,
+        json_schemas: Option<JsonSchemasId>,
+    ) -> Schema {
+        SchemaUpdater::update(Schema::default(), |updater| {
+            updater
+                .add_deployment(AddDeploymentRequest {
+                    json_schemas,
+                    ..add_deployment_request(services)
+                })
+                .map(|_| ())
+        })
+        .unwrap()
+    }
+
+    fn encoded_len(schema: &Schema) -> usize {
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(schema, &mut buf).unwrap();
+        buf.len()
+    }
+
+    fn ingress() -> AdvertisedAddress<HttpIngressPort> {
+        "http://localhost:8080".parse().unwrap()
+    }
+
+    #[test]
+    fn json_schemas_are_separated_on_registration() {
+        let service = service_with_json_schemas();
+        let inline = add(vec![service.clone()], None);
+        let inline_deployment_id = inline.assert_service(GREETER_SERVICE_NAME).deployment_id;
+        let id = JsonSchemasId::new();
+        let split = add(vec![service.clone()], Some(id));
+        let deployment_id = split.assert_service(GREETER_SERVICE_NAME).deployment_id;
+
+        // The object built from discovery is exactly what gets separated during registration
+        let json_schemas = DeploymentJsonSchemas::from_discovery(&[service])
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            inline.inline_json_schemas(),
+            vec![(inline_deployment_id, json_schemas.clone())]
+        );
+        assert!(
+            DeploymentJsonSchemas::from_discovery(&[greeter_service()])
+                .unwrap()
+                .is_none()
+        );
+
+        // The managed schema doesn't carry the JSON schemas
+        assert_eq!(split.json_schemas_ref(&deployment_id), Some(id));
+        assert_eq!(split.json_schemas_refs(), HashSet::from([id]));
+        assert!(split.inline_json_schemas().is_empty());
+        let handler = split.assert_handler(GREETER_SERVICE_NAME, GREET_HANDLER_NAME);
+        assert_eq!(
+            (handler.input_json_schema, handler.output_json_schema),
+            (None, None)
+        );
+        assert!(encoded_len(&split) < encoded_len(&inline));
+
+        // Hydrating the resolved metadata yields what the inline registration returns
+        let mut hydrated = split.assert_service(GREETER_SERVICE_NAME);
+        json_schemas.hydrate(&mut hydrated);
+        let mut expected = inline.assert_service(GREETER_SERVICE_NAME);
+        expected.deployment_id = deployment_id;
+        assert_eq!(
+            serde_json::to_value(hydrated).unwrap(),
+            serde_json::to_value(expected).unwrap()
+        );
+
+        // The OpenAPI document is built from the handlers and the separate JSON schemas
+        let inline_openapi = inline
+            .resolve_latest_service_openapi(GREETER_SERVICE_NAME, ingress())
+            .unwrap();
+        assert_eq!(
+            split.resolve_latest_service_openapi_with(
+                GREETER_SERVICE_NAME,
+                ingress(),
+                Some(&json_schemas)
+            ),
+            Some(inline_openapi.clone())
+        );
+        assert_ne!(
+            split.resolve_latest_service_openapi(GREETER_SERVICE_NAME, ingress()),
+            Some(inline_openapi)
+        );
+
+        // Attaching (on boot migration) only applies to matching inline JSON schemas
+        let other = DeploymentJsonSchemas::from_discovery(&[{
+            let mut service = service_with_json_schemas();
+            service.handlers[0].output = None;
+            service
+        }])
+        .unwrap()
+        .unwrap();
+        let mut migrated = inline;
+        assert!(!migrated.attach_json_schemas(inline_deployment_id, id, &other));
+        assert!(migrated.attach_json_schemas(inline_deployment_id, id, &json_schemas));
+        assert!(migrated.inline_json_schemas().is_empty());
+        assert_eq!(migrated.json_schemas_ref(&inline_deployment_id), Some(id));
+        assert!(!migrated.attach_json_schemas(inline_deployment_id, id, &json_schemas));
+
+        // The stored object survives encoding
+        let mut buf = BytesMut::new();
+        StorageCodec::encode(&json_schemas, &mut buf).unwrap();
+        let decoded = StorageCodec::decode::<DeploymentJsonSchemas, _>(&mut buf).unwrap();
+        assert_eq!(decoded, json_schemas);
+    }
+
+    #[test]
+    fn index_tracks_unreferenced_ids() {
+        let referenced = JsonSchemasId::new();
+        let schema = add(vec![service_with_json_schemas()], Some(referenced));
+        let unreferenced = JsonSchemasId::new();
+
+        let reserved_at = MillisSinceEpoch::new(1_000);
+        let index = JsonSchemasIndex::reserve(None, [referenced, unreferenced], reserved_at);
+        assert_eq!(index.version(), Version::MIN);
+
+        // Only unreferenced ids past their grace period are garbage
+        assert!(index.unreferenced(&schema, reserved_at).is_empty());
+        let garbage = index.unreferenced(&schema, MillisSinceEpoch::new(1_001));
+        assert_eq!(garbage, vec![unreferenced]);
+
+        let index = index.remove(&garbage.into_iter().collect()).unwrap();
+        assert_eq!(index.version(), Version::MIN.next());
+        assert_eq!(index.ids().collect::<Vec<_>>(), vec![referenced]);
+        assert!(index.remove(&HashSet::from([unreferenced])).is_none());
     }
 }

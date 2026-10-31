@@ -17,7 +17,7 @@ use crate::config::Configuration;
 use crate::deployment::{DeploymentAddress, Headers};
 use crate::endpoint_manifest::HandlerType;
 use crate::errors::GenericError;
-use crate::identifiers::{DeploymentId, SubscriptionId};
+use crate::identifiers::{DeploymentId, JsonSchemasId, SubscriptionId};
 use crate::invocation::{
     InvocationTargetType, ServiceType, VirtualObjectHandlerType, WorkflowHandlerType,
 };
@@ -260,6 +260,8 @@ pub(in crate::schema) struct AddDeploymentRequest {
     pub(in crate::schema) discovery_response: DiscoveryResponse,
     pub(in crate::schema) allow_breaking_changes: AllowBreakingChanges,
     pub(in crate::schema) overwrite: Overwrite,
+    /// If set, the handlers' JSON schemas are stored in this object instead of inline.
+    pub(in crate::schema) json_schemas: Option<JsonSchemasId>,
 }
 
 /// Outcome of removing deployments.
@@ -285,6 +287,9 @@ pub struct UpdateDeploymentRequest {
     pub(in crate::schema) additional_headers: Headers,
     pub(in crate::schema) discovery_response: DiscoveryResponse,
     pub(in crate::schema) overwrite: Overwrite,
+    /// If set, the re-discovered handlers' JSON schemas are stored in this object instead of
+    /// inline. Only applies when overwriting.
+    pub(in crate::schema) json_schemas: Option<JsonSchemasId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -362,6 +367,7 @@ impl SchemaUpdater {
             discovery_response,
             allow_breaking_changes,
             overwrite,
+            json_schemas,
         }: AddDeploymentRequest,
     ) -> Result<(AddDeploymentResult, DeploymentId), SchemaError> {
         let mut add_deployment_result = AddDeploymentResult::Created;
@@ -459,23 +465,28 @@ impl SchemaUpdater {
             computed_services.insert(service_name.to_string(), Arc::new(new_service_revision));
         }
 
-        self.schema.unindexed.deployments.insert(
-            deployment_id,
-            Deployment {
-                id: deployment_id,
-                ty: Some(Self::create_deployment_ty(
-                    deployment_address,
-                    discovery_response.deployment_type_parameters,
-                )),
-                delivery_options: DeliveryOptions::new(additional_headers),
-                supported_protocol_versions: discovery_response.supported_protocol_versions,
-                sdk_version: discovery_response.sdk_version,
-                created_at: MillisSinceEpoch::now(),
-                metadata,
-                services: computed_services,
-                limits: None,
-            },
-        );
+        let mut deployment = Deployment {
+            id: deployment_id,
+            ty: Some(Self::create_deployment_ty(
+                deployment_address,
+                discovery_response.deployment_type_parameters,
+            )),
+            delivery_options: DeliveryOptions::new(additional_headers),
+            supported_protocol_versions: discovery_response.supported_protocol_versions,
+            sdk_version: discovery_response.sdk_version,
+            created_at: MillisSinceEpoch::now(),
+            metadata,
+            services: computed_services,
+            limits: None,
+            json_schemas: None,
+        };
+        if let Some(id) = json_schemas {
+            deployment.detach_json_schemas(id);
+        }
+        self.schema
+            .unindexed
+            .deployments
+            .insert(deployment_id, deployment);
 
         self.mark_updated();
 
@@ -702,6 +713,7 @@ impl SchemaUpdater {
             additional_headers,
             discovery_response,
             overwrite,
+            json_schemas,
         }: UpdateDeploymentRequest,
     ) -> Result<(), SchemaError> {
         // Look for an existing deployment with this ID
@@ -750,6 +762,7 @@ impl SchemaUpdater {
                     // discovery_response once it has it, for now
                     // we keep original value.
                     limits: existing_deployment.limits,
+                    json_schemas: existing_deployment.json_schemas,
                 },
             );
 
@@ -834,29 +847,35 @@ impl SchemaUpdater {
                 computed_services.insert(service_name, Arc::new(service_revision));
             }
 
-            self.schema.unindexed.deployments.insert(
-                deployment_id,
-                Deployment {
-                    // We update all these fields
-                    ty: Some(Self::create_deployment_ty(
-                        deployment_address,
-                        discovery_response.deployment_type_parameters,
-                    )),
-                    delivery_options: DeliveryOptions::new(additional_headers),
-                    supported_protocol_versions: discovery_response.supported_protocol_versions,
-                    sdk_version: discovery_response.sdk_version,
-                    services: computed_services,
+            let mut deployment = Deployment {
+                // We update all these fields
+                ty: Some(Self::create_deployment_ty(
+                    deployment_address,
+                    discovery_response.deployment_type_parameters,
+                )),
+                delivery_options: DeliveryOptions::new(additional_headers),
+                supported_protocol_versions: discovery_response.supported_protocol_versions,
+                sdk_version: discovery_response.sdk_version,
+                services: computed_services,
+                // The services were re-discovered, so the previous JSON schemas object is stale
+                json_schemas: None,
 
-                    // We keep only these same as before
-                    id: deployment_id,
-                    created_at: existing_deployment.created_at,
-                    metadata: existing_deployment.metadata.clone(),
-                    // todo: limits should respect new values from
-                    // discovery_response once it has it, for now
-                    // we keep original value.
-                    limits: existing_deployment.limits,
-                },
-            );
+                // We keep only these same as before
+                id: deployment_id,
+                created_at: existing_deployment.created_at,
+                metadata: existing_deployment.metadata.clone(),
+                // todo: limits should respect new values from
+                // discovery_response once it has it, for now
+                // we keep original value.
+                limits: existing_deployment.limits,
+            };
+            if let Some(id) = json_schemas {
+                deployment.detach_json_schemas(id);
+            }
+            self.schema
+                .unindexed
+                .deployments
+                .insert(deployment_id, deployment);
 
             self.mark_updated();
 
@@ -1276,7 +1295,7 @@ impl SchemaUpdater {
 }
 
 impl Handler {
-    fn from_schema(
+    pub(in crate::schema::metadata) fn from_schema(
         service_name: &str,
         service_type: ServiceType,
         is_service_public: bool,

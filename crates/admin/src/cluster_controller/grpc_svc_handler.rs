@@ -45,7 +45,10 @@ use restate_types::identifiers::PartitionId;
 use restate_types::logs::metadata::{Logs, SegmentIndex};
 use restate_types::logs::{LogId, Lsn, SequenceNumber};
 use restate_types::metadata::{GlobalMetadata, Precondition};
-use restate_types::metadata_store::keys::{NODES_CONFIG_KEY, partition_processor_epoch_key};
+use restate_types::metadata_store::keys::{
+    JSON_SCHEMAS_INDEX_KEY, NODES_CONFIG_KEY, deployment_json_schemas_key,
+    partition_processor_epoch_key,
+};
 use restate_types::net::connect_opts::GrpcConnectionOptions;
 use restate_types::net::partition_processor_manager::{
     DropPartitionStoreError, DropPartitionStoreOutcome, Snapshot,
@@ -54,7 +57,7 @@ use restate_types::nodes_config::{NodesConfiguration, Role};
 use restate_types::partitions::PartitionTable;
 use restate_types::partitions::state::PartitionReplicaSetStates;
 use restate_types::protobuf::cluster::ClusterConfiguration;
-use restate_types::schema::Schema;
+use restate_types::schema::{JsonSchemasIndex, Schema};
 use restate_types::storage::{StorageCodec, StorageEncode};
 use restate_types::{NodeId, PlainNodeId, Version, Versioned};
 
@@ -554,6 +557,21 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
             .iter()
             .map(|p| partition_processor_epoch_key(*p.0));
 
+        let json_schemas_index = current_provider
+            .get::<JsonSchemasIndex>(JSON_SCHEMAS_INDEX_KEY.clone())
+            .await
+            .map_err(|err| {
+                Status::internal(format!("Failed to get the JSON schemas index: {err}"))
+            })?;
+        let json_schemas_keys = json_schemas_index
+            .iter()
+            .flat_map(|index| index.ids().map(deployment_json_schemas_key))
+            .chain(
+                json_schemas_index
+                    .is_some()
+                    .then(|| JSON_SCHEMAS_INDEX_KEY.clone()),
+            );
+
         let known_keys = [
             Schema::KEY,
             Logs::KEY,
@@ -562,7 +580,8 @@ impl ClusterCtrlSvc for ClusterCtrlSvcHandler {
         ]
         .iter()
         .map(|s| ByteString::from_static(s))
-        .chain(partitions_epoch_keys);
+        .chain(partitions_epoch_keys)
+        .chain(json_schemas_keys);
 
         let precondition = if request.force_override {
             Precondition::None

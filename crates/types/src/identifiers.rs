@@ -1318,6 +1318,7 @@ ulid_backed_id!(Deployment @with_resource_id);
 ulid_backed_id!(Subscription @with_resource_id);
 ulid_backed_id!(PartitionProcessorRpcRequest);
 ulid_backed_id!(Snapshot @with_resource_id);
+ulid_backed_id!(JsonSchemas);
 
 partitioned::partitioned_resource_id!(
     /// StateMutation request identifier

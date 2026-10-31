@@ -40,7 +40,11 @@ pub async fn list_service_handlers<Metadata, Discovery, Telemetry, Invocations, 
 where
     Metadata: MetadataService,
 {
-    match state.schema_registry.list_service_handlers(&service_name) {
+    match state
+        .schema_registry
+        .list_service_handlers(&service_name)
+        .await
+    {
         Some(handlers) => Ok(ListServiceHandlersResponse { handlers }.into()),
         None => Err(MetaApiError::ServiceNotFound(service_name)),
     }
@@ -73,6 +77,7 @@ where
     match state
         .schema_registry
         .get_service_handler(&service_name, &handler_name)
+        .await
     {
         Some(metadata) => Ok(metadata.into()),
         _ => Err(MetaApiError::HandlerNotFound {
