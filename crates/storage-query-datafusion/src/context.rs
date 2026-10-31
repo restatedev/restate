@@ -8,7 +8,7 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ use tokio::sync::watch;
 use tracing::warn;
 
 use datafusion::catalog::TableProvider;
-use datafusion::common::TableReference;
+use datafusion::common::{ParamValues, TableReference};
 use datafusion::error::DataFusionError;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::execution::TaskContext;
@@ -651,13 +651,46 @@ impl QueryContext {
     }
 
     pub async fn execute(&self, sql: &str) -> Result<QueryResult, QueryError> {
+        self.execute_with_params(sql, None).await
+    }
+
+    /// Executes `sql`, replacing its placeholders (`$1`, `$name`) with `params`.
+    pub async fn execute_with_params(
+        &self,
+        sql: &str,
+        params: Option<ParamValues>,
+    ) -> Result<QueryResult, QueryError> {
         if let Some(limiter) = self.rate_limiter.as_ref() {
             limiter.try_consume_one()?;
         }
 
         let state = self.datafusion_context.state();
         let statement = state.sql_to_statement(sql, &datafusion::config::Dialect::PostgreSQL)?;
-        let plan = state.statement_to_plan(statement).await?;
+        let mut plan = state.statement_to_plan(statement).await?;
+
+        // Every placeholder needs a value, and every value a placeholder: DataFusion would
+        // otherwise fail late for missing values and silently ignore unused ones.
+        let used = plan.get_parameter_names()?;
+        let provided: HashSet<String> = match &params {
+            None => HashSet::new(),
+            Some(ParamValues::List(values)) => {
+                (1..=values.len()).map(|i| format!("${i}")).collect()
+            }
+            Some(ParamValues::Map(values)) => {
+                values.keys().map(|name| format!("${name}")).collect()
+            }
+        };
+        check_placeholders(
+            "No values provided for placeholders",
+            used.difference(&provided),
+        )?;
+        check_placeholders(
+            "Values provided for placeholders not used in the query",
+            provided.difference(&used),
+        )?;
+        if let Some(params) = params {
+            plan = plan.with_param_values(params)?;
+        }
         self.sql_options.verify_plan(&plan)?;
         let df = self.datafusion_context.execute_logical_plan(plan).await?;
 
@@ -684,6 +717,21 @@ impl AsRef<SessionContext> for QueryContext {
     fn as_ref(&self) -> &SessionContext {
         &self.datafusion_context
     }
+}
+
+fn check_placeholders<'a>(
+    message: &str,
+    ids: impl Iterator<Item = &'a String>,
+) -> Result<(), DataFusionError> {
+    let mut ids: Vec<&str> = ids.map(String::as_str).collect();
+    if ids.is_empty() {
+        return Ok(());
+    }
+    ids.sort_unstable();
+    Err(DataFusionError::Plan(format!(
+        "{message}: {}",
+        ids.join(", ")
+    )))
 }
 
 /// Result of a SQL query execution, containing the record batch stream

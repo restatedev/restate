@@ -57,6 +57,13 @@ pub struct Sql {
     #[command(subcommand)]
     sub: Option<SqlSub>,
 
+    /// A value for a positional placeholder in the query. Repeat it for each placeholder: the
+    /// first `--param` binds `$1`, the second `$2`, and so on. Values are sent as strings and
+    /// converted to the type of the column they are compared with; cast where no column type
+    /// applies, e.g. `LIMIT $1::BIGINT`
+    #[arg(long = "param", short = 'p', value_name = "VALUE")]
+    params: Vec<String>,
+
     #[clap(flatten)]
     watch: Watch,
 
@@ -73,6 +80,7 @@ fn sql_after_help(long: bool) -> String {
             "restate sql \"SELECT id, target FROM sys_invocation ORDER BY created_at DESC LIMIT 10\" --json",
             "# State of the Cart virtual object: service_key is the object key, key the state key",
             "restate sql \"SELECT service_key, key, value_utf8 FROM state WHERE service_name = 'Cart'\"",
+            "restate sql 'SELECT id, status FROM sys_invocation WHERE target_service_name = $1' -p Cart",
             "restate sql describe sys_invocation",
         ],
         learn_more: "https://docs.restate.dev/references/sql-introspection",
@@ -145,7 +153,9 @@ async fn run_sql(State(env): State<CliEnv>, opts: &Sql) -> Result<()> {
 async fn run_query(env: &CliEnv, sql_opts: &Sql, query: &str) -> Result<()> {
     let client = crate::clients::DataFusionHttpClient::new(env).await?;
     let start_time = Instant::now();
-    let resp = client.run_arrow_query(query.to_owned()).await?;
+    let resp = client
+        .run_arrow_query_with_params(query.to_owned(), sql_opts.params.clone())
+        .await?;
 
     let json_output = CliContext::get().json_output();
     let mut row_count: usize = 0;

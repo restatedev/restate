@@ -17,6 +17,7 @@ use datafusion::arrow::array::{
     UInt32Array, UInt64Array,
 };
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::common::{ParamValues, ScalarValue};
 use futures::StreamExt;
 use googletest::prelude::{all, assert_that, eq};
 use googletest::unordered_elements_are;
@@ -979,5 +980,103 @@ async fn query_state_with_service_key_filter() {
     assert_that!(
         null_scope_service_key,
         row!(0, { "service_name" => LargeStringArray: eq("unscoped") })
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn query_with_params() {
+    let engine = MockQueryEngine::create().await;
+    let id = InvocationId::mock_random().to_string();
+
+    // asserts that `sql` with `params` pushes `scan_filter` down to the table scan
+    let assert_scan_filter = async |sql: &str, params: ParamValues, scan_filter: &str| {
+        let batches = engine
+            .execute_with_params(format!("EXPLAIN {sql}"), params)
+            .await
+            .unwrap()
+            .stream
+            .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+            .await
+            .into_iter()
+            .collect::<datafusion::common::Result<Vec<_>>>()
+            .unwrap();
+        let plan = datafusion::arrow::util::pretty::pretty_format_batches(&batches)
+            .unwrap()
+            .to_string();
+        assert!(
+            plan.contains(&format!("partial_filters=[{scan_filter}]")),
+            "{plan}"
+        );
+    };
+
+    // positional placeholders
+    assert_scan_filter(
+        "SELECT id FROM sys_invocation_status WHERE id = $1",
+        vec![ScalarValue::new_utf8(&id)].into(),
+        &format!("sys_invocation_status.id = LargeUtf8(\"{id}\")"),
+    )
+    .await;
+
+    // named placeholders
+    assert_scan_filter(
+        "SELECT service_name FROM state WHERE service_key = $key",
+        vec![("key", ScalarValue::new_utf8("k1"))].into(),
+        "state.service_key = LargeUtf8(\"k1\")",
+    )
+    .await;
+
+    // values are coerced to the column type, whether they are strings (as sent by the CLI) or
+    // JSON numbers
+    assert_scan_filter(
+        "SELECT id FROM sys_invocation_status WHERE partition_key = $1",
+        vec![ScalarValue::new_utf8("42")].into(),
+        "sys_invocation_status.partition_key = UInt64(42)",
+    )
+    .await;
+    assert_scan_filter(
+        "SELECT id FROM sys_invocation_status WHERE pinned_service_protocol_version = $1",
+        vec![ScalarValue::Int64(Some(4))].into(),
+        "sys_invocation_status.pinned_service_protocol_version = UInt32(4)",
+    )
+    .await;
+
+    // missing and unused values are rejected before execution
+    let err = engine
+        .execute("SELECT id FROM sys_invocation_status WHERE id = $2 OR target = $name")
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string()
+            .contains("No values provided for placeholders: $2, $name"),
+        "{err}"
+    );
+
+    let err = engine
+        .execute_with_params(
+            "SELECT id FROM sys_invocation_status WHERE id = $2",
+            vec![ScalarValue::new_utf8("a"), ScalarValue::new_utf8("b")],
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string()
+            .contains("Values provided for placeholders not used in the query: $1"),
+        "{err}"
+    );
+
+    let err = engine
+        .execute_with_params(
+            "SELECT id FROM sys_invocation_status",
+            vec![("name", ScalarValue::new_utf8("a"))],
+        )
+        .await
+        .err()
+        .unwrap();
+    assert!(
+        err.to_string()
+            .contains("Values provided for placeholders not used in the query: $name"),
+        "{err}"
     );
 }
