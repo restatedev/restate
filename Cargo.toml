@@ -206,11 +206,6 @@ mockall = { version = "0.15.0" }
 num-traits = { version = "0.2.19" }
 num_cpus = { version = "1.17.0" }
 object_store = { version = "0.14.2", features = ["aws", "azure", "gcp"] }
-# Match our jsonwebtoken provider instead of enabling Octocrab's RustCrypto default.
-octocrab = { version = "0.54.2", default-features = false, features = [
-    "follow-redirect", "retry", "rustls", "timeout", "tracing", "default-client",
-    "rustls-ring", "jwt-aws-lc-rs",
-] }
 opentelemetry = { version = "0.33" }
 opentelemetry-otlp = { version = "0.33", default-features = false }
 opentelemetry-semantic-conventions = { version = "0.33" }

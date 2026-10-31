@@ -54,10 +54,11 @@ enumset = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-octocrab = { workspace = true, features = ["stream"] }
 regex = { workspace = true }
+reqwest = { workspace = true }
 rlimit = { workspace = true }
 rustls = { workspace = true, features = ["aws-lc-rs"] }
+serde_json = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -87,8 +88,6 @@ test-log = { workspace = true }
 tonic = { workspace = true, features = ["transport"] }
 tracing-subscriber = { workspace = true }
 rand = { workspace = true }
-reqwest = { workspace = true }
-serde_json = { workspace = true }
 url = { workspace = true }
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
