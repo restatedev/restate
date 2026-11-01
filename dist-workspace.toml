@@ -46,6 +46,10 @@ issues = "read"
 packages = "write"
 pull-requests = "write"
 
+[dist.github-custom-job-permissions.docker-build-release]
+contents = "read"
+packages = "write"
+
 [dist.github-custom-job-permissions.npm]
 packages = "read"
 contents = "read"
