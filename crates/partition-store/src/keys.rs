@@ -18,10 +18,11 @@ use anyhow::anyhow;
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use bytestring::ByteString;
 use prost::encoding::encoded_len_varint;
-use rocksdb::MergeOperands;
+use rocksdb::{CompactionDecision, MergeOperands};
 use strum::EnumIter;
 use tracing::{error, trace};
 
+use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::{Scope, ServiceName};
 use restate_util_string::{ReString, RestateString};
@@ -91,6 +92,10 @@ pub enum KeyKind {
     // # Locks
     // locks for scoped and unscoped virtual objects and workflows
     Lock,
+    // # Blob
+    // stores large values (e.g. invocation outputs) separated from
+    // the records referencing them
+    Blob,
 }
 
 impl KeyKind {
@@ -154,6 +159,7 @@ impl KeyKind {
             KeyKind::VQueueSuspendedStage => b"qS",
             KeyKind::VQueuePausedStage => b"qP",
             KeyKind::VQueueFinishedStage => b"qF",
+            KeyKind::Blob => b"bl",
         }
     }
 
@@ -167,6 +173,7 @@ impl KeyKind {
     /// ```
     pub const fn from_bytes(bytes: &[u8; Self::SERIALIZED_LENGTH]) -> Option<Self> {
         match bytes {
+            b"bl" => Some(KeyKind::Blob),
             b"de" => Some(KeyKind::Deduplication),
             b"fs" => Some(KeyKind::Fsm),
             b"ip" => Some(KeyKind::Idempotency),
@@ -235,20 +242,48 @@ impl KeyKind {
 
         match kind {
             KeyKind::VQueueMeta => vqueue_meta_merge::full_merge(key, existing_val, operands),
+            KeyKind::Blob => blob_table::merge::full_merge(key, existing_val, operands),
             _ => None,
         }
     }
 
     // Rocksdb merge operator function (partial merge)
-    #[inline]
     pub fn partial_merge(
-        _key: &[u8],
+        key: &[u8],
         _unused: Option<&[u8]>,
-        _operands: &MergeOperands,
+        operands: &MergeOperands,
     ) -> Option<Vec<u8>> {
-        // Currently, we have no partial merge operator for any key. Change this
-        // if/when this is needed.
-        None
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply merge operator; {e}");
+                return None;
+            }
+        };
+        trace!(?kind, "partial merge");
+
+        match kind {
+            KeyKind::Blob => blob_table::merge::partial_merge(key, operands),
+            _ => None,
+        }
+    }
+
+    pub fn compaction_filter(_lvl: u32, key: &[u8], value: &[u8]) -> CompactionDecision {
+        let mut kind_buf = key;
+        let kind = match KeyKind::deserialize(&mut kind_buf) {
+            Ok(kind) => kind,
+            Err(e) => {
+                error!("Cannot apply compaction filter; {e}");
+                return CompactionDecision::Keep;
+            }
+        };
+        trace!(?kind, "compaction filter");
+
+        match kind {
+            KeyKind::Blob => blob_table::merge::compaction_filter(key, value),
+            _ => CompactionDecision::Keep,
+        }
     }
 }
 
@@ -627,12 +662,13 @@ macro_rules! define_table_key {
 
 use crate::PaddedPartitionId;
 use crate::TableKind;
+use crate::blob_table;
 use crate::vqueue_table::vqueue_meta_merge;
 pub(crate) use define_table_key;
 use restate_storage_api::StorageError;
 use restate_storage_api::deduplication_table::ProducerId;
 use restate_storage_api::timer_table::TimerKeyKind;
-use restate_types::identifiers::InvocationUuid;
+use restate_types::identifiers::{InvocationUuid, ResourceId};
 use restate_types::journal_v2::{CompletionId, NotificationId, SignalIndex};
 
 pub(crate) trait KeyEncode {
@@ -1125,6 +1161,26 @@ impl KeyDecode for NotificationId {
                 )));
             }
         })
+    }
+}
+
+impl KeyEncode for BlobId {
+    fn encode<B: BufMut>(&self, target: &mut B) {
+        target.put_slice(&self.to_bytes());
+    }
+
+    fn serialized_length(&self) -> usize {
+        BlobId::RAW_BYTES_LEN
+    }
+}
+
+impl KeyDecode for BlobId {
+    fn decode(source: &mut &[u8]) -> crate::Result<Self> {
+        let (bytes, rest) = source
+            .split_first_chunk::<{ BlobId::RAW_BYTES_LEN }>()
+            .ok_or(StorageError::DataIntegrityError)?;
+        *source = rest;
+        BlobId::from_slice(bytes).map_err(|_| StorageError::DataIntegrityError)
     }
 }
 

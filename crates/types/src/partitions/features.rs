@@ -18,7 +18,7 @@ use crate::storage::{
 };
 use crate::{
     RESTATE_VERSION_1_6_0, RESTATE_VERSION_1_7_0, RESTATE_VERSION_1_7_5, RESTATE_VERSION_1_7_8,
-    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, SemanticRestateVersion,
+    RESTATE_VERSION_1_8_0, RESTATE_VERSION_1_8_1, RESTATE_VERSION_1_8_2, SemanticRestateVersion,
 };
 
 /// A change to the set of state-machine features enabled on a partition.
@@ -80,6 +80,13 @@ pub enum PartitionFeatureChange {
     ///
     /// *Since v1.8.1*
     EnablePreflightSignalRecording = 7,
+
+    /// Write invocation results into the blob
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.2*
+    EnableWriteBlobTable = 8,
 }
 
 impl PartitionFeatureChange {
@@ -100,6 +107,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightInvocationTerminationRetention => &RESTATE_VERSION_1_7_8,
             Self::EnableInconsistentStateMutationCleanup => &RESTATE_VERSION_1_8_0,
             Self::EnablePreflightSignalRecording => &RESTATE_VERSION_1_8_1,
+            Self::EnableWriteBlobTable => &RESTATE_VERSION_1_8_2,
         }
     }
 
@@ -130,6 +138,7 @@ impl PartitionFeatureChange {
             Self::EnablePreflightSignalRecording => {
                 !std::mem::replace(&mut features.preflight_signal_recording, true)
             }
+            Self::EnableWriteBlobTable => !std::mem::replace(&mut features.write_blob_table, true),
         }
     }
 }
@@ -199,6 +208,14 @@ pub struct PersistedFeatures {
     /// *Since v1.8.1*
     #[bilrost(tag(7))]
     pub preflight_signal_recording: bool,
+
+    /// Write invocation results into the blob
+    /// table and only reference this value from
+    /// the invocation status.
+    ///
+    /// *Since v1.8.2*
+    #[bilrost(tag(8))]
+    pub write_blob_table: bool,
 }
 
 impl PersistedFeatures {
@@ -218,6 +235,7 @@ impl PersistedFeatures {
                 .then_some("inconsistent_state_mutation_cleanup"),
             self.preflight_signal_recording
                 .then_some("preflight_signal_recording"),
+            self.write_blob_table.then_some("write_blob_table"),
         ]
         .into_iter()
         .flatten()

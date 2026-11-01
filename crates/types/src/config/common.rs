@@ -1147,6 +1147,15 @@ experimental! {
     ///
     /// Since v1.8.1
     preflight_signal_recording,
+
+    /// # Write invocation response result into blob table
+    ///
+    /// Instead of embedding the response result (which can be huge)
+    /// in the invocation status, we instead keep a reference to the
+    /// output that is written to the blob table
+    ///
+    /// Since v1.8.2
+    write_blob_table,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

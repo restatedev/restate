@@ -19,6 +19,7 @@ use comfy_table::Table;
 use restate_cli_util::ui::console::StyledTable;
 use restate_cli_util::{c_println, c_title};
 use restate_types::IdResourceType;
+use restate_types::blob::BlobId;
 use restate_types::identifiers::{
     AwakeableIdentifier, CanonicalEntryId, DeploymentId, ExternalSignalIdentifier, InvocationId,
     PartitionKey, SnapshotId, StateMutationId, SubscriptionId, TimestampAwareId, WithPartitionKey,
@@ -71,6 +72,7 @@ pub async fn run_decode(cmd: &Decode) -> anyhow::Result<()> {
         IdResourceType::Signal => decode_signal_id(input),
         IdResourceType::Snapshot => decode_snapshot_id(input),
         IdResourceType::VQueue => decode_vqueue_id(input),
+        IdResourceType::Blob => decode_blob_id(input),
     }
 }
 
@@ -164,6 +166,27 @@ fn decode_invocation_id(input: &str) -> anyhow::Result<()> {
     if !print_ulid_timestamp_if_valid(uuid_u128) {
         c_println!("Note: UUID appears to be a hash (deterministic invocation), not a ULID");
     }
+
+    print_raw_bytes(&id.to_bytes());
+
+    Ok(())
+}
+
+fn decode_blob_id(input: &str) -> anyhow::Result<()> {
+    let id = BlobId::from_str(input)?;
+
+    print_header("Blob", input);
+
+    c_title!("🔍", "Decoded Components");
+    let mut components = Table::new_styled();
+    components.add_kv_row(
+        "Created At:",
+        format_timestamp(id.timestamp().to_unix_millis()),
+    );
+    components.add_kv_row("Partition Key:", id.partition_key());
+    components.add_kv_row("Seq:", id.sequence());
+    components.add_kv_row("ID:", u128::from_be_bytes(id.remainder()));
+    c_println!("{components}");
 
     print_raw_bytes(&id.to_bytes());
 

@@ -61,6 +61,7 @@ tokio = { workspace = true, features = ["fs"] }
 tokio-stream = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }
+zerocopy = { workspace = true }
 url = { workspace = true }
 
 [dev-dependencies]

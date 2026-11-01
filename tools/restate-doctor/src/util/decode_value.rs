@@ -13,13 +13,17 @@
 //! This module provides utilities to decode values stored in the partition-store
 //! using the appropriate decoder for each table type.
 
+use std::fmt::Write;
+
 use bilrost::OwnedMessage;
 
 use restate_limiter::RuleBook;
 use restate_partition_store::PartitionSeal;
+use restate_partition_store::blob_table::{BlobHeader, BlobKey};
 use restate_partition_store::fsm_table::PartitionStateMachineKey;
 use restate_partition_store::keys::{DecodeTableKey, KeyKind};
 use restate_partition_store::vqueue_table::{EntryStatusKey, InputPayloadKey};
+use restate_storage_api::blob_table::Header;
 use restate_storage_api::deduplication_table::DedupSequenceNumber;
 use restate_storage_api::fsm_table::{CachedEpochMetadata, PartitionDurability, SequenceNumber};
 use restate_storage_api::inbox_table::InboxEntry;
@@ -206,6 +210,7 @@ pub fn decode_value(key_kind: KeyKind, key: &[u8], value: &[u8]) -> DecodedValue
         KeyKind::ServiceStatus => decode_protobuf::<VirtualObjectStatus>(value),
         KeyKind::Timers => decode_protobuf::<Timer>(value),
         KeyKind::Promise | KeyKind::ScopedPromise => decode_protobuf::<Promise>(value),
+        KeyKind::Blob => decode_blob(key, value),
 
         // FSM table - decode based on state_id from key
         KeyKind::Fsm => decode_fsm_value(key, value),
@@ -330,6 +335,39 @@ fn decode_varint(data: &[u8]) -> Option<(usize, usize)> {
     }
 
     None
+}
+
+fn decode_blob(mut key: &[u8], value: &[u8]) -> DecodedValue {
+    if value.is_empty() {
+        return DecodedValue::empty();
+    }
+
+    let created_at = {
+        BlobKey::deserialize_from(&mut key)
+            .ok()
+            .map(|k| k.blob_id.timestamp().to_unix_millis())
+    };
+
+    match BlobHeader::decode(value) {
+        Ok((header, _body)) => {
+            let mut decoded = format!(
+                "Blob(Kind: {}, RefCount: {}",
+                header.kind(),
+                header.ref_count()
+            );
+            if let Some(ts) = created_at {
+                let _ = write!(
+                    decoded,
+                    ", CreatedAt: {} ({} ms)",
+                    ts.into_timestamp(),
+                    ts.as_u64()
+                );
+            }
+            decoded.push(')');
+            DecodedValue::decoded(None, value.len(), decoded)
+        }
+        Err(err) => DecodedValue::error(None, value.len(), format!("Blob error: {err}")),
+    }
 }
 
 /// Decode a protobuf value using PartitionStoreProtobufValue trait

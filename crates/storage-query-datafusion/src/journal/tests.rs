@@ -18,15 +18,20 @@ use googletest::all;
 use googletest::prelude::{assert_that, eq};
 use prost::Message;
 use restate_service_protocol::codec::ProtobufRawEntryCodec;
+use restate_service_protocol_v4::entry_codec::ServiceProtocolV4Codec;
 use restate_storage_api::Transaction;
 use restate_storage_api::journal_table::{JournalEntry, WriteJournalTable};
+use restate_storage_api::journal_table_v2;
 use restate_types::identifiers::InvocationId;
 use restate_types::invocation::InvocationTarget;
 use restate_types::journal::enriched::{
     CallEnrichmentResult, EnrichedEntryHeader, EnrichedRawEntry,
 };
 use restate_types::journal::{Entry, EntryType, InputEntry};
+use restate_types::journal_v2::{self, EndMarkerCommand};
 use restate_types::service_protocol;
+use restate_types::storage::{StoredRawEntry, StoredRawEntryHeader};
+use restate_types::time::MillisSinceEpoch;
 
 #[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
 async fn get_entries() {
@@ -196,5 +201,51 @@ async fn select_count_star() {
                 "count" => Int64Array: eq(3)
             }
         ),)
+    );
+}
+
+#[restate_core::test(flavor = "multi_thread", worker_threads = 2)]
+async fn get_end_marker_entry() {
+    let mut engine = MockQueryEngine::create().await;
+
+    let mut tx = engine.partition_store().transaction();
+    let invocation_id = InvocationId::mock_random();
+    journal_table_v2::WriteJournalTable::put_journal_entry(
+        &mut tx,
+        &invocation_id,
+        0,
+        &StoredRawEntry::new(
+            StoredRawEntryHeader::new(MillisSinceEpoch::now()),
+            journal_v2::Entry::from(EndMarkerCommand {
+                name: "my-output".into(),
+            })
+            .encode::<ServiceProtocolV4Codec>(),
+        ),
+        &[],
+    )
+    .unwrap();
+    tx.commit().await.unwrap();
+    drop(tx);
+
+    let records = engine
+        .execute("SELECT entry_type, name, entry_lite_json FROM sys_journal")
+        .await
+        .unwrap()
+        .stream
+        .collect::<Vec<datafusion::common::Result<RecordBatch>>>()
+        .await
+        .remove(0)
+        .unwrap();
+
+    assert_that!(
+        records,
+        all!(row!(
+            0,
+            {
+                "entry_type" => LargeStringArray: eq("Command: EndMarker"),
+                "name" => LargeStringArray: eq("my-output"),
+                "entry_lite_json" => LargeStringArray: eq(r#"{"Command":{"EndMarker":{}}}"#),
+            }
+        ))
     );
 }
