@@ -113,6 +113,11 @@ env:
 
 jobs:
   build-and-push-image:
+    # Pushes to ghcr.io. Set here so a manual dispatch of this workflow can push too;
+    # callers must grant at least the same.
+    permissions:
+      contents: read
+      packages: write
     runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ inputs.parca && 140 || 70 }}
 
