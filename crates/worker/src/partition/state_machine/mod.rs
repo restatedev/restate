@@ -40,10 +40,10 @@ use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::{InboxEntry, ReadInboxTable, WriteInboxTable};
 use restate_storage_api::invocation_status_table::{
-    CompletedInvocation, InFlightInvocationMetadata, InboxedInvocation, JournalMetadata,
-    JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
+    CompletedInvocation, CompletedResult, InFlightInvocationMetadata, InboxedInvocation,
+    JournalMetadata, JournalRetentionPolicy, PreFlightInvocationArgument, PreFlightInvocationInput,
     PreFlightInvocationJournal, PreFlightInvocationMetadata, ReadInvocationStatusTable,
-    WriteInvocationStatusTable,
+    ResponseResultRef, WriteInvocationStatusTable,
 };
 use restate_storage_api::invocation_status_table::{InvocationStatus, ScheduledInvocation};
 use restate_storage_api::journal_events::WriteJournalEventsTable;
@@ -69,9 +69,9 @@ use restate_tracing_instrumentation as instrumentation;
 use restate_types::blob::BlobId;
 use restate_types::clock::UniqueTimestamp;
 use restate_types::errors::{
-    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GONE_INVOCATION_ERROR,
-    GenericError, InvocationError, KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR,
-    NOT_READY_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
+    ALREADY_COMPLETED_INVOCATION_ERROR, CANCELED_INVOCATION_ERROR, GenericError, InvocationError,
+    KILLED_INVOCATION_ERROR, NOT_FOUND_INVOCATION_ERROR, NOT_READY_INVOCATION_ERROR,
+    TOO_MANY_SINKS_INVOCATION_ERROR, WORKFLOW_ALREADY_INVOKED_INVOCATION_ERROR,
 };
 use restate_types::identifiers::{
     AwakeableIdentifier, BaseEntryId, EntryIndex, ExternalSignalIdentifier, InvocationId,
@@ -126,7 +126,6 @@ use restate_worker_api::invoker::Effect;
 use restate_worker_api::processor::PartitionFeatures;
 
 use self::utils::SpanExt;
-use crate::ReadBlobTableExt;
 use crate::metric_definitions::{
     LEADER_LABEL, LEADER_LABEL_FOLLOWER, LEADER_LABEL_LEADER, PARTITION_APPLY_COMMAND,
     USAGE_LEADER_JOURNAL_ENTRY_BYTES, USAGE_LEADER_JOURNAL_ENTRY_COUNT,
@@ -134,9 +133,15 @@ use crate::metric_definitions::{
 };
 use crate::partition::processor::*;
 use crate::partition::state_machine::lifecycle::OnCancelCommand;
+use crate::partition::state_machine::utils::CachedResponseResultRef;
 use crate::partition::types::InvokerEffectKind;
 
 use super::processor::{FsmAccess, OutboxAccess, OutboxMut};
+
+// Output blobs ref counter can only hold u16::MAX reference.
+// A single slot is reserved for the the InvocationStatus
+// ResponseResult.
+const MAX_INVOCATION_SINK_LENGTH: u16 = u16::MAX - 1;
 
 pub struct StateMachine;
 
@@ -445,6 +450,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             | CommandKind::UpsertRuleBook
             | CommandKind::UpsertSchema
             | CommandKind::TruncateOutbox
+            | CommandKind::ReleaseOutboxBlobs
             | CommandKind::VersionBarrier => {
                 panic!(
                     "Partition-wide commands must be processed by the processor's apply_partition_command path"
@@ -1136,7 +1142,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                 Some(invocation_id),
                 None,
                 Some(&service_invocation.invocation_target),
-            )?;
+            )
+            .await?;
         }
 
         // For all the other type of duplicate requests, append the response sink or return back the original result
@@ -1160,23 +1167,20 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         .expect("response sink must be present")
                         .contains(response_sink)
                 {
-                    self.do_append_response_sink(invocation_id, is, response_sink.clone())?
+                    self.do_append_response_sink(invocation_id, is, response_sink.clone())
+                        .await?
                 }
             }
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
-                let response_result = self
-                    .storage
-                    .resolve_response_result_ref(&completed.response_result)
-                    .await?;
-
                 self.send_response_to_sinks(
                     service_invocation.response_sink.take(),
-                    response_result.unwrap_or_else(|| GONE_INVOCATION_ERROR.into()),
+                    completed.response_result,
                     Some(invocation_id),
                     completion_expiry_time,
                     Some(&completed.invocation_target),
-                )?;
+                )
+                .await?;
             }
             InvocationStatus::Free => {
                 unreachable!("This was checked before!")
@@ -1565,7 +1569,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         match termination_flavor {
             TerminationFlavor::Kill => self.on_kill_invocation(invocation_id, response_sink).await,
@@ -1603,7 +1608,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         let status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1679,7 +1685,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteTimerTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         let mut status = self.get_invocation_status(&invocation_id).await?;
 
@@ -1839,7 +1846,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
             + WriteTimerTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -1890,11 +1898,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
             response_sinks,
-            &error,
+            ResponseResult::from(&error),
             Some(invocation_id),
             None,
             Some(&invocation_target),
-        )?;
+        )
+        .await?;
 
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
@@ -1998,7 +2007,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteJournalEventsTable
             + ReadJournalTable
             + journal_table_v2::ReadJournalTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         let error = match termination_flavor {
             TerminationFlavor::Kill => KILLED_INVOCATION_ERROR,
@@ -2047,11 +2057,12 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // Reply back to callers with error, and publish end trace
         self.send_response_to_sinks(
             response_sinks,
-            &error,
+            ResponseResult::from(&error),
             Some(invocation_id),
             None,
             Some(&invocation_target),
-        )?;
+        )
+        .await?;
 
         if let Some(vqueue_id) = vqueue_id {
             if let Some(entry_status) = self
@@ -2164,7 +2175,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2206,7 +2218,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteTimerTable
             + ReadPromiseTable
             + WritePromiseTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         self.kill_child_invocations(&invocation_id, metadata.journal_metadata.length, &metadata)
             .await?;
@@ -2572,7 +2585,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVQueueTable
             + WriteLockTable
             + WriteJournalEventsTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         let status = self
             .get_invocation_status(&invoker_effect.invocation_id)
@@ -2607,7 +2621,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + ReadVQueueTable
             + WriteVQueueTable
             + WriteLockTable
-            + WriteBlobTable,
+            + WriteBlobTable
+            + ReadBlobTable,
     {
         if matches!(
             (&invocation_status, &effect.kind),
@@ -2826,6 +2841,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             + WriteVirtualObjectStatusTable
             + WriteJournalEventsTable
             + WriteBlobTable
+            + ReadBlobTable
             + ReadJournalTable
             + journal_table_v2::WriteJournalTable
             + journal_table_v2::ReadJournalTable
@@ -2856,33 +2872,54 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn send_response_to_sinks(
+    async fn send_response_to_sinks(
         &mut self,
         response_sinks: impl IntoIterator<Item = ServiceInvocationResponseSink>,
-        res: impl Into<ResponseResult>,
+        res: impl Into<ResponseResultRef>,
         invocation_id: Option<InvocationId>,
         completion_expiry_time: Option<MillisSinceEpoch>,
         invocation_target: Option<&InvocationTarget>,
     ) -> Result<(), Error>
     where
-        S: WriteOutboxTable + WriteFsmTable,
+        S: WriteOutboxTable + WriteFsmTable + ReadBlobTable,
     {
-        let result = res.into();
+        let result_ref = res.into();
+        let blob_id =
+            if let ResponseResultRef::Completed(CompletedResult { blob_id, .. }) = &result_ref {
+                Some(*blob_id)
+            } else {
+                None
+            };
+
+        let mut cache = CachedResponseResultRef::from(result_ref);
+
         for response_sink in response_sinks {
             match response_sink {
-                ServiceInvocationResponseSink::PartitionProcessor(target) => self
-                    .do_enqueue_into_outbox(commands::InvocationResponseCommand::from(
-                        InvocationResponse {
-                            target,
-                            result: result.clone(),
-                        },
-                    ))?,
-                ServiceInvocationResponseSink::Ingress { request_id } => self
+                ServiceInvocationResponseSink::PartitionProcessor(target) => {
+                    // check if blob id is set and use that instead
+                    match &blob_id {
+                        Some(blob_id) => self.do_enqueue_into_outbox(
+                            v2::outbox::InvocationResponseFromBlobCommand {
+                                target,
+                                blob: *blob_id,
+                            },
+                        )?,
+                        None => {
+                            let result = cache.resolve(self.storage).await?;
+                            self.do_enqueue_into_outbox(commands::InvocationResponseCommand::from(
+                                InvocationResponse { target, result },
+                            ))?
+                        }
+                    }
+                }
+                ServiceInvocationResponseSink::Ingress { request_id } => {
+                    let result = cache.resolve(self.storage).await?;
+                    self
                     .send_ingress_response(
                     request_id,
                     invocation_id,
                     completion_expiry_time,
-                    match result.clone() {
+                    match result {
                         ResponseResult::Success(res) => InvocationOutputResponse::Success(
                             invocation_target
                                 .expect(
@@ -2893,7 +2930,8 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         ),
                         ResponseResult::Failure(err) => InvocationOutputResponse::Failure(err),
                     },
-                ),
+                )
+                }
             }
         }
         Ok(())
@@ -4200,13 +4238,16 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             .to_invocation_id();
 
         match self.get_invocation_status(&invocation_id).await? {
-            InvocationStatus::Free => self.send_response_to_sinks(
-                vec![attach_invocation_request.response_sink],
-                NOT_FOUND_INVOCATION_ERROR,
-                Some(invocation_id),
-                None,
-                None,
-            )?,
+            InvocationStatus::Free => {
+                self.send_response_to_sinks(
+                    vec![attach_invocation_request.response_sink],
+                    ResponseResult::from(NOT_FOUND_INVOCATION_ERROR),
+                    Some(invocation_id),
+                    None,
+                    None,
+                )
+                .await?
+            }
             is @ InvocationStatus::Invoked(_)
             | is @ InvocationStatus::Suspended { .. }
             | is @ InvocationStatus::Inboxed(_)
@@ -4217,31 +4258,30 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
                         invocation_id,
                         is,
                         attach_invocation_request.response_sink,
-                    )?;
+                    )
+                    .await?;
                 } else {
                     self.send_response_to_sinks(
                         vec![attach_invocation_request.response_sink],
-                        NOT_READY_INVOCATION_ERROR,
+                        ResponseResult::from(NOT_READY_INVOCATION_ERROR),
                         Some(invocation_id),
                         None,
                         is.invocation_target(),
-                    )?;
+                    )
+                    .await?;
                 }
             }
             InvocationStatus::Completed(completed) => {
                 let completion_expiry_time = completed.completion_expiry_time();
-                let response_result = self
-                    .storage
-                    .resolve_response_result_ref(&completed.response_result)
-                    .await?;
 
                 self.send_response_to_sinks(
                     vec![attach_invocation_request.response_sink],
-                    response_result.unwrap_or_else(|| GONE_INVOCATION_ERROR.into()),
+                    completed.response_result,
                     Some(invocation_id),
                     completion_expiry_time,
                     Some(&completed.invocation_target),
-                )?;
+                )
+                .await?;
             }
         }
 
@@ -4633,7 +4673,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
 
     fn do_enqueue_into_outbox<M>(&mut self, message: M) -> Result<(), Error>
     where
-        M: v2::OutboxMessage,
+        M: v2::outbox::OutboxMessage,
         S: WriteOutboxTable + WriteFsmTable,
     {
         let seq_number = self.processor.outbox().outbox_tail();
@@ -5066,7 +5106,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         // Any pending invocation to it will be terminally failed by the invoker anyway.
     }
 
-    fn do_append_response_sink(
+    async fn do_append_response_sink(
         &mut self,
         invocation_id: InvocationId,
         // We pass around the invocation_status here to avoid an additional read.
@@ -5076,7 +5116,7 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
         additional_response_sink: ServiceInvocationResponseSink,
     ) -> Result<(), Error>
     where
-        S: WriteInvocationStatusTable,
+        S: WriteInvocationStatusTable + WriteOutboxTable + WriteFsmTable + ReadBlobTable,
     {
         debug_if_leader!(
             self.is_leader(),
@@ -5085,10 +5125,29 @@ impl<S, P: ProcessorContext> StateMachineApplyContext<'_, S, P> {
             additional_response_sink
         );
 
-        previous_invocation_status
+        let sinks = previous_invocation_status
             .get_response_sinks_mut()
-            .expect("No response sinks available")
-            .insert(additional_response_sink);
+            .expect("Response sinks available");
+
+        if self
+            .processor
+            .fsm()
+            .features()
+            .is_write_blob_table_enabled()
+            && sinks.len() == MAX_INVOCATION_SINK_LENGTH as usize
+        {
+            return self
+                .send_response_to_sinks(
+                    [additional_response_sink],
+                    ResponseResult::from(TOO_MANY_SINKS_INVOCATION_ERROR),
+                    Some(invocation_id),
+                    None,
+                    None,
+                )
+                .await;
+        }
+
+        sinks.insert(additional_response_sink);
         if let Some(timestamps) = previous_invocation_status.get_timestamps_mut() {
             timestamps.update(self.record_created_at);
         }

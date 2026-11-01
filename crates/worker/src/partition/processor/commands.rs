@@ -9,6 +9,7 @@
 // by the Apache License, Version 2.0.
 
 mod announce_leader;
+mod release_outbox_blobs;
 mod truncate_outbox;
 mod update_durability;
 mod upsert_rule_book;
@@ -17,6 +18,7 @@ mod version_barrier;
 
 // Re-exports
 pub use announce_leader::AnnounceLeaderContext;
+pub use release_outbox_blobs::ReleaseOutboxBlobsContext;
 pub use truncate_outbox::TruncateOutboxContext;
 pub use update_durability::UpdateDurabilityContext;
 pub use upsert_rule_book::UpsertRuleBookContext;

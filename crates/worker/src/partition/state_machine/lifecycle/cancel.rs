@@ -8,10 +8,9 @@
 // the Business Source License, use of this software will be governed
 // by the Apache License, Version 2.0.
 
-use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use tracing::{debug, trace};
 
-use restate_storage_api::blob_table::WriteBlobTable;
+use restate_storage_api::blob_table::{ReadBlobTable, WriteBlobTable};
 use restate_storage_api::fsm_table::WriteFsmTable;
 use restate_storage_api::inbox_table::WriteInboxTable;
 use restate_storage_api::invocation_status_table::{
@@ -23,6 +22,7 @@ use restate_storage_api::journal_table_v2::{ReadJournalTable, WriteJournalTable}
 use restate_storage_api::lock_table::WriteLockTable;
 use restate_storage_api::outbox_table::WriteOutboxTable;
 use restate_storage_api::promise_table::{ReadPromiseTable, WritePromiseTable};
+use restate_storage_api::service_status_table::WriteVirtualObjectStatusTable;
 use restate_storage_api::state_table::{ReadStateTable, WriteStateTable};
 use restate_storage_api::timer_table::WriteTimerTable;
 use restate_storage_api::vqueue_table::{ReadVQueueTable, WriteVQueueTable};
@@ -63,7 +63,8 @@ where
         + WriteVQueueTable
         + WriteLockTable
         + WritePromiseTable
-        + WriteBlobTable,
+        + WriteBlobTable
+        + ReadBlobTable,
     P: ProcessorContext,
 {
     async fn apply(self, ctx: &'ctx mut StateMachineApplyContext<'s, S, P>) -> Result<(), Error> {

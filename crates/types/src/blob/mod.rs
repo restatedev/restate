@@ -46,11 +46,15 @@ pub enum BlobKind {
 ///
 /// Composed of the partition key, a sequence number and a 16 bytes remainder. The byte
 /// representation is big-endian, so ordering of the encoded bytes matches the derived [`Ord`].
-#[derive(Eq, Hash, PartialEq, Clone, Copy, PartialOrd, Ord)]
+#[derive(Eq, Hash, PartialEq, Clone, Copy, PartialOrd, Ord, bilrost::Message)]
 pub struct BlobId {
+    #[bilrost(tag(1))]
     timestamp: UniqueTimestamp,
+    #[bilrost(tag(2))]
     sequence: Seq,
+    #[bilrost(tag(3))]
     partition_key: PartitionKey,
+    #[bilrost(tag(4), encoding(plainbytes))]
     remainder: [u8; 16],
 }
 
