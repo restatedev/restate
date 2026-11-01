@@ -113,6 +113,10 @@ env:
 
 jobs:
   build-and-push-image:
+    # dispatched directly, so it does not inherit packages: write from ci.yml
+    permissions:
+      contents: read
+      packages: write
     runs-on: ${{ inputs.runnerSize == '32x' && 'warp-ubuntu-latest-x64-32x' || inputs.runnerSize == '16x' && 'warp-ubuntu-latest-x64-16x' || inputs.parca && 'warp-ubuntu-latest-x64-32x' || 'warp-ubuntu-latest-x64-16x' }}
     timeout-minutes: ${{ inputs.parca && 140 || 70 }}
 
