@@ -1147,6 +1147,22 @@ experimental! {
     ///
     /// Since v1.8.1
     preflight_signal_recording,
+
+    /// # Store handler JSON schemas outside of the schema registry
+    ///
+    /// When enabled, the input/output JSON schemas of service handlers are stored
+    /// per deployment in the metadata store instead of inline in the schema registry,
+    /// which considerably reduces the memory footprint of the schema on every node.
+    /// Existing deployments are moved over when a node with the admin role starts.
+    ///
+    /// Only enable once all nodes run v1.8.2 or newer. Rolling back to an older version
+    /// hides the JSON schemas and OpenAPI documents of moved deployments until they are
+    /// re-registered with `--force`.
+    ///
+    /// This will be default from v1.9.0
+    ///
+    /// Since v1.8.2
+    json_schemas_split,
 }
 
 serde_with::with_prefix!(pub prefix_tokio_console "tokio_console_");

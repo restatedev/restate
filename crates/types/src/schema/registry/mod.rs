@@ -28,7 +28,7 @@ use crate::deployment;
 use crate::deployment::{
     DeploymentAddress, Headers, HttpDeploymentAddress, LambdaDeploymentAddress,
 };
-use crate::identifiers::{DeploymentId, LambdaARN, ServiceRevision, SubscriptionId};
+use crate::identifiers::{DeploymentId, JsonSchemasId, LambdaARN, ServiceRevision, SubscriptionId};
 use crate::net::address::{AdvertisedAddress, HttpIngressPort};
 use crate::schema::deployment::{Deployment, DeploymentResolver, DeploymentType};
 use crate::schema::kafka::{KafkaCluster, KafkaClusterName, KafkaClusterResolver};
@@ -39,11 +39,13 @@ use crate::schema::metadata::updater::{
 use crate::schema::service::{HandlerMetadata, ServiceMetadata, ServiceMetadataResolver};
 use crate::schema::subscriptions::{ListSubscriptionFilter, Subscription, SubscriptionResolver};
 
-use crate::schema::Redaction;
+use crate::config::Configuration;
+use crate::endpoint_manifest;
 pub use crate::schema::metadata::updater::{
     AddDeploymentResult, AllowBreakingChanges, AllowOrphanSubscriptions, DeleteDeploymentsResult,
     ModifyServiceRequest, Overwrite,
 };
+use crate::schema::{DeploymentJsonSchemas, Redaction, Schema};
 // -- Schema registry error and other types
 
 #[derive(Debug, thiserror::Error, codederror::CodedError)]
@@ -329,11 +331,11 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
         // Verify first if we have the service. If we do, no need to do anything here.
         if overwrite == Overwrite::No {
             // Verify if we have a service for this endpoint already or not
-            if let Some((deployment, services)) = self
-                .metadata_service
-                .get()
-                .find_deployment(&deployment_address, &additional_headers)
+            let schema = self.metadata_service.get().into_arc();
+            if let Some((deployment, mut services)) =
+                schema.find_deployment(&deployment_address, &additional_headers)
             {
+                self.hydrate_services(&schema, &mut services).await;
                 return Ok((AddDeploymentResult::Unchanged, deployment, services));
             }
         }
@@ -365,6 +367,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
             discovery_response,
             allow_breaking_changes: allow_breaking,
             overwrite,
+            json_schemas: None,
         };
 
         let (register_deployment_result, deployment, services) = if !apply_mode.should_apply() {
@@ -378,13 +381,24 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                     )
                 })?;
 
-            let (deployment, services) = schemas
+            let (deployment, mut services) = schemas
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just added");
+            // A dry run never stores JSON schemas separately, so this is usually a no-op. It is
+            // needed when the result is `Unchanged` (no overwrite, and a matching deployment was
+            // registered after the check above): the existing deployment's JSON schemas might
+            // already be stored separately.
+            self.hydrate_services(&schemas, &mut services).await;
 
             (deployment_result, deployment, services)
         } else {
             // --- Apply the deployment registration
+            let add_deployment_request = updater::AddDeploymentRequest {
+                json_schemas: self
+                    .store_json_schemas(&add_deployment_request.discovery_response.services)
+                    .await?,
+                ..add_deployment_request
+            };
             let ((new_deployment_result, new_deployment_id), schemas) = self
                 .metadata_service
                 .update(|schema| {
@@ -396,9 +410,10 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry: Telemetry
                 })
                 .await?;
 
-            let (deployment, services) = schemas
+            let (deployment, mut services) = schemas
                 .get_deployment_and_services(&new_deployment_id)
                 .expect("deployment was just added");
+            self.hydrate_services(&schemas, &mut services).await;
 
             (new_deployment_result, deployment, services)
         };
@@ -566,6 +581,7 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
             additional_headers,
             discovery_response,
             overwrite,
+            json_schemas: None,
         };
 
         if !apply_mode.should_apply() {
@@ -577,11 +593,26 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 })
             })?;
 
-            Ok(schemas
+            let (deployment, mut services) = schemas
                 .get_deployment_and_services(&deployment_id)
-                .expect("deployment was just added"))
+                .expect("deployment was just added");
+            self.hydrate_services(&schemas, &mut services).await;
+
+            Ok((deployment, services))
         } else {
             // --- Apply the deployment update
+            // Only overwriting replaces the services with the discovered ones
+            let update_deployment_request = if update_deployment_request.overwrite == Overwrite::Yes
+            {
+                updater::UpdateDeploymentRequest {
+                    json_schemas: self
+                        .store_json_schemas(&update_deployment_request.discovery_response.services)
+                        .await?,
+                    ..update_deployment_request
+                }
+            } else {
+                update_deployment_request
+            };
             let (_, schemas) = self
                 .metadata_service
                 .update(|schema| {
@@ -594,9 +625,10 @@ impl<Metadata: MetadataService, Discovery: DiscoveryClient, Telemetry>
                 })
                 .await?;
 
-            let (deployment, services) = schemas
+            let (deployment, mut services) = schemas
                 .get_deployment_and_services(&deployment_id)
                 .expect("deployment was just updated");
+            self.hydrate_services(&schemas, &mut services).await;
 
             Ok((deployment, services))
         }
@@ -679,9 +711,11 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
             })
             .await?;
 
-        let response = schema
+        let mut response = schema
             .resolve_latest_service(&service_name)
             .expect("service was just modified");
+        self.hydrate_services(&schema, std::slice::from_mut(&mut response))
+            .await;
 
         Ok(response)
     }
@@ -710,33 +744,105 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         Ok(())
     }
 
-    pub fn list_services(&self) -> Vec<ServiceMetadata> {
-        self.metadata_service.get().list_services()
-    }
+    /// Stores the JSON schemas of the discovered `services` in the metadata store, if storing them
+    /// separately is enabled. Returns the id of the stored object, for the deployment to reference.
+    async fn store_json_schemas(
+        &self,
+        services: &[endpoint_manifest::Service],
+    ) -> Result<Option<JsonSchemasId>, SchemaRegistryError> {
+        if !Configuration::pinned()
+            .common
+            .experimental
+            .is_json_schemas_split_enabled()
+        {
+            return Ok(None);
+        }
+        let Some(json_schemas) = DeploymentJsonSchemas::from_discovery(services)? else {
+            return Ok(None);
+        };
 
-    pub fn get_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
+        let id = JsonSchemasId::new();
         self.metadata_service
-            .get()
-            .resolve_latest_service(&service_name)
+            .store_json_schemas(id, &json_schemas)
+            .await?;
+        Ok(Some(id))
     }
 
-    pub fn get_service_openapi(
+    /// Fills in the separately stored JSON schemas of `services`, which were resolved from
+    /// `schema`.
+    async fn hydrate_services(&self, schema: &Schema, services: &mut [ServiceMetadata]) {
+        let refs: HashMap<_, _> = services
+            .iter()
+            .filter_map(|service| {
+                let id = schema.json_schemas_ref(&service.deployment_id)?;
+                Some((service.deployment_id, id))
+            })
+            .collect();
+        if refs.is_empty() {
+            return;
+        }
+
+        let json_schemas: HashMap<_, _> =
+            futures::future::join_all(refs.into_iter().map(|(deployment_id, id)| async move {
+                Some((
+                    deployment_id,
+                    self.metadata_service.get_json_schemas(id).await?,
+                ))
+            }))
+            .await
+            .into_iter()
+            .flatten()
+            .collect();
+
+        for service in services {
+            if let Some(json_schemas) = json_schemas.get(&service.deployment_id) {
+                json_schemas.hydrate(service);
+            }
+        }
+    }
+
+    pub async fn list_services(&self) -> Vec<ServiceMetadata> {
+        let schema = self.metadata_service.get().into_arc();
+        let mut services = schema.list_services();
+        self.hydrate_services(&schema, &mut services).await;
+        services
+    }
+
+    pub async fn get_service(&self, service_name: impl AsRef<str>) -> Option<ServiceMetadata> {
+        let schema = self.metadata_service.get().into_arc();
+        let mut service = schema.resolve_latest_service(service_name)?;
+        self.hydrate_services(&schema, std::slice::from_mut(&mut service))
+            .await;
+        Some(service)
+    }
+
+    pub async fn get_service_openapi(
         &self,
         service_name: impl AsRef<str>,
         ingress_address: AdvertisedAddress<HttpIngressPort>,
     ) -> Option<serde_json::Value> {
-        self.metadata_service
-            .get()
-            .resolve_latest_service_openapi(&service_name, ingress_address)
+        let service_name = service_name.as_ref();
+        let schema = self.metadata_service.get().into_arc();
+        let deployment = schema.resolve_latest_deployment_for_service(service_name)?;
+        let json_schemas = match schema.json_schemas_ref(&deployment.id) {
+            Some(id) => self.metadata_service.get_json_schemas(id).await,
+            None => None,
+        };
+        schema.resolve_latest_service_openapi_with(
+            service_name,
+            ingress_address,
+            json_schemas.as_deref(),
+        )
     }
 
-    pub fn get_deployment_and_services(
+    pub async fn get_deployment_and_services(
         &self,
         deployment_id: DeploymentId,
     ) -> Option<(Deployment, Vec<ServiceMetadata>)> {
-        self.metadata_service
-            .get()
-            .get_deployment_and_services(&deployment_id)
+        let schema = self.metadata_service.get().into_arc();
+        let (deployment, mut services) = schema.get_deployment_and_services(&deployment_id)?;
+        self.hydrate_services(&schema, &mut services).await;
+        Some((deployment, services))
     }
 
     pub fn get_deployment(&self, deployment_id: DeploymentId) -> Option<Deployment> {
@@ -756,25 +862,23 @@ impl<Metadata: MetadataService, Discovery, Telemetry>
         self.metadata_service.get().get_deployments()
     }
 
-    pub fn list_service_handlers(
+    pub async fn list_service_handlers(
         &self,
         service_name: impl AsRef<str>,
     ) -> Option<Vec<HandlerMetadata>> {
-        self.metadata_service
-            .get()
-            .resolve_latest_service(&service_name)
+        self.get_service(service_name)
+            .await
             .map(|m| m.handlers.into_values().collect())
     }
 
-    pub fn get_service_handler(
+    pub async fn get_service_handler(
         &self,
         service_name: impl AsRef<str>,
         handler_name: impl AsRef<str>,
     ) -> Option<HandlerMetadata> {
-        self.metadata_service
-            .get()
-            .resolve_latest_service(&service_name)
-            .and_then(|m| m.handlers.get(handler_name.as_ref()).cloned())
+        self.get_service(service_name)
+            .await
+            .and_then(|mut m| m.handlers.remove(handler_name.as_ref()))
     }
 
     pub fn get_subscription(&self, subscription_id: SubscriptionId) -> Option<Subscription> {
