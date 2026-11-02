@@ -32,7 +32,7 @@ use restate_types::config::{CommonOptions, Configuration};
 
 use self::completion::{CloseGuard, OpenGuard, ShutdownGuard};
 use self::tracking::TrackedDb;
-use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageTask};
+use crate::background::{GlobalExecutor, SinglePoolExecutor, StorageOp};
 use crate::db_env::check_memory_limit;
 use crate::{
     DbCleanup, DbEnv, DbName, DbRegistration, DbSpec, RocksAccess, RocksDb, RocksError,
@@ -284,11 +284,8 @@ impl RocksDbManager {
         // Get the result future before dispatching. If dispatch fails, the record is
         // closed and another open could replace it right away, losing this result.
         let opening = self.get_db_by_ref(tracked);
-        let task = StorageTask::default()
-            .kind(StorageTaskKind::OpenDb)
-            .op(move || open.run())
-            .build()
-            .expect("valid open task");
+        // The open is accounted for by its open guard, not by a gate.
+        let task = StorageOp::without_admission(move || open.run(), StorageTaskKind::OpenDb);
         self.0.lifecycle_executor.dispatch(task)?;
         Ok((tracked, opening))
     }
