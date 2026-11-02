@@ -269,14 +269,11 @@ impl PartitionDb {
         op: impl FnOnce(&RocksAccess) -> R + Send + 'static,
     ) -> Result<R, RocksError> {
         let physical = self.physical_scope().clone();
-        let task = self
-            .rocksdb()
-            .prepare(kind, move |db| {
-                let result = op(db.inner());
-                drop(physical);
-                result
-            })
-            .background();
+        let task = self.rocksdb().prepare(kind, move |db| {
+            let result = op(db.inner());
+            drop(physical);
+            result
+        });
         self.rocksdb()
             .executor()
             .low_pri()
@@ -638,7 +635,7 @@ impl PartitionCell {
                 }
                 worker_completion.send_replace(Some(result));
             });
-            let dispatch = executor.dispatch(task.background());
+            let dispatch = executor.dispatch(task);
             if let Err(error) = dispatch {
                 // The executor rejected the task and already dropped it, with everything it
                 // captured, so it's safe to report the failure now.
