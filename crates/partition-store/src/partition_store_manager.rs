@@ -663,7 +663,7 @@ mod tests {
                 "retirement-read",
                 restate_rocksdb::StorageTaskKind::MultiGet,
                 Priority::High,
-                move |_| {
+                move |_, _| {
                     let _ = started.send(());
                     let _ = paused.recv();
                 },

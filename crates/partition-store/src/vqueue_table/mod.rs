@@ -602,7 +602,6 @@ where
     const KEY_LEN: usize = MetaKey::serialized_length_fixed();
 
     let rocksdb = store.partition_db().clone();
-    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
 
     async move {
         rocksdb
@@ -610,12 +609,8 @@ where
                 "df-vqueue-meta",
                 StorageTaskKind::MultiGet,
                 Priority::Low,
-                move |raw_db| -> Result<()> {
-                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
-                        return Err(StorageError::Generic(anyhow::anyhow!(
-                            "column family {cf_name} not found for vqueue meta multi-get"
-                        )));
-                    };
+                move |raw_db, cfs| -> Result<()> {
+                    let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
 
                     let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
                     let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
@@ -648,7 +643,7 @@ where
                             "Each serialized MetaKey should have KEY_LEN"
                         );
 
-                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
+                        let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
@@ -746,7 +741,6 @@ where
     const KEY_LEN: usize = EntryStatusKey::serialized_length_fixed();
 
     let rocksdb = store.partition_db().clone();
-    let cf_name: restate_rocksdb::CfName = store.partition_db().partition().cf_name().into();
 
     async move {
         rocksdb
@@ -754,12 +748,8 @@ where
                 "df-vqueue-entry-status",
                 StorageTaskKind::MultiGet,
                 Priority::Low,
-                move |raw_db| -> Result<()> {
-                    let Some(cf) = raw_db.cf_handle(cf_name.as_str()) else {
-                        return Err(StorageError::Generic(anyhow::anyhow!(
-                            "column family {cf_name} not found for vqueue entry-status multi-get"
-                        )));
-                    };
+                move |raw_db, cfs| -> Result<()> {
+                    let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
 
                     let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
                     let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
@@ -792,7 +782,7 @@ where
                             "Each serialized EntryStatusKey should have KEY_LEN"
                         );
 
-                        let results = raw_db.batched_multi_get_cf_opt(&cf, keys, true, &readopts);
+                        let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
 
                         for (id, result) in batch_ids.iter().zip(results) {
                             let Some(value) =
