@@ -7589,7 +7589,6 @@ dependencies = [
  "bytes",
  "bytestring",
  "criterion",
- "crossbeam-utils",
  "dashmap",
  "derive_more",
  "enum-map",
@@ -7614,6 +7613,7 @@ dependencies = [
  "restate-test-util",
  "restate-types",
  "restate-util-bytecount",
+ "restate-util-cache-padded",
  "restate-util-time",
  "restate-wal-protocol",
  "restate-worker-api",
@@ -9072,6 +9072,13 @@ dependencies = [
  "serde_core",
  "serde_json",
  "serde_with",
+]
+
+[[package]]
+name = "restate-util-cache-padded"
+version = "1.8.2-dev"
+dependencies = [
+ "restate-workspace-hack",
 ]
 
 [[package]]
