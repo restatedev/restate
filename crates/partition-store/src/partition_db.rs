@@ -282,6 +282,9 @@ impl PartitionDb {
             .map_err(|_| ShutdownError.into())
     }
 
+    /// Runs a read on a background thread, as part of the partition's session.
+    /// `op` gets the database and the partition's column families, which stay
+    /// alive until it is done.
     pub(crate) async fn run_background_read_op<OP, R>(
         &self,
         name: &'static str,
@@ -290,16 +293,13 @@ impl PartitionDb {
         op: OP,
     ) -> Result<R, RocksError>
     where
-        OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
+        OP: FnOnce(&RawRocksDb, &CfHandles<KeyKind>) -> R + Send + 'static,
         R: Send + 'static,
     {
-        // Keep the column families until the operation is done with them.
         let physical = self.physical_scope().clone();
         self.rocksdb()
             .run_background_read_op_in(self.gate(), name, kind, priority, move |db| {
-                let result = op(db);
-                drop(physical);
-                result
+                op(db, &physical.payload().cfs)
             })
             .await
     }
