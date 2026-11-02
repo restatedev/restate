@@ -592,7 +592,8 @@ impl RocksDb {
 
     /// Prepares an operation on this database without running it yet.
     ///
-    /// Run it on the current thread with [`StorageOp::call`], or submit it to any
+    /// Run it on the current thread with
+    /// [`IoOp::call`](restate_core::io::IoOp::call), or submit it to any
     /// [`IoExecutor`], such as one of [`Self::executor`]'s pools, to run it on a
     /// background thread. Admission is checked at that point, not now: a prepared
     /// operation doesn't delay [`Self::drain`], and if the database is sealed first,
@@ -758,7 +759,7 @@ impl RocksDb {
     /// rows. The op receives the raw RocksDB handle and must not let borrowed
     /// database values escape its own scope.
     pub async fn run_background_read_op<OP, R>(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         name: &'static str,
         kind: StorageTaskKind,
         priority: Priority,
@@ -768,8 +769,7 @@ impl RocksDb {
         OP: FnOnce(&RawRocksDb) -> R + Send + 'static,
         R: Send + 'static,
     {
-        let gate = self.gate.clone();
-        self.run_background_read_op_in(&gate, name, kind, priority, op)
+        self.run_background_read_op_in(&self.gate, name, kind, priority, op)
             .await
     }
 
@@ -804,7 +804,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_wal(self: Arc<Self>, sync: bool) -> Result<(), RocksError> {
+    pub async fn flush_wal(self: &Arc<Self>, sync: bool) -> Result<(), RocksError> {
         let op = self.prepare(StorageTaskKind::FlushWal, move |db| db.db.flush_wal(sync));
         self.executor
             .low_pri()
@@ -814,7 +814,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub fn run_bg_wal_sync(self: Arc<Self>) -> Result<(), AdmissionClosed> {
+    pub fn run_bg_wal_sync(self: &Arc<Self>) -> Result<(), AdmissionClosed> {
         let op = self.prepare(StorageTaskKind::FlushWal, |db| {
             if let Err(e) = db.db.flush_wal(true) {
                 error!("Failed to flush rocksdb WAL: {}", e);
@@ -825,7 +825,7 @@ impl RocksDb {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn flush_memtables(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         cfs: &[CfName],
         wait: bool,
     ) -> Result<(), RocksError> {
@@ -841,7 +841,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn flush_all(self: Arc<Self>) -> Result<(), RocksError> {
+    pub async fn flush_all(self: &Arc<Self>) -> Result<(), RocksError> {
         let op = self.prepare(StorageTaskKind::FlushMemtables, |db| db.db.flush_all());
         self.executor
             .low_pri()
@@ -852,7 +852,7 @@ impl RocksDb {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn compact_all(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         options: ManualCompactionOptions,
     ) -> Result<(), RocksError> {
         let op = self.prepare(StorageTaskKind::Compaction, move |db| {
@@ -879,7 +879,7 @@ impl RocksDb {
     }
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
-    pub async fn open_cf(self: Arc<Self>, name: CfName) -> Result<(), RocksError> {
+    pub async fn open_cf(self: &Arc<Self>, name: CfName) -> Result<(), RocksError> {
         let op = self.prepare(StorageTaskKind::OpenColumnFamily, move |db| {
             db.db.open_cf(name)
         });
@@ -892,7 +892,7 @@ impl RocksDb {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn import_cf(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         name: CfName,
         metadata: ExportImportFilesMetaData,
     ) -> Result<(), RocksError> {
@@ -908,7 +908,7 @@ impl RocksDb {
 
     #[tracing::instrument(skip_all, fields(db = %self.name()))]
     pub async fn export_cf(
-        self: Arc<Self>,
+        self: &Arc<Self>,
         name: CfName,
         export_dir: PathBuf,
     ) -> Result<ExportImportFilesMetaData, RocksError> {
