@@ -561,6 +561,6 @@ async fn drains_wait_until_snapshots_have_released_everything() -> anyhow::Resul
     assert!(ReadSnapshot::new(&late, late.gate()).is_err());
 
     drop((late, sibling, db));
-    task_center.shutdown_node("test completed", 0).await;
+    task_center.shutdown_for_test().await;
     Ok(())
 }

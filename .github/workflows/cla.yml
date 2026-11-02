@@ -42,4 +42,4 @@ jobs:
           branch: 'main'
           remote-organization-name: 'restatedev'
           remote-repository-name: 'cla-signatures'
-          allowlist: github-actions[bot],dependabot[bot],claude,pullfrog[bot]
+          allowlist: github-actions[bot],dependabot[bot],claude,pullfrog[bot],restatedev-web-ui[bot]
