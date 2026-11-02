@@ -16,7 +16,6 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering},
 };
 
-use crossbeam_utils::CachePadded;
 use tokio::sync::Semaphore;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use tracing::{debug, info, instrument, trace};
@@ -32,6 +31,7 @@ use restate_types::{
     replicated_loglet::ReplicatedLogletParams,
     replication::{NodeSet, ReplicationProperty},
 };
+use restate_util_cache_padded::CachePadded;
 
 use self::{appender::SequencerAppender, stats::SequencerStats};
 use super::{
