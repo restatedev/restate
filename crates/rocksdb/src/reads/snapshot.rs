@@ -10,16 +10,16 @@
 
 use std::sync::Arc;
 
-use rocksdb::{ReadOptions, SnapshotWithThreadMode};
+use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions, SnapshotWithThreadMode};
 
 use restate_core::io::{AdmissionClosed, Gate, OwnedLease};
 use restate_util_lifecycle::Scope;
 
+use super::sealed::{Sealed, Token};
 use super::{
-    ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, Reader, iterator_options,
-    reader_options,
+    ColumnFamilies, OwnedReadIterator, OwnedReader, ReadIterator, Reader, default_reader_options,
 };
-use crate::RawRocksDb;
+use crate::{CfHandles, RawRocksDb};
 
 /// A snapshot of the column families of a scope, taken with [`Self::new`].
 /// Every read through it sees the data as it was when the snapshot was taken.
@@ -85,8 +85,11 @@ impl<C: ColumnFamilies> ReadSnapshot<C> {
         // - the scope's handles keep the same database open until the scope is
         //   dropped (see the safety contract of `ColumnFamilies`), and the
         //   snapshot is dropped before the scope;
-        // - the snapshot is private, and everything created from it below either
-        //   borrows `self` or holds its own clone of this snapshot.
+        // - the snapshot is private. Iterators created from it either borrow
+        //   `self` or hold their own clone of this snapshot. A reader's options
+        //   point to it without a lifetime, but only `Reader::new` gets them
+        //   (`reader_options` below needs a token that only this module can
+        //   create), and it keeps them next to its borrow or clone of `self`.
         let native = unsafe {
             std::mem::transmute::<
                 SnapshotWithThreadMode<'_, RawRocksDb>,
@@ -107,29 +110,18 @@ impl<C: ColumnFamilies> ReadSnapshot<C> {
         &self.inner.scope
     }
 
-    /// A reader for point lookups on one column family. The reader uses `options`
-    /// for all of its lookups. Any snapshot already set in `options` is replaced
-    /// with this one.
-    ///
-    /// Asynchronous reads are always requested; multi-gets use them when they can.
-    /// RocksDB turns them off by itself when the build or the filesystem doesn't
-    /// support them, so callers don't need to set this.
-    pub fn reader(&self, cf: C::Cf, mut options: ReadOptions) -> Reader<'_> {
-        options.set_snapshot(&self.inner.native);
-        reader_options(&mut options);
-        let handles = self.inner.scope.payload().handles();
-        Reader::new(
-            options,
-            handles.database().inner().as_raw_db(),
-            handles.get(cf),
-        )
+    /// A reader for point lookups on one column family, through this snapshot.
+    /// See [`Reader`] for its settings.
+    pub fn reader(&self, cf: C::Cf) -> Reader<'_, Self> {
+        Reader::new(self, cf)
     }
 
     /// Like [`Self::reader`], but the reader holds its own clone of this snapshot.
     /// A cursor can keep it across pauses, move it between threads, and look up
-    /// one batch after another with it.
-    pub fn owned_reader(&self, cf: C::Cf, options: ReadOptions) -> OwnedReader<Self> {
-        OwnedReader::retaining(self.clone(), |snapshot| snapshot.reader(cf, options))
+    /// one batch after another with it. The same as calling
+    /// [`Reader::into_owned`] on a borrowed reader.
+    pub fn owned_reader(&self, cf: C::Cf) -> OwnedReader<Self> {
+        self.reader(cf).into_owned()
     }
 
     /// An iterator over one column family that borrows this snapshot.
@@ -141,18 +133,40 @@ impl<C: ColumnFamilies> ReadSnapshot<C> {
     /// Asynchronous prefetching is always requested. RocksDB turns it off by
     /// itself when the build or the filesystem doesn't support it, so callers
     /// don't need to set this.
-    pub fn iterator(&self, cf: C::Cf, mut options: ReadOptions) -> ReadIterator<'_> {
-        iterator_options(&mut options);
-        ReadIterator::new(
-            self.inner
-                .native
-                .raw_iterator_cf_opt(self.inner.scope.payload().handles().get(cf), options),
-        )
+    pub fn iterator(&self, cf: C::Cf, options: ReadOptions) -> ReadIterator<'_, Self> {
+        ReadIterator::new(self, cf, options)
     }
 
     /// Like [`Self::iterator`], but the iterator holds its own clone of this
-    /// snapshot, so it can be kept across pauses and moved between threads.
+    /// snapshot, so it can be kept across pauses and moved between threads. The
+    /// same as calling [`ReadIterator::into_owned`] on a borrowed iterator.
     pub fn owned_iterator(&self, cf: C::Cf, options: ReadOptions) -> OwnedReadIterator<Self> {
-        OwnedReadIterator::retaining(self.clone(), |snapshot| snapshot.iterator(cf, options))
+        self.iterator(cf, options).into_owned()
+    }
+}
+
+impl<C: ColumnFamilies> Sealed for ReadSnapshot<C> {
+    type CfKey = C::Cf;
+
+    fn handles(&self, _: Token) -> &CfHandles<C::Cf> {
+        self.inner.scope.payload().handles()
+    }
+
+    // Readers read through this snapshot.
+    fn reader_options(&self, _: Token) -> ReadOptions {
+        let mut options = default_reader_options();
+        options.set_snapshot(&self.inner.native);
+        options
+    }
+
+    // The native snapshot sets itself on the iterator's options.
+    fn raw_iterator(
+        &self,
+        _: Token,
+        cf: C::Cf,
+        options: ReadOptions,
+    ) -> DBRawIteratorWithThreadMode<'_, RawRocksDb> {
+        let cf = self.inner.scope.payload().handles().get(cf);
+        self.inner.native.raw_iterator_cf_opt(cf, options)
     }
 }

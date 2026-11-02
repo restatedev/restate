@@ -10,39 +10,104 @@
 
 use std::sync::Arc;
 
-use rocksdb::{BoundColumnFamily, DBPinnableBatch, DBPinnableSlice, ReadOptions};
+use rocksdb::{BoundColumnFamily, DBPinnableBatch, DBPinnableSlice, ReadOptions, ReadTier};
 
-use super::ReadSource;
+use super::{ReadSource, Source, TOKEN};
 use crate::{RawRocksDb, RocksError};
 
 /// Point lookups on one column family, through a snapshot or of the latest data.
 ///
-/// `R` is what the reader keeps alive: nothing for a reader that borrows its
-/// snapshot or scope, or a clone of it for an [`OwnedReader`].
-pub struct Reader<'a, R = ()> {
-    // These options may have our snapshot set, so they must never leave this
-    // type. They are dropped before `retained`.
+/// `H` is what the reader reads through: a [`ReadSnapshot`](super::ReadSnapshot)
+/// or a [`Scope`](restate_util_lifecycle::Scope). The reader either borrows it,
+/// or holds its own clone as an [`OwnedReader`]. [`Self::into_owned`] turns a
+/// borrowed reader into an owned one.
+///
+/// A new reader reads through its snapshot, if it has one, and requests
+/// asynchronous reads where RocksDB supports them. [`Self::with_read_tier`]
+/// limits where its lookups may read from.
+pub struct Reader<'a, H> {
+    // These options may point to our snapshot, so they must never leave this
+    // type. They are dropped before `source`.
     options: ReadOptions,
+    // The database and the column family to read, looked up once, when the reader
+    // was created. Both point into the source.
     db: &'a RawRocksDb,
     cf: &'a Arc<BoundColumnFamily<'a>>,
-    retained: R,
+    source: Source<'a, H>,
 }
 
 /// A reader that holds its own clone of its snapshot or scope, so it can be
 /// kept across pauses and moved between threads.
 pub type OwnedReader<H> = Reader<'static, H>;
 
-impl<'a> Reader<'a> {
-    pub(super) fn new(
-        options: ReadOptions,
-        db: &'a RawRocksDb,
-        cf: &'a Arc<BoundColumnFamily<'a>>,
-    ) -> Self {
+impl<'a, H: ReadSource> Reader<'a, H> {
+    // A reader of `source`'s column family `cf`. The database, the column family,
+    // and the options all come from `source` itself, so they point into it and
+    // nowhere else, which `into_owned` relies on.
+    pub(super) fn new(source: &'a H, cf: H::CfKey) -> Self {
+        let handles = source.handles(TOKEN);
         Self {
+            options: source.reader_options(TOKEN),
+            db: handles.database().inner().as_raw_db(),
+            cf: handles.get(cf),
+            source: Source::Borrowed(source),
+        }
+    }
+
+    /// Limits where lookups may read from. For example, with
+    /// [`ReadTier::BlockCache`], [`Self::get`] and [`Self::get_pinned`] only read
+    /// what is already in memory, and fail with an `Incomplete` error instead of
+    /// reading from disk.
+    ///
+    /// Don't rely on it for [`Self::multi_get_pinned`]: in a test without a block
+    /// cache, a multi-get with [`ReadTier::BlockCache`] still returned a key that
+    /// had been flushed to disk.
+    pub fn with_read_tier(mut self, tier: ReadTier) -> Self {
+        self.options.set_read_tier(tier);
+        self
+    }
+
+    // Lets tests set read options that readers don't offer.
+    #[cfg(test)]
+    pub(super) fn with_options(mut self, set: impl FnOnce(&mut ReadOptions)) -> Self {
+        set(&mut self.options);
+        self
+    }
+
+    /// Turns this into a reader that holds its own clone of its snapshot or
+    /// scope, so it can be kept across pauses and moved between threads. It keeps
+    /// its settings. A reader that is already owned stays as it is.
+    pub fn into_owned(self) -> OwnedReader<H> {
+        let Self {
             options,
             db,
             cf,
-            retained: (),
+            source,
+        } = self;
+        let source = source.into_owned();
+        // SAFETY: `new` takes `db` and `cf` from the source's `CfHandles`. `cf`
+        // points to an `Arc` stored there, not to a copy, and `db` points into the
+        // `RocksDb` that the handles keep open. Both live in shared, heap-allocated
+        // state: the scope's node, and the `RocksDb` behind its `Arc`. Neither is
+        // replaced (see the safety contract of `ColumnFamilies`) or moved while
+        // that state is alive. `source` is a clone of the same scope or snapshot,
+        // so it keeps that same state alive for as long as the owned reader exists.
+        // The fields are private, and the methods only return values that borrow
+        // the reader, so nothing uses `db` or `cf` once the reader is gone.
+        let (db, cf) = unsafe {
+            (
+                std::mem::transmute::<&'a RawRocksDb, &'static RawRocksDb>(db),
+                std::mem::transmute::<
+                    &'a Arc<BoundColumnFamily<'a>>,
+                    &'static Arc<BoundColumnFamily<'static>>,
+                >(cf),
+            )
+        };
+        Reader {
+            options,
+            db,
+            cf,
+            source: Source::Owned(source),
         }
     }
 }
@@ -50,7 +115,7 @@ impl<'a> Reader<'a> {
 // Every method here returns values that borrow `self`, never values that live for
 // `'a`. For an owned reader, `'a` is `'static`, so a value living for `'a` could
 // outlive the snapshot or scope that keeps the database open.
-impl<R> Reader<'_, R> {
+impl<H> Reader<'_, H> {
     /// Reads the value of `key`, copied into a new vector.
     pub fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RocksError> {
         Ok(self.db.get_cf_opt(self.cf, key, &self.options)?)
@@ -71,11 +136,14 @@ impl<R> Reader<'_, R> {
     ///
     /// An error returned here means the whole lookup failed. An error for a
     /// single key is returned by [`PinnedBatch::get`] for that key.
+    ///
+    /// The batch borrows this reader. [`PinnedBatch::into_owned`] turns it into
+    /// one that can outlive the reader.
     pub fn multi_get_pinned<K, I>(
         &self,
         keys: I,
         sorted_input: bool,
-    ) -> Result<PinnedBatch<'_>, RocksError>
+    ) -> Result<PinnedBatch<'_, H>, RocksError>
     where
         K: AsRef<[u8]>,
         I: IntoIterator<Item = K>,
@@ -87,57 +155,7 @@ impl<R> Reader<'_, R> {
                 sorted_input,
                 &self.options,
             )?,
-            _retained: (),
-        })
-    }
-}
-
-impl<H: ReadSource> OwnedReader<H> {
-    /// Builds a reader from `source` with `build`, and stores `source` in it.
-    pub(super) fn retaining(source: H, build: impl FnOnce(&H) -> Reader<'_>) -> Self {
-        let reader = build(&source);
-        // SAFETY: the reader borrows only from `source`. Every `ReadSource` is a
-        // shared handle, so what the reader borrows stays where it is when
-        // `source` moves, and lives as long as `source`, which the owned reader
-        // stores. The reader's fields are private. Its methods only return values
-        // that borrow the reader, except `owned_multi_get_pinned`, whose batch
-        // holds its own clone of `source`.
-        let reader = unsafe { std::mem::transmute::<Reader<'_>, Reader<'static>>(reader) };
-        Reader {
-            options: reader.options,
-            db: reader.db,
-            cf: reader.cf,
-            retained: source,
-        }
-    }
-
-    /// The snapshot or scope this reader reads through.
-    pub fn source(&self) -> &H {
-        &self.retained
-    }
-
-    /// Like [`Reader::multi_get_pinned`], but the batch holds its own clone of the
-    /// snapshot or scope, so a cursor can keep it next to this reader across
-    /// pauses.
-    pub fn owned_multi_get_pinned<K, I>(
-        &self,
-        keys: I,
-        sorted_input: bool,
-    ) -> Result<OwnedPinnedBatch<H>, RocksError>
-    where
-        K: AsRef<[u8]>,
-        I: IntoIterator<Item = K>,
-    {
-        // The batch borrows the database for 'static. That is sound because the
-        // batch also holds a clone of the source, which keeps the database open.
-        Ok(PinnedBatch {
-            batch: self.db.batched_multi_get_pinned_batch_cf_opt(
-                self.cf,
-                keys,
-                sorted_input,
-                &self.options,
-            )?,
-            _retained: self.retained.clone(),
+            source: Source::Borrowed(self.source.get()),
         })
     }
 }
@@ -149,19 +167,44 @@ impl<H: ReadSource> OwnedReader<H> {
 /// look up per batch. All values are held by one native object, rather than one
 /// object per key.
 ///
-/// `R` is what the batch keeps alive: nothing for a batch that borrows its
-/// reader, or a clone of the snapshot or scope for an [`OwnedPinnedBatch`].
-pub struct PinnedBatch<'a, R = ()> {
-    // Dropped first, while `_retained` still keeps the database open.
+/// `H` is the snapshot or scope the values were read through. A batch from
+/// [`Reader::multi_get_pinned`] borrows the reader, and through it the snapshot
+/// or scope. An [`OwnedPinnedBatch`] holds its own clone of the snapshot or
+/// scope instead. [`Self::into_owned`] turns a borrowed batch into an owned one.
+pub struct PinnedBatch<'a, H> {
+    // Dropped first, while `source` still keeps the database open.
     batch: DBPinnableBatch<'a>,
-    _retained: R,
+    source: Source<'a, H>,
 }
 
 /// A batch that holds its own clone of its snapshot or scope, so it can be kept
 /// across pauses and moved between threads.
 pub type OwnedPinnedBatch<H> = PinnedBatch<'static, H>;
 
-impl<R> PinnedBatch<'_, R> {
+impl<'a, H: ReadSource> PinnedBatch<'a, H> {
+    /// Turns this into a batch that holds its own clone of its snapshot or
+    /// scope, so it can outlive the reader that looked it up. For example, a
+    /// cursor can keep it across pauses. A batch that is already owned stays as
+    /// it is.
+    pub fn into_owned(self) -> OwnedPinnedBatch<H> {
+        let Self { batch, source } = self;
+        let source = source.into_owned();
+        // SAFETY: the batch only borrows the database: once the lookup has
+        // returned, the values it pins need neither the reader nor its options.
+        // The source keeps that database open. Every `ReadSource` is a shared
+        // handle, so the clone keeps the same database open, in the same place,
+        // and the owned batch drops it after the native batch. The fields are
+        // private, and the batch only gives out values that borrow it.
+        let batch =
+            unsafe { std::mem::transmute::<DBPinnableBatch<'a>, DBPinnableBatch<'static>>(batch) };
+        PinnedBatch {
+            batch,
+            source: Source::Owned(source),
+        }
+    }
+}
+
+impl<H> PinnedBatch<'_, H> {
     /// The number of keys that were looked up.
     pub fn len(&self) -> usize {
         self.batch.len()

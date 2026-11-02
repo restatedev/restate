@@ -13,7 +13,7 @@ use std::sync::Arc;
 use rocksdb::ReadOptions;
 
 use restate_core::io::AdmissionClosed;
-use restate_rocksdb::reads::{OwnedReadIterator, OwnedReader, ReadIterator, ReadSnapshot, Reader};
+use restate_rocksdb::reads::{ReadIterator, ReadSnapshot, Reader};
 use restate_types::partitions::Partition;
 
 use crate::keys::KeyKind;
@@ -32,7 +32,7 @@ use crate::scan::PhysicalScan;
 ///
 /// // An owned scan holds its own clone of the snapshot, so a query cursor can
 /// // keep it between batches, and move it between threads.
-/// let mut rows: PartitionSnapshotScan = snapshot.owned_scan(scan, Default::default());
+/// let mut rows: PartitionSnapshotScan<'static> = snapshot.owned_scan(scan, Default::default());
 /// while let Some((key, value)) = rows.item()? {
 ///     // ... use `key` and `value` ...
 ///     rows.next();
@@ -56,13 +56,17 @@ pub struct PartitionReadSnapshot {
     inner: ReadSnapshot<PhysicalPartition>,
 }
 
-/// A reader of a [`PartitionReadSnapshot`] that holds its own clone of the
-/// snapshot, so it can be kept across pauses and moved between threads.
-pub type PartitionSnapshotReader = OwnedReader<ReadSnapshot<PhysicalPartition>>;
+/// A reader of a [`PartitionReadSnapshot`]. A borrowed one, from
+/// [`PartitionReadSnapshot::reader`], can't outlive the snapshot. An owned one,
+/// `PartitionSnapshotReader<'static>`, holds its own clone of the snapshot, so
+/// it can be kept across pauses and moved between threads.
+pub type PartitionSnapshotReader<'a> = Reader<'a, ReadSnapshot<PhysicalPartition>>;
 
-/// A scan of a [`PartitionReadSnapshot`] that holds its own clone of the
-/// snapshot, so it can be kept across pauses and moved between threads.
-pub type PartitionSnapshotScan = OwnedReadIterator<ReadSnapshot<PhysicalPartition>>;
+/// A scan of a [`PartitionReadSnapshot`]. A borrowed one, from
+/// [`PartitionReadSnapshot::scan`], can't outlive the snapshot. An owned one,
+/// `PartitionSnapshotScan<'static>`, holds its own clone of the snapshot, so it
+/// can be kept across pauses and moved between threads.
+pub type PartitionSnapshotScan<'a> = ReadIterator<'a, ReadSnapshot<PhysicalPartition>>;
 
 impl PartitionReadSnapshot {
     pub(crate) fn new(db: &PartitionDb) -> Result<Self, AdmissionClosed> {
@@ -76,16 +80,16 @@ impl PartitionReadSnapshot {
         self.inner.scope().payload().partition()
     }
 
-    /// A reader for point lookups of keys of `key_kind`. See
-    /// [`ReadSnapshot::reader`].
-    pub fn reader(&self, key_kind: KeyKind, options: ReadOptions) -> Reader<'_> {
-        self.inner.reader(key_kind, options)
+    /// A reader for point lookups in the column family that holds keys of
+    /// `key_kind`. See [`ReadSnapshot::reader`].
+    pub fn reader(&self, key_kind: KeyKind) -> PartitionSnapshotReader<'_> {
+        self.inner.reader(key_kind)
     }
 
     /// Like [`Self::reader`], but the reader holds its own clone of the snapshot.
     /// See [`ReadSnapshot::owned_reader`].
-    pub fn owned_reader(&self, key_kind: KeyKind, options: ReadOptions) -> PartitionSnapshotReader {
-        self.inner.owned_reader(key_kind, options)
+    pub fn owned_reader(&self, key_kind: KeyKind) -> PartitionSnapshotReader<'static> {
+        self.inner.owned_reader(key_kind)
     }
 
     /// An iterator over the keys that `scan` describes, positioned at its first key.
@@ -97,7 +101,7 @@ impl PartitionReadSnapshot {
         &self,
         scan: PhysicalScan<B>,
         mut options: ReadOptions,
-    ) -> ReadIterator<'_> {
+    ) -> PartitionSnapshotScan<'_> {
         scan.configure(&mut options);
         let mut iterator = self.inner.iterator(scan.key_kind(), options);
         iterator.seek(scan.start().as_ref());
@@ -109,11 +113,8 @@ impl PartitionReadSnapshot {
     pub fn owned_scan<B: AsRef<[u8]>>(
         &self,
         scan: PhysicalScan<B>,
-        mut options: ReadOptions,
-    ) -> PartitionSnapshotScan {
-        scan.configure(&mut options);
-        let mut iterator = self.inner.owned_iterator(scan.key_kind(), options);
-        iterator.seek(scan.start().as_ref());
-        iterator
+        options: ReadOptions,
+    ) -> PartitionSnapshotScan<'static> {
+        self.scan(scan, options).into_owned()
     }
 }

@@ -59,7 +59,7 @@
 //!
 //!     // Every read through a snapshot sees the table as it was at this moment.
 //!     let snapshot = ReadSnapshot::new(&table, table.gate())?;
-//!     let order = snapshot.reader(Cf::Rows, Default::default()).get(b"order-1")?;
+//!     let order = snapshot.reader(Cf::Rows).get(b"order-1")?;
 //!
 //!     let mut rows = snapshot.iterator(Cf::Rows, Default::default());
 //!     rows.seek(b"order-");
@@ -76,8 +76,17 @@
 //!         // ...
 //!     });
 //!
+//!     // A borrowed iterator can become owned later. It keeps its position.
+//!     let mut page = snapshot.iterator(Cf::Rows, Default::default());
+//!     page.seek(b"order-");
+//!     let page = page.into_owned();
+//!     std::thread::spawn(move || {
+//!         // ... continue reading from `order-` ...
+//!         drop(page);
+//!     });
+//!
 //!     // Without a snapshot, a read sees the latest data.
-//!     let latest = table.reader(Cf::Index, Default::default()).get(b"by-date")?;
+//!     let latest = table.reader(Cf::Index).get(b"by-date")?;
 //!     Ok(())
 //! }
 //! ```
@@ -104,8 +113,16 @@
 //!
 //! | Version  | Example               | What it holds                         | Use it for                                    |
 //! |----------|-----------------------|---------------------------------------|-----------------------------------------------|
-//! | Borrowed | [`ReadIterator<'_>`]  | A reference to its snapshot or scope  | Reads that are done before the snapshot or scope is dropped |
+//! | Borrowed | [`ReadIterator`]      | A reference to its snapshot or scope  | Reads that are done before the snapshot or scope is dropped |
 //! | Owned    | [`OwnedReadIterator`] | Its own clone of its snapshot or scope | Cursors kept across pauses or moved between threads |
+//!
+//! A borrowed reader, iterator, or batch and its owned version are the same
+//! type, and differ only in how long they may live. A borrowed one becomes owned
+//! with `into_owned` ([`Reader::into_owned`], [`ReadIterator::into_owned`],
+//! [`PinnedBatch::into_owned`]), which clones its snapshot or scope. An iterator
+//! keeps its position, and a batch keeps its values. So work can start with
+//! borrowed values, and only pay for the clone if it has to keep them or move
+//! them elsewhere.
 //!
 //! # What keeps what alive
 //!
@@ -136,7 +153,7 @@
 //! fn pinned_value<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let value = {
 //!         let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
-//!         let reader = snapshot.reader(cf, Default::default());
+//!         let reader = snapshot.reader(cf);
 //!         reader.get_pinned(b"key").unwrap()
 //!     };
 //!     drop(value);
@@ -149,7 +166,7 @@
 //! fn batch<C: ColumnFamilies>(scope: Scope<C>, cf: C::Cf) {
 //!     let snapshot = ReadSnapshot::new(&scope, scope.gate()).unwrap();
 //!     let batch = {
-//!         let reader = snapshot.reader(cf, Default::default());
+//!         let reader = snapshot.reader(cf);
 //!         reader.multi_get_pinned([b"key"], false).unwrap()
 //!     };
 //!     drop(batch);
@@ -203,7 +220,7 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf, Default::default());
+//!     let reader = snapshot.owned_reader(cf);
 //!     let value = reader.get_pinned(b"key").unwrap().unwrap();
 //!     drop(reader);
 //!     value.to_vec()
@@ -216,11 +233,26 @@
 //!     snapshot: &ReadSnapshot<C>,
 //!     cf: C::Cf,
 //! ) -> Vec<u8> {
-//!     let reader = snapshot.owned_reader(cf, Default::default());
-//!     let batch = reader.owned_multi_get_pinned([b"key"], false).unwrap();
+//!     let reader = snapshot.owned_reader(cf);
+//!     let batch = reader.multi_get_pinned([b"key"], false).unwrap().into_owned();
 //!     let value = batch.get(0).unwrap().unwrap();
 //!     drop(batch);
 //!     value.to_vec()
+//! }
+//! ```
+//!
+//! # What stays inside this crate
+//!
+//! Readers and iterators get their column families, options, and native
+//! iterators from their source through methods that other crates can't call,
+//! not even through a [`ReadSource`] bound. Otherwise a caller could take a
+//! snapshot's options, which point to the snapshot without a lifetime, and use
+//! them after the snapshot is gone:
+//!
+//! ```compile_fail,E0277
+//! # use restate_rocksdb::reads::ReadSource;
+//! fn options<H: ReadSource>(source: &H) {
+//!     let _options = source.reader_options(Default::default());
 //! }
 //! ```
 
@@ -232,11 +264,11 @@ mod snapshot;
 mod tests;
 
 use enum_map::Enum;
-use rocksdb::ReadOptions;
+use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
 
 use restate_util_lifecycle::{Scope, ScopePayload};
 
-use crate::CfHandles;
+use crate::{CfHandles, RawRocksDb};
 
 pub use self::iterator::{OwnedReadIterator, ReadIterator};
 pub use self::reader::{OwnedPinnedBatch, OwnedReader, PinnedBatch, Reader};
@@ -249,8 +281,9 @@ pub use self::snapshot::ReadSnapshot;
 ///
 /// # Safety
 ///
-/// Snapshots, readers, and iterators keep references into the handles for as
-/// long as they keep the scope alive, which the compiler doesn't check.
+/// Snapshots, readers, and iterators keep references into the handles, and to
+/// the database they keep open, for as long as they keep the scope alive, which
+/// the compiler doesn't check.
 /// [`Self::handles`] must therefore always return the same handles, which live
 /// as long as `self` and are never replaced. Returning a field of `self` does
 /// that.
@@ -272,26 +305,129 @@ pub unsafe trait ColumnFamilies: ScopePayload {
     fn handles(&self) -> &CfHandles<Self::Cf>;
 }
 
-/// What an owned reader, iterator, or batch keeps alive: a [`ReadSnapshot`], or
-/// the [`Scope`] it reads the latest data of. No other type can implement this.
+/// What readers, iterators, and batches read through: a [`ReadSnapshot`], or the
+/// [`Scope`] whose latest data they read. A borrowed reader, iterator, or batch
+/// points to it, and an owned one holds its own clone. No other type can
+/// implement this.
 ///
-/// Both are shared handles: moving one doesn't move the database, column
-/// families, or snapshot it points to. Owned readers and iterators rely on that.
+/// Both are shared handles: a clone keeps the same database, column families,
+/// and snapshot alive, and moving one doesn't move them. Owned readers,
+/// iterators, and batches, and turning borrowed ones into owned ones, rely on
+/// that.
 pub trait ReadSource: Clone + sealed::Sealed {}
 
+// What readers and iterators need from their source.
+//
+// Other crates can't implement this trait, because they can't name it. They
+// could still call its methods through a `ReadSource` bound, so every method
+// takes a `Token`, which only this module and its submodules can create.
 mod sealed {
-    pub trait Sealed {}
+    use enum_map::Enum;
+    use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions};
+
+    use crate::{CfHandles, RawRocksDb};
+
+    // Proves that the caller is in the `reads` module or one of its submodules.
+    // Other crates can neither name nor create it.
+    pub struct Token(pub(in crate::reads) ());
+
+    pub trait Sealed {
+        // Chooses one of the source's column families.
+        type CfKey: Enum + Copy;
+
+        // The source's column families, and the database they belong to.
+        fn handles(&self, _: Token) -> &CfHandles<Self::CfKey>;
+
+        // The options a new reader of this source starts with. They may point
+        // into the source, to its snapshot, and nowhere else. Only `Reader::new`
+        // uses them, and it keeps them next to the source they point into.
+        fn reader_options(&self, _: Token) -> ReadOptions;
+
+        // A native iterator over the column family `cf`, reading through this
+        // source. It borrows only from what every clone of the source shares,
+        // never from this particular handle. A scope's iterator also keeps
+        // `options`, which must not point to a snapshot (see the TODO in the
+        // scope's implementation).
+        fn raw_iterator(
+            &self,
+            _: Token,
+            cf: Self::CfKey,
+            options: ReadOptions,
+        ) -> DBRawIteratorWithThreadMode<'_, RawRocksDb>;
+    }
 }
 
-impl<C: ColumnFamilies> sealed::Sealed for ReadSnapshot<C> {}
+// Passed to the methods of `sealed::Sealed`.
+const TOKEN: sealed::Token = sealed::Token(());
+
+// `ReadSnapshot` implements `Sealed` next to its private fields, in `snapshot`.
 impl<C: ColumnFamilies> ReadSource for ReadSnapshot<C> {}
-impl<C: ColumnFamilies> sealed::Sealed for Scope<C> {}
+
+impl<C: ColumnFamilies> sealed::Sealed for Scope<C> {
+    type CfKey = C::Cf;
+
+    fn handles(&self, _: sealed::Token) -> &CfHandles<C::Cf> {
+        self.payload().handles()
+    }
+
+    fn reader_options(&self, _: sealed::Token) -> ReadOptions {
+        default_reader_options()
+    }
+
+    fn raw_iterator(
+        &self,
+        _: sealed::Token,
+        cf: C::Cf,
+        options: ReadOptions,
+    ) -> DBRawIteratorWithThreadMode<'_, RawRocksDb> {
+        // TODO: clear any snapshot set in `options`. That needs a change to
+        // `rocksdb::ReadOptions` itself: it can set a snapshot but has no way to
+        // clear one, and it keeps its native options private, so this code can't
+        // reset the snapshot on its own. Until then, the `ScopedReads` docs tell
+        // callers not to set one.
+        let handles = self.handles(TOKEN);
+        handles
+            .database()
+            .inner()
+            .as_raw_db()
+            .raw_iterator_cf_opt(handles.get(cf), options)
+    }
+}
 impl<C: ColumnFamilies> ReadSource for Scope<C> {}
 
-// Asynchronous reads are always requested. RocksDB turns them off by itself when
-// the build or the filesystem doesn't support them.
-fn reader_options(options: &mut ReadOptions) {
+// The snapshot or scope a reader, iterator, or batch reads through: borrowed, or
+// its own clone. Either way, it keeps alive everything the value points into.
+enum Source<'a, H> {
+    Borrowed(&'a H),
+    Owned(H),
+}
+
+impl<H> Source<'_, H> {
+    fn get(&self) -> &H {
+        match self {
+            Self::Borrowed(source) => source,
+            Self::Owned(source) => source,
+        }
+    }
+}
+
+impl<H: Clone> Source<'_, H> {
+    // A clone of a borrowed source, or the owned one itself.
+    fn into_owned(self) -> H {
+        match self {
+            Self::Borrowed(source) => source.clone(),
+            Self::Owned(source) => source,
+        }
+    }
+}
+
+// The options every new reader starts with. Asynchronous reads are always
+// requested. RocksDB turns them off by itself when the build or the filesystem
+// doesn't support them.
+fn default_reader_options() -> ReadOptions {
+    let mut options = ReadOptions::default();
     options.set_async_io(true);
+    options
 }
 
 fn iterator_options(options: &mut ReadOptions) {

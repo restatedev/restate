@@ -91,7 +91,7 @@ async fn read_snapshot_sees_the_partition_as_it_was_when_taken() -> anyhow::Resu
                 .expect("the applied LSN changed");
 
             // A point read through the snapshot also returns the old value.
-            let reader = before.reader(KeyKind::Fsm, ReadOptions::default());
+            let reader = before.reader(KeyKind::Fsm);
             assert_eq!(reader.get(key)?.as_ref(), Some(old_value));
 
             // A total-order range scan over the same keys finds the same entries.
