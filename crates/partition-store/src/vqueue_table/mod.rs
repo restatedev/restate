@@ -33,6 +33,7 @@ use rocksdb::{ReadOptions, WriteBatch, WriteOptions};
 use strum::EnumCount;
 use tracing::error;
 
+use restate_core::io::IoExecutor;
 use restate_rocksdb::{CfName, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
@@ -639,70 +640,73 @@ where
     let rocksdb = store.partition_db().clone();
 
     async move {
-        rocksdb
-            .run_background_read_op(
-                "df-vqueue-meta",
-                StorageTaskKind::MultiGet,
-                Priority::Low,
-                move |raw_db, cfs| -> Result<()> {
-                    let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
+        let read = rocksdb.prepare_read(
+            "df-vqueue-meta",
+            StorageTaskKind::MultiGet,
+            move |raw_db, cfs| -> Result<()> {
+                let cf = cfs.get(<MetaKey as EncodeTableKey>::KEY_KIND);
 
-                    let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
-                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
-                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+                let batch_capacity = ids.len().min(VQUEUE_META_MULTI_GET_BATCH_SIZE);
+                let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                let mut batch_ids = Vec::with_capacity(batch_capacity);
 
-                    let mut readopts = ReadOptions::default();
-                    // future proofing to make use of parallel L0 reads and async-io
-                    // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
-                    // by default, this will not do anything.
-                    readopts.set_async_io(true);
-                    readopts.set_optimize_multiget_for_io(true);
+                let mut readopts = ReadOptions::default();
+                // future proofing to make use of parallel L0 reads and async-io
+                // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                // by default, this will not do anything.
+                readopts.set_async_io(true);
+                readopts.set_optimize_multiget_for_io(true);
 
-                    let mut ids = ids.into_iter();
-                    loop {
-                        key_buf.clear();
-                        batch_ids.clear();
+                let mut ids = ids.into_iter();
+                loop {
+                    key_buf.clear();
+                    batch_ids.clear();
 
-                        for id in ids.by_ref().take(VQUEUE_META_MULTI_GET_BATCH_SIZE) {
-                            EncodeTableKey::serialize_to(&MetaKey::from(&id), &mut key_buf);
-                            batch_ids.push(id);
-                        }
+                    for id in ids.by_ref().take(VQUEUE_META_MULTI_GET_BATCH_SIZE) {
+                        EncodeTableKey::serialize_to(&MetaKey::from(&id), &mut key_buf);
+                        batch_ids.push(id);
+                    }
 
-                        if batch_ids.is_empty() {
-                            break;
-                        }
+                    if batch_ids.is_empty() {
+                        break;
+                    }
 
-                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
-                        debug_assert!(
-                            remainder.is_empty(),
-                            "Each serialized MetaKey should have KEY_LEN"
-                        );
+                    let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                    debug_assert!(
+                        remainder.is_empty(),
+                        "Each serialized MetaKey should have KEY_LEN"
+                    );
 
-                        let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
+                    let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
 
-                        for (id, result) in batch_ids.iter().zip(results) {
-                            let Some(value) =
-                                result.map_err(|e| StorageError::Generic(e.into()))?
-                            else {
-                                continue;
-                            };
+                    for (id, result) in batch_ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            continue;
+                        };
 
-                            let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
-                                .map_err(StorageError::BilrostDecode)?;
+                        let meta = VQueueMetaRef::decode_borrowed(value.as_ref())
+                            .map_err(StorageError::BilrostDecode)?;
 
-                            if f((id, &meta)).is_break() {
-                                return Ok(());
-                            }
-                        }
-
-                        if batch_ids.len() < VQUEUE_META_MULTI_GET_BATCH_SIZE {
-                            break;
+                        if f((id, &meta)).is_break() {
+                            return Ok(());
                         }
                     }
 
-                    Ok(())
-                },
-            )
+                    if batch_ids.len() < VQUEUE_META_MULTI_GET_BATCH_SIZE {
+                        break;
+                    }
+                }
+
+                Ok(())
+            },
+        );
+        rocksdb
+            .rocksdb()
+            .executor()
+            .low_pri()
+            .spawn(read)
+            .map_err(|_| StorageError::OperationalError)?
             .await
             .map_err(|_| StorageError::OperationalError)?
     }
@@ -778,72 +782,75 @@ where
     let rocksdb = store.partition_db().clone();
 
     async move {
-        rocksdb
-            .run_background_read_op(
-                "df-vqueue-entry-status",
-                StorageTaskKind::MultiGet,
-                Priority::Low,
-                move |raw_db, cfs| -> Result<()> {
-                    let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
+        let read = rocksdb.prepare_read(
+            "df-vqueue-entry-status",
+            StorageTaskKind::MultiGet,
+            move |raw_db, cfs| -> Result<()> {
+                let cf = cfs.get(<EntryStatusKey as EncodeTableKey>::KEY_KIND);
 
-                    let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
-                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
-                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+                let batch_capacity = ids.len().min(ENTRY_STATUS_MULTI_GET_BATCH_SIZE);
+                let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                let mut batch_ids = Vec::with_capacity(batch_capacity);
 
-                    let mut readopts = ReadOptions::default();
-                    // future proofing to make use of parallel L0 reads and async-io
-                    // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
-                    // by default, this will not do anything.
-                    readopts.set_async_io(true);
-                    readopts.set_optimize_multiget_for_io(true);
+                let mut readopts = ReadOptions::default();
+                // future proofing to make use of parallel L0 reads and async-io
+                // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                // by default, this will not do anything.
+                readopts.set_async_io(true);
+                readopts.set_optimize_multiget_for_io(true);
 
-                    let mut ids = ids.into_iter();
-                    loop {
-                        key_buf.clear();
-                        batch_ids.clear();
+                let mut ids = ids.into_iter();
+                loop {
+                    key_buf.clear();
+                    batch_ids.clear();
 
-                        for id in ids.by_ref().take(ENTRY_STATUS_MULTI_GET_BATCH_SIZE) {
-                            EncodeTableKey::serialize_to(&EntryStatusKey::from(id), &mut key_buf);
-                            batch_ids.push(id);
-                        }
+                    for id in ids.by_ref().take(ENTRY_STATUS_MULTI_GET_BATCH_SIZE) {
+                        EncodeTableKey::serialize_to(&EntryStatusKey::from(id), &mut key_buf);
+                        batch_ids.push(id);
+                    }
 
-                        if batch_ids.is_empty() {
-                            break;
-                        }
+                    if batch_ids.is_empty() {
+                        break;
+                    }
 
-                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
-                        debug_assert!(
-                            remainder.is_empty(),
-                            "Each serialized EntryStatusKey should have KEY_LEN"
-                        );
+                    let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                    debug_assert!(
+                        remainder.is_empty(),
+                        "Each serialized EntryStatusKey should have KEY_LEN"
+                    );
 
-                        let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
+                    let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
 
-                        for (id, result) in batch_ids.iter().zip(results) {
-                            let Some(value) =
-                                result.map_err(|e| StorageError::Generic(e.into()))?
-                            else {
-                                continue;
-                            };
+                    for (id, result) in batch_ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            continue;
+                        };
 
-                            let mut value = value.as_ref();
-                            let header =
-                                RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
-                                    .map_err(StorageError::BilrostDecode)?;
+                        let mut value = value.as_ref();
+                        let header =
+                            RawStatusHeaderRef::decode_borrowed_length_delimited(&mut value)
+                                .map_err(StorageError::BilrostDecode)?;
 
-                            if f(id, &header).is_break() {
-                                return Ok(());
-                            }
-                        }
-
-                        if batch_ids.len() < ENTRY_STATUS_MULTI_GET_BATCH_SIZE {
-                            break;
+                        if f(id, &header).is_break() {
+                            return Ok(());
                         }
                     }
 
-                    Ok(())
-                },
-            )
+                    if batch_ids.len() < ENTRY_STATUS_MULTI_GET_BATCH_SIZE {
+                        break;
+                    }
+                }
+
+                Ok(())
+            },
+        );
+        rocksdb
+            .rocksdb()
+            .executor()
+            .low_pri()
+            .spawn(read)
+            .map_err(|_| StorageError::OperationalError)?
             .await
             .map_err(|_| StorageError::OperationalError)?
     }

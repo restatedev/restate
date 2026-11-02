@@ -15,6 +15,7 @@ use bytes::BytesMut;
 use futures::{FutureExt, Stream};
 use rocksdb::ReadOptions;
 
+use restate_core::io::IoExecutor;
 use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::invocation_status_table::{
     InvocationLite, InvocationStatus, InvocationStatusDiscriminants, ReadInvocationStatusTable,
@@ -81,107 +82,109 @@ where
     let rocksdb = store.partition_db().clone();
 
     async move {
-        rocksdb
-            .run_background_read_op(
-                "df-for-each-invocation-status",
-                StorageTaskKind::MultiGet,
-                Priority::Low,
-                move |raw_db, cfs| -> Result<()> {
-                    let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
+        let read = rocksdb.prepare_read(
+            "df-for-each-invocation-status",
+            StorageTaskKind::MultiGet,
+            move |raw_db, cfs| -> Result<()> {
+                let cf = cfs.get(<InvocationStatusKey as EncodeTableKey>::KEY_KIND);
 
-                    let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
-                    let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
-                    let mut batch_ids = Vec::with_capacity(batch_capacity);
+                let batch_capacity = ids.len().min(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE);
+                let mut key_buf = BytesMut::with_capacity(batch_capacity * KEY_LEN);
+                let mut batch_ids = Vec::with_capacity(batch_capacity);
 
-                    let mut readopts = ReadOptions::default();
-                    // future proofing to make use of parallel L0 reads and async-io
-                    // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
-                    // by default, this will not do anything.
-                    readopts.set_async_io(true);
-                    readopts.set_optimize_multiget_for_io(true);
+                let mut readopts = ReadOptions::default();
+                // future proofing to make use of parallel L0 reads and async-io
+                // if/when we build rocksdb with COROUTINES=1 and IO-URING support.
+                // by default, this will not do anything.
+                readopts.set_async_io(true);
+                readopts.set_optimize_multiget_for_io(true);
 
-                    let mut ids = ids.into_iter();
-                    loop {
-                        key_buf.clear();
-                        batch_ids.clear();
+                let mut ids = ids.into_iter();
+                loop {
+                    key_buf.clear();
+                    batch_ids.clear();
 
-                        for id in ids.by_ref().take(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE) {
-                            EncodeTableKey::serialize_to(
-                                &create_invocation_status_key(&id),
-                                &mut key_buf,
-                            );
-                            batch_ids.push(id);
-                        }
-
-                        if batch_ids.is_empty() {
-                            break;
-                        }
-
-                        let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
-                        debug_assert!(remainder.is_empty(), "Each serialized InvocationStatusKey should have KEY_LEN");
-
-                        let results = raw_db.batched_multi_get_cf_opt(
-                            cf,
-                            keys,
-                            true,
-                            &readopts,
+                    for id in ids.by_ref().take(INVOCATION_STATUS_MULTI_GET_BATCH_SIZE) {
+                        EncodeTableKey::serialize_to(
+                            &create_invocation_status_key(&id),
+                            &mut key_buf,
                         );
+                        batch_ids.push(id);
+                    }
 
-                        for (id, result) in batch_ids.iter().zip(results) {
-                            let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
-                            else {
-                                continue;
-                            };
-                            let mut value = value.as_ref();
+                    if batch_ids.is_empty() {
+                        break;
+                    }
 
-                            if value.len() < std::mem::size_of::<u8>() {
-                                return Err(StorageError::Conversion(
-                                    restate_types::storage::StorageDecodeError::ReadingCodec(
-                                        format_restring!(
-                                            "remaining bytes in buf '{}' < version bytes '{}'",
-                                            value.len(),
-                                            std::mem::size_of::<u8>()
-                                        ),
-                                    )
-                                    .into(),
-                                ));
-                            }
+                    let (keys, remainder) = key_buf.as_chunks::<KEY_LEN>();
+                    debug_assert!(
+                        remainder.is_empty(),
+                        "Each serialized InvocationStatusKey should have KEY_LEN"
+                    );
 
-                            let codec = restate_types::storage::StorageCodecKind::try_from(
-                                bytes::Buf::get_u8(&mut value),
-                            )
-                            .map_err(|e| StorageError::Conversion(e.into()))?;
-                            let restate_types::storage::StorageCodecKind::Protobuf = codec else {
-                                return Err(StorageError::Conversion(
-                                    restate_types::storage::StorageDecodeError::UnsupportedCodecKind(
-                                        codec,
-                                    )
-                                    .into(),
-                                ));
-                            };
+                    let results = raw_db.batched_multi_get_cf_opt(cf, keys, true, &readopts);
 
-                            let mut inv_status_v2_lazy = InvocationStatusV2Lazy::default();
-                            inv_status_v2_lazy
-                                .merge(value)
-                                .map_err(|e| StorageError::Conversion(e.into()))?;
+                    for (id, result) in batch_ids.iter().zip(results) {
+                        let Some(value) = result.map_err(|e| StorageError::Generic(e.into()))?
+                        else {
+                            continue;
+                        };
+                        let mut value = value.as_ref();
 
-                            match f((*id, &inv_status_v2_lazy)) {
-                                ControlFlow::Continue(()) => {}
-                                ControlFlow::Break(Ok(())) => return Ok(()),
-                                ControlFlow::Break(Err(e)) => {
-                                    return Err(StorageError::Conversion(e.into()));
-                                }
-                            }
+                        if value.len() < std::mem::size_of::<u8>() {
+                            return Err(StorageError::Conversion(
+                                restate_types::storage::StorageDecodeError::ReadingCodec(
+                                    format_restring!(
+                                        "remaining bytes in buf '{}' < version bytes '{}'",
+                                        value.len(),
+                                        std::mem::size_of::<u8>()
+                                    ),
+                                )
+                                .into(),
+                            ));
                         }
 
-                        if batch_ids.len() < INVOCATION_STATUS_MULTI_GET_BATCH_SIZE {
-                            break;
+                        let codec = restate_types::storage::StorageCodecKind::try_from(
+                            bytes::Buf::get_u8(&mut value),
+                        )
+                        .map_err(|e| StorageError::Conversion(e.into()))?;
+                        let restate_types::storage::StorageCodecKind::Protobuf = codec else {
+                            return Err(StorageError::Conversion(
+                                restate_types::storage::StorageDecodeError::UnsupportedCodecKind(
+                                    codec,
+                                )
+                                .into(),
+                            ));
+                        };
+
+                        let mut inv_status_v2_lazy = InvocationStatusV2Lazy::default();
+                        inv_status_v2_lazy
+                            .merge(value)
+                            .map_err(|e| StorageError::Conversion(e.into()))?;
+
+                        match f((*id, &inv_status_v2_lazy)) {
+                            ControlFlow::Continue(()) => {}
+                            ControlFlow::Break(Ok(())) => return Ok(()),
+                            ControlFlow::Break(Err(e)) => {
+                                return Err(StorageError::Conversion(e.into()));
+                            }
                         }
                     }
 
-                    Ok(())
-                },
-            )
+                    if batch_ids.len() < INVOCATION_STATUS_MULTI_GET_BATCH_SIZE {
+                        break;
+                    }
+                }
+
+                Ok(())
+            },
+        );
+        rocksdb
+            .rocksdb()
+            .executor()
+            .low_pri()
+            .spawn(read)
+            .map_err(|_| StorageError::OperationalError)?
             .await
             .map_err(|_| StorageError::OperationalError)?
     }

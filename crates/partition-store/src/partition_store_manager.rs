@@ -554,6 +554,7 @@ mod tests {
     use tokio::sync::oneshot;
     use tokio::time::timeout;
 
+    use restate_core::io::IoExecutor;
     use restate_rocksdb::{Priority, RocksDbManager, RocksError};
     use restate_storage_api::fsm_table::{ReadFsmTable, WriteFsmTable};
     use restate_storage_api::{StorageError, Transaction};
@@ -659,20 +660,21 @@ mod tests {
             let released = store.partition_db().released();
             let (started, reached) = oneshot::channel();
             let (resume, paused) = mpsc::channel::<()>();
-            let mut read = Box::pin(store.partition_db().run_background_read_op(
+            let read = store.partition_db().prepare_read(
                 "retirement-read",
                 restate_rocksdb::StorageTaskKind::MultiGet,
-                Priority::High,
                 move |_, _| {
                     let _ = started.send(());
                     let _ = paused.recv();
                 },
-            ));
-            assert!(
-                read.as_mut()
-                    .poll(&mut Context::from_waker(Waker::noop()))
-                    .is_pending()
             );
+            // Submitting is eager: the read starts without polling the result.
+            let read = store
+                .partition_db()
+                .rocksdb()
+                .executor()
+                .high_pri()
+                .spawn(read)?;
             timeout(DEADLINE, reached).await??;
             drop(read);
             let mut retirement = Box::pin(manager.drop_partition_store(&partition));
