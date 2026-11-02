@@ -33,7 +33,7 @@ use rocksdb::{DBRawIteratorWithThreadMode, ReadOptions, WriteBatch, WriteOptions
 use strum::EnumCount;
 use tracing::error;
 
-use restate_rocksdb::{Priority, RocksDbReadPerfGuard, StorageTaskKind};
+use restate_rocksdb::{CfName, Priority, RocksDbReadPerfGuard, StorageTaskKind};
 use restate_storage_api::StorageError;
 use restate_storage_api::vqueue_table::filters::{ScanEntryIdFilter, ScanMetaFilter};
 use restate_storage_api::vqueue_table::metadata::{VQueueMeta, VQueueMetaRef};
@@ -125,8 +125,8 @@ impl ScanVQueueTable for PartitionDb {
         let mut end = false;
 
         // Escape hatch for orphaned active markers (meta is missing), e.g. caused by a
-        // duplicated put that survived a single delete. Orphans are collected and removed
-        // with a regular delete since more than one put might be present.
+        // duplicated put that survived a single delete. If more than one put is present, an
+        // older put may resurface later and requires enabling the escape hatch again.
         let remove_orphans = Configuration::pinned()
             .common
             .experimental
@@ -172,7 +172,7 @@ impl ScanVQueueTable for PartitionDb {
                             ActiveKeyRef::builder()
                                 .qid(&queue_id)
                                 .serialize_to(&mut key_buffer.as_mut());
-                            orphans.delete_cf(cf, key_buffer);
+                            orphans.single_delete_cf(cf, key_buffer);
                             continue;
                         }
                         // data integrity error, active vqueues must be present in meta
@@ -188,15 +188,17 @@ impl ScanVQueueTable for PartitionDb {
         }
 
         if !orphans.is_empty() {
-            // Like regular partition store commits, skip the WAL so that the removal only
-            // becomes durable together with all preceding writes.
+            // Like regular partition store commits, skip the WAL. The flush makes the removal
+            // durable so that the escape hatch can be disabled again.
             let mut write_options = WriteOptions::default();
             write_options.disable_wal(true);
-            self.rocksdb()
-                .inner()
+            let rocksdb = self.rocksdb().inner();
+            rocksdb
                 .write_batch(&orphans, &write_options)
-                .context("failed to remove orphaned active vqueues")
-                .map_err(StorageError::Generic)?;
+                .context("failed to remove orphaned active vqueues")?;
+            rocksdb
+                .flush_memtables(&[CfName::from(self.partition().cf_name())], true)
+                .context("failed to flush removal of orphaned active vqueues")?;
         }
         Ok(())
     }
