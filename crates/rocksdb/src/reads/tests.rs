@@ -73,8 +73,8 @@ fn spec(path: &Path) -> DbSpec {
 /// away, on the dropping thread.
 fn standalone(path: &Path) -> anyhow::Result<Arc<RocksDb>> {
     let executor = GlobalExecutor::new(
-        crate::SinglePoolExecutor::new("test-high".to_owned(), 1),
-        crate::SinglePoolExecutor::new("test-low".to_owned(), 1),
+        crate::SinglePoolExecutor::new("test-high", 1),
+        crate::SinglePoolExecutor::new("test-low", 1),
     );
     let native = RocksAccess::open_db(spec(path), DbEnv::default())?;
     Ok(Arc::new(RocksDb::new(native, executor)))
