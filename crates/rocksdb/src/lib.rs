@@ -49,8 +49,8 @@ use restate_util_lifecycle::Scope;
 
 // re-exports
 pub use self::background::{
-    GlobalExecutor, Guarded, OpContext, OpFn, Priority, SinglePoolExecutor, StorageOp,
-    StorageTaskKind,
+    GlobalExecutor, Guarded, Mapped, MappedOk, OpContext, OpFn, Priority, SinglePoolExecutor,
+    StorageOp, StorageTaskKind,
 };
 pub use self::cf_handles::CfHandles;
 pub use self::db_env::DbEnv;
@@ -658,6 +658,96 @@ impl RocksDb {
             lease,
         );
         StorageOp::without_admission(move || task.run(), StorageTaskKind::DropColumnFamily)
+    }
+
+    /// Prepares flushing the memtables of all of `scope`'s column families, to
+    /// submit to an executor of your choice. With `wait`, the operation finishes
+    /// only once the flush has.
+    ///
+    /// The operation runs on the database that the scope's column families
+    /// belong to. The scope is the operation's context (see [`OpContext`]): it
+    /// stays borrowed until the operation moves to a background thread, and
+    /// there a clone keeps the column families alive until the flush is done.
+    /// It counts in `gate`, which must be inside that database (see
+    /// [`Self::gate`]).
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` is outside the scope's database.
+    pub fn prepare_flush<'a, 'c, C: ColumnFamilies>(
+        scope: &'c Scope<C>,
+        gate: &'a Arc<Gate>,
+        wait: bool,
+    ) -> StorageOp<
+        'a,
+        &'c Scope<C>,
+        impl FnOnce(&Scope<C>) -> Result<(), RocksError> + Send + 'static + use<C>,
+    > {
+        scope
+            .payload()
+            .handles()
+            .database()
+            .debug_assert_inside(gate);
+        StorageOp::with_context(
+            scope,
+            gate,
+            StorageTaskKind::FlushMemtables,
+            move |scope: &Scope<C>| {
+                let handles = scope.payload().handles();
+                handles
+                    .database()
+                    .db
+                    .flush_memtables_by_handle(handles.all(), wait)
+            },
+        )
+    }
+
+    /// Prepares exporting one of `scope`'s column families into `export_dir`,
+    /// which RocksDB creates, to submit to an executor of your choice. The result
+    /// describes the exported files.
+    ///
+    /// Like [`Self::prepare_flush`], the operation runs on the scope's database,
+    /// borrows the scope until it moves to a background thread, and counts in
+    /// `gate`.
+    ///
+    /// If the export fails, RocksDB removes what it created. An export that
+    /// succeeds without any files fails with [`RocksError::SnapshotEmpty`], and
+    /// its directory is kept so it can be inspected.
+    ///
+    /// # Panics
+    /// In debug builds, panics if `gate` is outside the scope's database.
+    pub fn prepare_export_cf<'a, 'c, C: ColumnFamilies>(
+        scope: &'c Scope<C>,
+        gate: &'a Arc<Gate>,
+        cf: C::Cf,
+        export_dir: PathBuf,
+    ) -> StorageOp<
+        'a,
+        &'c Scope<C>,
+        impl FnOnce(&Scope<C>) -> Result<ExportImportFilesMetaData, RocksError>
+        + Send
+        + 'static
+        + use<C>,
+    >
+    where
+        C::Cf: Send,
+    {
+        scope
+            .payload()
+            .handles()
+            .database()
+            .debug_assert_inside(gate);
+        StorageOp::with_context(
+            scope,
+            gate,
+            StorageTaskKind::ExportColumnFamily,
+            move |scope: &Scope<C>| {
+                let handles = scope.payload().handles();
+                handles
+                    .database()
+                    .db
+                    .export_cf_by_handle(handles.get(cf), export_dir)
+            },
+        )
     }
 
     /// Runs a blocking read operation on the storage background thread-pool and

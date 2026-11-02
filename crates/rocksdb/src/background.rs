@@ -376,6 +376,65 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
         }
     }
 
+    /// Passes the operation's result to `f`, on the thread that runs the
+    /// operation, right after it. Use it for work that belongs with the result,
+    /// such as taking ownership of files that the operation created, so that
+    /// they are cleaned up even if nobody claims the result. If the operation is
+    /// rejected or dropped without running, `f` is never called.
+    ///
+    /// For an operation that returns a `Result`, [`Self::map_ok`] changes only
+    /// a successful result.
+    pub fn map<U, M>(self, f: M) -> StorageOp<'a, C, Mapped<F, M>>
+    where
+        M: FnOnce(F::Output) -> U + Send + 'static,
+    {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        StorageOp {
+            context,
+            op: Mapped { op, f },
+            gate,
+            kind,
+        }
+    }
+
+    /// Like [`Self::map`], but only for a successful result: `f` changes the
+    /// value inside `Ok`, and an error is passed on as it is.
+    ///
+    /// ```no_run
+    /// use restate_rocksdb::{RocksDb, StorageTaskKind};
+    /// use std::sync::Arc;
+    ///
+    /// # fn example(db: &Arc<RocksDb>) {
+    /// // Measures the value on the worker, so only its length comes back.
+    /// let op = db
+    ///     .prepare(StorageTaskKind::MultiGet, |db| db.inner().as_raw_db().get(b"key"))
+    ///     .map_ok(|value| value.map_or(0, |value| value.len()));
+    /// # }
+    /// ```
+    pub fn map_ok<T, E, U, M>(self, f: M) -> StorageOp<'a, C, MappedOk<F, M>>
+    where
+        F: OpFn<C, Output = Result<T, E>>,
+        M: FnOnce(T) -> U + Send + 'static,
+    {
+        let Self {
+            context,
+            op,
+            gate,
+            kind,
+        } = self;
+        StorageOp {
+            context,
+            op: MappedOk { op, f },
+            gate,
+            kind,
+        }
+    }
+
     /// Runs the operation now, on the current thread, with its context still
     /// borrowed. Fails with [`AdmissionClosed`] if the database (or scope) is
     /// sealed. Unlike background tasks, it records no task metrics or tracing
@@ -390,6 +449,54 @@ impl<'a, C: OpContext, F: OpFn<C>> StorageOp<'a, C, F> {
         let output = self.op.run(self.context);
         drop(lease);
         Ok(output)
+    }
+}
+
+/// The work of an operation returned by [`StorageOp::map`]: the original work,
+/// followed by the function that changes its result.
+pub struct Mapped<F, M> {
+    op: F,
+    f: M,
+}
+
+impl<C, F, M, U> OpFn<C> for Mapped<F, M>
+where
+    C: OpContext,
+    F: OpFn<C>,
+    M: FnOnce(F::Output) -> U + Send + 'static,
+{
+    type Output = U;
+
+    fn run(self, context: C) -> U {
+        (self.f)(self.op.run(context))
+    }
+
+    fn run_owned(self, context: C::Owned) -> U {
+        (self.f)(self.op.run_owned(context))
+    }
+}
+
+/// The work of an operation returned by [`StorageOp::map_ok`]: the original
+/// work, followed by the function that changes a successful result.
+pub struct MappedOk<F, M> {
+    op: F,
+    f: M,
+}
+
+impl<C, F, M, T, E, U> OpFn<C> for MappedOk<F, M>
+where
+    C: OpContext,
+    F: OpFn<C, Output = Result<T, E>>,
+    M: FnOnce(T) -> U + Send + 'static,
+{
+    type Output = Result<U, E>;
+
+    fn run(self, context: C) -> Result<U, E> {
+        self.op.run(context).map(self.f)
+    }
+
+    fn run_owned(self, context: C::Owned) -> Result<U, E> {
+        self.op.run_owned(context).map(self.f)
     }
 }
 
@@ -701,6 +808,16 @@ mod tests {
         assert_eq!(op.call().unwrap(), 42);
         assert_eq!(drops.load(Ordering::Relaxed), 1);
         assert!(gate.is_idle());
+
+        // `map` changes any result; `map_ok` only a successful one.
+        let op = StorageOp::new(|| 42, &gate, StorageTaskKind::MultiGet).map(|n| n + 1);
+        assert_eq!(op.call().unwrap(), 43);
+        let op = StorageOp::new(|| Ok::<_, &str>(42), &gate, StorageTaskKind::MultiGet)
+            .map_ok(|n| n + 1);
+        assert_eq!(op.call().unwrap(), Ok(43));
+        let op = StorageOp::new(|| Err::<i32, _>("failed"), &gate, StorageTaskKind::MultiGet)
+            .map_ok(|n| n + 1);
+        assert_eq!(op.call().unwrap(), Err("failed"));
 
         let task =
             StorageOp::new(|| 43, &gate, StorageTaskKind::MultiGet).with_guard(factory.clone());
