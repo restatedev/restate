@@ -79,7 +79,7 @@ workflows:
     '.github/workflows/pullfrog.yml':
         - 'actions-rust-lang/setup-rust-toolchain@v1.17.0'
         - 'actions/checkout@v6.1.0'
-        - 'pullfrog/pullfrog@v0.1.102'
+        - 'pullfrog/pullfrog@v0.1.110'
         - 'taiki-e/install-action@v2.88.0'
         - 'warpbuilds/rust-cache@v2.9.1'
     '.github/workflows/release-notes.yml':
@@ -232,9 +232,9 @@ dependencies:
         commit: 'sha1-ed408507eac070d1f99cc633dbcf757c94c7933a'
         owner_id: 124156
         repo_id: 743626948
-    'pullfrog/pullfrog@v0.1.102':
-        ref: 'v0.1.102'
-        commit: 'sha1-25a837a2b078177c3acdce790506d1fd1acedd82'
+    'pullfrog/pullfrog@v0.1.110':
+        ref: 'v0.1.110'
+        commit: 'sha1-895164fc90f5c493e72693c919c6cf269af158eb'
         owner_id: 223181266
         repo_id: 1032749534
     'reproducible-containers/buildkit-cache-dance@v3.1.2':
