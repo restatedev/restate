@@ -85,8 +85,8 @@ mod tests {
         .add_cf_pattern(CfPrefixPattern::ANY, Configurator)
         .build()?;
         let executor = GlobalExecutor::new(
-            threadpool::ThreadPool::new(1),
-            threadpool::ThreadPool::new(1),
+            crate::SinglePoolExecutor::new("test-high".to_owned(), 1),
+            crate::SinglePoolExecutor::new("test-low".to_owned(), 1),
         );
         let db = Arc::new(RocksDb::new(
             RocksAccess::open_db(spec, DbEnv::default())?,
